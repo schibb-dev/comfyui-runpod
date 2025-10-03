@@ -63,7 +63,6 @@ node_modules/
 npm-debug.log*
 
 # Custom nodes git directories (we don't want to track these as submodules)
-custom_nodes/*/.git
-workspace/ComfyUI/.git
-workspace/comfyui-wan/.git
-workspace/ComfyUI/custom_nodes/*/.git
+**/.git/
+custom_nodes/**/.git
+workspace/**/.git
