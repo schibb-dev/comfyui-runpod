@@ -41,6 +41,10 @@ output/
 temp/
 *.log
 
+# Cache directories
+.cache/
+**/.cache/
+
 # Models and large files (never commit these large files)
 models/
 *.safetensors
