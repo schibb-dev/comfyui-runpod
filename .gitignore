@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# ComfyUI specific
+input/
+output/
+temp/
+*.log
+
+# Models and large files (never commit these large files)
+models/
+*.safetensors
+*.ckpt
+*.gguf
+*.bin
+*.pt
+*.pth
+
+# Credentials (never commit these)
+credentials/
+.env
+*.token
+
+# Docker
+.dockerignore
+
+# Node.js (if any)
+node_modules/
+npm-debug.log*
+
+# Custom nodes git directories (we don't want to track these as submodules)
+custom_nodes/*/.git
+workspace/ComfyUI/.git
+workspace/comfyui-wan/.git
+workspace/ComfyUI/custom_nodes/*/.git

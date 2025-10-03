@@ -1,0 +1,78 @@
+# Custom Nodes Configuration
+# This file defines which custom nodes should be installed for ComfyUI
+
+nodes:
+  essential:
+    - name: ComfyUI-GGUF
+      repo: https://github.com/city96/ComfyUI-GGUF.git
+      branch: main
+      required: true
+      description: "GGUF model support for ComfyUI"
+      
+    - name: ComfyUI-mxToolkit
+      repo: https://github.com/Smirnov75/ComfyUI-mxToolkit.git
+      branch: main
+      required: true
+      description: "mxToolkit nodes for ComfyUI"
+      
+    - name: ComfyUI-Custom-Scripts
+      repo: https://github.com/pysssss/ComfyUI-Custom-Scripts.git
+      branch: main
+      required: true
+      description: "Custom scripts including pysssss nodes"
+      
+    - name: ComfyUI-KJNodes
+      repo: https://github.com/kijai/ComfyUI-KJNodes.git
+      branch: main
+      required: true
+      description: "KJNodes including TorchCompile, TeaCache, and other utilities"
+      
+    - name: ComfyUI-VideoHelperSuite
+      repo: https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git
+      branch: main
+      required: true
+      description: "Video processing nodes including VHS_VideoCombine"
+      
+    - name: ComfyUI-Easy-Use
+      repo: https://github.com/yolain/ComfyUI-Easy-Use.git
+      branch: main
+      required: true
+      description: "Easy-to-use nodes including math, prompt replace, and GPU cleanup"
+      
+    - name: ComfyUI-Florence2
+      repo: https://github.com/kijai/ComfyUI-Florence2.git
+      branch: main
+      required: true
+      description: "Florence2 model support"
+      
+    - name: ComfyUI-Frame-Interpolation
+      repo: https://github.com/Fannovel16/ComfyUI-Frame-Interpolation.git
+      branch: main
+      required: true
+      description: "Frame interpolation including RIFE VFI"
+      
+    - name: rgthree-comfy
+      repo: https://github.com/rgthree/rgthree-comfy.git
+      branch: main
+      required: true
+      description: "rgthree nodes including Power Lora Loader and Fast Groups"
+      
+  optional:
+    - name: ComfyUI-MultiGPU
+      repo: https://github.com/pollockjj/ComfyUI-MultiGPU.git
+      branch: main
+      required: true
+      description: "Multi-GPU support including GGUF loaders"
+      
+    - name: ComfyUI-Manager
+      repo: https://github.com/ltdrdata/ComfyUI-Manager.git
+      branch: main
+      required: false
+      description: "Node manager for ComfyUI"
+
+# Installation settings
+install:
+  auto_install_requirements: true
+  skip_existing: true
+  timeout: 300  # seconds
+  retry_attempts: 3

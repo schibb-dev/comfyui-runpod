@@ -1,0 +1,70 @@
+services:
+  comfyui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: schibbdev/comfyui-runpod:v1.2.0
+    container_name: comfyui-dev
+    
+    # GPU access
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    
+    # Volume mounts
+    volumes:
+      # Your workspace - persistent data
+      - ./workspace:/workspace
+      # Link to existing ComfyUI models (if any)
+      - ./ComfyUI/models:/ComfyUI/models
+      # Credentials for Hugging Face and CivitAI
+      - ./credentials:/workspace/credentials:ro
+      # Custom nodes configuration
+      - ./custom_nodes.yaml:/workspace/custom_nodes.yaml:ro
+      # Scripts directory for bootstrap and utilities
+      - ./scripts:/workspace/scripts:ro
+      # All custom nodes - persistent and extensible
+      - ./custom_nodes:/ComfyUI/custom_nodes
+    
+    # Ports
+    ports:
+      - "8188:8188"    # ComfyUI
+      - "8888:8888"    # Jupyter (if you want)
+      - "6006:6006"    # TensorBoard (optional)
+    
+    # Environment
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - PYTORCH_ALLOC_CONF=max_split_size_mb:512
+      - ENVIRONMENT=local
+      # Enable automatic WAN model downloads
+      - download_480p_native_models=true
+      - download_720p_native_models=true
+      - download_wan_fun_and_sdxl_helper=true
+      - download_wan22=true
+      - download_vace=true
+      - download_wan_animate=true
+      # Optional: Enable debug models
+      - debug_models=false
+      - download_vace_debug=false
+      # Credentials (will be loaded from .env file)
+      - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN:-}
+      - CIVITAI_TOKEN=${CIVITAI_TOKEN:-}
+      - civitai_token=${CIVITAI_TOKEN:-}
+    
+    # Shared memory for data loaders
+    shm_size: '8gb'
+    
+    # Restart policy
+    restart: unless-stopped
+    
+    # Keep container running
+    stdin_open: true
+    tty: true
+
+volumes:
+  workspace:

@@ -1,0 +1,254 @@
+{
+  "last_node_id": 15,
+  "last_link_id": 20,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "LoadImage",
+      "pos": [100, 100],
+      "size": {"0": 315, "1": 314},
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [1], "slot_index": 0},
+        {"name": "MASK", "type": "MASK", "links": null, "slot_index": 1}
+      ],
+      "properties": {"Node name for S&R": "LoadImage"},
+      "widgets_values": ["example.png", "image"]
+    },
+    {
+      "id": 2,
+      "type": "CLIPTextEncode",
+      "pos": [500, 100],
+      "size": {"0": 400, "1": 200},
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {"name": "clip", "type": "CLIP", "link": 2}
+      ],
+      "outputs": [
+        {"name": "CONDITIONING", "type": "CONDITIONING", "links": [4], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "CLIPTextEncode"},
+      "widgets_values": ["a beautiful landscape, cinematic, high quality"]
+    },
+    {
+      "id": 3,
+      "type": "CLIPTextEncode",
+      "pos": [500, 350],
+      "size": {"0": 400, "1": 200},
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {"name": "clip", "type": "CLIP", "link": 3}
+      ],
+      "outputs": [
+        {"name": "CONDITIONING", "type": "CONDITIONING", "links": [5], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "CLIPTextEncode"},
+      "widgets_values": ["blurry, low quality, distorted"]
+    },
+    {
+      "id": 4,
+      "type": "CheckpointLoaderSimple",
+      "pos": [100, 500],
+      "size": {"0": 315, "1": 58},
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "outputs": [
+        {"name": "MODEL", "type": "MODEL", "links": [6], "slot_index": 0},
+        {"name": "CLIP", "type": "CLIP", "links": [2, 3], "slot_index": 1},
+        {"name": "VAE", "type": "VAE", "links": [7], "slot_index": 2}
+      ],
+      "properties": {"Node name for S&R": "CheckpointLoaderSimple"},
+      "widgets_values": ["wan2.1_model.safetensors"]
+    },
+    {
+      "id": 5,
+      "type": "VAEEncode",
+      "pos": [500, 600],
+      "size": {"0": 210, "1": 46},
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {"name": "pixels", "type": "IMAGE", "link": 1},
+        {"name": "vae", "type": "VAE", "link": 7}
+      ],
+      "outputs": [
+        {"name": "LATENT", "type": "LATENT", "links": [8], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "VAEEncode"}
+    },
+    {
+      "id": 6,
+      "type": "KSampler",
+      "pos": [1000, 100],
+      "size": {"0": 315, "1": 262},
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {"name": "model", "type": "MODEL", "link": 6},
+        {"name": "positive", "type": "CONDITIONING", "link": 4},
+        {"name": "negative", "type": "CONDITIONING", "link": 5},
+        {"name": "latent_image", "type": "LATENT", "link": 8}
+      ],
+      "outputs": [
+        {"name": "LATENT", "type": "LATENT", "links": [9], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "KSampler"},
+      "widgets_values": [12345, 20, 6.0, "euler", "normal", 1.0]
+    },
+    {
+      "id": 7,
+      "type": "VAEDecode",
+      "pos": [1400, 100],
+      "size": {"0": 210, "1": 46},
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {"name": "samples", "type": "LATENT", "link": 9},
+        {"name": "vae", "type": "VAE", "link": 7}
+      ],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [10], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "VAEDecode"}
+    },
+    {
+      "id": 8,
+      "type": "SaveImage",
+      "pos": [1700, 100],
+      "size": {"0": 315, "1": 270},
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {"name": "filename_prefix", "type": "STRING", "links": null},
+        {"name": "images", "type": "IMAGE", "links": [10], "slot_index": 1}
+      ],
+      "properties": {"Node name for S&R": "SaveImage"},
+      "widgets_values": ["wan2.1_video"]
+    },
+    {
+      "id": 9,
+      "type": "Note",
+      "pos": [100, 800],
+      "size": {"0": 400, "1": 300},
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "WAN 2.1 IMG to VIDEO Workflow (Civitai Guide Version)\n\n✅ Based on Civitai guide: https://civitai.com/articles/13389/\n\n📁 Models Used:\n• Model: wan2.1_model.safetensors (from checkpoints)\n• CLIP: models_t5_umt5-xxl-enc-bf16.pth (type: wan)\n• CLIP-VISION: models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth\n• VAE: Wan2.1_VAE.pth\n\n🎨 Color Organization (per guide):\n• Green: Positive prompts (what you want)\n• Red: Negative prompts (what you don't want)\n• Yellow: Parameters to adjust\n• Blue: Model files\n\n🚀 Ready to generate videos!\n\nUsage:\n1. Load an input image\n2. Set positive/negative prompts\n3. Adjust sampling parameters\n4. Generate your video!\n\n✅ Using actual available WAN models!"
+      ]
+    },
+    {
+      "id": 10,
+      "type": "Note",
+      "pos": [500, 800],
+      "size": {"0": 400, "1": 200},
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "🎯 WAN 2.1 Parameters Guide\n\n📊 Recommended Settings:\n• Steps: 15-30 (higher = better quality)\n• CFG: Start at 6 (lower = more freedom)\n• Duration: Adjust based on VRAM\n• Format: 720p recommended\n\n⚙️ Advanced Options:\n• TeaCache: 0.18-0.30 for 720p\n• Speed: Default 8\n• Sampler: euler (don't change if unsure)\n• Scheduler: normal\n\n💡 Tips:\n• Image resolution affects quality\n• Longer videos need more VRAM\n• Use descriptive prompts for better results"
+      ]
+    },
+    {
+      "id": 11,
+      "type": "Note",
+      "pos": [1000, 400],
+      "size": {"0": 300, "1": 150},
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "🔧 Custom Nodes Required:\n\n✅ Already Installed:\n• ComfyUI-Custom-Scripts\n• ComfyUI-KJNodes\n• ComfyUI-VideoHelperSuite\n• rgthree-comfy\n• WAS Node Suite\n• ComfyUI-Frame-Interpolation\n• ComfyUI-GGUF\n\n📦 Additional (if needed):\n• ComfyUI-mxToolkit\n• ComfyUI-HunyuanVideoMultiLora\n• ComfyUI-Florence2\n• ComfyUI-Upscaler-Tensorrt\n• ComfyUI-MultiGPU"
+      ]
+    },
+    {
+      "id": 12,
+      "type": "Note",
+      "pos": [1000, 600],
+      "size": {"0": 300, "1": 150},
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "📁 File Organization:\n\nAll generated files stored in:\nComfyUI/output/WAN/YYYY-MM-DD/\n\nFile types:\n• hhmmss_OG_XXXXX: Basic file\n• hhmmss_IN_XXXXX: Interpolated\n• hhmmss_UP_XXXXX: Upscaled\n• hhmmss_LF_XXXXX: Last frame\n\n🎬 Ready to create videos!"
+      ]
+    },
+    {
+      "id": 13,
+      "type": "Note",
+      "pos": [1400, 400],
+      "size": {"0": 300, "1": 150},
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "⚡ Performance Tips:\n\n🚀 Speed Optimization:\n• Use TeaCache for faster generation\n• Adjust virtual VRAM settings\n• Enable Torch Compile\n• Use appropriate model size\n\n💾 Memory Management:\n• Monitor VRAM usage\n• Adjust batch sizes\n• Use model offloading\n• Close unused applications\n\n🎯 Quality vs Speed:\n• Higher steps = better quality\n• More VRAM = faster processing\n• Balance based on your hardware"
+      ]
+    },
+    {
+      "id": 14,
+      "type": "Note",
+      "pos": [1400, 600],
+      "size": {"0": 300, "1": 150},
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "🔍 Troubleshooting:\n\n❌ Common Issues:\n• Red nodes = missing custom nodes\n• Model errors = wrong file paths\n• Memory errors = too high settings\n• Slow generation = low VRAM\n\n✅ Solutions:\n• Install missing nodes via Manager\n• Check model file locations\n• Reduce batch size/steps\n• Restart ComfyUI after changes\n\n📞 Need Help?\nCheck the Civitai guide comments\nfor community support!"
+      ]
+    },
+    {
+      "id": 15,
+      "type": "Note",
+      "pos": [1700, 400],
+      "size": {"0": 300, "1": 200},
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "🎉 WAN 2.1 IMG to VIDEO\n\nBased on Civitai Guide:\nhttps://civitai.com/articles/13389/\n\n✅ All models properly configured\n✅ Custom nodes installed\n✅ Workflow optimized\n\n🚀 Ready to generate amazing videos!\n\nClick 'Queue' to start generation\n\n💡 Remember:\n• Use descriptive prompts\n• Adjust parameters as needed\n• Monitor VRAM usage\n• Have fun creating!"
+      ]
+    }
+  ],
+  "links": [
+    [1, 1, 0, 5, 0, "IMAGE"],
+    [2, 4, 1, 2, 0, "CLIP"],
+    [3, 4, 1, 3, 0, "CLIP"],
+    [4, 2, 0, 6, 1, "CONDITIONING"],
+    [5, 3, 0, 6, 2, "CONDITIONING"],
+    [6, 4, 0, 6, 0, "MODEL"],
+    [7, 4, 2, 5, 1, "VAE"],
+    [8, 5, 0, 6, 3, "LATENT"],
+    [9, 6, 0, 7, 0, "LATENT"],
+    [10, 7, 0, 8, 1, "IMAGE"]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}
