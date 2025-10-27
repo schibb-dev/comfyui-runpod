@@ -70,3 +70,7 @@ npm-debug.log*
 **/.git/
 custom_nodes/**/.git
 workspace/**/.git
+
+# Large directories that shouldn't be committed
+workspace/ComfyUI/
+custom_nodes/ComfyUI-mxToolkit/
