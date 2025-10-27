@@ -1,0 +1,17 @@
+[Unit]
+Description=Configure NVIDIA RTX 5060 Ti GPUs for Compute
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/nvidia-smi -i 0 -c EXCLUSIVE_PROCESS
+ExecStart=/usr/bin/nvidia-smi -i 1 -c EXCLUSIVE_PROCESS
+ExecStart=/usr/bin/nvidia-smi -pm 1
+RemainAfterExit=true
+
+[Install]
+WantedBy=multi-user.target
+
+
+
+

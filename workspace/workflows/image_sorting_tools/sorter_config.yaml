@@ -1,0 +1,129 @@
+# Image Sorter Configuration File
+# This YAML file contains settings for the image content sorter
+
+# Categories for content-based sorting
+# Each category contains keywords that describe that type of content
+categories:
+  portraits:
+    - portrait
+    - face
+    - person
+    - headshot
+    - selfie
+    - people
+    
+  landscapes:
+    - landscape
+    - nature
+    - scenery
+    - outdoor
+    - mountain
+    - forest
+    - sky
+    - sunset
+    - beach
+    
+  animals:
+    - animal
+    - cat
+    - dog
+    - wildlife
+    - pet
+    - bird
+    - horse
+    - zoo
+    
+  architecture:
+    - building
+    - architecture
+    - house
+    - city
+    - urban
+    - bridge
+    - church
+    - skyscraper
+    
+  vehicles:
+    - car
+    - vehicle
+    - transportation
+    - truck
+    - motorcycle
+    - airplane
+    - train
+    - boat
+    
+  food:
+    - food
+    - meal
+    - cooking
+    - restaurant
+    - kitchen
+    - fruit
+    - vegetable
+    - dessert
+    
+  abstract:
+    - abstract
+    - pattern
+    - texture
+    - geometric
+    - minimalist
+    - colorful
+    
+  art:
+    - artwork
+    - painting
+    - drawing
+    - sculpture
+    - museum
+    - gallery
+    - artistic
+    
+  technology:
+    - computer
+    - technology
+    - gadget
+    - smartphone
+    - electronics
+    - digital
+    
+  sports:
+    - sport
+    - athletic
+    - game
+    - competition
+    - fitness
+    - exercise
+    - stadium
+
+# Similarity threshold for category matching (0.0 to 1.0)
+# Higher values = more strict matching
+similarity_threshold: 0.7
+
+# Clustering settings
+clustering:
+  max_clusters: 10      # Maximum number of clusters to create
+  min_cluster_size: 3   # Minimum images per cluster
+
+# Visualization settings
+visualization:
+  figure_size: [12, 8]  # Width, height in inches
+  dpi: 150              # Resolution for saved images
+
+# Processing settings
+processing:
+  batch_size: 32        # Number of images to process at once
+  max_image_size: 1024  # Maximum image dimension for processing
+  
+# Output settings
+output:
+  create_thumbnails: true
+  thumbnail_size: 256
+  save_metadata: true
+  
+# Advanced settings
+advanced:
+  clip_model: "ViT-B/32"  # CLIP model to use
+  device: "auto"          # "auto", "cpu", or "cuda"
+  cache_embeddings: true  # Cache image embeddings for faster repeated processing

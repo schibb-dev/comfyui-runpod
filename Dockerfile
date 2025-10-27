@@ -1,5 +1,5 @@
-# Start from the WAN template
-FROM hearmeman/comfyui-wan-template:v10
+# Start from the ComfyUI template
+FROM schibbdev/comfyui-runpod:v1.2.0
 
 # Metadata
 LABEL maintainer="schibbdev@example.com"
@@ -23,7 +23,8 @@ RUN pip install --no-cache-dir \
     requests \
     pathlib \
     huggingface_hub \
-    safetensors
+    safetensors \
+    sageattention
 
 # Copy our Civitai LoRA downloader script and other scripts
 COPY scripts/ /workspace/scripts/
@@ -47,6 +48,7 @@ RUN cd /ComfyUI/custom_nodes && \
     git clone https://github.com/Smirnov75/ComfyUI-mxToolkit.git && \
     git clone https://github.com/city96/ComfyUI-GGUF.git && \
     git clone https://github.com/Nuitari/ComfyUI-MultiGPU-XPU.git && \
+    git clone https://github.com/pythongosssss/ComfyUI-Custom-Scripts.git && \
     cd ComfyUI-GGUF && \
     pip install --no-cache-dir -r requirements.txt || echo "No requirements.txt found"
 
@@ -55,11 +57,11 @@ RUN mkdir -p /workspace/{workflows,models,output,input,scripts} \
     && mkdir -p /workspace/models/{checkpoints,loras,vae,upscale_models} \
     && mkdir -p /ComfyUI/models/{checkpoints,loras,vae,upscale_models}
 
-# Create symlinks to ComfyUI models directory for easier access
-RUN ln -sf /ComfyUI/models/loras /workspace/models/loras \
-    && ln -sf /ComfyUI/models/checkpoints /workspace/models/checkpoints \
-    && ln -sf /ComfyUI/models/vae /workspace/models/vae \
-    && ln -sf /ComfyUI/models/upscale_models /workspace/models/upscale_models
+# Create symlinks from ComfyUI models to workspace for persistent storage
+RUN ln -sf /workspace/models/loras /ComfyUI/models/loras \
+    && ln -sf /workspace/models/checkpoints /ComfyUI/models/checkpoints \
+    && ln -sf /workspace/models/vae /ComfyUI/models/vae \
+    && ln -sf /workspace/models/upscale_models /ComfyUI/models/upscale_models
 
 # Environment variables
 ENV PYTHONUNBUFFERED=1
@@ -79,6 +81,22 @@ RUN echo '#!/bin/bash' > /custom_start.sh && \
     echo '# Load credentials' >> /custom_start.sh && \
     echo 'source /workspace/setup_tokens.sh' >> /custom_start.sh && \
     echo '' >> /custom_start.sh && \
+    echo '# Create symlink for ComfyUI input directory' >> /custom_start.sh && \
+    echo 'if [ ! -L "/ComfyUI/input" ]; then' >> /custom_start.sh && \
+    echo '  rm -rf /ComfyUI/input' >> /custom_start.sh && \
+    echo '  ln -sf /workspace/input /ComfyUI/input' >> /custom_start.sh && \
+    echo '  echo "✅ ComfyUI input symlink created"' >> /custom_start.sh && \
+    echo 'fi' >> /custom_start.sh && \
+    echo '' >> /custom_start.sh && \
+    echo '# Create symlinks for ComfyUI model directories' >> /custom_start.sh && \
+    echo 'for model_dir in loras checkpoints vae upscale_models; do' >> /custom_start.sh && \
+    echo '  if [ ! -L "/ComfyUI/models/$model_dir" ]; then' >> /custom_start.sh && \
+    echo '    rm -rf "/ComfyUI/models/$model_dir"' >> /custom_start.sh && \
+    echo '    ln -sf "/workspace/models/$model_dir" "/ComfyUI/models/$model_dir"' >> /custom_start.sh && \
+    echo '    echo "✅ ComfyUI $model_dir symlink created"' >> /custom_start.sh && \
+    echo '  fi' >> /custom_start.sh && \
+    echo 'done' >> /custom_start.sh && \
+    echo '' >> /custom_start.sh && \
     echo '# Setup CivitAI token file for the downloader' >> /custom_start.sh && \
     echo 'if [ -n "$CIVITAI_TOKEN" ]; then' >> /custom_start.sh && \
     echo '  echo "{\\"civitai_token\\": \\"$CIVITAI_TOKEN\\"}" > /workspace/.civitai_token' >> /custom_start.sh && \
@@ -94,26 +112,26 @@ RUN echo '#!/bin/bash' > /custom_start.sh && \
     echo '  echo "⚠️  No custom_nodes.yaml found, skipping bootstrap"' >> /custom_start.sh && \
     echo 'fi' >> /custom_start.sh && \
     echo '' >> /custom_start.sh && \
-    echo 'cd /' >> /custom_start.sh && \
-    echo 'if [ ! -d "comfyui-wan" ]; then' >> /custom_start.sh && \
-    echo '  git clone https://github.com/Hearmeman24/comfyui-wan.git' >> /custom_start.sh && \
-    echo 'fi' >> /custom_start.sh && \
-    echo 'if [ -f "comfyui-wan/src/start.sh" ]; then' >> /custom_start.sh && \
-    echo '  mv comfyui-wan/src/start.sh /start.sh' >> /custom_start.sh && \
-    echo '  chmod +x /start.sh' >> /custom_start.sh && \
-    echo '  # Start WAN download process in background' >> /custom_start.sh && \
-    echo '  bash /start.sh &' >> /custom_start.sh && \
-    echo '  WAN_PID=$!' >> /custom_start.sh && \
-    echo '  # Wait for WAN downloads to complete' >> /custom_start.sh && \
-    echo '  wait $WAN_PID' >> /custom_start.sh && \
-    echo '  echo "✅ WAN model downloads completed"' >> /custom_start.sh && \
-    echo '  # Run CivitAI downloader' >> /custom_start.sh && \
-    echo '  /workspace/scripts/run_civitai_downloader.sh &' >> /custom_start.sh && \
+    echo '# Download WAN models using our custom script' >> /custom_start.sh && \
+    echo 'echo "🚀 Starting WAN model downloads..."' >> /custom_start.sh && \
+    echo '/workspace/scripts/run_wan_downloader.sh' >> /custom_start.sh && \
+    echo 'echo "✅ WAN model downloads completed"' >> /custom_start.sh && \
+    echo '' >> /custom_start.sh && \
+    echo '# Copy GGUF model to text_encoders folder so CLIPLoaderGGUFMultiGPU can find it' >> /custom_start.sh && \
+    echo 'if [ -f "/ComfyUI/models/clip_gguf/umt5-xxl-encoder-Q5_K_M.gguf" ]; then' >> /custom_start.sh && \
+    echo '  cp /ComfyUI/models/clip_gguf/umt5-xxl-encoder-Q5_K_M.gguf /ComfyUI/models/text_encoders/' >> /custom_start.sh && \
+    echo '  echo "✅ Copied GGUF model to text_encoders folder"' >> /custom_start.sh && \
     echo 'else' >> /custom_start.sh && \
-    echo '  echo "Starting ComfyUI directly..."' >> /custom_start.sh && \
-    echo '  cd /ComfyUI' >> /custom_start.sh && \
-    echo '  python main.py --listen 0.0.0.0 --port 8188' >> /custom_start.sh && \
+    echo '  echo "⚠️  GGUF model not found, skipping copy"' >> /custom_start.sh && \
     echo 'fi' >> /custom_start.sh && \
+    echo '' >> /custom_start.sh && \
+    echo '# Run CivitAI downloader' >> /custom_start.sh && \
+    echo '/workspace/scripts/run_civitai_downloader.sh &' >> /custom_start.sh && \
+    echo '' >> /custom_start.sh && \
+    echo '# Start ComfyUI' >> /custom_start.sh && \
+    echo 'echo "🎭 Starting ComfyUI..."' >> /custom_start.sh && \
+    echo 'cd /ComfyUI' >> /custom_start.sh && \
+    echo 'python main.py --listen --port 8188' >> /custom_start.sh && \
     chmod +x /custom_start.sh
 
 # Use our custom startup script

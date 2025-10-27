@@ -1,6 +1,6 @@
 # ComfyUI RunPod Setup
 
-A complete Docker-based ComfyUI setup optimized for RunPod deployment with automatic model downloads, custom node installation, and workflow support.
+A complete Docker-based ComfyUI setup optimized for RunPod deployment with automatic model downloads, custom node installation, and workflow support. This project extends the base ComfyUI template with WAN video generation capabilities, GGUF model support, and automated LoRA management.
 
 ## Features
 
@@ -10,6 +10,9 @@ A complete Docker-based ComfyUI setup optimized for RunPod deployment with autom
 - 🔄 **Model Downloads**: Automatic download of WAN, GGUF, and CivitAI models
 - 🎯 **Workflow Support**: Pre-configured for WAN video generation workflows
 - 🔧 **Multi-GPU**: Support for distributed GPU processing
+- 🎬 **WAN Video**: Full WAN 2.1/2.2 support with text encoders, VAE, and diffusion models
+- 🤖 **GGUF Support**: Integrated GGUF model loading for efficient inference
+- 💾 **Persistent Storage**: Workspace-based model storage with symlinks
 
 ## Quick Start
 
@@ -150,6 +153,33 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 3. Make your changes
 4. Test locally with Docker
 5. Submit a pull request
+
+## Recent Updates
+
+### WAN Model Integration ✅
+- Complete WAN 2.1/2.2 model support with automatic downloads
+- Text encoders (FP16 and FP8 optimized)
+- VAE and diffusion models
+- CLIP vision models
+- See `WAN_INSTALLATION_COMPLETE.md` for details
+
+### GGUF Model Support ✅
+- Fixed GGUF model loading in CLIPLoaderGGUFMultiGPU node
+- Automatic folder registration before ComfyUI startup
+- Symlink-based model organization
+- See `GGUF_MODEL_FIX_COMPLETE.md` for details
+
+### GPU Configuration ✅
+- Multi-GPU setup support (GT710 + RTX 5060 Ti)
+- Compute-only mode configuration
+- Display/compute GPU separation
+- See `GPU_CONFIGURATION_GUIDE.md` for details
+
+### Script Enhancements
+- Added WAN model downloader (`scripts/download_wan_models.py`)
+- Added GGUF model downloader with proper folder registration
+- Enhanced CivitAI LoRA downloader
+- Bootstrap script for custom node installation
 
 ## Support
 

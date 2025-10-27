@@ -1,0 +1,78 @@
+# X.org Configuration - FORCE GT710 Display Only
+# This configuration forces GT710 to be the ONLY display device
+# RTX 5060 Ti cards will be compute-only
+
+Section "ServerLayout"
+    Identifier     "Layout0"
+    Screen      0  "GT710_Screen"
+    # Explicitly disable auto-detection
+    Option         "AutoAddDevices" "false"
+    Option         "AutoAddGPU" "false"
+EndSection
+
+# GT710 Configuration (Nouveau Driver) - PRIMARY DISPLAY
+Section "Device"
+    Identifier     "GT710_Device"
+    Driver         "nouveau"
+    VendorName     "NVIDIA Corporation"
+    BusID          "PCI:24:0:0"   # GT710 at 18:00.0 (18 hex = 24 decimal)
+    Option         "AccelMethod" "glamor"
+    Option         "DRI" "3"
+    # Force this to be the primary display device
+    Option         "PrimaryGPU" "true"
+EndSection
+
+Section "Screen"
+    Identifier     "GT710_Screen"
+    Device         "GT710_Device"
+    Monitor        "GT710_Monitor"
+    DefaultDepth    24
+    SubSection     "Display"
+        Depth       24
+        Modes      "1920x1080" "1600x1200" "1280x1024" "1024x768"
+    EndSubSection
+EndSection
+
+Section "Monitor"
+    Identifier     "GT710_Monitor"
+    VendorName     "Unknown"
+    ModelName      "Unknown"
+    Option         "DPMS"
+EndSection
+
+# Server Flags - Disable all auto-detection
+Section "ServerFlags"
+    Option         "AutoAddDevices" "false"
+    Option         "AutoAddGPU" "false"
+    Option         "AutoEnableDevices" "false"
+EndSection
+
+# RTX 5060 Ti #1 Configuration (NVIDIA Driver - COMPUTE ONLY)
+Section "Device"
+    Identifier     "RTX5060Ti_1_Device"
+    Driver         "nvidia"
+    VendorName     "NVIDIA Corporation"
+    BusID          "PCI:59:0:0"   # RTX 5060 Ti #1 at 3b:00.0 (3b hex = 59 decimal)
+    Option         "AllowEmptyInitialConfiguration" "true"
+    Option         "UseDisplayDevice" "none"
+    Option         "NoDisplay" "true"
+    Option         "IgnoreEDID" "true"
+    # Explicitly disable display functionality
+    Option         "ConnectedMonitor" "none"
+EndSection
+
+# RTX 5060 Ti #2 Configuration (NVIDIA Driver - COMPUTE ONLY)
+Section "Device"
+    Identifier     "RTX5060Ti_2_Device"
+    Driver         "nvidia"
+    VendorName     "NVIDIA Corporation"
+    BusID          "PCI:175:0:0"  # RTX 5060 Ti #2 at af:00.0 (af hex = 175 decimal)
+    Option         "AllowEmptyInitialConfiguration" "true"
+    Option         "UseDisplayDevice" "none"
+    Option         "NoDisplay" "true"
+    Option         "IgnoreEDID" "true"
+    # Explicitly disable display functionality
+    Option         "ConnectedMonitor" "none"
+EndSection
+
+

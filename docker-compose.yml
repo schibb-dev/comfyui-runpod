@@ -6,20 +6,20 @@ services:
     image: schibbdev/comfyui-runpod:v1.2.0
     container_name: comfyui-dev
     
-    # GPU access
+    # GPU access - allow access to all GPUs
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              count: all
               capabilities: [gpu]
     
     # Volume mounts
     volumes:
       # Your workspace - persistent data
       - ./workspace:/workspace
-      # Link to existing ComfyUI models (if any)
+      # Link to existing ComfyUI models (if any) - only mount models subdirectory
       - ./ComfyUI/models:/ComfyUI/models
       # Credentials for Hugging Face and CivitAI
       - ./credentials:/workspace/credentials:ro
@@ -30,11 +30,14 @@ services:
       # All custom nodes - persistent and extensible
       - ./custom_nodes:/ComfyUI/custom_nodes
     
-    # Ports
-    ports:
-      - "8188:8188"    # ComfyUI
-      - "8888:8888"    # Jupyter (if you want)
-      - "6006:6006"    # TensorBoard (optional)
+    # Use host networking to bypass Docker bridge issues
+    network_mode: "host"
+    
+    # Ports (not needed with host networking, but kept for reference)
+    # ports:
+    #   - "8188:8188"    # ComfyUI
+    #   - "8888:8888"    # Jupyter (if you want)
+    #   - "6006:6006"    # TensorBoard (optional)
     
     # Environment
     environment:

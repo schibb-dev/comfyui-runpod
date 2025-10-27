@@ -1,0 +1,1 @@
+Drag the PNG image into ComfyUI and it will open the workflow. 

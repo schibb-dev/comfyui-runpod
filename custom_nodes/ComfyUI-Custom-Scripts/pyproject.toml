@@ -1,5 +1,5 @@
 [project]
-name = "comfyui-runpod-scripts"
+name = "comfyui-custom-scripts"
 description = "Enhancements & experiments for ComfyUI, mostly focusing on UI features"
 version = "1.2.5"
 license = { file = "LICENSE" }
