@@ -29,6 +29,22 @@ A complete Docker-based ComfyUI setup optimized for RunPod deployment with autom
    ./scripts/setup_credentials.sh
    ```
 
+3. **(Optional) Use an existing local models directory**
+
+This repo supports mounting a host folder as the container’s `models/` base via `COMFYUI_MODELS_DIR`.
+
+- **Windows (non-RunPod)**: create a `.env` file next to `docker-compose.yml`:
+
+```env
+COMFYUI_MODELS_DIR=E:\models
+```
+
+Make sure Docker Desktop is allowed to access the `E:` drive (Settings → Resources → File Sharing).
+
+Note:
+- If you run `docker compose` from **PowerShell**, `E:\\models` (or `E:/models`) is fine.
+- If you run `docker compose` from **WSL/Linux**, use the WSL mount path instead (e.g. `/mnt/e/models`).
+
 3. **Build and run:**
    ```bash
    docker compose up -d
@@ -36,6 +52,231 @@ A complete Docker-based ComfyUI setup optimized for RunPod deployment with autom
 
 4. **Access ComfyUI:**
    - Open http://localhost:8188 in your browser
+
+### Ops: Docker-native “cron” (recommended)
+
+This repo supports **host-independent background machinery** using Docker Compose sidecars (no Windows Scheduled Tasks required).
+
+Canonical entrypoints (pick one style):
+- **npm**: `npm run ops:up` / `npm run ops:down`
+- **make**: `make ops-up` / `make ops-down`
+- **docker compose**: use the commands below directly
+
+Enable the ops profile:
+
+```bash
+docker compose --profile ops up -d refresh_run_status report_experiment_queue_status queue_incomplete_experiments ws_event_tap
+```
+
+What these do:
+- **`refresh_run_status`**: writes per-run `status.json` from live `/queue` (phase: done | running | queued | submitted | not_queued). “submitted” = has submit.json but prompt_id not in queue (e.g. job canceled).
+- **`report_experiment_queue_status`**: appends a periodic summary snapshot to `workspace/output/output/experiments/_status/queue_status.log`
+- **`queue_incomplete_experiments`**: fetches ComfyUI `/queue`, clears `submit.json` for runs no longer in queue (e.g. canceled), then runs the **experiment queue manager** once to submit eligible runs. The manager applies FIFO rules and caps how many **experiments** can have a run in the queue (default 12, env `EXPERIMENT_QUEUE_MAX_RUNS`). Skips experiments marked stopped (see “Stop an experiment” below).
+- **Future queue report**: `python workspace/scripts/report_future_queue.py` lists what needs to be queued, what is queued, and execution order; use `--json` for UI/API.
+- **`ws_event_tap`**: listens to ComfyUI `/ws` and records **true execution timing** (start/end) into each run’s `metrics.json` (preferred runtime source)
+
+Thin launchers (optional):
+- **Windows**: `scripts/ops_up.ps1`, `scripts/ops_down.ps1`
+- **Linux**: `scripts/ops_up.sh`, `scripts/ops_down.sh`
+
+**Experiment Run Queue (ERQ)**  
+Submission of experiment runs to ComfyUI is done by the **queue manager** (`workspace/scripts/experiment_queue_manager.py`), not by `tune_experiment run`. The manager scans experiments, applies pluggable **rules** (default: FIFO by experiment mtime, then exp_id, run_id), and submits runs up to an **experiment cap** (max distinct experiments with a run in the queue; default 12, set via `EXPERIMENT_QUEUE_MAX_RUNS`). The ops job `queue_incomplete_experiments` runs the manager once per tick. Optional snapshot: `--write-erq` writes the ordered candidate list to `experiments_root/_status/experiment_run_queue.json`.
+
+Note: Windows Scheduled Tasks are supported but **legacy/optional**. If you previously enabled them (e.g. `ComfyUI-RefreshRunStatus`), disable them to avoid duplicate work.
+
+### Daily routines (runbook)
+
+Common workflows using the canonical entrypoints:
+- **npm scripts**: `npm run <task>`
+- **Makefile**: `make <task>`
+
+#### DEV: Experiments UI (Vite) development
+
+- **Run Vite on the host** (best HMR; requires Node.js on host):
+
+```powershell
+npm run ui:dev
+```
+
+Or directly:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev_experiments_ui.ps1 -EnsureContainer
+```
+
+- **Run Vite inside the container** (no host Node required; better for “docker-only” setups):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev_experiments_ui_container.ps1 -EnsureContainer
+```
+
+This serves Vite on `http://127.0.0.1:5178/` (see `docker-compose.yml` port mapping).
+
+#### DEV: Rebuild UI after changing the Experiments UI backend API
+
+If you changed the backend (e.g. `scripts/experiments_ui_server.py`) and want the running container to pick it up:
+
+```bash
+npm run restart
+```
+
+If you changed the frontend and want the built `dist/` served by the Experiments UI server (port `8790`):
+
+```bash
+npm run ui:build:docker
+npm run comfy:restart
+```
+
+#### OPERATIONS: Check queue status quickly
+
+- **One-shot summary**:
+
+```bash
+npm run report:once
+```
+
+- **Tail the periodic log** (ops profile must be running):
+
+```bash
+npm run report:tail
+```
+
+The log is stored at `workspace/output/output/experiments/_status/queue_status.log`.
+
+#### OPERATIONS: Check logs
+
+- **All services**:
+
+```bash
+npm run logs
+```
+
+- **ComfyUI only**:
+
+```bash
+npm run logs:comfy
+```
+
+- **Queue watcher only**:
+
+```bash
+npm run logs:watch
+```
+
+#### OPERATIONS: Restart parts safely
+
+- **Restart ComfyUI + watcher**:
+
+```bash
+npm run restart
+```
+
+- **Restart only ComfyUI**:
+
+```bash
+npm run comfy:restart
+```
+
+- **Restart ops sidecars**:
+
+```bash
+npm run ops:down
+npm run ops:up
+```
+
+#### OPERATIONS: Backfill missing `history.json`
+
+If you have outputs on disk but missing `history.json` (e.g. after a ComfyUI restart), you can backfill:
+
+```bash
+npm run history:backfill
+```
+
+#### OPERATIONS: Stop an experiment (no more scheduling)
+
+To indicate that an experiment should **no longer be scheduled** (e.g. you don’t want remaining runs queued), mark it as stopped:
+
+- **From workspace** (paths relative to workspace):
+
+  ```bash
+  python scripts/stop_experiment.py output/output/experiments/<exp_id>
+  ```
+
+  Or by experiment id (folder name) under the default experiments root:
+
+  ```bash
+  python scripts/stop_experiment.py --exp-id tune_FB8VA5L-2026-02-20-203434_OG_00001_20260222-231422
+  ```
+
+- **Resume scheduling** for that experiment:
+
+  ```bash
+  python scripts/stop_experiment.py --remove output/output/experiments/<exp_id>
+  ```
+
+When an experiment is stopped, a sentinel file `experiment_stopped` is created in its directory. Then:
+
+- **`queue_incomplete_experiments`** (and the ops job) skips it, so no further runs are queued.
+- **`tune_experiment.py run <exp_dir>`** exits with a message instead of submitting.
+
+Stopping does **not** cancel runs already in the ComfyUI queue or currently running; it only prevents new runs of that experiment from being scheduled.
+
+#### Future queue report (API)
+
+To list what needs to be queued, what is actually queued, and the execution order:
+
+```bash
+python workspace/scripts/report_future_queue.py [--server URL] [--json]
+```
+
+- **Default**: prints a human-readable summary (needs_queued, queue order from ComfyUI `/queue`).
+- **`--json`**: full report as JSON for UI/API: `summary`, `needs_queued`, `queue_order` (position, status, prompt_id, exp_id, run_id when known), and `queue_error` if the server is unreachable.
+- **`--no-server`**: only scan disk (needs_queued); do not call ComfyUI.
+
+#### TESTING: Unit / integration / acceptance
+
+This repo currently has **Python `unittest`** suites under `workspace/tests/` and they are runnable **inside the container**.
+
+- **Run all Python tests**:
+
+```bash
+npm test
+```
+
+- **Unit tests only**:
+
+```bash
+npm run test:unit
+```
+
+- **Integration tests** (media roundtrip; uses `ffprobe` and fixture references, and may skip if fixtures are absent):
+
+```bash
+npm run test:integration
+```
+
+- **Acceptance tests**:
+
+```bash
+npm run test:acceptance
+```
+
+There are no formal acceptance tests defined yet; this is a placeholder so the ops/tooling surface is complete.
+
+### Experiments UI (optional)
+
+This repo includes a small React dashboard for comparing tuning runs side-by-side.
+
+- Enable it via `.env`:
+
+```env
+EXPERIMENTS_UI=true
+EXPERIMENTS_UI_PORT=8790
+```
+
+- Then open `http://127.0.0.1:8790/`.
+
+If you see a message about missing React build output, restart the container once; the entrypoint will build `workspace/experiments_ui/dist` automatically when `EXPERIMENTS_UI_BUILD=true` (default).
 
 ### RunPod Deployment
 
@@ -49,6 +290,7 @@ A complete Docker-based ComfyUI setup optimized for RunPod deployment with autom
    - Use the pushed Docker image: `schibbdev/comfyui-runpod:latest`
    - Configure environment variables for tokens
    - Mount persistent volumes for models
+   - See `RUNPOD.md` for the recommended volume/env setup
 
 ## Project Structure
 
@@ -67,6 +309,7 @@ comfyui-runpod/
 │   ├── ComfyUI/            # ComfyUI installation
 │   ├── workflows/          # Workflow files
 │   └── setup_tokens.sh     # Token loader
+├── workspace/experiments_ui # React dashboard (source in web/, built dist/ served on 8790)
 └── credentials/            # Token storage (gitignored)
 ```
 
@@ -101,6 +344,28 @@ The setup automatically downloads:
 - **CivitAI Models**: LoRA and other community models
 - **VAE Models**: WAN VAE for proper video encoding
 
+### Optional: workflow helper downloads (IP-Adapter / ControlNet)
+
+For AnimateDiff + IP-Adapter + ControlNet workflows, this repo includes an **optional curated downloader**:
+
+- `scripts/model_download_manifest.yaml`
+- `scripts/download_models_manifest.py`
+- `scripts/scan_workflows_for_models.py` (reports what your workflows reference + what's missing)
+
+**Opt-in at container startup** by adding to your `.env`:
+
+```env
+AUTO_DOWNLOAD_MANIFEST_MODELS=true
+MANIFEST_PROFILE=workflows_default
+```
+
+Or run it manually inside the container:
+
+```bash
+python3 /workspace/scripts/download_models_manifest.py --profile workflows_default
+python3 /workspace/scripts/scan_workflows_for_models.py --models-dir /ComfyUI/models
+```
+
 ## Workflows
 
 Pre-configured workflows are available in `workspace/workflows/`:
@@ -127,15 +392,23 @@ docker compose restart
 
 ## Troubleshooting
 
+See **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** for detailed steps, especially **custom node IMPORT FAILED** (getting the traceback from logs, force-reinstalling requirements, OpenCV/VideoHelperSuite in Docker).
+
 ### Missing Nodes
 - Check `custom_nodes.yaml` configuration
 - Verify bootstrap script ran: `docker compose logs comfyui`
 - Rebuild container if needed
+- If nodes show **IMPORT FAILED**: check container logs for the Python traceback; use `FORCE_REINSTALL_NODE_REQUIREMENTS=true` and restart to reinstall pip deps (see TROUBLESHOOTING.md).
 
 ### Missing Models
 - Verify tokens are set correctly
 - Check download logs: `docker compose logs comfyui`
 - Ensure sufficient disk space
+
+## Security Notes
+
+- **Never commit tokens**: store them in `credentials/` (gitignored) or set them as environment variables in RunPod.
+- **Do not edit** `workspace/.civitai_token.example` with real credentials; it is only a template.
 
 ### GPU Issues
 - Verify NVIDIA Docker runtime is installed
