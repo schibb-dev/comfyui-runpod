@@ -3,8 +3,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        COMFYUI_REF: ${COMFYUI_REF:-origin/master}
     image: schibbdev/comfyui-runpod:v1.2.0
-    container_name: comfyui-dev
+    container_name: comfyui0-runpod
     
     # GPU access - allow access to all GPUs
     deploy:
@@ -14,36 +16,54 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    # For docker compose (non-swarm)
+    gpus: all
     
     # Volume mounts
     volumes:
-      # Your workspace - persistent data
+      # Persistent workspace data (workflows, input, output, tokens, etc.)
       - ./workspace:/workspace
-      # Link to existing ComfyUI models (if any) - only mount models subdirectory
-      - ./ComfyUI/models:/ComfyUI/models
+      # Put node_modules on a Docker volume (avoids Windows bind-mount fs issues)
+      - experiments_ui_node_modules:/workspace/experiments_ui/web/node_modules
+      # Persist ComfyUI's default input/output dirs (ComfyUI uses /ComfyUI/input and /ComfyUI/output)
+      - ./workspace/input:/ComfyUI/input
+      - ./workspace/output:/ComfyUI/output
+      # Persist ComfyUI user data (settings, DB, manager config, user workflows)
+      - ./workspace/comfyui_user:/ComfyUI/user
+      # Persist models between runs (recommended)
+      # For local/non-RunPod usage you can mount a host models directory (e.g. E:\models on Windows)
+      - "${COMFYUI_MODELS_DIR:-./workspace/models}:/ComfyUI/models"
+      # Also mount to /workspace/models for scripts that reference WORKSPACE_PATH/models
+      - "${COMFYUI_MODELS_DIR:-./workspace/models}:/workspace/models"
       # Credentials for Hugging Face and CivitAI
       - ./credentials:/workspace/credentials:ro
       # Custom nodes configuration
       - ./custom_nodes.yaml:/workspace/custom_nodes.yaml:ro
       # Scripts directory for bootstrap and utilities
       - ./scripts:/workspace/scripts:ro
+      # Workspace scripts (tuning/watch utilities used at runtime)
+      - ./workspace/scripts:/workspace/ws_scripts:ro
       # All custom nodes - persistent and extensible
       - ./custom_nodes:/ComfyUI/custom_nodes
     
-    # Use host networking to bypass Docker bridge issues
-    network_mode: "host"
-    
-    # Ports (not needed with host networking, but kept for reference)
-    # ports:
-    #   - "8188:8188"    # ComfyUI
-    #   - "8888:8888"    # Jupyter (if you want)
-    #   - "6006:6006"    # TensorBoard (optional)
+    # Ports
+    ports:
+      - "8188:8188"    # ComfyUI
+      - "8888:8888"    # Jupyter (if you want)
+      - "6006:6006"    # TensorBoard (optional)
+      - "8790:8790"    # Experiments UI (optional)
+      - "5178:5178"    # Experiments UI dev (Vite HMR; optional)
     
     # Environment
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - PYTORCH_ALLOC_CONF=max_split_size_mb:512
       - ENVIRONMENT=local
+      # Set container timezone (affects ComfyUI log timestamps)
+      - TZ=America/New_York
+      # Log more info to `docker logs` (use DEBUG temporarily if needed)
+      - COMFYUI_LOG_STDOUT=true
+      - COMFYUI_VERBOSE=INFO
       # Enable automatic WAN model downloads
       - download_480p_native_models=true
       - download_720p_native_models=true
@@ -58,6 +78,11 @@ services:
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN:-}
       - CIVITAI_TOKEN=${CIVITAI_TOKEN:-}
       - civitai_token=${CIVITAI_TOKEN:-}
+
+      # Experiments UI (served on separate port by entrypoint.sh)
+      - EXPERIMENTS_UI=${EXPERIMENTS_UI:-false}
+      - EXPERIMENTS_UI_PORT=${EXPERIMENTS_UI_PORT:-8790}
+      - EXPERIMENTS_UI_BUILD=${EXPERIMENTS_UI_BUILD:-true}
     
     # Shared memory for data loaders
     shm_size: '8gb'
@@ -69,5 +94,163 @@ services:
     stdin_open: true
     tty: true
 
+  watch_queue:
+    image: schibbdev/comfyui-runpod:v1.2.0
+    container_name: comfyui0-watch-queue
+    depends_on:
+      - comfyui
+    restart: unless-stopped
+    # The image entrypoint starts ComfyUI + optional services; for watch_queue we want
+    # to run the queue watcher only, so bypass the image entrypoint.
+    entrypoint: ["python3", "/workspace/ws_scripts/watch_queue.py"]
+    volumes:
+      - ./workspace:/workspace
+      - ./workspace/scripts:/workspace/ws_scripts:ro
+    # Override image healthcheck: this container does not run ComfyUI, so localhost:8188 will fail.
+    # Probe the comfyui service over the compose network instead.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS \"http://comfyui:8188/queue\" >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    command:
+      - /workspace/output/output/experiments
+      - --server
+      - http://comfyui:8188
+      - --poll
+      - "2.0"
+      - --max-inflight
+      - "16"
+
+  # Optional: Docker-native periodic jobs (avoid Windows Scheduled Tasks).
+  # Enable with:
+  #   docker compose --profile ops up -d
+  refresh_run_status:
+    profiles: ["ops"]
+    image: schibbdev/comfyui-runpod:v1.2.0
+    container_name: comfyui0-refresh-run-status
+    depends_on:
+      - comfyui
+    restart: unless-stopped
+    entrypoint: ["sh", "-lc"]
+    environment:
+      - SERVER_URL=http://comfyui:8188
+      - REFRESH_INTERVAL_S=60
+    volumes:
+      - ./workspace:/workspace
+      - ./workspace/scripts:/workspace/ws_scripts:ro
+    # Override image healthcheck: this container does not run ComfyUI.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS \"http://comfyui:8188/queue\" >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    command:
+      - >-
+        while true; do
+          python3 /workspace/ws_scripts/refresh_run_status.py --server "$$SERVER_URL" || true;
+          sleep "$${REFRESH_INTERVAL_S}";
+        done
+
+  report_experiment_queue_status:
+    profiles: ["ops"]
+    image: schibbdev/comfyui-runpod:v1.2.0
+    container_name: comfyui0-report-queue-status
+    depends_on:
+      - comfyui
+    restart: unless-stopped
+    entrypoint: ["sh", "-lc"]
+    environment:
+      - SERVER_URL=http://comfyui:8188
+      - REPORT_INTERVAL_S=60
+      - REPORT_LIMIT=10
+    volumes:
+      - ./workspace:/workspace
+      - ./workspace/scripts:/workspace/ws_scripts:ro
+    # Override image healthcheck: this container does not run ComfyUI.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS \"http://comfyui:8188/queue\" >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    command:
+      - >-
+        mkdir -p /workspace/output/output/experiments/_status;
+        LOG=/workspace/output/output/experiments/_status/queue_status.log;
+        while true; do
+          echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)]";
+          python3 /workspace/ws_scripts/report_experiment_queue_status.py --server "$$SERVER_URL" --newest-first --limit "$$REPORT_LIMIT" --summary-only;
+          echo;
+          sleep "$${REPORT_INTERVAL_S}";
+        done >> "$$LOG" 2>&1
+
+  queue_incomplete_experiments:
+    profiles: ["ops"]
+    image: schibbdev/comfyui-runpod:v1.2.0
+    container_name: comfyui0-queue-incomplete
+    depends_on:
+      - comfyui
+    restart: unless-stopped
+    entrypoint: ["sh", "-lc"]
+    environment:
+      - SERVER_URL=http://comfyui:8188
+      - QUEUE_INTERVAL_S=600
+    volumes:
+      - ./workspace:/workspace
+      - ./workspace/scripts:/workspace/ws_scripts:ro
+    # Override image healthcheck: this container does not run ComfyUI.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS \"http://comfyui:8188/queue\" >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    command:
+      - >-
+        while true; do
+          python3 /workspace/ws_scripts/queue_incomplete_experiments.py --server "$$SERVER_URL" || true;
+          sleep "$${QUEUE_INTERVAL_S}";
+        done
+
+  ws_event_tap:
+    profiles: ["ops"]
+    image: schibbdev/comfyui-runpod:v1.2.0
+    container_name: comfyui0-ws-event-tap
+    depends_on:
+      - comfyui
+    restart: unless-stopped
+    # Primary runtime timing source: listen to ComfyUI /ws and write per-run metrics.json fields.
+    entrypoint: ["sh", "-lc"]
+    environment:
+      - SERVER_URL=http://comfyui:8188
+      - SCAN_EVERY_S=10
+      - WS_CLIENT_IDS=comfy_tool
+      - WS_AUTO_LEGACY_FROM_QUEUE=true
+      - WS_MAX_CLIENT_IDS=8
+      - WS_DEBUG=false
+    volumes:
+      - ./workspace:/workspace
+      - ./workspace/scripts:/workspace/ws_scripts:ro
+    # Override image healthcheck: this container does not run ComfyUI.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS \"http://comfyui:8188/queue\" >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    command:
+      - >-
+        python3 /workspace/ws_scripts/ws_event_tap.py
+        --server "$$SERVER_URL"
+        --client-id "$$WS_CLIENT_IDS"
+        $$( [ "$$WS_AUTO_LEGACY_FROM_QUEUE" = "true" ] && echo "--auto-legacy-from-queue" || true )
+        --max-client-ids "$$WS_MAX_CLIENT_IDS"
+        --scan-every "$$SCAN_EVERY_S"
+        $$( [ "$$WS_DEBUG" = "true" ] && echo "--debug" || true )
+
 volumes:
   workspace:
+  experiments_ui_node_modules:
