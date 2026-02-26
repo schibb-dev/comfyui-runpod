@@ -58,6 +58,17 @@ models/
 credentials/
 .env
 *.token
+workspace/.civitai_token
+workspace/.huggingface_token
+workspace/.hf_token
+
+# Workspace runtime / local state
+workspace/_tmp/
+workspace/output/
+workspace/input/
+workspace/comfyui_user/
+workspace/ComfyUI
+workspace/comfyui-wan
 
 # Docker
 .dockerignore
@@ -66,11 +77,14 @@ credentials/
 node_modules/
 npm-debug.log*
 
+# Experiments UI build output (served at runtime)
+workspace/experiments_ui/dist/
+
 # Custom nodes git directories (we don't want to track these as submodules)
 **/.git/
 custom_nodes/**/.git
 workspace/**/.git
 
-# Large directories that shouldn't be committed
-workspace/ComfyUI/
-custom_nodes/ComfyUI-mxToolkit/
+# Custom nodes (cloned by bootstrap from custom_nodes.yaml; do not track)
+custom_nodes/
+ComfyUI-Custom-Scripts/
