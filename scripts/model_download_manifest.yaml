@@ -1,0 +1,110 @@
+version: 1
+
+# A small, curated manifest of public model URLs that are commonly needed for
+# AnimateDiff + IP-Adapter + ControlNet workflows.
+#
+# The downloader script supports:
+# - --tag <tag> (repeatable)
+# - --profile <profile> (repeatable)
+#
+# Destinations are relative to the ComfyUI models directory (default: /ComfyUI/models).
+
+models:
+  # -----------------------
+  # IP-Adapter (SD1.5)
+  # -----------------------
+  - id: ipadapter_plus_sd15
+    tags: [ipadapter, sd15, plus, consistency]
+    filename: ip-adapter-plus_sd15.safetensors
+    dest: ipadapter/ip-adapter-plus_sd15.safetensors
+    url: https://huggingface.co/h94/IP-Adapter/resolve/main/models/ip-adapter-plus_sd15.safetensors?download=true
+    sha256: a1c250be40455cc61a43da1201ec3f1edaea71214865fb47f57927e06cbe4996
+
+  - id: ipadapter_sd15_light_v11
+    tags: [ipadapter, sd15, light, prompt_friendly]
+    filename: ip-adapter_sd15_light_v11.bin
+    dest: ipadapter/ip-adapter_sd15_light_v11.bin
+    url: https://huggingface.co/h94/IP-Adapter/resolve/main/models/ip-adapter_sd15_light_v11.bin?download=true
+
+  - id: ipadapter_sd15_basic
+    tags: [ipadapter, sd15, basic]
+    filename: ip-adapter_sd15.safetensors
+    dest: ipadapter/ip-adapter_sd15.safetensors
+    url: https://huggingface.co/h94/IP-Adapter/resolve/main/models/ip-adapter_sd15.safetensors?download=true
+
+  - id: ipadapter_plus_face_sd15
+    tags: [ipadapter, sd15, plus, face, portrait]
+    filename: ip-adapter-plus-face_sd15.safetensors
+    dest: ipadapter/ip-adapter-plus-face_sd15.safetensors
+    url: https://huggingface.co/h94/IP-Adapter/resolve/main/models/ip-adapter-plus-face_sd15.safetensors?download=true
+
+  - id: ipadapter_full_face_sd15
+    tags: [ipadapter, sd15, face, portrait]
+    filename: ip-adapter-full-face_sd15.safetensors
+    dest: ipadapter/ip-adapter-full-face_sd15.safetensors
+    url: https://huggingface.co/h94/IP-Adapter/resolve/main/models/ip-adapter-full-face_sd15.safetensors?download=true
+
+  # -----------------------
+  # CLIP Vision (for IP-Adapter unified loaders)
+  # -----------------------
+  - id: clip_vision_vit_h_14_laion2b_s32b_b79k
+    tags: [clip_vision, vit_h_14, ipadapter, encoder]
+    filename: CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors
+    dest: clip_vision/CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors
+    # This link preserves the exact filename ComfyUI/IP-Adapter expects.
+    url: https://huggingface.co/fofr/comfyui/resolve/b24971859a2d244d5f746ce707c3dfa4dd574108/clip_vision/CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors?download=true
+
+  # -----------------------
+  # ControlNet (SD1.5) - fp16 safetensors
+  # -----------------------
+  - id: controlnet_openpose_sd15_fp16
+    tags: [controlnet, sd15, openpose, fp16]
+    filename: control_v11p_sd15_openpose_fp16.safetensors
+    dest: controlnet/control_v11p_sd15_openpose_fp16.safetensors
+    url: https://huggingface.co/comfyanonymous/ControlNet-v1-1_fp16_safetensors/resolve/main/control_v11p_sd15_openpose_fp16.safetensors?download=true
+    sha256: 4003c1da17b0e4ba444e02140e1c0d83bb24b79e4dcfd613c3a554d38f0f89c7
+
+  # -----------------------
+  # FLUX (checkpoint)
+  # -----------------------
+  - id: flux1_dev_fp8
+    tags: [flux, checkpoints]
+    filename: flux1-dev-fp8.safetensors
+    dest: checkpoints/flux1-dev-fp8.safetensors
+    url: https://huggingface.co/Comfy-Org/flux1-dev/resolve/main/flux1-dev-fp8.safetensors
+
+  # -----------------------
+  # WAN helper assets (for specific workflows)
+  # -----------------------
+  - id: wan2_1_vae_pth
+    tags: [wan, vae]
+    filename: Wan2.1_VAE.pth
+    dest: vae/Wan2.1_VAE.pth
+    url: https://huggingface.co/Wan-AI/Wan2.1-T2V-1.3B/resolve/main/Wan2.1_VAE.pth
+
+  - id: wan_openclip_xlm_roberta_vit_huge_14_pth
+    tags: [wan, clip_vision]
+    filename: models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth
+    dest: clip_vision/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth
+    url: https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/8bee6e003d1d9d31ecb2c75b643e57fa74fb2ad5/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth?download=true
+
+profiles:
+  # Minimal pack for the AnimateDiff + IP-Adapter + OpenPose ControlNet workflow variant.
+  animatediff_ipadapter_controlnet:
+    tags: [ipadapter, clip_vision, controlnet]
+
+  # Broader pack that matches many workflows in comfyui_user/default.
+  workflows_default:
+    tags: [ipadapter, clip_vision, controlnet, flux, wan]
+
+aliases:
+  # Some workflows expect the 4xLSDIR upscaler. This repo already ships it (WAN template),
+  # but it may not be present in your mounted models dir. We'll copy it in if missing.
+  - src_candidates:
+      # inside container (./workspace mounted at /workspace)
+      - /workspace/comfyui-wan/4xLSDIR.pth
+      # running on host from repo root
+      - workspace/comfyui-wan/4xLSDIR.pth
+    dest: upscale_models/4xLSDIR.pth
+
+

@@ -32,6 +32,12 @@ nodes:
       branch: main
       required: true
       description: "Video processing nodes including VHS_VideoCombine"
+
+    - name: ComfyUI-AnimateDiff-Evolved
+      repo: https://github.com/Kosinkadink/ComfyUI-AnimateDiff-Evolved.git
+      branch: main
+      required: true
+      description: "AnimateDiff Evolved nodes for AnimateDiff workflows"
       
     - name: ComfyUI-Easy-Use
       repo: https://github.com/yolain/ComfyUI-Easy-Use.git
@@ -57,6 +63,12 @@ nodes:
       required: true
       description: "rgthree nodes including Power Lora Loader and Fast Groups"
       
+    - name: ComfyUI-Crystools
+      repo: https://github.com/crystian/ComfyUI-Crystools.git
+      branch: main
+      required: true
+      description: "System monitor widget (GPU/CPU/RAM/temps) and related utilities"
+
   optional:
     - name: ComfyUI-MultiGPU
       repo: https://github.com/pollockjj/ComfyUI-MultiGPU.git
@@ -69,6 +81,13 @@ nodes:
       branch: main
       required: false
       description: "Node manager for ComfyUI"
+
+    - name: comfyui-mobile-frontend
+      repo: https://github.com/cosmicbuffalo/comfyui-mobile-frontend.git
+      branch: main
+      required: false
+      npm_build: true
+      description: "Mobile-first ComfyUI frontend served at /mobile"
 
 # Installation settings
 install:
