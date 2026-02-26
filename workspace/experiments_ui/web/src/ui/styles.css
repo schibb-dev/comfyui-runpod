@@ -1,0 +1,1687 @@
+:root {
+  color-scheme: dark;
+  --bg: #0b1020;
+  --panel: #121a33;
+  --panel2: #0f1730;
+  --text: #e7eaf3;
+  --muted: #aab2c5;
+  --border: rgba(255, 255, 255, 0.12);
+  --accent: #5aa2ff;
+  --good: #46d39a;
+  --warn: #ffd166;
+  --bad: #ff5a7a;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+
+  /* Viewport breakpoints (match viewport.ts). Use in media queries for device-specific layout. */
+  --bp-phone: 767px;   /* max width: phone (swipe-first UI) */
+  --bp-tablet: 1024px; /* min width: desktop; below = tablet */
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: radial-gradient(1200px 700px at 20% 10%, #18244d 0%, var(--bg) 55%);
+  color: var(--text);
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  height: 100%;
+  overflow: hidden;
+}
+
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
+/* Make fixed-height layouts not overflow due to padding. */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+.app {
+  display: grid;
+  grid-template-columns: var(--sidebar-w, 340px) 1fr;
+  gap: var(--app-gap, 12px);
+  padding: 12px;
+  align-items: stretch;
+  height: 100vh;
+  overflow: hidden;
+  transition: grid-template-columns 180ms ease, gap 180ms ease;
+}
+
+.app.focus-preview {
+  grid-template-columns: 1fr;
+  height: 100vh;
+  padding: 10px;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.panel {
+  background: linear-gradient(180deg, var(--panel) 0%, var(--panel2) 100%);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+  min-height: 0;
+}
+
+.panel.flush {
+  padding: 10px;
+}
+
+.title {
+  font-size: 16px;
+  font-weight: 700;
+  margin: 0 0 10px 0;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 8px 0;
+}
+
+.row label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+select,
+input[type="text"] {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--text);
+  outline: none;
+}
+
+button {
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(90, 162, 255, 0.18);
+  color: var(--text);
+  cursor: pointer;
+}
+button:hover {
+  background: rgba(90, 162, 255, 0.25);
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pager {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 0;
+  font-size: 12px;
+  /* Make label text responsive to available width. */
+  container-type: inline-size;
+}
+
+.pager button {
+  padding: 6px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+.pager-nav {
+  width: 34px;
+  padding: 6px 0;
+  font-size: 18px;
+  line-height: 1;
+  font-family: var(--mono);
+}
+
+.pager-text {
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.pager-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.pager-size-select {
+  width: 110px;
+}
+
+.pager-size-text {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pager-size-short {
+  display: none;
+}
+
+/* Medium: use a compact label. */
+@container (max-width: 360px) {
+  .pager-size-long {
+    display: none;
+  }
+  .pager-size-short {
+    display: inline;
+  }
+  .pager-total {
+    display: none;
+  }
+  .pager-size-select {
+    width: 88px;
+  }
+}
+
+/* Very small: keep dropdown, shrink it; also drop total text. */
+@container (max-width: 260px) {
+  .pager-total {
+    display: none;
+  }
+  .pager-size-long,
+  .pager-size-short {
+    display: none;
+  }
+  .pager-size-select {
+    width: 72px;
+  }
+}
+
+.segmented {
+  display: inline-flex;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.segmented > * + * {
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.segmented .seg-btn {
+  padding: 7px 12px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.segmented .seg-btn:hover {
+  background: rgba(90, 162, 255, 0.10);
+  color: var(--text);
+}
+
+.segmented .seg-btn.active {
+  background: rgba(90, 162, 255, 0.22);
+  color: var(--text);
+}
+
+.segmented .seg-btn:focus-visible {
+  outline: 2px solid rgba(90, 162, 255, 0.65);
+  outline-offset: -2px;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.chip {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.axis-list {
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px;
+}
+
+.axis-list.paged {
+  /* In the sidebar we page instead of scrolling internally. */
+  overflow: visible;
+  max-height: none;
+}
+
+.paged-fixed {
+  /* Keep paged lists from shrinking on last page. */
+  min-height: calc(var(--paged-rows, 7) * var(--paged-row-h, 28px) + var(--paged-extra, 0px));
+}
+
+.facet {
+  padding: 0;
+  background: transparent;
+}
+
+.facet + .facet {
+  /* Keep closed accordions tight. */
+  margin-top: 8px;
+  padding-top: 0;
+  border-top: none;
+}
+
+.facet-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  width: 100%;
+  border-radius: 10px;
+}
+
+.facet-toggle {
+  flex: 1 1 auto;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  border-radius: 8px; /* focus ring only */
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.facet-toggle:hover {
+  color: var(--text);
+  background: transparent;
+}
+
+.facet-header:hover {
+  /* Higher-contrast full-width hover (including meta + icons). */
+  background: rgba(90, 162, 255, 0.10);
+}
+
+.facet-toggle:focus-visible {
+  outline: 2px solid rgba(90, 162, 255, 0.55);
+  outline-offset: 2px;
+}
+
+.facet-title {
+  font-weight: 800;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.facet-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.facet-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.facet-actions button {
+  padding: 6px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+.icon-btn {
+  padding: 4px 6px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+
+.icon-btn:hover {
+  color: var(--accent);
+  background: transparent;
+}
+
+.icon-btn:disabled {
+  opacity: 0.45;
+}
+
+.icon-btn:focus-visible {
+  outline: 2px solid rgba(90, 162, 255, 0.55);
+  outline-offset: 2px;
+}
+
+.facet-caret {
+  display: inline-block;
+  width: 20px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  transform: rotate(0deg);
+  transition: transform 140ms ease;
+}
+
+.facet-caret.open {
+  transform: rotate(90deg);
+}
+
+.facet-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 140ms ease, opacity 140ms ease;
+}
+
+.facet-body.open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.facet-body-inner {
+  overflow: hidden;
+  padding-top: 0;
+}
+
+.facet-body.open .facet-body-inner {
+  margin-top: 6px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+.sidebar-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  transform: translateX(0);
+  opacity: 1;
+  transition: transform 160ms ease, opacity 160ms ease;
+}
+
+.sidebar-panel.drawer-closed {
+  transform: translateX(-10px);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.sidebar-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+  /* Keep layout stable when scrollbar appears. */
+  scrollbar-gutter: stable;
+  /* Firefox */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+/* Chromium / WebKit scrollbar styling (subtle, nicer than default). */
+.sidebar-scroll::-webkit-scrollbar {
+  width: 10px;
+}
+.sidebar-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+.sidebar-scroll:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.26);
+}
+
+.sidebar-group-title {
+  margin: 12px 0 6px 0;
+  padding: 4px 8px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  opacity: 0.85;
+}
+
+.sidebar-group-title:first-child {
+  margin-top: 0;
+}
+
+.sidebar-panel.collapsed {
+  padding: 10px 8px;
+}
+
+.sidebar-panel.collapsed .preview-toolbar {
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+}
+
+.sidebar-panel.collapsed .preview-toolbar .right {
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sidebar-resize-handle {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  right: -4px;
+  width: 10px;
+  cursor: col-resize;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sidebar-resize-handle::before {
+  content: "";
+  width: 2px;
+  height: 44px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  opacity: 0.25;
+  transition: opacity 120ms ease, background 120ms ease;
+}
+
+.sidebar-resize-handle:hover::before {
+  opacity: 0.8;
+  background: rgba(90, 162, 255, 0.7);
+}
+
+.sidebar-panel.collapsed .sidebar-resize-handle {
+  display: none;
+}
+
+.main-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.main-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.viewer-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Runs viewer: scroll when viewport shrinks so Pair/Slide don't clip the navigator. */
+.runs-viewer-wrap {
+  overflow: auto;
+}
+.viewer-pane-stage {
+  min-height: min(50vh, 360px);
+}
+
+.table-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.table-pane .table-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.gallery-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  background: rgba(0, 0, 0, 0.10);
+  padding: 10px;
+}
+
+.gallery-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.gallery-card {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(10, 15, 30, 0.35);
+  cursor: pointer;
+  display: grid;
+  grid-template-rows: auto auto;
+  position: relative;
+}
+
+.gallery-card.disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.gallery-card.disabled:hover {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(10, 15, 30, 0.35);
+}
+.overlay-hotzone {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 40px;
+  height: 40px;
+  z-index: 45; /* above media; below nothing else */
+}
+.overlay-icon {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 40;
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(10, 15, 30, 0.18);
+  backdrop-filter: blur(10px);
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  transition: opacity 140ms ease;
+  pointer-events: none;
+}
+
+.overlay-icon:hover {
+  background: rgba(90, 162, 255, 0.18);
+  border-color: rgba(90, 162, 255, 0.35);
+}
+
+.overlay-hotzone:hover .overlay-icon,
+.overlay-hotzone:focus-within .overlay-icon,
+.overlay-icon:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.overlay-icon svg {
+  color: var(--text);
+}
+
+@media (hover: none) {
+  .overlay-icon {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+.slide-stage > video,
+.slide-stage > img {
+  position: relative;
+  z-index: 1;
+  /* Stack all A/B media in the same grid cell so B is not pushed below A. */
+  grid-area: 1 / 1;
+}
+
+/* Slide A/B: keep both mounted, show one. */
+.slide-media.ab-inactive {
+  opacity: 0;
+  pointer-events: none;
+}
+.slide-media.ab-active {
+  opacity: 1;
+}
+
+/* Ensure overlays render above the media element. */
+.slide-titlebar,
+.slide-hud,
+.nav-fab,
+.slide-no-match {
+  z-index: 10;
+}
+
+
+.gallery-card:hover {
+  border-color: rgba(90, 162, 255, 0.45);
+  background: rgba(90, 162, 255, 0.10);
+}
+
+.gallery-card.selected {
+  border-color: rgba(90, 162, 255, 0.75);
+  background: rgba(90, 162, 255, 0.14);
+}
+
+.gallery-thumb {
+  aspect-ratio: var(--thumb-ar, 1 / 1);
+  background: rgba(0, 0, 0, 0.18);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  padding: 8px;
+  box-sizing: border-box;
+}
+
+.gallery-media {
+  width: 100%;
+  height: 100%;
+  object-fit: contain !important; /* show full frame (no crop) */
+  object-position: center center;
+  display: block;
+  pointer-events: none;
+}
+
+.gallery-empty {
+  color: var(--muted);
+  font-size: 12px;
+  font-family: var(--mono);
+}
+
+.gallery-meta {
+  padding: 8px 10px;
+  display: grid;
+  gap: 4px;
+}
+
+.gallery-title {
+  font-size: 11px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gallery-status {
+  font-size: 11px;
+  opacity: 0.9;
+}
+
+.preview-pane {
+  flex: 0 0 auto;
+  height: clamp(280px, 38vh, 520px);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.preview-pane .preview {
+  height: 100%;
+}
+
+.preview-pane .preview-card {
+  height: 100%;
+}
+.axis-item {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 4px;
+  border-bottom: none;
+  min-width: 0;
+  white-space: nowrap;
+}
+.axis-item:last-child {
+  border-bottom: none;
+}
+.axis-item code {
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* A/B slot buttons: radio-style toggles; taller hit area without growing row */
+.slot-btn {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  min-width: 24px;
+  padding: 10px 6px;
+  margin: -5px 0;
+  box-sizing: content-box;
+}
+.slot-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.slot-btn-selected {
+  background: var(--accent) !important;
+  color: var(--bg) !important;
+  border-color: var(--accent) !important;
+  font-weight: 600;
+}
+.slot-btn-selected:hover:not(:disabled) {
+  background: var(--accent) !important;
+  color: var(--bg) !important;
+  filter: brightness(1.1);
+}
+
+.placeholder {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.axes-matrix-head {
+  display: grid;
+  grid-template-columns: 1fr 44px 54px;
+  gap: 8px;
+  align-items: center;
+  margin: 0 0 6px 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.axis-list.axes-matrix {
+  padding: 6px 8px;
+}
+
+.axes-row {
+  display: grid;
+  grid-template-columns: 1fr 44px 54px;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 4px;
+  border-bottom: none;
+  min-width: 0;
+}
+
+.axes-row:last-child {
+  border-bottom: none;
+}
+
+.axes-row code {
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.axes-row code.axis-virtual {
+  opacity: 0.7;
+  font-style: italic;
+}
+
+.table-wrap {
+  overflow: auto;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+}
+
+.table-wrap.paged {
+  /* Sidebar paging removes the need for vertical internal scroll. */
+  overflow-y: visible;
+  overflow-x: auto;
+}
+
+tr.placeholder-row {
+  visibility: hidden;
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+}
+th,
+td {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 8px 10px;
+  white-space: nowrap;
+}
+th {
+  position: sticky;
+  top: 0;
+  background: rgba(10, 15, 30, 0.92);
+  backdrop-filter: blur(8px);
+  text-align: left;
+  cursor: pointer;
+}
+tr:hover td {
+  background: rgba(255, 255, 255, 0.03);
+}
+tr.selected td {
+  background: rgba(90, 162, 255, 0.14);
+}
+tr.disabled td {
+  opacity: 0.55;
+}
+tr.disabled:hover td {
+  /* Keep disabled rows visually stable. */
+  background: transparent;
+}
+
+.status {
+  font-family: var(--mono);
+}
+.status.complete {
+  color: var(--good);
+}
+.status.submitted {
+  color: var(--warn);
+}
+.status.not_submitted {
+  color: var(--muted);
+}
+
+.preview {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.app.focus-preview .preview {
+  margin-top: 10px;
+  height: calc(100vh - 92px);
+}
+.app.focus-preview .preview > .panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.app.focus-preview .preview-toolbar {
+  flex: 0 0 auto;
+}
+.app.focus-preview .preview-media {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.preview h3 {
+  margin: 0 0 8px 0;
+  font-size: 13px;
+}
+
+.preview-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.preview-toolbar .right {
+  display: flex;
+  gap: 8px;
+}
+
+.preview-media {
+  width: 100%;
+  height: 100%;
+  /* Always show the whole frame (no crop). */
+  object-fit: contain;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  /* Let panel background show; avoids "black bar" look. */
+  background: transparent;
+}
+
+.fit-cover {
+  object-fit: cover !important;
+}
+.fit-fill {
+  object-fit: fill !important;
+}
+.fit-contain {
+  object-fit: contain !important;
+}
+
+.preview-media.pack-left {
+  /* "Allowed to pack left": unused space goes to the right. */
+  object-position: left center;
+}
+.preview-media.pack-right {
+  /* Unused space goes to the left. */
+  object-position: right center;
+}
+
+.preview-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.slide-wrap {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.slide-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  border-radius: 0;
+  border: none;
+  background: rgba(0, 0, 0, 0.10);
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  touch-action: none;
+}
+
+.spinner {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.spinner-ring {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 2px solid rgba(255, 255, 255, 0.20);
+  border-top-color: rgba(255, 255, 255, 0.65);
+  animation: spin 900ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.slide-stage.compact {
+  /* Shrink stage width to fitted media width (no horizontal letterboxing). */
+  width: auto;
+  max-width: 100%;
+  aspect-ratio: var(--media-ar, auto);
+  align-self: stretch;
+  justify-self: center;
+}
+
+.viewer-pane > .slide-stage.compact {
+  align-self: center;
+}
+
+.pair-stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+  border: none;
+  background: rgba(0, 0, 0, 0.10);
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  justify-content: stretch;
+  align-items: stretch;
+  gap: 0px; /* remove blank strip between A/B panes */
+  padding: 10px;
+}
+
+.pair-card {
+  position: relative;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(10, 15, 30, 0.35);
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-height: 0;
+  width: 100%;
+  max-width: none;
+  justify-self: stretch;
+}
+
+/* When panes are flush, avoid a double border + round inner corners. */
+.pair-stage > .pair-card:first-child {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right: none;
+}
+.pair-stage > .pair-card:last-child {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: none;
+}
+
+.pair-title {
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  font-family: var(--mono);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pair-zoom-stage {
+  height: 100%;
+  width: 100%;
+  /* In Pair mode, anchor content at top-left (no centering gutter). */
+  place-items: start;
+}
+
+/* In Pair mode, shrink the stage to the fitted media width (no internal gutter),
+   and align each pane toward the center seam. */
+.pair-card .pair-zoom-stage.compact {
+  width: auto;
+  max-width: 100%;
+  aspect-ratio: var(--media-ar, auto);
+  align-self: stretch;
+}
+
+.pair-stage > .pair-card:first-child .pair-zoom-stage.compact {
+  justify-self: end;
+}
+.pair-stage > .pair-card:last-child .pair-zoom-stage.compact {
+  justify-self: start;
+}
+
+.zp-fab {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  z-index: 30;
+  display: flex;
+  gap: clamp(4px, 0.8vw, 8px);
+  padding: clamp(6px, 1vw, 8px);
+  transform: translateX(-50%);
+  max-width: calc(100% - 24px);
+  justify-content: center;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(10, 15, 30, 0.55);
+  backdrop-filter: blur(10px);
+  align-items: center;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.zp-fab button {
+  pointer-events: auto;
+  padding: clamp(4px, 0.7vw, 6px) clamp(6px, 1vw, 10px);
+  border-radius: 10px;
+  font-family: var(--mono);
+  font-size: clamp(10px, 1.05vw, 12px);
+  background: rgba(90, 162, 255, 0.15);
+  min-width: 0;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pair-axis-label,
+.pair-axis-value {
+  padding: 4px 6px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.18);
+  font-size: 11px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 72px;
+  max-width: 160px;
+  text-align: center;
+}
+
+.pair-axis-hud {
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  bottom: 12px;
+  z-index: 30;
+  display: grid;
+  grid-template-rows: auto auto auto auto auto auto auto;
+  align-content: start;
+  gap: 8px;
+  padding: 10px 10px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(10, 15, 30, 0.55);
+  backdrop-filter: blur(10px);
+  opacity: 0;
+  transform: translateX(-6px);
+  transition: opacity 140ms ease, transform 140ms ease;
+  pointer-events: none;
+  width: fit-content;
+  max-width: min(220px, 42vw);
+}
+
+.pair-axis-hud.show {
+  opacity: 1;
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
+.pair-axis-hud button {
+  pointer-events: auto;
+  padding: 6px 10px;
+  border-radius: 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  background: rgba(90, 162, 255, 0.15);
+}
+
+.pair-axis-sep {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.10);
+  border-radius: 999px;
+  margin: 2px 0;
+}
+
+.pair-media {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: transparent;
+}
+
+/* Pair viewer is smaller than Slide; make overlay text denser. */
+.pair-card .slide-hud {
+  top: 44px; /* a bit tighter vs slide titlebar spacing */
+  left: 10px;
+  bottom: 10px;
+  max-width: min(150px, 46vw);
+}
+.pair-card .hud-row {
+  gap: 8px;
+  padding: 6px 6px;
+  border-radius: 12px;
+}
+.pair-card .scoreboard {
+  gap: 6px;
+}
+.pair-card .scorebox {
+  min-width: 84px;
+  padding: 6px 3px;
+  gap: 3px;
+  border-radius: 10px;
+}
+.pair-card .score-label {
+  font-size: 11px;
+}
+.pair-card .score-value {
+  font-size: 16px;
+  padding: 0 12px;
+}
+.pair-card .score-arrows button {
+  font-size: 10px;
+  padding: 2px 6px;
+}
+
+.pair-card .nav-fab {
+  right: 10px;
+  bottom: 10px;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 12px;
+}
+.pair-card .nav-status {
+  min-width: 118px;
+  padding: 5px 7px;
+  font-size: 11px;
+}
+.pair-card .nav-fab button {
+  padding: 5px 9px;
+  border-radius: 10px;
+  font-size: 11px;
+}
+
+.slide-media {
+  display: block;
+  background: transparent;
+}
+
+.slide-media.zoompan {
+  /* Anchor zoom/pan transforms at the stage origin. */
+  transform-origin: 0 0;
+  cursor: grab;
+  /* Critical: the stage is a centered grid; anchor zoompan media at (0,0). */
+  justify-self: start;
+  align-self: start;
+}
+
+.slide-media.zoompan:active {
+  cursor: grabbing;
+}
+
+.slide-hud {
+  position: absolute;
+  left: 12px;
+  top: 54px; /* leave space for titlebar */
+  bottom: 12px;
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 120ms ease, transform 120ms ease;
+  pointer-events: none;
+  /* Narrow by default, expand only for legibility. */
+  width: fit-content;
+  min-width: 0;
+  max-width: min(170px, 48vw);
+}
+.slide-hud.show {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.hud-row {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 10px;
+  align-items: stretch;
+  padding: 8px 8px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(10, 15, 30, 0.55);
+  backdrop-filter: blur(10px);
+  height: 100%;
+  overflow: auto;
+}
+
+.slide-titlebar {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: 12px;
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 120ms ease, transform 120ms ease;
+  pointer-events: auto;
+}
+
+.slide-titlebar.show {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.slide-titlebar-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(10, 15, 30, 0.45);
+  backdrop-filter: blur(10px);
+}
+
+.slide-title-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.slide-title-hint {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 42vw;
+}
+
+.slide-empty {
+  max-width: min(720px, 92vw);
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(10, 15, 30, 0.55);
+  backdrop-filter: blur(10px);
+}
+
+.slide-no-match {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: 64px;
+  max-width: min(720px, 92vw);
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(10, 15, 30, 0.55);
+  backdrop-filter: blur(10px);
+}
+
+.recent-good-btn {
+  text-align: left;
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.recent-good-btn:hover {
+  background: rgba(90, 162, 255, 0.12);
+  border-color: rgba(90, 162, 255, 0.35);
+}
+
+.scoreboard {
+  display: flex;
+  gap: 8px;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  margin-top: 8px;
+}
+
+.slide-hud .scoreboard {
+  margin-top: 0;
+  align-items: flex-start;
+  width: fit-content;
+}
+
+.slide-hud .scorebox {
+  width: var(--scorebox-w, fit-content);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.slide-hud .score-value {
+  /* Slightly less reserved space for arrows in narrow HUD. */
+  padding: 0 14px;
+}
+
+.scorebox {
+  min-width: 96px;
+  width: fit-content;
+  max-width: 200px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.22);
+  padding: 8px 4px;
+  display: grid;
+  gap: 4px;
+  align-content: center;
+  justify-items: center;
+  text-align: center;
+  position: relative;
+  box-sizing: border-box;
+}
+
+.scorebox.active {
+  border-color: rgba(90, 162, 255, 0.75);
+  background: rgba(90, 162, 255, 0.14);
+}
+
+.score-label {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--muted);
+  font-family: var(--mono);
+  line-height: 1.1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.score-value {
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: 0.3px;
+  font-family: var(--mono);
+  line-height: 1.1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* Leave room for hover arrows. */
+  padding: 0 10px;
+}
+
+.score-arrows {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+  z-index: 2;
+}
+
+.scorebox:hover .score-arrows {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Always show arrows for the selected/active axis box. */
+.scorebox.active .score-arrows {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.score-arrows button {
+  pointer-events: auto;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(10, 15, 30, 0.42);
+  backdrop-filter: blur(8px);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.score-arrows button:hover {
+  background: rgba(90, 162, 255, 0.18);
+}
+
+.hud-left {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text);
+  min-width: 0;
+}
+
+.hud-meta {
+  margin-top: 6px;
+  color: var(--muted);
+  display: grid;
+  gap: 2px;
+}
+
+.hud-meta-line {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.hud-right {
+  display: grid;
+  place-items: end;
+}
+
+.nav-fab {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+  padding: 10px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(10, 15, 30, 0.55);
+  backdrop-filter: blur(10px);
+}
+.nav-status {
+  width: 100%;
+  min-width: 140px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 8px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.18);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  color: var(--text);
+}
+.nav-fab button {
+  pointer-events: auto;
+  padding: 6px 10px;
+  border-radius: 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  background: rgba(90, 162, 255, 0.15);
+}
+.nav-fab button.active {
+  background: rgba(90, 162, 255, 0.35);
+  border: 1px solid rgba(90, 162, 255, 0.5);
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(6px);
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  z-index: 9999;
+}
+.modal {
+  width: min(1400px, 96vw);
+  max-height: 92vh;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, var(--panel) 0%, var(--panel2) 100%);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
+  display: flex;
+  flex-direction: column;
+}
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.modal-title {
+  font-size: 12px;
+  color: var(--muted);
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.modal-actions {
+  display: flex;
+  gap: 8px;
+}
+.modal-body {
+  padding: 12px;
+  display: grid;
+  place-items: center;
+}
+.modal-media {
+  width: 100%;
+  max-height: 80vh;
+  height: 100%;
+  object-fit: contain;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: transparent;
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+/* On narrow screens, keep the viewer visible: sidebar becomes an overlay drawer. */
+@media (max-width: 900px) {
+  .app {
+    grid-template-columns: 1fr;
+  }
+  .main-panel {
+    grid-column: 1 / -1;
+  }
+  .sidebar-panel {
+    position: fixed;
+    top: 10px;
+    bottom: 10px;
+    left: 10px;
+    width: min(420px, 78vw); /* never fully covers the viewer */
+    z-index: 5000;
+  }
+  /* Collapsed drawer: narrow strip with expand caret only, not full overlay width. */
+  .sidebar-panel.collapsed {
+    width: 56px;
+    min-width: 56px;
+  }
+}
+

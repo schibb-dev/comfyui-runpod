@@ -1,0 +1,25 @@
+{
+  "pairs": [
+    {
+      "mp4": "output/output/wip/2026-02-01/FB8VA5L-2026-02-01-000943_OG_00001.mp4",
+      "png": "output/output/wip/2026-02-01/FB8VA5L-2026-02-01-000943_OG_00001.png",
+      "note": "Mentioned example (OG) from 2026-02-01"
+    },
+    {
+      "mp4": "output/output/wip/2026-02-01/FB8VA5L-2026-02-01-000943_UPIN_00001.mp4",
+      "png": "output/output/wip/2026-02-01/FB8VA5L-2026-02-01-000943_UPIN_00001.png",
+      "note": "Mentioned example (UPIN) from 2026-02-01"
+    },
+    {
+      "mp4": "output/output/wip/2026-01-18/FB8VA5L-2026-01-18-003159_OG_00001.mp4",
+      "png": "output/output/wip/2026-01-18/FB8VA5L-2026-01-18-003159_OG_00001.png",
+      "note": "Mentioned example (OG) from 2026-01-18"
+    },
+    {
+      "mp4": "output/output/wip/2026-01-18/FB8VA5L-2026-01-18-003159_UPIN_00001.mp4",
+      "png": "output/output/wip/2026-01-18/FB8VA5L-2026-01-18-003159_UPIN_00001.png",
+      "note": "Mentioned example (UPIN) from 2026-01-18"
+    }
+  ]
+}
+
