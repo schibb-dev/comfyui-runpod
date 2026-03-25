@@ -13,6 +13,8 @@ import type {
   WipResponse,
   CreateExperimentRequest,
   CreateExperimentResponse,
+  ComfyHistoryResponse,
+  OrchestratorState,
 } from "./types";
 
 export async function fetchExperiments(): Promise<ExperimentsResponse> {
@@ -109,4 +111,48 @@ export async function comfyClear(): Promise<ComfyClearResponse> {
     throw new Error(`POST /api/queue/comfy-clear failed: ${r.status}${t ? `\n${t}` : ""}`);
   }
   return (await r.json()) as ComfyClearResponse;
+}
+
+export async function fetchComfyHistory(limit = 30): Promise<ComfyHistoryResponse> {
+  const r = await fetch(`/api/comfy/history?limit=${encodeURIComponent(String(limit))}`);
+  if (!r.ok) throw new Error(`GET /api/comfy/history failed: ${r.status}`);
+  return (await r.json()) as ComfyHistoryResponse;
+}
+
+export async function fetchOrchestratorState(): Promise<OrchestratorState> {
+  const r = await fetch("/api/orchestrator/state");
+  if (!r.ok) throw new Error(`GET /api/orchestrator/state failed: ${r.status}`);
+  return (await r.json()) as OrchestratorState;
+}
+
+export async function saveOrchestratorState(payload: OrchestratorState): Promise<OrchestratorState> {
+  const r = await fetch("/api/orchestrator/state", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) {
+    const t = await r.text().catch(() => "");
+    throw new Error(`POST /api/orchestrator/state failed: ${r.status}${t ? `\n${t}` : ""}`);
+  }
+  return (await r.json()) as OrchestratorState;
+}
+
+export async function saveQueueItemForLater(payload: {
+  title: string;
+  prompt_id?: string;
+  tags?: string[];
+  notes?: string;
+  payload?: Record<string, unknown>;
+}): Promise<Record<string, unknown>> {
+  const r = await fetch("/api/orchestrator/saved-items", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) {
+    const t = await r.text().catch(() => "");
+    throw new Error(`POST /api/orchestrator/saved-items failed: ${r.status}${t ? `\n${t}` : ""}`);
+  }
+  return (await r.json()) as Record<string, unknown>;
 }

@@ -79,6 +79,11 @@ export type QueueComfyItem = {
   external: boolean;
   exp_id?: string | null;
   run_id?: string | null;
+  workflow_name?: string | null;
+  input_media_relpath?: string | null;
+  input_media_url?: string | null;
+  input_media_kind?: "image" | "video" | null;
+  key_params?: Record<string, unknown>;
 };
 
 export type QueueResponse = {
@@ -90,6 +95,18 @@ export type QueueResponse = {
   };
 };
 
+export type ComfyHistoryItem = {
+  prompt_id: string;
+  status: string;
+  primary_video_url?: string | null;
+  primary_image_url?: string | null;
+  outputs: RunOutput[];
+};
+
+export type ComfyHistoryResponse = {
+  items: ComfyHistoryItem[];
+};
+
 export type RequeueRunRequest = { exp_id: string; run_id: string; front?: boolean };
 export type RequeueRunResponse = { ok: boolean; exp_id: string; run_id: string; front: boolean; submit?: unknown };
 
@@ -97,6 +114,85 @@ export type ComfyCancelRequest = { prompt_id: string; kind: "pending" | "running
 export type ComfyCancelResponse = { ok: boolean; kind: "pending" | "running"; prompt_id: string; result?: unknown };
 
 export type ComfyClearResponse = { ok: boolean; result?: unknown };
+
+export type OrchestratorProject = {
+  id: string;
+  name: string;
+  description?: string;
+  defaultQueueId?: string | null;
+  workflowIds: string[];
+  collectionIds: string[];
+  pipelineIds: string[];
+};
+
+export type OrchestratorCollectionMedia = {
+  path: string;
+  type: "image" | "video";
+  title?: string;
+};
+
+export type OrchestratorCollection = {
+  id: string;
+  name: string;
+  media: OrchestratorCollectionMedia[];
+  tags?: string[];
+};
+
+export type OrchestratorWorkflowRef = {
+  id: string;
+  name: string;
+  path: string;
+};
+
+export type OrchestratorStepRule = {
+  type: string;
+  config: Record<string, unknown>;
+};
+
+export type OrchestratorPipelineStep = {
+  id: string;
+  workflowRefId: string;
+  inputCollectionId?: string;
+  inputFromStepId?: string;
+  rules: OrchestratorStepRule[];
+};
+
+export type OrchestratorPipeline = {
+  id: string;
+  name: string;
+  projectId?: string;
+  steps: OrchestratorPipelineStep[];
+};
+
+export type OrchestratorQueueRule = {
+  type: string;
+  config: Record<string, unknown>;
+};
+
+export type OrchestratorQueue = {
+  id: string;
+  name: string;
+  rules: OrchestratorQueueRule[];
+};
+
+export type OrchestratorSavedItem = {
+  id: string;
+  prompt_id?: string;
+  created_at: string;
+  title: string;
+  tags: string[];
+  notes?: string;
+  payload: Record<string, unknown>;
+};
+
+export type OrchestratorState = {
+  projects: OrchestratorProject[];
+  collections: OrchestratorCollection[];
+  workflows: OrchestratorWorkflowRef[];
+  pipelines: OrchestratorPipeline[];
+  queues: OrchestratorQueue[];
+  saved_items: OrchestratorSavedItem[];
+};
 
 export type NextExperimentRequest = {
   anchor: { exp_id: string; run_id: string };

@@ -299,6 +299,75 @@ def _pick_primary_media(outputs: List[Dict[str, Any]]) -> Tuple[Optional[str], O
     return vid, img
 
 
+def _extract_input_media_from_prompt(prompt_obj: Any) -> Tuple[Optional[str], Optional[str]]:
+    if not isinstance(prompt_obj, dict):
+        return (None, None)
+    for _nid, node in prompt_obj.items():
+        if not isinstance(node, dict):
+            continue
+        ctype = node.get("class_type")
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict):
+            continue
+        if ctype == "LoadImage":
+            image = inputs.get("image")
+            if isinstance(image, str) and image.strip():
+                return (image.strip().replace("\\", "/"), "image")
+            if isinstance(image, list) and image:
+                last = image[-1]
+                if isinstance(last, str) and last.strip():
+                    return (last.strip().replace("\\", "/"), "image")
+        if ctype in ("VHS_LoadVideo", "LoadVideo"):
+            video = inputs.get("video") or inputs.get("path")
+            if isinstance(video, str) and video.strip():
+                return (video.strip().replace("\\", "/"), "video")
+    return (None, None)
+
+
+def _extract_key_params_from_prompt(prompt_obj: Any) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    if not isinstance(prompt_obj, dict):
+        return out
+    for _nid, node in prompt_obj.items():
+        if not isinstance(node, dict):
+            continue
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict):
+            continue
+        for key in ("seed", "noise_seed", "steps", "cfg", "sampler_name", "scheduler", "denoise", "model"):
+            if key in out:
+                continue
+            val = inputs.get(key)
+            if isinstance(val, (str, int, float, bool)) and str(val).strip():
+                out[key] = val
+    return out
+
+
+def _guess_workflow_name(prompt_obj: Any, raw_item: Any) -> Optional[str]:
+    if isinstance(raw_item, list) and len(raw_item) >= 4 and isinstance(raw_item[3], dict):
+        meta = raw_item[3]
+        extra = meta.get("extra_pnginfo")
+        if isinstance(extra, dict):
+            wf = extra.get("workflow")
+            if isinstance(wf, dict):
+                name = wf.get("name")
+                if isinstance(name, str) and name.strip():
+                    return name.strip()
+    if isinstance(prompt_obj, dict):
+        first_types: List[str] = []
+        for _nid, node in prompt_obj.items():
+            if not isinstance(node, dict):
+                continue
+            ct = node.get("class_type")
+            if isinstance(ct, str) and ct.strip():
+                first_types.append(ct.strip())
+            if len(first_types) >= 3:
+                break
+        if first_types:
+            return " + ".join(first_types)
+    return None
+
+
 def _run_primary_media(
     cfg: "ServerConfig", exp_dir: Path, run_dir: Path
 ) -> Tuple[Optional[str], Optional[str]]:
@@ -325,6 +394,7 @@ class ServerConfig:
     static_dir: Path
     tune_script: Path
     comfy_server: str
+    orchestrator_state_path: Path
 
 
 def _resolve_workspace_root(base: Path) -> Path:
@@ -625,6 +695,39 @@ def _summarize_runs_for_queue(cfg: ServerConfig, *, exp_id: str, exp_dir: Path) 
     return runs_out
 
 
+def _default_orchestrator_state() -> Dict[str, Any]:
+    return {
+        "projects": [],
+        "collections": [],
+        "workflows": [],
+        "pipelines": [],
+        "queues": [],
+        "saved_items": [],
+    }
+
+
+def _read_orchestrator_state(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return _default_orchestrator_state()
+    try:
+        obj = _read_json(path)
+    except Exception:
+        return _default_orchestrator_state()
+    if not isinstance(obj, dict):
+        return _default_orchestrator_state()
+    base = _default_orchestrator_state()
+    for k in base.keys():
+        v = obj.get(k)
+        if isinstance(v, list):
+            base[k] = v
+    return base
+
+
+def _write_orchestrator_state(path: Path, obj: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 class Handler(BaseHTTPRequestHandler):
     server: "ExperimentsServer"  # type: ignore[assignment]
 
@@ -716,9 +819,22 @@ class Handler(BaseHTTPRequestHandler):
                         continue
                     for it in items:
                         pid = None
+                        prompt_obj: Optional[Dict[str, Any]] = None
                         if isinstance(it, list) and len(it) >= 2 and isinstance(it[1], str):
                             pid = it[1]
+                            if len(it) >= 3 and isinstance(it[2], dict):
+                                prompt_obj = it[2]
                         mapped = prompt_to_run.get(pid) if isinstance(pid, str) and pid else None
+                        input_rel, input_kind = _extract_input_media_from_prompt(prompt_obj)
+                        input_url = None
+                        if isinstance(input_rel, str):
+                            normalized = _normalize_rel_posix(input_rel)
+                            if normalized:
+                                full = _safe_join(cfg.output_root, normalized)
+                                if full is not None and full.exists() and full.is_file():
+                                    input_url = "/files/" + urllib.parse.quote(normalized)
+                        workflow_name = _guess_workflow_name(prompt_obj, it)
+                        key_params = _extract_key_params_from_prompt(prompt_obj)
                         out.append(
                             {
                                 "prompt_id": pid,
@@ -726,6 +842,11 @@ class Handler(BaseHTTPRequestHandler):
                                 "external": mapped is None,
                                 "exp_id": mapped.get("exp_id") if isinstance(mapped, dict) else None,
                                 "run_id": mapped.get("run_id") if isinstance(mapped, dict) else None,
+                                "workflow_name": workflow_name,
+                                "input_media_relpath": input_rel,
+                                "input_media_url": input_url,
+                                "input_media_kind": input_kind,
+                                "key_params": key_params,
                             }
                         )
 
@@ -737,6 +858,51 @@ class Handler(BaseHTTPRequestHandler):
                     "comfyui": {"running": comfy_running, "pending": comfy_pending, "raw": queue_obj if isinstance(queue_obj, dict) else {}},
                 },
             )
+
+        if path == "/api/comfy/history":
+            limit = 30
+            for v in q.get("limit", []):
+                p = _safe_int(v)
+                if p is not None:
+                    limit = max(1, min(200, int(p)))
+                    break
+            comfy = str(cfg.comfy_server).rstrip("/")
+            try:
+                hist_obj = _http_json("GET", f"{comfy}/history", timeout_s=10)
+            except Exception as e:
+                return _json_response(self, 502, {"error": "comfy_history_fetch_failed", "detail": str(e), "items": []})
+            items_out: List[Dict[str, Any]] = []
+            if isinstance(hist_obj, dict):
+                for pid, record in hist_obj.items():
+                    if not isinstance(pid, str):
+                        continue
+                    outs = _extract_outputs_from_history(record)
+                    pv, pi = _pick_primary_media(outs)
+                    def _mk_url(rel: Optional[str]) -> Optional[str]:
+                        if not isinstance(rel, str) or not rel:
+                            return None
+                        norm = _normalize_rel_posix(rel)
+                        if not norm:
+                            return None
+                        full = _safe_join(cfg.output_root, norm)
+                        if full is None or not full.exists() or not full.is_file():
+                            return None
+                        return "/files/" + urllib.parse.quote(norm)
+                    items_out.append(
+                        {
+                            "prompt_id": pid,
+                            "status": "complete",
+                            "primary_video_url": _mk_url(pv),
+                            "primary_image_url": _mk_url(pi),
+                            "outputs": [{**o, "url": _mk_url(o.get("relpath"))} for o in outs],
+                        }
+                    )
+            items_out = items_out[:limit]
+            return _json_response(self, 200, {"items": items_out})
+
+        if path == "/api/orchestrator/state":
+            st = _read_orchestrator_state(cfg.orchestrator_state_path)
+            return _json_response(self, 200, st)
 
         if path == "/api/experiments":
             # Optional: use server-level cache (invalidated on create-experiment)
@@ -837,6 +1003,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_comfy_cancel()
         if path == "/api/queue/comfy-clear":
             return self._handle_comfy_clear()
+        if path == "/api/orchestrator/state":
+            return self._handle_orchestrator_state_post()
+        if path == "/api/orchestrator/saved-items":
+            return self._handle_orchestrator_saved_item_post()
         return _json_response(self, 404, {"error": "unknown_api_route", "path": path})
 
     def _read_request_json(self) -> Optional[Dict[str, Any]]:
@@ -1110,6 +1280,52 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return _json_response(self, 502, {"error": "comfy_clear_failed", "detail": str(e), "server": comfy})
 
+    def _handle_orchestrator_state_post(self) -> None:
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"error": "bad_json"})
+        if not isinstance(body, dict):
+            return _json_response(self, 400, {"error": "bad_state"})
+        current = _default_orchestrator_state()
+        next_state: Dict[str, Any] = {}
+        for key in current.keys():
+            v = body.get(key)
+            if not isinstance(v, list):
+                v = []
+            next_state[key] = v
+        try:
+            _write_orchestrator_state(cfg.orchestrator_state_path, next_state)
+        except Exception as e:
+            return _json_response(self, 500, {"error": "write_failed", "detail": str(e)})
+        return _json_response(self, 200, next_state)
+
+    def _handle_orchestrator_saved_item_post(self) -> None:
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"error": "bad_json"})
+        title = body.get("title")
+        if not isinstance(title, str) or not title.strip():
+            return _json_response(self, 400, {"error": "missing_title"})
+        st = _read_orchestrator_state(cfg.orchestrator_state_path)
+        now = _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        item = {
+            "id": f"saved_{int(_dt.datetime.utcnow().timestamp() * 1000)}",
+            "prompt_id": body.get("prompt_id") if isinstance(body.get("prompt_id"), str) else None,
+            "created_at": now,
+            "title": title.strip(),
+            "tags": body.get("tags") if isinstance(body.get("tags"), list) else [],
+            "notes": body.get("notes") if isinstance(body.get("notes"), str) else "",
+            "payload": body.get("payload") if isinstance(body.get("payload"), dict) else {},
+        }
+        st["saved_items"] = [item] + [x for x in st.get("saved_items", []) if isinstance(x, dict)]
+        try:
+            _write_orchestrator_state(cfg.orchestrator_state_path, st)
+        except Exception as e:
+            return _json_response(self, 500, {"error": "write_failed", "detail": str(e)})
+        return _json_response(self, 200, item)
+
     def _handle_next_experiment(self) -> None:
         """
         Derive+submit the next experiment based on an anchor run's *output MP4*.
@@ -1382,6 +1598,7 @@ def main() -> int:
     output_root = Path(args.output_root) if args.output_root else (ws / "output")
     wip_root = output_root / "output" / "wip"
     static_dir = Path(args.static_dir) if args.static_dir else (ws / "experiments_ui" / "dist")
+    orchestrator_state_path = ws / "output" / "orchestrator" / "state.json"
     # Runtime utilities live under workspace/scripts in this repo, but /workspace/scripts may be
     # occupied by a bind-mount of repo-level scripts. Prefer ws_scripts when present.
     tune_script = ws / "scripts" / "tune_experiment.py"
@@ -1398,6 +1615,7 @@ def main() -> int:
         static_dir=static_dir,
         tune_script=tune_script,
         comfy_server=comfy_server,
+        orchestrator_state_path=orchestrator_state_path,
     )
     server = ExperimentsServer((args.host, int(args.port)), cfg)
     print(f"[experiments-ui] listening on http://{args.host}:{args.port}")
@@ -1406,6 +1624,7 @@ def main() -> int:
     print(f"[experiments-ui] output_root={cfg.output_root}")
     print(f"[experiments-ui] wip_root={cfg.wip_root}")
     print(f"[experiments-ui] static_dir={cfg.static_dir}")
+    print(f"[experiments-ui] orchestrator_state={cfg.orchestrator_state_path}")
     server.serve_forever()
     return 0
 

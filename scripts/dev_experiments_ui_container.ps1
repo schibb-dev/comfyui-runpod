@@ -28,5 +28,5 @@ Write-Host "This is useful when Node.js is not installed on the host." -Foregrou
 Write-Host "If file watching is flaky on Windows mounts, we enable CHOKIDAR_USEPOLLING=true." -ForegroundColor DarkGray
 
 # Long-running foreground process.
-docker compose exec comfyui bash -lc "cd /workspace/experiments_ui/web && npm install && CHOKIDAR_USEPOLLING=true npm run dev -- --host 0.0.0.0 --port $Port"
+docker compose exec comfyui bash -lc "cd /workspace/experiments_ui/web && npm install && export EXPERIMENTS_UI_PROXY_TARGET=http://127.0.0.1:8790 && CHOKIDAR_USEPOLLING=true npm run dev -- --host 0.0.0.0 --port $Port"
 

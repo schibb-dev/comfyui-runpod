@@ -1,5 +1,6 @@
 Param(
-  [string]$Backend = "http://127.0.0.1:8790",
+  # Host dev: experiments_ui_server on 8791 (Docker uses 8790 -> container; see vite.config.ts).
+  [string]$Backend = "http://127.0.0.1:8791",
   [int]$Port = 5178,
   [switch]$NoOpen,
   [switch]$EnsureContainer
@@ -48,6 +49,9 @@ Write-Host "Proxying /api and /files to $Backend" -ForegroundColor DarkGray
 if (-not $NoOpen) {
   Start-Process "http://127.0.0.1:$Port"
 }
+
+# Vite reads this in vite.config.ts (loadEnv).
+$env:EXPERIMENTS_UI_PROXY_TARGET = $Backend
 
 # NOTE: we force host/port to avoid IPv6 localhost issues.
 npm run dev -- --host 127.0.0.1 --port $Port
