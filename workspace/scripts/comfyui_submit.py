@@ -162,6 +162,39 @@ def _prune_dead_nodes(prompt_obj: Dict[str, Any]) -> int:
     return removed
 
 
+def _workflow_ui_for_run_dir(run_dir: Path) -> Optional[Dict[str, Any]]:
+    """
+    Resolve the UI workflow JSON to embed in pnginfo when submitting this run.
+
+    Prefers per-run workflow file (e.g. <stem>.workflow.<run_id>.json) so saved
+    PNGs/MP4s carry the exact workflow for this run. Falls back to experiment
+    base workflow if no per-run file exists.
+    """
+    run_dir = Path(run_dir)
+    run_id = run_dir.name
+    for p in run_dir.iterdir():
+        if not p.is_file() or p.suffix.lower() != ".json":
+            continue
+        name = p.name
+        if ".cleaned." in name:
+            continue
+        if name.endswith(f".workflow.{run_id}.json"):
+            try:
+                obj = _read_json(p)
+                return obj if isinstance(obj, dict) else None
+            except Exception:
+                break
+    exp_dir = run_dir.parent.parent
+    base_wf = exp_dir / "base" / "base.workflow.json"
+    if base_wf.exists():
+        try:
+            obj = _read_json(base_wf)
+            return obj if isinstance(obj, dict) else None
+        except Exception:
+            pass
+    return None
+
+
 # --- Public API ---
 
 def submit_run_to_comfyui(
@@ -214,9 +247,14 @@ def submit_run_to_comfyui(
     _prune_dead_nodes(prompt_obj)
     _normalize_prompt_paths_for_linux(prompt_obj)
 
+    payload: Dict[str, Any] = {"prompt": prompt_obj, "client_id": client_id}
+    workflow_ui = _workflow_ui_for_run_dir(run_dir)
+    if isinstance(workflow_ui, dict) and workflow_ui:
+        payload["extra_data"] = {"extra_pnginfo": {"workflow": workflow_ui}}
+
     run_dir.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
-    submit = _http_json("POST", f"{server}/prompt", {"prompt": prompt_obj, "client_id": client_id}, timeout_s=timeout_s)
+    submit = _http_json("POST", f"{server}/prompt", payload, timeout_s=timeout_s)
     t1 = time.time()
     prompt_id2 = submit.get("prompt_id")
     if not isinstance(prompt_id2, str) or not prompt_id2.strip():

@@ -19,6 +19,7 @@ import json
 import math
 import re
 import shutil
+import sys
 import time
 import urllib.request
 from pathlib import Path
@@ -669,6 +670,25 @@ def _set_first_noise_seed(prompt: Dict[str, Any], seed: int) -> None:
                 inputs["noise_seed"] = int(seed)
                 return
     raise RuntimeError("No RandomNoise node found in prompt.")
+
+
+def _get_seed_from_prompt(prompt: Dict[str, Any]) -> Optional[int]:
+    """Extract seed from embedded prompt: RandomNoise.noise_seed first, else first KSampler.seed. Returns None if not found."""
+    for _, node in prompt.items():
+        if not isinstance(node, dict):
+            continue
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict):
+            continue
+        if node.get("class_type") == "RandomNoise" and "noise_seed" in inputs:
+            v = inputs["noise_seed"]
+            if isinstance(v, int):
+                return int(v)
+        if node.get("class_type") == "KSampler" and "seed" in inputs:
+            v = inputs["seed"]
+            if isinstance(v, int):
+                return int(v)
+    return None
 
 
 def _force_fixed_seed_everywhere(prompt: Dict[str, Any], seed: int) -> int:
@@ -1931,6 +1951,12 @@ def main() -> int:
         help="Queue runs and exit immediately (implies --submit-all). Re-run later without --no-wait to write history.json.",
     )
 
+    seed_media = sub.add_parser(
+        "seed-from-media",
+        help="Print the seed embedded in an MP4/PNG (from prompt metadata). Exit 1 if not found.",
+    )
+    seed_media.add_argument("media_path", help="Path to MP4 or PNG with embedded ComfyUI prompt/workflow")
+
     mat = sub.add_parser(
         "materialize",
         help="Retroactively write per-run candidate workflows from params.json (usable like tuned workflows).",
@@ -2028,6 +2054,23 @@ def main() -> int:
             no_wait=bool(args.no_wait),
         )
         print("OK")
+        return 0
+
+    if args.cmd == "seed-from-media":
+        media_path = Path(args.media_path)
+        if not media_path.exists() or not media_path.is_file():
+            print(f"Not found or not a file: {media_path}", file=sys.stderr)
+            return 1
+        try:
+            prompt_base, _ = _extract_base_from_media(media_path)
+        except SystemExit as e:
+            print(f"Failed to extract prompt from {media_path}: {e}", file=sys.stderr)
+            return 1
+        seed = _get_seed_from_prompt(prompt_base)
+        if seed is None:
+            print("No seed found in embedded prompt (RandomNoise.noise_seed or KSampler.seed).", file=sys.stderr)
+            return 1
+        print(seed)
         return 0
 
     if args.cmd == "materialize":

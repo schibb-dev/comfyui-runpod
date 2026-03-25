@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """
-Find MP4 files modified in the last 24 hours and run three experiments (generate + run).
+Find MP4/PNG files (recent or matching a string) and run experiments (generate + run).
+
+By default uses each input video's embedded seed so experiments match the original.
+Use --no-seed-from-video to use --seed for all instead.
+
 Usage:
-  python run_experiments_from_recent_videos.py [--video-dir DIR] [--out-root DIR] [--limit N] [--dry-run]
+  python run_experiments_from_recent_videos.py [--video-dir DIR] [--out-root DIR] [--limit N] [--match STR] [--dry-run]
 """
 
 from __future__ import annotations
@@ -27,9 +31,24 @@ def main() -> int:
         help="Experiment output root (default: workspace/output/output/experiments)",
     )
     ap.add_argument("--limit", type=int, default=3, help="Number of experiments to run (default: 3)")
-    ap.add_argument("--seed", type=int, default=12345, help="Seed for generate (default: 12345)")
+    ap.add_argument(
+        "--seed",
+        type=int,
+        default=12345,
+        help="Seed for generate when not read from video (default: 12345). Default is to use each video's embedded seed.",
+    )
     ap.add_argument("--server", default="http://127.0.0.1:8188", help="ComfyUI server URL for run")
     ap.add_argument("--dry-run", action="store_true", help="Only list videos that would be used")
+    ap.add_argument(
+        "--no-seed-from-video",
+        action="store_true",
+        help="Do not extract seed from video; use --seed for all experiments.",
+    )
+    ap.add_argument(
+        "--match",
+        default="",
+        help="Only use videos whose path/name contains this string (e.g. 133216). Ignores 24h cutoff when set.",
+    )
     args = ap.parse_args()
 
     script_dir = Path(__file__).resolve().parent
@@ -51,6 +70,7 @@ def main() -> int:
         out_root = workspace / "output" / "output" / "experiments"
 
     cutoff = time.time() - (24 * 3600)
+    match_substring = (args.match or "").strip()
     # Exclude paths under former experiment dirs (e.g. .../experiments/tune_xxx/...).
     def under_experiments(p: Path) -> bool:
         try:
@@ -67,10 +87,13 @@ def main() -> int:
         for f in video_dir.rglob(ext):
             if under_experiments(f):
                 continue
+            if match_substring and match_substring not in str(f):
+                continue
             try:
                 mtime = f.stat().st_mtime
-                if mtime >= cutoff:
-                    media.append((mtime, f))
+                if not match_substring and mtime < cutoff:
+                    continue
+                media.append((mtime, f))
             except OSError:
                 continue
 
@@ -78,7 +101,12 @@ def main() -> int:
     chosen = [p for _, p in media[: args.limit]]
 
     if not chosen:
-        print("No MP4/PNG files (excluding former experiments) modified in the last 24 hours under", video_dir, file=sys.stderr)
+        msg = "No MP4/PNG files (excluding former experiments)"
+        if match_substring:
+            msg += f" matching {match_substring!r}"
+        else:
+            msg += " modified in the last 24 hours"
+        print(msg, "under", video_dir, file=sys.stderr)
         return 1
 
     print("Media to use (newest first):")
@@ -95,6 +123,20 @@ def main() -> int:
 
     for i, base_media in enumerate(chosen):
         print("\n--- Experiment", i + 1, "of", len(chosen), ":", base_media.name, "---")
+        seed = args.seed
+        if not args.no_seed_from_video:
+            seed_result = subprocess.run(
+                [sys.executable, str(tune_script), "seed-from-media", str(base_media.resolve())],
+                cwd=str(workspace),
+                capture_output=True,
+                text=True,
+            )
+            if seed_result.returncode == 0 and seed_result.stdout:
+                try:
+                    seed = int(seed_result.stdout.strip().splitlines()[0].strip())
+                    print("Using seed from input video:", seed)
+                except ValueError:
+                    pass
         gen_cmd = [
             sys.executable,
             str(tune_script),
@@ -103,7 +145,7 @@ def main() -> int:
             "--out-root",
             str(out_root.resolve()),
             "--seed",
-            str(args.seed),
+            str(seed),
             "--defaults",
             "core",
             "--max-runs",

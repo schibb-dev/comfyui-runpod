@@ -299,6 +299,38 @@ def _workflow_info_for_exp(exp_dir: Path) -> Dict[str, Any]:
     }
 
 
+def _workflow_ui_for_run(r: "RunRef") -> Optional[Dict[str, Any]]:
+    """
+    Resolve the UI workflow JSON to embed in pnginfo when submitting this run.
+
+    Prefers per-run workflow file (e.g. <stem>.workflow.<run_id>.json) so saved
+    PNGs/MP4s carry the exact workflow for this run. Falls back to experiment
+    base workflow if no per-run file exists.
+    """
+    # Per-run workflow written by tune_experiment generate: <stem>.workflow.<run_id>.json (exclude .cleaned)
+    for p in r.run_dir.iterdir():
+        if not p.is_file() or p.suffix.lower() != ".json":
+            continue
+        name = p.name
+        if ".cleaned." in name:
+            continue
+        if name.endswith(f".workflow.{r.run_id}.json"):
+            try:
+                obj = _read_json(p)
+                return obj if isinstance(obj, dict) else None
+            except Exception:
+                break
+    # Fallback: experiment base workflow
+    base_wf = r.exp_dir / "base" / "base.workflow.json"
+    if base_wf.exists():
+        try:
+            obj = _read_json(base_wf)
+            return obj if isinstance(obj, dict) else None
+        except Exception:
+            pass
+    return None
+
+
 def _crash_dir_for(root_or_exp: Path) -> Path:
     """
     Write crash ledger under the experiments root:
@@ -1099,11 +1131,16 @@ def watch(
                 # Fix common portability issue: prompts authored on Windows may use backslashes in
                 # model names (e.g. "WAN\\foo.gguf"), but nodes validate against "/"-separated lists.
                 _normalize_prompt_paths_for_linux(prompt_obj)
+                # Build payload: include extra_pnginfo.workflow so ComfyUI SaveImage nodes embed UI workflow in outputs.
+                payload: Dict[str, Any] = {"prompt": prompt_obj, "client_id": _client_id(r.exp_id)}
+                workflow_ui = _workflow_ui_for_run(r)
+                if isinstance(workflow_ui, dict) and workflow_ui:
+                    payload["extra_data"] = {"extra_pnginfo": {"workflow": workflow_ui}}
                 t0 = time.time()
                 submit = _http_json(
                     "POST",
                     f"{server}/prompt",
-                    {"prompt": prompt_obj, "client_id": _client_id(r.exp_id)},
+                    payload,
                     timeout_s=submit_timeout_s,
                 )
                 t1 = time.time()
