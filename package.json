@@ -13,11 +13,11 @@
     "logs:comfy": "docker compose logs -f --tail 200 comfyui",
     "logs:watch": "docker compose logs -f --tail 200 watch_queue",
 
-    "ops:up": "docker compose --profile ops up -d refresh_run_status report_experiment_queue_status queue_incomplete_experiments ws_event_tap",
-    "ops:down": "docker compose --profile ops stop refresh_run_status report_experiment_queue_status queue_incomplete_experiments ws_event_tap",
-    "ops:rm": "docker compose --profile ops rm -fsv refresh_run_status report_experiment_queue_status queue_incomplete_experiments ws_event_tap",
-    "ops:ps": "docker compose ps refresh_run_status report_experiment_queue_status queue_incomplete_experiments ws_event_tap",
-    "ops:logs": "docker compose logs -f --tail 200 refresh_run_status report_experiment_queue_status queue_incomplete_experiments ws_event_tap",
+    "ops:up": "docker compose --profile ops up -d refresh_run_status report_experiment_queue_status queue_incomplete_experiments queue_ledger ws_event_tap",
+    "ops:down": "docker compose --profile ops stop refresh_run_status report_experiment_queue_status queue_incomplete_experiments queue_ledger ws_event_tap",
+    "ops:rm": "docker compose --profile ops rm -fsv refresh_run_status report_experiment_queue_status queue_incomplete_experiments queue_ledger ws_event_tap",
+    "ops:ps": "docker compose ps refresh_run_status report_experiment_queue_status queue_incomplete_experiments queue_ledger ws_event_tap",
+    "ops:logs": "docker compose logs -f --tail 200 refresh_run_status report_experiment_queue_status queue_incomplete_experiments queue_ledger ws_event_tap",
 
     "status:once": "docker compose exec -T watch_queue python3 /workspace/ws_scripts/refresh_run_status.py --server http://comfyui:8188",
     "report:once": "docker compose exec -T watch_queue python3 /workspace/ws_scripts/report_experiment_queue_status.py --server http://comfyui:8188 --newest-first --limit 10 --summary-only",
@@ -33,6 +33,8 @@
 
     "//ui": "Experiments UI helpers. Windows-native scripts are kept; Docker-native commands are provided too.",
     "ui:dev:win": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\\\scripts\\\\dev_experiments_ui_container.ps1",
+    "ui:dev:all": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\\\scripts\\\\dev_experiments_ui_all.ps1",
+    "stack:restart": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\\\scripts\\\\restart_stack.ps1",
     "ui:build:win": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\\\scripts\\\\build_experiments_ui_container.ps1",
     "ui:recreate:win": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\\\scripts\\\\build_experiments_ui_container.ps1 -Recreate",
     "ui:build:docker": "docker compose exec -T comfyui sh -lc \"cd /workspace/experiments_ui/web && (test -f package-lock.json && npm ci || npm install) && npm run build\"",

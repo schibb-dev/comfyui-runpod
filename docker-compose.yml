@@ -4,7 +4,10 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        COMFYUI_REF: ${COMFYUI_REF:-origin/master}
+        # Default pin: last ComfyUI commit before #11632 (LTXV2) removed module-level
+        # `precompute_freqs_cis` — required for welltop-cn ComfyUI-TeaCache in the WAN base image.
+        # Override in `.env`: COMFYUI_REF=origin/master for bleeding-edge (TeaCache will break until upstream fixes).
+        COMFYUI_REF: ${COMFYUI_REF:-38d049382533c6662d815b08ca3395e96cca9f57}
     image: schibbdev/comfyui-runpod:v1.2.0
     container_name: comfyui0-runpod
     
@@ -30,11 +33,9 @@ services:
       - ./workspace/output:/ComfyUI/output
       # Persist ComfyUI user data (settings, DB, manager config, user workflows)
       - ./workspace/comfyui_user:/ComfyUI/user
-      # Persist models between runs (recommended)
-      # For local/non-RunPod usage you can mount a host models directory (e.g. E:\models on Windows)
-      - "${COMFYUI_MODELS_DIR:-./workspace/models}:/ComfyUI/models"
-      # Also mount to /workspace/models for scripts that reference WORKSPACE_PATH/models
-      - "${COMFYUI_MODELS_DIR:-./workspace/models}:/workspace/models"
+      # Persist models (default E:\models on Windows; set COMFYUI_MODELS_DIR in .env to override)
+      - "${COMFYUI_MODELS_DIR:-E:/models}:/ComfyUI/models"
+      - "${COMFYUI_MODELS_DIR:-E:/models}:/workspace/models"
       # Credentials for Hugging Face and CivitAI
       - ./credentials:/workspace/credentials:ro
       # Custom nodes configuration
@@ -43,12 +44,14 @@ services:
       - ./scripts:/workspace/scripts:ro
       # Workspace scripts (tuning/watch utilities used at runtime)
       - ./workspace/scripts:/workspace/ws_scripts:ro
-      # All custom nodes - persistent and extensible
-      - ./custom_nodes:/ComfyUI/custom_nodes
-    
-    # Ports
+      # Custom nodes: use the image's baked-in nodes (from custom_nodes.yaml at build time).
+      # Uncomment the line below to override with a local ./custom_nodes directory instead.
+      # - ./custom_nodes:/ComfyUI/custom_nodes
+
+    # Ports (host:container). If another ComfyUI already binds 127.0.0.1:8188 (e.g. portable install),
+    # browsers hitting http://127.0.0.1:8188 reach THAT app, not Docker — set COMFYUI_HOST_PORT=8189 in .env.
     ports:
-      - "8188:8188"    # ComfyUI
+      - "${COMFYUI_HOST_PORT:-8188}:8188"    # ComfyUI
       - "8888:8888"    # Jupyter (if you want)
       - "6006:6006"    # TensorBoard (optional)
       - "8790:8790"    # Experiments UI (optional)
@@ -83,6 +86,13 @@ services:
       - EXPERIMENTS_UI=${EXPERIMENTS_UI:-false}
       - EXPERIMENTS_UI_PORT=${EXPERIMENTS_UI_PORT:-8790}
       - EXPERIMENTS_UI_BUILD=${EXPERIMENTS_UI_BUILD:-true}
+      # Load ComfyUI-MultiGPU from custom_nodes (default on). Set false on single-GPU / if you symlink it away.
+      - INSTALL_MULTIGPU=${INSTALL_MULTIGPU:-true}
+      # Krita AI Diffusion (desktop plugin) backend — off by default so ComfyUI is not pulling Krita model sets / Acly nodes unless you opt in.
+      # See docs/KRITA_AI_SETUP.md. Set both to true in .env when using Krita as a client to this ComfyUI.
+      - AUTO_DOWNLOAD_KRITA_AI_MODELS=${AUTO_DOWNLOAD_KRITA_AI_MODELS:-false}
+      - INSTALL_KRITA_BACKEND_NODES=${INSTALL_KRITA_BACKEND_NODES:-false}
+      - KRITA_DOWNLOAD_PRESET=${KRITA_DOWNLOAD_PRESET:---recommended}
     
     # Shared memory for data loaders
     shm_size: '8gb'
@@ -214,6 +224,51 @@ services:
           python3 /workspace/ws_scripts/queue_incomplete_experiments.py --server "$$SERVER_URL" || true;
           sleep "$${QUEUE_INTERVAL_S}";
         done
+
+  queue_ledger:
+    profiles: ["ops"]
+    image: schibbdev/comfyui-runpod:v1.2.0
+    container_name: comfyui0-queue-ledger
+    depends_on:
+      - comfyui
+    restart: unless-stopped
+    entrypoint: ["sh", "-lc"]
+    environment:
+      - SERVER_URL=http://comfyui:8188
+      - LEDGER_PENDING_TARGET=2
+      - LEDGER_POLL_NORMAL_S=0.5
+      - LEDGER_POLL_CHURN_S=3
+      - LEDGER_CHURN_WINDOW_S=30
+      - LEDGER_QUIET_WINDOW_S=45
+      - LEDGER_CHURN_THRESHOLD=2
+      - LEDGER_EXPECTED_ADD_TTL_S=20
+      - LEDGER_MAX_RESTORE_ATTEMPTS=2
+      - LEDGER_RESTORE_COOLDOWN_S=120
+      - LEDGER_CLIENT_ID=comfy-queue-ledger
+    volumes:
+      - ./workspace:/workspace
+      - ./workspace/scripts:/workspace/ws_scripts:ro
+    # Override image healthcheck: this container does not run ComfyUI.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS \"http://comfyui:8188/queue\" >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    command:
+      - >-
+        python3 /workspace/ws_scripts/comfy_queue_ledger.py
+        --server "$$SERVER_URL"
+        --pending-target "$$LEDGER_PENDING_TARGET"
+        --poll-interval-normal "$$LEDGER_POLL_NORMAL_S"
+        --poll-interval-churn "$$LEDGER_POLL_CHURN_S"
+        --churn-window-s "$$LEDGER_CHURN_WINDOW_S"
+        --quiet-window-s "$$LEDGER_QUIET_WINDOW_S"
+        --churn-threshold "$$LEDGER_CHURN_THRESHOLD"
+        --expected-add-ttl-s "$$LEDGER_EXPECTED_ADD_TTL_S"
+        --max-restore-attempts "$$LEDGER_MAX_RESTORE_ATTEMPTS"
+        --restore-cooldown-s "$$LEDGER_RESTORE_COOLDOWN_S"
+        --client-id "$$LEDGER_CLIENT_ID"
 
   ws_event_tap:
     profiles: ["ops"]
