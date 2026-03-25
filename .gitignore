@@ -80,6 +80,15 @@ npm-debug.log*
 # Experiments UI build output (served at runtime)
 workspace/experiments_ui/dist/
 
+# TypeScript incremental build cache (Vite/tsc)
+*.tsbuildinfo
+
+# Local scratch logs (repo root)
+/tmp_comfy_logs.txt
+
+# Workspace vendored custom nodes (cloned beside repo bootstrap; do not track)
+workspace/ComfyUI-*/
+
 # Custom nodes git directories (we don't want to track these as submodules)
 **/.git/
 custom_nodes/**/.git
