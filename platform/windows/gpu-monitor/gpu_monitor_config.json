@@ -1,0 +1,36 @@
+{
+  "report_only": true,
+  "log_file": "C:/Logs/gpu_crash.log",
+  "sampling_interval": 10,
+  "enable_generation_logging": true,
+  "generation_sampling_interval": 1,
+  "generation_utilization_threshold": 20,
+  "failure_threshold": 3,
+  "temperature_warning_threshold": 80,
+  "temperature_critical_threshold": 85,
+  "power_warning_threshold": 95,
+  "power_limit": null,
+  "monitor_event_log": true,
+  "monitor_comfyui_logs": true,
+
+  "recovery_enabled": true,
+  "recovery_steps": [
+    "restart_docker_containers",
+    "wsl_shutdown",
+    "restart_docker_service",
+    "pnputil_restart_display",
+    "reboot"
+  ],
+  "recovery_fallback_to_reboot": true,
+  "recovery_docker_containers": [
+    "comfyui0-runpod"
+  ],
+  "recovery_docker_services": [
+    "com.docker.service"
+  ],
+  "recovery_verify_attempts": 6,
+  "recovery_verify_interval_seconds": 5,
+  "recovery_pnputil_restart_display": false,
+  "recovery_pnputil_instance_id": null
+}
+

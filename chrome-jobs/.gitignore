@@ -1,0 +1,10 @@
+node_modules/
+.env
+
+# Auth/session (treat like credentials)
+storageState.json
+
+# Debug artifacts
+artifacts/
+*.zip
+

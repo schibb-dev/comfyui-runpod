@@ -1,0 +1,19 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../../UmeAiRT/ComfyUI_windows_portable"
+		},
+		{
+			"path": "../../../../Logs"
+		},
+		{
+			"path": "E:/models"
+		}
+	],
+	"settings": {
+		"powershell.cwd": "comfyui-runpod"
+	}
+}

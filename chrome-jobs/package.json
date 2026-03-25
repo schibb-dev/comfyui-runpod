@@ -1,0 +1,17 @@
+{
+  "name": "chrome-jobs",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Robust scripted jobs on Chrome using Playwright storage state (one-time login, then headless runs).",
+  "license": "UNLICENSED",
+  "scripts": {
+    "login": "node scripts/login.js",
+    "job": "node scripts/job.js",
+    "job:headed": "node scripts/job.js --headed"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "playwright": "^1.55.0"
+  }
+}
+

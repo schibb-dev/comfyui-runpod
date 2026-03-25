@@ -1,0 +1,18 @@
+# Maps legacy ComfyUI workflow node `type` strings → current registered class names.
+# Extend this file whenever you upgrade ComfyUI or custom nodes and workflows report "missing" nodes.
+#
+# Keys/values must match EXACTLY what appears in workflow JSON (`nodes[].type`) and in
+# `/object_info` from a running ComfyUI (or ComfyUI-Manager node list).
+#
+# version: bump when you change semantics (optional tooling may use it later)
+version: 1
+
+mappings:
+  # Easy-Use / core renames (verify against YOUR /object_info — names differ by pack version)
+  "Text Concatenate": "StringConcatenate"
+
+  # CFG / guidance (KJNodes / sampler naming drift)
+  "CFGZeroStarAndInit": "CFGZeroStar"
+
+  # Add entries when the UI reports a missing node but the pack is installed — usually a rename.
+  # "SkipLayerGuidanceWanVideo": "SkipLayerGuidanceDiT"
