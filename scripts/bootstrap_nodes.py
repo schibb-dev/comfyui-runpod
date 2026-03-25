@@ -45,6 +45,34 @@ def clone_repo(repo_url, target_dir, branch="main", timeout=300):
         print(f"❌ Error cloning {repo_url}: {e}")
         return False
 
+def checkout_repo_ref(target_dir: str, ref: str, timeout: int = 300) -> bool:
+    """Checkout a specific git ref (commit/tag/branch) in an existing clone."""
+    try:
+        if not ref:
+            return True
+        print(f"📌 Pinning {os.path.basename(target_dir)} to {ref}")
+        subprocess.run(
+            ["git", "-C", target_dir, "fetch", "--all", "--tags"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        result = subprocess.run(
+            ["git", "-C", target_dir, "checkout", ref],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        if result.returncode == 0:
+            return True
+        print(f"⚠️  Failed to checkout ref {ref} for {os.path.basename(target_dir)}: {result.stderr}")
+        return False
+    except Exception as e:
+        print(f"⚠️  Error pinning {os.path.basename(target_dir)} to {ref}: {e}")
+        return False
+
 def _sha256_file(path: str) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -260,6 +288,7 @@ def bootstrap_nodes(config):
         repo_url = node['repo']
         branch = node.get('branch', 'main')
         required = node.get('required', True)
+        ref = node.get('ref')
         npm_build = node.get('npm_build', False)
         
         target_dir = os.path.join(custom_nodes_dir, node_name)
@@ -267,6 +296,10 @@ def bootstrap_nodes(config):
         # Skip if already exists and skip_existing is True (unless we still need an npm build).
         # Even when skipping the clone step, we still ensure Python deps are installed.
         if skip_existing and is_valid_node_install(target_dir):
+            if ref and not checkout_repo_ref(target_dir, ref, timeout):
+                if required:
+                    print(f"❌ Failed to pin required node {node_name} to {ref}")
+                    return False
             if auto_install_requirements:
                 install_requirements(target_dir, retry_attempts, force=force_reinstall)
             if npm_build and not is_frontend_built(target_dir):
@@ -284,6 +317,10 @@ def bootstrap_nodes(config):
         
         # Clone the repository
         if clone_repo(repo_url, target_dir, branch, timeout):
+            if ref and not checkout_repo_ref(target_dir, ref, timeout):
+                if required:
+                    print(f"❌ Failed to pin required node {node_name} to {ref}")
+                    return False
             success_count += 1
 
             # Build node frontend if requested
@@ -298,20 +335,43 @@ def bootstrap_nodes(config):
                 print(f"❌ Failed to install required node: {node_name}")
                 return False
     
-    # Process optional nodes
-    optional_nodes = nodes.get('optional', [])
+    # Process optional nodes (skip Acly/Krita bridge nodes unless INSTALL_KRITA_BACKEND_NODES=true)
+    install_krita_backend = os.environ.get("INSTALL_KRITA_BACKEND_NODES", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    optional_nodes = nodes.get("optional", [])
     for node in optional_nodes:
+        if node.get("krita_backend") and not install_krita_backend:
+            print(
+                f"⏭️  Skipping optional node {node.get('name', '?')} "
+                f"(Krita AI Diffusion backend; set INSTALL_KRITA_BACKEND_NODES=true to install)"
+            )
+            continue
         total_count += 1
         node_name = node['name']
         repo_url = node['repo']
         branch = node.get('branch', 'main')
+        ref = node.get('ref')
         npm_build = node.get('npm_build', False)
+        enabled_env = node.get("enabled_env")
+        if enabled_env:
+            enabled = os.environ.get(enabled_env, "").strip().lower() in ("1", "true", "yes")
+            if not enabled:
+                print(
+                    f"⏭️  Skipping optional node {node_name} "
+                    f"(set {enabled_env}=true to install)"
+                )
+                continue
         
         target_dir = os.path.join(custom_nodes_dir, node_name)
         
         # Skip if already exists and skip_existing is True (unless we still need an npm build).
         # Even when skipping the clone step, we still ensure Python deps are installed.
         if skip_existing and is_valid_node_install(target_dir):
+            if ref and not checkout_repo_ref(target_dir, ref, timeout):
+                print(f"⚠️  Failed to pin optional node {node_name} to {ref}")
             if auto_install_requirements:
                 install_requirements(target_dir, retry_attempts, force=force_reinstall)
             if npm_build and not is_frontend_built(target_dir):
@@ -329,6 +389,8 @@ def bootstrap_nodes(config):
         
         # Clone the repository
         if clone_repo(repo_url, target_dir, branch, timeout):
+            if ref and not checkout_repo_ref(target_dir, ref, timeout):
+                print(f"⚠️  Failed to pin optional node {node_name} to {ref}")
             success_count += 1
 
             # Build node frontend if requested

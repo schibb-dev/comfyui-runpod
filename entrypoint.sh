@@ -88,6 +88,26 @@ else
   echo "ℹ️  No $WORKSPACE_PATH/custom_nodes.yaml found; skipping node bootstrap"
 fi
 
+# Optional: disable MultiGPU node pack by physically moving it out of custom_nodes.
+# This avoids startup import failures when the pack expects newer ComfyUI internals.
+INSTALL_MULTIGPU="${INSTALL_MULTIGPU:-true}"
+MULTIGPU_DIR="$COMFYUI_PATH/custom_nodes/ComfyUI-MultiGPU"
+MULTIGPU_DISABLED_DIR="$COMFYUI_PATH/custom_nodes.disabled/ComfyUI-MultiGPU"
+if [[ "$INSTALL_MULTIGPU" == "true" ]]; then
+  if [[ -d "$MULTIGPU_DISABLED_DIR" && ! -d "$MULTIGPU_DIR" ]]; then
+    mkdir -p "$COMFYUI_PATH/custom_nodes"
+    mv "$MULTIGPU_DISABLED_DIR" "$MULTIGPU_DIR" || true
+    echo "✅ Re-enabled ComfyUI-MultiGPU"
+  fi
+else
+  if [[ -d "$MULTIGPU_DIR" ]]; then
+    mkdir -p "$COMFYUI_PATH/custom_nodes.disabled"
+    rm -rf "$MULTIGPU_DISABLED_DIR" || true
+    mv "$MULTIGPU_DIR" "$MULTIGPU_DISABLED_DIR" || true
+    echo "⏭️  Disabled ComfyUI-MultiGPU (set INSTALL_MULTIGPU=true to enable)"
+  fi
+fi
+
 # Optional: background CivitAI downloader (non-fatal)
 if [[ -x "$WORKSPACE_PATH/scripts/run_civitai_downloader.sh" ]]; then
   echo "⬇️  Starting CivitAI downloader in background"
@@ -107,6 +127,26 @@ if [[ "$AUTO_DOWNLOAD_MANIFEST_MODELS" == "true" ]]; then
     python3 "$WORKSPACE_PATH/scripts/download_models_manifest.py" --profile "$MANIFEST_PROFILE" || true
   else
     echo "⚠️  AUTO_DOWNLOAD_MANIFEST_MODELS=true but manifest downloader is missing in $WORKSPACE_PATH/scripts"
+  fi
+fi
+
+# Optional: Krita AI Diffusion models (for the Krita *plugin* talking to ComfyUI — ComfyUI does not run Krita).
+# Default false: avoids startup downloads / conflicts when you only use ComfyUI directly. Opt in: AUTO_DOWNLOAD_KRITA_AI_MODELS=true
+# Preset: KRITA_DOWNLOAD_PRESET=--minimal | --recommended | --all
+AUTO_DOWNLOAD_KRITA_AI_MODELS="${AUTO_DOWNLOAD_KRITA_AI_MODELS:-false}"
+KRITA_DOWNLOAD_PRESET="${KRITA_DOWNLOAD_PRESET:---recommended}"
+if [[ "$AUTO_DOWNLOAD_KRITA_AI_MODELS" == "true" ]]; then
+  if [[ -f "$WORKSPACE_PATH/scripts/model_download_manifest.yaml" && -f "$WORKSPACE_PATH/scripts/download_models_manifest.py" ]]; then
+    echo "⬇️  Downloading Krita AI models (manifest profile krita_ai) into $COMFYUI_PATH/models"
+    python3 "$WORKSPACE_PATH/scripts/download_models_manifest.py" --profile krita_ai --models-dir "$COMFYUI_PATH/models" || true
+  else
+    echo "⚠️  AUTO_DOWNLOAD_KRITA_AI_MODELS=true but manifest downloader is missing in $WORKSPACE_PATH/scripts"
+  fi
+  if [[ -f /opt/krita-ai-diffusion/scripts/download_models.py ]]; then
+    echo "⬇️  Running Krita AI Diffusion download script (preset: $KRITA_DOWNLOAD_PRESET) into $COMFYUI_PATH"
+    ( cd /opt/krita-ai-diffusion && python3 scripts/download_models.py "$COMFYUI_PATH" $KRITA_DOWNLOAD_PRESET ) || true
+  else
+    echo "ℹ️  Krita download script not found at /opt/krita-ai-diffusion/scripts/download_models.py (skip)"
   fi
 fi
 

@@ -27,7 +27,7 @@ models:
     url: https://huggingface.co/h94/IP-Adapter/resolve/main/models/ip-adapter_sd15_light_v11.bin?download=true
 
   - id: ipadapter_sd15_basic
-    tags: [ipadapter, sd15, basic]
+    tags: [ipadapter, sd15, basic, krita_ai, krita_sd15]
     filename: ip-adapter_sd15.safetensors
     dest: ipadapter/ip-adapter_sd15.safetensors
     url: https://huggingface.co/h94/IP-Adapter/resolve/main/models/ip-adapter_sd15.safetensors?download=true
@@ -88,6 +88,95 @@ models:
     dest: clip_vision/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth
     url: https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/8bee6e003d1d9d31ecb2c75b643e57fa74fb2ad5/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth?download=true
 
+  # -----------------------
+  # Krita AI Diffusion (shared: inpaint + upscale)
+  # -----------------------
+  - id: mat_places512_fp16
+    tags: [krita_ai, inpaint, mat]
+    filename: MAT_Places512_G_fp16.safetensors
+    dest: inpaint/MAT_Places512_G_fp16.safetensors
+    url: https://huggingface.co/Acly/MAT/resolve/main/MAT_Places512_G_fp16.safetensors
+
+  - id: nmkd_superscale_4x_sp178000
+    tags: [krita_ai, upscale, nmkd]
+    filename: 4x_NMKD-Superscale-SP_178000_G.pth
+    dest: upscale_models/4x_NMKD-Superscale-SP_178000_G.pth
+    url: https://huggingface.co/gemasai/4x_NMKD-Superscale-SP_178000_G/resolve/main/4x_NMKD-Superscale-SP_178000_G.pth
+
+  - id: omnisr_x2_div2k
+    tags: [krita_ai, upscale, omnisr]
+    filename: OmniSR_X2_DIV2K.safetensors
+    dest: upscale_models/OmniSR_X2_DIV2K.safetensors
+    url: https://huggingface.co/Acly/Omni-SR/resolve/main/OmniSR_X2_DIV2K.safetensors
+
+  - id: omnisr_x3_div2k
+    tags: [krita_ai, upscale, omnisr]
+    filename: OmniSR_X3_DIV2K.safetensors
+    dest: upscale_models/OmniSR_X3_DIV2K.safetensors
+    url: https://huggingface.co/Acly/Omni-SR/resolve/main/OmniSR_X3_DIV2K.safetensors
+
+  - id: omnisr_x4_div2k
+    tags: [krita_ai, upscale, omnisr]
+    filename: OmniSR_X4_DIV2K.safetensors
+    dest: upscale_models/OmniSR_X4_DIV2K.safetensors
+    url: https://huggingface.co/Acly/Omni-SR/resolve/main/OmniSR_X4_DIV2K.safetensors
+
+  # -----------------------
+  # Krita AI: SD 1.5
+  # -----------------------
+  - id: clip_vision_vit_h_krita
+    tags: [krita_ai, krita_sd15, krita_sdxl, clip_vision, ipadapter]
+    filename: clip-vision_vit-h.safetensors
+    dest: clip_vision/clip-vision_vit-h.safetensors
+    url: https://huggingface.co/h94/IP-Adapter/resolve/main/models/image_encoder/model.safetensors
+
+  - id: hyper_sd_sd15_lora
+    tags: [krita_ai, krita_sd15, lora, hyper_sd]
+    filename: Hyper-SD15-8steps-CFG-lora.safetensors
+    dest: loras/Hyper-SD15-8steps-CFG-lora.safetensors
+    url: https://huggingface.co/ByteDance/Hyper-SD/resolve/main/Hyper-SD15-8steps-CFG-lora.safetensors
+
+  - id: controlnet_sd15_inpaint
+    tags: [krita_ai, krita_sd15, controlnet]
+    filename: control_v11p_sd15_inpaint_fp16.safetensors
+    dest: controlnet/control_v11p_sd15_inpaint_fp16.safetensors
+    url: https://huggingface.co/comfyanonymous/ControlNet-v1-1_fp16_safetensors/resolve/main/control_v11p_sd15_inpaint_fp16.safetensors
+
+  - id: controlnet_sd15_tile_unblur
+    tags: [krita_ai, krita_sd15, controlnet]
+    filename: control_v11f1e_sd15_tile_fp16.safetensors
+    dest: controlnet/control_v11f1e_sd15_tile_fp16.safetensors
+    url: https://huggingface.co/comfyanonymous/ControlNet-v1-1_fp16_safetensors/resolve/main/control_v11f1e_sd15_tile_fp16.safetensors
+
+  # IP-Adapter SD1.5 (ip-adapter_sd15.safetensors) already listed above as ipadapter_sd15_basic
+
+  # -----------------------
+  # Krita AI: SD XL
+  # -----------------------
+  - id: hyper_sd_sdxl_lora
+    tags: [krita_ai, krita_sdxl, lora, hyper_sd]
+    filename: Hyper-SDXL-8steps-CFG-lora.safetensors
+    dest: loras/Hyper-SDXL-8steps-CFG-lora.safetensors
+    url: https://huggingface.co/ByteDance/Hyper-SD/resolve/main/Hyper-SDXL-8steps-CFG-lora.safetensors
+
+  - id: fooocus_inpaint_patch
+    tags: [krita_ai, krita_sdxl, inpaint, fooocus]
+    filename: inpaint_v26.fooocus.patch
+    dest: inpaint/inpaint_v26.fooocus.patch
+    url: https://huggingface.co/lllyasviel/fooocus_inpaint/resolve/main/inpaint_v26.fooocus.patch
+
+  - id: fooocus_inpaint_head
+    tags: [krita_ai, krita_sdxl, inpaint, fooocus]
+    filename: fooocus_inpaint_head.pth
+    dest: inpaint/fooocus_inpaint_head.pth
+    url: https://huggingface.co/lllyasviel/fooocus_inpaint/resolve/main/fooocus_inpaint_head.pth
+
+  - id: ipadapter_sdxl_vit_h
+    tags: [krita_ai, krita_sdxl, ipadapter]
+    filename: ip-adapter_sdxl_vit-h.safetensors
+    dest: ipadapter/ip-adapter_sdxl_vit-h.safetensors
+    url: https://huggingface.co/h94/IP-Adapter/resolve/main/sdxl_models/ip-adapter_sdxl_vit-h.safetensors
+
 profiles:
   # Minimal pack for the AnimateDiff + IP-Adapter + OpenPose ControlNet workflow variant.
   animatediff_ipadapter_controlnet:
@@ -96,6 +185,10 @@ profiles:
   # Broader pack that matches many workflows in comfyui_user/default.
   workflows_default:
     tags: [ipadapter, clip_vision, controlnet, flux, wan]
+
+  # MAT inpainting + NMKD + OmniSR upscalers (required for Krita AI Diffusion).
+  krita_ai:
+    tags: [krita_ai]
 
 aliases:
   # Some workflows expect the 4xLSDIR upscaler. This repo already ships it (WAN template),

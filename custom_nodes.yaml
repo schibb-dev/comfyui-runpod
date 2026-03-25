@@ -6,88 +6,153 @@ nodes:
     - name: ComfyUI-GGUF
       repo: https://github.com/city96/ComfyUI-GGUF.git
       branch: main
+      ref: 6ea2651e7df66d7585f6ffee804b20e92fb38b8a
       required: true
       description: "GGUF model support for ComfyUI"
       
     - name: ComfyUI-mxToolkit
       repo: https://github.com/Smirnov75/ComfyUI-mxToolkit.git
       branch: main
+      ref: 7f7a0e584f12078a1c589645d866ae96bad0cc35
       required: true
       description: "mxToolkit nodes for ComfyUI"
       
     - name: ComfyUI-Custom-Scripts
-      repo: https://github.com/pysssss/ComfyUI-Custom-Scripts.git
+      repo: https://github.com/pythongosssss/ComfyUI-Custom-Scripts.git
       branch: main
+      ref: 609f3afaa74b2f88ef9ce8d939626065e3247469
       required: true
-      description: "Custom scripts including pysssss nodes"
+      description: "Custom scripts including pysssss nodes (pythongosssss fork)"
       
     - name: ComfyUI-KJNodes
       repo: https://github.com/kijai/ComfyUI-KJNodes.git
       branch: main
+      # pyproject 1.2.9 (FB9_GEX_FACIAL / CNR)
+      ref: f710f2635dbadbaf1ccf7d25572daa7dfec80bfd
       required: true
       description: "KJNodes including TorchCompile, TeaCache, and other utilities"
       
     - name: ComfyUI-VideoHelperSuite
       repo: https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git
       branch: main
+      # pyproject 1.7.9 (matches FB9 workflow CNR)
+      ref: 3234937ff5f3ca19068aaba5042771514de2429d
       required: true
       description: "Video processing nodes including VHS_VideoCombine"
 
     - name: ComfyUI-AnimateDiff-Evolved
       repo: https://github.com/Kosinkadink/ComfyUI-AnimateDiff-Evolved.git
       branch: main
+      ref: 90fb1331201a4b29488089e4fbffc0d82cc6d0a9
       required: true
       description: "AnimateDiff Evolved nodes for AnimateDiff workflows"
       
     - name: ComfyUI-Easy-Use
       repo: https://github.com/yolain/ComfyUI-Easy-Use.git
       branch: main
+      # pyproject tag v1.3.6 (FB9 workflow CNR)
+      ref: b5e31ef12ad9d0b187b545c2707735cc7d581c52
       required: true
       description: "Easy-to-use nodes including math, prompt replace, and GPU cleanup"
       
     - name: ComfyUI-Florence2
       repo: https://github.com/kijai/ComfyUI-Florence2.git
       branch: main
+      ref: 6c766b13f4908a86cfbd6357d6d485c80e0f3a2f
       required: true
       description: "Florence2 model support"
       
     - name: ComfyUI-Frame-Interpolation
       repo: https://github.com/Fannovel16/ComfyUI-Frame-Interpolation.git
       branch: main
+      ref: a969c01dbccd9e5510641be04eb51fe93f6bfc3d
       required: true
       description: "Frame interpolation including RIFE VFI"
       
     - name: rgthree-comfy
       repo: https://github.com/rgthree/rgthree-comfy.git
       branch: main
+      ref: 8ff50e4521881eca1fe26aec9615fc9362474931
       required: true
       description: "rgthree nodes including Power Lora Loader and Fast Groups"
       
     - name: ComfyUI-Crystools
       repo: https://github.com/crystian/ComfyUI-Crystools.git
       branch: main
+      ref: 2f18256c5b5063937106f29a8e0a7db3ae3869b7
       required: true
       description: "System monitor widget (GPU/CPU/RAM/temps) and related utilities"
 
-  optional:
+    # WAS: Text Concatenate / Text Multiline (FB9_GEX_FACIAL). CNR reported 1.0.1; this commit is post–registry rename.
+    - name: was-node-suite-comfyui
+      repo: https://github.com/WASasquatch/was-node-suite-comfyui.git
+      branch: main
+      ref: 30ca750032f1cbd88e51bda4b145ce8431f4d6a5
+      required: true
+      description: "WAS node suite (text tools); pinned for FB9 workflow compatibility"
+
+    # ImageListToImageBatch etc. (FB9 workflow CNR commit)
+    - name: ComfyUI-Impact-Pack
+      repo: https://github.com/ltdrdata/ComfyUI-Impact-Pack.git
+      branch: main
+      ref: 6a517ebe06fea2b74fc41b3bd089c0d7173eeced
+      required: true
+      description: "Impact Pack (batch/image nodes); FB9 workflow pin"
+
+    # FB9_GEX_FACIAL embedded CNR ref. If import fails (WanVideoWrapper symbols), install matching
+    # ComfyUI-WanVideoWrapper or fall back to: ee41f46beb0dfe5b221d2791d88ebce0d0b39df0
     - name: ComfyUI-MultiGPU
       repo: https://github.com/pollockjj/ComfyUI-MultiGPU.git
       branch: main
+      ref: ac3df4ed701ded39eeb1542f6e5c261ac38fa28a
       required: true
-      description: "Multi-GPU support including GGUF loaders"
-      
+      description: "Multi-GPU support (DisTorch, GGUF wrappers); FB9 workflow CNR pin"
+
+  optional:
     - name: ComfyUI-Manager
       repo: https://github.com/ltdrdata/ComfyUI-Manager.git
       branch: main
+      ref: 92979ff7c84d3a2b66a222829f882b528fa97f53
       required: false
       description: "Node manager for ComfyUI"
 
     - name: comfyui-mobile-frontend
       repo: https://github.com/cosmicbuffalo/comfyui-mobile-frontend.git
       branch: main
+      ref: 24c7014a3d3c2a40bf86f2cb2e03103ec17ac869
       required: false
       npm_build: true
       description: "Mobile-first ComfyUI frontend served at /mobile"
+
+    # Krita AI Diffusion (Acly) — ComfyUI-side bridge + inpaint. Skipped unless INSTALL_KRITA_BACKEND_NODES=true (docker-compose / .env).
+    - name: comfyui-tooling-nodes
+      repo: https://github.com/Acly/comfyui-tooling-nodes.git
+      branch: main
+      required: false
+      krita_backend: true
+      description: "Backend nodes for external tools (e.g. Krita AI Diffusion); image/mask over WebSocket"
+    - name: comfyui-inpaint-nodes
+      repo: https://github.com/Acly/comfyui-inpaint-nodes.git
+      branch: main
+      required: false
+      krita_backend: true
+      description: "Inpaint/outpaint nodes (Fooocus, LaMa, MAT) required by Krita AI Diffusion"
+    - name: ComfyUI_IPAdapter_plus
+      repo: https://github.com/cubiq/ComfyUI_IPAdapter_plus.git
+      branch: main
+      required: false
+      description: "IP-Adapter models for image conditioning; required by Krita AI Diffusion"
+    - name: comfyui_controlnet_aux
+      repo: https://github.com/Fannovel16/comfyui_controlnet_aux.git
+      branch: main
+      required: false
+      description: "ControlNet preprocessors; required by Krita AI Diffusion"
+    # Optional per Krita AI Handbook: Nunchaku svdq model support
+    - name: ComfyUI-nunchaku
+      repo: https://github.com/nunchaku-tech/ComfyUI-nunchaku.git
+      branch: main
+      required: false
+      description: "Nunchaku svdq model support (optional for Krita AI)"
 
 # Installation settings
 install:

@@ -20,9 +20,10 @@ RUN apt-get update && apt-get install -y \
     npm \
     && rm -rf /var/lib/apt/lists/*
 
-# Optional: upgrade/pin ComfyUI at build time.
-# Set COMFYUI_REF to a commit hash, tag, branch name, or remote ref (e.g. origin/master).
-ARG COMFYUI_REF=origin/master
+# Pin ComfyUI at build time (compose passes COMFYUI_REF; default matches docker-compose).
+# 38d0493… = last commit before #11632 removed module-level precompute_freqs_cis (TeaCache).
+# Override: docker compose build --build-arg COMFYUI_REF=origin/master
+ARG COMFYUI_REF=38d049382533c6662d815b08ca3395e96cca9f57
 RUN cd /ComfyUI && \
     git fetch --all --tags && \
     git checkout "${COMFYUI_REF}" && \
@@ -36,27 +37,26 @@ RUN pip install --no-cache-dir \
     safetensors \
     sageattention \
     insightface \
-    onnxruntime
+    onnxruntime \
+    aiohttp \
+    tqdm
 
 # Pin NumPy to <2 so OpenCV (cv2) and other binary extensions built for NumPy 1.x work.
 # Otherwise: "numpy.core.multiarray failed to import" / "_ARRAY_API not found" when custom nodes import cv2.
 RUN pip install --no-cache-dir "numpy<2"
 
+# OpenCV (headless) so ComfyUI-VideoHelperSuite loads and registers VHS_VideoCombine; without it the node shows "not found".
+RUN pip install --no-cache-dir opencv-python-headless
+
 # ComfyUI-Crystools and other nodes may need these at runtime; install once in image.
 RUN pip install --no-cache-dir deepdiff
 
-# Optional: pre-install and build ComfyUI Mobile Frontend in the image.
-ARG INSTALL_COMFYUI_MOBILE_FRONTEND=true
-ARG COMFYUI_MOBILE_FRONTEND_REF=main
-RUN if [ "${INSTALL_COMFYUI_MOBILE_FRONTEND}" = "true" ]; then \
-      mkdir -p /ComfyUI/custom_nodes && \
-      if [ ! -d "/ComfyUI/custom_nodes/comfyui-mobile-frontend" ]; then \
-        git clone --depth 1 --branch "${COMFYUI_MOBILE_FRONTEND_REF}" https://github.com/cosmicbuffalo/comfyui-mobile-frontend.git /ComfyUI/custom_nodes/comfyui-mobile-frontend; \
-      fi && \
-      cd /ComfyUI/custom_nodes/comfyui-mobile-frontend && \
-      if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi && \
-      npm run build; \
-    fi
+# Bake all custom nodes from custom_nodes.yaml into the image (avoids clone at container startup).
+# When you do not mount ./custom_nodes over /ComfyUI/custom_nodes, these are used.
+# When you do mount, bootstrap at startup still runs and skips existing (so no redownload).
+COPY custom_nodes.yaml /workspace/custom_nodes.yaml
+COPY scripts/ /workspace/scripts/
+RUN python3 /workspace/scripts/bootstrap_nodes.py
 
 # Copy our scripts and entrypoint
 COPY scripts/ /workspace/scripts/
@@ -64,6 +64,9 @@ COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh && \
     sed -i 's/\r$//' /usr/local/bin/entrypoint.sh && \
     if [ -d /workspace/scripts ]; then find /workspace/scripts -maxdepth 1 -type f -name "*.sh" -exec sed -i 's/\r$//' {} \; ; fi
+
+# Krita AI Diffusion: clone repo so we can run its download_models.py (wired in entrypoint).
+RUN git clone --depth 1 https://github.com/Acly/krita-ai-diffusion.git /opt/krita-ai-diffusion
 
 # Create directories for models and our workspace
 RUN mkdir -p /workspace/{workflows,models,output,input,scripts} \

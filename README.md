@@ -13,6 +13,7 @@ A complete Docker-based ComfyUI setup optimized for RunPod deployment with autom
 - 🎬 **WAN Video**: Full WAN 2.1/2.2 support with text encoders, VAE, and diffusion models
 - 🤖 **GGUF Support**: Integrated GGUF model loading for efficient inference
 - 💾 **Persistent Storage**: Workspace-based model storage with symlinks
+- 📌 **Pinned ComfyUI**: Default build uses commit `38d049382533c6662d815b08ca3395e96cca9f57` so **ComfyUI-TeaCache** (WAN base image) keeps working; override with `COMFYUI_REF` in `.env` (see `.env.example`, `TROUBLESHOOTING.md`).
 
 ## Quick Start
 
