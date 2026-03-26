@@ -36,7 +36,7 @@ When you bring up with the `ops` profile, these **additional** containers run:
 | **refresh_run_status** | `comfyui0-refresh-run-status` | Loop: every **60s** runs `refresh_run_status.py --server http://comfyui:8188`, then sleeps. Same as the scheduled task “ComfyUI-RefreshRunStatus” but inside Docker. |
 | **report_experiment_queue_status** | `comfyui0-report-queue-status` | Loop: every **60s** runs `report_experiment_queue_status.py` (summary to stdout and into `_status/queue_status.log`), then sleeps. Same as the scheduled task “ComfyUI-ReportExperimentQueueStatus”. |
 | **queue_incomplete_experiments** | `comfyui0-queue-incomplete` | Loop: every **600s** (10 min) runs `queue_incomplete_experiments.py --server http://comfyui:8188`, then sleeps. Same as the scheduled task “ComfyUI-QueueIncompleteExperiments”. |
-| **queue_ledger** | `comfyui0-queue-ledger` | Long-running `comfy_queue_ledger.py`: passively polls ComfyUI `/queue`, writes a best-effort shadow ledger (`_status/comfy_queue_ledger_state.json` + `comfy_queue_ledger.jsonl`), and performs startup restore with attempt caps/cooldown. Uses normal/churn pacing to avoid loops/churn. |
+| **queue_ledger** | `comfyui0-queue-ledger` | Long-running `comfy_queue_ledger.py`: passively polls ComfyUI `/queue`, writes a best-effort shadow ledger (`_status/comfy_queue_ledger_state.json` + `comfy_queue_ledger.jsonl`), performs startup restore with attempt caps/cooldown, and (optionally) applies gentle spillover/refill to keep pending depth near target. Uses normal/churn pacing + breaker to avoid loops/churn. |
 | **ws_event_tap** | `comfyui0-ws-event-tap` | Long-running **ws_event_tap.py**: connects to ComfyUI’s WebSocket, records execution timings (execution_start, executing, execution_success/error/interrupted) per `prompt_id`, maps to experiment run dirs via `submit.json`/`metrics.json`, and merges timing into `<run_dir>/metrics.json`. **Not** duplicated by any scheduled task; only runs in Docker when ops profile is on. |
 
 ---
@@ -47,7 +47,7 @@ When you bring up with the `ops` profile, these **additional** containers run:
 |--------|---------|
 | **watch_queue.py** | Submits experiment runs to ComfyUI, polls for history, writes submit.json/history.json. |
 | **queue_incomplete_experiments.py** | Cleans submit.json for runs no longer in queue; runs queue manager once to re-queue eligible incompletes. |
-| **comfy_queue_ledger.py** | Best-effort queue shadow + startup restore; non-ACID by design; prioritizes anti-loop/anti-stuck behavior. |
+| **comfy_queue_ledger.py** | Best-effort queue shadow + startup restore + optional spillover/refill; non-ACID by design; prioritizes anti-loop/anti-stuck behavior. |
 | **refresh_run_status.py** | Writes/updates `status.json` per run from /queue + on-disk state (done/running/queued/submitted). |
 | **report_experiment_queue_status.py** | Prints/appends a short queue status report (newest-first, limit 10, summary-only) to a log file. |
 | **ws_event_tap.py** | WebSocket client; records per-prompt execution timings into run dir `metrics.json`. |
@@ -89,3 +89,24 @@ When you bring up with the `ops` profile, these **additional** containers run:
    ```  
    To remove them entirely:  
    `Unregister-ScheduledTask -TaskName "ComfyUI-QueueIncompleteExperiments"` (and same for the other two).
+
+---
+
+## 6. Queue ledger visibility and control
+
+- Ledger files:
+  - `workspace/output/output/experiments/_status/comfy_queue_ledger_state.json`
+  - `workspace/output/output/experiments/_status/comfy_queue_ledger.jsonl`
+- API visibility from Experiments UI backend:
+  - `GET /api/queue/ledger-status` (mode, paused, breaker, backlog count, stats)
+- API control actions:
+  - `POST /api/queue/ledger-control` with `{"action":"pause"}`
+  - `POST /api/queue/ledger-control` with `{"action":"resume"}`
+  - `POST /api/queue/ledger-control` with `{"action":"drain-once"}`
+  - `POST /api/queue/ledger-control` with `{"action":"reset-breaker"}`
+- Key env knobs in `docker-compose.yml` (`queue_ledger` service):
+  - `LEDGER_PENDING_TARGET`
+  - `LEDGER_SPILLOVER_ENABLED`
+  - `LEDGER_MAX_RESTORE_ATTEMPTS`
+  - `LEDGER_RESTORE_COOLDOWN_S`
+  - `LEDGER_BREAKER_FAILURE_THRESHOLD`, `LEDGER_BREAKER_WINDOW_S`, `LEDGER_BREAKER_OPEN_S`

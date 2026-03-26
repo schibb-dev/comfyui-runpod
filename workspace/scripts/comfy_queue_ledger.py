@@ -18,7 +18,7 @@ import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 
 def _utc_iso(ts: Optional[float] = None) -> str:
@@ -66,6 +66,10 @@ def _http_json(method: str, url: str, body: Optional[Dict[str, Any]] = None, tim
     with urllib.request.urlopen(req, timeout=timeout_s) as resp:
         raw = resp.read()
     return json.loads(raw.decode("utf-8", "replace"))
+
+
+def _now_ts() -> float:
+    return float(time.time())
 
 
 @dataclass
@@ -117,13 +121,26 @@ def _default_state() -> Dict[str, Any]:
         "version": 1,
         "updated_at": _utc_iso(),
         "mode": "normal",
-        "mode_since_ts": float(time.time()),
+        "mode_since_ts": _now_ts(),
         "last_snapshot": {"running": [], "pending": []},
         "known": {},
+        "backlog": [],
         "restore_attempts": {},
         "restore_last_ts": {},
         "expected_add_until_ts": {},
         "recent_unexpected_ts": [],
+        "restore_failures_ts": [],
+        "breaker": {"open": False, "opened_ts": 0.0, "reason": "", "open_until_ts": 0.0},
+        "paused": False,
+        "drain_once_requested_at": 0.0,
+        "stats": {
+            "restored_startup": 0,
+            "restored_refill": 0,
+            "spillover_removed": 0,
+            "suppressed_breaker": 0,
+            "suppressed_cap": 0,
+            "suppressed_cooldown": 0,
+        },
     }
 
 
@@ -142,6 +159,8 @@ def _read_state(path: Path) -> Dict[str, Any]:
             base[k] = obj[k]
     if not isinstance(base.get("known"), dict):
         base["known"] = {}
+    if not isinstance(base.get("backlog"), list):
+        base["backlog"] = []
     return base
 
 
@@ -167,8 +186,72 @@ def _submit_prompt(
     return True, res
 
 
+def _delete_pending_prompt(server: str, prompt_id: str, timeout_s: int = 10) -> Tuple[bool, Dict[str, Any]]:
+    try:
+        res = _http_json("POST", f"{server.rstrip('/')}/queue", {"delete": [prompt_id]}, timeout_s=timeout_s)
+    except Exception as e:
+        return False, {"error": "delete_failed", "detail": str(e)}
+    if not isinstance(res, dict):
+        return False, {"error": "bad_delete_response", "response_type": str(type(res))}
+    return True, res
+
+
+def _push_backlog_item(state: Dict[str, Any], prompt_id: str) -> bool:
+    known = state.get("known", {})
+    if not isinstance(known, dict):
+        return False
+    rec = known.get(prompt_id)
+    if not isinstance(rec, dict) or not isinstance(rec.get("prompt"), dict):
+        return False
+    backlog = state.setdefault("backlog", [])
+    if not isinstance(backlog, list):
+        backlog = []
+        state["backlog"] = backlog
+    for x in backlog:
+        if isinstance(x, dict) and x.get("prompt_id") == prompt_id:
+            return False
+    backlog.append(
+        {
+            "prompt_id": prompt_id,
+            "prompt": rec.get("prompt"),
+            "extra_data": rec.get("extra_data") if isinstance(rec.get("extra_data"), dict) else None,
+            "outputs_to_execute": rec.get("outputs_to_execute") if isinstance(rec.get("outputs_to_execute"), list) else None,
+            "enqueued_backlog_ts": _now_ts(),
+            "source": "spillover",
+        }
+    )
+    return True
+
+
+def _breaker_open(state: Dict[str, Any], *, reason: str, open_for_s: float) -> None:
+    now = _now_ts()
+    br = state.setdefault("breaker", {})
+    if not isinstance(br, dict):
+        br = {}
+        state["breaker"] = br
+    br["open"] = True
+    br["opened_ts"] = now
+    br["open_until_ts"] = now + max(1.0, float(open_for_s))
+    br["reason"] = reason
+
+
+def _breaker_maybe_close(state: Dict[str, Any]) -> bool:
+    br = state.get("breaker")
+    if not isinstance(br, dict):
+        return False
+    if not bool(br.get("open")):
+        return False
+    now = _now_ts()
+    until = br.get("open_until_ts")
+    if isinstance(until, (int, float)) and now >= float(until):
+        br["open"] = False
+        br["reason"] = ""
+        return True
+    return False
+
+
 def _prune_state(state: Dict[str, Any], *, keep_known: int = 2000, keep_events_window_s: int = 300) -> None:
-    now = float(time.time())
+    now = _now_ts()
     ex = state.get("expected_add_until_ts")
     if isinstance(ex, dict):
         state["expected_add_until_ts"] = {
@@ -177,6 +260,9 @@ def _prune_state(state: Dict[str, Any], *, keep_known: int = 2000, keep_events_w
     ru = state.get("recent_unexpected_ts")
     if isinstance(ru, list):
         state["recent_unexpected_ts"] = [float(x) for x in ru if isinstance(x, (int, float)) and float(x) >= now - keep_events_window_s]
+    rf = state.get("restore_failures_ts")
+    if isinstance(rf, list):
+        state["restore_failures_ts"] = [float(x) for x in rf if isinstance(x, (int, float)) and float(x) >= now - 3600]
     known = state.get("known")
     if isinstance(known, dict) and len(known) > keep_known:
         scored: List[Tuple[float, str]] = []
@@ -196,6 +282,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Best-effort Comfy queue ledger + startup restore")
     ap.add_argument("--server", default="http://127.0.0.1:8188", help="ComfyUI server URL")
     ap.add_argument("--pending-target", type=int, default=2, help="Desired pending depth (minimum floor is 2)")
+    ap.add_argument("--spillover-enabled", action="store_true", help="Enable gentle tail spillover to backlog")
     ap.add_argument("--poll-interval-normal", type=float, default=0.5, help="Sleep seconds in normal mode")
     ap.add_argument("--poll-interval-churn", type=float, default=3.0, help="Sleep seconds in churn mode")
     ap.add_argument("--churn-window-s", type=float, default=30.0, help="Window for unexpected queue deltas")
@@ -204,6 +291,16 @@ def main() -> int:
     ap.add_argument("--expected-add-ttl-s", type=float, default=20.0, help="Expected add grace window after restore")
     ap.add_argument("--max-restore-attempts", type=int, default=2, help="Per prompt restore attempt cap")
     ap.add_argument("--restore-cooldown-s", type=float, default=120.0, help="Min seconds between restore attempts per prompt")
+    ap.add_argument("--breaker-failure-threshold", type=int, default=3, help="Restore failures in window to open breaker")
+    ap.add_argument("--breaker-window-s", type=float, default=120.0, help="Window for breaker failure threshold")
+    ap.add_argument("--breaker-open-s", type=float, default=180.0, help="Breaker open duration")
+    ap.set_defaults(protect_on_deck=True, protect_in_hole=True)
+    ap.add_argument("--protect-on-deck", dest="protect_on_deck", action="store_true", help="Never spill pending[0]")
+    ap.add_argument("--no-protect-on-deck", dest="protect_on_deck", action="store_false", help="Allow spilling pending[0]")
+    ap.add_argument("--protect-in-hole", dest="protect_in_hole", action="store_true", help="Never spill pending[1]")
+    ap.add_argument("--no-protect-in-hole", dest="protect_in_hole", action="store_false", help="Allow spilling pending[1]")
+    ap.add_argument("--max-actions-normal", type=int, default=2, help="Max queue actions per cycle in normal mode")
+    ap.add_argument("--max-actions-churn", type=int, default=1, help="Max queue actions per cycle in churn mode")
     ap.add_argument("--client-id", default="comfy-queue-ledger", help="client_id for restored prompt submissions")
     ap.add_argument("--state-path", default="", help="Path to ledger state JSON")
     ap.add_argument("--events-path", default="", help="Path to ledger events JSONL")
@@ -219,8 +316,9 @@ def main() -> int:
     events_path = Path(args.events_path) if args.events_path else default_events
 
     state = _read_state(state_path)
-    now = float(time.time())
+    now = _now_ts()
     state["updated_at"] = _utc_iso(now)
+    state["pending_target"] = pending_target
     _write_json(state_path, state)
 
     def log_event(kind: str, **data: Any) -> None:
@@ -235,7 +333,7 @@ def main() -> int:
     running, pending, _raw = q
     current_ids: Set[str] = {x.prompt_id for x in running + pending}
 
-    # Startup restore: best effort from previous snapshot.
+    # Startup restore: best effort from previous snapshot (or backlog).
     if not args.no_startup_restore:
         prev = state.get("last_snapshot") if isinstance(state.get("last_snapshot"), dict) else {}
         prev_pending = prev.get("pending") if isinstance(prev, dict) else []
@@ -276,14 +374,67 @@ def main() -> int:
                 restored += 1
                 state.setdefault("expected_add_until_ts", {})[pid] = now + float(args.expected_add_ttl_s)
                 log_event("startup_restored", prompt_id=pid, response=res)
+                state.setdefault("stats", {})["restored_startup"] = int(state.setdefault("stats", {}).get("restored_startup", 0)) + 1
             else:
                 log_event("startup_restore_failed", prompt_id=pid, error=res)
+                state.setdefault("restore_failures_ts", []).append(now)
+        # Backlog restore if slots remain.
+        backlog = state.get("backlog", [])
+        if isinstance(backlog, list) and restored < slots:
+            i = 0
+            while i < len(backlog) and restored < slots:
+                item = backlog[i]
+                if not isinstance(item, dict):
+                    i += 1
+                    continue
+                pid = item.get("prompt_id")
+                if not isinstance(pid, str) or not pid.strip():
+                    backlog.pop(i)
+                    continue
+                if pid in current_ids:
+                    backlog.pop(i)
+                    continue
+                attempts = int(state.get("restore_attempts", {}).get(pid, 0))
+                last_ts = float(state.get("restore_last_ts", {}).get(pid, 0.0))
+                if attempts >= int(args.max_restore_attempts) or now - last_ts < float(args.restore_cooldown_s):
+                    i += 1
+                    continue
+                prompt_obj = item.get("prompt")
+                if not isinstance(prompt_obj, dict):
+                    backlog.pop(i)
+                    continue
+                ok, res = _submit_prompt(
+                    args.server,
+                    prompt=prompt_obj,
+                    client_id=args.client_id,
+                    extra_data=item.get("extra_data") if isinstance(item.get("extra_data"), dict) else None,
+                    outputs_to_execute=item.get("outputs_to_execute") if isinstance(item.get("outputs_to_execute"), list) else None,
+                )
+                state.setdefault("restore_attempts", {})[pid] = attempts + 1
+                state.setdefault("restore_last_ts", {})[pid] = now
+                if ok:
+                    restored += 1
+                    state.setdefault("expected_add_until_ts", {})[pid] = now + float(args.expected_add_ttl_s)
+                    log_event("startup_restored_backlog", prompt_id=pid, response=res)
+                    state.setdefault("stats", {})["restored_startup"] = int(state.setdefault("stats", {}).get("restored_startup", 0)) + 1
+                    backlog.pop(i)
+                else:
+                    state.setdefault("restore_failures_ts", []).append(now)
+                    log_event("startup_restore_failed_backlog", prompt_id=pid, error=res)
+                    i += 1
         if restored:
             print(f"startup_restored={restored}")
 
-    last_quiet_ts = float(time.time())
+    last_quiet_ts = _now_ts()
     while True:
-        now = float(time.time())
+        now = _now_ts()
+        # Merge operator control keys from disk.
+        disk_state = _read_state(state_path)
+        for k in ("paused", "drain_once_requested_at", "breaker", "restore_failures_ts"):
+            if k in disk_state:
+                state[k] = disk_state[k]
+        if _breaker_maybe_close(state):
+            log_event("breaker_closed_auto")
         q2 = _fetch_queue(args.server)
         if q2 is None:
             log_event("queue_fetch_failed", server=args.server)
@@ -350,6 +501,113 @@ def main() -> int:
             state["mode"] = mode
             state["mode_since_ts"] = now
             log_event("mode_switched", mode="normal", reason="quiet_window")
+
+        # Open breaker if too many recent restore failures.
+        rf = [float(x) for x in state.get("restore_failures_ts", []) if isinstance(x, (int, float))]
+        rf = [x for x in rf if x >= now - float(args.breaker_window_s)]
+        state["restore_failures_ts"] = rf
+        br = state.get("breaker", {})
+        if (
+            isinstance(br, dict)
+            and not bool(br.get("open"))
+            and len(rf) >= int(args.breaker_failure_threshold)
+        ):
+            _breaker_open(state, reason="restore_failures_threshold", open_for_s=float(args.breaker_open_s))
+            log_event("breaker_opened", reason="restore_failures_threshold", failures=len(rf))
+
+        max_actions = int(args.max_actions_churn if mode == "churn" else args.max_actions_normal)
+        max_actions = max(0, max_actions)
+        actions = 0
+        breaker_open = bool(state.get("breaker", {}).get("open")) if isinstance(state.get("breaker"), dict) else False
+        paused = bool(state.get("paused"))
+
+        if paused:
+            log_event("actions_paused")
+        elif breaker_open:
+            state.setdefault("stats", {})["suppressed_breaker"] = int(state.setdefault("stats", {}).get("suppressed_breaker", 0)) + 1
+            log_event("actions_suppressed_breaker", breaker=state.get("breaker"))
+        else:
+            # Spillover: trim only tail, never touch on-deck/in-hole by default.
+            if bool(args.spillover_enabled) and actions < max_actions:
+                protected = 0
+                if bool(args.protect_on_deck):
+                    protected = max(protected, 1)
+                if bool(args.protect_in_hole):
+                    protected = max(protected, 2)
+                spill_start = max(pending_target, protected)
+                overflow = max(0, len(pending_ids) - spill_start)
+                if overflow > 0:
+                    tail = pending_ids[spill_start:]
+                    for pid in reversed(tail):
+                        if actions >= max_actions:
+                            break
+                        ok_del, del_res = _delete_pending_prompt(args.server, pid)
+                        if ok_del:
+                            pushed = _push_backlog_item(state, pid)
+                            actions += 1
+                            if pushed:
+                                state.setdefault("stats", {})["spillover_removed"] = int(state.setdefault("stats", {}).get("spillover_removed", 0)) + 1
+                            log_event("spillover_removed", prompt_id=pid, backlog_added=bool(pushed), result=del_res)
+                        else:
+                            log_event("spillover_remove_failed", prompt_id=pid, error=del_res)
+
+            # Refill: fill naturally when slots open.
+            if actions < max_actions:
+                slots = max(0, pending_target - len(pending_ids))
+                backlog = state.get("backlog", [])
+                if slots > 0 and isinstance(backlog, list) and backlog:
+                    i = 0
+                    while i < len(backlog) and slots > 0 and actions < max_actions:
+                        item = backlog[i]
+                        if not isinstance(item, dict):
+                            i += 1
+                            continue
+                        pid = item.get("prompt_id")
+                        prompt_obj = item.get("prompt")
+                        if not isinstance(pid, str) or not pid.strip() or not isinstance(prompt_obj, dict):
+                            backlog.pop(i)
+                            continue
+                        if pid in observed_ids:
+                            backlog.pop(i)
+                            continue
+                        attempts = int(state.get("restore_attempts", {}).get(pid, 0))
+                        last_ts = float(state.get("restore_last_ts", {}).get(pid, 0.0))
+                        if attempts >= int(args.max_restore_attempts):
+                            state.setdefault("stats", {})["suppressed_cap"] = int(state.setdefault("stats", {}).get("suppressed_cap", 0)) + 1
+                            log_event("refill_suppressed_attempt_cap", prompt_id=pid, attempts=attempts)
+                            i += 1
+                            continue
+                        if now - last_ts < float(args.restore_cooldown_s):
+                            state.setdefault("stats", {})["suppressed_cooldown"] = int(state.setdefault("stats", {}).get("suppressed_cooldown", 0)) + 1
+                            log_event("refill_suppressed_cooldown", prompt_id=pid, since_s=(now - last_ts))
+                            i += 1
+                            continue
+                        ok, res = _submit_prompt(
+                            args.server,
+                            prompt=prompt_obj,
+                            client_id=args.client_id,
+                            extra_data=item.get("extra_data") if isinstance(item.get("extra_data"), dict) else None,
+                            outputs_to_execute=item.get("outputs_to_execute") if isinstance(item.get("outputs_to_execute"), list) else None,
+                        )
+                        state.setdefault("restore_attempts", {})[pid] = attempts + 1
+                        state.setdefault("restore_last_ts", {})[pid] = now
+                        if ok:
+                            state.setdefault("expected_add_until_ts", {})[pid] = now + float(args.expected_add_ttl_s)
+                            state.setdefault("stats", {})["restored_refill"] = int(state.setdefault("stats", {}).get("restored_refill", 0)) + 1
+                            log_event("refill_restored", prompt_id=pid, response=res)
+                            backlog.pop(i)
+                            slots -= 1
+                            actions += 1
+                        else:
+                            state.setdefault("restore_failures_ts", []).append(now)
+                            log_event("refill_restore_failed", prompt_id=pid, error=res)
+                            i += 1
+
+        # One-shot drain trigger from API.
+        drain_req = float(state.get("drain_once_requested_at") or 0.0)
+        if drain_req > 0 and actions < max_actions:
+            state["drain_once_requested_at"] = 0.0
+            log_event("drain_once_ack")
 
         state["last_snapshot"] = {"running": running_ids, "pending": pending_ids}
         state["updated_at"] = _utc_iso(now)

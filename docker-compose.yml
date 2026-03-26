@@ -236,6 +236,7 @@ services:
     environment:
       - SERVER_URL=http://comfyui:8188
       - LEDGER_PENDING_TARGET=2
+      - LEDGER_SPILLOVER_ENABLED=false
       - LEDGER_POLL_NORMAL_S=0.5
       - LEDGER_POLL_CHURN_S=3
       - LEDGER_CHURN_WINDOW_S=30
@@ -244,6 +245,9 @@ services:
       - LEDGER_EXPECTED_ADD_TTL_S=20
       - LEDGER_MAX_RESTORE_ATTEMPTS=2
       - LEDGER_RESTORE_COOLDOWN_S=120
+      - LEDGER_BREAKER_FAILURE_THRESHOLD=3
+      - LEDGER_BREAKER_WINDOW_S=120
+      - LEDGER_BREAKER_OPEN_S=180
       - LEDGER_CLIENT_ID=comfy-queue-ledger
     volumes:
       - ./workspace:/workspace
@@ -260,6 +264,7 @@ services:
         python3 /workspace/ws_scripts/comfy_queue_ledger.py
         --server "$$SERVER_URL"
         --pending-target "$$LEDGER_PENDING_TARGET"
+        $$( [ "$$LEDGER_SPILLOVER_ENABLED" = "true" ] && echo "--spillover-enabled" || true )
         --poll-interval-normal "$$LEDGER_POLL_NORMAL_S"
         --poll-interval-churn "$$LEDGER_POLL_CHURN_S"
         --churn-window-s "$$LEDGER_CHURN_WINDOW_S"
@@ -268,6 +273,9 @@ services:
         --expected-add-ttl-s "$$LEDGER_EXPECTED_ADD_TTL_S"
         --max-restore-attempts "$$LEDGER_MAX_RESTORE_ATTEMPTS"
         --restore-cooldown-s "$$LEDGER_RESTORE_COOLDOWN_S"
+        --breaker-failure-threshold "$$LEDGER_BREAKER_FAILURE_THRESHOLD"
+        --breaker-window-s "$$LEDGER_BREAKER_WINDOW_S"
+        --breaker-open-s "$$LEDGER_BREAKER_OPEN_S"
         --client-id "$$LEDGER_CLIENT_ID"
 
   ws_event_tap:

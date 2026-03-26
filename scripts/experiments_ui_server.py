@@ -26,6 +26,7 @@ import posixpath
 import re
 import subprocess
 import sys
+import time
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -395,6 +396,8 @@ class ServerConfig:
     tune_script: Path
     comfy_server: str
     orchestrator_state_path: Path
+    queue_ledger_state_path: Path
+    queue_ledger_events_path: Path
 
 
 def _resolve_workspace_root(base: Path) -> Path:
@@ -728,6 +731,21 @@ def _write_orchestrator_state(path: Path, obj: Dict[str, Any]) -> None:
     path.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def _read_queue_ledger_state(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        obj = _read_json(path)
+    except Exception:
+        return {}
+    return obj if isinstance(obj, dict) else {}
+
+
+def _write_queue_ledger_state(path: Path, obj: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 class Handler(BaseHTTPRequestHandler):
     server: "ExperimentsServer"  # type: ignore[assignment]
 
@@ -904,6 +922,22 @@ class Handler(BaseHTTPRequestHandler):
             st = _read_orchestrator_state(cfg.orchestrator_state_path)
             return _json_response(self, 200, st)
 
+        if path == "/api/queue/ledger-status":
+            st = _read_queue_ledger_state(cfg.queue_ledger_state_path)
+            out = {
+                "enabled": True,
+                "state_path": str(cfg.queue_ledger_state_path),
+                "events_path": str(cfg.queue_ledger_events_path),
+                "mode": st.get("mode"),
+                "updated_at": st.get("updated_at"),
+                "paused": bool(st.get("paused")),
+                "pending_target": st.get("pending_target"),
+                "backlog_count": len(st.get("backlog", [])) if isinstance(st.get("backlog"), list) else 0,
+                "breaker": st.get("breaker") if isinstance(st.get("breaker"), dict) else {"open": False},
+                "stats": st.get("stats") if isinstance(st.get("stats"), dict) else {},
+            }
+            return _json_response(self, 200, out)
+
         if path == "/api/experiments":
             # Optional: use server-level cache (invalidated on create-experiment)
             srv = self.server
@@ -1007,6 +1041,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_orchestrator_state_post()
         if path == "/api/orchestrator/saved-items":
             return self._handle_orchestrator_saved_item_post()
+        if path == "/api/queue/ledger-control":
+            return self._handle_queue_ledger_control()
         return _json_response(self, 404, {"error": "unknown_api_route", "path": path})
 
     def _read_request_json(self) -> Optional[Dict[str, Any]]:
@@ -1326,6 +1362,59 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, 500, {"error": "write_failed", "detail": str(e)})
         return _json_response(self, 200, item)
 
+    def _handle_queue_ledger_control(self) -> None:
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"error": "bad_json"})
+        action = body.get("action")
+        if not isinstance(action, str) or not action.strip():
+            return _json_response(self, 400, {"error": "missing_action"})
+        action = action.strip().lower()
+
+        st = _read_queue_ledger_state(cfg.queue_ledger_state_path)
+        if not st:
+            return _json_response(
+                self,
+                404,
+                {
+                    "error": "ledger_state_missing",
+                    "state_path": str(cfg.queue_ledger_state_path),
+                },
+            )
+
+        if action == "pause":
+            st["paused"] = True
+        elif action == "resume":
+            st["paused"] = False
+        elif action == "drain-once":
+            st["drain_once_requested_at"] = time.time()
+        elif action == "reset-breaker":
+            br = st.get("breaker")
+            if not isinstance(br, dict):
+                br = {}
+            br["open"] = False
+            br["reason"] = ""
+            br["open_until_ts"] = 0.0
+            st["breaker"] = br
+            st["restore_failures_ts"] = []
+        else:
+            return _json_response(
+                self,
+                400,
+                {
+                    "error": "bad_action",
+                    "expected": ["pause", "resume", "drain-once", "reset-breaker"],
+                },
+            )
+
+        st["updated_at"] = _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        try:
+            _write_queue_ledger_state(cfg.queue_ledger_state_path, st)
+        except Exception as e:
+            return _json_response(self, 500, {"error": "write_failed", "detail": str(e)})
+        return _json_response(self, 200, {"ok": True, "action": action, "paused": bool(st.get("paused"))})
+
     def _handle_next_experiment(self) -> None:
         """
         Derive+submit the next experiment based on an anchor run's *output MP4*.
@@ -1599,6 +1688,8 @@ def main() -> int:
     wip_root = output_root / "output" / "wip"
     static_dir = Path(args.static_dir) if args.static_dir else (ws / "experiments_ui" / "dist")
     orchestrator_state_path = ws / "output" / "orchestrator" / "state.json"
+    queue_ledger_state_path = ws / "output" / "output" / "experiments" / "_status" / "comfy_queue_ledger_state.json"
+    queue_ledger_events_path = ws / "output" / "output" / "experiments" / "_status" / "comfy_queue_ledger.jsonl"
     # Runtime utilities live under workspace/scripts in this repo, but /workspace/scripts may be
     # occupied by a bind-mount of repo-level scripts. Prefer ws_scripts when present.
     tune_script = ws / "scripts" / "tune_experiment.py"
@@ -1616,6 +1707,8 @@ def main() -> int:
         tune_script=tune_script,
         comfy_server=comfy_server,
         orchestrator_state_path=orchestrator_state_path,
+        queue_ledger_state_path=queue_ledger_state_path,
+        queue_ledger_events_path=queue_ledger_events_path,
     )
     server = ExperimentsServer((args.host, int(args.port)), cfg)
     print(f"[experiments-ui] listening on http://{args.host}:{args.port}")
@@ -1625,6 +1718,7 @@ def main() -> int:
     print(f"[experiments-ui] wip_root={cfg.wip_root}")
     print(f"[experiments-ui] static_dir={cfg.static_dir}")
     print(f"[experiments-ui] orchestrator_state={cfg.orchestrator_state_path}")
+    print(f"[experiments-ui] queue_ledger_state={cfg.queue_ledger_state_path}")
     server.serve_forever()
     return 0
 
