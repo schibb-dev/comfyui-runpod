@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
-import { fetchDiscoveryLibrary, submitPromptToQueue } from "./api";
+import { fetchDiscoveryEmbedApiPrompt, fetchDiscoveryLibrary, submitPromptToQueue } from "./api";
 import {
   discoveryTrimMediaRelpath,
   loadDiscoveryTrimAsync,
@@ -30,8 +30,13 @@ const DESKTOP_META_DRAWER_MAX = 640;
 /** Initial open state for the desktop discovery details drawer. Toggle placement / persisted pref TBD. */
 const DESKTOP_DETAILS_DRAWER_DEFAULT_OPEN = false;
 
-const DISCOVERY_COMFY_GRAPH_DRAFT_KEY = "discovery_comfy_graph_draft_v1";
+const DISCOVERY_GRAPH_DRAFT_PREFIX = "discovery_comfy_graph_draft__";
 const DISCOVERY_COMFY_FRONT_KEY = "discovery_comfy_front_v1";
+
+function discoveryDraftStorageKey(itemKey: string): string {
+  const safe = itemKey.replace(/[^a-zA-Z0-9:._-]+/g, "_").slice(0, 200);
+  return `${DISCOVERY_GRAPH_DRAFT_PREFIX}${safe}`;
+}
 
 function _discoverySessionGet(key: string, fallback: string): string {
   try {
@@ -1099,19 +1104,67 @@ function PhoneAutoplayToggle({
 
 function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
   const itemKey = discoveryItemKey(it);
-  const [graphJson, setGraphJson] = useState(() => _discoverySessionGet(DISCOVERY_COMFY_GRAPH_DRAFT_KEY, ""));
+  const draftKey = discoveryDraftStorageKey(itemKey);
+  const [graphJson, setGraphJson] = useState("");
   const [frontOfQueue, setFrontOfQueue] = useState(() => _discoverySessionGetBool01(DISCOVERY_COMFY_FRONT_KEY));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [resultLine, setResultLine] = useState<string | null>(null);
+  const [embedLoading, setEmbedLoading] = useState(true);
+  const [embedMeta, setEmbedMeta] = useState<string | null>(null);
+
+  const loadEmbedFromServer = useCallback(async () => {
+    setEmbedLoading(true);
+    setGraphJson("");
+    setEmbedMeta(null);
+    setError(null);
+    setResultLine(null);
+    try {
+      const j = await fetchDiscoveryEmbedApiPrompt(it);
+      if (j.ok) {
+        setGraphJson(JSON.stringify(j.prompt, null, 2));
+        setEmbedMeta(`${j.source} · ${j.png_relpath}`);
+        return;
+      }
+      const detail = [j.detail, j.hint].filter(Boolean).join(" ");
+      const fallback = _discoverySessionGet(draftKey, "");
+      if (fallback.trim()) {
+        setGraphJson(fallback);
+        setEmbedMeta(`Saved draft · ${j.error}${detail ? ` — ${detail}` : ""}`);
+        setError(null);
+      } else {
+        setGraphJson("");
+        setEmbedMeta(null);
+        setError(detail || j.error || "Could not load embedded workflow.");
+      }
+    } catch (e) {
+      const fallback = _discoverySessionGet(draftKey, "");
+      if (fallback.trim()) {
+        setGraphJson(fallback);
+        setEmbedMeta(`Saved draft · ${e instanceof Error ? e.message : String(e)}`);
+        setError(null);
+      } else {
+        setGraphJson("");
+        setEmbedMeta(null);
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    } finally {
+      setEmbedLoading(false);
+    }
+  }, [it, draftKey]);
 
   useEffect(() => {
+    void loadEmbedFromServer();
+  }, [loadEmbedFromServer]);
+
+  useEffect(() => {
+    if (embedLoading) return;
     try {
-      sessionStorage.setItem(DISCOVERY_COMFY_GRAPH_DRAFT_KEY, graphJson);
+      sessionStorage.setItem(draftKey, graphJson);
     } catch {
       /* ignore */
     }
-  }, [graphJson]);
+  }, [draftKey, graphJson, embedLoading]);
 
   useEffect(() => {
     try {
@@ -1120,11 +1173,6 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
       /* ignore */
     }
   }, [frontOfQueue]);
-
-  useEffect(() => {
-    setError(null);
-    setResultLine(null);
-  }, [itemKey]);
 
   const onSend = useCallback(async () => {
     setError(null);
@@ -1171,18 +1219,21 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
   return (
     <div className="discovery-comfy-queue-panel">
       <p className="discovery-comfy-queue-lead">
-        Paste the Comfy API <strong>prompt</strong> (the node graph). Template pickers and binding this clip as an
-        input will build this for you later; for now use JSON from an export or your own tooling.
+        Workflow is loaded from the output PNG metadata when available. If the file only has the UI workflow (nodes
+        + links), the server asks Comfy at <span className="mono">POST /workflow/convert</span> (e.g. workflow-to-api
+        converter custom node) to produce API <strong>prompt</strong> JSON. You can still edit before sending.
       </p>
       <div className="discovery-comfy-queue-context mono" title={ctxTitle}>
         <span className="discovery-comfy-queue-context-label">Now viewing</span> {it.name}
       </div>
+      {embedMeta ? <p className="discovery-comfy-queue-embedmeta">{embedMeta}</p> : null}
+      {embedLoading ? <p className="discovery-comfy-queue-embedloading">Loading embedded workflow…</p> : null}
       <label className="discovery-comfy-queue-check">
         <input type="checkbox" checked={frontOfQueue} onChange={(e) => setFrontOfQueue(e.target.checked)} />
         Send to front of queue
       </label>
       <label className="discovery-comfy-queue-json-label" htmlFor="discovery-comfy-graph-json">
-        Workflow JSON
+        API prompt (editable)
       </label>
       <textarea
         id="discovery-comfy-graph-json"
@@ -1194,7 +1245,15 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
         placeholder={`{\n  "3": { "class_type": "...", "inputs": { }\n}`}
       />
       <div className="discovery-comfy-queue-actions">
-        <button type="button" className="discovery-comfy-queue-send" disabled={busy} onClick={() => void onSend()}>
+        <button
+          type="button"
+          className="discovery-comfy-queue-reload"
+          disabled={busy || embedLoading}
+          onClick={() => void loadEmbedFromServer()}
+        >
+          Reload from file
+        </button>
+        <button type="button" className="discovery-comfy-queue-send" disabled={busy || embedLoading} onClick={() => void onSend()}>
           {busy ? "Sending…" : "Send to Comfy"}
         </button>
       </div>

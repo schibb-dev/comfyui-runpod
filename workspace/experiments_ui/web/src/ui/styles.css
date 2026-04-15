@@ -576,6 +576,40 @@ body {
   align-items: center;
 }
 
+.discovery-comfy-queue-embedmeta {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--muted, #9aa7b8);
+  word-break: break-word;
+}
+
+.discovery-comfy-queue-embedloading {
+  margin: 0;
+  font-size: 12px;
+  color: var(--accent, #5aa2ff);
+}
+
+.discovery-comfy-queue-reload {
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.discovery-comfy-queue-reload:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.discovery-comfy-queue-reload:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .discovery-comfy-queue-send {
   padding: 8px 14px;
   border-radius: 8px;

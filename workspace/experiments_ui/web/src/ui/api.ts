@@ -18,6 +18,8 @@ import type {
   ComfyHistoryResponse,
   OrchestratorState,
   DiscoveryLibraryResponse,
+  DiscoveryLibraryItem,
+  DiscoveryEmbedApiPromptResponse,
 } from "./types";
 
 export async function fetchDiscoveryLibrary(opts?: {
@@ -37,6 +39,20 @@ export async function fetchDiscoveryLibrary(opts?: {
   const r = await fetch(`/api/discovery/library${qs ? `?${qs}` : ""}`);
   if (!r.ok) throw new Error(`GET /api/discovery/library failed: ${r.status}`);
   return (await r.json()) as DiscoveryLibraryResponse;
+}
+
+export async function fetchDiscoveryEmbedApiPrompt(it: DiscoveryLibraryItem): Promise<DiscoveryEmbedApiPromptResponse> {
+  const sp = new URLSearchParams();
+  sp.set("relpath", it.relpath);
+  sp.set("library", it.library);
+  if (it.thumb_relpath) sp.set("thumb_relpath", it.thumb_relpath);
+  if (it.video_relpath) sp.set("video_relpath", it.video_relpath);
+  const r = await fetch(`/api/discovery/embed-api-prompt?${sp.toString()}`);
+  const j = (await r.json()) as DiscoveryEmbedApiPromptResponse;
+  if (!r.ok) {
+    throw new Error(`GET /api/discovery/embed-api-prompt failed: ${r.status}: ${JSON.stringify(j)}`);
+  }
+  return j;
 }
 
 /** Sidecar trim presets per media file + context (e.g. discovery-player). */

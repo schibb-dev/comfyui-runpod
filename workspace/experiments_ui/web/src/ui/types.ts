@@ -316,3 +316,21 @@ export type DiscoveryLibraryResponse = {
   items: DiscoveryLibraryItem[];
 };
 
+/** GET /api/discovery/embed-api-prompt — API-format prompt from PNG metadata (+ optional Comfy /workflow/convert). */
+export type DiscoveryEmbedApiPromptResponse =
+  | {
+      ok: true;
+      source: string;
+      png_relpath: string;
+      prompt: Record<string, unknown>;
+      comfy_convert_http?: number | null;
+    }
+  | {
+      ok: false;
+      error: string;
+      detail?: string;
+      hint?: string;
+      png_relpath?: string;
+      comfy_convert_http?: number | null;
+    };
+

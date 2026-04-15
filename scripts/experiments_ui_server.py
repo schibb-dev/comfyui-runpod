@@ -86,6 +86,40 @@ def _comfy_submit_prompt(
     return _http_json("POST", f"{comfy}/prompt", payload, timeout_s=timeout_s)
 
 
+def _comfy_convert_workflow_to_prompt_dict(
+    cfg: "ServerConfig",
+    workflow_or_api: Dict[str, Any],
+) -> Tuple[Optional[Dict[str, Any]], Optional[str], Optional[int]]:
+    """
+    If already API prompt, return as-is. If UI workflow (nodes+links), POST to Comfy
+    POST /workflow/convert (e.g. SethRobinson workflow-to-api-converter custom node).
+    Returns (prompt_dict, error_message, http_status_if_http_error).
+    """
+    if _looks_like_comfy_api_prompt(workflow_or_api):
+        return workflow_or_api, None, None
+    if not _looks_like_comfy_ui_workflow(workflow_or_api):
+        return None, "not_ui_workflow_or_api_prompt", None
+    comfy = str(cfg.comfy_server).rstrip("/")
+    url = f"{comfy}/workflow/convert"
+    try:
+        out = _http_json("POST", url, workflow_or_api, timeout_s=120)
+    except urllib.error.HTTPError as e:
+        try:
+            raw = e.read().decode("utf-8", "replace")[:4000]
+        except Exception:
+            raw = str(e)
+        return None, f"http_{e.code}: {raw}", int(e.code)
+    except Exception as e:
+        return None, str(e), None
+    if not isinstance(out, dict):
+        return None, "comfy_convert_non_object", None
+    if isinstance(out.get("error"), str) and not _looks_like_comfy_api_prompt(out):
+        return None, str(out.get("error")), None
+    if not _looks_like_comfy_api_prompt(out):
+        return None, "comfy_convert_unexpected_shape", None
+    return out, None, None
+
+
 def _safe_int(x: Any) -> Optional[int]:
     try:
         return int(x)
@@ -225,6 +259,27 @@ def _png_metadata_fields(path: Path) -> Tuple[Optional[str], List[str], bool]:
     if isinstance(wf, str) and wf.strip():
         return (_workflow_fingerprint_for_prompt_raw(wf), [], False)
     return (None, [], False)
+
+
+def _looks_like_comfy_api_prompt(obj: Any) -> bool:
+    """True if JSON matches Comfy /prompt graph shape (node id -> {class_type, inputs, ...})."""
+    if not isinstance(obj, dict) or not obj:
+        return False
+    if isinstance(obj.get("nodes"), list) and isinstance(obj.get("links"), list):
+        return False
+    for _k, v in obj.items():
+        if not isinstance(v, dict):
+            return False
+        if not isinstance(v.get("class_type"), str):
+            return False
+    return True
+
+
+def _looks_like_comfy_ui_workflow(obj: Any) -> bool:
+    """Litegraph-style workflow saved in PNG workflow chunk."""
+    if not isinstance(obj, dict):
+        return False
+    return isinstance(obj.get("nodes"), list) and isinstance(obj.get("links"), list)
 
 
 def _atomic_write_json(path: Path, obj: Any) -> None:
@@ -597,6 +652,83 @@ def _file_relpath_for_api(output_root: Path, wip_root: Path, abs_path: Path) -> 
         return f"{wr}/{sub}"
     except ValueError:
         return abs_path.name.replace("\\", "/")
+
+
+def _discovery_abs_allowed_for_library(cfg: "ServerConfig", abs_p: Path, lib: str) -> bool:
+    og_root, wip_root = _og_wip_library_roots(cfg)
+    try:
+        r = abs_p.resolve()
+        ogr = og_root.resolve()
+        wipr = wip_root.resolve()
+    except Exception:
+        return False
+    under_og = r == ogr or ogr in r.parents
+    under_wip = r == wipr or wipr in r.parents
+    if lib == "og":
+        return under_og
+    if lib == "wip":
+        return under_wip
+    return under_og or under_wip
+
+
+def _discovery_resolve_embed_png_abs(
+    cfg: "ServerConfig", q: Dict[str, List[str]]
+) -> Tuple[Optional[Path], Optional[str]]:
+    """
+    Pick a PNG under output_root (og/wip) that may carry Comfy workflow / prompt tEXt chunks.
+    Returns (absolute_path, api_relpath_for_response) or (None, None).
+    """
+    thumb = (q.get("thumb_relpath") or [""])[0].strip()
+    video = (q.get("video_relpath") or [""])[0].strip()
+    primary = (q.get("relpath") or [""])[0].strip()
+    lib = (q.get("library") or [""])[0].strip().lower()
+    if lib not in ("og", "wip", "all"):
+        lib = "all"
+
+    seen: set[str] = set()
+    cands: List[str] = []
+
+    def push(rel: str) -> None:
+        rel2 = _normalize_rel_posix(rel)
+        if not rel2 or rel2 in seen:
+            return
+        seen.add(rel2)
+        cands.append(rel2)
+
+    if thumb:
+        push(thumb)
+
+    def sibling_png_from_media(rel: str) -> None:
+        rel2 = _normalize_rel_posix(rel)
+        if not rel2:
+            return
+        parent = str(Path(rel2).parent).replace("\\", "/")
+        stem = Path(rel2).stem
+        if parent and parent != ".":
+            push(f"{parent}/{stem}.png")
+        else:
+            push(f"{stem}.png")
+
+    if video:
+        sibling_png_from_media(video)
+    if primary and primary != video:
+        sibling_png_from_media(primary)
+    if primary.lower().endswith(".png"):
+        push(primary)
+
+    for rel in cands:
+        abs_p = _safe_join(cfg.output_root, rel)
+        if abs_p is None or not abs_p.is_file() or abs_p.suffix.lower() != ".png":
+            continue
+        if not _discovery_abs_allowed_for_library(cfg, abs_p, lib):
+            continue
+        try:
+            _read_png_text_chunks(abs_p)
+        except Exception:
+            continue
+        rel_api = _file_relpath_for_api(cfg.output_root, cfg.wip_root, abs_p)
+        return abs_p, rel_api
+    return None, None
 
 
 def _resolve_wip_root(ws: Path, output_root: Path, override: str) -> Path:
@@ -1297,6 +1429,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/discovery/trim":
             return self._handle_discovery_trim_get(q)
 
+        if path == "/api/discovery/embed-api-prompt":
+            return self._handle_discovery_embed_api_prompt_get(q)
+
         if path == "/api/queue":
             # Optional: limit how many experiments we scan (newest first).
             limit_exps = None
@@ -1784,6 +1919,156 @@ class Handler(BaseHTTPRequestHandler):
                 "presets": presets,
             },
         )
+
+    def _handle_discovery_embed_api_prompt_get(self, q: Dict[str, List[str]]) -> None:
+        """
+        GET /api/discovery/embed-api-prompt
+          ?relpath= (required) &thumb_relpath= &video_relpath= &library=og|wip|all
+
+        Reads Comfy ``prompt`` / ``workflow`` PNG text chunks and returns an API-format ``prompt``
+        dict. UI workflows (nodes+links) are converted using POST ``{COMFYUI}/workflow/convert``
+        (requires an extension such as workflow-to-api-converter on the Comfy server).
+        """
+        cfg = self.server.cfg
+        primary = (q.get("relpath") or [""])[0].strip()
+        if not primary:
+            return _json_response(self, 200, {"ok": False, "error": "missing_relpath", "detail": "relpath is required"})
+
+        abs_png, rel_png_api = _discovery_resolve_embed_png_abs(cfg, q)
+        if abs_png is None or not rel_png_api:
+            return _json_response(
+                self,
+                200,
+                {
+                    "ok": False,
+                    "error": "png_not_found",
+                    "detail": "No candidate PNG under og/wip (thumb, sibling of video, or primary .png).",
+                },
+            )
+
+        try:
+            chunks = _read_png_text_chunks(abs_png)
+        except Exception as e:
+            return _json_response(
+                self,
+                200,
+                {"ok": False, "error": "png_read_failed", "detail": str(e), "png_relpath": rel_png_api},
+            )
+
+        praw = chunks.get("prompt")
+        wfraw = chunks.get("workflow")
+        pr_obj: Optional[Dict[str, Any]] = None
+        wf_obj: Optional[Dict[str, Any]] = None
+        if isinstance(praw, str) and praw.strip():
+            try:
+                v = json.loads(praw)
+                if isinstance(v, dict):
+                    pr_obj = v
+            except Exception:
+                pass
+        if isinstance(wfraw, str) and wfraw.strip():
+            try:
+                v = json.loads(wfraw)
+                if isinstance(v, dict):
+                    wf_obj = v
+            except Exception:
+                pass
+
+        if pr_obj is None and wf_obj is None:
+            return _json_response(
+                self,
+                200,
+                {
+                    "ok": False,
+                    "error": "no_embedded_json",
+                    "detail": "PNG has no parsable workflow or prompt text chunk.",
+                    "png_relpath": rel_png_api,
+                },
+            )
+
+        _convert_hint = (
+            "Install a Comfy extension that exposes POST /workflow/convert (e.g. workflow-to-api-converter), "
+            "or save API-format prompt into the PNG."
+        )
+
+        if pr_obj is not None:
+            if _looks_like_comfy_api_prompt(pr_obj):
+                return _json_response(
+                    self,
+                    200,
+                    {
+                        "ok": True,
+                        "source": "embedded_png_prompt_api",
+                        "png_relpath": rel_png_api,
+                        "prompt": pr_obj,
+                    },
+                )
+            if _looks_like_comfy_ui_workflow(pr_obj):
+                prompt, err, http = _comfy_convert_workflow_to_prompt_dict(cfg, pr_obj)
+                if prompt is not None:
+                    return _json_response(
+                        self,
+                        200,
+                        {
+                            "ok": True,
+                            "source": "embedded_png_prompt_chunk_via_comfy",
+                            "png_relpath": rel_png_api,
+                            "prompt": prompt,
+                            "comfy_convert_http": http,
+                        },
+                    )
+                return _json_response(
+                    self,
+                    200,
+                    {
+                        "ok": False,
+                        "error": "comfy_convert_failed",
+                        "detail": err,
+                        "hint": _convert_hint,
+                        "png_relpath": rel_png_api,
+                        "comfy_convert_http": http,
+                    },
+                )
+            if wf_obj is None:
+                return _json_response(
+                    self,
+                    200,
+                    {
+                        "ok": False,
+                        "error": "unrecognized_prompt_chunk",
+                        "detail": "prompt text chunk is neither API prompt nor UI workflow (nodes+links).",
+                        "png_relpath": rel_png_api,
+                    },
+                )
+
+        if wf_obj is not None:
+            prompt, err, http = _comfy_convert_workflow_to_prompt_dict(cfg, wf_obj)
+            if prompt is not None:
+                return _json_response(
+                    self,
+                    200,
+                    {
+                        "ok": True,
+                        "source": "embedded_png_workflow_via_comfy",
+                        "png_relpath": rel_png_api,
+                        "prompt": prompt,
+                        "comfy_convert_http": http,
+                    },
+                )
+            return _json_response(
+                self,
+                200,
+                {
+                    "ok": False,
+                    "error": "comfy_convert_failed",
+                    "detail": err,
+                    "hint": _convert_hint,
+                    "png_relpath": rel_png_api,
+                    "comfy_convert_http": http,
+                },
+            )
+
+        return _json_response(self, 200, {"ok": False, "error": "no_usable_workflow", "detail": "No workflow chunk to convert.", "png_relpath": rel_png_api})
 
     def _handle_discovery_trim_post(self) -> None:
         """
