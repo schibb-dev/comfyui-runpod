@@ -542,33 +542,6 @@ body {
   flex-shrink: 0;
 }
 
-.discovery-comfy-queue-json-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--muted, #9aa7b8);
-  margin-top: 4px;
-}
-
-.discovery-comfy-queue-textarea {
-  width: 100%;
-  min-height: 200px;
-  max-height: min(48vh, 520px);
-  resize: vertical;
-  box-sizing: border-box;
-  padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.35);
-  color: var(--fg, #e8eef8);
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-.discovery-comfy-queue-textarea:focus {
-  outline: 2px solid rgba(90, 162, 255, 0.45);
-  outline-offset: 1px;
-}
-
 .discovery-comfy-queue-actions {
   display: flex;
   flex-wrap: wrap;
@@ -628,6 +601,115 @@ body {
 .discovery-comfy-queue-send:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.discovery-comfy-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  max-height: min(52vh, 560px);
+  overflow-y: auto;
+  padding: 2px 0 8px;
+}
+
+.discovery-comfy-node-fieldset {
+  margin: 0;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.2);
+  min-width: 0;
+}
+
+.discovery-comfy-node-legend {
+  padding: 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted, #9aa7b8);
+}
+
+.discovery-comfy-field-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 6px;
+}
+
+.discovery-comfy-field-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.discovery-comfy-field-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text, #c8d0dc);
+  line-height: 1.3;
+}
+
+.discovery-comfy-field-input,
+.discovery-comfy-field-textarea {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--fg, #e8eef8);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.discovery-comfy-field-input:focus,
+.discovery-comfy-field-textarea:focus {
+  outline: 2px solid rgba(90, 162, 255, 0.45);
+  outline-offset: 1px;
+}
+
+.discovery-comfy-field-textarea {
+  resize: vertical;
+  min-height: 72px;
+}
+
+.discovery-comfy-field-textarea--json {
+  min-height: 88px;
+}
+
+.discovery-comfy-field-check {
+  width: 18px;
+  height: 18px;
+  align-self: flex-start;
+  margin-top: 2px;
+}
+
+.discovery-comfy-json-details {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted, #9aa7b8);
+}
+
+.discovery-comfy-json-details summary {
+  cursor: pointer;
+  user-select: none;
+  color: var(--accent, #5aa2ff);
+}
+
+.discovery-comfy-json-pre {
+  margin: 8px 0 0;
+  padding: 10px;
+  max-height: 200px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.35);
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .discovery-comfy-queue-msg {

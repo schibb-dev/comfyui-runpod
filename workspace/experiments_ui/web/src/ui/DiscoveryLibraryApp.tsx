@@ -1102,49 +1102,233 @@ function PhoneAutoplayToggle({
   );
 }
 
+function _discoveryCloneJson<T>(x: T): T {
+  return JSON.parse(JSON.stringify(x)) as T;
+}
+
+function _isComfyEdgeRef(v: unknown): boolean {
+  if (!Array.isArray(v) || v.length !== 2) return false;
+  const [, b] = v;
+  if (typeof b !== "number" || !Number.isInteger(b)) return false;
+  return true;
+}
+
+function _isScalarEditable(v: unknown): v is string | number | boolean {
+  if (typeof v === "boolean") return true;
+  if (typeof v === "string") return true;
+  if (typeof v === "number" && Number.isFinite(v)) return true;
+  return false;
+}
+
+function _sortNodeIds(ids: string[]): string[] {
+  return [...ids].sort((a, b) => {
+    const na = Number.parseInt(a, 10);
+    const nb = Number.parseInt(b, 10);
+    if (String(na) === a && String(nb) === b && !Number.isNaN(na) && !Number.isNaN(nb)) return na - nb;
+    return a.localeCompare(b);
+  });
+}
+
+/** Friendly labels for CLIPTextEncode `text` by node order (two nodes → positive / negative). */
+function _clipTextLabelsByNodeId(prompt: Record<string, unknown>): Map<string, Partial<Record<string, string>>> {
+  const clipIds = _sortNodeIds(
+    Object.keys(prompt).filter((nid) => {
+      const n = prompt[nid];
+      if (typeof n !== "object" || n === null) return false;
+      const ct = (n as { class_type?: unknown }).class_type;
+      return typeof ct === "string" && ct.includes("CLIPTextEncode");
+    })
+  );
+  const out = new Map<string, Partial<Record<string, string>>>();
+  clipIds.forEach((nid, i) => {
+    let label: string;
+    if (clipIds.length === 2) label = i === 0 ? "Positive prompt" : "Negative prompt";
+    else if (clipIds.length === 1) label = "Prompt text";
+    else label = `CLIP text (node ${nid})`;
+    out.set(nid, { text: label });
+  });
+  return out;
+}
+
+type DiscoveryComfyFieldKind = "string" | "textarea" | "number" | "bool" | "json";
+
+type DiscoveryComfyEditableRow = {
+  nodeId: string;
+  classType: string;
+  inputKey: string;
+  value: string | number | boolean;
+  kind: DiscoveryComfyFieldKind;
+  displayLabel: string;
+};
+
+function _buildComfyEditableRows(prompt: Record<string, unknown>): DiscoveryComfyEditableRow[] {
+  const clipLabels = _clipTextLabelsByNodeId(prompt);
+  const rows: DiscoveryComfyEditableRow[] = [];
+  for (const nodeId of _sortNodeIds(Object.keys(prompt))) {
+    const node = prompt[nodeId];
+    if (typeof node !== "object" || node === null) continue;
+    const nrec = node as Record<string, unknown>;
+    const classType = String(nrec.class_type ?? "Node");
+    const inputs = nrec.inputs;
+    if (typeof inputs !== "object" || inputs === null) continue;
+    const inRec = inputs as Record<string, unknown>;
+    for (const inputKey of Object.keys(inRec).sort((a, b) => a.localeCompare(b))) {
+      const v = inRec[inputKey];
+      if (_isComfyEdgeRef(v)) continue;
+      if (_isScalarEditable(v)) {
+        const clipOverride = clipLabels.get(nodeId)?.[inputKey];
+        const displayLabel = clipOverride ?? `${inputKey} · ${classType}`;
+        let kind: DiscoveryComfyFieldKind =
+          typeof v === "boolean" ? "bool" : typeof v === "number" ? "number" : "string";
+        if (typeof v === "string" && (v.includes("\n") || v.length > 160 || inputKey === "text")) {
+          kind = "textarea";
+        }
+        rows.push({ nodeId, classType, inputKey, value: v, kind, displayLabel });
+        continue;
+      }
+      if (Array.isArray(v) && !_isComfyEdgeRef(v)) {
+        rows.push({
+          nodeId,
+          classType,
+          inputKey,
+          value: JSON.stringify(v),
+          kind: "json",
+          displayLabel: `${inputKey} · ${classType} (JSON)`,
+        });
+        continue;
+      }
+      if (v !== null && typeof v === "object") {
+        rows.push({
+          nodeId,
+          classType,
+          inputKey,
+          value: JSON.stringify(v),
+          kind: "json",
+          displayLabel: `${inputKey} · ${classType} (JSON)`,
+        });
+      }
+    }
+  }
+  return rows;
+}
+
+function _parsePromptDraft(raw: string): Record<string, unknown> | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  try {
+    const v = JSON.parse(trimmed) as unknown;
+    if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
+    return v as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function DiscoveryComfyJsonInput({
+  fieldKey,
+  valueObj,
+  displayLabel,
+  onCommit,
+  onParseState,
+}: {
+  fieldKey: string;
+  valueObj: unknown;
+  displayLabel: string;
+  onCommit: (parsed: unknown) => void;
+  onParseState: (msg: string | null) => void;
+}) {
+  const [text, setText] = useState(() => JSON.stringify(valueObj, null, 2));
+  useEffect(() => {
+    setText(JSON.stringify(valueObj, null, 2));
+  }, [valueObj, fieldKey]);
+  return (
+    <textarea
+      id={`dcf-json-${fieldKey}`}
+      className="discovery-comfy-field-textarea discovery-comfy-field-textarea--json mono"
+      spellCheck={false}
+      rows={4}
+      value={text}
+      onChange={(e) => {
+        setText(e.target.value);
+        onParseState(null);
+      }}
+      onBlur={() => {
+        const t = text.trim();
+        if (!t) {
+          onParseState(`Empty JSON (${displayLabel})`);
+          return;
+        }
+        try {
+          onCommit(JSON.parse(t));
+          onParseState(null);
+        } catch {
+          onParseState(`Invalid JSON (${displayLabel})`);
+        }
+      }}
+    />
+  );
+}
+
 function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
   const itemKey = discoveryItemKey(it);
   const draftKey = discoveryDraftStorageKey(itemKey);
-  const [graphJson, setGraphJson] = useState("");
+  const [promptDraft, setPromptDraft] = useState<Record<string, unknown> | null>(null);
   const [frontOfQueue, setFrontOfQueue] = useState(() => _discoverySessionGetBool01(DISCOVERY_COMFY_FRONT_KEY));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [resultLine, setResultLine] = useState<string | null>(null);
   const [embedLoading, setEmbedLoading] = useState(true);
   const [embedMeta, setEmbedMeta] = useState<string | null>(null);
+  const [jsonFieldError, setJsonFieldError] = useState<string | null>(null);
+
+  const setPromptInput = useCallback((nodeId: string, inputKey: string, value: unknown) => {
+    setPromptDraft((prev) => {
+      if (!prev) return prev;
+      const node = prev[nodeId];
+      if (typeof node !== "object" || node === null) return prev;
+      const nrec = node as Record<string, unknown>;
+      const inputs = nrec.inputs;
+      if (typeof inputs !== "object" || inputs === null) return prev;
+      const inRec = { ...(inputs as Record<string, unknown>), [inputKey]: value };
+      return { ...prev, [nodeId]: { ...nrec, inputs: inRec } };
+    });
+  }, []);
 
   const loadEmbedFromServer = useCallback(async () => {
     setEmbedLoading(true);
-    setGraphJson("");
+    setPromptDraft(null);
     setEmbedMeta(null);
     setError(null);
+    setJsonFieldError(null);
     setResultLine(null);
     try {
       const j = await fetchDiscoveryEmbedApiPrompt(it);
       if (j.ok) {
-        setGraphJson(JSON.stringify(j.prompt, null, 2));
+        setPromptDraft(_discoveryCloneJson(j.prompt));
         setEmbedMeta(`${j.source} · ${j.png_relpath}`);
         return;
       }
       const detail = [j.detail, j.hint].filter(Boolean).join(" ");
       const fallback = _discoverySessionGet(draftKey, "");
-      if (fallback.trim()) {
-        setGraphJson(fallback);
+      const parsed = _parsePromptDraft(fallback);
+      if (parsed) {
+        setPromptDraft(parsed);
         setEmbedMeta(`Saved draft · ${j.error}${detail ? ` — ${detail}` : ""}`);
         setError(null);
       } else {
-        setGraphJson("");
+        setPromptDraft(null);
         setEmbedMeta(null);
         setError(detail || j.error || "Could not load embedded workflow.");
       }
     } catch (e) {
       const fallback = _discoverySessionGet(draftKey, "");
-      if (fallback.trim()) {
-        setGraphJson(fallback);
+      const parsed = _parsePromptDraft(fallback);
+      if (parsed) {
+        setPromptDraft(parsed);
         setEmbedMeta(`Saved draft · ${e instanceof Error ? e.message : String(e)}`);
         setError(null);
       } else {
-        setGraphJson("");
+        setPromptDraft(null);
         setEmbedMeta(null);
         setError(e instanceof Error ? e.message : String(e));
       }
@@ -1158,13 +1342,13 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
   }, [loadEmbedFromServer]);
 
   useEffect(() => {
-    if (embedLoading) return;
+    if (embedLoading || !promptDraft) return;
     try {
-      sessionStorage.setItem(draftKey, graphJson);
+      sessionStorage.setItem(draftKey, JSON.stringify(promptDraft));
     } catch {
       /* ignore */
     }
-  }, [draftKey, graphJson, embedLoading]);
+  }, [draftKey, promptDraft, embedLoading]);
 
   useEffect(() => {
     try {
@@ -1174,30 +1358,32 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
     }
   }, [frontOfQueue]);
 
+  const editableRows = useMemo(() => _buildComfyEditableRows(promptDraft ?? {}), [promptDraft]);
+  const rowsByNode = useMemo(() => {
+    const m = new Map<string, DiscoveryComfyEditableRow[]>();
+    for (const row of editableRows) {
+      const arr = m.get(row.nodeId) ?? [];
+      arr.push(row);
+      m.set(row.nodeId, arr);
+    }
+    return m;
+  }, [editableRows]);
+
   const onSend = useCallback(async () => {
     setError(null);
     setResultLine(null);
-    const trimmed = graphJson.trim();
-    if (!trimmed) {
-      setError("Paste a workflow JSON object first.");
+    if (jsonFieldError) {
+      setError(jsonFieldError);
       return;
     }
-    let prompt: Record<string, unknown>;
-    try {
-      const v = JSON.parse(trimmed) as unknown;
-      if (typeof v !== "object" || v === null || Array.isArray(v)) {
-        setError("The workflow must be a JSON object (Comfy API “prompt”, keyed by node id).");
-        return;
-      }
-      prompt = v as Record<string, unknown>;
-    } catch {
-      setError("Could not parse JSON. Check brackets and commas.");
+    if (!promptDraft || Object.keys(promptDraft).length === 0) {
+      setError("No workflow loaded to send.");
       return;
     }
     setBusy(true);
     try {
       const res = await submitPromptToQueue({
-        prompt,
+        prompt: promptDraft,
         front: frontOfQueue,
         client_id: "discovery-ui",
       });
@@ -1212,16 +1398,21 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
     } finally {
       setBusy(false);
     }
-  }, [graphJson, frontOfQueue]);
+  }, [promptDraft, frontOfQueue, jsonFieldError]);
 
   const ctxTitle = it.video_relpath ?? it.relpath;
+  const jsonMirror = useMemo(
+    () => (promptDraft ? JSON.stringify(promptDraft, null, 2) : ""),
+    [promptDraft]
+  );
 
   return (
     <div className="discovery-comfy-queue-panel">
       <p className="discovery-comfy-queue-lead">
         Workflow is loaded from the output PNG metadata when available. If the file only has the UI workflow (nodes
         + links), the server asks Comfy at <span className="mono">POST /workflow/convert</span> (e.g. workflow-to-api
-        converter custom node) to produce API <strong>prompt</strong> JSON. You can still edit before sending.
+        converter custom node) to produce API <strong>prompt</strong> JSON. Edit fields below; linked inputs (other
+        nodes) stay wired and are hidden.
       </p>
       <div className="discovery-comfy-queue-context mono" title={ctxTitle}>
         <span className="discovery-comfy-queue-context-label">Now viewing</span> {it.name}
@@ -1232,18 +1423,101 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
         <input type="checkbox" checked={frontOfQueue} onChange={(e) => setFrontOfQueue(e.target.checked)} />
         Send to front of queue
       </label>
-      <label className="discovery-comfy-queue-json-label" htmlFor="discovery-comfy-graph-json">
-        API prompt (editable)
-      </label>
-      <textarea
-        id="discovery-comfy-graph-json"
-        className="discovery-comfy-queue-textarea mono"
-        spellCheck={false}
-        autoComplete="off"
-        value={graphJson}
-        onChange={(e) => setGraphJson(e.target.value)}
-        placeholder={`{\n  "3": { "class_type": "...", "inputs": { }\n}`}
-      />
+
+      {!embedLoading && !promptDraft ? (
+        <p className="discovery-comfy-queue-msg discovery-comfy-queue-msg--error">
+          {error ?? "No workflow loaded. Try Reload from file after selecting an item with PNG metadata."}
+        </p>
+      ) : null}
+
+      {promptDraft && !embedLoading ? (
+        <div className="discovery-comfy-fields">
+          {Array.from(rowsByNode.entries()).map(([nodeId, rows]) => (
+            <fieldset key={nodeId} className="discovery-comfy-node-fieldset">
+              <legend className="discovery-comfy-node-legend mono">
+                Node {nodeId} — {rows[0]?.classType ?? "?"}
+              </legend>
+              <div className="discovery-comfy-field-stack">
+                {rows.map((row) => {
+                  const valueObj =
+                    typeof promptDraft[row.nodeId] === "object" &&
+                    promptDraft[row.nodeId] !== null &&
+                    typeof (promptDraft[row.nodeId] as Record<string, unknown>).inputs === "object" &&
+                    (promptDraft[row.nodeId] as Record<string, unknown>).inputs !== null
+                      ? ((promptDraft[row.nodeId] as Record<string, unknown>).inputs as Record<string, unknown>)[
+                          row.inputKey
+                        ]
+                      : row.value;
+                  return (
+                    <div key={`${row.nodeId}:${row.inputKey}`} className="discovery-comfy-field-row">
+                      <label className="discovery-comfy-field-label" htmlFor={`dcf-${row.nodeId}-${row.inputKey}`}>
+                        {row.displayLabel}
+                      </label>
+                      {row.kind === "bool" ? (
+                        <input
+                          id={`dcf-${row.nodeId}-${row.inputKey}`}
+                          type="checkbox"
+                          className="discovery-comfy-field-check"
+                          checked={Boolean(row.value)}
+                          onChange={(e) => setPromptInput(row.nodeId, row.inputKey, e.target.checked)}
+                        />
+                      ) : row.kind === "number" ? (
+                        <input
+                          id={`dcf-${row.nodeId}-${row.inputKey}`}
+                          type="number"
+                          className="discovery-comfy-field-input mono"
+                          step="any"
+                          value={typeof row.value === "number" && Number.isFinite(row.value) ? row.value : 0}
+                          onChange={(e) => {
+                            const n = Number.parseFloat(e.target.value);
+                            setPromptInput(row.nodeId, row.inputKey, Number.isFinite(n) ? n : 0);
+                          }}
+                        />
+                      ) : row.kind === "textarea" ? (
+                        <textarea
+                          id={`dcf-${row.nodeId}-${row.inputKey}`}
+                          className="discovery-comfy-field-textarea mono"
+                          spellCheck={false}
+                          rows={6}
+                          value={typeof row.value === "string" ? row.value : String(row.value)}
+                          onChange={(e) => setPromptInput(row.nodeId, row.inputKey, e.target.value)}
+                        />
+                      ) : row.kind === "json" ? (
+                        <DiscoveryComfyJsonInput
+                          fieldKey={`${row.nodeId}::${row.inputKey}`}
+                          valueObj={valueObj}
+                          displayLabel={row.displayLabel}
+                          onCommit={(parsed) => setPromptInput(row.nodeId, row.inputKey, parsed)}
+                          onParseState={setJsonFieldError}
+                        />
+                      ) : (
+                        <input
+                          id={`dcf-${row.nodeId}-${row.inputKey}`}
+                          type="text"
+                          className="discovery-comfy-field-input mono"
+                          value={typeof row.value === "string" ? row.value : String(row.value)}
+                          onChange={(e) => setPromptInput(row.nodeId, row.inputKey, e.target.value)}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </fieldset>
+          ))}
+          {editableRows.length === 0 ? (
+            <p className="discovery-comfy-queue-msg">No scalar or JSON widget fields found (graph may be links-only).</p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {promptDraft && !embedLoading ? (
+        <details className="discovery-comfy-json-details">
+          <summary>Advanced: full prompt JSON</summary>
+          <pre className="discovery-comfy-json-pre mono">{jsonMirror}</pre>
+        </details>
+      ) : null}
+
       <div className="discovery-comfy-queue-actions">
         <button
           type="button"
@@ -1253,11 +1527,17 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
         >
           Reload from file
         </button>
-        <button type="button" className="discovery-comfy-queue-send" disabled={busy || embedLoading} onClick={() => void onSend()}>
+        <button
+          type="button"
+          className="discovery-comfy-queue-send"
+          disabled={busy || embedLoading || !promptDraft || Boolean(jsonFieldError)}
+          onClick={() => void onSend()}
+        >
           {busy ? "Sending…" : "Send to Comfy"}
         </button>
       </div>
-      {error ? <p className="discovery-comfy-queue-msg discovery-comfy-queue-msg--error">{error}</p> : null}
+      {jsonFieldError ? <p className="discovery-comfy-queue-msg discovery-comfy-queue-msg--error">{jsonFieldError}</p> : null}
+      {error && promptDraft ? <p className="discovery-comfy-queue-msg discovery-comfy-queue-msg--error">{error}</p> : null}
       {resultLine ? <p className="discovery-comfy-queue-msg discovery-comfy-queue-msg--ok">{resultLine}</p> : null}
     </div>
   );
