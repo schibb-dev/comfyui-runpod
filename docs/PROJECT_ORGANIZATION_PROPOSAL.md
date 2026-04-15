@@ -61,6 +61,10 @@ The rest of this doc describes the five projects (A–E) and then **§7** spells
 - Feature/spec docs: `experiments_ui/docs/` (VIEWPORT_DEVICES.md, FEATURE_WIP_TUNE_LAUNCHER.md).
 - **No** Python server here: the server is part of Project A and serves this app’s static files + API.
 
+**Planned (see `docs/WORKSPACE_PROJECTS_RUNDOWN.md` §4.1):** **Resubmit / replay / extend** from visible artifacts (liberal template↔asset pairing, **fail-fast** errors, logging). Post-MVP: optional **workflow analysis** (static scan vs cached “workflow profiles”) to infer inputs and guide validation—driven by mismatches observed in production use.
+
+**Process:** After each MVP spike, a **short retrospective** (see rundown **§4.2**) so UI-led discovery leaves a written trail for A/B contract tweaks.
+
 **API contract:** Experiments UI talks to the server (Project A) over HTTP (e.g. `/api/experiments`, `/api/queue`, `/files/`, and future `/api/wip`, `/api/create-experiment`). Document this contract (OpenAPI or a short markdown) so A and B can evolve independently.
 
 **Suggested name / location:**  

@@ -78,6 +78,35 @@ None of these are “your” in-house projects; they are dependencies that exten
 |------|-----------|-------------|
 | **WIP tune launcher** | `experiments_ui/docs/FEATURE_WIP_TUNE_LAUNCHER.md` | Feature spec: browse WIP dir, select videos, set tune params, create experiments from UI. Backend: GET /api/wip, POST /api/create-experiment. Frontend: WipBrowser, TuneParamsForm, “New from WIP” section. |
 | **Viewport / device targets** | `experiments_ui/docs/VIEWPORT_DEVICES.md` | Desktop (current), tablet and phone (later); breakpoints and hooks in place. |
+| **Resubmit / replay / extend** | (spec: this section §4.1) | **Next MVP (planned):** from a visible artifact, queue Comfy again with sensible defaults; optional overrides (seed, prompts, etc.); **extend** = same pipeline but a **user-picked extend template** workflow with the **current video** as starter (not the asset’s embedded graph). Quick access to a **small pinned list** (2–3 templates). |
+
+### 4.1 Resubmit, replay, extend — product intent and evolution
+
+**Near-term MVP (in scope):**
+
+- **Replay (same workflow):** Re-queue “this workflow with these settings again” for a given image/video artifact, with **defaults = true replay** (one click submit).
+- **Overrides in one activity:** Same UI path; advanced fields optional (seed, prompts, parameters) so “replay” does not require a separate product verb unless we later want one.
+- **Extend:** Same resubmit primitive: **template workflow** (from a short pinned list) + **current video as input**; not the embedded workflow from the asset.
+- **Compatibility:** **Liberal pairing** for MVP—do **not** maintain a full asset↔workflow matrix up front. **Fail fast:** clear errors when Comfy or the wrapper rejects a run; surface mismatches so they inform later design.
+- **Logging:** Record template id, artifact type/path, success/fail, and error strings to guide the next phase.
+
+**Explicitly later (out of MVP):**
+
+- **Collections / buckets / lists** of assets for pickers and batch input.
+- **Orchestration** (A→B→C workflows across buckets) — needs durable run state and stronger compatibility rules.
+- **Workflow analysis / “smart” validation:** Scan workflow JSON (at queue time or in a **cached configuration library**) to infer **input requirements**, inject **validation or prompt steps** for missing data, and optionally block or warn before submit. **Tension:** if analysis is **fast and reliable**, run it at queue or config time; if it is **slow or fragile**, persist **precomputed** workflow profiles (inputs, types, node hints) and version them with the template. **Mismatches observed in MVP** (via fail-fast errors + logs) should drive **which** of those directions to invest in first.
+
+**Doc hygiene:** When this ships, add a short feature note under `workspace/experiments_ui/docs/` (e.g. `FEATURE_RESUBMIT.md`) and link it from this table.
+
+### 4.2 Post–feature-spike retrospectives (habit)
+
+After each **MVP-sized feature spike** (e.g. resubmit/replay/extend), do a **short retrospective** before moving on—no ceremony required, just a durable note:
+
+- **What shipped** (PR or commit range) and **what was explicitly deferred**
+- **What we learned** (Comfy/API/UI—especially surprises and fail-fast errors)
+- **What we are not deciding yet** (so discovery stays honest)
+
+Capture it in the feature doc, an issue comment, or a few bullets at the bottom of this section’s linked `FEATURE_*.md`. Goal: **reversible memory** when the next spike reopens the same files.
 
 ---
 
@@ -96,7 +125,7 @@ None of these are “your” in-house projects; they are dependencies that exten
 | Area | Type | Status |
 |------|------|--------|
 | **scripts/** + workspace README | Repo tooling | Developed |
-| **experiments_ui/** | React + server | Developed (desktop); tablet/phone + WIP launcher in progress |
+| **experiments_ui/** | React + server | Developed (desktop); tablet/phone + WIP launcher in progress; **resubmit/replay/extend** (see §4.1) planned |
 | **tests/** | Integration tests | Developed |
 | **workflows/image_sorting_tools** | Image sorter toolkit | Developed |
 | **workflows/ponyflow_*** | Pony workflows | Documented (external-style) |
@@ -114,6 +143,7 @@ None of these are “your” in-house projects; they are dependencies that exten
 - **Experiment/tune tooling:** `workspace/scripts/` (and `comfy_tool.py`).
 - **Experiments UI app:** `workspace/experiments_ui/web/`; server: **`scripts/experiments_ui_server.py`** (repo root; container path `$WORKSPACE_PATH/scripts/` when that bind mount is used).
 - **WIP launcher spec:** `workspace/experiments_ui/docs/FEATURE_WIP_TUNE_LAUNCHER.md`.
+- **Resubmit / replay / extend (plan):** `docs/WORKSPACE_PROJECTS_RUNDOWN.md` §4.1 (future feature note: `workspace/experiments_ui/docs/FEATURE_RESUBMIT.md` when implemented).
 - **Image sorter:** `workspace/workflows/image_sorting_tools/` (and under `comfyui_user/default/workflows/image_sorting_tools/`).
 - **Roundtrip test:** `workspace/tests/test_integration_media_roundtrip.py`; fixtures: `workspace/tests/fixtures/media/`.
 - **Custom nodes:** All `workspace/ComfyUI-*` (WanVideoWrapper, Wan22FMLF, VAE-Utils, FSampler, KJNodes, VibeVoice, WanAnimatePreprocess, WanMoEScheduler).
