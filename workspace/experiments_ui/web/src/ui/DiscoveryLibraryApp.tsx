@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
-import { fetchDiscoveryLibrary } from "./api";
+import { fetchDiscoveryLibrary, submitPromptToQueue } from "./api";
 import {
   discoveryTrimMediaRelpath,
   loadDiscoveryTrimAsync,
@@ -29,6 +29,27 @@ const DESKTOP_META_DRAWER_MAX = 640;
 
 /** Initial open state for the desktop discovery details drawer. Toggle placement / persisted pref TBD. */
 const DESKTOP_DETAILS_DRAWER_DEFAULT_OPEN = false;
+
+const DISCOVERY_COMFY_GRAPH_DRAFT_KEY = "discovery_comfy_graph_draft_v1";
+const DISCOVERY_COMFY_FRONT_KEY = "discovery_comfy_front_v1";
+
+function _discoverySessionGet(key: string, fallback: string): string {
+  try {
+    return sessionStorage.getItem(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function _discoverySessionGetBool01(key: string): boolean {
+  try {
+    return sessionStorage.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+}
+
+type DiscoveryMetaDrawerTab = "details" | "comfy";
 
 function loadVideoAutoplay(): boolean {
   try {
@@ -1076,6 +1097,113 @@ function PhoneAutoplayToggle({
   );
 }
 
+function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
+  const itemKey = discoveryItemKey(it);
+  const [graphJson, setGraphJson] = useState(() => _discoverySessionGet(DISCOVERY_COMFY_GRAPH_DRAFT_KEY, ""));
+  const [frontOfQueue, setFrontOfQueue] = useState(() => _discoverySessionGetBool01(DISCOVERY_COMFY_FRONT_KEY));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [resultLine, setResultLine] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(DISCOVERY_COMFY_GRAPH_DRAFT_KEY, graphJson);
+    } catch {
+      /* ignore */
+    }
+  }, [graphJson]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(DISCOVERY_COMFY_FRONT_KEY, frontOfQueue ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }, [frontOfQueue]);
+
+  useEffect(() => {
+    setError(null);
+    setResultLine(null);
+  }, [itemKey]);
+
+  const onSend = useCallback(async () => {
+    setError(null);
+    setResultLine(null);
+    const trimmed = graphJson.trim();
+    if (!trimmed) {
+      setError("Paste a workflow JSON object first.");
+      return;
+    }
+    let prompt: Record<string, unknown>;
+    try {
+      const v = JSON.parse(trimmed) as unknown;
+      if (typeof v !== "object" || v === null || Array.isArray(v)) {
+        setError("The workflow must be a JSON object (Comfy API “prompt”, keyed by node id).");
+        return;
+      }
+      prompt = v as Record<string, unknown>;
+    } catch {
+      setError("Could not parse JSON. Check brackets and commas.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await submitPromptToQueue({
+        prompt,
+        front: frontOfQueue,
+        client_id: "discovery-ui",
+      });
+      const sub = res.submit;
+      let line = "Sent to the ComfyUI queue.";
+      if (sub && typeof sub === "object" && sub !== null && "prompt_id" in sub) {
+        line = `Queued. prompt_id: ${String((sub as { prompt_id?: unknown }).prompt_id)}`;
+      }
+      setResultLine(line);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [graphJson, frontOfQueue]);
+
+  const ctxTitle = it.video_relpath ?? it.relpath;
+
+  return (
+    <div className="discovery-comfy-queue-panel">
+      <p className="discovery-comfy-queue-lead">
+        Paste the Comfy API <strong>prompt</strong> (the node graph). Template pickers and binding this clip as an
+        input will build this for you later; for now use JSON from an export or your own tooling.
+      </p>
+      <div className="discovery-comfy-queue-context mono" title={ctxTitle}>
+        <span className="discovery-comfy-queue-context-label">Now viewing</span> {it.name}
+      </div>
+      <label className="discovery-comfy-queue-check">
+        <input type="checkbox" checked={frontOfQueue} onChange={(e) => setFrontOfQueue(e.target.checked)} />
+        Send to front of queue
+      </label>
+      <label className="discovery-comfy-queue-json-label" htmlFor="discovery-comfy-graph-json">
+        Workflow JSON
+      </label>
+      <textarea
+        id="discovery-comfy-graph-json"
+        className="discovery-comfy-queue-textarea mono"
+        spellCheck={false}
+        autoComplete="off"
+        value={graphJson}
+        onChange={(e) => setGraphJson(e.target.value)}
+        placeholder={`{\n  "3": { "class_type": "...", "inputs": { }\n}`}
+      />
+      <div className="discovery-comfy-queue-actions">
+        <button type="button" className="discovery-comfy-queue-send" disabled={busy} onClick={() => void onSend()}>
+          {busy ? "Sending…" : "Send to Comfy"}
+        </button>
+      </div>
+      {error ? <p className="discovery-comfy-queue-msg discovery-comfy-queue-msg--error">{error}</p> : null}
+      {resultLine ? <p className="discovery-comfy-queue-msg discovery-comfy-queue-msg--ok">{resultLine}</p> : null}
+    </div>
+  );
+}
+
 function DiscoveryDesktopPreview({
   it,
   saved,
@@ -1111,6 +1239,7 @@ function DiscoveryDesktopPreview({
 
   const previewRootRef = useRef<HTMLDivElement | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(DESKTOP_DETAILS_DRAWER_DEFAULT_OPEN);
+  const [metaDrawerTab, setMetaDrawerTab] = useState<DiscoveryMetaDrawerTab>("details");
   const [drawerWidth, setDrawerWidth] = useState<number>(() => loadDesktopMetaDrawerWidth());
   const drawerWidthRef = useRef(drawerWidth);
   drawerWidthRef.current = drawerWidth;
@@ -1596,7 +1725,7 @@ function DiscoveryDesktopPreview({
           className="discovery-desktop-meta-resize-handle"
           role="separator"
           aria-orientation="vertical"
-          aria-label="Resize details panel"
+          aria-label="Resize side panel"
           tabIndex={detailsOpen ? 0 : -1}
           onMouseDown={detailsOpen ? onMetaDrawerResizeStart : undefined}
           onKeyDown={
@@ -1627,31 +1756,87 @@ function DiscoveryDesktopPreview({
         />
         <div className="discovery-desktop-meta-drawer-column">
           <div className="discovery-desktop-meta-drawer-head">
-            <span className="discovery-desktop-meta-drawer-title">Details</span>
+            <div className="discovery-desktop-meta-drawer-tablist" role="tablist" aria-label="Side panel">
+              <button
+                type="button"
+                role="tab"
+                id="discovery-meta-tab-details"
+                aria-controls="discovery-meta-panel-body"
+                aria-selected={metaDrawerTab === "details"}
+                tabIndex={detailsOpen ? (metaDrawerTab === "details" ? 0 : -1) : -1}
+                className={
+                  "discovery-desktop-meta-drawer-tab" +
+                  (metaDrawerTab === "details" ? " discovery-desktop-meta-drawer-tab--active" : "")
+                }
+                onClick={() => setMetaDrawerTab("details")}
+              >
+                Details
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id="discovery-meta-tab-comfy"
+                aria-controls="discovery-meta-panel-body"
+                aria-selected={metaDrawerTab === "comfy"}
+                tabIndex={detailsOpen ? (metaDrawerTab === "comfy" ? 0 : -1) : -1}
+                className={
+                  "discovery-desktop-meta-drawer-tab" +
+                  (metaDrawerTab === "comfy" ? " discovery-desktop-meta-drawer-tab--active" : "")
+                }
+                onClick={() => setMetaDrawerTab("comfy")}
+              >
+                Comfy
+              </button>
+            </div>
             <button
               type="button"
               className="discovery-desktop-meta-drawer-close"
-              aria-label="Close details panel"
+              aria-label="Close side panel"
               onClick={() => setDetailsOpen(false)}
             >
               ×
             </button>
           </div>
-          <div className="discovery-desktop-preview-meta">
-            <DiscoveryItemMetaBody it={it} k={k} saved={saved} onToggleSaved={onToggleSaved} />
+          <div
+            className="discovery-desktop-preview-meta"
+            role="tabpanel"
+            id="discovery-meta-panel-body"
+            aria-labelledby={metaDrawerTab === "details" ? "discovery-meta-tab-details" : "discovery-meta-tab-comfy"}
+          >
+            {metaDrawerTab === "details" ? (
+              <DiscoveryItemMetaBody it={it} k={k} saved={saved} onToggleSaved={onToggleSaved} />
+            ) : (
+              <DiscoveryComfyQueuePanel it={it} />
+            )}
           </div>
         </div>
       </aside>
 
       {!detailsOpen ? (
-        <button
-          type="button"
-          className="discovery-desktop-drawer-tab"
-          onClick={() => setDetailsOpen(true)}
-          aria-label="Open details panel"
-        >
-          Details
-        </button>
+        <div className="discovery-desktop-drawer-tab-stack" aria-label="Open side panel">
+          <button
+            type="button"
+            className="discovery-desktop-drawer-tab"
+            onClick={() => {
+              setMetaDrawerTab("details");
+              setDetailsOpen(true);
+            }}
+            aria-label="Open details"
+          >
+            Details
+          </button>
+          <button
+            type="button"
+            className="discovery-desktop-drawer-tab"
+            onClick={() => {
+              setMetaDrawerTab("comfy");
+              setDetailsOpen(true);
+            }}
+            aria-label="Open Comfy queue"
+          >
+            Comfy
+          </button>
+        </div>
       ) : null}
     </div>
   );
