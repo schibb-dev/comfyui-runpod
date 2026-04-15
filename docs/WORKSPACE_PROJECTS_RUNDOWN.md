@@ -112,7 +112,7 @@ None of these are “your” in-house projects; they are dependencies that exten
 ## 7. Quick reference: where things live
 
 - **Experiment/tune tooling:** `workspace/scripts/` (and `comfy_tool.py`).
-- **Experiments UI app:** `workspace/experiments_ui/web/`; server: `workspace/scripts/experiments_ui_server.py`.
+- **Experiments UI app:** `workspace/experiments_ui/web/`; server: **`scripts/experiments_ui_server.py`** (repo root; container path `$WORKSPACE_PATH/scripts/` when that bind mount is used).
 - **WIP launcher spec:** `workspace/experiments_ui/docs/FEATURE_WIP_TUNE_LAUNCHER.md`.
 - **Image sorter:** `workspace/workflows/image_sorting_tools/` (and under `comfyui_user/default/workflows/image_sorting_tools/`).
 - **Roundtrip test:** `workspace/tests/test_integration_media_roundtrip.py`; fixtures: `workspace/tests/fixtures/media/`.

@@ -1,0 +1,231 @@
+#!/usr/bin/env node
+/**
+ * Cross-platform Experiments UI dev launcher (Windows / Linux / macOS).
+ *
+ * Usage:
+ *   node scripts/experiments-ui-dev.mjs vite [--tailscale] [--no-open] [--port N] [--ensure-container]
+ *   node scripts/experiments-ui-dev.mjs all [--tailscale] [--no-open] [--port N]
+ *
+ * Env: EXPERIMENTS_UI_PROXY_TARGET (default http://127.0.0.1:8791 for vite mode)
+ */
+
+import { spawn, spawnSync, execFileSync } from "child_process";
+import fs from "fs";
+import path from "path";
+import process from "process";
+import { fileURLToPath } from "url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(__dirname, "..");
+const webDir = path.join(repoRoot, "workspace", "experiments_ui", "web");
+const apiScript = path.join(repoRoot, "scripts", "experiments_ui_server.py");
+
+const isWin = process.platform === "win32";
+
+function die(msg) {
+  console.error(msg);
+  process.exit(1);
+}
+
+function resolvePython() {
+  const bins = isWin ? ["python", "py"] : ["python3", "python"];
+  for (const bin of bins) {
+    try {
+      const args = bin === "py" ? ["-3", "--version"] : ["--version"];
+      execFileSync(bin, args, { stdio: "ignore" });
+      return bin === "py" ? { cmd: "py", argsPrefix: ["-3"] } : { cmd: bin, argsPrefix: [] };
+    } catch {
+      /* try next */
+    }
+  }
+  die("Need python3/python on PATH (or py -3 on Windows).");
+}
+
+function parseArgs(argv) {
+  const mode = argv[2];
+  if (mode !== "vite" && mode !== "all") {
+    die(
+      "Usage: node scripts/experiments-ui-dev.mjs <vite|all> [--tailscale] [--no-open] [--port N] [--ensure-container]",
+    );
+  }
+  let tailscale = false;
+  let noOpen = false;
+  let port = 5178;
+  let ensureContainer = false;
+  for (let i = 3; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--tailscale") tailscale = true;
+    else if (a === "--no-open") noOpen = true;
+    else if (a === "--ensure-container") ensureContainer = true;
+    else if (a.startsWith("--port=")) port = Number.parseInt(a.slice("--port=".length), 10) || port;
+    else if (a === "--port") {
+      port = Number.parseInt(argv[++i] || "", 10) || port;
+    } else die(`Unknown arg: ${a}`);
+  }
+  return { mode, tailscale, noOpen, port, ensureContainer };
+}
+
+function tailscaleIpv4() {
+  try {
+    const out = execFileSync("tailscale", ["ip", "-4"], { encoding: "utf8" });
+    const line = out.split(/\r?\n/).find((l) => l.trim());
+    return line ? line.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
+function openBrowser(url) {
+  try {
+    if (isWin) {
+      spawn("cmd.exe", ["/c", "start", "", url], {
+        detached: true,
+        stdio: "ignore",
+      }).unref();
+    } else if (process.platform === "darwin") {
+      spawn("open", [url], { detached: true, stdio: "ignore" }).unref();
+    } else {
+      spawn("xdg-open", [url], { detached: true, stdio: "ignore" }).unref();
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+/** @returns {number} exit code */
+function runVite(opts) {
+  const { tailscale, noOpen, port, backend, ensureContainer } = opts;
+
+  if (ensureContainer) {
+    console.log("Ensuring container is up (docker compose up -d)...");
+    spawnSync("docker", ["compose", "up", "-d"], { stdio: "inherit", cwd: repoRoot, shell: isWin });
+  }
+
+  if (!fs.existsSync(webDir)) die(`Missing web dir: ${webDir}`);
+  const npmCmd = isWin ? "npm.cmd" : "npm";
+  try {
+    execFileSync(npmCmd, ["--version"], { stdio: "ignore", shell: isWin });
+  } catch {
+    die("npm not found on PATH. Install Node.js.");
+  }
+  if (!fs.existsSync(path.join(webDir, "node_modules"))) {
+    console.log("Installing dependencies (npm install)...");
+    const inst = spawnSync(npmCmd, ["install"], {
+      cwd: webDir,
+      stdio: "inherit",
+      shell: isWin,
+    });
+    if (inst.status !== 0) die("npm install failed.");
+  }
+
+  const env = { ...process.env };
+  env.EXPERIMENTS_UI_PROXY_TARGET = backend;
+  env.EXPERIMENTS_UI_DEV_PORT = String(port);
+
+  let viteHost = "127.0.0.1";
+  let openUrl = `http://127.0.0.1:${port}`;
+
+  if (tailscale) {
+    viteHost = "0.0.0.0";
+    let tsIp = tailscaleIpv4();
+    if (!tsIp && process.env.EXPERIMENTS_UI_HMR_HOST) {
+      tsIp = process.env.EXPERIMENTS_UI_HMR_HOST.trim();
+    }
+    if (tsIp) {
+      env.EXPERIMENTS_UI_HMR_HOST = tsIp;
+      console.log(`EXPERIMENTS_UI_HMR_HOST=${tsIp} (HMR for remote devices)`);
+      openUrl = `http://${tsIp}:${port}`;
+    } else {
+      delete env.EXPERIMENTS_UI_HMR_HOST;
+      console.warn(
+        "Could not detect Tailscale IPv4. Set EXPERIMENTS_UI_HMR_HOST=100.x.y.z for HMR on iPhone.",
+      );
+      console.warn(`On iPhone: open http://<tailscale-ip>:${port}`);
+    }
+    console.log(`Tailscale mode: Vite on 0.0.0.0:${port}`);
+    if (tsIp) console.log(`On iPhone (Tailscale on): ${openUrl}`);
+  } else {
+    delete env.EXPERIMENTS_UI_HMR_HOST;
+    console.log(`Vite dev server: http://127.0.0.1:${port}`);
+  }
+
+  console.log(`Proxy /api and /files → ${backend}`);
+
+  if (!noOpen) openBrowser(openUrl);
+
+  const result = spawnSync(npmCmd, ["run", "dev", "--", "--host", viteHost], {
+    cwd: webDir,
+    stdio: "inherit",
+    env,
+    shell: isWin,
+  });
+  return result.status === null ? 1 : result.status;
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function runAll(opts) {
+  if (!fs.existsSync(apiScript)) die(`Missing API script: ${apiScript}`);
+
+  const py = resolvePython();
+  const pyArgs = [...py.argsPrefix, apiScript, "--host", "127.0.0.1", "--port", "8791"];
+
+  console.log("[ui:dev:all] starting backend API at http://127.0.0.1:8791");
+  const api = spawn(py.cmd, pyArgs, {
+    cwd: repoRoot,
+    stdio: "inherit",
+    shell: isWin,
+  });
+
+  const stopApi = () => {
+    if (api && !api.killed && api.exitCode === null) {
+      console.log(`[ui:dev:all] stopping backend API (pid=${api.pid})`);
+      try {
+        api.kill(isWin ? undefined : "SIGTERM");
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+
+  const onSig = () => {
+    stopApi();
+    process.exit(130);
+  };
+  process.on("SIGINT", onSig);
+  process.on("SIGTERM", () => {
+    stopApi();
+    process.exit(143);
+  });
+
+  await sleep(1000);
+  if (api.exitCode !== null) {
+    die(`Backend API exited early with code ${api.exitCode}`);
+  }
+
+  try {
+    const code = runVite({
+      ...opts,
+      backend: "http://127.0.0.1:8791",
+      ensureContainer: false,
+    });
+    stopApi();
+    process.exit(code);
+  } catch (e) {
+    stopApi();
+    throw e;
+  }
+}
+
+const opts = parseArgs(process.argv);
+if (opts.mode === "vite") {
+  const backend = process.env.EXPERIMENTS_UI_PROXY_TARGET?.trim() || "http://127.0.0.1:8791";
+  process.exit(runVite({ ...opts, backend }));
+} else {
+  runAll(opts).catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}

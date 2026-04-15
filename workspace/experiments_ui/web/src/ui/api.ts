@@ -15,7 +15,81 @@ import type {
   CreateExperimentResponse,
   ComfyHistoryResponse,
   OrchestratorState,
+  DiscoveryLibraryResponse,
 } from "./types";
+
+export async function fetchDiscoveryLibrary(opts?: {
+  refresh?: boolean;
+  q?: string;
+  since_days?: number;
+  library?: "og" | "wip" | "all";
+  limit?: number;
+}): Promise<DiscoveryLibraryResponse> {
+  const sp = new URLSearchParams();
+  if (opts?.refresh) sp.set("refresh", "1");
+  if (opts?.q != null && opts.q !== "") sp.set("q", opts.q);
+  if (opts?.since_days != null && opts.since_days > 0) sp.set("since_days", String(opts.since_days));
+  if (opts?.library && opts.library !== "all") sp.set("library", opts.library);
+  if (opts?.limit != null && opts.limit > 0) sp.set("limit", String(opts.limit));
+  const qs = sp.toString();
+  const r = await fetch(`/api/discovery/library${qs ? `?${qs}` : ""}`);
+  if (!r.ok) throw new Error(`GET /api/discovery/library failed: ${r.status}`);
+  return (await r.json()) as DiscoveryLibraryResponse;
+}
+
+/** Sidecar trim presets per media file + context (e.g. discovery-player). */
+export type DiscoveryTrimPreset = {
+  id: string;
+  label: string;
+  in: number;
+  out: number;
+  at?: number;
+};
+
+export type DiscoveryTrimGetResponse = {
+  found: boolean;
+  media_relpath: string;
+  context: string;
+  active_preset_id: string | null;
+  active: DiscoveryTrimPreset | null;
+  presets: DiscoveryTrimPreset[];
+};
+
+export async function fetchDiscoveryTrim(
+  mediaRelpath: string,
+  context: string
+): Promise<DiscoveryTrimGetResponse> {
+  const sp = new URLSearchParams();
+  sp.set("media_relpath", mediaRelpath);
+  sp.set("context", context);
+  const r = await fetch(`/api/discovery/trim?${sp.toString()}`);
+  if (!r.ok) throw new Error(`GET /api/discovery/trim failed: ${r.status}`);
+  return (await r.json()) as DiscoveryTrimGetResponse;
+}
+
+export type DiscoveryTrimSaveBody = {
+  media_relpath: string;
+  context: string;
+  op?: "save_trim";
+  duration_sec: number;
+  in?: number | null;
+  out?: number | null;
+  clear?: boolean;
+  preset_id?: string | null;
+  label?: string | null;
+};
+
+export async function postDiscoveryTrimSave(body: DiscoveryTrimSaveBody): Promise<void> {
+  const r = await fetch("/api/discovery/trim", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ op: "save_trim", ...body }),
+  });
+  if (!r.ok) {
+    const t = await r.text().catch(() => "");
+    throw new Error(`POST /api/discovery/trim failed: ${r.status}${t ? `\n${t}` : ""}`);
+  }
+}
 
 export async function fetchExperiments(): Promise<ExperimentsResponse> {
   const r = await fetch("/api/experiments");

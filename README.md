@@ -93,25 +93,29 @@ Common workflows using the canonical entrypoints:
 
 #### DEV: Experiments UI (Vite) development
 
-- **Run Vite on the host** (best HMR; requires Node.js on host):
+- **Run Vite inside the container** (no host Node required; same command on Linux, macOS, and Windows):
 
-```powershell
+```bash
 npm run ui:dev
 ```
 
-Or directly:
+This uses `docker compose exec` and serves Vite on `http://127.0.0.1:5178/` (see `docker-compose.yml` port mapping).
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev_experiments_ui.ps1 -EnsureContainer
+- **Run Vite on the host** (best HMR; requires Node.js on host). Cross-platform:
+
+```bash
+npm run ui:dev:vite
 ```
 
-- **Run Vite inside the container** (no host Node required; better for “docker-only” setups):
+API + Vite on the host:
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev_experiments_ui_container.ps1 -EnsureContainer
+```bash
+npm run ui:dev:all
 ```
 
-This serves Vite on `http://127.0.0.1:5178/` (see `docker-compose.yml` port mapping).
+Tailscale / remote HMR: `npm run ui:dev:vite:tailscale` or `npm run ui:dev:all:tailscale`. Optional shell wrappers: `./scripts/dev_experiments_ui.sh`, `./scripts/dev_experiments_ui_all.sh`.
+
+- **Windows-only PowerShell** (ensure container, then Vite): `npm run ui:dev:win` or `.\scripts\dev_experiments_ui_container.ps1 -EnsureContainer`.
 
 #### DEV: Rebuild UI after changing the Experiments UI backend API
 

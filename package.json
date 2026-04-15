@@ -31,9 +31,15 @@
     "test:integration": "docker compose exec -T comfyui sh -lc \"cd /workspace/tests && python3 -m unittest -v test_integration_media_roundtrip\"",
     "test:acceptance": "node -e \"console.log('No acceptance tests defined yet.'); process.exit(0)\"",
 
-    "//ui": "Experiments UI helpers. Windows-native scripts are kept; Docker-native commands are provided too.",
+    "//ui": "Experiments UI: cross-platform via node scripts/experiments-ui-dev.mjs; PowerShell helpers optional on Windows.",
+    "ui:dev:vite": "node scripts/experiments-ui-dev.mjs vite",
+    "ui:dev:vite:tailscale": "node scripts/experiments-ui-dev.mjs vite --tailscale",
+    "ui:dev:all": "node scripts/experiments-ui-dev.mjs all",
+    "ui:dev:all:tailscale": "node scripts/experiments-ui-dev.mjs all --tailscale",
+    "ui:dev:all:powershell": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\\\scripts\\\\dev_experiments_ui_all.ps1",
+    "ui:dev:all:powershell:tailscale": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\\\scripts\\\\dev_experiments_ui_all.ps1 -Tailscale",
     "ui:dev:win": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\\\scripts\\\\dev_experiments_ui_container.ps1",
-    "ui:dev:all": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\\\scripts\\\\dev_experiments_ui_all.ps1",
+    "ui:dev:container": "docker compose exec comfyui bash -lc \"cd /workspace/experiments_ui/web && (test -d node_modules || npm install) && export EXPERIMENTS_UI_PROXY_TARGET=http://127.0.0.1:8790 && export EXPERIMENTS_UI_DEV_PORT=5178 && CHOKIDAR_USEPOLLING=true npm run dev -- --host 0.0.0.0\"",
     "stack:restart": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\\\scripts\\\\restart_stack.ps1",
     "ui:build:win": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\\\scripts\\\\build_experiments_ui_container.ps1",
     "ui:recreate:win": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\\\scripts\\\\build_experiments_ui_container.ps1 -Recreate",
@@ -42,7 +48,7 @@
     "//compat": "Back-compat aliases for older script names.",
     "comfy:restart": "docker compose restart comfyui",
     "comfy:recreate": "docker compose up -d --force-recreate comfyui",
-    "ui:dev": "npm run ui:dev:win",
+    "ui:dev": "npm run ui:dev:container",
     "ui:build": "npm run ui:build:win",
     "ui:recreate": "npm run ui:recreate:win"
   }

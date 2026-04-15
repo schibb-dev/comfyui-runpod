@@ -33,6 +33,1353 @@ body {
   overflow: hidden;
 }
 
+/* Discovery library (/discovery): fill the real viewport on iPhone; avoid 100vh + margin overflow. */
+.discovery-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  padding: 10px;
+  padding-top: max(10px, env(safe-area-inset-top, 0px));
+  padding-bottom: max(10px, env(safe-area-inset-bottom, 0px));
+  padding-left: max(10px, env(safe-area-inset-left, 0px));
+  padding-right: max(10px, env(safe-area-inset-right, 0px));
+  overflow: hidden;
+}
+
+.discovery-screen .discovery-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  overflow: hidden;
+}
+
+.discovery-screen .discovery-list-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.discovery-desktop-root.discovery-panel {
+  min-height: 0;
+}
+
+.discovery-desktop-split {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 0;
+  align-items: stretch;
+}
+
+.discovery-desktop-list-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.discovery-desktop-list-pane .discovery-list-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.discovery-desktop-resize-handle {
+  flex: 0 0 6px;
+  min-width: 6px;
+  cursor: col-resize;
+  background: var(--border);
+  touch-action: none;
+  margin: 0 2px;
+  border-radius: 3px;
+  align-self: stretch;
+}
+
+.discovery-desktop-resize-handle:hover,
+.discovery-desktop-resize-handle:focus-visible {
+  background: rgba(90, 162, 255, 0.45);
+  outline: none;
+}
+
+.discovery-desktop-preview {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  display: block;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--panel);
+}
+
+.discovery-desktop-preview--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.discovery-desktop-preview-main {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.discovery-desktop-preview-stage {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  padding: 12px;
+  background: #050810;
+}
+
+.discovery-desktop-preview-video-slot {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.discovery-desktop-preview-video-slot video,
+.discovery-desktop-preview-video-slot img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 8px;
+}
+
+.discovery-desktop-preview-trim {
+  flex: 0 0 auto;
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.discovery-trim-head-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.discovery-trim-primary-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 10px;
+  width: 100%;
+  min-width: 0;
+  margin-bottom: 10px;
+}
+
+.discovery-trim-primary-row__time {
+  justify-self: start;
+  text-align: left;
+  min-width: 0;
+}
+
+.discovery-trim-primary-row__center {
+  justify-self: center;
+}
+
+.discovery-trim-primary-row__io {
+  justify-self: end;
+}
+
+.discovery-trim-time-readout {
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.discovery-trim-time-readout--sheet {
+  color: rgba(255, 255, 255, 0.95);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+}
+
+.discovery-trim-primary-row--sheet {
+  margin-bottom: 0;
+}
+
+.discovery-trim-range-readout-sep {
+  opacity: 0.55;
+  font-weight: 400;
+}
+
+.discovery-trim-timeline-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.discovery-trim-timeline-row__track {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.discovery-trim-timeline-row__actions {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.discovery-trim-timeline-row__actions .discovery-trim-out-toggle {
+  margin-top: 0;
+  align-self: center;
+}
+
+.discovery-trim-io-btns {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.discovery-trim-io-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 32px;
+  margin: 0;
+  padding: 0 6px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.28);
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.discovery-trim-io-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.discovery-trim-io-btn:focus-visible {
+  outline: 2px solid var(--accent, #5aa2ff);
+  outline-offset: 2px;
+}
+
+.discovery-trim-io-btn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.discovery-trim-io-btn--activated {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.24);
+}
+
+.discovery-trim-io-btn--activated:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.discovery-trim-transport {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.discovery-trim-transport--large {
+  gap: 10px;
+}
+
+.discovery-trim-transport--large .discovery-trim-transport__btn {
+  width: 54px;
+  height: 50px;
+  border-radius: 10px;
+}
+
+.discovery-trim-transport--large .discovery-trim-transport__svg {
+  width: 26px;
+  height: 26px;
+}
+
+.discovery-trim-transport__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 36px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.28);
+  color: rgba(255, 255, 255, 0.82);
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.discovery-trim-transport__btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.discovery-trim-transport__btn:focus-visible {
+  outline: 2px solid var(--accent, #5aa2ff);
+  outline-offset: 2px;
+}
+
+.discovery-trim-transport__btn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.discovery-trim-transport__svg {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+
+.discovery-desktop-meta-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  min-height: 0;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  box-shadow: -10px 0 28px rgba(0, 0, 0, 0.35);
+  transform: translateX(100%);
+  transition: transform 0.22s ease, box-shadow 0.22s ease;
+  pointer-events: none;
+}
+
+.discovery-desktop-meta-drawer--open {
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
+.discovery-desktop-meta-resize-handle {
+  flex: 0 0 6px;
+  min-width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+  background: var(--border);
+  margin: 0;
+  align-self: stretch;
+}
+
+.discovery-desktop-meta-resize-handle:hover,
+.discovery-desktop-meta-resize-handle:focus-visible {
+  background: rgba(90, 162, 255, 0.45);
+  outline: none;
+}
+
+.discovery-desktop-meta-drawer-column {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.discovery-desktop-meta-drawer-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.discovery-desktop-meta-drawer-title {
+  color: var(--fg, #e8eef8);
+}
+
+.discovery-desktop-meta-drawer-close {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.discovery-desktop-meta-drawer-close:hover {
+  background: rgba(90, 162, 255, 0.2);
+}
+
+.discovery-desktop-drawer-tab {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  z-index: 6;
+  transform: translateY(-50%);
+  padding: 10px 6px;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-right: none;
+  border-radius: 8px 0 0 8px;
+  background: var(--panel);
+  color: var(--accent, #5aa2ff);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  cursor: pointer;
+  box-shadow: -4px 0 12px rgba(0, 0, 0, 0.2);
+}
+
+.discovery-desktop-drawer-tab:hover {
+  background: rgba(90, 162, 255, 0.12);
+}
+
+.discovery-desktop-preview-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 12px 16px 16px;
+  font-size: 13px;
+}
+
+.discovery-phone-row.discovery-desktop-row--selected {
+  position: relative;
+  z-index: 1;
+  background: rgba(90, 162, 255, 0.18);
+  border-radius: 10px;
+  box-shadow: inset 0 0 0 2px var(--accent), 0 0 0 1px rgba(90, 162, 255, 0.35);
+}
+
+@media (max-width: 767px) {
+  .discovery-screen .discovery-subtitle {
+    display: none;
+  }
+}
+
+/* Phone-only discovery: filter drawer, thumbnail rows, fullscreen detail */
+.discovery-phone-topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.discovery-phone-autoplay-row {
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 14px;
+  line-height: 1.35;
+  padding: 8px 0 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.discovery-phone-autoplay-row input {
+  flex-shrink: 0;
+  margin-top: 2px;
+  width: 18px;
+  height: 18px;
+}
+
+.discovery-phone-detail-autoplay {
+  position: absolute;
+  top: max(10px, env(safe-area-inset-top, 0px));
+  left: max(10px, env(safe-area-inset-left, 0px));
+  z-index: 210;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(240px, calc(100% - 56px - env(safe-area-inset-right, 0px)));
+  font-size: 13px;
+  line-height: 1.25;
+  color: var(--text);
+  user-select: none;
+  cursor: pointer;
+  touch-action: manipulation;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid var(--border);
+}
+
+.discovery-phone-detail-autoplay input {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+}
+
+.discovery-phone-detail-autoplay span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.discovery-phone-filters-toggle {
+  margin-left: auto;
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  font-size: 14px;
+  min-height: 44px;
+  touch-action: manipulation;
+}
+
+.discovery-phone-filters-panel {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 0 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.discovery-phone-filters-panel[hidden] {
+  display: none !important;
+}
+
+.discovery-phone-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  min-height: 64px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.discovery-phone-row:active {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.discovery-phone-row.discovery-desktop-row--selected:active {
+  background: rgba(90, 162, 255, 0.24);
+}
+
+.discovery-phone-thumb {
+  width: 56px;
+  height: 56px;
+  border-radius: 8px;
+  overflow: hidden;
+  flex-shrink: 0;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.discovery-phone-thumb img,
+.discovery-phone-thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.discovery-phone-thumb-placeholder {
+  font-size: 11px;
+  color: var(--muted);
+  text-align: center;
+  padding: 4px;
+  line-height: 1.2;
+}
+
+.discovery-phone-detail-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: #050810;
+  display: flex;
+  flex-direction: column;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  box-sizing: border-box;
+}
+
+/* Gesture-safe fullscreen: z-index only; size/position follow window.visualViewport (see DiscoveryLibraryApp). */
+.discovery-phone-detail-overlay.discovery-phone-detail-overlay--viewer-fs-lock {
+  z-index: 2147483000;
+}
+
+.discovery-phone-detail-swipe-zone {
+  flex-shrink: 0;
+  touch-action: none;
+}
+
+.discovery-phone-detail-stage--viewer {
+  flex: 1 1 0;
+  min-height: 0;
+  touch-action: none;
+}
+
+/* Let the stage (wrapper) receive horizontal swipes; inner handles tap / long-press. */
+.discovery-phone-detail-overlay .discovery-phone-detail-stage--viewer .discovery-phone-detail-stage-inner {
+  flex: 1 1 0;
+  min-height: 0;
+  width: 100%;
+  align-self: stretch;
+}
+
+.discovery-phone-detail-stage--immersive:not(.discovery-phone-detail-stage--video-controls) .discovery-phone-detail-stage-inner video,
+.discovery-phone-detail-stage--immersive:not(.discovery-phone-detail-stage--video-controls) .discovery-phone-detail-stage-inner img {
+  pointer-events: none;
+}
+
+.discovery-phone-viewer-chrome {
+  position: absolute;
+  inset: 0;
+  z-index: 205;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: max(8px, env(safe-area-inset-top, 0px)) max(10px, env(safe-area-inset-right, 0px))
+    max(10px, env(safe-area-inset-bottom, 0px)) max(10px, env(safe-area-inset-left, 0px));
+  pointer-events: none;
+}
+
+.discovery-phone-viewer-chrome-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-shrink: 0;
+  pointer-events: none;
+}
+
+.discovery-phone-viewer-chrome-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  pointer-events: none;
+}
+
+.discovery-phone-viewer-chrome-top-actions .discovery-phone-viewer-chrome-btn {
+  pointer-events: auto;
+}
+
+.discovery-phone-viewer-chrome-counter {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.discovery-phone-viewer-chrome-btn {
+  flex-shrink: 0;
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.55);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  touch-action: manipulation;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  pointer-events: auto;
+}
+
+.discovery-phone-viewer-chrome .discovery-phone-detail-autoplay {
+  position: static;
+  top: auto;
+  left: auto;
+  max-width: none;
+  width: 100%;
+  flex-shrink: 0;
+  pointer-events: auto;
+}
+
+.discovery-phone-viewer-chrome-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  flex-shrink: 0;
+  pointer-events: none;
+}
+
+.discovery-phone-viewer-chrome-nav .discovery-phone-detail-nav-btn {
+  pointer-events: auto;
+}
+
+.discovery-phone-viewer-chrome-hint {
+  margin: 0;
+  flex-shrink: 0;
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--muted);
+  opacity: 0.92;
+  pointer-events: none;
+}
+
+.discovery-phone-info-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 220;
+  pointer-events: auto;
+}
+
+.discovery-phone-viewer-action-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 224;
+  pointer-events: none;
+}
+
+.discovery-phone-viewer-action-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+  pointer-events: auto;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.discovery-phone-viewer-action-popover {
+  position: fixed;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+  pointer-events: auto;
+}
+
+.discovery-phone-viewer-action-item {
+  width: 100%;
+  margin: 0;
+  padding: 14px 16px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: 16px;
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+  min-height: 48px;
+}
+
+.discovery-phone-viewer-action-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.discovery-phone-viewer-action-cancel {
+  width: 100%;
+  margin: 0;
+  padding: 12px 16px;
+  border: none;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+  font-size: 15px;
+  cursor: pointer;
+  touch-action: manipulation;
+  min-height: 48px;
+}
+
+.discovery-phone-scrub-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 223;
+  pointer-events: none;
+}
+
+.discovery-phone-scrub-sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
+  max-height: 42vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: 14px 14px 0 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-bottom: none;
+  background: rgba(8, 10, 18, 0.38);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.22);
+  pointer-events: auto;
+}
+
+.discovery-phone-scrub-sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  flex-shrink: 0;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.discovery-phone-scrub-sheet-head--compact {
+  padding: 6px 8px 8px;
+  gap: 8px;
+  justify-content: flex-start;
+  align-items: center;
+}
+
+.discovery-phone-scrub-close {
+  width: 40px;
+  height: 40px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.28);
+  color: var(--text);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  touch-action: manipulation;
+  flex-shrink: 0;
+}
+
+.discovery-phone-scrub-sheet-head--compact .discovery-phone-scrub-close {
+  width: 36px;
+  height: 36px;
+  font-size: 20px;
+  border-radius: 9px;
+  margin-left: auto;
+}
+
+.discovery-phone-scrub-play {
+  width: 40px;
+  height: 40px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  cursor: pointer;
+  touch-action: manipulation;
+  flex-shrink: 0;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+
+.discovery-phone-scrub-play:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.discovery-phone-scrub-compact-time {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.95);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+}
+
+.discovery-phone-scrub-compact-time--solo {
+  flex: 1 1 auto;
+  text-align: center;
+}
+
+.discovery-phone-scrub-compact-time-sep {
+  opacity: 0.55;
+  font-weight: 400;
+}
+
+.discovery-phone-scrub-sheet-body {
+  padding: 14px 16px max(16px, env(safe-area-inset-bottom, 0px));
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.discovery-phone-scrub-sheet-body--compact {
+  padding: 10px 12px max(12px, env(safe-area-inset-bottom, 0px));
+  overflow: visible;
+}
+
+.discovery-phone-scrub-footnote {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.78);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75);
+  line-height: 1.35;
+}
+
+/* iOS-style trim strip */
+.discovery-phone-trim-track {
+  position: relative;
+  height: 40px;
+  margin: 4px 0 2px;
+  border-radius: 5px;
+  background: rgba(20, 22, 28, 0.75);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.discovery-phone-trim-track--disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.discovery-phone-trim-excluded {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  pointer-events: none;
+  background: rgba(255, 214, 48, 0.22);
+  box-shadow: inset 0 0 0 1px rgba(255, 200, 40, 0.12);
+  z-index: 1;
+}
+
+.discovery-phone-trim-selected {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.04);
+  z-index: 2;
+}
+
+.discovery-phone-trim-handle {
+  position: absolute;
+  top: 50%;
+  z-index: 7; /* above playhead so in/out stays grabbable when the playhead sits on an edge */
+  width: 28px;
+  height: 52px;
+  margin-top: -26px;
+  margin-left: -14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.discovery-phone-trim-handle:active {
+  cursor: grabbing;
+}
+
+.discovery-phone-trim-handle-grip {
+  display: block;
+  width: 4px;
+  height: 28px;
+  border-radius: 2px;
+  background: #fff;
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.35),
+    0 2px 8px rgba(0, 0, 0, 0.45);
+}
+
+.discovery-phone-trim-handle--in .discovery-phone-trim-handle-grip,
+.discovery-phone-trim-handle--out .discovery-phone-trim-handle-grip {
+  border-radius: 2px 2px 3px 3px;
+}
+
+.discovery-phone-trim-playhead {
+  position: absolute;
+  top: 50%;
+  z-index: 6;
+  width: 20px;
+  height: 56px;
+  margin-top: -28px;
+  margin-left: -10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  pointer-events: auto;
+  touch-action: none;
+  cursor: grab;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.discovery-phone-trim-playhead:active {
+  cursor: grabbing;
+}
+
+.discovery-phone-trim-playhead-line {
+  position: absolute;
+  top: 6px;
+  bottom: 4px;
+  left: 50%;
+  width: 3px;
+  margin-left: -1.5px;
+  border-radius: 1px;
+  background: #fff;
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.4),
+    0 1px 6px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
+.discovery-phone-trim-playhead-knob {
+  position: relative;
+  z-index: 1;
+  width: 13px;
+  height: 13px;
+  margin-top: 0;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.35),
+    0 2px 6px rgba(0, 0, 0, 0.4);
+  flex-shrink: 0;
+}
+
+/* Trim out behavior: single icon switch (repeat vs stop-at-out); more modes later. */
+.discovery-trim-out-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: flex-start;
+  margin-top: 10px;
+  width: 44px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.28);
+  color: rgba(255, 255, 255, 0.78);
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.discovery-trim-out-toggle:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.discovery-trim-out-toggle:focus-visible {
+  outline: 2px solid var(--accent, #5aa2ff);
+  outline-offset: 2px;
+}
+
+.discovery-trim-out-toggle--repeat {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+.discovery-trim-out-toggle--stop {
+  background: rgba(0, 0, 0, 0.28);
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.discovery-trim-out-toggle__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+
+.discovery-trim-out-toggle__svg {
+  width: 22px;
+  height: 22px;
+  display: block;
+}
+
+.discovery-phone-info-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: rgba(0, 0, 0, 0.52);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.discovery-phone-info-sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
+  max-height: 78vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  border-radius: 14px 14px 0 0;
+  border: 1px solid var(--border);
+  border-bottom: none;
+  background: var(--panel);
+  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.45);
+}
+
+/* Gray translucent filename strip (HUD, details sheet, swipe-only top bar). */
+.discovery-phone-info-sheet-filename,
+.discovery-phone-viewer-chrome-filename {
+  flex-shrink: 0;
+  padding: 5px 14px 6px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.52);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  text-align: center;
+  pointer-events: none;
+}
+
+.discovery-phone-info-sheet-filename {
+  border-radius: 14px 14px 0 0;
+}
+
+.discovery-phone-info-sheet-filename-text,
+.discovery-phone-viewer-chrome-filename-text {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 1.3;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.discovery-phone-info-dismiss {
+  flex-shrink: 0;
+  width: 100%;
+  min-height: 48px;
+  margin: 0;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: rgba(90, 162, 255, 0.18);
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.discovery-phone-info-sheet-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 12px 16px 20px;
+  font-size: 13px;
+}
+
+.discovery-phone-filename-status {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 230;
+  margin: 0;
+  padding: 2px max(10px, env(safe-area-inset-right, 0px)) 3px max(10px, env(safe-area-inset-left, 0px));
+  padding-top: max(2px, env(safe-area-inset-top, 0px));
+  background: rgba(0, 0, 0, 0.52);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border);
+  text-align: center;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.38s ease;
+}
+
+.discovery-phone-filename-status--fade {
+  opacity: 0;
+}
+
+.discovery-phone-filename-status-text {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  line-height: 1.25;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.discovery-phone-detail-close {
+  position: absolute;
+  top: max(8px, env(safe-area-inset-top, 0px));
+  right: max(8px, env(safe-area-inset-right, 0px));
+  z-index: 210;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.55);
+  color: var(--text);
+  font-size: 22px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: manipulation;
+}
+
+.discovery-phone-detail-stage {
+  flex: 1 1 55%;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 12px 12px;
+  touch-action: none;
+}
+
+/* Full-bleed video before chrome is shown (phone detail). */
+.discovery-phone-detail-stage.discovery-phone-detail-stage--immersive {
+  flex: 1 1 0;
+  min-height: 0;
+  padding: 0;
+  background: #000;
+}
+
+.discovery-phone-detail-stage.discovery-phone-detail-stage--immersive .discovery-phone-detail-stage-inner {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+}
+
+.discovery-phone-detail-stage.discovery-phone-detail-stage--immersive .discovery-phone-detail-stage-inner video {
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.discovery-phone-detail-stage-inner {
+  max-width: 100%;
+  max-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.discovery-phone-detail-stage-inner img,
+.discovery-phone-detail-stage-inner video {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 8px;
+}
+
+.discovery-phone-detail-meta {
+  flex: 1 1 45%;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 12px 16px 16px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.discovery-phone-detail-hint {
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 4px 12px 4px;
+  flex-shrink: 0;
+}
+
+.discovery-phone-detail-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 4px 12px 8px;
+  flex-shrink: 0;
+}
+
+.discovery-phone-detail-nav-btn {
+  padding: 10px 16px;
+  min-height: 44px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  font-size: 14px;
+  touch-action: manipulation;
+}
+
+.discovery-phone-detail-nav-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
 /* Make fixed-height layouts not overflow due to padding. */
 *,
 *::before,

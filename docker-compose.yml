@@ -86,6 +86,8 @@ services:
       - EXPERIMENTS_UI=${EXPERIMENTS_UI:-false}
       - EXPERIMENTS_UI_PORT=${EXPERIMENTS_UI_PORT:-8790}
       - EXPERIMENTS_UI_BUILD=${EXPERIMENTS_UI_BUILD:-true}
+      # Create-from-WIP browse root (relative to workspace unless absolute). Default: output/output/wip
+      - EXPERIMENTS_UI_WIP_ROOT=${EXPERIMENTS_UI_WIP_ROOT:-}
       # Load ComfyUI-MultiGPU from custom_nodes (default on). Set false on single-GPU / if you symlink it away.
       - INSTALL_MULTIGPU=${INSTALL_MULTIGPU:-true}
       # Krita AI Diffusion (desktop plugin) backend — off by default so ComfyUI is not pulling Krita model sets / Acly nodes unless you opt in.

@@ -135,7 +135,7 @@ The rest of this doc describes the five projects (A–E) and then **§7** spells
 | Item | Current location | Proposed location |
 |------|------------------|-------------------|
 | Experiment/tune/queue Python scripts | `workspace/scripts/` | **Project A** `experiment-pipeline/` (or repo root) |
-| Experiments UI server | `workspace/scripts/experiments_ui_server.py` | **Project A** (server) + **Project B** (React app) |
+| Experiments UI server | `scripts/experiments_ui_server.py` (repo root) | **Project A** (server) + **Project B** (React app) |
 | Experiments UI React app | `workspace/experiments_ui/` | **Project B** `experiments-ui/` |
 | Roundtrip tests + fixtures | `workspace/tests/` | **Project A** `experiment-pipeline/tests/` |
 | Image sorter | `workspace/workflows/image_sorting_tools/` | **Project C** `image-content-sorter/` |
@@ -172,7 +172,7 @@ Project D (Workflow templates)
 ## 5. Migration steps (subrepos path)
 
 1. **Create the four project repos** (e.g. on GitHub/GitLab): `comfyui-experiment-pipeline`, `comfyui-experiments-ui`, `image-content-sorter`, `comfyui-workflows` (or `comfyui-workflow-templates`).
-2. **Populate experiment-pipeline repo:** Move `workspace/scripts/` and `workspace/tests/` into it. Include `experiments_ui_server.py`. Add README, optional `pyproject.toml` or `setup.py`. Commit and push.
+2. **Populate experiment-pipeline repo:** Move `workspace/scripts/` and `workspace/tests/` into it. Include **`scripts/experiments_ui_server.py`** from the repo root (or move it with the pipeline). Add README, optional `pyproject.toml` or `setup.py`. Commit and push.
 3. **Populate experiments-ui repo:** Move `workspace/experiments_ui/web/` and `workspace/experiments_ui/docs/` (and optionally `dist/` or add to .gitignore). Add README, package.json. Commit and push.
 4. **Populate image-content-sorter repo:** Move `workspace/workflows/image_sorting_tools/` contents to repo root. Add README. Commit and push.
 5. **Populate workflows repo:** Move `workspace/workflows/` WAN 2.1 folders, `current/`, `legacy/` into it. Add a top-level README. Commit and push.

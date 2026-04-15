@@ -12,6 +12,8 @@ Default paths (inside container):
 - workspace root: /workspace  (WORKSPACE_PATH env in this repo's Dockerfile)
 - experiments root: /workspace/output/output/experiments
 - output root (for /files): /workspace/output
+- WIP browse root (Create from WIP): /workspace/output/output/wip unless EXPERIMENTS_UI_WIP_ROOT
+  is set (e.g. output/output/og relative to workspace, or an absolute path)
 - static dist: /workspace/experiments_ui/dist
 """
 
@@ -19,21 +21,27 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import hashlib
 import json
+import math
 import mimetypes
 import os
 import posixpath
 import re
+import struct
 import subprocess
 import sys
+import threading
 import time
+import uuid
+import zlib
 import urllib.parse
 import urllib.request
 import urllib.error
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 def _read_json(path: Path) -> Any:
@@ -83,6 +91,454 @@ def _slug(s: str) -> str:
     return "".join(out).strip("_")
 
 
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+_DISCOVERY_MEDIA_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm"}
+_DISCOVERY_VIDEO_EXTS = {".mp4", ".webm"}
+_DISCOVERY_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+
+
+def _read_png_text_chunks(png_path: Path) -> Dict[str, str]:
+    """PNG tEXt / zTXt / iTXt reader (stdlib only). Raises if not a PNG."""
+    data = png_path.read_bytes()
+    if data[:8] != _PNG_MAGIC:
+        raise ValueError("not_png")
+    off = 8
+    out: Dict[str, str] = {}
+    while off + 8 <= len(data):
+        length = struct.unpack(">I", data[off : off + 4])[0]
+        ctype = data[off + 4 : off + 8]
+        cdata = data[off + 8 : off + 8 + length]
+        off = off + 12 + length
+
+        if ctype == b"tEXt":
+            k, v = cdata.split(b"\x00", 1)
+            out[k.decode("latin1", "replace")] = v.decode("utf-8", "replace")
+        elif ctype == b"zTXt":
+            k, rest = cdata.split(b"\x00", 1)
+            compressed = rest[1:]
+            try:
+                v = zlib.decompress(compressed).decode("utf-8", "replace")
+            except Exception:
+                v = ""
+            out[k.decode("latin1", "replace")] = v
+        elif ctype == b"iTXt":
+            i = cdata.find(b"\x00")
+            if i == -1:
+                continue
+            keyword = cdata[:i].decode("latin1", "replace")
+            comp_flag = cdata[i + 1]
+            j = i + 3
+            k0 = cdata.find(b"\x00", j)
+            if k0 == -1:
+                continue
+            j = k0 + 1
+            k1 = cdata.find(b"\x00", j)
+            if k1 == -1:
+                continue
+            text_bytes = cdata[k1 + 1 :]
+            if comp_flag == 1:
+                try:
+                    text_bytes = zlib.decompress(text_bytes)
+                except Exception:
+                    text_bytes = b""
+            out[keyword] = text_bytes.decode("utf-8", "replace")
+    return out
+
+
+def _class_types_preview_from_prompt_json(prompt_raw: str, *, limit: int = 6) -> List[str]:
+    try:
+        obj = json.loads(prompt_raw)
+    except Exception:
+        return []
+    if not isinstance(obj, dict):
+        return []
+    out: List[str] = []
+    for _nid, node in obj.items():
+        if isinstance(node, dict) and isinstance(node.get("class_type"), str):
+            ct = str(node["class_type"]).strip()
+            if ct:
+                out.append(ct)
+            if len(out) >= limit:
+                break
+    return out
+
+
+def _workflow_fingerprint_for_prompt_raw(prompt_raw: str) -> str:
+    raw = prompt_raw.encode("utf-8", errors="replace")
+    return hashlib.sha256(raw).hexdigest()[:24]
+
+
+def _file_content_hash(path: Path) -> str:
+    st = path.stat()
+    size = int(st.st_size)
+    if size <= 25_000_000:
+        h = hashlib.sha256()
+        with path.open("rb") as f:
+            while True:
+                buf = f.read(1024 * 1024)
+                if not buf:
+                    break
+                h.update(buf)
+        return h.hexdigest()
+    h = hashlib.sha256()
+    h.update(str(size).encode())
+    h.update(str(int(st.st_mtime)).encode())
+    with path.open("rb") as f:
+        h.update(f.read(min(2_000_000, size)))
+    return h.hexdigest()
+
+
+def _png_metadata_fields(path: Path) -> Tuple[Optional[str], List[str], bool]:
+    """
+    Returns (workflow_fingerprint, class_types_preview, has_embedded_prompt).
+    fingerprint is SHA256 prefix of raw Comfy 'prompt' chunk text when present.
+    """
+    try:
+        chunks = _read_png_text_chunks(path)
+    except Exception:
+        return (None, [], False)
+    pr = chunks.get("prompt")
+    if isinstance(pr, str) and pr.strip():
+        fp = _workflow_fingerprint_for_prompt_raw(pr)
+        prev = _class_types_preview_from_prompt_json(pr)
+        return (fp, prev, True)
+    wf = chunks.get("workflow")
+    if isinstance(wf, str) and wf.strip():
+        return (_workflow_fingerprint_for_prompt_raw(wf), [], False)
+    return (None, [], False)
+
+
+def _atomic_write_json(path: Path, obj: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+_TRIM_FILE_LOCK = threading.Lock()
+_TRIM_CONTEXT_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9._-]{0,127}$")
+_TRIM_MEDIA_REL_PATH_MAX = 4096
+_TRIM_HANDLE_MIN_GAP_SEC = 0.12
+_TRIMS_DOC_VERSION = 1
+# Single UI surface for now; more contexts (e.g. compare, extend-wizard) can share the same sidecar file.
+DEFAULT_TRIM_CONTEXT = "discovery-player"
+
+
+def _discovery_trim_video_media_path(cfg: "ServerConfig", media_relpath: str) -> Optional[Path]:
+    rel = _normalize_rel_posix(media_relpath)
+    if not rel or len(rel) > _TRIM_MEDIA_REL_PATH_MAX:
+        return None
+    low = rel.lower()
+    if not (low.endswith(".mp4") or low.endswith(".webm")):
+        return None
+    return _safe_join(cfg.output_root, rel)
+
+
+def _discovery_trim_sidecar_path(media_abs: Path) -> Path:
+    """Canonical sidecar next to the video: <stem>.trims.json (same pattern as *.metadata.json)."""
+    return media_abs.with_suffix(".trims.json")
+
+
+def _empty_trims_document() -> Dict[str, Any]:
+    return {"v": _TRIMS_DOC_VERSION, "contexts": {}}
+
+
+def _load_trims_document(sidecar: Path) -> Dict[str, Any]:
+    if not sidecar.exists():
+        return _empty_trims_document()
+    try:
+        obj = _read_json(sidecar)
+    except Exception:
+        return _empty_trims_document()
+    if not isinstance(obj, dict) or int(obj.get("v") or 0) != _TRIMS_DOC_VERSION:
+        return _empty_trims_document()
+    raw_ctx = obj.get("contexts")
+    if not isinstance(raw_ctx, dict):
+        return _empty_trims_document()
+    out_ctx: Dict[str, Any] = {}
+    for ck, cv in raw_ctx.items():
+        if not isinstance(ck, str) or not isinstance(cv, dict):
+            continue
+        raw_presets = cv.get("presets")
+        if not isinstance(raw_presets, list):
+            continue
+        presets: List[Dict[str, Any]] = []
+        for p in raw_presets:
+            if not isinstance(p, dict):
+                continue
+            pid = str(p.get("id") or "").strip()
+            if not pid:
+                continue
+            try:
+                tin = float(p.get("in"))
+                tout = float(p.get("out"))
+            except Exception:
+                continue
+            if tin < 0 or tout <= tin or tout - tin < 1e-4:
+                continue
+            label = (str(p.get("label") or "Trim").strip() or "Trim")[:200]
+            presets.append({"id": pid, "label": label, "in": tin, "out": tout, "at": int(p.get("at") or 0)})
+        aid_raw = cv.get("active_preset_id")
+        aid = str(aid_raw).strip() if aid_raw is not None and str(aid_raw).strip() else None
+        if aid and not any(x["id"] == aid for x in presets):
+            aid = presets[0]["id"] if presets else None
+        out_ctx[ck] = {"active_preset_id": aid, "presets": presets}
+    return {"v": _TRIMS_DOC_VERSION, "contexts": out_ctx}
+
+
+def _trim_clamp(mi: Optional[float], mo: Optional[float], duration: float) -> Optional[Tuple[float, float]]:
+    if not (duration > 0 and math.isfinite(duration)):
+        return None
+    raw_in = max(0.0, float(mi if mi is not None else 0.0))
+    raw_out = min(float(duration), float(mo if mo is not None else duration))
+    gap = _TRIM_HANDLE_MIN_GAP_SEC
+    safe_in = min(raw_in, max(0.0, raw_out - gap))
+    safe_out = max(raw_out, safe_in + gap)
+    if safe_out - safe_in < gap - 1e-6:
+        return None
+    return (safe_in, safe_out)
+
+
+def _trim_is_nontrivial(safe_in: float, safe_out: float, duration: float) -> bool:
+    return safe_in > 0.008 or safe_out < duration - 0.008
+
+
+def _prune_empty_trims_document(doc: Dict[str, Any]) -> bool:
+    """Return True if document has no presets left in any context."""
+    ctxs = doc.get("contexts")
+    if not isinstance(ctxs, dict) or not ctxs:
+        return True
+    for cv in ctxs.values():
+        if isinstance(cv, dict) and isinstance(cv.get("presets"), list) and len(cv.get("presets") or []) > 0:
+            return False
+    return True
+
+
+def _scrub_empty_trim_contexts(doc: Dict[str, Any]) -> None:
+    ctxs = doc.get("contexts")
+    if not isinstance(ctxs, dict):
+        doc["contexts"] = {}
+        return
+    dead = [
+        k
+        for k, v in list(ctxs.items())
+        if not (isinstance(v, dict) and isinstance(v.get("presets"), list) and len(v.get("presets") or []) > 0)
+    ]
+    for k in dead:
+        ctxs.pop(k, None)
+
+
+def _discovery_trim_mutate_document(cfg: "ServerConfig", media_relpath: str, mutator: Callable[[Dict[str, Any]], None]) -> bool:
+    """
+    Load `<stem>.trims.json` beside the media file, apply mutator(doc), then save or delete the sidecar.
+    Returns False if media_relpath does not resolve to an existing file under output_root.
+    """
+    media_abs = _discovery_trim_video_media_path(cfg, media_relpath)
+    if media_abs is None or not media_abs.is_file():
+        return False
+    sidecar = _discovery_trim_sidecar_path(media_abs)
+    with _TRIM_FILE_LOCK:
+        doc = _load_trims_document(sidecar)
+        mutator(doc)
+        _scrub_empty_trim_contexts(doc)
+        if _prune_empty_trims_document(doc):
+            if sidecar.exists():
+                try:
+                    sidecar.unlink()
+                except Exception:
+                    pass
+        else:
+            _atomic_write_json(sidecar, doc)
+    return True
+
+
+def _og_wip_library_roots(cfg: "ServerConfig") -> Tuple[Path, Path]:
+    base = (cfg.output_root / "output").resolve()
+    return (base / "og", base / "wip")
+
+
+def _merge_discovery_group(lib: str, dir_posix: str, group_stem: str, members: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """One indexed row: video + companion png/jpg/webp merged; metadata prefer PNG with prompt."""
+    videos = [m for m in members if m.get("ext") in _DISCOVERY_VIDEO_EXTS]
+    images = [m for m in members if m.get("ext") in _DISCOVERY_IMAGE_EXTS]
+
+    def sort_video(m: Dict[str, Any]) -> Tuple[float, int]:
+        return (float(m.get("mtime") or 0), int(m.get("size") or 0))
+
+    primary_video = max(videos, key=sort_video) if videos else None
+
+    def img_score(m: Dict[str, Any]) -> Tuple[int, int, float]:
+        has_fp = 1 if m.get("workflow_fingerprint") else 0
+        is_png = 1 if m.get("ext") == ".png" else 0
+        return (has_fp, is_png, float(m.get("mtime") or 0))
+
+    thumb_image = None
+    if images:
+        thumb_image = max(images, key=img_score)
+
+    wf_fp: Optional[str] = None
+    cls_prev: List[str] = []
+    has_prompt = False
+    meta_src = thumb_image
+    if meta_src:
+        wf_fp = meta_src.get("workflow_fingerprint")  # type: ignore[assignment]
+        cls_prev = list(meta_src.get("class_types_preview") or [])
+        has_prompt = bool(meta_src.get("has_embedded_prompt"))
+    if wf_fp is None and images:
+        for im in sorted(images, key=img_score, reverse=True):
+            if im.get("workflow_fingerprint"):
+                wf_fp = im.get("workflow_fingerprint")  # type: ignore[assignment]
+                cls_prev = list(im.get("class_types_preview") or [])
+                has_prompt = bool(im.get("has_embedded_prompt"))
+                break
+
+    mtime = max(float(m.get("mtime") or 0) for m in members) if members else 0.0
+    size_sum = sum(int(m.get("size") or 0) for m in members)
+
+    members_out: List[Dict[str, str]] = []
+    for m in sorted(members, key=lambda x: (str(x.get("ext") or ""), str(x.get("name") or ""))):
+        ext = str(m.get("ext") or "").lower()
+        if ext in _DISCOVERY_VIDEO_EXTS:
+            kk = "video"
+        elif ext in _DISCOVERY_IMAGE_EXTS:
+            kk = "image"
+        else:
+            kk = "other"
+        members_out.append(
+            {
+                "relpath": str(m.get("relpath") or ""),
+                "name": str(m.get("name") or ""),
+                "kind": kk,
+            }
+        )
+
+    primary = primary_video or thumb_image or members[0]
+    display_name = str((primary_video or thumb_image or members[0]).get("name") or "")
+    video_relpath = str(primary_video.get("relpath")) if primary_video else None
+    thumb_relpath = str(thumb_image.get("relpath")) if thumb_image else None
+
+    # group_stem is exact Path(name).stem (already lowercased in the index key).
+    group_id = f"{lib}:stem:{group_stem}"
+
+    h = hashlib.sha256()
+    for m in sorted(members, key=lambda x: str(x.get("relpath"))):
+        h.update(str(m.get("sha256") or "").encode("utf-8", "replace"))
+        h.update(b"\n")
+
+    return {
+        "group_id": group_id,
+        "relpath": str(primary.get("relpath") or ""),
+        "library": lib,
+        "name": display_name,
+        "mtime": mtime,
+        "size": size_sum,
+        "sha256": h.hexdigest()[:64],
+        "workflow_fingerprint": wf_fp,
+        "class_types_preview": cls_prev,
+        "has_embedded_prompt": has_prompt,
+        "video_relpath": video_relpath,
+        "thumb_relpath": thumb_relpath,
+        "members": members_out,
+    }
+
+
+def _build_discovery_og_wip_index(cfg: "ServerConfig") -> Dict[str, Any]:
+    og_root, wip_root = _og_wip_library_roots(cfg)
+    t0 = time.time()
+    try:
+        out_resolved = cfg.output_root.resolve()
+    except Exception:
+        out_resolved = cfg.output_root
+
+    # (library, exact filename stem lowercased) -> all extensions for that output.
+    # Matches FB9_GEX2_OVERHEAD_2026-04-13_00006.mp4 + .png even if they land in different subfolders.
+    by_stem: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+
+    for lib, root in (("og", og_root), ("wip", wip_root)):
+        if not root.is_dir():
+            continue
+        try:
+            for p in root.rglob("*"):
+                try:
+                    if not p.is_file():
+                        continue
+                except Exception:
+                    continue
+                ext_lc = p.suffix.lower()
+                if ext_lc not in _DISCOVERY_MEDIA_EXTS:
+                    continue
+                try:
+                    rel = p.resolve().relative_to(out_resolved)
+                except Exception:
+                    continue
+                rel_posix = _normalize_rel_posix(str(rel).replace("\\", "/"))
+                if not rel_posix:
+                    continue
+                try:
+                    st = p.stat()
+                    mtime = float(st.st_mtime)
+                    size = int(st.st_size)
+                except Exception:
+                    mtime = 0.0
+                    size = 0
+                wf_fp: Optional[str] = None
+                cls_prev: List[str] = []
+                has_prompt = False
+                if ext_lc == ".png":
+                    wf_fp, cls_prev, has_prompt = _png_metadata_fields(p)
+                content_hash = _file_content_hash(p)
+                stem_key = Path(p.name).stem.lower()
+                skey = (lib, stem_key)
+                rec = {
+                    "relpath": rel_posix,
+                    "library": lib,
+                    "name": p.name,
+                    "ext": ext_lc,
+                    "mtime": mtime,
+                    "size": size,
+                    "sha256": content_hash,
+                    "workflow_fingerprint": wf_fp,
+                    "class_types_preview": cls_prev,
+                    "has_embedded_prompt": has_prompt,
+                }
+                by_stem.setdefault(skey, []).append(rec)
+        except Exception:
+            continue
+
+    items: List[Dict[str, Any]] = []
+    for (lib, stem_key), members in by_stem.items():
+        if not members:
+            continue
+        vids = [m for m in members if m.get("ext") in _DISCOVERY_VIDEO_EXTS]
+        if vids:
+            anchor = max(vids, key=lambda m: (float(m.get("mtime") or 0), str(m.get("relpath") or "")))
+        else:
+            anchor = max(members, key=lambda m: (float(m.get("mtime") or 0), str(m.get("relpath") or "")))
+        dir_posix = _normalize_rel_posix(str(Path(str(anchor.get("relpath") or "")).parent).replace("\\", "/")) or "."
+        items.append(_merge_discovery_group(lib, dir_posix, stem_key, members))
+
+    items.sort(key=lambda it: float(it.get("mtime") or 0), reverse=True)
+    built = {
+        "version": 5,
+        "updated_at": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "libraries": {"og": str(og_root), "wip": str(wip_root)},
+        "item_count": len(items),
+        "items": items,
+        "scan_ms": int((time.time() - t0) * 1000),
+    }
+    return built
+
+
+def _load_discovery_index_disk(path: Path) -> Optional[Dict[str, Any]]:
+    if not path.exists():
+        return None
+    try:
+        obj = _read_json(path)
+    except Exception:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
 def _now_stamp() -> str:
     return _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
 
@@ -103,6 +559,40 @@ def _text_response(handler: BaseHTTPRequestHandler, code: int, text: str, conten
     handler.send_header("Content-Length", str(len(raw)))
     handler.end_headers()
     handler.wfile.write(raw)
+
+
+def _file_relpath_for_api(output_root: Path, wip_root: Path, abs_path: Path) -> str:
+    """
+    POSIX relpath from output_root for API + /files (e.g. output/output/og/2026-04-10/foo.mp4).
+    Falls back through wip_root if abs_path is not under output_root (unusual mounts).
+    """
+    try:
+        return str(abs_path.resolve().relative_to(output_root.resolve())).replace("\\", "/")
+    except ValueError:
+        pass
+    try:
+        wr = str(wip_root.resolve().relative_to(output_root.resolve())).replace("\\", "/")
+        sub = str(abs_path.resolve().relative_to(wip_root.resolve())).replace("\\", "/")
+        if sub in ("", "."):
+            return wr
+        return f"{wr}/{sub}"
+    except ValueError:
+        return abs_path.name.replace("\\", "/")
+
+
+def _resolve_wip_root(ws: Path, output_root: Path, override: str) -> Path:
+    """
+    Root directory for GET /api/wip (date folders + MP4 listing).
+    Default: <output_root>/output/wip
+    override: absolute path, or path relative to workspace_root (e.g. output/output/og).
+    """
+    o = (override or "").strip()
+    if not o:
+        return (output_root / "output" / "wip").resolve()
+    p = Path(o)
+    if p.is_absolute():
+        return p.resolve()
+    return (ws / p).resolve()
 
 
 def _normalize_rel_posix(p: str) -> str:
@@ -398,6 +888,7 @@ class ServerConfig:
     orchestrator_state_path: Path
     queue_ledger_state_path: Path
     queue_ledger_events_path: Path
+    discovery_index_path: Path
 
 
 def _resolve_workspace_root(base: Path) -> Path:
@@ -752,6 +1243,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path or "/"
+        if len(path) > 1:
+            path = path.rstrip("/")
 
         if path.startswith("/api/"):
             return self._handle_api_get(path, parsed.query)
@@ -766,6 +1259,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path or "/"
+        if len(path) > 1:
+            path = path.rstrip("/")
         if not path.startswith("/api/"):
             return _json_response(self, 404, {"error": "not_found"})
         return self._handle_api_post(path)
@@ -776,6 +1271,12 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/wip":
             return self._handle_wip_get(q)
+
+        if path == "/api/discovery/library":
+            return self._handle_discovery_library_get(q)
+
+        if path == "/api/discovery/trim":
+            return self._handle_discovery_trim_get(q)
 
         if path == "/api/queue":
             # Optional: limit how many experiments we scan (newest first).
@@ -939,10 +1440,9 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, 200, out)
 
         if path == "/api/experiments":
-            # Optional: use server-level cache (invalidated on create-experiment)
-            srv = self.server
-            if getattr(srv, "_experiments_cache", None) is not None:
-                return _json_response(self, 200, srv._experiments_cache)
+            # Always scan experiments_root: experiments are often created via CLI
+            # (tune_experiment.py generate), not only POST /api/create-experiment, so a
+            # long-lived in-memory cache made new runs invisible until server restart.
             exps: List[Dict[str, Any]] = []
             by_base_mp4: Dict[str, List[str]] = {}
             output_to_run: Dict[str, Dict[str, str]] = {}
@@ -980,8 +1480,6 @@ class Handler(BaseHTTPRequestHandler):
                 "experiments": exps,
                 "relations": {"by_base_mp4": by_base_mp4, "output_to_run": output_to_run},
             }
-            if srv is not None:
-                srv._experiments_cache = payload
             return _json_response(self, 200, payload)
 
         if path == "/api/runs":
@@ -1043,6 +1541,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_orchestrator_saved_item_post()
         if path == "/api/queue/ledger-control":
             return self._handle_queue_ledger_control()
+        if path == "/api/discovery/trim":
+            return self._handle_discovery_trim_post()
         return _json_response(self, 404, {"error": "unknown_api_route", "path": path})
 
     def _read_request_json(self) -> Optional[Dict[str, Any]]:
@@ -1055,6 +1555,352 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return None
         return obj if isinstance(obj, dict) else None
+
+    def _handle_discovery_library_get(self, q: Dict[str, List[str]]) -> None:
+        """
+        GET /api/discovery/library
+          ?refresh=1 — rescan output/output/{og,wip}, rewrite JSON index
+          ?q= — case-insensitive substring on relpath or filename
+          ?since_days=N — keep items with mtime within last N days
+          ?library=og|wip|all
+          ?limit= — max items after sort (default 800, max 8000)
+        """
+        cfg = self.server.cfg
+        refresh = False
+        for v in q.get("refresh", []):
+            if str(v).strip().lower() in ("1", "true", "yes", "on"):
+                refresh = True
+                break
+
+        qtext = (q.get("q") or [""])[0].strip().lower()
+        since_days: Optional[float] = None
+        for v in q.get("since_days", []):
+            since_days = _safe_float(v)
+            if since_days is not None:
+                break
+
+        lib_filter = "all"
+        for v in q.get("library", []):
+            s = str(v).strip().lower()
+            if s in ("og", "wip", "all"):
+                lib_filter = s
+                break
+
+        limit = 800
+        for v in q.get("limit", []):
+            li = _safe_int(v)
+            if li is not None:
+                limit = max(1, min(8000, int(li)))
+                break
+
+        idx_path = cfg.discovery_index_path
+        payload: Dict[str, Any]
+        from_cache = False
+        if refresh or not idx_path.exists():
+            try:
+                payload = _build_discovery_og_wip_index(cfg)
+                _atomic_write_json(idx_path, payload)
+            except Exception as e:
+                return _json_response(self, 500, {"error": "discovery_scan_failed", "detail": str(e)})
+        else:
+            loaded = _load_discovery_index_disk(idx_path)
+            if loaded is None:
+                try:
+                    payload = _build_discovery_og_wip_index(cfg)
+                    _atomic_write_json(idx_path, payload)
+                except Exception as e:
+                    return _json_response(self, 500, {"error": "discovery_scan_failed", "detail": str(e)})
+            else:
+                payload = loaded
+                from_cache = True
+
+        # Regroup when on-disk index predates (lib, exact-stem) merge for mp4+png pairs.
+        try:
+            if int(payload.get("version") or 0) < 5:
+                payload = _build_discovery_og_wip_index(cfg)
+                _atomic_write_json(idx_path, payload)
+                from_cache = False
+        except Exception as e:
+            return _json_response(self, 500, {"error": "discovery_scan_failed", "detail": str(e)})
+
+        items_in = payload.get("items")
+        if not isinstance(items_in, list):
+            items_in = []
+
+        now = time.time()
+        since_cut = None
+        if since_days is not None and since_days > 0:
+            since_cut = now - float(since_days) * 86400.0
+
+        filtered: List[Dict[str, Any]] = []
+        for it in items_in:
+            if not isinstance(it, dict):
+                continue
+            lib = it.get("library")
+            if lib_filter != "all" and lib != lib_filter:
+                continue
+            rp = str(it.get("relpath") or "")
+            nm = str(it.get("name") or "")
+            if qtext:
+                blob_parts = [rp.lower(), nm.lower()]
+                mems = it.get("members")
+                if isinstance(mems, list):
+                    for mm in mems:
+                        if isinstance(mm, dict):
+                            blob_parts.append(str(mm.get("relpath") or "").lower())
+                            blob_parts.append(str(mm.get("name") or "").lower())
+                blob = " ".join(blob_parts)
+                if qtext not in blob:
+                    continue
+            if since_cut is not None:
+                try:
+                    mt = float(it.get("mtime") or 0)
+                except Exception:
+                    mt = 0.0
+                if mt < since_cut:
+                    continue
+            filtered.append(it)
+
+        total_after_filter = len(filtered)
+        truncated = total_after_filter > limit
+        filtered = filtered[:limit]
+
+        out = {
+            "version": payload.get("version", 1),
+            "updated_at": payload.get("updated_at"),
+            "index_path": str(idx_path),
+            "from_cache": from_cache,
+            "scan_ms": payload.get("scan_ms"),
+            "item_count_total": payload.get("item_count"),
+            "item_count_filtered": total_after_filter,
+            "truncated": truncated,
+            "limit": limit,
+            "items": filtered,
+        }
+        for it in out["items"]:
+            if isinstance(it, dict):
+                rp = str(it.get("relpath") or "")
+                it["url"] = "/files/" + urllib.parse.quote(rp, safe="") if rp else ""
+                vr = it.get("video_relpath")
+                tr = it.get("thumb_relpath")
+                it["video_url"] = (
+                    "/files/" + urllib.parse.quote(str(vr), safe="")
+                    if isinstance(vr, str) and vr.strip()
+                    else None
+                )
+                it["thumb_url"] = (
+                    "/files/" + urllib.parse.quote(str(tr), safe="")
+                    if isinstance(tr, str) and tr.strip()
+                    else None
+                )
+        return _json_response(self, 200, out)
+
+    def _handle_discovery_trim_get(self, q: Dict[str, List[str]]) -> None:
+        """
+        GET /api/discovery/trim?media_relpath=...&context=discovery-player
+
+        Canonical data lives in ``<stem>.trims.json`` next to the video. Multiple presets per context
+        are supported; the active preset drives playback defaults in the UI.
+        """
+        cfg = self.server.cfg
+        media = (q.get("media_relpath") or [""])[0].strip()
+        if not media or len(media) > _TRIM_MEDIA_REL_PATH_MAX:
+            return _json_response(self, 400, {"error": "bad_media_relpath"})
+        context = (q.get("context") or [DEFAULT_TRIM_CONTEXT])[0].strip() or DEFAULT_TRIM_CONTEXT
+        if not _TRIM_CONTEXT_RE.match(context):
+            return _json_response(self, 400, {"error": "bad_context"})
+        media_abs = _discovery_trim_video_media_path(cfg, media)
+        if media_abs is None or not media_abs.is_file():
+            return _json_response(
+                self,
+                200,
+                {
+                    "found": False,
+                    "media_relpath": media,
+                    "context": context,
+                    "active_preset_id": None,
+                    "active": None,
+                    "presets": [],
+                },
+            )
+        sidecar = _discovery_trim_sidecar_path(media_abs)
+        doc = _load_trims_document(sidecar)
+        ctxs = doc.get("contexts")
+        blk = ctxs.get(context) if isinstance(ctxs, dict) else None
+        if not isinstance(blk, dict):
+            return _json_response(
+                self,
+                200,
+                {
+                    "found": False,
+                    "media_relpath": media,
+                    "context": context,
+                    "active_preset_id": None,
+                    "active": None,
+                    "presets": [],
+                },
+            )
+        presets = blk.get("presets") if isinstance(blk.get("presets"), list) else []
+        aid = blk.get("active_preset_id")
+        aid_s = str(aid).strip() if aid is not None and str(aid).strip() else None
+        active_row = None
+        if aid_s:
+            for p in presets:
+                if isinstance(p, dict) and p.get("id") == aid_s:
+                    active_row = p
+                    break
+        if active_row is None and presets:
+            active_row = presets[0] if isinstance(presets[0], dict) else None
+        return _json_response(
+            self,
+            200,
+            {
+                "found": bool(active_row),
+                "media_relpath": media,
+                "context": context,
+                "active_preset_id": (active_row or {}).get("id") if isinstance(active_row, dict) else None,
+                "active": active_row,
+                "presets": presets,
+            },
+        )
+
+    def _handle_discovery_trim_post(self) -> None:
+        """
+        POST /api/discovery/trim
+          { "media_relpath", "context": "discovery-player", "op": "save_trim",
+            "duration_sec", "in", "out", "preset_id"?, "label"?, "clear"? }
+
+        Writes ``<stem>.trims.json`` beside the media file (see GET). ``clear`` or a trivial range
+        removes the active preset entry (and clears ``active_preset_id``).
+        """
+        cfg = self.server.cfg
+        obj = self._read_request_json()
+        if not obj:
+            return _json_response(self, 400, {"error": "bad_json"})
+        op = str(obj.get("op") or "save_trim").strip().lower()
+        if op != "save_trim":
+            return _json_response(self, 400, {"error": "bad_op"})
+        media = str(obj.get("media_relpath") or "").strip()
+        if not media or len(media) > _TRIM_MEDIA_REL_PATH_MAX:
+            return _json_response(self, 400, {"error": "bad_media_relpath"})
+        context = str(obj.get("context") or DEFAULT_TRIM_CONTEXT).strip() or DEFAULT_TRIM_CONTEXT
+        if not _TRIM_CONTEXT_RE.match(context):
+            return _json_response(self, 400, {"error": "bad_context"})
+
+        try:
+            duration = float(obj.get("duration_sec"))
+        except Exception:
+            return _json_response(self, 400, {"error": "bad_duration_sec"})
+        if not (duration > 0 and math.isfinite(duration)):
+            return _json_response(self, 400, {"error": "bad_duration_sec"})
+
+        clear = obj.get("clear") is True
+        mi = obj.get("in")
+        mo = obj.get("out")
+        if not clear and mi is None and mo is None:
+            return _json_response(self, 400, {"error": "missing_in_out"})
+
+        bounds: Optional[Tuple[float, float]] = None
+        if not clear:
+            try:
+                tin_f = float(mi)
+                tout_f = float(mo)
+            except Exception:
+                return _json_response(self, 400, {"error": "bad_in_out"})
+            bounds = _trim_clamp(tin_f, tout_f, duration)
+            if bounds is None:
+                return _json_response(self, 400, {"error": "invalid_range"})
+
+        pid_in = str(obj.get("preset_id") or "").strip() or None
+        label_in = (str(obj.get("label") or "Trim").strip() or "Trim")[:200]
+
+        def _mut(doc: Dict[str, Any]) -> None:
+            ctxs = doc.setdefault("contexts", {})
+            if not isinstance(ctxs, dict):
+                doc["contexts"] = {}
+                ctxs = doc["contexts"]
+            blk = ctxs.setdefault(context, {"active_preset_id": None, "presets": []})
+            if not isinstance(blk, dict):
+                blk = {"active_preset_id": None, "presets": []}
+                ctxs[context] = blk
+            presets = blk.setdefault("presets", [])
+            if not isinstance(presets, list):
+                blk["presets"] = []
+                presets = blk["presets"]
+            aid = blk.get("active_preset_id")
+            aid_s = str(aid).strip() if aid is not None and str(aid).strip() else None
+
+            def _remove_preset(pid: str) -> None:
+                blk["presets"] = [p for p in presets if isinstance(p, dict) and p.get("id") != pid]
+                cur = blk.get("active_preset_id")
+                cur_s = str(cur).strip() if cur is not None and str(cur).strip() else None
+                if cur_s == pid:
+                    blk["active_preset_id"] = None
+
+            if clear:
+                if pid_in:
+                    _remove_preset(pid_in)
+                elif aid_s:
+                    _remove_preset(aid_s)
+                else:
+                    blk["presets"] = []
+                    blk["active_preset_id"] = None
+                if not blk["presets"]:
+                    ctxs.pop(context, None)
+                return
+
+            tin, tout = bounds  # set only when not clear (bounds validated above)
+            if not _trim_is_nontrivial(tin, tout, duration):
+                if aid_s:
+                    _remove_preset(aid_s)
+                blk["active_preset_id"] = None
+                if not blk["presets"]:
+                    ctxs.pop(context, None)
+                return
+
+            now = int(time.time())
+            target_id = pid_in or aid_s
+            for p in presets:
+                if isinstance(p, dict) and p.get("id") == target_id:
+                    p["in"] = tin
+                    p["out"] = tout
+                    p["label"] = label_in
+                    p["at"] = now
+                    blk["active_preset_id"] = p.get("id")
+                    return
+            nid = str(uuid.uuid4())
+            presets.append({"id": nid, "label": label_in, "in": tin, "out": tout, "at": now})
+            blk["active_preset_id"] = nid
+
+        ok = _discovery_trim_mutate_document(cfg, media, _mut)
+        if not ok:
+            return _json_response(self, 404, {"error": "media_not_found", "media_relpath": media})
+
+        media_abs = _discovery_trim_video_media_path(cfg, media)
+        if media_abs is None or not media_abs.is_file():
+            return _json_response(self, 200, {"ok": True, "media_relpath": media, "context": context, "active_preset_id": None, "active": None, "presets": []})
+        doc2 = _load_trims_document(_discovery_trim_sidecar_path(media_abs))
+        ctxs2 = doc2.get("contexts") or {}
+        blk2 = ctxs2.get(context) or {}
+        presets2 = blk2.get("presets") if isinstance(blk2.get("presets"), list) else []
+        aid2 = blk2.get("active_preset_id")
+        active = None
+        for p in presets2:
+            if isinstance(p, dict) and p.get("id") == aid2:
+                active = p
+                break
+        return _json_response(
+            self,
+            200,
+            {
+                "ok": True,
+                "media_relpath": media,
+                "context": context,
+                "active_preset_id": aid2,
+                "active": active,
+                "presets": presets2,
+            },
+        )
 
     def _handle_wip_get(self, q: Dict[str, List[str]]) -> None:
         """GET /api/wip?dir= — list date subdirs (dir empty) or MP4s in that date dir."""
@@ -1071,11 +1917,7 @@ class Handler(BaseHTTPRequestHandler):
             dates: List[Dict[str, Any]] = []
             for child in sorted([p for p in cfg.wip_root.iterdir() if p.is_dir()], key=lambda p: p.name, reverse=True):
                 if date_re.match(child.name):
-                    try:
-                        rel = child.relative_to(cfg.output_root)
-                        path_posix = str(rel).replace("\\", "/")
-                    except ValueError:
-                        path_posix = f"output/output/wip/{child.name}"
+                    path_posix = _file_relpath_for_api(cfg.output_root, cfg.wip_root, child)
                     dates.append({"name": child.name, "path": path_posix, "date": child.name})
             return _json_response(self, 200, {"dates": dates, "media": [], "dir": ""})
 
@@ -1088,11 +1930,7 @@ class Handler(BaseHTTPRequestHandler):
         for f in sorted(target_dir.glob("*.mp4"), key=lambda p: p.name):
             if not f.is_file():
                 continue
-            try:
-                rel = f.relative_to(cfg.output_root)
-                relpath = str(rel).replace("\\", "/")
-            except ValueError:
-                relpath = f"output/output/wip/{dir_param}/{f.name}"
+            relpath = _file_relpath_for_api(cfg.output_root, cfg.wip_root, f)
             try:
                 st = f.stat()
                 size = st.st_size
@@ -1218,10 +2056,6 @@ class Handler(BaseHTTPRequestHandler):
         exp_dir_out = (gen.stdout or "").strip().splitlines()[-1].strip() if gen.stdout else ""
         if not exp_dir_out:
             exp_dir_out = str(Path(out_root) / new_exp_id)
-
-        # Invalidate experiments+relations cache so next GET /api/experiments sees the new experiment
-        if hasattr(self.server, "_experiments_cache"):
-            self.server._experiments_cache = None
 
         return _json_response(
             self,
@@ -1668,7 +2502,6 @@ class ExperimentsServer(ThreadingHTTPServer):
     def __init__(self, server_address: Tuple[str, int], cfg: ServerConfig):
         super().__init__(server_address, Handler)
         self.cfg = cfg
-        self._experiments_cache: Optional[Dict[str, Any]] = None  # experiments + relations; cleared on create-experiment
 
 
 def main() -> int:
@@ -1679,17 +2512,25 @@ def main() -> int:
     ap.add_argument("--experiments-root", default="")
     ap.add_argument("--output-root", default="")
     ap.add_argument("--static-dir", default="")
+    ap.add_argument(
+        "--wip-root",
+        default="",
+        help="Browse root for Create from WIP (default: <output>/output/wip). "
+        "Relative to workspace unless absolute. Env: EXPERIMENTS_UI_WIP_ROOT.",
+    )
     args = ap.parse_args()
 
     base = Path(args.workspace_root) if args.workspace_root else Path(__file__).resolve().parent.parent
     ws = _resolve_workspace_root(base)
     experiments_root = Path(args.experiments_root) if args.experiments_root else (ws / "output" / "output" / "experiments")
     output_root = Path(args.output_root) if args.output_root else (ws / "output")
-    wip_root = output_root / "output" / "wip"
+    wip_override = (args.wip_root or "").strip() or os.environ.get("EXPERIMENTS_UI_WIP_ROOT", "").strip()
+    wip_root = _resolve_wip_root(ws, output_root, wip_override)
     static_dir = Path(args.static_dir) if args.static_dir else (ws / "experiments_ui" / "dist")
     orchestrator_state_path = ws / "output" / "orchestrator" / "state.json"
     queue_ledger_state_path = ws / "output" / "output" / "experiments" / "_status" / "comfy_queue_ledger_state.json"
     queue_ledger_events_path = ws / "output" / "output" / "experiments" / "_status" / "comfy_queue_ledger.jsonl"
+    discovery_index_path = ws / "output" / "output" / "_status" / "discovery_og_wip_index.json"
     # Runtime utilities live under workspace/scripts in this repo, but /workspace/scripts may be
     # occupied by a bind-mount of repo-level scripts. Prefer ws_scripts when present.
     tune_script = ws / "scripts" / "tune_experiment.py"
@@ -1709,6 +2550,7 @@ def main() -> int:
         orchestrator_state_path=orchestrator_state_path,
         queue_ledger_state_path=queue_ledger_state_path,
         queue_ledger_events_path=queue_ledger_events_path,
+        discovery_index_path=discovery_index_path,
     )
     server = ExperimentsServer((args.host, int(args.port)), cfg)
     print(f"[experiments-ui] listening on http://{args.host}:{args.port}")
@@ -1719,6 +2561,7 @@ def main() -> int:
     print(f"[experiments-ui] static_dir={cfg.static_dir}")
     print(f"[experiments-ui] orchestrator_state={cfg.orchestrator_state_path}")
     print(f"[experiments-ui] queue_ledger_state={cfg.queue_ledger_state_path}")
+    print(f"[experiments-ui] discovery_index={cfg.discovery_index_path}")
     server.serve_forever()
     return 0
 

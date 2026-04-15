@@ -264,3 +264,42 @@ export type WipPlannedExperiment = {
   sweep: Record<string, unknown>;
 };
 
+export type DiscoveryMember = {
+  relpath: string;
+  name: string;
+  kind: string;
+};
+
+/** One logical output: mp4 + companion png (and similar) merged on the server when they share folder + stem. */
+export type DiscoveryLibraryItem = {
+  group_id?: string;
+  relpath: string;
+  library: string;
+  name: string;
+  mtime: number;
+  size: number;
+  sha256: string;
+  workflow_fingerprint?: string | null;
+  class_types_preview?: string[];
+  has_embedded_prompt?: boolean;
+  url: string;
+  video_relpath?: string | null;
+  thumb_relpath?: string | null;
+  video_url?: string | null;
+  thumb_url?: string | null;
+  members?: DiscoveryMember[];
+};
+
+export type DiscoveryLibraryResponse = {
+  version: number;
+  updated_at?: string;
+  index_path: string;
+  from_cache: boolean;
+  scan_ms?: number | null;
+  item_count_total?: number | null;
+  item_count_filtered: number;
+  truncated: boolean;
+  limit: number;
+  items: DiscoveryLibraryItem[];
+};
+
