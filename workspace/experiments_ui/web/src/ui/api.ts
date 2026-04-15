@@ -4,6 +4,8 @@ import type {
   QueueResponse,
   RequeueRunRequest,
   RequeueRunResponse,
+  QueueSubmitPromptRequest,
+  QueueSubmitPromptResponse,
   ComfyCancelRequest,
   ComfyCancelResponse,
   ComfyClearResponse,
@@ -140,6 +142,19 @@ export async function requeueRun(req: RequeueRunRequest): Promise<RequeueRunResp
     throw new Error(`POST /api/queue/requeue-run failed: ${r.status}${t ? `\n${t}` : ""}`);
   }
   return (await r.json()) as RequeueRunResponse;
+}
+
+export async function submitPromptToQueue(req: QueueSubmitPromptRequest): Promise<QueueSubmitPromptResponse> {
+  const r = await fetch("/api/queue/submit-prompt", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  if (!r.ok) {
+    const t = await r.text().catch(() => "");
+    throw new Error(`POST /api/queue/submit-prompt failed: ${r.status}${t ? `\n${t}` : ""}`);
+  }
+  return (await r.json()) as QueueSubmitPromptResponse;
 }
 
 export async function comfyCancel(req: ComfyCancelRequest): Promise<ComfyCancelResponse> {

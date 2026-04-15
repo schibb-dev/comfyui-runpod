@@ -110,6 +110,19 @@ export type ComfyHistoryResponse = {
 export type RequeueRunRequest = { exp_id: string; run_id: string; front?: boolean };
 export type RequeueRunResponse = { ok: boolean; exp_id: string; run_id: string; front: boolean; submit?: unknown };
 
+/** POST /api/queue/submit-prompt — generic Comfy graph submit (no experiment run artifacts). */
+export type QueueSubmitPromptRequest = {
+  prompt: Record<string, unknown>;
+  front?: boolean;
+  client_id?: string;
+};
+export type QueueSubmitPromptResponse = {
+  ok: boolean;
+  front: boolean;
+  client_id: string;
+  submit?: unknown;
+};
+
 export type ComfyCancelRequest = { prompt_id: string; kind: "pending" | "running" };
 export type ComfyCancelResponse = { ok: boolean; kind: "pending" | "running"; prompt_id: string; result?: unknown };
 

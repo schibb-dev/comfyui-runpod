@@ -67,6 +67,25 @@ def _http_json(
     return json.loads(raw.decode("utf-8", "replace"))
 
 
+def _comfy_submit_prompt(
+    comfy_server: str,
+    prompt: Dict[str, Any],
+    *,
+    front: bool = False,
+    client_id: str = "experiments-ui",
+    timeout_s: int = 30,
+) -> Any:
+    """
+    POST a workflow graph to ComfyUI /prompt (same payload shape as the UI uses for requeue).
+    Returns Comfy's JSON body. Raises on network / HTTP / JSON errors (urllib / json).
+    """
+    comfy = str(comfy_server).rstrip("/")
+    payload: Dict[str, Any] = {"prompt": prompt, "client_id": client_id}
+    if front:
+        payload["front"] = True
+    return _http_json("POST", f"{comfy}/prompt", payload, timeout_s=timeout_s)
+
+
 def _safe_int(x: Any) -> Optional[int]:
     try:
         return int(x)
@@ -1531,6 +1550,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_create_experiment()
         if path == "/api/queue/requeue-run":
             return self._handle_requeue_run()
+        if path == "/api/queue/submit-prompt":
+            return self._handle_queue_submit_prompt()
         if path == "/api/queue/comfy-cancel":
             return self._handle_comfy_cancel()
         if path == "/api/queue/comfy-clear":
@@ -2103,11 +2124,8 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, 400, {"error": "prompt_not_object"})
 
         comfy = str(cfg.comfy_server).rstrip("/")
-        payload: Dict[str, Any] = {"prompt": prompt_obj, "client_id": "experiments-ui"}
-        if front:
-            payload["front"] = True
         try:
-            submit = _http_json("POST", f"{comfy}/prompt", payload, timeout_s=30)
+            submit = _comfy_submit_prompt(cfg.comfy_server, prompt_obj, front=front)
         except Exception as e:
             return _json_response(self, 502, {"error": "comfy_submit_failed", "detail": str(e), "server": comfy})
 
@@ -2117,6 +2135,35 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, 500, {"error": "write_submit_failed", "detail": str(e)})
 
         return _json_response(self, 200, {"ok": True, "exp_id": exp_id, "run_id": run_id, "front": front, "submit": submit})
+
+    def _handle_queue_submit_prompt(self) -> None:
+        """
+        POST /api/queue/submit-prompt
+        Body: { "prompt": { ... Comfy graph ... }, "front"?: bool, "client_id"?: str }
+        Submits to Comfy /prompt without reading or writing experiment run artifacts.
+        """
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"error": "bad_json"})
+
+        prompt_obj = body.get("prompt")
+        if not isinstance(prompt_obj, dict):
+            return _json_response(self, 400, {"error": "missing_prompt", "detail": "prompt must be a JSON object"})
+
+        front = bool(body.get("front") or False)
+        raw_cid = body.get("client_id")
+        if raw_cid is not None and not isinstance(raw_cid, str):
+            return _json_response(self, 400, {"error": "bad_client_id"})
+        client_id = (raw_cid.strip() if isinstance(raw_cid, str) else "") or "experiments-ui"
+
+        comfy = str(cfg.comfy_server).rstrip("/")
+        try:
+            submit = _comfy_submit_prompt(cfg.comfy_server, prompt_obj, front=front, client_id=client_id)
+        except Exception as e:
+            return _json_response(self, 502, {"error": "comfy_submit_failed", "detail": str(e), "server": comfy})
+
+        return _json_response(self, 200, {"ok": True, "front": front, "client_id": client_id, "submit": submit})
 
     def _handle_comfy_cancel(self) -> None:
         cfg = self.server.cfg
