@@ -231,7 +231,7 @@ Then restart ComfyUI (or reload the UI). You can later edit `text_file_dirs.json
 
 ---
 
-## Experiments UI dev (`npm run ui:dev:all`) and Docker port **8790**
+## Experiments UI dev (`npm run ui:dev:start` / `ui:dev:all`) and Docker port **8790**
 
 Docker Compose maps **host `8790` → container `8790`**, where the container may run `experiments_ui_server.py` (see `entrypoint.sh` / `EXPERIMENTS_UI`).
 
@@ -242,7 +242,7 @@ If you run **Vite on the host** with the proxy target set to `http://127.0.0.1:8
 
 **Fix (current repo defaults):**
 
-- Host workflow: `npm run ui:dev:all` (Node launcher `scripts/experiments-ui-dev.mjs`; Linux/macOS/Windows) starts `experiments_ui_server.py` on **`127.0.0.1:8791`**. Vite’s default proxy targets **8791** (`workspace/experiments_ui/web/vite.config.ts`).
+- Host workflow: **`npm run ui:dev:start`** (watched API + Vite) or **`npm run ui:dev:all`** (API + Vite, no watch) via `scripts/experiments-ui-dev.mjs`; both start the API on **`127.0.0.1:8791`**. Vite’s default proxy targets **8791** (`workspace/experiments_ui/web/vite.config.ts`).
 - Container workflow: `scripts/dev_experiments_ui_container.ps1` sets `EXPERIMENTS_UI_PROXY_TARGET=http://127.0.0.1:8790` so Vite inside the container talks to the in-container API.
 
 After changing `experiments_ui_server.py`, restart the ComfyUI container so the background Experiments UI picks up the script: `docker compose restart comfyui`.

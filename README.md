@@ -107,13 +107,19 @@ This uses `docker compose exec` and serves Vite on `http://127.0.0.1:5178/` (see
 npm run ui:dev:vite
 ```
 
-API + Vite on the host:
+API + Vite on the host (recommended — watched API restarts on `experiments_ui_server.py` saves):
+
+```bash
+npm run ui:dev:start
+```
+
+Same stack without auto-restart of the Python server (manual restart after API edits):
 
 ```bash
 npm run ui:dev:all
 ```
 
-Tailscale / remote HMR: `npm run ui:dev:vite:tailscale` or `npm run ui:dev:all:tailscale`. Optional shell wrappers: `./scripts/dev_experiments_ui.sh`, `./scripts/dev_experiments_ui_all.sh`.
+Tailscale / remote HMR: `npm run ui:dev:vite:tailscale`, `npm run ui:dev:start:tailscale`, or `npm run ui:dev:all:tailscale`. Optional shell wrappers: `./scripts/dev_experiments_ui.sh`, `./scripts/dev_experiments_ui_start.sh`, `./scripts/dev_experiments_ui_all.sh`.
 
 - **Windows-only PowerShell** (ensure container, then Vite): `npm run ui:dev:win` or `.\scripts\dev_experiments_ui_container.ps1 -EnsureContainer`.
 

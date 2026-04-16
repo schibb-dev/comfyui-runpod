@@ -11,6 +11,8 @@
  *   node scripts/experiments-ui-dev.mjs api-watch
  *       → Same as `api`, but uses `npx nodemon` to restart when experiments_ui_server.py changes
  *       (Node ecosystem; first run may download nodemon). Pair with `npm run ui:dev:vite` in another terminal.
+ *   node scripts/experiments-ui-dev.mjs start
+ *       → Recommended host dev: **api-watch + Vite** in one process (same as `npm run ui:dev:start`).
  *
  * Env: EXPERIMENTS_UI_PROXY_TARGET (default http://127.0.0.1:8791 for vite mode)
  *      EXPERIMENTS_UI_API_HOST / EXPERIMENTS_UI_API_PORT (optional; default 127.0.0.1:8791 for `api` mode)
@@ -50,9 +52,9 @@ function resolvePython() {
 
 function parseArgs(argv) {
   const mode = argv[2];
-  if (mode !== "vite" && mode !== "all" && mode !== "api" && mode !== "api-watch") {
+  if (mode !== "vite" && mode !== "all" && mode !== "api" && mode !== "api-watch" && mode !== "start") {
     die(
-      "Usage: node scripts/experiments-ui-dev.mjs <vite|all|api|api-watch> [--tailscale] [--no-open] [--port N] [--ensure-container]",
+      "Usage: node scripts/experiments-ui-dev.mjs <vite|all|api|api-watch|start> [--tailscale] [--no-open] [--port N] [--ensure-container]",
     );
   }
   let tailscale = false;
@@ -173,6 +175,55 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+async function runStart(opts) {
+  if (!fs.existsSync(apiScript)) die(`Missing API script: ${apiScript}`);
+  resolvePython();
+
+  console.log(
+    "[ui:dev:start] Vite + watched Python API on :8791 (nodemon restarts experiments_ui_server.py on save; Ctrl+C stops both)",
+  );
+  const api = spawnNodemonExperimentsApi("[ui:dev:start]");
+
+  const stopApi = () => {
+    if (api && !api.killed && api.exitCode === null) {
+      console.log(`[ui:dev:start] stopping backend watcher (pid=${api.pid})`);
+      try {
+        api.kill(isWin ? undefined : "SIGTERM");
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+
+  const onSig = () => {
+    stopApi();
+    process.exit(130);
+  };
+  process.on("SIGINT", onSig);
+  process.on("SIGTERM", () => {
+    stopApi();
+    process.exit(143);
+  });
+
+  await sleep(1000);
+  if (api.exitCode !== null) {
+    die(`Backend watcher exited early with code ${api.exitCode}`);
+  }
+
+  try {
+    const code = runVite({
+      ...opts,
+      backend: "http://127.0.0.1:8791",
+      ensureContainer: false,
+    });
+    stopApi();
+    process.exit(code);
+  } catch (e) {
+    stopApi();
+    throw e;
+  }
+}
+
 async function runAll(opts) {
   if (!fs.existsSync(apiScript)) die(`Missing API script: ${apiScript}`);
 
@@ -229,8 +280,7 @@ async function runAll(opts) {
 function runApiOnly() {
   if (!fs.existsSync(apiScript)) die(`Missing API script: ${apiScript}`);
   const py = resolvePython();
-  const host = (process.env.EXPERIMENTS_UI_API_HOST || "127.0.0.1").trim() || "127.0.0.1";
-  const portApi = Number.parseInt(process.env.EXPERIMENTS_UI_API_PORT || "8791", 10) || 8791;
+  const { host, portApi } = resolveApiListenOpts();
   const pyArgs = [...py.argsPrefix, apiScript, "--host", host, "--port", String(portApi)];
   console.log(`[ui:dev:api] http://${host}:${portApi}  (${py.cmd} ${pyArgs.join(" ")})`);
   const api = spawn(py.cmd, pyArgs, {
@@ -251,6 +301,12 @@ function runApiOnly() {
   process.on("SIGTERM", onSig);
 }
 
+function resolveApiListenOpts() {
+  const host = (process.env.EXPERIMENTS_UI_API_HOST || "127.0.0.1").trim() || "127.0.0.1";
+  const portApi = Number.parseInt(process.env.EXPERIMENTS_UI_API_PORT || "8791", 10) || 8791;
+  return { host, portApi };
+}
+
 function buildPythonExecForNodemon(py, host, portApi) {
   const relScript = path.join("scripts", "experiments_ui_server.py");
   if (py.cmd === "py") {
@@ -259,11 +315,11 @@ function buildPythonExecForNodemon(py, host, portApi) {
   return `${py.cmd} ${relScript} --host ${host} --port ${portApi}`;
 }
 
-function runApiWatch() {
+/** @param {string} logPrefix e.g. "[ui:dev:api:watch]" */
+function spawnNodemonExperimentsApi(logPrefix) {
   if (!fs.existsSync(apiScript)) die(`Missing API script: ${apiScript}`);
   const py = resolvePython();
-  const host = (process.env.EXPERIMENTS_UI_API_HOST || "127.0.0.1").trim() || "127.0.0.1";
-  const portApi = Number.parseInt(process.env.EXPERIMENTS_UI_API_PORT || "8791", 10) || 8791;
+  const { host, portApi } = resolveApiListenOpts();
   const relScript = path.join("scripts", "experiments_ui_server.py");
   const execStr = buildPythonExecForNodemon(py, host, portApi);
 
@@ -279,15 +335,19 @@ function runApiWatch() {
     execStr,
   ];
   console.log(
-    `[ui:dev:api:watch] http://${host}:${portApi} — restart on ${relScript} changes (npx nodemon; first run may fetch nodemon)`,
+    `${logPrefix} http://${host}:${portApi} — restart on ${relScript} changes (npx nodemon; first run may fetch nodemon)`,
   );
-  console.log(`[ui:dev:api:watch] exec: ${execStr}`);
+  console.log(`${logPrefix} exec: ${execStr}`);
 
-  const proc = spawn("npx", args, {
+  return spawn("npx", args, {
     cwd: repoRoot,
     stdio: "inherit",
     shell: isWin,
   });
+}
+
+function runApiWatch() {
+  const proc = spawnNodemonExperimentsApi("[ui:dev:api:watch]");
   proc.on("exit", (code) => process.exit(code === null ? 1 : code));
   const onSig = () => {
     try {
@@ -309,6 +369,11 @@ if (opts.mode === "vite") {
   runApiOnly();
 } else if (opts.mode === "api-watch") {
   runApiWatch();
+} else if (opts.mode === "start") {
+  runStart(opts).catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
 } else {
   runAll(opts).catch((e) => {
     console.error(e);
