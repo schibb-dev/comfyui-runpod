@@ -62,6 +62,9 @@ workspace/.civitai_token
 workspace/.huggingface_token
 workspace/.hf_token
 
+# One-off migrations / scratch scripts (not part of supported repo tooling)
+workspace/ephemera/
+
 # Workspace runtime / local state
 workspace/_tmp/
 workspace/output/
