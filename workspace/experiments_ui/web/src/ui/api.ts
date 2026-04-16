@@ -58,11 +58,13 @@ export async function fetchDiscoveryEmbedApiPrompt(it: DiscoveryLibraryItem): Pr
       String(j.path || "").includes("embed-api-prompt");
     if (isStale) {
       throw new Error(
-        "The Experiments UI API you are hitting is too old: it does not have GET /api/discovery/embed-api-prompt. " +
-          "Restart the Python server that serves /api (pick the setup you use): " +
-          "host dev — stop and re-run experiments_ui_server on port 8791 (e.g. npm run ui:dev:all or scripts/experiments-ui-dev.mjs all); " +
-          "Docker — docker compose restart comfyui so the container reloads scripts/experiments_ui_server.py from the bind mount. " +
-          "If Vite proxies to port 8790, that is usually the container; after a git pull you must restart the container, not only refresh the browser."
+        "Experiments API is outdated (missing GET /api/discovery/embed-api-prompt). Restart the server that handles /api.\n\n" +
+          "npm run ui:dev:start\n" +
+          "npm run ui:dev:all\n" +
+          "npm run ui:dev:api\n" +
+          "npm run ui:dev:api:watch   (with npm run ui:dev:vite in another terminal)\n" +
+          "npm run ui:dev:vite\n" +
+          "Docker: npm run restart"
       );
     }
     throw new Error(`GET /api/discovery/embed-api-prompt failed: ${r.status}: ${JSON.stringify(j)}`);

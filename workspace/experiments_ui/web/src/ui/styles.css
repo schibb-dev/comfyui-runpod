@@ -721,6 +721,7 @@ body {
 
 .discovery-comfy-queue-msg--error {
   color: #ff8a8a;
+  white-space: pre-line;
 }
 
 .discovery-comfy-queue-msg--ok {
