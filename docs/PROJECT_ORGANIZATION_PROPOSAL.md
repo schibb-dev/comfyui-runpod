@@ -269,3 +269,30 @@ To keep runpod configs clean, **only the following** are maintained in the comfy
 | **platform/** (optional) | Repo root | e.g. Windows GPU monitor if you keep it in this repo. |
 
 Everything else (pipeline code, UI code, image sorter, workflow JSONs) lives in **subrepos**. Updating runpod “config” means editing Dockerfile, compose, entrypoint, and docs—not touching Python or React. That keeps runpod config management clean and focused.
+
+---
+
+## 9. Deferred: open the **Comfy UI** graph from Experiments UI (“launch workflow”)
+
+### Goal
+
+From **Experiments UI** (Discovery / Comfy tab), coordinate with the **already-running ComfyUI instance** so the **canvas** loads a workflow **as if you had opened it yourself** in that browser session (e.g. PNG-with-embedded-workflow or UI-format graph), not only queue an API-format `prompt`.
+
+### Summary assessment
+
+| Path | Status |
+|------|--------|
+| **Queue execution** via Comfy’s **`POST /prompt`** with API-format JSON | Supported; Experiments UI / server already use this pattern. |
+| **Inject or replace the graph in the Comfy frontend** from another tab or app via a **small, stable HTTP API** | **Not** a first-class, documented Comfy feature today. The SPA owns editor state; loading a file is normally user-driven (open file, drag PNG, etc.). |
+| **Open Comfy in a new tab with query params** (`?workflow=…`, `?asset_url=…`) | Only useful if **custom** code runs in Comfy’s frontend (fork, extension, bookmarklet) or a **local helper** interprets those params and talks to the editor. |
+
+So coordinating **“load into the current Comfy UI”** is **integration-heavy**: it needs agreement with whatever Comfy build you run (CORS if the browser calls Comfy directly, or a backend that can reach Comfy and some channel the UI listens on). There are **no standard API hooks** today that mean “replace current graph with this workflow JSON / this PNG URL” the way `/prompt` means “run this API prompt.”
+
+### Plan: **punt for now**
+
+- **Ship / keep** affordances that do **not** require Comfy UI cooperation: e.g. link-with-hints, server-side embed/load, **Send to Comfy** for execution.
+- **Defer** first-class **“launch into editor”** until one of: a **custom Comfy frontend hook** or extension, a **documented internal** API if upstream adds one, **desktop automation** (last resort), or a **narrow contract** you own (e.g. same-origin proxy + small script in Comfy’s `web/`).
+
+### When revisiting
+
+Record the chosen contract (query param names, who fetches `asset_url`, same-origin vs server-mediated) in **Project B** docs or a short **A↔B API** note so the Experiments UI and Comfy build stay in sync.
