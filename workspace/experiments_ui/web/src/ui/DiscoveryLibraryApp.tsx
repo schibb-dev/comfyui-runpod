@@ -14,6 +14,7 @@ import {
   TRIM_HANDLE_MIN_GAP_SEC,
 } from "./phoneTrimModel";
 import { DeviceProvider, useDeviceContext } from "./viewport";
+import { DiscoveryComfyQuickEditsSection } from "./DiscoveryComfyQuickEdits";
 
 const SAVED_KEY = "discovery_library_saved_v1";
 const VIDEO_AUTOPLAY_KEY = "discovery_phone_video_autoplay";
@@ -1526,9 +1527,11 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
       ) : null}
 
       {promptDraft && !embedLoading ? (
-        <details className="discovery-comfy-advanced-details">
-          <summary>All node fields (advanced)</summary>
-          <div className="discovery-comfy-fields">
+        <>
+          <DiscoveryComfyQuickEditsSection promptDraft={promptDraft} setPromptInput={setPromptInput} disabled={busy} />
+          <details className="discovery-comfy-advanced-details">
+            <summary>All node fields (advanced)</summary>
+            <div className="discovery-comfy-fields">
               {Array.from(rowsByNode.entries()).map(([nodeId, rows]) => (
                 <fieldset key={nodeId} className="discovery-comfy-node-fieldset">
                   <legend className="discovery-comfy-node-legend mono">
@@ -1606,7 +1609,8 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
                 <p className="discovery-comfy-queue-msg">No scalar or JSON widget fields found (graph may be links-only).</p>
               ) : null}
             </div>
-        </details>
+          </details>
+        </>
       ) : null}
 
       {promptDraft && !embedLoading ? (
