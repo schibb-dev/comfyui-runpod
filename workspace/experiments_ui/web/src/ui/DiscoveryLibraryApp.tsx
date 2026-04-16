@@ -15,6 +15,7 @@ import {
 } from "./phoneTrimModel";
 import { DeviceProvider, useDeviceContext } from "./viewport";
 import { DiscoveryComfyQuickEditsSection } from "./DiscoveryComfyQuickEdits";
+import { useComfyPromptUndoKeyboard, usePromptDraftHistory } from "./usePromptDraftHistory";
 
 const SAVED_KEY = "discovery_library_saved_v1";
 const VIDEO_AUTOPLAY_KEY = "discovery_phone_video_autoplay";
@@ -1316,7 +1317,16 @@ function DiscoveryComfyJsonInput({
 function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
   const itemKey = discoveryItemKey(it);
   const draftKey = discoveryDraftStorageKey(itemKey);
-  const [promptDraft, setPromptDraft] = useState<Record<string, unknown> | null>(null);
+  const {
+    promptDraft,
+    setPromptInput,
+    resetPromptDraft,
+    undo,
+    redo,
+    endSliderBurst,
+    canUndo,
+    canRedo,
+  } = usePromptDraftHistory();
   const [frontOfQueue, setFrontOfQueue] = useState(() => _discoverySessionGetBool01(DISCOVERY_COMFY_FRONT_KEY));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1326,22 +1336,9 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
   const [jsonFieldError, setJsonFieldError] = useState<string | null>(null);
   const [workflowPathCopied, setWorkflowPathCopied] = useState(false);
 
-  const setPromptInput = useCallback((nodeId: string, inputKey: string, value: unknown) => {
-    setPromptDraft((prev) => {
-      if (!prev) return prev;
-      const node = prev[nodeId];
-      if (typeof node !== "object" || node === null) return prev;
-      const nrec = node as Record<string, unknown>;
-      const inputs = nrec.inputs;
-      if (typeof inputs !== "object" || inputs === null) return prev;
-      const inRec = { ...(inputs as Record<string, unknown>), [inputKey]: value };
-      return { ...prev, [nodeId]: { ...nrec, inputs: inRec } };
-    });
-  }, []);
-
   const loadEmbedFromServer = useCallback(async () => {
     setEmbedLoading(true);
-    setPromptDraft(null);
+    resetPromptDraft(null);
     setEmbedUi(null);
     setError(null);
     setJsonFieldError(null);
@@ -1349,7 +1346,7 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
     try {
       const j = await fetchDiscoveryEmbedApiPrompt(it);
       if (j.ok) {
-        setPromptDraft(_discoveryCloneJson(j.prompt));
+        resetPromptDraft(_discoveryCloneJson(j.prompt));
         setEmbedUi({ kind: "loaded", pngRelpath: j.png_relpath });
         return;
       }
@@ -1357,11 +1354,11 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
       const fallback = _discoverySessionGet(draftKey, "");
       const parsed = _parsePromptDraft(fallback);
       if (parsed) {
-        setPromptDraft(parsed);
+        resetPromptDraft(parsed);
         setEmbedUi({ kind: "note", text: `Saved draft · ${j.error}${detail ? ` — ${detail}` : ""}` });
         setError(null);
       } else {
-        setPromptDraft(null);
+        resetPromptDraft(null);
         setEmbedUi(null);
         setError(detail || j.error || "Could not load embedded workflow.");
       }
@@ -1369,22 +1366,30 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
       const fallback = _discoverySessionGet(draftKey, "");
       const parsed = _parsePromptDraft(fallback);
       if (parsed) {
-        setPromptDraft(parsed);
+        resetPromptDraft(parsed);
         setEmbedUi({ kind: "note", text: `Saved draft · ${e instanceof Error ? e.message : String(e)}` });
         setError(null);
       } else {
-        setPromptDraft(null);
+        resetPromptDraft(null);
         setEmbedUi(null);
         setError(e instanceof Error ? e.message : String(e));
       }
     } finally {
       setEmbedLoading(false);
     }
-  }, [it, draftKey]);
+  }, [it, draftKey, resetPromptDraft]);
 
   useEffect(() => {
     void loadEmbedFromServer();
   }, [loadEmbedFromServer]);
+
+  useComfyPromptUndoKeyboard({
+    active: Boolean(!embedLoading && promptDraft),
+    canUndo,
+    canRedo,
+    undo,
+    redo,
+  });
 
   useEffect(() => {
     setWorkflowPathCopied(false);
@@ -1528,7 +1533,12 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
 
       {promptDraft && !embedLoading ? (
         <>
-          <DiscoveryComfyQuickEditsSection promptDraft={promptDraft} setPromptInput={setPromptInput} disabled={busy} />
+          <DiscoveryComfyQuickEditsSection
+            promptDraft={promptDraft}
+            setPromptInput={setPromptInput}
+            onSliderBurstEnd={endSliderBurst}
+            disabled={busy}
+          />
           <details className="discovery-comfy-advanced-details">
             <summary>All node fields (advanced)</summary>
             <div className="discovery-comfy-fields">
@@ -1621,6 +1631,26 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
       ) : null}
 
       <div className="discovery-comfy-queue-actions">
+        <div className="discovery-comfy-queue-history" role="group" aria-label="Quick edit undo and redo">
+          <button
+            type="button"
+            className="discovery-comfy-queue-undo"
+            disabled={busy || embedLoading || !canUndo}
+            title="Undo quick edit (Ctrl+Z)"
+            onClick={() => undo()}
+          >
+            Undo
+          </button>
+          <button
+            type="button"
+            className="discovery-comfy-queue-redo"
+            disabled={busy || embedLoading || !canRedo}
+            title="Redo quick edit (Ctrl+Shift+Z or Ctrl+Y)"
+            onClick={() => redo()}
+          >
+            Redo
+          </button>
+        </div>
         <button
           type="button"
           className="discovery-comfy-queue-reload"

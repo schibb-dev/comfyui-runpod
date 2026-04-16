@@ -1,4 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { SetPromptInputMeta } from "./usePromptDraftHistory";
+
+const QH = { recordHistory: true } satisfies SetPromptInputMeta;
 
 /** Comfy API prompt: node id → { class_type, inputs } */
 export type ComfyPromptMap = Record<string, unknown>;
@@ -168,6 +171,7 @@ function SliderNumRow({
   step,
   disabled,
   onChange,
+  onRangePointerUp,
   intMode,
 }: {
   label: string;
@@ -177,7 +181,9 @@ function SliderNumRow({
   step: number;
   disabled?: boolean;
   intMode?: boolean;
-  onChange: (n: number) => void;
+  onChange: (n: number, meta?: SetPromptInputMeta) => void;
+  /** End coalesced undo burst after a range drag (see usePromptDraftHistory). */
+  onRangePointerUp?: () => void;
 }) {
   const [text, setText] = useState(() => String(intMode ? Math.round(value) : value));
   useEffect(() => {
@@ -197,8 +203,10 @@ function SliderNumRow({
         onChange={(e) => {
           const raw = Number.parseFloat(e.target.value);
           const n = intMode ? Math.round(raw) : raw;
-          if (Number.isFinite(n)) onChange(n);
+          if (Number.isFinite(n)) onChange(n, { coalesce: true });
         }}
+        onPointerUp={() => onRangePointerUp?.()}
+        onPointerCancel={() => onRangePointerUp?.()}
       />
       <input
         type="number"
@@ -235,10 +243,13 @@ type QuickDialog =
 export function DiscoveryComfyQuickEditsSection({
   promptDraft,
   setPromptInput,
+  onSliderBurstEnd,
   disabled,
 }: {
   promptDraft: ComfyPromptMap;
-  setPromptInput: (nodeId: string, inputKey: string, value: unknown) => void;
+  setPromptInput: (nodeId: string, inputKey: string, value: unknown, meta?: SetPromptInputMeta) => void;
+  /** Call after a range slider gesture so the next drag starts a new undo step. */
+  onSliderBurstEnd?: () => void;
   disabled?: boolean;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -306,7 +317,7 @@ export function DiscoveryComfyQuickEditsSection({
             spellCheck={false}
             disabled={disabled}
             value={posSlot.text}
-            onChange={(e) => setPromptInput(posSlot.nodeId, "text", e.target.value)}
+            onChange={(e) => setPromptInput(posSlot.nodeId, "text", e.target.value, QH)}
           />
         </>
       );
@@ -322,7 +333,7 @@ export function DiscoveryComfyQuickEditsSection({
             spellCheck={false}
             disabled={disabled}
             value={negSlot.text}
-            onChange={(e) => setPromptInput(negSlot.nodeId, "text", e.target.value)}
+            onChange={(e) => setPromptInput(negSlot.nodeId, "text", e.target.value, QH)}
           />
         </>
       );
@@ -339,7 +350,7 @@ export function DiscoveryComfyQuickEditsSection({
             spellCheck={false}
             disabled={disabled}
             value={slot.text}
-            onChange={(e) => setPromptInput(slot.nodeId, "text", e.target.value)}
+            onChange={(e) => setPromptInput(slot.nodeId, "text", e.target.value, QH)}
           />
         </>
       );
@@ -359,7 +370,8 @@ export function DiscoveryComfyQuickEditsSection({
             max={30}
             step={0.5}
             disabled={disabled}
-            onChange={(n) => setPromptInput(nodeId, keys.cfg, n)}
+            onRangePointerUp={onSliderBurstEnd}
+            onChange={(n, meta) => setPromptInput(nodeId, keys.cfg, n, { ...QH, ...meta })}
           />
         </>
       );
@@ -380,7 +392,8 @@ export function DiscoveryComfyQuickEditsSection({
             step={1}
             intMode
             disabled={disabled}
-            onChange={(n) => setPromptInput(nodeId, keys.steps, n)}
+            onRangePointerUp={onSliderBurstEnd}
+            onChange={(n, meta) => setPromptInput(nodeId, keys.steps, n, { ...QH, ...meta })}
           />
         </>
       );
@@ -400,7 +413,8 @@ export function DiscoveryComfyQuickEditsSection({
             max={1}
             step={0.01}
             disabled={disabled}
-            onChange={(n) => setPromptInput(nodeId, keys.denoise!, n)}
+            onRangePointerUp={onSliderBurstEnd}
+            onChange={(n, meta) => setPromptInput(nodeId, keys.denoise!, n, { ...QH, ...meta })}
           />
         </>
       );
@@ -419,7 +433,8 @@ export function DiscoveryComfyQuickEditsSection({
             max={0.5}
             step={0.005}
             disabled={disabled}
-            onChange={(n) => setPromptInput(speed.nodeId, "rel_l1_thresh", n)}
+            onRangePointerUp={onSliderBurstEnd}
+            onChange={(n, meta) => setPromptInput(speed.nodeId, "rel_l1_thresh", n, { ...QH, ...meta })}
           />
         </>
       );
@@ -443,7 +458,7 @@ export function DiscoveryComfyQuickEditsSection({
                         const ins = _nodeInputs(promptDraft, s.nodeId);
                         const cur = ins?.[s.slotKey];
                         if (typeof cur !== "object" || cur === null || Array.isArray(cur)) return;
-                        setPromptInput(s.nodeId, s.slotKey, { ...(cur as Record<string, unknown>), on: e.target.checked });
+                        setPromptInput(s.nodeId, s.slotKey, { ...(cur as Record<string, unknown>), on: e.target.checked }, QH);
                       }}
                     />
                     <span>{s.name || s.slotKey}</span>
@@ -455,11 +470,12 @@ export function DiscoveryComfyQuickEditsSection({
                     max={4}
                     step={0.05}
                     disabled={disabled}
-                    onChange={(n) => {
+                    onRangePointerUp={onSliderBurstEnd}
+                    onChange={(n, meta) => {
                       const ins = _nodeInputs(promptDraft, s.nodeId);
                       const cur = ins?.[s.slotKey];
                       if (typeof cur !== "object" || cur === null || Array.isArray(cur)) return;
-                      setPromptInput(s.nodeId, s.slotKey, { ...(cur as Record<string, unknown>), strength: n });
+                      setPromptInput(s.nodeId, s.slotKey, { ...(cur as Record<string, unknown>), strength: n }, { ...QH, ...meta });
                     }}
                   />
                 </div>
@@ -481,7 +497,8 @@ export function DiscoveryComfyQuickEditsSection({
                     max={4}
                     step={0.05}
                     disabled={disabled}
-                    onChange={(n) => setPromptInput(r.nodeId, "strength_model", n)}
+                    onRangePointerUp={onSliderBurstEnd}
+                    onChange={(n, meta) => setPromptInput(r.nodeId, "strength_model", n, { ...QH, ...meta })}
                   />
                   {r.strengthClip != null ? (
                     <SliderNumRow
@@ -491,7 +508,8 @@ export function DiscoveryComfyQuickEditsSection({
                       max={4}
                       step={0.05}
                       disabled={disabled}
-                      onChange={(n) => setPromptInput(r.nodeId, "strength_clip", n)}
+                      onRangePointerUp={onSliderBurstEnd}
+                      onChange={(n, meta) => setPromptInput(r.nodeId, "strength_clip", n, { ...QH, ...meta })}
                     />
                   ) : null}
                 </div>

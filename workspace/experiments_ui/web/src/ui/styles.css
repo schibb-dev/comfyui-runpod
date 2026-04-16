@@ -863,6 +863,37 @@ body {
   align-items: center;
 }
 
+.discovery-comfy-queue-history {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-right: auto;
+}
+
+.discovery-comfy-queue-undo,
+.discovery-comfy-queue-redo {
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.discovery-comfy-queue-undo:hover:not(:disabled),
+.discovery-comfy-queue-redo:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.discovery-comfy-queue-undo:disabled,
+.discovery-comfy-queue-redo:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .discovery-comfy-queue-embedmeta {
   margin: 0;
   font-size: 11px;
