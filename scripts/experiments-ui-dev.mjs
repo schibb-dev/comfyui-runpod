@@ -8,6 +8,9 @@
  *   node scripts/experiments-ui-dev.mjs api
  *       → Python API only (same as the backend half of `all`). Restart this process after editing
  *       scripts/experiments_ui_server.py without restarting Vite.
+ *   node scripts/experiments-ui-dev.mjs api-watch
+ *       → Same as `api`, but uses `npx nodemon` to restart when experiments_ui_server.py changes
+ *       (Node ecosystem; first run may download nodemon). Pair with `npm run ui:dev:vite` in another terminal.
  *
  * Env: EXPERIMENTS_UI_PROXY_TARGET (default http://127.0.0.1:8791 for vite mode)
  *      EXPERIMENTS_UI_API_HOST / EXPERIMENTS_UI_API_PORT (optional; default 127.0.0.1:8791 for `api` mode)
@@ -47,9 +50,9 @@ function resolvePython() {
 
 function parseArgs(argv) {
   const mode = argv[2];
-  if (mode !== "vite" && mode !== "all" && mode !== "api") {
+  if (mode !== "vite" && mode !== "all" && mode !== "api" && mode !== "api-watch") {
     die(
-      "Usage: node scripts/experiments-ui-dev.mjs <vite|all|api> [--tailscale] [--no-open] [--port N] [--ensure-container]",
+      "Usage: node scripts/experiments-ui-dev.mjs <vite|all|api|api-watch> [--tailscale] [--no-open] [--port N] [--ensure-container]",
     );
   }
   let tailscale = false;
@@ -248,12 +251,64 @@ function runApiOnly() {
   process.on("SIGTERM", onSig);
 }
 
+function buildPythonExecForNodemon(py, host, portApi) {
+  const relScript = path.join("scripts", "experiments_ui_server.py");
+  if (py.cmd === "py") {
+    return `py -3 ${relScript} --host ${host} --port ${portApi}`;
+  }
+  return `${py.cmd} ${relScript} --host ${host} --port ${portApi}`;
+}
+
+function runApiWatch() {
+  if (!fs.existsSync(apiScript)) die(`Missing API script: ${apiScript}`);
+  const py = resolvePython();
+  const host = (process.env.EXPERIMENTS_UI_API_HOST || "127.0.0.1").trim() || "127.0.0.1";
+  const portApi = Number.parseInt(process.env.EXPERIMENTS_UI_API_PORT || "8791", 10) || 8791;
+  const relScript = path.join("scripts", "experiments_ui_server.py");
+  const execStr = buildPythonExecForNodemon(py, host, portApi);
+
+  const args = [
+    "--yes",
+    "nodemon",
+    "--quiet",
+    "--watch",
+    relScript,
+    "--ext",
+    "py",
+    "--exec",
+    execStr,
+  ];
+  console.log(
+    `[ui:dev:api:watch] http://${host}:${portApi} — restart on ${relScript} changes (npx nodemon; first run may fetch nodemon)`,
+  );
+  console.log(`[ui:dev:api:watch] exec: ${execStr}`);
+
+  const proc = spawn("npx", args, {
+    cwd: repoRoot,
+    stdio: "inherit",
+    shell: isWin,
+  });
+  proc.on("exit", (code) => process.exit(code === null ? 1 : code));
+  const onSig = () => {
+    try {
+      proc.kill(isWin ? undefined : "SIGTERM");
+    } catch {
+      /* ignore */
+    }
+    process.exit(130);
+  };
+  process.on("SIGINT", onSig);
+  process.on("SIGTERM", onSig);
+}
+
 const opts = parseArgs(process.argv);
 if (opts.mode === "vite") {
   const backend = process.env.EXPERIMENTS_UI_PROXY_TARGET?.trim() || "http://127.0.0.1:8791";
   process.exit(runVite({ ...opts, backend }));
 } else if (opts.mode === "api") {
   runApiOnly();
+} else if (opts.mode === "api-watch") {
+  runApiWatch();
 } else {
   runAll(opts).catch((e) => {
     console.error(e);
