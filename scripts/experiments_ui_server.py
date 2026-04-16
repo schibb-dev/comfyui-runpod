@@ -2894,6 +2894,10 @@ def main() -> int:
     print(f"[experiments-ui] orchestrator_state={cfg.orchestrator_state_path}")
     print(f"[experiments-ui] queue_ledger_state={cfg.queue_ledger_state_path}")
     print(f"[experiments-ui] discovery_index={cfg.discovery_index_path}")
+    print(
+        "[experiments-ui] discovery_routes=GET /api/discovery/library, "
+        "/api/discovery/trim, /api/discovery/embed-api-prompt"
+    )
     server.serve_forever()
     return 0
 
