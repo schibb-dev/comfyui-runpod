@@ -5,8 +5,12 @@
  * Usage:
  *   node scripts/experiments-ui-dev.mjs vite [--tailscale] [--no-open] [--port N] [--ensure-container]
  *   node scripts/experiments-ui-dev.mjs all [--tailscale] [--no-open] [--port N]
+ *   node scripts/experiments-ui-dev.mjs api
+ *       → Python API only (same as the backend half of `all`). Restart this process after editing
+ *       scripts/experiments_ui_server.py without restarting Vite.
  *
  * Env: EXPERIMENTS_UI_PROXY_TARGET (default http://127.0.0.1:8791 for vite mode)
+ *      EXPERIMENTS_UI_API_HOST / EXPERIMENTS_UI_API_PORT (optional; default 127.0.0.1:8791 for `api` mode)
  */
 
 import { spawn, spawnSync, execFileSync } from "child_process";
@@ -43,9 +47,9 @@ function resolvePython() {
 
 function parseArgs(argv) {
   const mode = argv[2];
-  if (mode !== "vite" && mode !== "all") {
+  if (mode !== "vite" && mode !== "all" && mode !== "api") {
     die(
-      "Usage: node scripts/experiments-ui-dev.mjs <vite|all> [--tailscale] [--no-open] [--port N] [--ensure-container]",
+      "Usage: node scripts/experiments-ui-dev.mjs <vite|all|api> [--tailscale] [--no-open] [--port N] [--ensure-container]",
     );
   }
   let tailscale = false;
@@ -219,10 +223,37 @@ async function runAll(opts) {
   }
 }
 
+function runApiOnly() {
+  if (!fs.existsSync(apiScript)) die(`Missing API script: ${apiScript}`);
+  const py = resolvePython();
+  const host = (process.env.EXPERIMENTS_UI_API_HOST || "127.0.0.1").trim() || "127.0.0.1";
+  const portApi = Number.parseInt(process.env.EXPERIMENTS_UI_API_PORT || "8791", 10) || 8791;
+  const pyArgs = [...py.argsPrefix, apiScript, "--host", host, "--port", String(portApi)];
+  console.log(`[ui:dev:api] http://${host}:${portApi}  (${py.cmd} ${pyArgs.join(" ")})`);
+  const api = spawn(py.cmd, pyArgs, {
+    cwd: repoRoot,
+    stdio: "inherit",
+    shell: isWin,
+  });
+  api.on("exit", (code) => process.exit(code === null ? 1 : code));
+  const onSig = () => {
+    try {
+      api.kill(isWin ? undefined : "SIGTERM");
+    } catch {
+      /* ignore */
+    }
+    process.exit(130);
+  };
+  process.on("SIGINT", onSig);
+  process.on("SIGTERM", onSig);
+}
+
 const opts = parseArgs(process.argv);
 if (opts.mode === "vite") {
   const backend = process.env.EXPERIMENTS_UI_PROXY_TARGET?.trim() || "http://127.0.0.1:8791";
   process.exit(runVite({ ...opts, backend }));
+} else if (opts.mode === "api") {
+  runApiOnly();
 } else {
   runAll(opts).catch((e) => {
     console.error(e);

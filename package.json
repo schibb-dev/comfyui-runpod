@@ -34,6 +34,7 @@
     "//ui": "Experiments UI: cross-platform via node scripts/experiments-ui-dev.mjs; PowerShell helpers optional on Windows.",
     "ui:dev:vite": "node scripts/experiments-ui-dev.mjs vite",
     "ui:dev:vite:tailscale": "node scripts/experiments-ui-dev.mjs vite --tailscale",
+    "ui:dev:api": "node scripts/experiments-ui-dev.mjs api",
     "ui:dev:all": "node scripts/experiments-ui-dev.mjs all",
     "ui:dev:all:tailscale": "node scripts/experiments-ui-dev.mjs all --tailscale",
     "ui:dev:all:powershell": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\\\scripts\\\\dev_experiments_ui_all.ps1",
