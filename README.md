@@ -2,6 +2,16 @@
 
 A complete Docker-based ComfyUI setup optimized for RunPod deployment with automatic model downloads, custom node installation, and workflow support. This project extends the base ComfyUI template with WAN video generation capabilities, GGUF model support, and automated LoRA management.
 
+## TL;DR (local dev: bounce the stack)
+
+From the repo root (after `docker compose up -d` and any one-time setup in **Quick Start**):
+
+1. **`npm run restart`** — restarts Docker services `comfyui` and `watch_queue`.
+2. **`npm run ui:dev:start`** — host Experiments UI: **nodemon-watched** Python API on `http://127.0.0.1:8791` plus Vite on **`http://127.0.0.1:5178/`** (Vite proxies `/api` and `/files` to the API). Stop both with **Ctrl+C** in that terminal.
+3. **ComfyUI** — **`http://localhost:8188/`** (or the host port from `COMFYUI_HOST_PORT` in `.env`).
+
+Optional: `npm run ui:dev:start -- --no-open` skips auto-opening a browser. More UI modes and container-only dev are under **Quick Start → Local Development** (Experiments UI).
+
 ## Features
 
 - 🐳 **Docker-based**: Complete containerization for consistent deployment
