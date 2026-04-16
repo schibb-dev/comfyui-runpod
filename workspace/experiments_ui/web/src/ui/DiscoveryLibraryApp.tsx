@@ -658,6 +658,49 @@ function fileUrlFromRel(relpath: string): string {
   return "/files/" + encodeURIComponent(relpath.replace(/\\/g, "/"));
 }
 
+/**
+ * Workspace-relative path for “open this asset in Comfy like a workflow” — prefer PNG thumb/metadata when present.
+ */
+function discoveryComfyAssetRelpath(it: DiscoveryLibraryItem): string {
+  const tr = it.thumb_relpath;
+  if (tr && isRasterImage(tr)) return tr;
+  if (isRasterImage(it.relpath)) return it.relpath;
+  if (it.video_relpath) return it.video_relpath;
+  return it.relpath;
+}
+
+/** POSIX path under the workspace output tree (PNG-with-metadata thumb when available, same rule as /files/). */
+function discoveryWorkflowFilePathForClipboard(it: DiscoveryLibraryItem): string {
+  return discoveryComfyAssetRelpath(it).replace(/\\/g, "/");
+}
+
+type DiscoveryComfyEmbedUi = { kind: "loaded"; pngRelpath: string } | { kind: "note"; text: string };
+
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 function discoveryItemKey(it: DiscoveryLibraryItem): string {
   return it.group_id || it.relpath;
 }
@@ -1278,8 +1321,9 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
   const [error, setError] = useState<string | null>(null);
   const [resultLine, setResultLine] = useState<string | null>(null);
   const [embedLoading, setEmbedLoading] = useState(true);
-  const [embedMeta, setEmbedMeta] = useState<string | null>(null);
+  const [embedUi, setEmbedUi] = useState<DiscoveryComfyEmbedUi | null>(null);
   const [jsonFieldError, setJsonFieldError] = useState<string | null>(null);
+  const [workflowPathCopied, setWorkflowPathCopied] = useState(false);
 
   const setPromptInput = useCallback((nodeId: string, inputKey: string, value: unknown) => {
     setPromptDraft((prev) => {
@@ -1297,7 +1341,7 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
   const loadEmbedFromServer = useCallback(async () => {
     setEmbedLoading(true);
     setPromptDraft(null);
-    setEmbedMeta(null);
+    setEmbedUi(null);
     setError(null);
     setJsonFieldError(null);
     setResultLine(null);
@@ -1305,7 +1349,7 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
       const j = await fetchDiscoveryEmbedApiPrompt(it);
       if (j.ok) {
         setPromptDraft(_discoveryCloneJson(j.prompt));
-        setEmbedMeta(`${j.source} · ${j.png_relpath}`);
+        setEmbedUi({ kind: "loaded", pngRelpath: j.png_relpath });
         return;
       }
       const detail = [j.detail, j.hint].filter(Boolean).join(" ");
@@ -1313,11 +1357,11 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
       const parsed = _parsePromptDraft(fallback);
       if (parsed) {
         setPromptDraft(parsed);
-        setEmbedMeta(`Saved draft · ${j.error}${detail ? ` — ${detail}` : ""}`);
+        setEmbedUi({ kind: "note", text: `Saved draft · ${j.error}${detail ? ` — ${detail}` : ""}` });
         setError(null);
       } else {
         setPromptDraft(null);
-        setEmbedMeta(null);
+        setEmbedUi(null);
         setError(detail || j.error || "Could not load embedded workflow.");
       }
     } catch (e) {
@@ -1325,11 +1369,11 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
       const parsed = _parsePromptDraft(fallback);
       if (parsed) {
         setPromptDraft(parsed);
-        setEmbedMeta(`Saved draft · ${e instanceof Error ? e.message : String(e)}`);
+        setEmbedUi({ kind: "note", text: `Saved draft · ${e instanceof Error ? e.message : String(e)}` });
         setError(null);
       } else {
         setPromptDraft(null);
-        setEmbedMeta(null);
+        setEmbedUi(null);
         setError(e instanceof Error ? e.message : String(e));
       }
     } finally {
@@ -1340,6 +1384,10 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
   useEffect(() => {
     void loadEmbedFromServer();
   }, [loadEmbedFromServer]);
+
+  useEffect(() => {
+    setWorkflowPathCopied(false);
+  }, [itemKey]);
 
   useEffect(() => {
     if (embedLoading || !promptDraft) return;
@@ -1400,25 +1448,72 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
     }
   }, [promptDraft, frontOfQueue, jsonFieldError]);
 
-  const ctxTitle = it.video_relpath ?? it.relpath;
+  const viewingPathHint = it.video_relpath ?? it.relpath;
+  const viewingTitleTooltip = viewingPathHint && viewingPathHint !== it.name ? `${it.name}\n${viewingPathHint}` : it.name;
   const jsonMirror = useMemo(
     () => (promptDraft ? JSON.stringify(promptDraft, null, 2) : ""),
     [promptDraft]
   );
 
+  const workflowFilePathForClipboard = useMemo(() => discoveryWorkflowFilePathForClipboard(it), [it]);
+
+  const onCopyWorkflowPath = useCallback(async () => {
+    const text = workflowFilePathForClipboard;
+    const ok = await copyTextToClipboard(text);
+    if (ok) {
+      setWorkflowPathCopied(true);
+      window.setTimeout(() => setWorkflowPathCopied(false), 2500);
+      return;
+    }
+    window.prompt("Copy this path manually (Ctrl+C):", text);
+  }, [workflowFilePathForClipboard]);
+
   return (
     <div className="discovery-comfy-queue-panel">
-      <p className="discovery-comfy-queue-lead">
-        Workflow is loaded from the output PNG metadata when available. If the file only has the UI workflow (nodes
-        + links), the server asks Comfy at <span className="mono">POST /workflow/convert</span> (e.g. workflow-to-api
-        converter custom node) to produce API <strong>prompt</strong> JSON. Edit fields below; linked inputs (other
-        nodes) stay wired and are hidden.
-      </p>
-      <div className="discovery-comfy-queue-context mono" title={ctxTitle}>
-        <span className="discovery-comfy-queue-context-label">Now viewing</span> {it.name}
+      <div className="discovery-comfy-queue-meta">
+        <div className="discovery-comfy-queue-section-head">Now viewing</div>
+        <div className="discovery-comfy-queue-viewing-title" title={viewingTitleTooltip}>
+          {it.name}
+        </div>
+        {embedLoading ? <p className="discovery-comfy-queue-embedloading">Loading embedded workflow…</p> : null}
+        {!embedLoading && embedUi?.kind === "note" ? (
+          <p className="discovery-comfy-queue-embedmeta">{embedUi.text}</p>
+        ) : null}
+        <details className="discovery-comfy-queue-meta-paths-details">
+          <summary className="discovery-comfy-queue-meta-paths-summary">
+            <span className="discovery-comfy-queue-meta-paths-caret" aria-hidden="true" />
+            Details
+          </summary>
+          <div className="discovery-comfy-queue-meta-paths-body">
+            {!embedLoading && embedUi?.kind === "loaded" ? (
+              <div className="discovery-comfy-queue-embed-loaded">
+                <div className="discovery-comfy-queue-section-head">Prompt source</div>
+                <div className="discovery-comfy-queue-path-copy">
+                  <span className="discovery-comfy-queue-path-clip" title={embedUi.pngRelpath}>
+                    <span className="discovery-comfy-queue-path-text mono">{embedUi.pngRelpath}</span>
+                  </span>
+                </div>
+              </div>
+            ) : null}
+            <div className="discovery-comfy-queue-path-row">
+              <span className="discovery-comfy-queue-path-label">Workflow file</span>
+              <div className="discovery-comfy-queue-path-copy">
+                <span className="discovery-comfy-queue-path-clip" title={workflowFilePathForClipboard}>
+                  <span className="discovery-comfy-queue-path-text mono">{workflowFilePathForClipboard}</span>
+                </span>
+                <button
+                  type="button"
+                  className="discovery-comfy-queue-copypath"
+                  title={`Copy workspace-relative path (POSIX).\n${workflowFilePathForClipboard}`}
+                  onClick={() => void onCopyWorkflowPath()}
+                >
+                  {workflowPathCopied ? "Copied" : "Copy"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </details>
       </div>
-      {embedMeta ? <p className="discovery-comfy-queue-embedmeta">{embedMeta}</p> : null}
-      {embedLoading ? <p className="discovery-comfy-queue-embedloading">Loading embedded workflow…</p> : null}
       <label className="discovery-comfy-queue-check">
         <input type="checkbox" checked={frontOfQueue} onChange={(e) => setFrontOfQueue(e.target.checked)} />
         Send to front of queue
@@ -1431,84 +1526,87 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
       ) : null}
 
       {promptDraft && !embedLoading ? (
-        <div className="discovery-comfy-fields">
-          {Array.from(rowsByNode.entries()).map(([nodeId, rows]) => (
-            <fieldset key={nodeId} className="discovery-comfy-node-fieldset">
-              <legend className="discovery-comfy-node-legend mono">
-                Node {nodeId} — {rows[0]?.classType ?? "?"}
-              </legend>
-              <div className="discovery-comfy-field-stack">
-                {rows.map((row) => {
-                  const valueObj =
-                    typeof promptDraft[row.nodeId] === "object" &&
-                    promptDraft[row.nodeId] !== null &&
-                    typeof (promptDraft[row.nodeId] as Record<string, unknown>).inputs === "object" &&
-                    (promptDraft[row.nodeId] as Record<string, unknown>).inputs !== null
-                      ? ((promptDraft[row.nodeId] as Record<string, unknown>).inputs as Record<string, unknown>)[
-                          row.inputKey
-                        ]
-                      : row.value;
-                  return (
-                    <div key={`${row.nodeId}:${row.inputKey}`} className="discovery-comfy-field-row">
-                      <label className="discovery-comfy-field-label" htmlFor={`dcf-${row.nodeId}-${row.inputKey}`}>
-                        {row.displayLabel}
-                      </label>
-                      {row.kind === "bool" ? (
-                        <input
-                          id={`dcf-${row.nodeId}-${row.inputKey}`}
-                          type="checkbox"
-                          className="discovery-comfy-field-check"
-                          checked={Boolean(row.value)}
-                          onChange={(e) => setPromptInput(row.nodeId, row.inputKey, e.target.checked)}
-                        />
-                      ) : row.kind === "number" ? (
-                        <input
-                          id={`dcf-${row.nodeId}-${row.inputKey}`}
-                          type="number"
-                          className="discovery-comfy-field-input mono"
-                          step="any"
-                          value={typeof row.value === "number" && Number.isFinite(row.value) ? row.value : 0}
-                          onChange={(e) => {
-                            const n = Number.parseFloat(e.target.value);
-                            setPromptInput(row.nodeId, row.inputKey, Number.isFinite(n) ? n : 0);
-                          }}
-                        />
-                      ) : row.kind === "textarea" ? (
-                        <textarea
-                          id={`dcf-${row.nodeId}-${row.inputKey}`}
-                          className="discovery-comfy-field-textarea mono"
-                          spellCheck={false}
-                          rows={6}
-                          value={typeof row.value === "string" ? row.value : String(row.value)}
-                          onChange={(e) => setPromptInput(row.nodeId, row.inputKey, e.target.value)}
-                        />
-                      ) : row.kind === "json" ? (
-                        <DiscoveryComfyJsonInput
-                          fieldKey={`${row.nodeId}::${row.inputKey}`}
-                          valueObj={valueObj}
-                          displayLabel={row.displayLabel}
-                          onCommit={(parsed) => setPromptInput(row.nodeId, row.inputKey, parsed)}
-                          onParseState={setJsonFieldError}
-                        />
-                      ) : (
-                        <input
-                          id={`dcf-${row.nodeId}-${row.inputKey}`}
-                          type="text"
-                          className="discovery-comfy-field-input mono"
-                          value={typeof row.value === "string" ? row.value : String(row.value)}
-                          onChange={(e) => setPromptInput(row.nodeId, row.inputKey, e.target.value)}
-                        />
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </fieldset>
-          ))}
-          {editableRows.length === 0 ? (
-            <p className="discovery-comfy-queue-msg">No scalar or JSON widget fields found (graph may be links-only).</p>
-          ) : null}
-        </div>
+        <details className="discovery-comfy-advanced-details">
+          <summary>All node fields (advanced)</summary>
+          <div className="discovery-comfy-fields">
+              {Array.from(rowsByNode.entries()).map(([nodeId, rows]) => (
+                <fieldset key={nodeId} className="discovery-comfy-node-fieldset">
+                  <legend className="discovery-comfy-node-legend mono">
+                    Node {nodeId} — {rows[0]?.classType ?? "?"}
+                  </legend>
+                  <div className="discovery-comfy-field-stack">
+                    {rows.map((row) => {
+                      const valueObj =
+                        typeof promptDraft[row.nodeId] === "object" &&
+                        promptDraft[row.nodeId] !== null &&
+                        typeof (promptDraft[row.nodeId] as Record<string, unknown>).inputs === "object" &&
+                        (promptDraft[row.nodeId] as Record<string, unknown>).inputs !== null
+                          ? ((promptDraft[row.nodeId] as Record<string, unknown>).inputs as Record<string, unknown>)[
+                              row.inputKey
+                            ]
+                          : row.value;
+                      return (
+                        <div key={`${row.nodeId}:${row.inputKey}`} className="discovery-comfy-field-row">
+                          <label className="discovery-comfy-field-label" htmlFor={`dcf-${row.nodeId}-${row.inputKey}`}>
+                            {row.displayLabel}
+                          </label>
+                          {row.kind === "bool" ? (
+                            <input
+                              id={`dcf-${row.nodeId}-${row.inputKey}`}
+                              type="checkbox"
+                              className="discovery-comfy-field-check"
+                              checked={Boolean(row.value)}
+                              onChange={(e) => setPromptInput(row.nodeId, row.inputKey, e.target.checked)}
+                            />
+                          ) : row.kind === "number" ? (
+                            <input
+                              id={`dcf-${row.nodeId}-${row.inputKey}`}
+                              type="number"
+                              className="discovery-comfy-field-input mono"
+                              step="any"
+                              value={typeof row.value === "number" && Number.isFinite(row.value) ? row.value : 0}
+                              onChange={(e) => {
+                                const n = Number.parseFloat(e.target.value);
+                                setPromptInput(row.nodeId, row.inputKey, Number.isFinite(n) ? n : 0);
+                              }}
+                            />
+                          ) : row.kind === "textarea" ? (
+                            <textarea
+                              id={`dcf-${row.nodeId}-${row.inputKey}`}
+                              className="discovery-comfy-field-textarea mono"
+                              spellCheck={false}
+                              rows={6}
+                              value={typeof row.value === "string" ? row.value : String(row.value)}
+                              onChange={(e) => setPromptInput(row.nodeId, row.inputKey, e.target.value)}
+                            />
+                          ) : row.kind === "json" ? (
+                            <DiscoveryComfyJsonInput
+                              fieldKey={`${row.nodeId}::${row.inputKey}`}
+                              valueObj={valueObj}
+                              displayLabel={row.displayLabel}
+                              onCommit={(parsed) => setPromptInput(row.nodeId, row.inputKey, parsed)}
+                              onParseState={setJsonFieldError}
+                            />
+                          ) : (
+                            <input
+                              id={`dcf-${row.nodeId}-${row.inputKey}`}
+                              type="text"
+                              className="discovery-comfy-field-input mono"
+                              value={typeof row.value === "string" ? row.value : String(row.value)}
+                              onChange={(e) => setPromptInput(row.nodeId, row.inputKey, e.target.value)}
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </fieldset>
+              ))}
+              {editableRows.length === 0 ? (
+                <p className="discovery-comfy-queue-msg">No scalar or JSON widget fields found (graph may be links-only).</p>
+              ) : null}
+            </div>
+        </details>
       ) : null}
 
       {promptDraft && !embedLoading ? (
