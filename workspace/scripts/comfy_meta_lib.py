@@ -183,19 +183,48 @@ def json_min(obj: Any) -> Optional[str]:
         return None
 
 
+def _coerce_int_seed(v: Any) -> Optional[int]:
+    if isinstance(v, int):
+        return int(v)
+    if isinstance(v, float) and v.is_integer():
+        return int(v)
+    if isinstance(v, str):
+        t = v.strip()
+        if not t:
+            return None
+        try:
+            n = int(t, 10)
+            return n
+        except ValueError:
+            return None
+    return None
+
+
 def collect_seeds_from_prompt(prompt_obj: Any) -> Dict[str, Any]:
     """
     Workflow-specific heuristic:
     - Prefer RandomNoise.inputs.noise_seed (SamplerCustomAdvanced path)
     - Otherwise fall back to KSampler.inputs.seed
+    - ``random_noise_nodes`` / ``ksampler_seed_nodes`` record per-node values for correlating
+      with embedded PNG/MP4 ``prompt`` metadata after a run (Comfy may update widgets when
+      control_after_generate is increment/randomize).
     """
     noise_seeds: set[int] = set()
     ksampler_seeds: set[int] = set()
+    random_noise_nodes: List[Dict[str, Any]] = []
+    ksampler_seed_nodes: List[Dict[str, Any]] = []
 
     if not isinstance(prompt_obj, dict):
-        return {"used_seed": None, "seed_source": None, "noise_seeds": [], "ksampler_seeds": []}
+        return {
+            "used_seed": None,
+            "seed_source": None,
+            "noise_seeds": [],
+            "ksampler_seeds": [],
+            "random_noise_nodes": [],
+            "ksampler_seed_nodes": [],
+        }
 
-    for _, node in prompt_obj.items():
+    for nid, node in prompt_obj.items():
         if not isinstance(node, dict):
             continue
         ctype = node.get("class_type")
@@ -204,10 +233,35 @@ def collect_seeds_from_prompt(prompt_obj: Any) -> Dict[str, Any]:
             v = inputs.get("noise_seed")
             if isinstance(v, int):
                 noise_seeds.add(v)
-        elif ctype == "KSampler":
+            else:
+                coerced = _coerce_int_seed(v)
+                if coerced is not None:
+                    noise_seeds.add(coerced)
+            cad = inputs.get("control_after_generate")
+            random_noise_nodes.append(
+                {
+                    "node_id": str(nid),
+                    "noise_seed": _coerce_int_seed(inputs.get("noise_seed")),
+                    "control_after_generate": cad if isinstance(cad, str) else None,
+                }
+            )
+        elif ctype in ("KSampler", "KSamplerAdvanced"):
             v = inputs.get("seed")
             if isinstance(v, int):
                 ksampler_seeds.add(v)
+            else:
+                coerced = _coerce_int_seed(v)
+                if coerced is not None:
+                    ksampler_seeds.add(coerced)
+            cad = inputs.get("control_after_generate")
+            ksampler_seed_nodes.append(
+                {
+                    "node_id": str(nid),
+                    "class_type": str(ctype),
+                    "seed": _coerce_int_seed(inputs.get("seed")),
+                    "control_after_generate": cad if isinstance(cad, str) else None,
+                }
+            )
 
     used_seed = min(noise_seeds) if noise_seeds else (min(ksampler_seeds) if ksampler_seeds else None)
     seed_source = None
@@ -222,6 +276,8 @@ def collect_seeds_from_prompt(prompt_obj: Any) -> Dict[str, Any]:
         "seed_source": seed_source,
         "noise_seeds": sorted(noise_seeds),
         "ksampler_seeds": sorted(ksampler_seeds),
+        "random_noise_nodes": random_noise_nodes,
+        "ksampler_seed_nodes": ksampler_seed_nodes,
     }
 
 
@@ -236,7 +292,7 @@ def extract_preset(prompt_obj: Any) -> Optional[Dict[str, Any]]:
     KEEP: Dict[str, List[str]] = {
         "PrimitiveStringMultiline": ["value"],
         "LoadImage": ["image"],
-        "RandomNoise": ["noise_seed"],
+        "RandomNoise": ["noise_seed", "control_after_generate"],
         "mxSlider": ["Xi", "Xf", "isfloatX"],
         "mxSlider2D": ["Xi", "Xf", "Yi", "Yf", "isfloatX", "isfloatY"],
         "CFGGuider": ["cfg"],
