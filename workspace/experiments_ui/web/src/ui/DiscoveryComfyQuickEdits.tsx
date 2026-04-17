@@ -1341,6 +1341,14 @@ function _durationQuickEditConfigNotes(res: DurationControlResolution): QuickEdi
       },
     ];
   }
+  if (surface.kind === "peeled_linear_chain") {
+    return [
+      {
+        section,
+        message: `Length is wired through easy math / convert nodes into WanImageToVideo node ${surface.wanNodeId}. Writes mxSlider on node ${surface.sliderNodeId} (Xi/Xf); Discovery estimates Wan-side frames from the same linear chain as the API inputs.`,
+      },
+    ];
+  }
   return [
     {
       section,
