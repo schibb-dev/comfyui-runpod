@@ -1472,6 +1472,11 @@ div.discovery-comfy-q-lora-name.discovery-comfy-q-lora-name--meta {
   gap: 10px;
 }
 
+/* Seed block moved beside queue submit (DiscoveryLibraryApp) */
+.discovery-comfy-q-root--queue-seed {
+  margin-top: 10px;
+}
+
 .discovery-comfy-queue-actions {
   display: flex;
   flex-wrap: wrap;

@@ -1465,6 +1465,127 @@ function _summarizePrompt(text: string, maxLen = 96): string {
   return `${t.slice(0, maxLen - 1)}…`;
 }
 
+/** Seed quick edit for Comfy prompt draft; used beside queue actions when omitted from DiscoveryComfyQuickEditsSection. */
+export function DiscoveryComfySeedQuickEdit({
+  promptDraft,
+  setPromptInput,
+  disabled,
+}: {
+  promptDraft: ComfyPromptMap;
+  setPromptInput: (nodeId: string, inputKey: string, value: unknown, meta?: SetPromptInputMeta) => void;
+  disabled?: boolean;
+}) {
+  const noiseSeed = useMemo(() => findNoiseSeedQuickEdit(promptDraft), [promptDraft]);
+  const seedAuditRows = useMemo(() => collectSeedLikeRowsFromPrompt(promptDraft), [promptDraft]);
+  const sameSeedBaselineRef = useRef<number | null>(null);
+  const noiseSeedPinKey = noiseSeed ? `${noiseSeed.nodeId}:${noiseSeed.intKey}` : "";
+  useEffect(() => {
+    if (!noiseSeed) {
+      sameSeedBaselineRef.current = null;
+      return;
+    }
+    sameSeedBaselineRef.current = noiseSeed.seedValue;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- deps: noiseSeedPinKey only (see DiscoveryComfyQuickEditsSection)
+  }, [noiseSeedPinKey]);
+
+  if (!noiseSeed) return null;
+
+  return (
+    <div className="discovery-comfy-q-card discovery-comfy-q-card-inline-controls">
+      <div className="discovery-comfy-q-card-title">Seed</div>
+      <div className="discovery-comfy-q-seed-inline-toolbar">
+            <input
+              type="number"
+              className="discovery-comfy-q-num discovery-comfy-q-seed-inline-int"
+              min={0}
+              max={9007199254740991}
+              step={1}
+              disabled={disabled}
+              value={noiseSeed.seedValue}
+              onChange={(e) => {
+                const n = Number.parseInt(e.target.value, 10);
+                if (Number.isFinite(n)) {
+                  sameSeedBaselineRef.current = n;
+                  setPromptInput(noiseSeed.nodeId, noiseSeed.intKey, n, { ...QH, coalesce: true });
+                }
+              }}
+            />
+            <button
+              type="button"
+              className="discovery-comfy-q-seed-inline-btn"
+              disabled={disabled}
+              title="Repeat with pinned seed and fix after-run (pin follows this field; New does not move the pin until you edit the number)"
+              onClick={() => {
+                const v = sameSeedBaselineRef.current;
+                if (v == null || !Number.isFinite(v)) return;
+                setPromptInput(noiseSeed.nodeId, noiseSeed.intKey, Math.round(v), QH);
+                setPromptInput(noiseSeed.nodeId, "control_after_generate", "fixed", QH);
+              }}
+            >
+              Same
+            </button>
+            <button
+              type="button"
+              className="discovery-comfy-q-seed-inline-btn discovery-comfy-q-seed-inline-btn-primary"
+              disabled={disabled}
+              title="Random seed and pin"
+              onClick={() => {
+                const n = _randomSeedInt() % Number.MAX_SAFE_INTEGER;
+                setPromptInput(noiseSeed.nodeId, noiseSeed.intKey, n, QH);
+                setPromptInput(noiseSeed.nodeId, "control_after_generate", "fixed", QH);
+              }}
+            >
+              New
+            </button>
+          </div>
+          <details className="discovery-comfy-q-seed-inline-details">
+            <summary>Advanced</summary>
+            <div className="discovery-comfy-q-seed-details-stack">
+              <div className="discovery-comfy-q-slider-row discovery-comfy-q-seed-numrow discovery-comfy-q-seed-numrow-tight">
+                <div className="discovery-comfy-q-slider-label">After run</div>
+                <select
+                  className="discovery-comfy-q-num discovery-comfy-q-seed-field-span2"
+                  disabled={disabled}
+                  value={noiseSeed.control_after_generate}
+                  onChange={(e) => setPromptInput(noiseSeed.nodeId, "control_after_generate", e.target.value, QH)}
+                >
+                  {_CONTROL_AFTER_MODES.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {seedAuditRows.length > 0 ? (
+                <table className="discovery-comfy-q-seed-table">
+                  <thead>
+                    <tr>
+                      <th>Node</th>
+                      <th>Type</th>
+                      <th>Key</th>
+                      <th>Value</th>
+                      <th>control_after_generate</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {seedAuditRows.map((r) => (
+                      <tr key={`${r.nodeId}:${r.intKey}`}>
+                        <td className="mono">{r.nodeId}</td>
+                        <td className="mono">{r.classType}</td>
+                        <td className="mono">{r.intKey}</td>
+                        <td className="mono">{r.seedValue == null ? "(linked)" : String(r.seedValue)}</td>
+                        <td className="mono">{r.control_after_generate ?? "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : null}
+            </div>
+          </details>
+    </div>
+  );
+}
+
 type QuickDialog =
   | { kind: "pos"; nodeId: string }
   | { kind: "neg"; nodeId: string }
@@ -1479,12 +1600,15 @@ export function DiscoveryComfyQuickEditsSection({
   setPromptInput,
   onSliderBurstEnd,
   disabled,
+  omitSeed,
 }: {
   promptDraft: ComfyPromptMap;
   setPromptInput: (nodeId: string, inputKey: string, value: unknown, meta?: SetPromptInputMeta) => void;
   /** Call after a range slider gesture so the next drag starts a new undo step. */
   onSliderBurstEnd?: () => void;
   disabled?: boolean;
+  /** When true, seed UI is rendered elsewhere (e.g. beside queue submit). */
+  omitSeed?: boolean;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [dlg, setDlg] = useState<QuickDialog | null>(null);
@@ -1517,22 +1641,6 @@ export function DiscoveryComfyQuickEditsSection({
   const durationResolution = useMemo(() => resolveDurationControlSurface(promptDraft), [promptDraft]);
   const durationEncodeFps = useMemo(() => discoveryLiteralFpsFromVhsCombine(promptDraft), [promptDraft]);
   const seedAuditRows = useMemo(() => collectSeedLikeRowsFromPrompt(promptDraft), [promptDraft]);
-
-  /**
-   * Value reapplied by "Same" (repeat pin). Updated when the targeted seed widget changes or the user
-   * edits the number field — not when "New" runs — so New → Same restores the pre-New seed (idempotent Same).
-   */
-  const sameSeedBaselineRef = useRef<number | null>(null);
-  const noiseSeedPinKey = noiseSeed ? `${noiseSeed.nodeId}:${noiseSeed.intKey}` : "";
-  useEffect(() => {
-    if (!noiseSeed) {
-      sameSeedBaselineRef.current = null;
-      return;
-    }
-    sameSeedBaselineRef.current = noiseSeed.seedValue;
-    // Baseline resets when the quick-edit seed target changes; draft updates from "New" do not reset it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- deps: noiseSeedPinKey only (see comment above)
-  }, [noiseSeedPinKey]);
 
   const samplerConfigNotes = useMemo(() => (sampler ? _samplerQuickEditConfigNotes(sampler) : []), [sampler]);
   const seedConfigNotes = useMemo(
@@ -1588,7 +1696,7 @@ export function DiscoveryComfyQuickEditsSection({
     standardLoras.length > 0 ||
     Boolean(vhsLoader) ||
     Boolean(vhsCombine) ||
-    Boolean(noiseSeed) ||
+    (!omitSeed && Boolean(noiseSeed)) ||
     Boolean(durationResolution);
 
   const renderDialogBody = () => {
@@ -1924,99 +2032,8 @@ export function DiscoveryComfyQuickEditsSection({
               </button>
             </div>
           ))}
-          {noiseSeed ? (
-            <div className="discovery-comfy-q-card discovery-comfy-q-card-inline-controls">
-              <div className="discovery-comfy-q-card-title">Seed</div>
-              <div className="discovery-comfy-q-seed-inline-toolbar">
-                <input
-                  type="number"
-                  className="discovery-comfy-q-num discovery-comfy-q-seed-inline-int"
-                  min={0}
-                  max={9007199254740991}
-                  step={1}
-                  disabled={disabled}
-                  value={noiseSeed.seedValue}
-                  onChange={(e) => {
-                    const n = Number.parseInt(e.target.value, 10);
-                    if (Number.isFinite(n)) {
-                      sameSeedBaselineRef.current = n;
-                      setPromptInput(noiseSeed.nodeId, noiseSeed.intKey, n, { ...QH, coalesce: true });
-                    }
-                  }}
-                />
-                <button
-                  type="button"
-                  className="discovery-comfy-q-seed-inline-btn"
-                  disabled={disabled}
-                  title="Repeat with pinned seed and fix after-run (pin follows this field; New does not move the pin until you edit the number)"
-                  onClick={() => {
-                    const v = sameSeedBaselineRef.current;
-                    if (v == null || !Number.isFinite(v)) return;
-                    setPromptInput(noiseSeed.nodeId, noiseSeed.intKey, Math.round(v), QH);
-                    setPromptInput(noiseSeed.nodeId, "control_after_generate", "fixed", QH);
-                  }}
-                >
-                  Same
-                </button>
-                <button
-                  type="button"
-                  className="discovery-comfy-q-seed-inline-btn discovery-comfy-q-seed-inline-btn-primary"
-                  disabled={disabled}
-                  title="Random seed and pin"
-                  onClick={() => {
-                    const n = _randomSeedInt() % Number.MAX_SAFE_INTEGER;
-                    setPromptInput(noiseSeed.nodeId, noiseSeed.intKey, n, QH);
-                    setPromptInput(noiseSeed.nodeId, "control_after_generate", "fixed", QH);
-                  }}
-                >
-                  New
-                </button>
-              </div>
-              <details className="discovery-comfy-q-seed-inline-details">
-                <summary>Advanced</summary>
-                <div className="discovery-comfy-q-seed-details-stack">
-                  <div className="discovery-comfy-q-slider-row discovery-comfy-q-seed-numrow discovery-comfy-q-seed-numrow-tight">
-                    <div className="discovery-comfy-q-slider-label">After run</div>
-                    <select
-                      className="discovery-comfy-q-num discovery-comfy-q-seed-field-span2"
-                      disabled={disabled}
-                      value={noiseSeed.control_after_generate}
-                      onChange={(e) => setPromptInput(noiseSeed.nodeId, "control_after_generate", e.target.value, QH)}
-                    >
-                      {_CONTROL_AFTER_MODES.map((m) => (
-                        <option key={m} value={m}>
-                          {m}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  {seedAuditRows.length > 0 ? (
-                    <table className="discovery-comfy-q-seed-table">
-                      <thead>
-                        <tr>
-                          <th>Node</th>
-                          <th>Type</th>
-                          <th>Key</th>
-                          <th>Value</th>
-                          <th>control_after_generate</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {seedAuditRows.map((r) => (
-                          <tr key={`${r.nodeId}:${r.intKey}`}>
-                            <td className="mono">{r.nodeId}</td>
-                            <td className="mono">{r.classType}</td>
-                            <td className="mono">{r.intKey}</td>
-                            <td className="mono">{r.seedValue == null ? "(linked)" : String(r.seedValue)}</td>
-                            <td className="mono">{r.control_after_generate ?? "-"}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  ) : null}
-                </div>
-              </details>
-            </div>
+          {!omitSeed ? (
+            <DiscoveryComfySeedQuickEdit promptDraft={promptDraft} setPromptInput={setPromptInput} disabled={disabled} />
           ) : null}
           {durationResolution ? (
             <DiscoveryDurationTranslatingCard

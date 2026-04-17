@@ -14,7 +14,11 @@ import {
   TRIM_HANDLE_MIN_GAP_SEC,
 } from "./phoneTrimModel";
 import { DeviceProvider, useDeviceContext } from "./viewport";
-import { DiscoveryComfyQuickEditsSection } from "./DiscoveryComfyQuickEdits";
+import {
+  DiscoveryComfyQuickEditsSection,
+  DiscoveryComfySeedQuickEdit,
+  findNoiseSeedQuickEdit,
+} from "./DiscoveryComfyQuickEdits";
 import { useComfyPromptUndoKeyboard, usePromptDraftHistory } from "./usePromptDraftHistory";
 
 const SAVED_KEY = "discovery_library_saved_v1";
@@ -1461,6 +1465,11 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
     [promptDraft]
   );
 
+  const seedQuickTarget = useMemo(
+    () => (promptDraft ? findNoiseSeedQuickEdit(promptDraft) : null),
+    [promptDraft],
+  );
+
   const workflowFilePathForClipboard = useMemo(() => discoveryWorkflowFilePathForClipboard(it), [it]);
 
   const onCopyWorkflowPath = useCallback(async () => {
@@ -1534,6 +1543,7 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
             setPromptInput={setPromptInput}
             onSliderBurstEnd={endSliderBurst}
             disabled={busy}
+            omitSeed
           />
           <details className="discovery-comfy-advanced-details">
             <summary>All node fields (advanced)</summary>
@@ -1624,6 +1634,15 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
           <summary>Advanced: full prompt JSON</summary>
           <pre className="discovery-comfy-json-pre mono">{jsonMirror}</pre>
         </details>
+      ) : null}
+
+      {promptDraft && !embedLoading && seedQuickTarget ? (
+        <div className="discovery-comfy-q-root discovery-comfy-q-root--queue-seed">
+          <div className="discovery-comfy-q-head">Seed</div>
+          <div className="discovery-comfy-q-cards">
+            <DiscoveryComfySeedQuickEdit promptDraft={promptDraft} setPromptInput={setPromptInput} disabled={busy} />
+          </div>
+        </div>
       ) : null}
 
       <div className="discovery-comfy-queue-actions">
