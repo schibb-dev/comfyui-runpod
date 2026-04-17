@@ -8,6 +8,11 @@ import {
 } from "./discoveryDurationControl";
 import type { SetPromptInputMeta } from "./usePromptDraftHistory";
 
+/**
+ * Maintenance bookmark: this file mixes prompt-graph resolvers and UI and is already large. On the next
+ * substantial check-in here, plan to extract shared Comfy prompt primitives (dedupe with duration control)
+ * and split resolver domains (sampler, seed, VHS, CLIP, LoRA) into sibling modules instead of growing further.
+ */
 const QH = { recordHistory: true } satisfies SetPromptInputMeta;
 
 /**
