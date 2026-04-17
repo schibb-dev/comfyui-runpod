@@ -38,6 +38,28 @@ const DESKTOP_DETAILS_DRAWER_DEFAULT_OPEN = false;
 
 const DISCOVERY_GRAPH_DRAFT_PREFIX = "discovery_comfy_graph_draft__";
 const DISCOVERY_COMFY_FRONT_KEY = "discovery_comfy_front_v1";
+const DISCOVERY_LIBRARY_POLL_KEY = "discovery_library_poll_sec_v1";
+const DISCOVERY_LIBRARY_POLL_CHOICES = [0, 1, 5, 10, 15, 30, 60] as const;
+
+function loadDiscoveryPollSec(): (typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number] {
+  try {
+    const n = Number(localStorage.getItem(DISCOVERY_LIBRARY_POLL_KEY));
+    if (DISCOVERY_LIBRARY_POLL_CHOICES.includes(n as (typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number])) {
+      return n as (typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number];
+    }
+  } catch {
+    /* ignore */
+  }
+  return 0;
+}
+
+function persistDiscoveryPollSec(sec: (typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number]) {
+  try {
+    localStorage.setItem(DISCOVERY_LIBRARY_POLL_KEY, String(sec));
+  } catch {
+    /* ignore */
+  }
+}
 
 function discoveryDraftStorageKey(itemKey: string): string {
   const safe = itemKey.replace(/[^a-zA-Z0-9:._-]+/g, "_").slice(0, 200);
@@ -2498,6 +2520,8 @@ function DiscoveryLibraryInner() {
   const [savedOnly, setSavedOnly] = useState(false);
   const [data, setData] = useState<DiscoveryLibraryResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [listRefreshing, setListRefreshing] = useState(false);
+  const [pollSec, setPollSec] = useState<(typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number]>(() => loadDiscoveryPollSec());
   const [err, setErr] = useState("");
   const [desktopSelectedKey, setDesktopSelectedKey] = useState<string | null>(null);
   const [listPaneWidth, setListPaneWidth] = useState<number>(() => loadDesktopListWidth());
@@ -2531,8 +2555,10 @@ function DiscoveryLibraryInner() {
   }, [qInput]);
 
   const load = useCallback(
-    async (refresh: boolean) => {
-      setLoading(true);
+    async (refresh: boolean, opts?: { soft?: boolean }) => {
+      const soft = opts?.soft === true;
+      if (soft) setListRefreshing(true);
+      else setLoading(true);
       setErr("");
       try {
         const res = await fetchDiscoveryLibrary({
@@ -2546,7 +2572,8 @@ function DiscoveryLibraryInner() {
       } catch (e) {
         setErr(String(e));
       } finally {
-        setLoading(false);
+        if (soft) setListRefreshing(false);
+        else setLoading(false);
       }
     },
     [qApplied, sinceDays, library]
@@ -2555,6 +2582,15 @@ function DiscoveryLibraryInner() {
   useEffect(() => {
     void load(false);
   }, [load]);
+
+  useEffect(() => {
+    if (pollSec <= 0) return;
+    const id = window.setInterval(() => {
+      if (document.visibilityState === "hidden") return;
+      void load(true, { soft: true });
+    }, pollSec * 1000);
+    return () => window.clearInterval(id);
+  }, [pollSec, load]);
 
   const toggleSaved = useCallback((relpath: string) => {
     setSaved((prev) => {
@@ -2802,12 +2838,42 @@ function DiscoveryLibraryInner() {
         <span style={{ fontSize: 14 }}>Saved only</span>
       </label>
       <span style={{ flex: "1 1 20px" }} />
-      <button type="button" onClick={() => void load(false)} disabled={loading}>
-        Refresh
+      <button
+        type="button"
+        title="Re-query the saved index from the server (no disk rescan)"
+        onClick={() => void load(false, { soft: true })}
+        disabled={loading || listRefreshing}
+      >
+        Reload
       </button>
-      <button type="button" onClick={() => void load(true)} disabled={loading}>
-        Rebuild index
+      <button
+        type="button"
+        title="Rescan output folders and refresh the list (incremental index update)"
+        onClick={() => void load(true, { soft: true })}
+        disabled={loading || listRefreshing}
+      >
+        {listRefreshing ? "Updating…" : "Update"}
       </button>
+      <label style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 120 }}>
+        <span style={{ fontSize: 12, color: "var(--muted)" }}>Auto-refresh</span>
+        <select
+          value={pollSec}
+          onChange={(e) => {
+            const v = Number(e.target.value) as (typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number];
+            const next = DISCOVERY_LIBRARY_POLL_CHOICES.includes(v) ? v : 0;
+            setPollSec(next);
+            persistDiscoveryPollSec(next);
+          }}
+        >
+          <option value={0}>Off</option>
+          <option value={1}>1 s</option>
+          <option value={5}>5 s</option>
+          <option value={10}>10 s</option>
+          <option value={15}>15 s</option>
+          <option value={30}>30 s</option>
+          <option value={60}>60 s</option>
+        </select>
+      </label>
     </>
   );
 
@@ -2856,6 +2922,7 @@ function DiscoveryLibraryInner() {
                 <span className="mono">{data.item_count_filtered}</span> matches
                 {data.truncated ? " · truncated" : ""}
                 {data.from_cache ? " · cached" : ""}
+                {listRefreshing ? " · updating…" : ""}
                 {" · "}
                 <span style={{ color: "var(--text)" }}>
                   Tap a row to open the viewer · after {(PHONE_VIEWER_CONTROLS_MS / 1000).toFixed(1)}s only the video
@@ -2881,7 +2948,7 @@ function DiscoveryLibraryInner() {
               />
             ))}
             {!loading && displayed.length === 0 ? (
-              <div style={{ padding: 16, color: "var(--muted)" }}>No items. Open filters → Rebuild index.</div>
+              <div style={{ padding: 16, color: "var(--muted)" }}>No items. Open filters → Update.</div>
             ) : null}
           </div>
         </div>
@@ -2951,6 +3018,7 @@ function DiscoveryLibraryInner() {
               Index <span className="mono">{data.updated_at ?? "—"}</span>
               {data.from_cache ? " (cached)" : " (just scanned)"}
               {data.scan_ms != null ? ` · ${data.scan_ms} ms scan` : ""}
+              {listRefreshing ? " · updating…" : ""}
               {" · "}
               <span className="mono">{data.item_count_filtered}</span> matches
               {data.truncated ? " (truncated)" : ""}
@@ -2991,7 +3059,7 @@ function DiscoveryLibraryInner() {
                 />
               ))}
               {!loading && displayed.length === 0 ? (
-                <div style={{ padding: 16, color: "var(--muted)" }}>No items. Try Rebuild index or relax filters.</div>
+                <div style={{ padding: 16, color: "var(--muted)" }}>No items. Try Update or relax filters.</div>
               ) : null}
             </div>
           </div>
