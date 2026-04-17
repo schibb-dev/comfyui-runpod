@@ -16,10 +16,10 @@ import {
 import { DeviceProvider, useDeviceContext } from "./viewport";
 import {
   DiscoveryComfyQuickEditsSection,
-  DiscoveryComfySeedQuickEdit,
   findNoiseSeedQuickEdit,
+  type NoiseSeedQuickEdit,
 } from "./DiscoveryComfyQuickEdits";
-import { useComfyPromptUndoKeyboard, usePromptDraftHistory } from "./usePromptDraftHistory";
+import { useComfyPromptUndoKeyboard, usePromptDraftHistory, type PromptDraftMap } from "./usePromptDraftHistory";
 
 const SAVED_KEY = "discovery_library_saved_v1";
 const VIDEO_AUTOPLAY_KEY = "discovery_phone_video_autoplay";
@@ -1318,6 +1318,54 @@ function DiscoveryComfyJsonInput({
   );
 }
 
+function _discoveryClonePromptDraft(p: PromptDraftMap): PromptDraftMap {
+  return JSON.parse(JSON.stringify(p)) as PromptDraftMap;
+}
+
+function _discoveryRandomSeedInt(): number {
+  try {
+    const buf = new Uint32Array(2);
+    crypto.getRandomValues(buf);
+    return (buf[0]! >>> 0) * 0x100000000 + (buf[1]! >>> 0);
+  } catch {
+    return Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+  }
+}
+
+/**
+ * Clone-on-submit: patch only the literal seed in memory (leave `control_after_generate` as embedded in the draft).
+ * Queued payload matches `resetPromptDraft(next)` (avoids stale React state vs `setPromptInput` + immediate send).
+ */
+function buildPromptForSeedPresetSubmit(
+  draft: PromptDraftMap,
+  target: NoiseSeedQuickEdit,
+  mode: "replay" | "new" | "increment",
+): PromptDraftMap {
+  const next = _discoveryClonePromptDraft(draft);
+  const nodeRaw = next[target.nodeId];
+  if (typeof nodeRaw !== "object" || nodeRaw === null) return next;
+  const node = nodeRaw as Record<string, unknown>;
+  const insRaw = node.inputs;
+  if (typeof insRaw !== "object" || insRaw === null) return next;
+  const inputs = { ...(insRaw as Record<string, unknown>) };
+  const curSeed =
+    typeof inputs[target.intKey] === "number" && Number.isFinite(inputs[target.intKey] as number)
+      ? Math.round(inputs[target.intKey] as number)
+      : target.seedValue;
+
+  if (mode === "replay") {
+    inputs[target.intKey] = curSeed;
+  } else if (mode === "new") {
+    let n = Math.round(_discoveryRandomSeedInt() % Number.MAX_SAFE_INTEGER);
+    if (!Number.isFinite(n)) n = target.seedValue;
+    inputs[target.intKey] = n;
+  } else {
+    inputs[target.intKey] = Math.min(Number.MAX_SAFE_INTEGER - 1, curSeed + 1);
+  }
+  next[target.nodeId] = { ...node, inputs };
+  return next;
+}
+
 function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
   const itemKey = discoveryItemKey(it);
   const draftKey = discoveryDraftStorageKey(itemKey);
@@ -1333,6 +1381,7 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
   } = usePromptDraftHistory();
   const [frontOfQueue, setFrontOfQueue] = useState(() => _discoverySessionGetBool01(DISCOVERY_COMFY_FRONT_KEY));
   const [busy, setBusy] = useState(false);
+  const [submitKind, setSubmitKind] = useState<null | "replay" | "new" | "increment" | "queue">(null);
   const [error, setError] = useState<string | null>(null);
   const [resultLine, setResultLine] = useState<string | null>(null);
   const [embedLoading, setEmbedLoading] = useState(true);
@@ -1438,6 +1487,7 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
       setError("No workflow loaded to send.");
       return;
     }
+    setSubmitKind("queue");
     setBusy(true);
     try {
       const res = await submitPromptToQueue({
@@ -1455,8 +1505,52 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
+      setSubmitKind(null);
     }
   }, [promptDraft, frontOfQueue, jsonFieldError]);
+
+  const runSeedPresetSubmit = useCallback(
+    async (mode: "replay" | "new" | "increment") => {
+      setError(null);
+      setResultLine(null);
+      if (jsonFieldError) {
+        setError(jsonFieldError);
+        return;
+      }
+      if (!promptDraft) {
+        setError("No workflow loaded to send.");
+        return;
+      }
+      const t = findNoiseSeedQuickEdit(promptDraft);
+      if (!t) {
+        setError("No literal seed widget found in this prompt.");
+        return;
+      }
+      const next = buildPromptForSeedPresetSubmit(promptDraft, t, mode);
+      setSubmitKind(mode);
+      setBusy(true);
+      try {
+        const res = await submitPromptToQueue({
+          prompt: next,
+          front: frontOfQueue,
+          client_id: "discovery-ui",
+        });
+        const sub = res.submit;
+        let line = "Sent to the ComfyUI queue.";
+        if (sub && typeof sub === "object" && sub !== null && "prompt_id" in sub) {
+          line = `Queued. prompt_id: ${String((sub as { prompt_id?: unknown }).prompt_id)}`;
+        }
+        setResultLine(line);
+        resetPromptDraft(next);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusy(false);
+        setSubmitKind(null);
+      }
+    },
+    [promptDraft, jsonFieldError, frontOfQueue, resetPromptDraft],
+  );
 
   const viewingPathHint = it.video_relpath ?? it.relpath;
   const viewingTitleTooltip = viewingPathHint && viewingPathHint !== it.name ? `${it.name}\n${viewingPathHint}` : it.name;
@@ -1483,8 +1577,32 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
     window.prompt("Copy this path manually (Ctrl+C):", text);
   }, [workflowFilePathForClipboard]);
 
+  const loadWorkflowHint = !embedLoading && !promptDraft;
+  const loadWorkflowMsg = error ?? "No workflow loaded. Try Reload from file after selecting an item with PNG metadata.";
+  const showQueueStatusStrip =
+    Boolean(jsonFieldError) ||
+    Boolean(error && promptDraft) ||
+    Boolean(resultLine) ||
+    loadWorkflowHint;
+
   return (
     <div className="discovery-comfy-queue-panel">
+      {showQueueStatusStrip ? (
+        <div className="discovery-comfy-queue-status-strip" aria-live="polite">
+          {jsonFieldError ? (
+            <p className="discovery-comfy-queue-msg discovery-comfy-queue-msg--error">{jsonFieldError}</p>
+          ) : null}
+          {error && promptDraft ? (
+            <p className="discovery-comfy-queue-msg discovery-comfy-queue-msg--error">{error}</p>
+          ) : null}
+          {loadWorkflowHint ? (
+            <p className="discovery-comfy-queue-msg discovery-comfy-queue-msg--error">{loadWorkflowMsg}</p>
+          ) : null}
+          {resultLine ? (
+            <p className="discovery-comfy-queue-msg discovery-comfy-queue-msg--ok mono">{resultLine}</p>
+          ) : null}
+        </div>
+      ) : null}
       <div className="discovery-comfy-queue-meta">
         <div className="discovery-comfy-queue-section-head">Now viewing</div>
         <div className="discovery-comfy-queue-viewing-title" title={viewingTitleTooltip}>
@@ -1529,12 +1647,6 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
           </div>
         </details>
       </div>
-
-      {!embedLoading && !promptDraft ? (
-        <p className="discovery-comfy-queue-msg discovery-comfy-queue-msg--error">
-          {error ?? "No workflow loaded. Try Reload from file after selecting an item with PNG metadata."}
-        </p>
-      ) : null}
 
       {promptDraft && !embedLoading ? (
         <>
@@ -1636,12 +1748,61 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
         </details>
       ) : null}
 
-      {promptDraft && !embedLoading && seedQuickTarget ? (
-        <div className="discovery-comfy-q-root discovery-comfy-q-root--queue-seed">
-          <div className="discovery-comfy-q-head">Seed</div>
-          <div className="discovery-comfy-q-cards">
-            <DiscoveryComfySeedQuickEdit promptDraft={promptDraft} setPromptInput={setPromptInput} disabled={busy} />
-          </div>
+      {promptDraft && !embedLoading ? (
+        <div className="discovery-comfy-queue-submit-block" aria-busy={busy}>
+          <div className="discovery-comfy-queue-submit-head">Submit</div>
+          <label className="discovery-comfy-queue-check discovery-comfy-queue-check--submit-block">
+            <input
+              type="checkbox"
+              checked={frontOfQueue}
+              disabled={busy}
+              onChange={(e) => setFrontOfQueue(e.target.checked)}
+            />
+            <span>Send to front of queue</span>
+          </label>
+          {seedQuickTarget ? (
+            <div className="discovery-comfy-queue-submit-presets" role="group" aria-label="Queue with seed preset">
+              <button
+                type="button"
+                className="discovery-comfy-queue-submit-preset"
+                disabled={busy || Boolean(jsonFieldError)}
+                title="Same seed as in the draft, then queue"
+                onClick={() => void runSeedPresetSubmit("replay")}
+              >
+                {busy && submitKind === "replay" ? "Sending…" : "Replay"}
+              </button>
+              <button
+                type="button"
+                className="discovery-comfy-queue-submit-preset"
+                disabled={busy || Boolean(jsonFieldError)}
+                title="New random seed, then queue"
+                onClick={() => void runSeedPresetSubmit("new")}
+              >
+                {busy && submitKind === "new" ? "Sending…" : "New seed"}
+              </button>
+              <button
+                type="button"
+                className="discovery-comfy-queue-submit-preset"
+                disabled={busy || Boolean(jsonFieldError)}
+                title="Seed +1, then queue"
+                onClick={() => void runSeedPresetSubmit("increment")}
+              >
+                {busy && submitKind === "increment" ? "Sending…" : "Increment"}
+              </button>
+            </div>
+          ) : (
+            <div className="discovery-comfy-queue-submit-presets" role="group" aria-label="Queue current prompt">
+              <button
+                type="button"
+                className="discovery-comfy-queue-send"
+                disabled={busy || Boolean(jsonFieldError)}
+                title="Queue the draft as shown (no literal seed widget found for presets)"
+                onClick={() => void onSend()}
+              >
+                {busy && submitKind === "queue" ? "Sending…" : "Queue draft"}
+              </button>
+            </div>
+          )}
         </div>
       ) : null}
 
@@ -1674,24 +1835,7 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
         >
           Reload from file
         </button>
-        <div className="discovery-comfy-queue-send-cluster">
-          <label className="discovery-comfy-queue-check discovery-comfy-queue-check--send-adjacent">
-            <input type="checkbox" checked={frontOfQueue} onChange={(e) => setFrontOfQueue(e.target.checked)} />
-            <span>Send to front of queue</span>
-          </label>
-          <button
-            type="button"
-            className="discovery-comfy-queue-send"
-            disabled={busy || embedLoading || !promptDraft || Boolean(jsonFieldError)}
-            onClick={() => void onSend()}
-          >
-            {busy ? "Sending…" : "Send to Comfy"}
-          </button>
-        </div>
       </div>
-      {jsonFieldError ? <p className="discovery-comfy-queue-msg discovery-comfy-queue-msg--error">{jsonFieldError}</p> : null}
-      {error && promptDraft ? <p className="discovery-comfy-queue-msg discovery-comfy-queue-msg--error">{error}</p> : null}
-      {resultLine ? <p className="discovery-comfy-queue-msg discovery-comfy-queue-msg--ok">{resultLine}</p> : null}
     </div>
   );
 }

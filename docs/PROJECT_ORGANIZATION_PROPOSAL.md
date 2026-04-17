@@ -305,6 +305,12 @@ Record the chosen contract (query param names, who fetches `asset_url`, same-ori
 
 **Goal:** Support **multi-run experiments** that **sweep seeds in both directions** from a baseline (e.g. lower and higher than the anchor), at **configurable step sizes / intervals**, so you can assess **seed stability** (how much output moves when the seed barely changes) and what **adjacent states** look like (coarser steps along the integer line). UX would plan runs (or a batch template), tie each run to a pinned seed in the prompt, and surface results for comparison. **Status:** deferred; the Discovery seed dialog today (`DiscoveryComfyQuickEdits.tsx`) only covers explicit next-submit value and pin semantics.
 
+### Intermediate editor (Discovery / Comfy queue) — bookmark
+
+**Gap:** **Quick Edit** and the queue **Submit** strip target **frequent** edits. **Advanced** (“All node fields”) is the full prompt editor—correct but heavy for **occasional** fields that still belong in the **queued / embedded Comfy graph** (and thus work products) but should not read as **Discovery “run” controls** (playback, library chrome, etc.). Examples: `control_after_generate`, other metadata-ish node inputs, or small clusters of “workflow policy” fields you rarely touch.
+
+**Bookmark:** Revisit an **Intermediate** surface—between Quick and Advanced—that gathers **less-common workflow edits** with copy that frames them as **Comfy prompt / embed only**, not Discovery behavior. Could start as a collapsible section, a filtered field list by allowlist, or a dedicated step once the set of fields is known. **Status:** not implemented; for now those edits remain in **Advanced** (and optional Quick affordances remain a separate product decision).
+
 ---
 
 ## 11. Workflow management: “work orders” and a possible future project

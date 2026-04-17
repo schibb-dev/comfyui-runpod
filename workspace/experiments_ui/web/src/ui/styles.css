@@ -1351,6 +1351,26 @@ div.discovery-comfy-q-lora-name.discovery-comfy-q-lora-name--meta {
 }
 
 /**
+ * Sticky within `.discovery-desktop-preview-meta` scroll so queue / JSON errors and
+ * “Queued. prompt_id: …” stay visible while editing below the fold.
+ */
+.discovery-comfy-queue-status-strip {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 4px;
+  padding: 8px 10px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(14, 18, 24, 0.94);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+}
+
+/**
  * Comfy tab: Now viewing on top; prompt source + workflow file live in a collapsed details block.
  * Paths use RTL ellipsis; extra horizontal space helps.
  */
@@ -1459,22 +1479,56 @@ div.discovery-comfy-q-lora-name.discovery-comfy-q-lora-name--meta {
   flex-shrink: 0;
 }
 
-.discovery-comfy-queue-check--send-adjacent {
+.discovery-comfy-queue-check--submit-block {
   font-size: 12px;
   gap: 6px;
-  margin: 0;
+  margin: 0 0 10px;
+  width: fit-content;
 }
 
-.discovery-comfy-queue-send-cluster {
+/* Submit block: front-of-queue + presets (DiscoveryLibraryApp queue panel) */
+.discovery-comfy-queue-submit-block {
+  margin-top: 12px;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.discovery-comfy-queue-submit-head {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted, #9aa7b8);
+  margin-bottom: 8px;
+}
+
+.discovery-comfy-queue-submit-presets {
   display: flex;
   flex-wrap: wrap;
+  gap: 8px;
   align-items: center;
-  gap: 10px;
 }
 
-/* Seed block moved beside queue submit (DiscoveryLibraryApp) */
-.discovery-comfy-q-root--queue-seed {
-  margin-top: 10px;
+.discovery-comfy-queue-submit-preset {
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(90, 162, 255, 0.16);
+  color: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.discovery-comfy-queue-submit-preset:hover:not(:disabled) {
+  background: rgba(90, 162, 255, 0.26);
+}
+
+.discovery-comfy-queue-submit-preset:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .discovery-comfy-queue-actions {

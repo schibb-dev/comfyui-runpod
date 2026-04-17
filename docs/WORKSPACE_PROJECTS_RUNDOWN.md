@@ -79,6 +79,7 @@ None of these are “your” in-house projects; they are dependencies that exten
 | **WIP tune launcher** | `experiments_ui/docs/FEATURE_WIP_TUNE_LAUNCHER.md` | Feature spec: browse WIP dir, select videos, set tune params, create experiments from UI. Backend: GET /api/wip, POST /api/create-experiment. Frontend: WipBrowser, TuneParamsForm, “New from WIP” section. |
 | **Viewport / device targets** | `experiments_ui/docs/VIEWPORT_DEVICES.md` | Desktop (current), tablet and phone (later); breakpoints and hooks in place. |
 | **Resubmit / replay / extend** | (spec: this section §4.1) | **Next MVP (planned):** from a visible artifact, queue Comfy again with sensible defaults; optional overrides (seed, prompts, etc.); **extend** = same pipeline but a **user-picked extend template** workflow with the **current video** as starter (not the asset’s embedded graph). Quick access to a **small pinned list** (2–3 templates). |
+| **Discovery “Intermediate” editor (idea)** | `docs/PROJECT_ORGANIZATION_PROPOSAL.md` §10 | **Bookmark:** optional UI between Quick Edit and Advanced for **less-common** Comfy prompt fields (embed / work products), framed so it does not read as Discovery “run” chrome. Not implemented; see proposal for rationale. |
 
 ### 4.1 Resubmit, replay, extend — product intent and evolution
 
