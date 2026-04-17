@@ -296,3 +296,27 @@ So coordinating **“load into the current Comfy UI”** is **integration-heavy*
 ### When revisiting
 
 Record the chosen contract (query param names, who fetches `asset_url`, same-origin vs server-mediated) in **Project B** docs or a short **A↔B API** note so the Experiments UI and Comfy build stay in sync.
+
+---
+
+## 10. Future enhancements (Experiments UI / Discovery)
+
+### Seed surfing (Discovery)
+
+**Goal:** Support **multi-run experiments** that **sweep seeds in both directions** from a baseline (e.g. lower and higher than the anchor), at **configurable step sizes / intervals**, so you can assess **seed stability** (how much output moves when the seed barely changes) and what **adjacent states** look like (coarser steps along the integer line). UX would plan runs (or a batch template), tie each run to a pinned seed in the prompt, and surface results for comparison. **Status:** deferred; the Discovery seed dialog today (`DiscoveryComfyQuickEdits.tsx`) only covers explicit next-submit value and pin semantics.
+
+---
+
+## 11. Workflow management: “work orders” and a possible future project
+
+A ComfyUI workflow file usually **bundles too much at once**: executable graph, canvas layout, notes, implicit custom-node surface area, default paths, prompts, and half-finished edits. That makes **workflow management a larger chore than it ought to be** if the goal were only “define a reproducible pipeline.” **Pulling the spec (inputs, steps, approvals) apart from the serialized editor graph** could be a **whole separate product or repo** (templates, manifests, patch-only updates, reviewable diffs)—not something this runpod doc has to solve.
+
+**For now**, a practical stance is to treat each saved graph as a **work order**: a single artifact that **authorizes a class of runs** with a known topology. The common shortcut is **“take an old work order and change the specifications as needed”** (paths, frame counts, prompts, seeds) rather than maintaining an abstract template library before the tooling exists.
+
+**Mitigations today** (without a new workflow product): lightweight static checks (e.g. orphan / disconnected litegraph nodes, scheduler and VHS wiring) and pipeline scripts that patch API prompts or metadata so the canvas is not the only source of truth. See `workspace/scripts/workflow_litegraph_health.py`, `validate_workflow_orphans.py`, and `analyze_fb9_workflows.py`.
+
+### Future direction: templating, composition, and extraction
+
+The longer-term shape is a **templating system** that **assembles and composes** subgraphs or parameterized slots into a **transient workflow**—a throwaway or short-lived **work product** generated for a specific run or experiment, rather than treating every export as a long-lived canonical file.
+
+The hard part is **ingestion**: taking **external** workflows (anyone’s arbitrary graph) and **extracting the templates that are already implicit in them**—which nodes are “plumbing,” which are policy knobs, which branches are optional variants, what invariants must hold across rewires. Purely structural heuristics (node types, degrees, link cuts) get you part of the way; **semantic** grouping (“this cluster is the I2V path,” “this is debug-only”) often needs **human judgment or AI-assisted analysis** as a **labor tool** on top of deterministic passes. That is separate from using AI to **design the templating product**, though both can apply: rules and tests for safety, models or assistants for **suggested factorizations** that a human accepts or edits. Nothing here commits the repo to that stack—only records the problem boundary so a future project does not underestimate **extraction** as the cost center. **Note:** the full templating-plus-AI-assisted-ingestion picture may be a **pipedream**; it is captured here as orientation, not a committed roadmap.
