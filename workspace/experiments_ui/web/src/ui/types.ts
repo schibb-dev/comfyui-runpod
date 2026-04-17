@@ -300,6 +300,8 @@ export type DiscoveryLibraryItem = {
   thumb_relpath?: string | null;
   video_url?: string | null;
   thumb_url?: string | null;
+  /** Video container frame rate when known (e.g. from metadata). */
+  frame_rate?: number | null;
   members?: DiscoveryMember[];
 };
 

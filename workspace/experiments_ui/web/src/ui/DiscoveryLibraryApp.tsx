@@ -1520,10 +1520,6 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
           </div>
         </details>
       </div>
-      <label className="discovery-comfy-queue-check">
-        <input type="checkbox" checked={frontOfQueue} onChange={(e) => setFrontOfQueue(e.target.checked)} />
-        Send to front of queue
-      </label>
 
       {!embedLoading && !promptDraft ? (
         <p className="discovery-comfy-queue-msg discovery-comfy-queue-msg--error">
@@ -1659,14 +1655,20 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
         >
           Reload from file
         </button>
-        <button
-          type="button"
-          className="discovery-comfy-queue-send"
-          disabled={busy || embedLoading || !promptDraft || Boolean(jsonFieldError)}
-          onClick={() => void onSend()}
-        >
-          {busy ? "Sending…" : "Send to Comfy"}
-        </button>
+        <div className="discovery-comfy-queue-send-cluster">
+          <label className="discovery-comfy-queue-check discovery-comfy-queue-check--send-adjacent">
+            <input type="checkbox" checked={frontOfQueue} onChange={(e) => setFrontOfQueue(e.target.checked)} />
+            <span>Send to front of queue</span>
+          </label>
+          <button
+            type="button"
+            className="discovery-comfy-queue-send"
+            disabled={busy || embedLoading || !promptDraft || Boolean(jsonFieldError)}
+            onClick={() => void onSend()}
+          >
+            {busy ? "Sending…" : "Send to Comfy"}
+          </button>
+        </div>
       </div>
       {jsonFieldError ? <p className="discovery-comfy-queue-msg discovery-comfy-queue-msg--error">{jsonFieldError}</p> : null}
       {error && promptDraft ? <p className="discovery-comfy-queue-msg discovery-comfy-queue-msg--error">{error}</p> : null}
