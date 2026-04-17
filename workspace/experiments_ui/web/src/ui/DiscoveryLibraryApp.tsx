@@ -38,10 +38,11 @@ const DESKTOP_DETAILS_DRAWER_DEFAULT_OPEN = false;
 
 const DISCOVERY_GRAPH_DRAFT_PREFIX = "discovery_comfy_graph_draft__";
 const DISCOVERY_COMFY_FRONT_KEY = "discovery_comfy_front_v1";
-const DISCOVERY_LIBRARY_POLL_KEY = "discovery_library_poll_sec_v1";
+/** Minutes between auto-refresh (0 = off). New key so legacy second-based values are not reused. */
+const DISCOVERY_LIBRARY_POLL_KEY = "discovery_library_poll_min_v1";
 const DISCOVERY_LIBRARY_POLL_CHOICES = [0, 1, 5, 10, 15, 30, 60] as const;
 
-function loadDiscoveryPollSec(): (typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number] {
+function loadDiscoveryPollMin(): (typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number] {
   try {
     const n = Number(localStorage.getItem(DISCOVERY_LIBRARY_POLL_KEY));
     if (DISCOVERY_LIBRARY_POLL_CHOICES.includes(n as (typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number])) {
@@ -53,9 +54,9 @@ function loadDiscoveryPollSec(): (typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number]
   return 0;
 }
 
-function persistDiscoveryPollSec(sec: (typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number]) {
+function persistDiscoveryPollMin(min: (typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number]) {
   try {
-    localStorage.setItem(DISCOVERY_LIBRARY_POLL_KEY, String(sec));
+    localStorage.setItem(DISCOVERY_LIBRARY_POLL_KEY, String(min));
   } catch {
     /* ignore */
   }
@@ -2521,7 +2522,7 @@ function DiscoveryLibraryInner() {
   const [data, setData] = useState<DiscoveryLibraryResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [listRefreshing, setListRefreshing] = useState(false);
-  const [pollSec, setPollSec] = useState<(typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number]>(() => loadDiscoveryPollSec());
+  const [pollMin, setPollMin] = useState<(typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number]>(() => loadDiscoveryPollMin());
   const [err, setErr] = useState("");
   const [desktopSelectedKey, setDesktopSelectedKey] = useState<string | null>(null);
   const [listPaneWidth, setListPaneWidth] = useState<number>(() => loadDesktopListWidth());
@@ -2584,13 +2585,13 @@ function DiscoveryLibraryInner() {
   }, [load]);
 
   useEffect(() => {
-    if (pollSec <= 0) return;
+    if (pollMin <= 0) return;
     const id = window.setInterval(() => {
       if (document.visibilityState === "hidden") return;
       void load(true, { soft: true });
-    }, pollSec * 1000);
+    }, pollMin * 60_000);
     return () => window.clearInterval(id);
-  }, [pollSec, load]);
+  }, [pollMin, load]);
 
   const toggleSaved = useCallback((relpath: string) => {
     setSaved((prev) => {
@@ -2857,21 +2858,21 @@ function DiscoveryLibraryInner() {
       <label style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 120 }}>
         <span style={{ fontSize: 12, color: "var(--muted)" }}>Auto-refresh</span>
         <select
-          value={pollSec}
+          value={pollMin}
           onChange={(e) => {
             const v = Number(e.target.value) as (typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number];
             const next = DISCOVERY_LIBRARY_POLL_CHOICES.includes(v) ? v : 0;
-            setPollSec(next);
-            persistDiscoveryPollSec(next);
+            setPollMin(next);
+            persistDiscoveryPollMin(next);
           }}
         >
           <option value={0}>Off</option>
-          <option value={1}>1 s</option>
-          <option value={5}>5 s</option>
-          <option value={10}>10 s</option>
-          <option value={15}>15 s</option>
-          <option value={30}>30 s</option>
-          <option value={60}>60 s</option>
+          <option value={1}>1 min</option>
+          <option value={5}>5 min</option>
+          <option value={10}>10 min</option>
+          <option value={15}>15 min</option>
+          <option value={30}>30 min</option>
+          <option value={60}>60 min</option>
         </select>
       </label>
     </>
