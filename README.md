@@ -135,6 +135,13 @@ Use this when the **canonical** checkout and **`docker compose`** run from **Ubu
 8. **FileBrowser / phone:** recreate bookmarks or sync tasks — SFTP host is your PC (Tailscale/LAN), path is **`/home/<you>/src/comfyui-runpod/...`** (not `C:\…`).
 9. **Parity check:** **`npm run ui:dev`** for Vite **inside** the container on **`http://127.0.0.1:51780/`** (see `EXPERIMENTS_UI_VITE_HOST_PORT`).
 
+**Transition tooling (explicitly migration-oriented):**
+
+| Script | Where it runs | Role |
+|--------|----------------|------|
+| **`scripts/sync_comfyui_shadow_to_e.ps1`** | Windows PowerShell | Copies local-only state from a checkout into **`E:\comfyui-runpod-shadow`** (cold backup / pre–WSL-primary). Optional after cutover. |
+| **`scripts/wsl_setup_from_shadow.sh`** | WSL bash | One-time: wire a **`~/src/...`** clone to that shadow via **`.env`** **`COMFYUI_BIND_*`** + token files. |
+
 **Windows clone (`~/Code` / `C:\Users\...\Code\...`):** archive or delete when you are satisfied WSL is primary — avoid two active copies diverging. Until then, you can **`rsync`** or selectively **`cp`** updated files from **`/mnt/c/.../comfyui-runpod/`** into **`~/src/...`** if you need compose or script changes before they are pushed to **`origin`**.
 
 - **Run Vite inside the container** (no host Node required; same command on Linux, macOS, and Windows):

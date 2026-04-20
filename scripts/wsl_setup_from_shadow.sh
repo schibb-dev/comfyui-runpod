@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
-# One-time: point a WSL checkout at E: shadow data (see README "Host dev on WSL2").
-# Run from repo root in WSL, or pass REPO_ROOT as first argument.
+# ---------------------------------------------------------------------------
+# TRANSITION / MIGRATION HELPER (WSL — bash)
+# ---------------------------------------------------------------------------
+# One-time (or rare): point a Linux checkout at the E: shadow tree mounted
+# as /mnt/e/comfyui-runpod-shadow — copies token files into workspace/,
+# seeds .env from the shadow if missing, appends COMFYUI_BIND_* for Compose.
+# See README "Host dev on WSL2 (cutover from Windows)". After cutover, normal
+# workflow is docker compose + .env on this clone; you do not need to re-run
+# this script unless you rebuild the clone or change shadow layout.
+# ---------------------------------------------------------------------------
+# Usage: from repo root in WSL: ./scripts/wsl_setup_from_shadow.sh
+#        or: ./scripts/wsl_setup_from_shadow.sh /path/to/comfyui-runpod
 set -euo pipefail
 
 REPO_ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
