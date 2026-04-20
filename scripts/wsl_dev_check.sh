@@ -33,6 +33,28 @@ if [[ -f .env ]] && grep -q '^COMFYUI_MODELS_DIR=' .env; then
   fi
 fi
 
+check_bind() {
+  local var="$1"
+  if [[ ! -f .env ]] || ! grep -q "^${var}=" .env; then
+    return
+  fi
+  local p
+  p="$(grep "^${var}=" .env | head -1 | cut -d= -f2- | tr -d '\r')"
+  p="${p//\"/}"
+  if [[ -n "$p" && -d "$p" ]]; then
+    echo "OK: $var -> $p"
+  elif [[ -n "$p" ]]; then
+    echo "WARN: $var set but not a directory: $p"
+  fi
+}
+
+if [[ -f .env ]]; then
+  check_bind COMFYUI_BIND_INPUT_DIR
+  check_bind COMFYUI_BIND_OUTPUT_DIR
+  check_bind COMFYUI_BIND_USER_DIR
+  check_bind COMFYUI_BIND_CREDENTIALS_DIR
+fi
+
 docker compose config >/dev/null
 echo "OK: docker compose config"
 

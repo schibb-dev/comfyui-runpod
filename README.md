@@ -12,7 +12,7 @@ From the repo root (after `docker compose up -d` and any one-time setup in **Qui
 
 Optional: `npm run ui:dev:start -- --no-open` skips auto-opening a browser. More UI modes and container-only dev are under **Quick Start → Local Development** (Experiments UI).
 
-**Host dev on WSL2:** clone the repo under **`~/code/...`** (Linux filesystem), set **`COMFYUI_MODELS_DIR=/mnt/e/models`** in `.env` if models stay on **`E:`**, then run the same **`npm run ui:dev:start`** from Ubuntu — see **Quick Start → Host dev on WSL2 (cutover)**.
+**Host dev on WSL2:** clone the repo under **`~/src/...`** (Linux filesystem), set **`COMFYUI_MODELS_DIR=/mnt/e/models`** in `.env` if models stay on **`E:`**, then run the same **`npm run ui:dev:start`** from Ubuntu — see **Quick Start → Host dev on WSL2 (cutover)**.
 
 ## Features
 
@@ -107,7 +107,7 @@ Common workflows using the canonical entrypoints:
 
 **HMR** means **Hot Module Replacement**: Vite pushes **small live updates** (e.g. a React file save) over a WebSocket so the browser refreses **that module** without a full page reload. It feels instant when file watching is healthy; it stutters when the dev server cannot see file changes quickly (common with **NTFS → Docker bind mounts** on Windows).
 
-**“Native Vite”** here means **Node + Vite running in your interactive shell’s OS** — not inside the `comfyui` container. The same **`npm run ui:dev:vite`** / **`npm run ui:dev:start`** entrypoints work on **macOS, Linux, and Windows** (see `scripts/experiments-ui-dev.mjs`). A **WSL2 Ubuntu** shell counts as **Linux** for this purpose: install Node in WSL, clone the repo under the **Linux filesystem** (e.g. `~/code/...`, not `/mnt/c/...`), and run the same npm commands there.
+**“Native Vite”** here means **Node + Vite running in your interactive shell’s OS** — not inside the `comfyui` container. The same **`npm run ui:dev:vite`** / **`npm run ui:dev:start`** entrypoints work on **macOS, Linux, and Windows** (see `scripts/experiments-ui-dev.mjs`). A **WSL2 Ubuntu** shell counts as **Linux** for this purpose: install Node in WSL, clone the repo under the **Linux filesystem** (e.g. `~/src/...`, not `/mnt/c/...`), and run the same npm commands there.
 
 **Recommended layout (performance + portability):** keep **day-to-day UI** on **native Vite** in **WSL2** (or Linux/macOS), with **Docker Compose** for ComfyUI + API; use **in-container Vite** (`npm run ui:dev`) or **`npm run ui:build:docker`** when you want a strict “same as the container” check.
 
@@ -119,21 +119,23 @@ Use this when the **canonical** checkout and **`docker compose`** run from **Ubu
 2. **Clone inside Linux home** (not under `/mnt/c/…`):
 
    ```bash
-   mkdir -p ~/code && cd ~/code
+   mkdir -p ~/src && cd ~/src
    git clone <your-repo-url> comfyui-runpod
    cd comfyui-runpod
    ```
 
-3. **`.env` next to `docker-compose.yml`:** copy values from your Windows `.env` (do **not** copy the file blindly — paths change). At minimum:
+3. **Heavy data on `E:` (shadow tree):** if you copied local-only state to **`E:\comfyui-runpod-shadow`** (see that folder’s `README.txt`), run **`./scripts/wsl_setup_from_shadow.sh`** once from the WSL repo root. It installs workspace token files from the shadow, merges **`.env`**, and appends **`COMFYUI_BIND_*`** paths so **`docker-compose.yml`** keeps code on the Linux disk while **input / output / `comfyui_user` / credentials** stay on **`/mnt/e/comfyui-runpod-shadow/...`**. Skip this step if everything still lives under **`./workspace/...`** in the clone.
+
+4. **`.env` next to `docker-compose.yml`:** if you did **not** use the shadow script, copy values from your Windows `.env` (do **not** copy blindly — paths change). At minimum:
    - **`COMFYUI_MODELS_DIR=/mnt/e/models`** if models stay on **`E:`** (confirm `ls /mnt/e` in WSL). Keep **Docker Desktop file sharing** for **`E:`** enabled.
    - Re-apply any **`COMFYUI_HOST_PORT`**, tokens, etc., you had on Windows.
-4. **Credentials:** run `./scripts/setup_credentials.sh` again from WSL **or** copy `./credentials` from the old tree into this clone (same layout the compose file expects).
-5. **Stack:** `docker compose up -d` from `~/code/comfyui-runpod`, then **`npm run ui:dev:start`** (API + Vite) or **`npm run ui:dev:vite`**. Optional sanity: **`./scripts/wsl_dev_check.sh`**.
-6. **Editor:** open the folder **via Remote WSL** (VS Code / Cursor) so terminals and Git use Ubuntu paths.
-7. **FileBrowser / phone:** recreate bookmarks or sync tasks — SFTP host is your PC (Tailscale/LAN), path is **`/home/<you>/code/comfyui-runpod/...`** (not `C:\…`).
-8. **Parity check:** **`npm run ui:dev`** for Vite **inside** the container on **`http://127.0.0.1:51780/`** (see `EXPERIMENTS_UI_VITE_HOST_PORT`).
+5. **Credentials:** run `./scripts/setup_credentials.sh` again from WSL **or** copy **`./credentials`** from the old tree **or** rely on **`COMFYUI_BIND_CREDENTIALS_DIR`** when using the shadow layout.
+6. **Stack:** `docker compose up -d` from **`~/src/comfyui-runpod`**, then **`npm run ui:dev:start`** (API + Vite) or **`npm run ui:dev:vite`**. Optional sanity: **`./scripts/wsl_dev_check.sh`**.
+7. **Editor:** open the folder **via Remote WSL** (VS Code / Cursor) so terminals and Git use Ubuntu paths.
+8. **FileBrowser / phone:** recreate bookmarks or sync tasks — SFTP host is your PC (Tailscale/LAN), path is **`/home/<you>/src/comfyui-runpod/...`** (not `C:\…`).
+9. **Parity check:** **`npm run ui:dev`** for Vite **inside** the container on **`http://127.0.0.1:51780/`** (see `EXPERIMENTS_UI_VITE_HOST_PORT`).
 
-**Windows clone:** archive or delete when you are satisfied WSL is primary — avoid two active copies diverging.
+**Windows clone (`~/Code` / `C:\Users\...\Code\...`):** archive or delete when you are satisfied WSL is primary — avoid two active copies diverging. Until then, you can **`rsync`** or selectively **`cp`** updated files from **`/mnt/c/.../comfyui-runpod/`** into **`~/src/...`** if you need compose or script changes before they are pushed to **`origin`**.
 
 - **Run Vite inside the container** (no host Node required; same command on Linux, macOS, and Windows):
 

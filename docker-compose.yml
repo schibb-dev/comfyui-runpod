@@ -26,18 +26,22 @@ services:
     volumes:
       # Persistent workspace data (workflows, input, output, tokens, etc.)
       - ./workspace:/workspace
+      # Optional: override host paths for heavy/local-only dirs (WSL + E: shadow). Defaults keep ./workspace/... next to the repo.
+      - ${COMFYUI_BIND_INPUT_DIR:-./workspace/input}:/workspace/input
+      - ${COMFYUI_BIND_OUTPUT_DIR:-./workspace/output}:/workspace/output
+      - ${COMFYUI_BIND_USER_DIR:-./workspace/comfyui_user}:/workspace/comfyui_user
       # Put node_modules on a Docker volume (avoids Windows bind-mount fs issues)
       - experiments_ui_node_modules:/workspace/experiments_ui/web/node_modules
       # Persist ComfyUI's default input/output dirs (ComfyUI uses /ComfyUI/input and /ComfyUI/output)
-      - ./workspace/input:/ComfyUI/input
-      - ./workspace/output:/ComfyUI/output
+      - ${COMFYUI_BIND_INPUT_DIR:-./workspace/input}:/ComfyUI/input
+      - ${COMFYUI_BIND_OUTPUT_DIR:-./workspace/output}:/ComfyUI/output
       # Persist ComfyUI user data (settings, DB, manager config, user workflows)
-      - ./workspace/comfyui_user:/ComfyUI/user
+      - ${COMFYUI_BIND_USER_DIR:-./workspace/comfyui_user}:/ComfyUI/user
       # Persist models (default E:\models on Windows; set COMFYUI_MODELS_DIR in .env to override)
       - "${COMFYUI_MODELS_DIR:-E:/models}:/ComfyUI/models"
       - "${COMFYUI_MODELS_DIR:-E:/models}:/workspace/models"
       # Credentials for Hugging Face and CivitAI
-      - ./credentials:/workspace/credentials:ro
+      - ${COMFYUI_BIND_CREDENTIALS_DIR:-./credentials}:/workspace/credentials:ro
       # Custom nodes configuration
       - ./custom_nodes.yaml:/workspace/custom_nodes.yaml:ro
       # Scripts directory for bootstrap and utilities
@@ -119,6 +123,9 @@ services:
     entrypoint: ["python3", "/workspace/ws_scripts/watch_queue.py"]
     volumes:
       - ./workspace:/workspace
+      - ${COMFYUI_BIND_INPUT_DIR:-./workspace/input}:/workspace/input
+      - ${COMFYUI_BIND_OUTPUT_DIR:-./workspace/output}:/workspace/output
+      - ${COMFYUI_BIND_USER_DIR:-./workspace/comfyui_user}:/workspace/comfyui_user
       - ./workspace/scripts:/workspace/ws_scripts:ro
     # Override image healthcheck: this container does not run ComfyUI, so localhost:8188 will fail.
     # Probe the comfyui service over the compose network instead.
@@ -153,6 +160,9 @@ services:
       - REFRESH_INTERVAL_S=60
     volumes:
       - ./workspace:/workspace
+      - ${COMFYUI_BIND_INPUT_DIR:-./workspace/input}:/workspace/input
+      - ${COMFYUI_BIND_OUTPUT_DIR:-./workspace/output}:/workspace/output
+      - ${COMFYUI_BIND_USER_DIR:-./workspace/comfyui_user}:/workspace/comfyui_user
       - ./workspace/scripts:/workspace/ws_scripts:ro
     # Override image healthcheck: this container does not run ComfyUI.
     healthcheck:
@@ -182,6 +192,9 @@ services:
       - REPORT_LIMIT=10
     volumes:
       - ./workspace:/workspace
+      - ${COMFYUI_BIND_INPUT_DIR:-./workspace/input}:/workspace/input
+      - ${COMFYUI_BIND_OUTPUT_DIR:-./workspace/output}:/workspace/output
+      - ${COMFYUI_BIND_USER_DIR:-./workspace/comfyui_user}:/workspace/comfyui_user
       - ./workspace/scripts:/workspace/ws_scripts:ro
     # Override image healthcheck: this container does not run ComfyUI.
     healthcheck:
@@ -214,6 +227,9 @@ services:
       - QUEUE_INTERVAL_S=600
     volumes:
       - ./workspace:/workspace
+      - ${COMFYUI_BIND_INPUT_DIR:-./workspace/input}:/workspace/input
+      - ${COMFYUI_BIND_OUTPUT_DIR:-./workspace/output}:/workspace/output
+      - ${COMFYUI_BIND_USER_DIR:-./workspace/comfyui_user}:/workspace/comfyui_user
       - ./workspace/scripts:/workspace/ws_scripts:ro
     # Override image healthcheck: this container does not run ComfyUI.
     healthcheck:
@@ -255,6 +271,9 @@ services:
       - LEDGER_CLIENT_ID=comfy-queue-ledger
     volumes:
       - ./workspace:/workspace
+      - ${COMFYUI_BIND_INPUT_DIR:-./workspace/input}:/workspace/input
+      - ${COMFYUI_BIND_OUTPUT_DIR:-./workspace/output}:/workspace/output
+      - ${COMFYUI_BIND_USER_DIR:-./workspace/comfyui_user}:/workspace/comfyui_user
       - ./workspace/scripts:/workspace/ws_scripts:ro
     # Override image healthcheck: this container does not run ComfyUI.
     healthcheck:
@@ -300,6 +319,9 @@ services:
       - WS_DEBUG=false
     volumes:
       - ./workspace:/workspace
+      - ${COMFYUI_BIND_INPUT_DIR:-./workspace/input}:/workspace/input
+      - ${COMFYUI_BIND_OUTPUT_DIR:-./workspace/output}:/workspace/output
+      - ${COMFYUI_BIND_USER_DIR:-./workspace/comfyui_user}:/workspace/comfyui_user
       - ./workspace/scripts:/workspace/ws_scripts:ro
     # Override image healthcheck: this container does not run ComfyUI.
     healthcheck:
