@@ -12,6 +12,8 @@ From the repo root (after `docker compose up -d` and any one-time setup in **Qui
 
 Optional: `npm run ui:dev:start -- --no-open` skips auto-opening a browser. More UI modes and container-only dev are under **Quick Start → Local Development** (Experiments UI).
 
+**Host dev on WSL2:** clone the repo under **`~/code/...`** (Linux filesystem), set **`COMFYUI_MODELS_DIR=/mnt/e/models`** in `.env` if models stay on **`E:`**, then run the same **`npm run ui:dev:start`** from Ubuntu — see **Quick Start → Host dev on WSL2 (cutover)**.
+
 ## Features
 
 - 🐳 **Docker-based**: Complete containerization for consistent deployment
@@ -56,12 +58,12 @@ Note:
 - If you run `docker compose` from **PowerShell**, `E:\\models` (or `E:/models`) is fine.
 - If you run `docker compose` from **WSL/Linux**, use the WSL mount path instead (e.g. `/mnt/e/models`).
 
-3. **Build and run:**
+4. **Build and run:**
    ```bash
    docker compose up -d
    ```
 
-4. **Access ComfyUI:**
+5. **Access ComfyUI:**
    - Open http://localhost:8188 in your browser
 
 ### Ops: Docker-native “cron” (recommended)
@@ -103,13 +105,43 @@ Common workflows using the canonical entrypoints:
 
 #### DEV: Experiments UI (Vite) development
 
+**HMR** means **Hot Module Replacement**: Vite pushes **small live updates** (e.g. a React file save) over a WebSocket so the browser refreses **that module** without a full page reload. It feels instant when file watching is healthy; it stutters when the dev server cannot see file changes quickly (common with **NTFS → Docker bind mounts** on Windows).
+
+**“Native Vite”** here means **Node + Vite running in your interactive shell’s OS** — not inside the `comfyui` container. The same **`npm run ui:dev:vite`** / **`npm run ui:dev:start`** entrypoints work on **macOS, Linux, and Windows** (see `scripts/experiments-ui-dev.mjs`). A **WSL2 Ubuntu** shell counts as **Linux** for this purpose: install Node in WSL, clone the repo under the **Linux filesystem** (e.g. `~/code/...`, not `/mnt/c/...`), and run the same npm commands there.
+
+**Recommended layout (performance + portability):** keep **day-to-day UI** on **native Vite** in **WSL2** (or Linux/macOS), with **Docker Compose** for ComfyUI + API; use **in-container Vite** (`npm run ui:dev`) or **`npm run ui:build:docker`** when you want a strict “same as the container” check.
+
+**Host dev on WSL2 (cutover from Windows)**
+
+Use this when the **canonical** checkout and **`docker compose`** run from **Ubuntu on WSL**, with models still on **`E:`** if you like.
+
+1. **One-time:** install **WSL2** + **Ubuntu**, **Docker Desktop** with **Settings → Resources → WSL integration** enabled for that distro. Install **Node 20+** inside Ubuntu (`fnm`, `nvm`, or distro packages).
+2. **Clone inside Linux home** (not under `/mnt/c/…`):
+
+   ```bash
+   mkdir -p ~/code && cd ~/code
+   git clone <your-repo-url> comfyui-runpod
+   cd comfyui-runpod
+   ```
+
+3. **`.env` next to `docker-compose.yml`:** copy values from your Windows `.env` (do **not** copy the file blindly — paths change). At minimum:
+   - **`COMFYUI_MODELS_DIR=/mnt/e/models`** if models stay on **`E:`** (confirm `ls /mnt/e` in WSL). Keep **Docker Desktop file sharing** for **`E:`** enabled.
+   - Re-apply any **`COMFYUI_HOST_PORT`**, tokens, etc., you had on Windows.
+4. **Credentials:** run `./scripts/setup_credentials.sh` again from WSL **or** copy `./credentials` from the old tree into this clone (same layout the compose file expects).
+5. **Stack:** `docker compose up -d` from `~/code/comfyui-runpod`, then **`npm run ui:dev:start`** (API + Vite) or **`npm run ui:dev:vite`**. Optional sanity: **`./scripts/wsl_dev_check.sh`**.
+6. **Editor:** open the folder **via Remote WSL** (VS Code / Cursor) so terminals and Git use Ubuntu paths.
+7. **FileBrowser / phone:** recreate bookmarks or sync tasks — SFTP host is your PC (Tailscale/LAN), path is **`/home/<you>/code/comfyui-runpod/...`** (not `C:\…`).
+8. **Parity check:** **`npm run ui:dev`** for Vite **inside** the container on **`http://127.0.0.1:51780/`** (see `EXPERIMENTS_UI_VITE_HOST_PORT`).
+
+**Windows clone:** archive or delete when you are satisfied WSL is primary — avoid two active copies diverging.
+
 - **Run Vite inside the container** (no host Node required; same command on Linux, macOS, and Windows):
 
 ```bash
 npm run ui:dev
 ```
 
-This uses `docker compose exec` and serves Vite on `http://127.0.0.1:5178/` (see `docker-compose.yml` port mapping).
+This uses `docker compose exec` and serves Vite from the container; Docker maps **`http://127.0.0.1:51780/`** (host) to Vite on port **5178** inside the container (see `EXPERIMENTS_UI_VITE_HOST_PORT` in `docker-compose.yml` / `.env.example`). **Host** `npm run ui:dev:start` still uses **`http://127.0.0.1:5178/`** without conflicting with Docker. After changing that mapping, run **`docker compose up -d`** (or recreate the `comfyui` service) so the old host **5178** publish is released.
 
 - **Run Vite on the host** (best HMR; requires Node.js on host). Cross-platform:
 

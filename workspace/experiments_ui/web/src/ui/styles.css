@@ -456,6 +456,23 @@ body {
   align-items: stretch;
 }
 
+.discovery-desktop-meta-drawer-tablist--wrap {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.discovery-desktop-meta-drawer-tablist--wrap .discovery-desktop-meta-drawer-tab {
+  flex: 1 1 calc(50% - 6px);
+  min-width: 96px;
+}
+
+.discovery-mock-tab-hint {
+  font-size: 10px;
+  font-weight: 700;
+  opacity: 0.75;
+  letter-spacing: 0.04em;
+}
+
 .discovery-desktop-meta-drawer-tab {
   flex: 1 1 0;
   min-width: 0;
@@ -499,6 +516,281 @@ body {
   top: auto;
   right: auto;
   transform: none;
+}
+
+/* Discovery mock panels (Assets / Workflows placeholders — non-contract UI) */
+.discovery-mock-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text, #c8d0dc);
+}
+
+.discovery-mock-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px dashed rgba(255, 200, 120, 0.45);
+  background: rgba(255, 200, 120, 0.09);
+  font-size: 12px;
+  color: var(--muted, #9aa7b8);
+}
+
+.discovery-mock-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: rgba(255, 180, 90, 0.35);
+  color: var(--fg, #e8eef8);
+  flex-shrink: 0;
+}
+
+.discovery-mock-lead {
+  margin: 0;
+  color: var(--muted, #9aa7b8);
+}
+
+.discovery-mock-section-title {
+  margin: 8px 0 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted, #9aa7b8);
+}
+
+.discovery-mock-hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted, #9aa7b8);
+  line-height: 1.35;
+}
+
+.discovery-mock-footnote {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--muted, #9aa7b8);
+  font-style: italic;
+}
+
+.discovery-mock-search-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.discovery-mock-input {
+  flex: 1 1 160px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.25);
+  color: inherit;
+  font-size: 13px;
+}
+
+.discovery-mock-button-ghost {
+  flex-shrink: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.discovery-mock-button-ghost:hover {
+  background: rgba(90, 162, 255, 0.15);
+}
+
+.discovery-mock-adv {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.discovery-mock-prov {
+  padding: 10px 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.discovery-mock-prov__flow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.discovery-mock-prov__branch {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.12);
+}
+
+.discovery-mock-arrow {
+  color: var(--muted, #9aa7b8);
+  font-size: 14px;
+}
+
+.discovery-mock-node {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(90, 162, 255, 0.4);
+  background: rgba(90, 162, 255, 0.12);
+  color: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: left;
+  cursor: default;
+  max-width: 100%;
+}
+
+.discovery-mock-node:hover {
+  background: rgba(90, 162, 255, 0.22);
+}
+
+.discovery-mock-node--current {
+  border-color: rgba(120, 220, 140, 0.55);
+  background: rgba(120, 220, 140, 0.14);
+}
+
+.discovery-mock-node--small {
+  font-size: 10px;
+  padding: 6px 8px;
+}
+
+.discovery-mock-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.discovery-mock-chip {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  font-size: 11px;
+  cursor: default;
+}
+
+.discovery-mock-chip:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.discovery-mock-tag-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.discovery-mock-tag {
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--muted, #9aa7b8);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.discovery-mock-tag:hover {
+  color: var(--fg, #e8eef8);
+}
+
+.discovery-mock-tag--active {
+  border-color: rgba(90, 162, 255, 0.55);
+  background: rgba(90, 162, 255, 0.2);
+  color: var(--fg, #e8eef8);
+}
+
+.discovery-mock-library {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.discovery-mock-library-cat {
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.discovery-mock-library-cat-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted, #9aa7b8);
+  margin-bottom: 8px;
+}
+
+.discovery-mock-library-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px 8px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: default;
+}
+
+.discovery-mock-library-row:first-of-type {
+  margin-top: 0;
+}
+
+.discovery-mock-library-row:hover {
+  border-color: rgba(90, 162, 255, 0.35);
+  background: rgba(90, 162, 255, 0.08);
+}
+
+.discovery-mock-library-row-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.discovery-mock-library-row-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.discovery-mock-tag-pill {
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--muted, #9aa7b8);
 }
 
 /* Discovery Comfy tab — quick edits (primary) + advanced node fields */
@@ -2013,6 +2305,138 @@ div.discovery-comfy-q-lora-name.discovery-comfy-q-lora-name--meta {
   padding-top: env(safe-area-inset-top, 0px);
   padding-bottom: env(safe-area-inset-bottom, 0px);
   box-sizing: border-box;
+}
+
+/**
+ * Phone viewer: vertical scroll-snap between Details (video + meta), Assets, Parameters, Workflows.
+ */
+.discovery-phone-stack {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scroll-snap-type: y mandatory;
+  scroll-padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px));
+  -webkit-overflow-scrolling: touch;
+}
+
+.discovery-phone-stack__page {
+  min-height: 100%;
+  flex-shrink: 0;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+  box-sizing: border-box;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.discovery-phone-stack__page--details {
+  background: #050810;
+}
+
+.discovery-phone-stack__details-video {
+  flex: 1 1 58%;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.discovery-phone-stack__details-video .discovery-phone-detail-stage--viewer {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+/* Allow vertical scroll of the snap stack while keeping horizontal swipe + long-press on the stage. */
+.discovery-phone-stack .discovery-phone-detail-stage,
+.discovery-phone-stack .discovery-phone-detail-stage--viewer {
+  touch-action: pan-y;
+}
+
+.discovery-phone-stack__details-meta {
+  flex: 1 1 42%;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.discovery-phone-stack__page--panel {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #070c14;
+}
+
+.discovery-phone-stack__page-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted, #9aa7b8);
+}
+
+.discovery-phone-stack__page-head span {
+  color: var(--text, #c8d0dc);
+}
+
+.discovery-phone-stack__page-body {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 0 12px 12px;
+}
+
+.discovery-phone-stack-nav {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 6px;
+  padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--border);
+  background: rgba(7, 12, 20, 0.92);
+  backdrop-filter: blur(10px);
+}
+
+.discovery-phone-stack-nav button {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 44px;
+  padding: 6px 4px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text, #c8d0dc);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.15;
+  touch-action: manipulation;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.discovery-phone-stack-nav button:hover {
+  background: rgba(90, 162, 255, 0.15);
+}
+
+.discovery-phone-stack-nav button.discovery-phone-stack-nav--active {
+  border-color: rgba(90, 162, 255, 0.55);
+  background: rgba(90, 162, 255, 0.2);
+  color: var(--fg, #e8eef8);
 }
 
 /* Gesture-safe fullscreen: z-index only; size/position follow window.visualViewport (see DiscoveryLibraryApp). */

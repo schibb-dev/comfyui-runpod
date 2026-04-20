@@ -83,7 +83,22 @@ function _discoverySessionGetBool01(key: string): boolean {
   }
 }
 
-type DiscoveryMetaDrawerTab = "details" | "comfy";
+type DiscoveryMetaDrawerTab = "details" | "parameters" | "assets" | "workflows";
+
+function discoveryMetaPanelLabelId(tab: DiscoveryMetaDrawerTab): string {
+  switch (tab) {
+    case "details":
+      return "discovery-meta-tab-details";
+    case "parameters":
+      return "discovery-meta-tab-parameters";
+    case "assets":
+      return "discovery-meta-tab-assets";
+    case "workflows":
+      return "discovery-meta-tab-workflows";
+    default:
+      return "discovery-meta-tab-details";
+  }
+}
 
 function loadVideoAutoplay(): boolean {
   try {
@@ -1863,6 +1878,202 @@ function DiscoveryComfyQueuePanel({ it }: { it: DiscoveryLibraryItem }) {
   );
 }
 
+function DiscoveryMockBadge() {
+  return (
+    <span className="discovery-mock-badge" title="Placeholder UI — not a product contract">
+      Mock
+    </span>
+  );
+}
+
+function DiscoveryMockAssetsPanel({ it }: { it: DiscoveryLibraryItem | null }) {
+  const [advOpen, setAdvOpen] = useState(false);
+  if (!it) {
+    return (
+      <div className="discovery-mock-panel">
+        <div className="discovery-mock-banner">
+          <DiscoveryMockBadge />
+          <span>Select a library item for mock Assets tools.</span>
+        </div>
+      </div>
+    );
+  }
+  const name = it.name;
+  const short =
+    name.length > 36 ? `${name.slice(0, 34)}…` : name;
+  return (
+    <div className="discovery-mock-panel" aria-label="Assets mock">
+      <div className="discovery-mock-banner">
+        <DiscoveryMockBadge />
+        <span>Ideas only — not a contract.</span>
+      </div>
+      <p className="discovery-mock-lead">
+        Tools to find, filter, and organize <strong>images and video</strong> (selection-aware).
+      </p>
+      <div className="discovery-mock-search-row">
+        <input
+          type="search"
+          className="discovery-mock-input"
+          placeholder="Search assets…"
+          readOnly
+          aria-readonly="true"
+        />
+        <button type="button" className="discovery-mock-button-ghost" onClick={() => setAdvOpen((o) => !o)}>
+          {advOpen ? "Hide advanced" : "Advanced search…"}
+        </button>
+      </div>
+      {advOpen ? (
+        <div className="discovery-mock-adv">
+          <p className="discovery-mock-hint">
+            Mock filters: media kind, library, date range, size, has embedded workflow, path glob…
+          </p>
+        </div>
+      ) : null}
+
+      <h3 className="discovery-mock-section-title">Provenance sketch</h3>
+      <p className="discovery-mock-hint">Diagram mock — shortcuts would open historical artifacts.</p>
+      <div className="discovery-mock-prov" role="presentation">
+        <div className="discovery-mock-prov__flow">
+          <button type="button" className="discovery-mock-node">
+            Starter still.png
+          </button>
+          <span className="discovery-mock-arrow" aria-hidden="true">
+            →
+          </span>
+          <button type="button" className="discovery-mock-node">
+            Intermediate.mp4
+          </button>
+          <span className="discovery-mock-arrow" aria-hidden="true">
+            →
+          </span>
+          <button type="button" className="discovery-mock-node discovery-mock-node--current">
+            Current: {short}
+          </button>
+        </div>
+        <div className="discovery-mock-prov__branch">
+          <button type="button" className="discovery-mock-node discovery-mock-node--small">
+            Parallel branch preview.png
+          </button>
+        </div>
+      </div>
+      <p className="discovery-mock-footnote">
+        Non-contract: real lineage would come from indexed parent/child edges or embeds.
+      </p>
+    </div>
+  );
+}
+
+function DiscoveryMockWorkflowsPanel({ it }: { it: DiscoveryLibraryItem | null }) {
+  const [advOpen, setAdvOpen] = useState(false);
+  const [activeMockTag, setActiveMockTag] = useState<string | null>("i2v");
+  const mockTags = ["i2v", "extend", "upscale", "color", "wip", "fb9"];
+  if (!it) {
+    return (
+      <div className="discovery-mock-panel">
+        <div className="discovery-mock-banner">
+          <DiscoveryMockBadge />
+          <span>Select a library item for mock Workflow tools.</span>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="discovery-mock-panel" aria-label="Workflows mock">
+      <div className="discovery-mock-banner">
+        <DiscoveryMockBadge />
+        <span>Ideas only — not a contract.</span>
+      </div>
+      <p className="discovery-mock-lead">
+        Discover workflows as carried by <strong>exemplar assets</strong> (PNG / MP4); categorize with tags (mock).
+      </p>
+
+      <div className="discovery-mock-search-row">
+        <input
+          type="search"
+          className="discovery-mock-input"
+          placeholder="Search workflows…"
+          readOnly
+          aria-readonly="true"
+        />
+        <button type="button" className="discovery-mock-button-ghost" onClick={() => setAdvOpen((o) => !o)}>
+          {advOpen ? "Hide advanced" : "Advanced search…"}
+        </button>
+      </div>
+      {advOpen ? (
+        <div className="discovery-mock-adv">
+          <p className="discovery-mock-hint">
+            Mock: fingerprint, node class, embedded vs file path, same-graph cluster…
+          </p>
+        </div>
+      ) : null}
+
+      <h3 className="discovery-mock-section-title">Historical shortcuts (mock)</h3>
+      <div className="discovery-mock-chip-row">
+        <button type="button" className="discovery-mock-chip">
+          Last queued from this PNG
+        </button>
+        <button type="button" className="discovery-mock-chip">
+          Embed from paired asset
+        </button>
+        <button type="button" className="discovery-mock-chip">
+          Previous run fingerprint
+        </button>
+      </div>
+
+      <h3 className="discovery-mock-section-title">Tag navigation (mock)</h3>
+      <div className="discovery-mock-tag-strip" role="toolbar" aria-label="Mock tag filters">
+        {mockTags.map((tag) => (
+          <button
+            key={tag}
+            type="button"
+            className={
+              "discovery-mock-tag" + (activeMockTag === tag ? " discovery-mock-tag--active" : "")
+            }
+            onClick={() => setActiveMockTag(activeMockTag === tag ? null : tag)}
+          >
+            #{tag}
+          </button>
+        ))}
+      </div>
+
+      <h3 className="discovery-mock-section-title">Workflow library (mock)</h3>
+      <p className="discovery-mock-hint">Categorized exemplars — tagging and browse are placeholders.</p>
+      <div className="discovery-mock-library">
+        <div className="discovery-mock-library-cat">
+          <div className="discovery-mock-library-cat-title">FB9 · GEX family</div>
+          <button type="button" className="discovery-mock-library-row">
+            <span className="discovery-mock-library-row-title">FEAR_FB9_GEX… (exemplar)</span>
+            <span className="discovery-mock-library-row-tags">
+              <span className="discovery-mock-tag-pill">i2v</span>
+              <span className="discovery-mock-tag-pill">fb9</span>
+            </span>
+          </button>
+          <button type="button" className="discovery-mock-library-row">
+            <span className="discovery-mock-library-row-title">Variant · wide aspect</span>
+            <span className="discovery-mock-library-row-tags">
+              <span className="discovery-mock-tag-pill">wip</span>
+            </span>
+          </button>
+        </div>
+        <div className="discovery-mock-library-cat">
+          <div className="discovery-mock-library-cat-title">Extensions</div>
+          <button type="button" className="discovery-mock-library-row">
+            <span className="discovery-mock-library-row-title">Upscale tail template</span>
+            <span className="discovery-mock-library-row-tags">
+              <span className="discovery-mock-tag-pill">upscale</span>
+              <span className="discovery-mock-tag-pill">extend</span>
+            </span>
+          </button>
+        </div>
+      </div>
+      <p className="discovery-mock-footnote">
+        Non-contract: library rows would resolve to real exemplar paths or index rows. Selection:{" "}
+        <span className="mono">{it.relpath}</span>
+      </p>
+    </div>
+  );
+}
+
 function DiscoveryDesktopPreview({
   it,
   saved,
@@ -2415,7 +2626,11 @@ function DiscoveryDesktopPreview({
         />
         <div className="discovery-desktop-meta-drawer-column">
           <div className="discovery-desktop-meta-drawer-head">
-            <div className="discovery-desktop-meta-drawer-tablist" role="tablist" aria-label="Side panel">
+            <div
+              className="discovery-desktop-meta-drawer-tablist discovery-desktop-meta-drawer-tablist--wrap"
+              role="tablist"
+              aria-label="Side panel"
+            >
               <button
                 type="button"
                 role="tab"
@@ -2434,17 +2649,47 @@ function DiscoveryDesktopPreview({
               <button
                 type="button"
                 role="tab"
-                id="discovery-meta-tab-comfy"
+                id="discovery-meta-tab-parameters"
                 aria-controls="discovery-meta-panel-body"
-                aria-selected={metaDrawerTab === "comfy"}
-                tabIndex={detailsOpen ? (metaDrawerTab === "comfy" ? 0 : -1) : -1}
+                aria-selected={metaDrawerTab === "parameters"}
+                tabIndex={detailsOpen ? (metaDrawerTab === "parameters" ? 0 : -1) : -1}
                 className={
                   "discovery-desktop-meta-drawer-tab" +
-                  (metaDrawerTab === "comfy" ? " discovery-desktop-meta-drawer-tab--active" : "")
+                  (metaDrawerTab === "parameters" ? " discovery-desktop-meta-drawer-tab--active" : "")
                 }
-                onClick={() => setMetaDrawerTab("comfy")}
+                onClick={() => setMetaDrawerTab("parameters")}
               >
-                Comfy
+                Parameters
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id="discovery-meta-tab-assets"
+                aria-controls="discovery-meta-panel-body"
+                aria-selected={metaDrawerTab === "assets"}
+                tabIndex={detailsOpen ? (metaDrawerTab === "assets" ? 0 : -1) : -1}
+                className={
+                  "discovery-desktop-meta-drawer-tab" +
+                  (metaDrawerTab === "assets" ? " discovery-desktop-meta-drawer-tab--active" : "")
+                }
+                onClick={() => setMetaDrawerTab("assets")}
+              >
+                Assets <span className="discovery-mock-tab-hint">Mock</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id="discovery-meta-tab-workflows"
+                aria-controls="discovery-meta-panel-body"
+                aria-selected={metaDrawerTab === "workflows"}
+                tabIndex={detailsOpen ? (metaDrawerTab === "workflows" ? 0 : -1) : -1}
+                className={
+                  "discovery-desktop-meta-drawer-tab" +
+                  (metaDrawerTab === "workflows" ? " discovery-desktop-meta-drawer-tab--active" : "")
+                }
+                onClick={() => setMetaDrawerTab("workflows")}
+              >
+                Workflows <span className="discovery-mock-tab-hint">Mock</span>
               </button>
             </div>
             <button
@@ -2460,12 +2705,16 @@ function DiscoveryDesktopPreview({
             className="discovery-desktop-preview-meta"
             role="tabpanel"
             id="discovery-meta-panel-body"
-            aria-labelledby={metaDrawerTab === "details" ? "discovery-meta-tab-details" : "discovery-meta-tab-comfy"}
+            aria-labelledby={discoveryMetaPanelLabelId(metaDrawerTab)}
           >
             {metaDrawerTab === "details" ? (
               <DiscoveryItemMetaBody it={it} k={k} saved={saved} onToggleSaved={onToggleSaved} />
-            ) : (
+            ) : metaDrawerTab === "parameters" ? (
               <DiscoveryComfyQueuePanel it={it} />
+            ) : metaDrawerTab === "assets" ? (
+              <DiscoveryMockAssetsPanel it={it} />
+            ) : (
+              <DiscoveryMockWorkflowsPanel it={it} />
             )}
           </div>
         </div>
@@ -2488,12 +2737,34 @@ function DiscoveryDesktopPreview({
             type="button"
             className="discovery-desktop-drawer-tab"
             onClick={() => {
-              setMetaDrawerTab("comfy");
+              setMetaDrawerTab("parameters");
               setDetailsOpen(true);
             }}
-            aria-label="Open Comfy queue"
+            aria-label="Open Parameters"
           >
-            Comfy
+            Parameters
+          </button>
+          <button
+            type="button"
+            className="discovery-desktop-drawer-tab"
+            onClick={() => {
+              setMetaDrawerTab("assets");
+              setDetailsOpen(true);
+            }}
+            aria-label="Open Assets mock"
+          >
+            Assets
+          </button>
+          <button
+            type="button"
+            className="discovery-desktop-drawer-tab"
+            onClick={() => {
+              setMetaDrawerTab("workflows");
+              setDetailsOpen(true);
+            }}
+            aria-label="Open Workflows mock"
+          >
+            Workflows
           </button>
         </div>
       ) : null}
@@ -3136,7 +3407,10 @@ function DiscoveryPhoneDetailOverlay({
   const trimMedia = discoveryTrimMediaRelpath(it);
   const phoneVideoRef = useRef<HTMLVideoElement | null>(null);
   const trimLoopRewindPendingRef = useRef(false);
-  const [infoOverlayOpen, setInfoOverlayOpen] = useState(false);
+  const stackRef = useRef<HTMLDivElement | null>(null);
+  const detailsMetaScrollRef = useRef<HTMLDivElement | null>(null);
+  const [stackActive, setStackActive] = useState<"details" | "assets" | "parameters" | "workflows">("details");
+  const detailsPageActive = stackActive === "details";
   const [viewerActionMenuOpen, setViewerActionMenuOpen] = useState(false);
   const [viewerActionMenuPos, setViewerActionMenuPos] = useState<{ x: number; y: number } | null>(null);
   const [scrubSheetOpen, setScrubSheetOpen] = useState(false);
@@ -3156,7 +3430,6 @@ function DiscoveryPhoneDetailOverlay({
   const [hideHudChromeForNativeVideo, setHideHudChromeForNativeVideo] = useState(false);
   /** Thin top filename strip when HUD is hidden (e.g. swipe nav); fades after PHONE_VIEWER_CONTROLS_MS. HUD uses in-chrome strip. */
   const [filenameLinePhase, setFilenameLinePhase] = useState<"hidden" | "visible" | "fade">("hidden");
-  const skipIntroTransientAfterInfoDismiss = useRef(false);
   /** Swipe next/prev: skip the index-change chrome flash and the follow-up synthetic click. */
   const skipIndexEffectTransientOnce = useRef(false);
   const suppressStageClickOnce = useRef(false);
@@ -3182,8 +3455,45 @@ function DiscoveryPhoneDetailOverlay({
     }
   }, []);
 
+  const scrollStackTo = useCallback((page: "details" | "assets" | "parameters" | "workflows") => {
+    const el = typeof document !== "undefined" ? document.getElementById(`discovery-phone-page-${page}`) : null;
+    el?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
+
+  const onStackScroll = useCallback(() => {
+    const root = stackRef.current;
+    if (!root) return;
+    const rootRect = root.getBoundingClientRect();
+    const midY = rootRect.top + rootRect.height * 0.35;
+    const pages = ["details", "assets", "parameters", "workflows"] as const;
+    for (const p of pages) {
+      const el = document.getElementById(`discovery-phone-page-${p}`);
+      if (!el) continue;
+      const r = el.getBoundingClientRect();
+      if (midY >= r.top && midY <= r.bottom) {
+        setStackActive((prev) => (prev === p ? prev : p));
+        break;
+      }
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    const root = stackRef.current;
+    if (!root) return;
+    root.scrollTop = 0;
+    setStackActive("details");
+  }, [index, k]);
+
+  useEffect(() => {
+    const root = stackRef.current;
+    if (!root) return;
+    root.addEventListener("scroll", onStackScroll, { passive: true });
+    onStackScroll();
+    return () => root.removeEventListener("scroll", onStackScroll);
+  }, [onStackScroll, index, k]);
+
   const scheduleHideViewerChrome = useCallback(() => {
-    if (infoOverlayOpen) return;
+    if (!detailsPageActive) return;
     clearViewerUiTimer();
     viewerUiTimerRef.current = setTimeout(() => {
       setViewerChromeVisible(false);
@@ -3191,7 +3501,7 @@ function DiscoveryPhoneDetailOverlay({
       setHideHudChromeForNativeVideo(false);
       viewerUiTimerRef.current = null;
     }, PHONE_VIEWER_CONTROLS_MS);
-  }, [infoOverlayOpen, clearViewerUiTimer]);
+  }, [detailsPageActive, clearViewerUiTimer]);
 
   const clearFilenameStatusTimers = useCallback(() => {
     const [a, b] = filenameStatusTimersRef.current;
@@ -3216,7 +3526,7 @@ function DiscoveryPhoneDetailOverlay({
 
   /** Toolbar + native video controls (when applicable); auto-hide after PHONE_VIEWER_CONTROLS_MS. */
   const showTransientViewerUi = useCallback(() => {
-    if (infoOverlayOpen) return;
+    if (!detailsPageActive) return;
     setViewerActionMenuOpen(false);
     setViewerActionMenuPos(null);
     setScrubSheetOpen(false);
@@ -3225,10 +3535,10 @@ function DiscoveryPhoneDetailOverlay({
     setShowVideoControls(!!play);
     setHideHudChromeForNativeVideo(false);
     scheduleHideViewerChrome();
-  }, [play, infoOverlayOpen, clearViewerUiTimer, scheduleHideViewerChrome]);
+  }, [play, detailsPageActive, clearViewerUiTimer, scheduleHideViewerChrome]);
 
   useEffect(() => {
-    if (infoOverlayOpen) {
+    if (!detailsPageActive) {
       clearViewerUiTimer();
       setViewerChromeVisible(false);
       setShowVideoControls(false);
@@ -3238,10 +3548,6 @@ function DiscoveryPhoneDetailOverlay({
       setScrubSheetOpen(false);
       return;
     }
-    if (skipIntroTransientAfterInfoDismiss.current) {
-      skipIntroTransientAfterInfoDismiss.current = false;
-      return;
-    }
     if (skipIndexEffectTransientOnce.current) {
       skipIndexEffectTransientOnce.current = false;
       flashFilenameStatus();
@@ -3249,7 +3555,7 @@ function DiscoveryPhoneDetailOverlay({
     }
     showTransientViewerUi();
     return () => clearViewerUiTimer();
-  }, [index, k, infoOverlayOpen, showTransientViewerUi, clearViewerUiTimer, flashFilenameStatus]);
+  }, [index, k, detailsPageActive, showTransientViewerUi, clearViewerUiTimer, flashFilenameStatus]);
 
   useEffect(() => {
     if (!showVideoControls || !play) {
@@ -3298,11 +3604,6 @@ function DiscoveryPhoneDetailOverlay({
       window.removeEventListener("touchcancel", endTouchHud, { capture: true });
     };
   }, [showVideoControls, play, k, index, clearViewerUiTimer, scheduleHideViewerChrome]);
-
-  const dismissInfoOverlay = useCallback(() => {
-    skipIntroTransientAfterInfoDismiss.current = true;
-    setInfoOverlayOpen(false);
-  }, []);
 
   useEffect(() => {
     skipTrimPersistRef.current = true;
@@ -3373,7 +3674,7 @@ function DiscoveryPhoneDetailOverlay({
   }, [viewerActionMenuOpen, scrubSheetOpen]);
 
   useEffect(() => {
-    if (!play || infoOverlayOpen) return;
+    if (!play || !detailsPageActive) return;
     const onKey = (e: KeyboardEvent) => {
       const t = e.target;
       if (!(t instanceof HTMLElement)) return;
@@ -3428,7 +3729,7 @@ function DiscoveryPhoneDetailOverlay({
     return () => window.removeEventListener("keydown", onKey, true);
   }, [
     play,
-    infoOverlayOpen,
+    detailsPageActive,
     phoneVideoDuration,
     scrubUiDuration,
     markIn,
@@ -3638,7 +3939,7 @@ function DiscoveryPhoneDetailOverlay({
 
   /** Muted inline + play() after load is required for iOS. */
   useEffect(() => {
-    if (!play || !videoAutoplay || infoOverlayOpen || scrubSheetOpen) return;
+    if (!play || !videoAutoplay || !detailsPageActive || scrubSheetOpen) return;
     const v = phoneVideoRef.current;
     if (!v) return;
     v.setAttribute("playsinline", "");
@@ -3656,7 +3957,7 @@ function DiscoveryPhoneDetailOverlay({
       v.removeEventListener("loadeddata", tryPlay);
       v.removeEventListener("canplay", tryPlay);
     };
-  }, [play, videoAutoplay, k, index, infoOverlayOpen, scrubSheetOpen]);
+  }, [play, videoAutoplay, k, index, detailsPageActive, scrubSheetOpen]);
 
   const goNext = useCallback(() => {
     onIndexChange(Math.min(index + 1, items.length - 1));
@@ -3670,14 +3971,14 @@ function DiscoveryPhoneDetailOverlay({
   const stageMenuAnchorRef = useRef<{ x: number; y: number } | null>(null);
 
   const onSwipeTouchStart = useCallback((e: React.TouchEvent) => {
-    if (infoOverlayOpen || viewerActionMenuOpen || scrubSheetOpen) return;
+    if (!detailsPageActive || viewerActionMenuOpen || scrubSheetOpen) return;
     if (e.touches.length !== 1) return;
     swipeTouchStart.current = { y: e.touches[0].clientY, x: e.touches[0].clientX };
-  }, [infoOverlayOpen, viewerActionMenuOpen, scrubSheetOpen]);
+  }, [detailsPageActive, viewerActionMenuOpen, scrubSheetOpen]);
 
   const onSwipeTouchEnd = useCallback(
     (e: React.TouchEvent) => {
-      if (infoOverlayOpen || viewerActionMenuOpen || scrubSheetOpen) return;
+      if (!detailsPageActive || viewerActionMenuOpen || scrubSheetOpen) return;
       const start = swipeTouchStart.current;
       swipeTouchStart.current = null;
       if (!start || e.changedTouches.length < 1) return;
@@ -3701,7 +4002,7 @@ function DiscoveryPhoneDetailOverlay({
         goPrev();
       }
     },
-    [goNext, goPrev, infoOverlayOpen, viewerActionMenuOpen, scrubSheetOpen, index, items.length]
+    [goNext, goPrev, detailsPageActive, viewerActionMenuOpen, scrubSheetOpen, index, items.length]
   );
 
   const stageLpTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -3717,7 +4018,7 @@ function DiscoveryPhoneDetailOverlay({
 
   const onStagePointerDown = useCallback(
     (e: React.PointerEvent) => {
-      if (infoOverlayOpen || viewerActionMenuOpen || scrubSheetOpen) return;
+      if (!detailsPageActive || viewerActionMenuOpen || scrubSheetOpen) return;
       if (e.pointerType === "mouse" && e.button !== 0) return;
       stageLpDown.current = { x: e.clientX, y: e.clientY };
       stageMenuAnchorRef.current = { x: e.clientX, y: e.clientY };
@@ -3734,12 +4035,12 @@ function DiscoveryPhoneDetailOverlay({
         setViewerActionMenuOpen(true);
       }, PHONE_LONG_PRESS_MS);
     },
-    [infoOverlayOpen, viewerActionMenuOpen, scrubSheetOpen, clearStageLp]
+    [detailsPageActive, viewerActionMenuOpen, scrubSheetOpen, clearStageLp]
   );
 
   const onStagePointerMove = useCallback(
     (e: React.PointerEvent) => {
-      if (infoOverlayOpen || viewerActionMenuOpen || scrubSheetOpen || !stageLpDown.current || !stageLpTimer.current)
+      if (!detailsPageActive || viewerActionMenuOpen || scrubSheetOpen || !stageLpDown.current || !stageLpTimer.current)
         return;
       const dx = e.clientX - stageLpDown.current.x;
       const dy = e.clientY - stageLpDown.current.y;
@@ -3749,12 +4050,12 @@ function DiscoveryPhoneDetailOverlay({
         stageLpDown.current = null;
       }
     },
-    [infoOverlayOpen, viewerActionMenuOpen, scrubSheetOpen, clearStageLp]
+    [detailsPageActive, viewerActionMenuOpen, scrubSheetOpen, clearStageLp]
   );
 
   const onStagePointerUp = useCallback(
     (e: React.PointerEvent) => {
-      if (infoOverlayOpen || viewerActionMenuOpen || scrubSheetOpen) return;
+      if (!detailsPageActive || viewerActionMenuOpen || scrubSheetOpen) return;
       clearStageLp();
       stageLpDown.current = null;
       if (stageLpSuppressClick.current) {
@@ -3763,7 +4064,7 @@ function DiscoveryPhoneDetailOverlay({
         e.stopPropagation();
       }
     },
-    [infoOverlayOpen, viewerActionMenuOpen, scrubSheetOpen, clearStageLp]
+    [detailsPageActive, viewerActionMenuOpen, scrubSheetOpen, clearStageLp]
   );
 
   const onStagePointerCancel = useCallback(() => {
@@ -3777,7 +4078,7 @@ function DiscoveryPhoneDetailOverlay({
   }, [scheduleHideViewerChrome]);
 
   const onStageClick = useCallback(() => {
-    if (infoOverlayOpen) return;
+    if (!detailsPageActive) return;
     if (viewerActionMenuOpen) {
       setViewerActionMenuOpen(false);
       setViewerActionMenuPos(null);
@@ -3796,7 +4097,7 @@ function DiscoveryPhoneDetailOverlay({
       return;
     }
     showTransientViewerUi();
-  }, [infoOverlayOpen, viewerActionMenuOpen, scrubSheetOpen, closeScrubSheet, showTransientViewerUi]);
+  }, [detailsPageActive, viewerActionMenuOpen, scrubSheetOpen, closeScrubSheet, showTransientViewerUi]);
 
   useEffect(() => {
     const sync = () => {
@@ -3995,84 +4296,172 @@ function DiscoveryPhoneDetailOverlay({
       aria-modal="true"
       aria-label={it.name}
     >
-      <div className={stageClass} onContextMenu={(e) => e.preventDefault()}>
-        <div
-          className="discovery-phone-detail-stage-inner"
-          onClick={onStageClick}
-          onPointerDown={onStagePointerDown}
-          onPointerMove={onStagePointerMove}
-          onPointerUp={onStagePointerUp}
-          onPointerCancel={onStagePointerCancel}
-          onTouchStart={onSwipeTouchStart}
-          onTouchEnd={onSwipeTouchEnd}
+      <div ref={stackRef} className="discovery-phone-stack">
+        <section
+          id="discovery-phone-page-details"
+          className="discovery-phone-stack__page discovery-phone-stack__page--details"
+          aria-label="Details"
         >
-          {play ? (
-            <video
-              ref={phoneVideoRef}
-              key={k}
-              src={play}
-              controls={showVideoControls && !scrubSheetOpen}
-              controlsList="nofullscreen"
-              playsInline
-              poster={posterUrl}
-              preload={videoAutoplay ? "auto" : "metadata"}
-              loop={videoAutoplay && !trimEnforcesPlayback && trimPlaybackLoop}
-              muted={videoAutoplay}
-              autoPlay={videoAutoplay}
-            />
-          ) : thumb ? (
-            <img key={k} src={thumb} alt="" decoding="async" />
-          ) : (
-            <div style={{ color: "var(--muted)", padding: 24, textAlign: "center" }}>No preview for this type</div>
-          )}
-        </div>
+          <div className="discovery-phone-stack__details-video">
+            <div className={stageClass} onContextMenu={(e) => e.preventDefault()}>
+              <div
+                className="discovery-phone-detail-stage-inner"
+                onClick={onStageClick}
+                onPointerDown={onStagePointerDown}
+                onPointerMove={onStagePointerMove}
+                onPointerUp={onStagePointerUp}
+                onPointerCancel={onStagePointerCancel}
+                onTouchStart={onSwipeTouchStart}
+                onTouchEnd={onSwipeTouchEnd}
+              >
+                {play ? (
+                  <video
+                    ref={phoneVideoRef}
+                    key={k}
+                    src={play}
+                    controls={showVideoControls && !scrubSheetOpen}
+                    controlsList="nofullscreen"
+                    playsInline
+                    poster={posterUrl}
+                    preload={videoAutoplay ? "auto" : "metadata"}
+                    loop={videoAutoplay && !trimEnforcesPlayback && trimPlaybackLoop}
+                    muted={videoAutoplay}
+                    autoPlay={videoAutoplay}
+                  />
+                ) : thumb ? (
+                  <img key={k} src={thumb} alt="" decoding="async" />
+                ) : (
+                  <div style={{ color: "var(--muted)", padding: 24, textAlign: "center" }}>No preview for this type</div>
+                )}
+              </div>
+            </div>
+
+            {viewerChromeVisible && detailsPageActive && !hideHudChromeForNativeVideo ? (
+              <div className="discovery-phone-viewer-chrome">
+                <div className="discovery-phone-viewer-chrome-filename" title={it.name}>
+                  <span className="mono discovery-phone-viewer-chrome-filename-text">{it.name}</span>
+                </div>
+                <div className="discovery-phone-viewer-chrome-top">
+                  <button type="button" className="discovery-phone-viewer-chrome-btn" onClick={onClose} aria-label="Return to list">
+                    ← List
+                  </button>
+                  <span className="mono discovery-phone-viewer-chrome-counter">
+                    {index + 1} / {items.length}
+                  </span>
+                  <div className="discovery-phone-viewer-chrome-top-actions">
+                    <button
+                      type="button"
+                      className="discovery-phone-viewer-chrome-btn"
+                      onClick={() => detailsMetaScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" })}
+                      aria-label="Scroll to item fields"
+                    >
+                      Meta
+                    </button>
+                    <button
+                      type="button"
+                      className="discovery-phone-viewer-chrome-btn"
+                      onClick={() => void toggleViewerFullscreen()}
+                      aria-label={inViewerFullscreen ? "Exit fullscreen" : "Fullscreen viewer"}
+                    >
+                      {inViewerFullscreen ? "Exit FS" : "Full"}
+                    </button>
+                  </div>
+                </div>
+                <PhoneAutoplayToggle variant="overlay" videoAutoplay={videoAutoplay} onVideoAutoplayChange={onVideoAutoplayChange} />
+                <div className="discovery-phone-viewer-chrome-nav">
+                  <button type="button" className="discovery-phone-detail-nav-btn" disabled={index <= 0} onClick={goPrev} aria-label="Previous item">
+                    ← Prev
+                  </button>
+                  <button
+                    type="button"
+                    className="discovery-phone-detail-nav-btn"
+                    disabled={index >= items.length - 1}
+                    onClick={goNext}
+                    aria-label="Next item"
+                  >
+                    Next →
+                  </button>
+                </div>
+                <p className="discovery-phone-viewer-chrome-hint">
+                  Swipe video for next / prev · scroll vertically for Assets, Parameters, and Workflows · long-press for actions
+                  · Full uses the visible viewport on phones (Safari bars may still show)
+                </p>
+              </div>
+            ) : null}
+          </div>
+          <div ref={detailsMetaScrollRef} className="discovery-phone-stack__details-meta">
+            <DiscoveryItemMetaBody it={it} k={k} saved={saved} onToggleSaved={onToggleSaved} />
+          </div>
+        </section>
+
+        <section
+          id="discovery-phone-page-assets"
+          className="discovery-phone-stack__page discovery-phone-stack__page--panel"
+          aria-label="Assets mock"
+        >
+          <div className="discovery-phone-stack__page-head">
+            <span>Assets</span>
+            <span className="discovery-mock-tab-hint">Mock</span>
+          </div>
+          <div className="discovery-phone-stack__page-body">
+            <DiscoveryMockAssetsPanel it={it} />
+          </div>
+        </section>
+
+        <section id="discovery-phone-page-parameters" className="discovery-phone-stack__page discovery-phone-stack__page--panel" aria-label="Parameters">
+          <div className="discovery-phone-stack__page-head">
+            <span>Parameters</span>
+          </div>
+          <div className="discovery-phone-stack__page-body">
+            <DiscoveryComfyQueuePanel it={it} />
+          </div>
+        </section>
+
+        <section
+          id="discovery-phone-page-workflows"
+          className="discovery-phone-stack__page discovery-phone-stack__page--panel"
+          aria-label="Workflows mock"
+        >
+          <div className="discovery-phone-stack__page-head">
+            <span>Workflows</span>
+            <span className="discovery-mock-tab-hint">Mock</span>
+          </div>
+          <div className="discovery-phone-stack__page-body">
+            <DiscoveryMockWorkflowsPanel it={it} />
+          </div>
+        </section>
       </div>
 
-      {viewerChromeVisible && !infoOverlayOpen && !hideHudChromeForNativeVideo ? (
-        <div className="discovery-phone-viewer-chrome">
-          <div className="discovery-phone-viewer-chrome-filename" title={it.name}>
-            <span className="mono discovery-phone-viewer-chrome-filename-text">{it.name}</span>
-          </div>
-          <div className="discovery-phone-viewer-chrome-top">
-            <button type="button" className="discovery-phone-viewer-chrome-btn" onClick={onClose} aria-label="Return to list">
-              ← List
-            </button>
-            <span className="mono discovery-phone-viewer-chrome-counter">{index + 1} / {items.length}</span>
-            <div className="discovery-phone-viewer-chrome-top-actions">
-              <button type="button" className="discovery-phone-viewer-chrome-btn" onClick={() => setInfoOverlayOpen(true)} aria-label="Details">
-                Info
-              </button>
-              <button
-                type="button"
-                className="discovery-phone-viewer-chrome-btn"
-                onClick={() => void toggleViewerFullscreen()}
-                aria-label={inViewerFullscreen ? "Exit fullscreen" : "Fullscreen viewer"}
-              >
-                {inViewerFullscreen ? "Exit FS" : "Full"}
-              </button>
-            </div>
-          </div>
-          <PhoneAutoplayToggle variant="overlay" videoAutoplay={videoAutoplay} onVideoAutoplayChange={onVideoAutoplayChange} />
-          <div className="discovery-phone-viewer-chrome-nav">
-            <button type="button" className="discovery-phone-detail-nav-btn" disabled={index <= 0} onClick={goPrev} aria-label="Previous item">
-              ← Prev
-            </button>
-            <button
-              type="button"
-              className="discovery-phone-detail-nav-btn"
-              disabled={index >= items.length - 1}
-              onClick={goNext}
-              aria-label="Next item"
-            >
-              Next →
-            </button>
-          </div>
-          <p className="discovery-phone-viewer-chrome-hint">
-            Swipe for next / prev · long-press video for actions menu · Full uses the visible viewport on phones (Safari
-            bars may still show)
-          </p>
-        </div>
-      ) : null}
+      <nav className="discovery-phone-stack-nav" aria-label="Discovery panels">
+        <button
+          type="button"
+          className={stackActive === "details" ? "discovery-phone-stack-nav--active" : undefined}
+          onClick={() => scrollStackTo("details")}
+        >
+          Details
+        </button>
+        <button
+          type="button"
+          className={stackActive === "assets" ? "discovery-phone-stack-nav--active" : undefined}
+          onClick={() => scrollStackTo("assets")}
+        >
+          Assets
+        </button>
+        <button
+          type="button"
+          className={stackActive === "parameters" ? "discovery-phone-stack-nav--active" : undefined}
+          onClick={() => scrollStackTo("parameters")}
+        >
+          Parameters
+        </button>
+        <button
+          type="button"
+          className={stackActive === "workflows" ? "discovery-phone-stack-nav--active" : undefined}
+          onClick={() => scrollStackTo("workflows")}
+        >
+          Workflows
+        </button>
+      </nav>
 
       {viewerActionMenuOpen ? (
         <div className="discovery-phone-viewer-action-layer" role="presentation">
@@ -4093,7 +4482,7 @@ function DiscoveryPhoneDetailOverlay({
               onClick={() => {
                 setViewerActionMenuOpen(false);
                 setViewerActionMenuPos(null);
-                setInfoOverlayOpen(true);
+                scrollStackTo("details");
               }}
             >
               Details…
@@ -4236,24 +4625,7 @@ function DiscoveryPhoneDetailOverlay({
         </div>
       ) : null}
 
-      {infoOverlayOpen ? (
-        <div className="discovery-phone-info-layer">
-          <button type="button" className="discovery-phone-info-backdrop" aria-label="Dismiss details" onClick={dismissInfoOverlay} />
-          <div className="discovery-phone-info-sheet" onClick={(e) => e.stopPropagation()}>
-            <div className="discovery-phone-info-sheet-filename" title={it.name}>
-              <span className="mono discovery-phone-info-sheet-filename-text">{it.name}</span>
-            </div>
-            <button type="button" className="discovery-phone-info-dismiss" onClick={dismissInfoOverlay}>
-              Dismiss
-            </button>
-            <div className="discovery-phone-info-sheet-body">
-              <DiscoveryItemMetaBody it={it} k={k} saved={saved} onToggleSaved={onToggleSaved} />
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {filenameLinePhase !== "hidden" && !infoOverlayOpen && !viewerChromeVisible ? (
+      {filenameLinePhase !== "hidden" && detailsPageActive && !viewerChromeVisible ? (
         <div
           className={
             "discovery-phone-filename-status" +

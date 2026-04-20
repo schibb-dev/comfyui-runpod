@@ -149,13 +149,15 @@ The Vite config proxies `/api` and `/files` to `http://127.0.0.1:8790`.
 .\scripts\dev_experiments_ui.ps1
 ```
 
-This starts Vite on `http://127.0.0.1:5178/` and proxies `/api` + `/files` to the container UI server at `http://127.0.0.1:8790/`.
+This starts Vite on **`http://127.0.0.1:5178/`** and proxies `/api` + `/files` to the container UI server at `http://127.0.0.1:8790/`.
 
 - **Start UI dev server (HMR) inside the container** (no host Node.js required):
 
 ```powershell
 .\scripts\dev_experiments_ui_container.ps1 -EnsureContainer
 ```
+
+Opens **`http://127.0.0.1:51780/`** by default (Docker maps host **51780** → container **5178**). If `EXPERIMENTS_UI_VITE_HOST_PORT` is set in `.env`, that value is used; override with **`-HostPort`**.
 
 Note: the container currently ships with Node 18, so the UI dev server uses Vite 5 for compatibility.
 

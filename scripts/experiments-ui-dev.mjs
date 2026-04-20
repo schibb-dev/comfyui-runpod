@@ -16,6 +16,8 @@
  *
  * Env: EXPERIMENTS_UI_PROXY_TARGET (default http://127.0.0.1:8791 for vite mode)
  *      EXPERIMENTS_UI_API_HOST / EXPERIMENTS_UI_API_PORT (optional; default 127.0.0.1:8791 for `api` mode)
+ *      EXPERIMENTS_UI_DEV_LOCALONLY=1 → bind Vite to 127.0.0.1 only (no Tailscale/LAN remote).
+ *      EXPERIMENTS_UI_HMR_HOST → tailnet/LAN IP for HMR when the phone is not on localhost.
  */
 
 import { spawn, spawnSync, execFileSync } from "child_process";
@@ -131,31 +133,36 @@ function runVite(opts) {
   env.EXPERIMENTS_UI_PROXY_TARGET = backend;
   env.EXPERIMENTS_UI_DEV_PORT = String(port);
 
-  let viteHost = "127.0.0.1";
+  const localOnlyRaw = (process.env.EXPERIMENTS_UI_DEV_LOCALONLY || "").trim().toLowerCase();
+  const localOnly = localOnlyRaw === "1" || localOnlyRaw === "true" || localOnlyRaw === "yes";
+
+  /** Default 0.0.0.0 so phones on Tailscale/LAN can load the dev server; opt out with EXPERIMENTS_UI_DEV_LOCALONLY=1. */
+  let viteHost = localOnly ? "127.0.0.1" : "0.0.0.0";
   let openUrl = `http://127.0.0.1:${port}`;
 
-  if (tailscale) {
-    viteHost = "0.0.0.0";
-    let tsIp = tailscaleIpv4();
-    if (!tsIp && process.env.EXPERIMENTS_UI_HMR_HOST) {
-      tsIp = process.env.EXPERIMENTS_UI_HMR_HOST.trim();
+  if (localOnly) {
+    delete env.EXPERIMENTS_UI_HMR_HOST;
+    console.log(`Vite dev server (local only): http://127.0.0.1:${port}`);
+    if (tailscale) {
+      console.warn("Note: --tailscale has no extra effect while EXPERIMENTS_UI_DEV_LOCALONLY is set.");
     }
-    if (tsIp) {
-      env.EXPERIMENTS_UI_HMR_HOST = tsIp;
-      console.log(`EXPERIMENTS_UI_HMR_HOST=${tsIp} (HMR for remote devices)`);
-      openUrl = `http://${tsIp}:${port}`;
+  } else {
+    let hmrHost = (process.env.EXPERIMENTS_UI_HMR_HOST || "").trim();
+    if (!hmrHost) hmrHost = tailscaleIpv4();
+    if (hmrHost) {
+      env.EXPERIMENTS_UI_HMR_HOST = hmrHost;
+      console.log(`EXPERIMENTS_UI_HMR_HOST=${hmrHost} (HMR WebSocket for phones / remote browsers)`);
+      openUrl = `http://${hmrHost}:${port}`;
     } else {
       delete env.EXPERIMENTS_UI_HMR_HOST;
       console.warn(
-        "Could not detect Tailscale IPv4. Set EXPERIMENTS_UI_HMR_HOST=100.x.y.z for HMR on iPhone.",
+        "Set EXPERIMENTS_UI_HMR_HOST to this PC's Tailscale IP (100.x) or LAN IP so hot reload works on your phone.",
       );
-      console.warn(`On iPhone: open http://<tailscale-ip>:${port}`);
+      console.warn(`Example: export EXPERIMENTS_UI_HMR_HOST=100.x.y.z  then open http://100.x.y.z:${port} on the phone.`);
     }
-    console.log(`Tailscale mode: Vite on 0.0.0.0:${port}`);
-    if (tsIp) console.log(`On iPhone (Tailscale on): ${openUrl}`);
-  } else {
-    delete env.EXPERIMENTS_UI_HMR_HOST;
-    console.log(`Vite dev server: http://127.0.0.1:${port}`);
+    const tag = tailscale ? "Tailscale" : "Remote-friendly";
+    console.log(`${tag}: Vite on 0.0.0.0:${port} (use tailnet or LAN IP from the phone)`);
+    if (hmrHost) console.log(`Phone URL (same host for page + HMR): ${openUrl}`);
   }
 
   console.log(`Proxy /api and /files → ${backend}`);

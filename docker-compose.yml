@@ -55,7 +55,9 @@ services:
       - "8888:8888"    # Jupyter (if you want)
       - "6006:6006"    # TensorBoard (optional)
       - "8790:8790"    # Experiments UI (optional)
-      - "5178:5178"    # Experiments UI dev (Vite HMR; optional)
+      # Vite inside the container listens on 5178; publish on a *different* host port so host-side
+      # `npm run ui:dev:start` (Vite on :5178) does not clash with com.docker.backend on 0.0.0.0:5178.
+      - "${EXPERIMENTS_UI_VITE_HOST_PORT:-51780}:5178"
     
     # Environment
     environment:

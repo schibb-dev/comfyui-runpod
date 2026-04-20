@@ -4,7 +4,9 @@ Param(
   [int]$Port = 5178,
   [switch]$NoOpen,
   [switch]$EnsureContainer,
-  # Listen on 0.0.0.0 + set HMR host for WebSocket when opening the app from iPhone via Tailscale.
+  # Bind Vite to 127.0.0.1 only (no remote Tailscale/LAN). Default is 0.0.0.0 for phone testing.
+  [switch]$LocalOnly,
+  # Optional: same remote-friendly defaults as without this switch; kept for scripts that pass -Tailscale.
   [switch]$Tailscale
 )
 
@@ -48,44 +50,42 @@ if (-not (Test-Path "node_modules")) {
 # Vite reads this in vite.config.ts (loadEnv).
 $env:EXPERIMENTS_UI_PROXY_TARGET = $Backend
 
-$viteHost = "127.0.0.1"
+$env:EXPERIMENTS_UI_DEV_PORT = "$Port"
 $openUrl = "http://127.0.0.1:$Port"
 
-if (-not $Tailscale) {
+if ($LocalOnly) {
+  $viteHost = "127.0.0.1"
   Remove-Item Env:EXPERIMENTS_UI_HMR_HOST -ErrorAction SilentlyContinue
-}
-$env:EXPERIMENTS_UI_DEV_PORT = "$Port"
-
-if ($Tailscale) {
+  $openUrl = "http://127.0.0.1:$Port"
+  Write-Host "Vite (local only): http://127.0.0.1:$Port" -ForegroundColor Green
+  if ($Tailscale) {
+    Write-Host "Note: -Tailscale is ignored with -LocalOnly." -ForegroundColor Yellow
+  }
+} else {
   $viteHost = "0.0.0.0"
   $tsIp = $null
-  if (Get-Command tailscale -ErrorAction SilentlyContinue) {
+  $hmrEnv = $env:EXPERIMENTS_UI_HMR_HOST
+  if ($hmrEnv) { $tsIp = $hmrEnv.Trim() }
+  if (-not $tsIp -and (Get-Command tailscale -ErrorAction SilentlyContinue)) {
     try {
       $lines = & tailscale ip -4 2>$null
       if ($lines) { $tsIp = ($lines | Select-Object -First 1).ToString().Trim() }
     } catch { }
   }
-  if (-not $tsIp) {
-    $hmrEnv = $env:EXPERIMENTS_UI_HMR_HOST
-    if ($hmrEnv) { $tsIp = $hmrEnv.Trim() }
-  }
   if ($tsIp) {
     $env:EXPERIMENTS_UI_HMR_HOST = $tsIp
     Write-Host "EXPERIMENTS_UI_HMR_HOST=$tsIp (HMR WebSocket for remote devices)" -ForegroundColor DarkGray
-  } else {
-    Write-Host "Could not detect Tailscale IPv4. Set EXPERIMENTS_UI_HMR_HOST to your tailnet IP, e.g.:" -ForegroundColor Yellow
-    Write-Host '  $env:EXPERIMENTS_UI_HMR_HOST = "100.x.y.z"' -ForegroundColor Yellow
-    Write-Host "Then re-run with -Tailscale. HMR may not work on iPhone until this is set." -ForegroundColor Yellow
-  }
-  Write-Host "Tailscale mode: Vite listening on 0.0.0.0:$Port (reachable on tailnet)" -ForegroundColor Green
-  if ($tsIp) {
     $openUrl = "http://${tsIp}:$Port"
-    Write-Host "On iPhone (Tailscale VPN on): open $openUrl" -ForegroundColor Cyan
   } else {
-    Write-Host "On iPhone: open http://<your-tailscale-ip>:$Port" -ForegroundColor Cyan
+    Remove-Item Env:EXPERIMENTS_UI_HMR_HOST -ErrorAction SilentlyContinue
+    Write-Host "Set EXPERIMENTS_UI_HMR_HOST to this PC's Tailscale IP for HMR on your phone, e.g.:" -ForegroundColor Yellow
+    Write-Host '  $env:EXPERIMENTS_UI_HMR_HOST = "100.x.y.z"' -ForegroundColor Yellow
   }
-} else {
-  Write-Host "Starting Vite dev server (HMR) on http://127.0.0.1:$Port" -ForegroundColor Green
+  $tag = if ($Tailscale) { "Tailscale" } else { "Remote-friendly" }
+  Write-Host "$tag : Vite on 0.0.0.0:$Port (open http://<tailnet-or-LAN-ip>:$Port from the phone)" -ForegroundColor Green
+  if ($tsIp) {
+    Write-Host "Phone URL: $openUrl" -ForegroundColor Cyan
+  }
 }
 
 Write-Host "Proxying /api and /files to $Backend" -ForegroundColor DarkGray
@@ -94,6 +94,6 @@ if (-not $NoOpen) {
   Start-Process $openUrl
 }
 
-# NOTE: 127.0.0.1 avoids IPv6 localhost issues on desktop; 0.0.0.0 for Tailscale/LAN.
+# Default 0.0.0.0 for Tailscale/LAN phones; use -LocalOnly for 127.0.0.1 only.
 # Port comes from EXPERIMENTS_UI_DEV_PORT (see vite.config.ts) so HMR clientPort matches.
 npm run dev -- --host $viteHost
