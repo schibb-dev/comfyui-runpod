@@ -4,10 +4,7 @@
 			"path": "."
 		},
 		{
-			"path": "../../../../Logs"
-		},
-		{
-			"path": "E:/models"
+			"path": "../../../../mnt/e/output"
 		}
 	],
 	"settings": {
