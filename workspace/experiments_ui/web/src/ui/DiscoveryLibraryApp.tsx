@@ -1,12 +1,24 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
-import { fetchDiscoveryEmbedApiPrompt, fetchDiscoveryLibrary, submitPromptToQueue } from "./api";
+import {
+  fetchDiscoveryEmbedApiPrompt,
+  fetchDiscoveryLibrary,
+  fetchDiscoveryLibraryStatus,
+  fetchDiscoveryProvenanceChain,
+  submitPromptToQueue,
+} from "./api";
 import {
   discoveryTrimMediaRelpath,
   loadDiscoveryTrimAsync,
   persistDiscoveryTrimAsync,
   TRIM_CONTEXT_DISCOVERY_PLAYER,
 } from "./discoveryTrimStorage";
-import type { DiscoveryLibraryItem, DiscoveryLibraryResponse, DiscoveryMember } from "./types";
+import type {
+  DiscoveryLibraryItem,
+  DiscoveryLibraryResponse,
+  DiscoveryLibraryStatusResponse,
+  DiscoveryMember,
+  DiscoveryProvenanceChainResponse,
+} from "./types";
 import {
   phoneTrimBounds,
   phoneTrimLoopSeekTarget,
@@ -28,19 +40,25 @@ const DESKTOP_LIST_WIDTH_DEFAULT = 400;
 const DESKTOP_LIST_MIN = 260;
 const DESKTOP_PREVIEW_MIN = 280;
 
-const DESKTOP_META_DRAWER_WIDTH_KEY = "discovery_desktop_meta_drawer_width_v1";
-const DESKTOP_META_DRAWER_WIDTH_DEFAULT = 360;
-const DESKTOP_META_DRAWER_MIN = 220;
-const DESKTOP_META_DRAWER_MAX = 640;
-
-/** Initial open state for the desktop discovery details drawer. Toggle placement / persisted pref TBD. */
-const DESKTOP_DETAILS_DRAWER_DEFAULT_OPEN = false;
-
 const DISCOVERY_GRAPH_DRAFT_PREFIX = "discovery_comfy_graph_draft__";
 const DISCOVERY_COMFY_FRONT_KEY = "discovery_comfy_front_v1";
 /** Minutes between auto-refresh (0 = off). New key so legacy second-based values are not reused. */
 const DISCOVERY_LIBRARY_POLL_KEY = "discovery_library_poll_min_v1";
 const DISCOVERY_LIBRARY_POLL_CHOICES = [0, 1, 5, 10, 15, 30, 60] as const;
+type DiscoverySortField = "mtime" | "name";
+type DiscoverySortDirection = "asc" | "desc";
+
+type DiscoverySortFieldOption = {
+  label: string;
+  field: DiscoverySortField;
+};
+
+const DISCOVERY_SORT_FIELDS: DiscoverySortFieldOption[] = [
+  { label: "Date", field: "mtime" },
+  { label: "Title", field: "name" },
+];
+const DISCOVERY_SORT_DEFAULT_FIELD: DiscoverySortField = "mtime";
+const DISCOVERY_SORT_DEFAULT_DIRECTION: DiscoverySortDirection = "desc";
 
 function loadDiscoveryPollMin(): (typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number] {
   try {
@@ -60,6 +78,22 @@ function persistDiscoveryPollMin(min: (typeof DISCOVERY_LIBRARY_POLL_CHOICES)[nu
   } catch {
     /* ignore */
   }
+}
+
+function discoveryCompareItems(
+  a: DiscoveryLibraryItem,
+  b: DiscoveryLibraryItem,
+  field: DiscoverySortField,
+  direction: DiscoverySortDirection
+): number {
+  let cmp = 0;
+  if (field === "mtime") {
+    cmp = a.mtime - b.mtime;
+  } else {
+    cmp = a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true });
+  }
+  if (cmp !== 0) return direction === "asc" ? cmp : -cmp;
+  return a.relpath.localeCompare(b.relpath, undefined, { sensitivity: "base", numeric: true });
 }
 
 function discoveryDraftStorageKey(itemKey: string): string {
@@ -83,10 +117,24 @@ function _discoverySessionGetBool01(key: string): boolean {
   }
 }
 
-type DiscoveryMetaDrawerTab = "details" | "parameters" | "assets" | "workflows";
+type DiscoveryDesktopPanelTab = "viewer" | "details" | "parameters" | "assets" | "workflows";
 
-function discoveryMetaPanelLabelId(tab: DiscoveryMetaDrawerTab): string {
+const DISCOVERY_DESKTOP_PANEL_TABS: {
+  id: DiscoveryDesktopPanelTab;
+  label: string;
+  mock?: boolean;
+}[] = [
+  { id: "viewer", label: "Viewer" },
+  { id: "details", label: "Details" },
+  { id: "parameters", label: "Parameters" },
+  { id: "assets", label: "Assets", mock: true },
+  { id: "workflows", label: "Workflows", mock: true },
+];
+
+function discoveryDesktopPanelLabelId(tab: DiscoveryDesktopPanelTab): string {
   switch (tab) {
+    case "viewer":
+      return "discovery-meta-tab-viewer";
     case "details":
       return "discovery-meta-tab-details";
     case "parameters":
@@ -96,8 +144,188 @@ function discoveryMetaPanelLabelId(tab: DiscoveryMetaDrawerTab): string {
     case "workflows":
       return "discovery-meta-tab-workflows";
     default:
-      return "discovery-meta-tab-details";
+      return "discovery-meta-tab-viewer";
   }
+}
+
+type DiscoveryRefreshMenuProps = {
+  loading: boolean;
+  rebuildRunning: boolean;
+  rebuildHeartbeatAgeMs?: number | null;
+  rebuildLastError?: string | null;
+  pollMin: (typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number];
+  onReload: () => void;
+  onUpdate: () => void;
+  onPollMinChange: (next: (typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number]) => void;
+  className?: string;
+  triggerMode?: "click" | "hover";
+};
+
+function DiscoveryRefreshMenu({
+  loading,
+  rebuildRunning,
+  rebuildHeartbeatAgeMs,
+  rebuildLastError,
+  pollMin,
+  onReload,
+  onUpdate,
+  onPollMinChange,
+  className,
+  triggerMode = "click",
+}: DiscoveryRefreshMenuProps) {
+  const [open, setOpen] = useState(false);
+  const isHover = triggerMode === "hover";
+  const refreshTimeLabel = pollMin > 0 ? `${pollMin}m` : null;
+  const showRefreshingIcon = rebuildRunning;
+  const maybeStuck = rebuildRunning && typeof rebuildHeartbeatAgeMs === "number" && rebuildHeartbeatAgeMs > 30_000;
+
+  return (
+    <div
+      className={className}
+      style={{ position: "relative" }}
+      onMouseEnter={isHover ? () => setOpen(true) : undefined}
+      onMouseLeave={isHover ? () => setOpen(false) : undefined}
+    >
+      <button
+        type="button"
+        className="discovery-phone-filters-toggle"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={isHover ? undefined : () => setOpen((v) => !v)}
+      >
+        <span>Refresh</span>
+        {showRefreshingIcon ? (
+          <span
+            aria-hidden="true"
+            style={{
+              color: "var(--muted)",
+              fontSize: "0.86em",
+              fontWeight: 400,
+              marginLeft: 6,
+              display: "inline-flex",
+              alignItems: "center",
+            }}
+            title={maybeStuck ? "Rebuild may be stalled (no progress heartbeat recently)" : "Rebuilding"}
+          >
+            <svg
+              viewBox="0 0 16 16"
+              width="12"
+              height="12"
+              focusable="false"
+              aria-hidden="true"
+              className="discovery-refresh-rotating-icon"
+            >
+              <path
+                d="M13.2 5.8A5.2 5.2 0 0 0 4.3 4.1"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <path
+                d="M4.3 4.1H6.9M4.3 4.1V6.7"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <path
+                d="M2.8 10.2A5.2 5.2 0 0 0 11.7 11.9"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <path
+                d="M11.7 11.9H9.1M11.7 11.9V9.3"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </span>
+        ) : refreshTimeLabel ? (
+          <span
+            aria-hidden="true"
+            style={{ color: "var(--muted)", fontSize: "0.86em", fontWeight: 400, marginLeft: 6 }}
+          >
+            ({refreshTimeLabel})
+          </span>
+        ) : null}
+      </button>
+      {open ? (
+        <div
+          role="menu"
+          style={{
+            position: "absolute",
+            right: 0,
+            top: "calc(100% + 6px)",
+            zIndex: 20,
+            minWidth: 220,
+            padding: 10,
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            background: "var(--bg)",
+            boxShadow: "0 8px 24px rgba(0,0,0,0.25)",
+            display: "grid",
+            gap: 8,
+          }}
+        >
+          <button
+            type="button"
+            title="Re-query the saved index from the server (no disk rescan)"
+            onClick={() => {
+              onReload();
+              if (!isHover) setOpen(false);
+            }}
+            disabled={loading || rebuildRunning}
+          >
+            Reload
+          </button>
+          <button
+            type="button"
+            title="Rescan output folders and rebuild the list index (can take a while)"
+            onClick={() => {
+              onUpdate();
+              if (!isHover) setOpen(false);
+            }}
+            disabled={loading || rebuildRunning}
+          >
+            {rebuildRunning ? "Rebuilding…" : "Rebuild"}
+          </button>
+          {rebuildLastError ? (
+            <div style={{ color: "var(--bad)", fontSize: 12 }} role="status">
+              Last rebuild error: {rebuildLastError}
+            </div>
+          ) : null}
+          <label style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 120 }}>
+            <span style={{ fontSize: 12, color: "var(--muted)" }}>Auto-refresh</span>
+            <select
+              value={pollMin}
+              onChange={(e) => {
+                const v = Number(e.target.value) as (typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number];
+                const next = DISCOVERY_LIBRARY_POLL_CHOICES.includes(v) ? v : 0;
+                onPollMinChange(next);
+              }}
+            >
+              <option value={0}>Off</option>
+              <option value={1}>1 min</option>
+              <option value={5}>5 min</option>
+              <option value={10}>10 min</option>
+              <option value={15}>15 min</option>
+              <option value={30}>30 min</option>
+              <option value={60}>60 min</option>
+            </select>
+          </label>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function loadVideoAutoplay(): boolean {
@@ -202,26 +430,6 @@ function loadDesktopListWidth(): number {
 function persistDesktopListWidth(px: number) {
   try {
     localStorage.setItem(DESKTOP_LIST_WIDTH_KEY, String(px));
-  } catch {
-    /* ignore */
-  }
-}
-
-function loadDesktopMetaDrawerWidth(): number {
-  try {
-    const raw = localStorage.getItem(DESKTOP_META_DRAWER_WIDTH_KEY);
-    if (!raw) return DESKTOP_META_DRAWER_WIDTH_DEFAULT;
-    const n = Number(raw);
-    if (!Number.isFinite(n)) return DESKTOP_META_DRAWER_WIDTH_DEFAULT;
-    return Math.max(DESKTOP_META_DRAWER_MIN, Math.min(DESKTOP_META_DRAWER_MAX, Math.round(n)));
-  } catch {
-    return DESKTOP_META_DRAWER_WIDTH_DEFAULT;
-  }
-}
-
-function persistDesktopMetaDrawerWidth(px: number) {
-  try {
-    localStorage.setItem(DESKTOP_META_DRAWER_WIDTH_KEY, String(px));
   } catch {
     /* ignore */
   }
@@ -702,6 +910,12 @@ function fileUrlFromRel(relpath: string): string {
   return "/files/" + encodeURIComponent(relpath.replace(/\\/g, "/"));
 }
 
+function basenameRelPosix(rel: string): string {
+  const s = rel.replace(/\\/g, "/").trim();
+  const i = s.lastIndexOf("/");
+  return i >= 0 ? s.slice(i + 1) : s;
+}
+
 /**
  * Workspace-relative path for “open this asset in Comfy like a workflow” — prefer PNG thumb/metadata when present.
  */
@@ -759,6 +973,21 @@ function discoveryThumbUrl(it: DiscoveryLibraryItem): string | null {
   if (it.thumb_url) return it.thumb_url;
   if (isRasterImage(it.name) && it.url) return it.url;
   return null;
+}
+
+/** Preview URL for a grouped member file when it is a raster image; videos use a placeholder tile. */
+function discoveryMemberThumbSrc(m: DiscoveryMember): string | null {
+  if (isRasterImage(m.name)) return fileUrlFromRel(m.relpath);
+  return null;
+}
+
+/** Whether this member path is the merged item’s primary video / thumb / canonical relpath. */
+function discoveryMemberIsPrimaryOutput(it: DiscoveryLibraryItem, m: DiscoveryMember): boolean {
+  const norm = m.relpath.replace(/\\/g, "/");
+  if (norm === it.relpath.replace(/\\/g, "/")) return true;
+  if (it.video_relpath && norm === it.video_relpath.replace(/\\/g, "/")) return true;
+  if (it.thumb_relpath && norm === it.thumb_relpath.replace(/\\/g, "/")) return true;
+  return false;
 }
 
 function DiscoveryItemMetaBody({
@@ -945,6 +1174,111 @@ function DiscoveryListThumbRow({
       >
         {saved ? "★" : "☆"}
       </button>
+    </div>
+  );
+}
+
+type DiscoveryProvenanceThumbRowProps = {
+  name: string;
+  library: string;
+  /** Short secondary line (e.g. kind label, size — members have no mtime in the index). */
+  metaLine: React.ReactNode;
+  thumbSrc: string | null;
+  showVideoPlaceholder: boolean;
+  /** Primary file for this library row (merged output). */
+  isOutput?: boolean;
+  showSavedButton?: boolean;
+  saved?: boolean;
+  onToggleSaved?: () => void;
+  onActivate: () => void;
+};
+
+/** Same layout as `DiscoveryListThumbRow`, for co-located bundle files in the Assets tab. */
+function DiscoveryProvenanceThumbRow({
+  name,
+  library,
+  metaLine,
+  thumbSrc,
+  showVideoPlaceholder,
+  isOutput,
+  showSavedButton,
+  saved,
+  onToggleSaved,
+  onActivate,
+}: DiscoveryProvenanceThumbRowProps) {
+  return (
+    <div
+      className={`discovery-phone-row discovery-assets-prov-row${isOutput ? " discovery-assets-prov-row--output" : ""}`}
+      role="button"
+      tabIndex={0}
+      onClick={onActivate}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onActivate();
+        }
+      }}
+    >
+      <div className="discovery-phone-thumb" aria-hidden>
+        {thumbSrc ? (
+          <img src={thumbSrc} alt="" loading="lazy" decoding="async" />
+        ) : showVideoPlaceholder ? (
+          <span className="discovery-phone-thumb-placeholder">▶ Video</span>
+        ) : (
+          <span className="discovery-phone-thumb-placeholder">File</span>
+        )}
+      </div>
+      <div style={{ flex: "1 1 auto", minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }}>
+        <div style={{ fontWeight: 600, fontSize: 14, wordBreak: "break-word", lineHeight: 1.25 }}>{name}</div>
+        <div style={{ fontSize: 12, color: "var(--muted)", display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+          <span
+            style={{
+              fontSize: 10,
+              fontWeight: 600,
+              textTransform: "uppercase",
+              padding: "1px 6px",
+              borderRadius: 4,
+              background: library === "og" ? "rgba(90,162,255,0.2)" : "rgba(70,211,154,0.18)",
+            }}
+          >
+            {library}
+          </span>
+          {metaLine}
+          {isOutput ? (
+            <span
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                textTransform: "uppercase",
+                padding: "1px 6px",
+                borderRadius: 4,
+                background: "rgba(120, 140, 255, 0.22)",
+                color: "var(--fg)",
+              }}
+              title="Canonical file for this merged discovery row"
+            >
+              Output
+            </span>
+          ) : null}
+        </div>
+      </div>
+      {showSavedButton && onToggleSaved ? (
+        <button
+          type="button"
+          className="icon-btn"
+          title={saved ? "Remove from saved" : "Save for later"}
+          aria-label={saved ? "Remove from saved" : "Save for later"}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleSaved();
+          }}
+          style={{ fontSize: 20, lineHeight: 1, flexShrink: 0 }}
+        >
+          {saved ? "★" : "☆"}
+        </button>
+      ) : (
+        <span style={{ width: 36, flexShrink: 0 }} aria-hidden />
+      )}
     </div>
   );
 }
@@ -1886,8 +2220,46 @@ function DiscoveryMockBadge() {
   );
 }
 
-function DiscoveryMockAssetsPanel({ it }: { it: DiscoveryLibraryItem | null }) {
+function DiscoveryMockAssetsPanel({
+  it,
+  saved,
+  onToggleSaved,
+}: {
+  it: DiscoveryLibraryItem | null;
+  saved?: Set<string>;
+  onToggleSaved?: (key: string) => void;
+}) {
   const [advOpen, setAdvOpen] = useState(false);
+  const [chainRes, setChainRes] = useState<DiscoveryProvenanceChainResponse | null>(null);
+  const [chainErr, setChainErr] = useState("");
+  const [chainLoading, setChainLoading] = useState(false);
+
+  useEffect(() => {
+    if (!it) {
+      setChainRes(null);
+      setChainErr("");
+      setChainLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setChainLoading(true);
+    setChainErr("");
+    setChainRes(null);
+    void fetchDiscoveryProvenanceChain(it)
+      .then((r) => {
+        if (!cancelled) setChainRes(r);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setChainErr(String(e));
+      })
+      .finally(() => {
+        if (!cancelled) setChainLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [it]);
+
   if (!it) {
     return (
       <div className="discovery-mock-panel">
@@ -1898,9 +2270,157 @@ function DiscoveryMockAssetsPanel({ it }: { it: DiscoveryLibraryItem | null }) {
       </div>
     );
   }
-  const name = it.name;
-  const short =
-    name.length > 36 ? `${name.slice(0, 34)}…` : name;
+  const key = discoveryItemKey(it);
+  const showSaved = Boolean(saved && onToggleSaved);
+  const savedSelected = Boolean(saved?.has(key));
+  const members = it.members;
+
+  const bundleRows =
+    members && members.length > 0 ? (
+      <div className="discovery-assets-prov-list" role="list" aria-label="Co-located outputs in this discovery group">
+        {members.map((m) => {
+          const thumbSrc = discoveryMemberThumbSrc(m);
+          const vidPh = !thumbSrc && isVideo(m.name);
+          const primary = discoveryMemberIsPrimaryOutput(it, m);
+          return (
+            <div key={m.relpath} role="listitem">
+              <DiscoveryProvenanceThumbRow
+                name={m.name}
+                library={it.library}
+                metaLine={
+                  <span className="mono" style={{ fontSize: 11 }}>
+                    {m.kind}
+                  </span>
+                }
+                thumbSrc={thumbSrc}
+                showVideoPlaceholder={vidPh}
+                isOutput={primary}
+                showSavedButton={Boolean(showSaved && primary)}
+                saved={Boolean(showSaved && primary && savedSelected)}
+                onToggleSaved={
+                  showSaved && primary && onToggleSaved ? () => onToggleSaved(key) : undefined
+                }
+                onActivate={() => {
+                  window.open(fileUrlFromRel(m.relpath), "_blank", "noopener,noreferrer");
+                }}
+              />
+            </div>
+          );
+        })}
+      </div>
+    ) : (
+      <div className="discovery-assets-prov-list" role="list" aria-label="Single primary file">
+        <div role="listitem">
+          <DiscoveryProvenanceThumbRow
+            name={it.name}
+            library={it.library}
+            metaLine={
+              <>
+                <span className="mono">{fmtTime(it.mtime)}</span>
+                <span>{fmtSize(it.size)}</span>
+              </>
+            }
+            thumbSrc={discoveryThumbUrl(it)}
+            showVideoPlaceholder={!discoveryThumbUrl(it) && Boolean(discoveryPlayUrl(it))}
+            isOutput
+            showSavedButton={showSaved}
+            saved={showSaved ? savedSelected : false}
+            onToggleSaved={showSaved && onToggleSaved ? () => onToggleSaved(key) : undefined}
+            onActivate={() => {
+              window.open(it.url, "_blank", "noopener,noreferrer");
+            }}
+          />
+        </div>
+      </div>
+    );
+
+  let generationChainBlock: React.ReactNode = null;
+  if (chainLoading) {
+    generationChainBlock = <p className="discovery-mock-hint">Loading generation chain…</p>;
+  } else if (chainErr) {
+    generationChainBlock = (
+      <p style={{ margin: 0, fontSize: 13, color: "var(--bad)" }} role="alert">
+        {chainErr}
+      </p>
+    );
+  } else if (chainRes && chainRes.ok === false) {
+    generationChainBlock = (
+      <p style={{ margin: 0, fontSize: 13, color: "var(--bad)" }} role="alert">
+        {chainRes.detail ?? chainRes.error ?? "Could not load provenance chain."}
+      </p>
+    );
+  } else if (chainRes && chainRes.ok === true) {
+    generationChainBlock = (
+      <>
+        <p className="discovery-mock-hint" style={{ marginBottom: 10 }}>
+          {chainRes.caveat}
+        </p>
+        {chainRes.links.length === 0 ? (
+          <p className="discovery-mock-hint">No embedded PNG prompt found for this selection.</p>
+        ) : (
+          <div className="discovery-prov-chain" role="list" aria-label="Generation chain (newest step first)">
+            {chainRes.links.map((link, idx) => (
+              <div key={`prov-chain-${idx}-${link.depth}`} className="discovery-prov-chain-step">
+                <div className="discovery-prov-chain-step__head">
+                  Step {link.depth + 1}
+                  {link.embed_source ? (
+                    <span className="discovery-prov-chain-step__src mono">{link.embed_source}</span>
+                  ) : null}
+                </div>
+                <div className="discovery-prov-chain-step__body">
+                  <div>
+                    <span style={{ color: "var(--muted)", fontSize: 11 }}>Output (embed read from)</span>
+                    <div className="mono" style={{ fontSize: 12, wordBreak: "break-all" }}>
+                      {link.artifact_relpath ? basenameRelPosix(link.artifact_relpath) : "—"}
+                    </div>
+                  </div>
+                  <div>
+                    <span style={{ color: "var(--muted)", fontSize: 11 }}>Workflow fingerprint</span>
+                    <div className="mono" style={{ fontSize: 12, wordBreak: "break-all" }}>
+                      {link.workflow_fingerprint}
+                    </div>
+                  </div>
+                  <div>
+                    <span style={{ color: "var(--muted)", fontSize: 11 }}>Parent media (LoadImage / LoadVideo)</span>
+                    {link.parent_resolved_relpath ? (
+                      <a
+                        href={fileUrlFromRel(link.parent_resolved_relpath)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mono"
+                        style={{ fontSize: 12, display: "block", wordBreak: "break-all" }}
+                      >
+                        {basenameRelPosix(link.parent_resolved_relpath)}
+                      </a>
+                    ) : (
+                      <div className="mono" style={{ fontSize: 12, color: "var(--muted)", wordBreak: "break-all" }}>
+                        {link.input_raw_from_prompt ?? "—"}
+                        {link.input_kind ? ` · ${link.input_kind}` : ""}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {chainRes.stops.length > 0 ? (
+          <p className="discovery-mock-footnote" style={{ marginTop: 10 }}>
+            Chain stopped:{" "}
+            {chainRes.stops.map((s, i) => (
+              <span key={i} className="mono" style={{ fontSize: 11 }}>
+                {typeof s === "object" && s !== null && "reason" in s
+                  ? String((s as { reason?: string }).reason ?? JSON.stringify(s))
+                  : JSON.stringify(s)}
+                {i < chainRes.stops.length - 1 ? "; " : ""}
+              </span>
+            ))}
+          </p>
+        ) : null}
+      </>
+    );
+  }
+
   return (
     <div className="discovery-mock-panel" aria-label="Assets mock">
       <div className="discovery-mock-banner">
@@ -1930,35 +2450,22 @@ function DiscoveryMockAssetsPanel({ it }: { it: DiscoveryLibraryItem | null }) {
         </div>
       ) : null}
 
-      <h3 className="discovery-mock-section-title">Provenance sketch</h3>
-      <p className="discovery-mock-hint">Diagram mock — shortcuts would open historical artifacts.</p>
-      <div className="discovery-mock-prov" role="presentation">
-        <div className="discovery-mock-prov__flow">
-          <button type="button" className="discovery-mock-node">
-            Starter still.png
-          </button>
-          <span className="discovery-mock-arrow" aria-hidden="true">
-            →
-          </span>
-          <button type="button" className="discovery-mock-node">
-            Intermediate.mp4
-          </button>
-          <span className="discovery-mock-arrow" aria-hidden="true">
-            →
-          </span>
-          <button type="button" className="discovery-mock-node discovery-mock-node--current">
-            Current: {short}
-          </button>
-        </div>
-        <div className="discovery-mock-prov__branch">
-          <button type="button" className="discovery-mock-node discovery-mock-node--small">
-            Parallel branch preview.png
-          </button>
-        </div>
-      </div>
-      <p className="discovery-mock-footnote">
-        Non-contract: real lineage would come from indexed parent/child edges or embeds.
+      <h3 className="discovery-mock-section-title">Provenance (generation chain)</h3>
+      <p className="discovery-mock-hint">
+        Each step reads the Comfy API prompt embedded in a PNG next to the output, fingerprints that graph, and
+        follows the first LoadImage / VHS_LoadVideo input path that resolves under this workspace. This is not the same
+        as “files merged into one discovery row” below.
       </p>
+      {generationChainBlock}
+
+      <h3 className="discovery-mock-section-title" style={{ marginTop: 18 }}>
+        Co-located outputs
+      </h3>
+      <p className="discovery-mock-hint">
+        Files in the same discovery group (usually same filename stem: e.g. PNG + MP4). This is not provenance; it is
+        how the library merges companions.
+      </p>
+      {bundleRows}
     </div>
   );
 }
@@ -2079,6 +2586,7 @@ function DiscoveryDesktopPreview({
   saved,
   onToggleSaved,
   videoAutoplay,
+  onVideoAutoplayChange,
   previewVideoRef,
   trimSeekBoundsRef,
   trimKeyboardRef,
@@ -2087,6 +2595,7 @@ function DiscoveryDesktopPreview({
   saved: Set<string>;
   onToggleSaved: (key: string) => void;
   videoAutoplay: boolean;
+  onVideoAutoplayChange: (on: boolean) => void;
   previewVideoRef: React.MutableRefObject<HTMLVideoElement | null>;
   trimSeekBoundsRef: DiscoveryDesktopTrimSeekRef;
   trimKeyboardRef: React.MutableRefObject<DiscoveryTrimKeyboardApi | null>;
@@ -2108,92 +2617,7 @@ function DiscoveryDesktopPreview({
   const trimLoopRewindPendingRef = useRef(false);
 
   const previewRootRef = useRef<HTMLDivElement | null>(null);
-  const [detailsOpen, setDetailsOpen] = useState(DESKTOP_DETAILS_DRAWER_DEFAULT_OPEN);
-  const [metaDrawerTab, setMetaDrawerTab] = useState<DiscoveryMetaDrawerTab>("details");
-  const [drawerWidth, setDrawerWidth] = useState<number>(() => loadDesktopMetaDrawerWidth());
-  const drawerWidthRef = useRef(drawerWidth);
-  drawerWidthRef.current = drawerWidth;
-
-  const clampDrawerWidthPx = useCallback((w: number, containerW: number) => {
-    const cap = Math.min(
-      DESKTOP_META_DRAWER_MAX,
-      Math.max(DESKTOP_META_DRAWER_MIN, containerW - 96)
-    );
-    return Math.max(DESKTOP_META_DRAWER_MIN, Math.min(cap, Math.round(w)));
-  }, []);
-
-  useEffect(() => {
-    const root = previewRootRef.current;
-    if (!root || typeof ResizeObserver === "undefined") return;
-    const obs = new ResizeObserver(() => {
-      const cw = root.clientWidth;
-      if (cw < 40) return;
-      setDrawerWidth((dw) => {
-        const next = clampDrawerWidthPx(dw, cw);
-        if (next !== dw) persistDesktopMetaDrawerWidth(next);
-        drawerWidthRef.current = next;
-        return next;
-      });
-    });
-    obs.observe(root);
-    return () => obs.disconnect();
-  }, [clampDrawerWidthPx]);
-
-  useEffect(() => {
-    if (!detailsOpen) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      setDetailsOpen(false);
-      e.preventDefault();
-      e.stopPropagation();
-    };
-    document.addEventListener("keydown", onKeyDown, true);
-    return () => document.removeEventListener("keydown", onKeyDown, true);
-  }, [detailsOpen]);
-
-  const onMetaDrawerResizeStart = useCallback(
-    (e: React.MouseEvent) => {
-      e.preventDefault();
-      let ended = false;
-      const root = previewRootRef.current;
-      const startW = drawerWidthRef.current;
-      const startX = e.clientX;
-      const onMove = (ev: MouseEvent) => {
-        if (ended) return;
-        if ((ev.buttons & 1) === 0) {
-          cleanup();
-          return;
-        }
-        const cw = root?.clientWidth ?? 800;
-        const delta = startX - ev.clientX;
-        const next = clampDrawerWidthPx(startW + delta, cw);
-        drawerWidthRef.current = next;
-        setDrawerWidth(next);
-      };
-      const cleanup = () => {
-        if (ended) return;
-        ended = true;
-        window.removeEventListener("mousemove", onMove);
-        window.removeEventListener("mouseup", cleanup, true);
-        window.removeEventListener("blur", cleanup);
-        document.removeEventListener("visibilitychange", onVis);
-        root?.removeEventListener("mouseenter", onEnter);
-        persistDesktopMetaDrawerWidth(drawerWidthRef.current);
-      };
-      const onVis = () => {
-        if (document.visibilityState === "hidden") cleanup();
-      };
-      const onEnter = (ev: MouseEvent) => {
-        if ((ev.buttons & 1) === 0) cleanup();
-      };
-      window.addEventListener("mousemove", onMove);
-      window.addEventListener("mouseup", cleanup, true);
-      window.addEventListener("blur", cleanup);
-      document.addEventListener("visibilitychange", onVis);
-      root?.addEventListener("mouseenter", onEnter);
-    },
-    [clampDrawerWidthPx]
-  );
+  const [panelTab, setPanelTab] = useState<DiscoveryDesktopPanelTab>("viewer");
 
   useEffect(() => {
     if (!playUrl) previewVideoRef.current = null;
@@ -2482,292 +2906,195 @@ function DiscoveryDesktopPreview({
     return previewVideoRef.current?.paused ?? true;
   }, [playUrl, previewPlayEpoch, previewVideoRef]);
 
-  if (!it) {
-    return (
-      <div className="discovery-desktop-preview discovery-desktop-preview--empty">
-        <p style={{ margin: 0, color: "var(--muted)", fontSize: 14 }}>Select an item from the list.</p>
-      </div>
+  const autoplayStrip = (
+    <div className="discovery-desktop-preview-topbar">
+      <label className="discovery-desktop-preview-autoplay">
+        <input type="checkbox" checked={videoAutoplay} onChange={(e) => onVideoAutoplayChange(e.target.checked)} />
+        <span>Autoplay (muted)</span>
+      </label>
+    </div>
+  );
+
+  const tablist = (
+    <div
+      className="discovery-desktop-panel-tablist discovery-desktop-panel-tablist--wrap"
+      role="tablist"
+      aria-label="Right panel"
+    >
+      {DISCOVERY_DESKTOP_PANEL_TABS.map((t) => (
+        <button
+          key={t.id}
+          type="button"
+          role="tab"
+          id={discoveryDesktopPanelLabelId(t.id)}
+          aria-controls="discovery-desktop-panel-tabpanel"
+          aria-selected={panelTab === t.id}
+          tabIndex={panelTab === t.id ? 0 : -1}
+          className={
+            "discovery-desktop-panel-tab" + (panelTab === t.id ? " discovery-desktop-panel-tab--active" : "")
+          }
+          onClick={() => setPanelTab(t.id)}
+        >
+          {t.label}
+          {t.mock ? (
+            <>
+              {" "}
+              <span className="discovery-mock-tab-hint">Mock</span>
+            </>
+          ) : null}
+        </button>
+      ))}
+    </div>
+  );
+
+  const viewerStage =
+    it && panelTab === "viewer" ? (
+      <>
+        {autoplayStrip}
+        <div className="discovery-desktop-preview-main">
+          <div className="discovery-desktop-preview-stage">
+            <div className="discovery-desktop-preview-video-slot">
+              {playUrl ? (
+                <video
+                  ref={(el) => {
+                    previewVideoRef.current = el;
+                  }}
+                  key={k}
+                  src={playUrl}
+                  controls
+                  playsInline
+                  loop={videoAutoplay && !trimEnforcesPlayback && trimPlaybackLoop}
+                  autoPlay={videoAutoplay}
+                  muted={videoAutoplay}
+                />
+              ) : thumb ? (
+                <img key={k} src={thumb} alt="" decoding="async" />
+              ) : (
+                <div style={{ color: "var(--muted)", textAlign: "center", padding: 16 }}>No preview for this type</div>
+              )}
+            </div>
+            {playUrl ? (
+              <div className="discovery-desktop-preview-trim">
+                <div className="discovery-trim-primary-row">
+                  <div className="discovery-trim-primary-row__time mono">
+                    <span className="discovery-trim-time-readout">
+                      {fmtVideoSec(trimUiCurrentTime)}{" "}
+                      <span className="discovery-trim-range-readout-sep">/</span> {fmtVideoSec(previewDuration)}
+                    </span>
+                  </div>
+                  <div className="discovery-trim-primary-row__center">
+                    <DiscoveryTrimTransport
+                      videoRef={previewVideoRef}
+                      duration={previewDuration}
+                      markIn={markIn}
+                      markOut={markOut}
+                      mediaSyncKey={k}
+                      size="large"
+                      onSyncTime={(t) => {
+                        setTrimUiCurrentTime(t);
+                      }}
+                    />
+                  </div>
+                  <div className="discovery-trim-primary-row__io">
+                    <TrimInOutAtPlayheadButtons
+                      duration={previewDuration}
+                      markIn={markIn}
+                      markOut={markOut}
+                      setMarkIn={setMarkIn}
+                      setMarkOut={setMarkOut}
+                      getVideo={() => previewVideoRef.current}
+                      playheadSec={trimUiCurrentTime}
+                      paused={previewPaused}
+                    />
+                  </div>
+                </div>
+                <div className="discovery-trim-timeline-row">
+                  <div className="discovery-trim-timeline-row__track">
+                    <PhoneTrimTimeline
+                      duration={previewDuration}
+                      currentTime={trimUiCurrentTime}
+                      markIn={markIn}
+                      markOut={markOut}
+                      disabled={previewDuration <= 0}
+                      onSeek={(t) => {
+                        const v = previewVideoRef.current;
+                        if (!v) return;
+                        v.currentTime = t;
+                        setTrimUiCurrentTime(t);
+                      }}
+                      onMarkInChange={setMarkIn}
+                      onMarkOutChange={setMarkOut}
+                    />
+                  </div>
+                  <div className="discovery-trim-timeline-row__actions" role="group" aria-label="Trim range options">
+                    <TrimClearInOutButton
+                      onClick={() => {
+                        setMarkIn(null);
+                        setMarkOut(null);
+                      }}
+                      disabled={!trimEnforcesPlayback}
+                    />
+                    <TrimPlaybackOutIconToggle
+                      mode={trimPlaybackLoop ? "repeat" : "stop_at_end"}
+                      onModeChange={(m) => setTrimPlaybackLoop(m === "repeat")}
+                    />
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </>
+    ) : (
+      <>
+        {autoplayStrip}
+        <div className="discovery-desktop-preview-main discovery-desktop-preview-main--empty">
+          <p style={{ margin: 0, color: "var(--muted)", fontSize: 14, textAlign: "center", padding: "24px 16px" }}>
+            Select an item from the list.
+          </p>
+        </div>
+      </>
     );
-  }
+
+  const metaPanelBody =
+    it && panelTab !== "viewer" ? (
+      panelTab === "details" ? (
+        <DiscoveryItemMetaBody it={it} k={k} saved={saved} onToggleSaved={onToggleSaved} />
+      ) : panelTab === "parameters" ? (
+        <DiscoveryComfyQueuePanel it={it} />
+      ) : panelTab === "assets" ? (
+        <DiscoveryMockAssetsPanel it={it} saved={saved} onToggleSaved={onToggleSaved} />
+      ) : (
+        <DiscoveryMockWorkflowsPanel it={it} />
+      )
+    ) : (
+      <p style={{ margin: 0, color: "var(--muted)", fontSize: 14 }}>Select an item from the list.</p>
+    );
 
   return (
-    <div ref={previewRootRef} className="discovery-desktop-preview">
-      <div className="discovery-desktop-preview-main">
-        <div className="discovery-desktop-preview-stage">
-          <div className="discovery-desktop-preview-video-slot">
-            {playUrl ? (
-              <video
-                ref={(el) => {
-                  previewVideoRef.current = el;
-                }}
-                key={k}
-                src={playUrl}
-                controls
-                playsInline
-                loop={videoAutoplay && !trimEnforcesPlayback && trimPlaybackLoop}
-                autoPlay={videoAutoplay}
-                muted={videoAutoplay}
-              />
-            ) : thumb ? (
-              <img key={k} src={thumb} alt="" decoding="async" />
-            ) : (
-              <div style={{ color: "var(--muted)", textAlign: "center", padding: 16 }}>No preview for this type</div>
-            )}
-          </div>
-          {playUrl ? (
-            <div className="discovery-desktop-preview-trim">
-              <div className="discovery-trim-primary-row">
-                <div className="discovery-trim-primary-row__time mono">
-                  <span className="discovery-trim-time-readout">
-                    {fmtVideoSec(trimUiCurrentTime)}{" "}
-                    <span className="discovery-trim-range-readout-sep">/</span> {fmtVideoSec(previewDuration)}
-                  </span>
-                </div>
-                <div className="discovery-trim-primary-row__center">
-                  <DiscoveryTrimTransport
-                    videoRef={previewVideoRef}
-                    duration={previewDuration}
-                    markIn={markIn}
-                    markOut={markOut}
-                    mediaSyncKey={k}
-                    size="large"
-                    onSyncTime={(t) => {
-                      setTrimUiCurrentTime(t);
-                    }}
-                  />
-                </div>
-                <div className="discovery-trim-primary-row__io">
-                  <TrimInOutAtPlayheadButtons
-                    duration={previewDuration}
-                    markIn={markIn}
-                    markOut={markOut}
-                    setMarkIn={setMarkIn}
-                    setMarkOut={setMarkOut}
-                    getVideo={() => previewVideoRef.current}
-                    playheadSec={trimUiCurrentTime}
-                    paused={previewPaused}
-                  />
-                </div>
-              </div>
-              <div className="discovery-trim-timeline-row">
-                <div className="discovery-trim-timeline-row__track">
-                  <PhoneTrimTimeline
-                    duration={previewDuration}
-                    currentTime={trimUiCurrentTime}
-                    markIn={markIn}
-                    markOut={markOut}
-                    disabled={previewDuration <= 0}
-                    onSeek={(t) => {
-                      const v = previewVideoRef.current;
-                      if (!v) return;
-                      v.currentTime = t;
-                      setTrimUiCurrentTime(t);
-                    }}
-                    onMarkInChange={setMarkIn}
-                    onMarkOutChange={setMarkOut}
-                  />
-                </div>
-                <div className="discovery-trim-timeline-row__actions" role="group" aria-label="Trim range options">
-                  <TrimClearInOutButton
-                    onClick={() => {
-                      setMarkIn(null);
-                      setMarkOut(null);
-                    }}
-                    disabled={!trimEnforcesPlayback}
-                  />
-                  <TrimPlaybackOutIconToggle
-                    mode={trimPlaybackLoop ? "repeat" : "stop_at_end"}
-                    onModeChange={(m) => setTrimPlaybackLoop(m === "repeat")}
-                  />
-                </div>
-              </div>
-            </div>
-          ) : null}
-        </div>
-      </div>
-
-      <aside
-        className={"discovery-desktop-meta-drawer" + (detailsOpen ? " discovery-desktop-meta-drawer--open" : "")}
-        style={{ width: drawerWidth }}
-        aria-hidden={!detailsOpen}
-      >
-        <div
-          className="discovery-desktop-meta-resize-handle"
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize side panel"
-          tabIndex={detailsOpen ? 0 : -1}
-          onMouseDown={detailsOpen ? onMetaDrawerResizeStart : undefined}
-          onKeyDown={
-            detailsOpen
-              ? (e) => {
-                  const root = previewRootRef.current;
-                  const cw = root?.clientWidth ?? 800;
-                  if (e.key === "ArrowLeft") {
-                    e.preventDefault();
-                    setDrawerWidth((w) => {
-                      const next = clampDrawerWidthPx(w + 12, cw);
-                      drawerWidthRef.current = next;
-                      persistDesktopMetaDrawerWidth(next);
-                      return next;
-                    });
-                  } else if (e.key === "ArrowRight") {
-                    e.preventDefault();
-                    setDrawerWidth((w) => {
-                      const next = clampDrawerWidthPx(w - 12, cw);
-                      drawerWidthRef.current = next;
-                      persistDesktopMetaDrawerWidth(next);
-                      return next;
-                    });
-                  }
-                }
-              : undefined
-          }
-        />
-        <div className="discovery-desktop-meta-drawer-column">
-          <div className="discovery-desktop-meta-drawer-head">
-            <div
-              className="discovery-desktop-meta-drawer-tablist discovery-desktop-meta-drawer-tablist--wrap"
-              role="tablist"
-              aria-label="Side panel"
-            >
-              <button
-                type="button"
-                role="tab"
-                id="discovery-meta-tab-details"
-                aria-controls="discovery-meta-panel-body"
-                aria-selected={metaDrawerTab === "details"}
-                tabIndex={detailsOpen ? (metaDrawerTab === "details" ? 0 : -1) : -1}
-                className={
-                  "discovery-desktop-meta-drawer-tab" +
-                  (metaDrawerTab === "details" ? " discovery-desktop-meta-drawer-tab--active" : "")
-                }
-                onClick={() => setMetaDrawerTab("details")}
-              >
-                Details
-              </button>
-              <button
-                type="button"
-                role="tab"
-                id="discovery-meta-tab-parameters"
-                aria-controls="discovery-meta-panel-body"
-                aria-selected={metaDrawerTab === "parameters"}
-                tabIndex={detailsOpen ? (metaDrawerTab === "parameters" ? 0 : -1) : -1}
-                className={
-                  "discovery-desktop-meta-drawer-tab" +
-                  (metaDrawerTab === "parameters" ? " discovery-desktop-meta-drawer-tab--active" : "")
-                }
-                onClick={() => setMetaDrawerTab("parameters")}
-              >
-                Parameters
-              </button>
-              <button
-                type="button"
-                role="tab"
-                id="discovery-meta-tab-assets"
-                aria-controls="discovery-meta-panel-body"
-                aria-selected={metaDrawerTab === "assets"}
-                tabIndex={detailsOpen ? (metaDrawerTab === "assets" ? 0 : -1) : -1}
-                className={
-                  "discovery-desktop-meta-drawer-tab" +
-                  (metaDrawerTab === "assets" ? " discovery-desktop-meta-drawer-tab--active" : "")
-                }
-                onClick={() => setMetaDrawerTab("assets")}
-              >
-                Assets <span className="discovery-mock-tab-hint">Mock</span>
-              </button>
-              <button
-                type="button"
-                role="tab"
-                id="discovery-meta-tab-workflows"
-                aria-controls="discovery-meta-panel-body"
-                aria-selected={metaDrawerTab === "workflows"}
-                tabIndex={detailsOpen ? (metaDrawerTab === "workflows" ? 0 : -1) : -1}
-                className={
-                  "discovery-desktop-meta-drawer-tab" +
-                  (metaDrawerTab === "workflows" ? " discovery-desktop-meta-drawer-tab--active" : "")
-                }
-                onClick={() => setMetaDrawerTab("workflows")}
-              >
-                Workflows <span className="discovery-mock-tab-hint">Mock</span>
-              </button>
-            </div>
-            <button
-              type="button"
-              className="discovery-desktop-meta-drawer-close"
-              aria-label="Close side panel"
-              onClick={() => setDetailsOpen(false)}
-            >
-              ×
-            </button>
-          </div>
+    <div ref={previewRootRef} className="discovery-desktop-preview discovery-desktop-preview--stacked">
+      {tablist}
+      <div className="discovery-desktop-panel-body">
+        {panelTab === "viewer" ? (
           <div
-            className="discovery-desktop-preview-meta"
             role="tabpanel"
-            id="discovery-meta-panel-body"
-            aria-labelledby={discoveryMetaPanelLabelId(metaDrawerTab)}
+            id="discovery-desktop-panel-tabpanel"
+            aria-labelledby={discoveryDesktopPanelLabelId("viewer")}
+            className={"discovery-desktop-viewer-pane" + (!it ? " discovery-desktop-viewer-pane--empty" : "")}
           >
-            {metaDrawerTab === "details" ? (
-              <DiscoveryItemMetaBody it={it} k={k} saved={saved} onToggleSaved={onToggleSaved} />
-            ) : metaDrawerTab === "parameters" ? (
-              <DiscoveryComfyQueuePanel it={it} />
-            ) : metaDrawerTab === "assets" ? (
-              <DiscoveryMockAssetsPanel it={it} />
-            ) : (
-              <DiscoveryMockWorkflowsPanel it={it} />
-            )}
+            {viewerStage}
           </div>
-        </div>
-      </aside>
-
-      {!detailsOpen ? (
-        <div className="discovery-desktop-drawer-tab-stack" aria-label="Open side panel">
-          <button
-            type="button"
-            className="discovery-desktop-drawer-tab"
-            onClick={() => {
-              setMetaDrawerTab("details");
-              setDetailsOpen(true);
-            }}
-            aria-label="Open details"
+        ) : (
+          <div
+            role="tabpanel"
+            id="discovery-desktop-panel-tabpanel"
+            className="discovery-desktop-preview-meta"
+            aria-labelledby={discoveryDesktopPanelLabelId(panelTab)}
           >
-            Details
-          </button>
-          <button
-            type="button"
-            className="discovery-desktop-drawer-tab"
-            onClick={() => {
-              setMetaDrawerTab("parameters");
-              setDetailsOpen(true);
-            }}
-            aria-label="Open Parameters"
-          >
-            Parameters
-          </button>
-          <button
-            type="button"
-            className="discovery-desktop-drawer-tab"
-            onClick={() => {
-              setMetaDrawerTab("assets");
-              setDetailsOpen(true);
-            }}
-            aria-label="Open Assets mock"
-          >
-            Assets
-          </button>
-          <button
-            type="button"
-            className="discovery-desktop-drawer-tab"
-            onClick={() => {
-              setMetaDrawerTab("workflows");
-              setDetailsOpen(true);
-            }}
-            aria-label="Open Workflows mock"
-          >
-            Workflows
-          </button>
-        </div>
-      ) : null}
+            {metaPanelBody}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -2790,7 +3117,10 @@ function DiscoveryLibraryInner() {
   const [sinceDays, setSinceDays] = useState(0);
   const [library, setLibrary] = useState<"all" | "og" | "wip">("all");
   const [savedOnly, setSavedOnly] = useState(false);
+  const [sortField, setSortField] = useState<DiscoverySortField>(DISCOVERY_SORT_DEFAULT_FIELD);
+  const [sortDirection, setSortDirection] = useState<DiscoverySortDirection>(DISCOVERY_SORT_DEFAULT_DIRECTION);
   const [data, setData] = useState<DiscoveryLibraryResponse | null>(null);
+  const [discoveryStatus, setDiscoveryStatus] = useState<DiscoveryLibraryStatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [listRefreshing, setListRefreshing] = useState(false);
   const [pollMin, setPollMin] = useState<(typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number]>(() => loadDiscoveryPollMin());
@@ -2809,6 +3139,7 @@ function DiscoveryLibraryInner() {
   const desktopTrimKeyboardRef = useRef<DiscoveryTrimKeyboardApi | null>(null);
   const desktopSplitRef = useRef<HTMLDivElement | null>(null);
   const [phoneFiltersOpen, setPhoneFiltersOpen] = useState(false);
+  const [desktopFiltersOpen, setDesktopFiltersOpen] = useState(true);
   /** Phone: highlighted list row (kept after closing viewer). */
   const [phoneFocusIndex, setPhoneFocusIndex] = useState<number | null>(null);
   /** Phone: detail overlay open (list highlight can remain when false). */
@@ -2842,7 +3173,12 @@ function DiscoveryLibraryInner() {
         });
         setData(res);
       } catch (e) {
-        setErr(String(e));
+        const msg = String(e);
+        if (/already in progress/i.test(msg)) {
+          setErr("");
+        } else {
+          setErr(msg);
+        }
       } finally {
         if (soft) setListRefreshing(false);
         else setLoading(false);
@@ -2851,9 +3187,37 @@ function DiscoveryLibraryInner() {
     [qApplied, sinceDays, library]
   );
 
+  const requestRebuild = useCallback(() => {
+    const ok = window.confirm(
+      "Rebuild discovery index now?\n\nThis can take a while because it rescans output folders."
+    );
+    if (!ok) return;
+    void load(true, { soft: true });
+  }, [load]);
+
   useEffect(() => {
     void load(false);
   }, [load]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const pullStatus = async () => {
+      try {
+        const st = await fetchDiscoveryLibraryStatus();
+        if (!cancelled) setDiscoveryStatus(st);
+      } catch {
+        /* ignore status poll errors */
+      }
+    };
+    void pullStatus();
+    const id = window.setInterval(() => {
+      void pullStatus();
+    }, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
 
   useEffect(() => {
     if (pollMin <= 0) return;
@@ -2875,10 +3239,18 @@ function DiscoveryLibraryInner() {
   }, []);
 
   const items = data?.items ?? [];
+  const rebuildRunning = discoveryStatus?.running ?? listRefreshing;
+  const rebuildHeartbeatAgeMs = discoveryStatus?.heartbeat_age_ms ?? null;
+  const rebuildLastError = discoveryStatus?.last_error ?? null;
+  const sortedItems = useMemo(() => {
+    const out = [...items];
+    out.sort((a, b) => discoveryCompareItems(a, b, sortField, sortDirection));
+    return out;
+  }, [items, sortField, sortDirection]);
   const displayed = useMemo(() => {
-    if (!savedOnly) return items;
-    return items.filter((it) => saved.has(discoveryItemKey(it)));
-  }, [items, savedOnly, saved]);
+    if (!savedOnly) return sortedItems;
+    return sortedItems.filter((it) => saved.has(discoveryItemKey(it)));
+  }, [sortedItems, savedOnly, saved]);
 
   useEffect(() => {
     if (!isPhone || phoneFocusIndex === null) return;
@@ -2947,8 +3319,7 @@ function DiscoveryLibraryInner() {
       if (!(t instanceof HTMLElement)) return;
 
       if (t.closest(".discovery-desktop-resize-handle")) return;
-      if (t.closest(".discovery-desktop-meta-resize-handle")) return;
-      if (t.closest(".discovery-desktop-meta-drawer")) return;
+      if (t.closest(".discovery-desktop-preview-meta")) return;
       if (
         t.closest(
           'input, textarea, select, [contenteditable="true"], [contenteditable="plaintext-only"]'
@@ -3110,42 +3481,6 @@ function DiscoveryLibraryInner() {
         <span style={{ fontSize: 14 }}>Saved only</span>
       </label>
       <span style={{ flex: "1 1 20px" }} />
-      <button
-        type="button"
-        title="Re-query the saved index from the server (no disk rescan)"
-        onClick={() => void load(false, { soft: true })}
-        disabled={loading || listRefreshing}
-      >
-        Reload
-      </button>
-      <button
-        type="button"
-        title="Rescan output folders and refresh the list (incremental index update)"
-        onClick={() => void load(true, { soft: true })}
-        disabled={loading || listRefreshing}
-      >
-        {listRefreshing ? "Updating…" : "Update"}
-      </button>
-      <label style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 120 }}>
-        <span style={{ fontSize: 12, color: "var(--muted)" }}>Auto-refresh</span>
-        <select
-          value={pollMin}
-          onChange={(e) => {
-            const v = Number(e.target.value) as (typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number];
-            const next = DISCOVERY_LIBRARY_POLL_CHOICES.includes(v) ? v : 0;
-            setPollMin(next);
-            persistDiscoveryPollMin(next);
-          }}
-        >
-          <option value={0}>Off</option>
-          <option value={1}>1 min</option>
-          <option value={5}>5 min</option>
-          <option value={10}>10 min</option>
-          <option value={15}>15 min</option>
-          <option value={30}>30 min</option>
-          <option value={60}>60 min</option>
-        </select>
-      </label>
     </>
   );
 
@@ -3168,6 +3503,20 @@ function DiscoveryLibraryInner() {
             >
               {phoneFiltersOpen ? "Hide filters" : "Filters"}
             </button>
+            <DiscoveryRefreshMenu
+              loading={loading}
+              rebuildRunning={rebuildRunning}
+              rebuildHeartbeatAgeMs={rebuildHeartbeatAgeMs}
+              rebuildLastError={rebuildLastError}
+              pollMin={pollMin}
+              onReload={() => void load(false, { soft: true })}
+              onUpdate={requestRebuild}
+              onPollMinChange={(next) => {
+                setPollMin(next);
+                persistDiscoveryPollMin(next);
+              }}
+              triggerMode="click"
+            />
           </div>
 
           <PhoneAutoplayToggle
@@ -3194,7 +3543,7 @@ function DiscoveryLibraryInner() {
                 <span className="mono">{data.item_count_filtered}</span> matches
                 {data.truncated ? " · truncated" : ""}
                 {data.from_cache ? " · cached" : ""}
-                {listRefreshing ? " · updating…" : ""}
+                {rebuildRunning ? " · rebuilding…" : ""}
                 {" · "}
                 <span style={{ color: "var(--text)" }}>
                   Tap a row to open the viewer · after {(PHONE_VIEWER_CONTROLS_MS / 1000).toFixed(1)}s only the video
@@ -3202,6 +3551,47 @@ function DiscoveryLibraryInner() {
                 </span>
               </>
             ) : null}
+          </div>
+
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              flexShrink: 0,
+              padding: "4px 0",
+              borderTop: "1px solid var(--border)",
+              borderBottom: "1px solid var(--border)",
+            }}
+          >
+            <span style={{ fontSize: 12, color: "var(--muted)" }}>Sort</span>
+            <select value={sortField} onChange={(e) => setSortField(e.target.value as DiscoverySortField)} style={{ minWidth: 120 }}>
+              {DISCOVERY_SORT_FIELDS.map((opt) => (
+                <option key={opt.field} value={opt.field}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={() => setSortDirection((v) => (v === "asc" ? "desc" : "asc"))}
+              title={sortDirection === "asc" ? "Sort ascending (click for descending)" : "Sort descending (click for ascending)"}
+              aria-label={sortDirection === "asc" ? "Sort ascending" : "Sort descending"}
+              aria-pressed={sortDirection === "desc"}
+            >
+              <svg
+                viewBox="0 0 16 16"
+                width="14"
+                height="14"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <rect x="2" y="3" width={sortDirection === "asc" ? 6 : 12} height="2.2" rx="0.8" fill="currentColor" />
+                <rect x="2" y="6.9" width="9" height="2.2" rx="0.8" fill="currentColor" />
+                <rect x="2" y="10.8" width={sortDirection === "asc" ? 12 : 6} height="2.2" rx="0.8" fill="currentColor" />
+              </svg>
+            </button>
           </div>
 
           <div ref={phoneListScrollRef} className="discovery-list-scroll">
@@ -3247,59 +3637,118 @@ function DiscoveryLibraryInner() {
 
   return (
     <div className="discovery-screen">
-      <div className="panel discovery-panel discovery-desktop-root" style={{ gap: 10 }}>
-        <header style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, flexShrink: 0 }}>
-          <a href="/" style={{ fontWeight: 600 }}>
-            ← Experiments
-          </a>
-          <h1 className="title" style={{ margin: 0, fontSize: "1.15rem" }}>
-            Og / Wip library
-          </h1>
-          <span className="discovery-subtitle" style={{ color: "var(--muted)", fontSize: 13 }}>
-            Indexed discovery (persistent scan)
-          </span>
-        </header>
-
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", flexShrink: 0 }}>{filtersBlock}</div>
-
-        <label
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            fontSize: 14,
-            flexShrink: 0,
-            userSelect: "none",
-          }}
-        >
-          <input type="checkbox" checked={videoAutoplay} onChange={(e) => setVideoAutoplayFromUser(e.target.checked)} />
-          <span>Autoplay video in preview (muted; same setting as phone viewer)</span>
-        </label>
-
-        {err ? (
-          <div style={{ color: "var(--bad)", fontSize: 14, flexShrink: 0 }} role="alert">
-            {err}
-          </div>
-        ) : null}
-
-        <div style={{ fontSize: 13, color: "var(--muted)", flexShrink: 0 }}>
-          {loading ? (
-            "Loading…"
-          ) : data ? (
-            <>
-              Index <span className="mono">{data.updated_at ?? "—"}</span>
-              {data.from_cache ? " (cached)" : " (just scanned)"}
-              {data.scan_ms != null ? ` · ${data.scan_ms} ms scan` : ""}
-              {listRefreshing ? " · updating…" : ""}
-              {" · "}
-              <span className="mono">{data.item_count_filtered}</span> matches
-              {data.truncated ? " (truncated)" : ""}
-            </>
-          ) : null}
-        </div>
-
+      <div className="panel discovery-panel discovery-desktop-root" style={{ gap: 0 }}>
         <div ref={desktopSplitRef} className="discovery-desktop-split">
           <div className="discovery-desktop-list-pane" style={{ flex: `0 0 ${listPaneWidth}px` }}>
+            <details className="discovery-desktop-nav-details" open>
+              <summary className="discovery-desktop-nav-summary">
+                <span className="discovery-desktop-nav-summary-label">Navigation & filters</span>
+              </summary>
+              <div className="discovery-desktop-nav-details-inner">
+                <header style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, flexShrink: 0 }}>
+                  <a href="/" style={{ fontWeight: 600 }}>
+                    ← Experiments
+                  </a>
+                  <h1 className="title" style={{ margin: 0, fontSize: "1.05rem" }}>
+                    Og / Wip library
+                  </h1>
+                  <span className="discovery-subtitle" style={{ color: "var(--muted)", fontSize: 12 }}>
+                    Indexed discovery (persistent scan)
+                  </span>
+                </header>
+
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexShrink: 0, flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    className="discovery-phone-filters-toggle"
+                    aria-expanded={desktopFiltersOpen}
+                    onClick={() => setDesktopFiltersOpen((v) => !v)}
+                    style={{ marginLeft: 0 }}
+                  >
+                    {desktopFiltersOpen ? "Hide filters" : "Filters"}
+                  </button>
+                  <DiscoveryRefreshMenu
+                    loading={loading}
+                    rebuildRunning={rebuildRunning}
+                    rebuildHeartbeatAgeMs={rebuildHeartbeatAgeMs}
+                    rebuildLastError={rebuildLastError}
+                    pollMin={pollMin}
+                    onReload={() => void load(false, { soft: true })}
+                    onUpdate={requestRebuild}
+                    onPollMinChange={(next) => {
+                      setPollMin(next);
+                      persistDiscoveryPollMin(next);
+                    }}
+                    triggerMode="hover"
+                  />
+                </div>
+                {desktopFiltersOpen ? (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", flexShrink: 0 }}>{filtersBlock}</div>
+                ) : null}
+
+                {err ? (
+                  <div style={{ color: "var(--bad)", fontSize: 13, flexShrink: 0 }} role="alert">
+                    {err}
+                  </div>
+                ) : null}
+
+                <div style={{ fontSize: 12, color: "var(--muted)", flexShrink: 0, lineHeight: 1.35 }}>
+                  {loading ? (
+                    "Loading…"
+                  ) : data ? (
+                    <>
+                      Index <span className="mono">{data.updated_at ?? "—"}</span>
+                      {data.from_cache ? " (cached)" : " (just scanned)"}
+                      {data.scan_ms != null ? ` · ${data.scan_ms} ms scan` : ""}
+                      {rebuildRunning ? " · rebuilding…" : ""}
+                      {" · "}
+                      <span className="mono">{data.item_count_filtered}</span> matches
+                      {data.truncated ? " (truncated)" : ""}
+                    </>
+                  ) : null}
+                </div>
+              </div>
+            </details>
+
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "6px 8px",
+                borderBottom: "1px solid var(--border)",
+                flexShrink: 0,
+              }}
+            >
+              <span style={{ fontSize: 12, color: "var(--muted)" }}>Sort</span>
+              <select value={sortField} onChange={(e) => setSortField(e.target.value as DiscoverySortField)} style={{ minWidth: 120 }}>
+                {DISCOVERY_SORT_FIELDS.map((opt) => (
+                  <option key={opt.field} value={opt.field}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => setSortDirection((v) => (v === "asc" ? "desc" : "asc"))}
+                title={sortDirection === "asc" ? "Sort ascending (click for descending)" : "Sort descending (click for ascending)"}
+                aria-label={sortDirection === "asc" ? "Sort ascending" : "Sort descending"}
+                aria-pressed={sortDirection === "desc"}
+              >
+                <svg
+                  viewBox="0 0 16 16"
+                  width="14"
+                  height="14"
+                  aria-hidden="true"
+                  focusable="false"
+                >
+                  <rect x="2" y="3" width={sortDirection === "asc" ? 6 : 12} height="2.2" rx="0.8" fill="currentColor" />
+                  <rect x="2" y="6.9" width="9" height="2.2" rx="0.8" fill="currentColor" />
+                  <rect x="2" y="10.8" width={sortDirection === "asc" ? 12 : 6} height="2.2" rx="0.8" fill="currentColor" />
+                </svg>
+              </button>
+            </div>
             <div
               ref={desktopListScrollRef}
               className="discovery-list-scroll"
@@ -3335,6 +3784,7 @@ function DiscoveryLibraryInner() {
               ) : null}
             </div>
           </div>
+
           <div
             className="discovery-desktop-resize-handle"
             role="separator"
@@ -3369,6 +3819,7 @@ function DiscoveryLibraryInner() {
             saved={saved}
             onToggleSaved={toggleSaved}
             videoAutoplay={videoAutoplay}
+            onVideoAutoplayChange={setVideoAutoplayFromUser}
             previewVideoRef={desktopPreviewVideoRef}
             trimSeekBoundsRef={desktopTrimSeekRef}
             trimKeyboardRef={desktopTrimKeyboardRef}
@@ -4404,7 +4855,7 @@ function DiscoveryPhoneDetailOverlay({
             <span className="discovery-mock-tab-hint">Mock</span>
           </div>
           <div className="discovery-phone-stack__page-body">
-            <DiscoveryMockAssetsPanel it={it} />
+            <DiscoveryMockAssetsPanel it={it} saved={saved} onToggleSaved={onToggleSaved} />
           </div>
         </section>
 

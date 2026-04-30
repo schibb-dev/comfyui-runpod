@@ -318,6 +318,62 @@ export type DiscoveryLibraryResponse = {
   items: DiscoveryLibraryItem[];
 };
 
+/** Per-phase timing from the last completed discovery index build (stderr also logs a line). */
+export type DiscoveryLastIndexTiming = {
+  wall_ms?: number;
+  scan_loop_ms?: number;
+  stat_ms?: number;
+  png_meta_ms?: number;
+  content_hash_ms?: number;
+  other_scan_ms?: number;
+  merge_ms?: number;
+  sort_ms?: number;
+  files_scanned?: number;
+  group_count?: number;
+};
+
+export type DiscoveryLibraryStatusResponse = {
+  running: boolean;
+  started_at?: string | null;
+  last_progress_at?: string | null;
+  finished_at?: string | null;
+  last_error?: string | null;
+  scan_ms?: number | null;
+  scanned_files?: number | null;
+  last_path?: string | null;
+  running_for_ms?: number | null;
+  heartbeat_age_ms?: number | null;
+  /** False if server had no public snapshot yet (should be rare). */
+  snapshot_ok?: boolean;
+  last_index_timing?: DiscoveryLastIndexTiming | null;
+};
+
+/** GET /api/discovery/provenance-chain — inferred ancestor chain from embedded prompts (see caveat in response). */
+export type DiscoveryProvenanceChainLink = {
+  depth: number;
+  artifact_relpath?: string | null;
+  embed_read_from_png?: string | null;
+  embed_source?: string | null;
+  workflow_fingerprint: string;
+  input_raw_from_prompt?: string | null;
+  input_kind?: string | null;
+  parent_resolved_relpath?: string | null;
+};
+
+export type DiscoveryProvenanceChainResponse =
+  | {
+      ok: true;
+      source: string;
+      caveat: string;
+      links: DiscoveryProvenanceChainLink[];
+      stops: unknown[];
+    }
+  | {
+      ok: false;
+      error?: string;
+      detail?: string;
+    };
+
 /** GET /api/discovery/embed-api-prompt — API-format prompt from PNG metadata (+ optional Comfy /workflow/convert). */
 export type DiscoveryEmbedApiPromptResponse =
   | {

@@ -18,8 +18,10 @@ import type {
   ComfyHistoryResponse,
   OrchestratorState,
   DiscoveryLibraryResponse,
+  DiscoveryLibraryStatusResponse,
   DiscoveryLibraryItem,
   DiscoveryEmbedApiPromptResponse,
+  DiscoveryProvenanceChainResponse,
 } from "./types";
 
 export async function fetchDiscoveryLibrary(opts?: {
@@ -37,8 +39,35 @@ export async function fetchDiscoveryLibrary(opts?: {
   if (opts?.limit != null && opts.limit > 0) sp.set("limit", String(opts.limit));
   const qs = sp.toString();
   const r = await fetch(`/api/discovery/library${qs ? `?${qs}` : ""}`);
+  if (r.status === 409) {
+    let detail = "Discovery index rebuild is already in progress.";
+    try {
+      const j = (await r.json()) as { detail?: string };
+      if (typeof j.detail === "string" && j.detail.trim()) detail = j.detail.trim();
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
   if (!r.ok) throw new Error(`GET /api/discovery/library failed: ${r.status}`);
   return (await r.json()) as DiscoveryLibraryResponse;
+}
+
+export async function fetchDiscoveryLibraryStatus(): Promise<DiscoveryLibraryStatusResponse> {
+  const r = await fetch("/api/discovery/library-status");
+  if (!r.ok) throw new Error(`GET /api/discovery/library-status failed: ${r.status}`);
+  return (await r.json()) as DiscoveryLibraryStatusResponse;
+}
+
+export async function fetchDiscoveryProvenanceChain(it: DiscoveryLibraryItem): Promise<DiscoveryProvenanceChainResponse> {
+  const sp = new URLSearchParams();
+  sp.set("relpath", it.relpath);
+  sp.set("library", it.library);
+  if (it.thumb_relpath) sp.set("thumb_relpath", it.thumb_relpath);
+  if (it.video_relpath) sp.set("video_relpath", it.video_relpath);
+  const r = await fetch(`/api/discovery/provenance-chain?${sp.toString()}`);
+  if (!r.ok) throw new Error(`GET /api/discovery/provenance-chain failed: ${r.status}`);
+  return (await r.json()) as DiscoveryProvenanceChainResponse;
 }
 
 export async function fetchDiscoveryEmbedApiPrompt(it: DiscoveryLibraryItem): Promise<DiscoveryEmbedApiPromptResponse> {
