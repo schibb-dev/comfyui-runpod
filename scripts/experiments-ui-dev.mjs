@@ -4,9 +4,11 @@
  *
  * Usage:
  *   node scripts/experiments-ui-dev.mjs vite [--tailscale] [--no-open] [--port N] [--ensure-container]
- *   node scripts/experiments-ui-dev.mjs all [--tailscale] [--no-open] [--port N]
+ *   node scripts/experiments-ui-dev.mjs all [--tailscale] [--no-open] [--port N] [--ensure-container]
+ *       → Vite only; proxies to comfyui Experiments API on the host (default :8790). Pair with
+ *       `docker compose up -d` (or `--ensure-container`).
  *   node scripts/experiments-ui-dev.mjs api
- *       → Python API only (same as the backend half of `all`). Restart this process after editing
+ *       → Python API only on the host. Restart this process after editing
  *       scripts/experiments_ui_server.py without restarting Vite.
  *   node scripts/experiments-ui-dev.mjs api-watch
  *       → Same as `api`, but uses `npx nodemon` to restart when experiments_ui_server.py changes
@@ -14,7 +16,7 @@
  *   node scripts/experiments-ui-dev.mjs start
  *       → Recommended host dev: **api-watch + Vite** in one process (same as `npm run ui:dev:start`).
  *
- * Env: EXPERIMENTS_UI_PROXY_TARGET (default http://127.0.0.1:8791 for vite mode)
+ * Env: EXPERIMENTS_UI_PROXY_TARGET (default http://127.0.0.1:8790 for `vite` and `all`; comfyui container)
  *      EXPERIMENTS_UI_API_HOST / EXPERIMENTS_UI_API_PORT (optional; default 127.0.0.1:8791 for `api` mode)
  *      EXPERIMENTS_UI_DEV_LOCALONLY=1 → bind Vite to 127.0.0.1 only (no Tailscale/LAN remote).
  *      EXPERIMENTS_UI_HMR_HOST → tailnet/LAN IP for HMR when the phone is not on localhost.
@@ -36,6 +38,12 @@ const isWin = process.platform === "win32";
 function die(msg) {
   console.error(msg);
   process.exit(1);
+}
+
+/** Default proxy for Vite (`vite` / `all`): container Experiments UI on host :8790 unless overridden. */
+function defaultExperimentsProxyTarget() {
+  const t = process.env.EXPERIMENTS_UI_PROXY_TARGET?.trim();
+  return t || "http://127.0.0.1:8790";
 }
 
 function resolvePython() {
@@ -231,59 +239,6 @@ async function runStart(opts) {
   }
 }
 
-async function runAll(opts) {
-  if (!fs.existsSync(apiScript)) die(`Missing API script: ${apiScript}`);
-
-  const py = resolvePython();
-  const pyArgs = [...py.argsPrefix, apiScript, "--host", "127.0.0.1", "--port", "8791"];
-
-  console.log("[ui:dev:all] starting backend API at http://127.0.0.1:8791");
-  const api = spawn(py.cmd, pyArgs, {
-    cwd: repoRoot,
-    stdio: "inherit",
-    shell: isWin,
-  });
-
-  const stopApi = () => {
-    if (api && !api.killed && api.exitCode === null) {
-      console.log(`[ui:dev:all] stopping backend API (pid=${api.pid})`);
-      try {
-        api.kill(isWin ? undefined : "SIGTERM");
-      } catch {
-        /* ignore */
-      }
-    }
-  };
-
-  const onSig = () => {
-    stopApi();
-    process.exit(130);
-  };
-  process.on("SIGINT", onSig);
-  process.on("SIGTERM", () => {
-    stopApi();
-    process.exit(143);
-  });
-
-  await sleep(1000);
-  if (api.exitCode !== null) {
-    die(`Backend API exited early with code ${api.exitCode}`);
-  }
-
-  try {
-    const code = runVite({
-      ...opts,
-      backend: "http://127.0.0.1:8791",
-      ensureContainer: false,
-    });
-    stopApi();
-    process.exit(code);
-  } catch (e) {
-    stopApi();
-    throw e;
-  }
-}
-
 function runApiOnly() {
   if (!fs.existsSync(apiScript)) die(`Missing API script: ${apiScript}`);
   const py = resolvePython();
@@ -370,7 +325,7 @@ function runApiWatch() {
 
 const opts = parseArgs(process.argv);
 if (opts.mode === "vite") {
-  const backend = process.env.EXPERIMENTS_UI_PROXY_TARGET?.trim() || "http://127.0.0.1:8791";
+  const backend = defaultExperimentsProxyTarget();
   process.exit(runVite({ ...opts, backend }));
 } else if (opts.mode === "api") {
   runApiOnly();
@@ -382,8 +337,12 @@ if (opts.mode === "vite") {
     process.exit(1);
   });
 } else {
-  runAll(opts).catch((e) => {
-    console.error(e);
-    process.exit(1);
-  });
+  const backend = defaultExperimentsProxyTarget();
+  console.log(
+    `[ui:dev:all] Vite only — proxy /api and /files → ${backend} (set EXPERIMENTS_UI_PROXY_TARGET to override).`,
+  );
+  console.log(
+    "[ui:dev:all] Default target is the comfyui container on the host (e.g. docker maps 8790). Run: docker compose up -d",
+  );
+  process.exit(runVite({ ...opts, backend }));
 }
