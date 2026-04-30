@@ -1,0 +1,20 @@
+# Read-only SFTP to a host output tree (e.g. E: output) for clients like FileBrowser Pro over Tailscale.
+# Do not use : in OUTPUT_SFTP_PASSWORD (atmoz/sftp command format).
+#
+# Standalone:
+#   docker compose -f docker-compose.output-sftp.yml up -d
+# With the main stack on boot (Linux/WSL systemd), see scripts/install-systemd-boot.sh or npm run boot:install-systemd.
+#
+# Set OUTPUT_SFTP_PASSWORD in .env (see .env.example). Default here is only a dev placeholder.
+
+services:
+  output-sftp:
+    image: atmoz/sftp:alpine
+    container_name: output-sftp
+    restart: unless-stopped
+    ports:
+      - "${OUTPUT_SFTP_PORT:-2222}:22"
+    volumes:
+      - "${OUTPUT_SFTP_ROOT:-/mnt/e/output}:/home/sftpuser/output:ro"
+    # user:pass:uid:gid:home_subdir  ->  chrooted under /home/sftpuser; files live in ./output
+    command: "sftpuser:${OUTPUT_SFTP_PASSWORD:-changeme}:1000:1000:output"
