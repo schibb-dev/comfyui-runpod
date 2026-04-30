@@ -242,7 +242,8 @@ If you run **Vite on the host** with the proxy target set to `http://127.0.0.1:8
 
 **Fix (current repo defaults):**
 
-- Host workflow: **`npm run ui:dev:start`** (watched API + Vite) or **`npm run ui:dev:all`** (API + Vite, no watch) via `scripts/experiments-ui-dev.mjs`; both start the API on **`127.0.0.1:8791`**. Vite’s default proxy targets **8791** (`workspace/experiments_ui/web/vite.config.ts`).
+- **`npm run ui:dev:all`** / **`npm run ui:dev:vite`**: Vite on the host only; proxy defaults to **`http://127.0.0.1:8790`** (the published comfyui Experiments API). Set **`EXPERIMENTS_UI_PROXY_TARGET`** to override (`scripts/experiments-ui-dev.mjs` and `workspace/experiments_ui/web/vite.config.ts` agree on the fallback).
+- **`npm run ui:dev:start`**: nodemon-watched Python API on **`127.0.0.1:8791`** plus Vite proxied to that API (for editing `experiments_ui_server.py` on the host).
 - Container workflow: `scripts/dev_experiments_ui_container.ps1` sets `EXPERIMENTS_UI_PROXY_TARGET=http://127.0.0.1:8790` so Vite inside the container talks to the in-container API.
 
 After changing `experiments_ui_server.py`, restart the ComfyUI container so the background Experiments UI picks up the script: `docker compose restart comfyui`.

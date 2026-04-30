@@ -158,13 +158,13 @@ This uses `docker compose exec` and serves Vite from the container; Docker maps 
 npm run ui:dev:vite
 ```
 
-API + Vite on the host (recommended — watched API restarts on `experiments_ui_server.py` saves):
+API + Vite on the host (use when editing `experiments_ui_server.py` — nodemon restarts the API on save):
 
 ```bash
 npm run ui:dev:start
 ```
 
-Same stack without auto-restart of the Python server (manual restart after API edits):
+Vite on the host only, proxying `/api` and `/files` to the **comfyui** container on **`http://127.0.0.1:8790`** by default (good HMR; run `docker compose up -d` first). Override the proxy with **`EXPERIMENTS_UI_PROXY_TARGET`**.
 
 ```bash
 npm run ui:dev:all
@@ -173,6 +173,14 @@ npm run ui:dev:all
 Tailscale / remote HMR: `npm run ui:dev:vite:tailscale`, `npm run ui:dev:start:tailscale`, or `npm run ui:dev:all:tailscale`. Optional shell wrappers: `./scripts/dev_experiments_ui.sh`, `./scripts/dev_experiments_ui_start.sh`, `./scripts/dev_experiments_ui_all.sh`.
 
 - **Windows-only PowerShell** (ensure container, then Vite): `npm run ui:dev:win` or `.\scripts\dev_experiments_ui_container.ps1 -EnsureContainer`.
+
+#### Boot: Docker (ComfyUI + watch_queue + output SFTP) and host Vite (Linux / WSL2, systemd)
+
+From the repo root, **`npm run boot:install-systemd`** writes user units that run **`docker compose`** with **`docker-compose.yml`** and **`docker-compose.output-sftp.yml`**, then **`npm run ui:dev:all -- --no-open`**. Set **`OUTPUT_SFTP_PASSWORD`** (and paths) in **`.env`** first. On WSL2 without an interactive login, enable lingering: **`sudo loginctl enable-linger "$USER"`**. Remove with **`npm run boot:uninstall-systemd`**. This path does not apply to Windows hosts without systemd.
+
+On **WSL2 + Docker Desktop**, pulls can fail with **`docker-credential-desktop.exe` not found** under systemd because the default **`PATH`** omits Docker’s Windows **`resources/bin`**. Re-run **`npm run boot:install-systemd`** so the generated unit prepends that directory (or fix **`~/.docker/config.json`** creds helper yourself).
+
+**fnm / nvm:** a normal **`~/.bashrc`** often skips everything for non-interactive shells, so **`npm` is missing** under systemd. The install script pins **`npm`** to **`~/.local/share/fnm/aliases/default/bin/npm`** (or nvm default / **`/usr/bin/npm`**) and sets **`PATH`** for the Vite unit so **`experiments-ui-dev.mjs`** can spawn **`npm run dev`**. After changing the default Node version, run **`npm run boot:install-systemd`** again.
 
 #### DEV: Rebuild UI after changing the Experiments UI backend API
 
