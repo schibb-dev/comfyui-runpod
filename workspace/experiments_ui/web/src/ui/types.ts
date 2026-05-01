@@ -303,11 +303,6 @@ export type DiscoveryLibraryItem = {
   /** Video container frame rate when known (e.g. from metadata). */
   frame_rate?: number | null;
   members?: DiscoveryMember[];
-  /**
-   * When the discovery index is v6+ and provenance was computed at index time
-   * (GET /api/discovery/library). Same shape as GET /api/discovery/provenance-chain.
-   */
-  provenance?: DiscoveryProvenanceChainResponse;
 };
 
 export type DiscoveryLibraryResponse = {
@@ -322,117 +317,6 @@ export type DiscoveryLibraryResponse = {
   limit: number;
   items: DiscoveryLibraryItem[];
 };
-
-/** Per-phase timing from the last completed discovery index build (stderr also logs a line). */
-export type DiscoveryLastIndexTiming = {
-  wall_ms?: number;
-  scan_loop_ms?: number;
-  stat_ms?: number;
-  png_meta_ms?: number;
-  content_hash_ms?: number;
-  other_scan_ms?: number;
-  merge_ms?: number;
-  sort_ms?: number;
-  provenance_ms?: number;
-  files_scanned?: number;
-  group_count?: number;
-};
-
-/** Inferred from workflow node classes when the exemplar is added (legacy rows may omit). */
-export type DiscoveryExemplarInputProfile = {
-  uses_image_start: boolean;
-  uses_video_start: boolean;
-};
-
-/** GET/POST /api/discovery/exemplar-sets — server-persisted exemplar keys (same as discoveryItemKey). */
-export type DiscoveryExemplarLibraryEntry = {
-  key: string;
-  note?: string;
-  added_at?: string;
-  /** Optional label for menus / lists; falls back to live index name or key. */
-  display_name?: string;
-  /** Snapshot of the asset display name when added (or backfilled); stays stable if the file is renamed. */
-  source_name?: string;
-  /** When set, library / working-set rows are filtered against the current asset’s available media. */
-  input_profile?: DiscoveryExemplarInputProfile;
-};
-
-export type DiscoveryExemplarWorkingEntry = {
-  key: string;
-};
-
-export type DiscoveryExemplarSets = {
-  version: number;
-  library: DiscoveryExemplarLibraryEntry[];
-  working_set: DiscoveryExemplarWorkingEntry[];
-};
-
-export type DiscoveryLibraryStatusResponse = {
-  running: boolean;
-  started_at?: string | null;
-  last_progress_at?: string | null;
-  finished_at?: string | null;
-  last_error?: string | null;
-  scan_ms?: number | null;
-  scanned_files?: number | null;
-  last_path?: string | null;
-  running_for_ms?: number | null;
-  heartbeat_age_ms?: number | null;
-  /** False if server had no public snapshot yet (should be rare). */
-  snapshot_ok?: boolean;
-  last_index_timing?: DiscoveryLastIndexTiming | null;
-};
-
-/** GET /api/discovery/provenance-chain — inferred ancestor chain from embedded prompts (see caveat in response). */
-export type DiscoveryProvenanceTerminalSource = {
-  relpath: string;
-  library?: string;
-  chain_halted_reason?: string | null;
-};
-
-export type DiscoveryProvenanceChainLink = {
-  depth: number;
-  artifact_relpath?: string | null;
-  embed_read_from_png?: string | null;
-  embed_source?: string | null;
-  workflow_fingerprint: string;
-  input_raw_from_prompt?: string | null;
-  input_kind?: string | null;
-  parent_resolved_relpath?: string | null;
-  /** Media file this step produced (merged discovery primary for depth 0, else prior step's parent). */
-  step_output_relpath?: string | null;
-  /** Library inferred from step_output path (og / wip / all). */
-  step_output_library?: string | null;
-  branch_provenance?: DiscoveryProvenanceBranchPayload;
-};
-
-/** Per-link branch when that step's parent matches another indexed discovery row (see server index). */
-export type DiscoveryProvenanceBranchPayload = {
-  ok: true;
-  source?: string;
-  caveat?: string;
-  links: DiscoveryProvenanceChainLink[];
-  stops?: unknown[];
-  terminal_source?: DiscoveryProvenanceTerminalSource;
-  /** Primary relpath of the discovery row this branch was copied from. */
-  from_discovery_primary?: string;
-  nested_truncated?: boolean;
-};
-
-export type DiscoveryProvenanceChainResponse =
-  | {
-      ok: true;
-      source: string;
-      caveat: string;
-      links: DiscoveryProvenanceChainLink[];
-      stops: unknown[];
-      terminal_source?: DiscoveryProvenanceTerminalSource;
-    }
-  | {
-      ok: false;
-      error?: string;
-      detail?: string;
-    };
 
 /** GET /api/discovery/embed-api-prompt — API-format prompt from PNG metadata (+ optional Comfy /workflow/convert). */
 export type DiscoveryEmbedApiPromptResponse =

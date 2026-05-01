@@ -1,31 +1,12 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
-import {
-  fetchDiscoveryEmbedApiPrompt,
-  fetchDiscoveryExemplarSets,
-  fetchDiscoveryLibrary,
-  fetchDiscoveryLibraryStatus,
-  fetchDiscoveryProvenanceChain,
-  saveDiscoveryExemplarSets,
-  submitPromptToQueue,
-} from "./api";
+import { fetchDiscoveryEmbedApiPrompt, fetchDiscoveryLibrary, submitPromptToQueue } from "./api";
 import {
   discoveryTrimMediaRelpath,
   loadDiscoveryTrimAsync,
   persistDiscoveryTrimAsync,
   TRIM_CONTEXT_DISCOVERY_PLAYER,
 } from "./discoveryTrimStorage";
-import type {
-  DiscoveryExemplarInputProfile,
-  DiscoveryExemplarLibraryEntry,
-  DiscoveryExemplarSets,
-  DiscoveryLibraryItem,
-  DiscoveryLibraryResponse,
-  DiscoveryLibraryStatusResponse,
-  DiscoveryMember,
-  DiscoveryProvenanceBranchPayload,
-  DiscoveryProvenanceChainLink,
-  DiscoveryProvenanceChainResponse,
-} from "./types";
+import type { DiscoveryLibraryItem, DiscoveryLibraryResponse, DiscoveryMember } from "./types";
 import {
   phoneTrimBounds,
   phoneTrimLoopSeekTarget,
@@ -41,34 +22,20 @@ import {
 import { useComfyPromptUndoKeyboard, usePromptDraftHistory, type PromptDraftMap } from "./usePromptDraftHistory";
 
 const SAVED_KEY = "discovery_library_saved_v1";
-const DISCOVERY_KNOWN_KEY = "discovery_library_known_v1";
-const DISCOVERY_FRESH_KEY = "discovery_library_fresh_v1";
-const DISCOVERY_VISITED_KEY = "discovery_library_visited_v1";
 const VIDEO_AUTOPLAY_KEY = "discovery_phone_video_autoplay";
 const DESKTOP_LIST_WIDTH_KEY = "discovery_desktop_list_width_v1";
 const DESKTOP_LIST_WIDTH_DEFAULT = 400;
 const DESKTOP_LIST_MIN = 260;
 const DESKTOP_PREVIEW_MIN = 280;
 
+/** Initial open state for the desktop discovery details drawer. Toggle placement / persisted pref TBD. */
+const DESKTOP_DETAILS_DRAWER_DEFAULT_OPEN = false;
+
 const DISCOVERY_GRAPH_DRAFT_PREFIX = "discovery_comfy_graph_draft__";
 const DISCOVERY_COMFY_FRONT_KEY = "discovery_comfy_front_v1";
 /** Minutes between auto-refresh (0 = off). New key so legacy second-based values are not reused. */
 const DISCOVERY_LIBRARY_POLL_KEY = "discovery_library_poll_min_v1";
 const DISCOVERY_LIBRARY_POLL_CHOICES = [0, 1, 5, 10, 15, 30, 60] as const;
-type DiscoverySortField = "mtime" | "name";
-type DiscoverySortDirection = "asc" | "desc";
-
-type DiscoverySortFieldOption = {
-  label: string;
-  field: DiscoverySortField;
-};
-
-const DISCOVERY_SORT_FIELDS: DiscoverySortFieldOption[] = [
-  { label: "Date", field: "mtime" },
-  { label: "Title", field: "name" },
-];
-const DISCOVERY_SORT_DEFAULT_FIELD: DiscoverySortField = "mtime";
-const DISCOVERY_SORT_DEFAULT_DIRECTION: DiscoverySortDirection = "desc";
 
 function loadDiscoveryPollMin(): (typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number] {
   try {
@@ -88,22 +55,6 @@ function persistDiscoveryPollMin(min: (typeof DISCOVERY_LIBRARY_POLL_CHOICES)[nu
   } catch {
     /* ignore */
   }
-}
-
-function discoveryCompareItems(
-  a: DiscoveryLibraryItem,
-  b: DiscoveryLibraryItem,
-  field: DiscoverySortField,
-  direction: DiscoverySortDirection
-): number {
-  let cmp = 0;
-  if (field === "mtime") {
-    cmp = a.mtime - b.mtime;
-  } else {
-    cmp = a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true });
-  }
-  if (cmp !== 0) return direction === "asc" ? cmp : -cmp;
-  return a.relpath.localeCompare(b.relpath, undefined, { sensitivity: "base", numeric: true });
 }
 
 function discoveryDraftStorageKey(itemKey: string): string {
@@ -127,249 +78,56 @@ function _discoverySessionGetBool01(key: string): boolean {
   }
 }
 
-type DiscoveryDesktopPanelTab = "viewer" | "details" | "parameters" | "assets" | "workflows";
+type DiscoveryMetaDrawerTab = "details" | "parameters" | "assets" | "exemplars" | "workflows";
 
-const DISCOVERY_DESKTOP_PANEL_TABS: {
-  id: DiscoveryDesktopPanelTab;
-  label: string;
-  mock?: boolean;
-}[] = [
-  { id: "viewer", label: "Viewer" },
-  { id: "details", label: "Details" },
-  { id: "parameters", label: "Parameters" },
-  { id: "assets", label: "Assets", mock: true },
-  { id: "workflows", label: "Workflows" },
-];
-
-function discoveryDesktopPanelLabelId(tab: DiscoveryDesktopPanelTab): string {
+function discoveryMetaPanelLabelId(tab: DiscoveryMetaDrawerTab): string {
   switch (tab) {
-    case "viewer":
-      return "discovery-meta-tab-viewer";
     case "details":
       return "discovery-meta-tab-details";
     case "parameters":
       return "discovery-meta-tab-parameters";
     case "assets":
       return "discovery-meta-tab-assets";
+    case "exemplars":
+      return "discovery-meta-tab-exemplars";
     case "workflows":
       return "discovery-meta-tab-workflows";
     default:
-      return "discovery-meta-tab-viewer";
+      return "discovery-meta-tab-details";
   }
 }
 
-type DiscoveryRefreshMenuProps = {
-  loading: boolean;
-  reloading: boolean;
-  rebuildRunning: boolean;
-  rebuildProgressPct?: number | null;
-  rebuildHeartbeatAgeMs?: number | null;
-  rebuildLastError?: string | null;
-  pollMin: (typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number];
-  onReload: () => void;
-  onUpdate: () => void;
-  onPollMinChange: (next: (typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number]) => void;
-  className?: string;
-  triggerMode?: "click" | "hover";
-};
-
-function DiscoveryRefreshMenu({
-  loading,
-  reloading,
-  rebuildRunning,
-  rebuildProgressPct,
-  rebuildHeartbeatAgeMs,
-  rebuildLastError,
-  pollMin,
-  onReload,
-  onUpdate,
-  onPollMinChange,
-  className,
-  triggerMode = "click",
-}: DiscoveryRefreshMenuProps) {
-  const [open, setOpen] = useState(false);
-  const isHover = triggerMode === "hover";
-  const refreshTimeLabel = pollMin > 0 ? `${pollMin}m` : null;
-  const showRefreshingIcon = reloading || rebuildRunning;
-  const maybeStuck = rebuildRunning && typeof rebuildHeartbeatAgeMs === "number" && rebuildHeartbeatAgeMs > 30_000;
+/** Compact video/thumbnail for meta tabs (no trim). Hidden via CSS container query when the drawer is narrow. */
+function DiscoveryMetaPanelInlineViewer({
+  it,
+  videoAutoplay,
+}: {
+  it: DiscoveryLibraryItem;
+  videoAutoplay: boolean;
+}) {
+  const playUrl = discoveryPlayUrl(it);
+  const k = discoveryItemKey(it);
+  const thumb = discoveryThumbUrl(it);
 
   return (
-    <div
-      className={className}
-      style={{ position: "relative" }}
-      onMouseEnter={isHover ? () => setOpen(true) : undefined}
-      onMouseLeave={
-        isHover
-          ? () => {
-              setOpen(false);
-            }
-          : undefined
-      }
-    >
-      <button
-        type="button"
-        className="discovery-phone-filters-toggle"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={isHover ? undefined : () => setOpen((v) => !v)}
-        style={{ position: "relative", overflow: "hidden" }}
-      >
-        <span>{rebuildRunning ? "Rebuilding…" : reloading ? "Refreshing…" : "Refresh"}</span>
-        {showRefreshingIcon ? (
-          <span
-            aria-hidden="true"
-            style={{
-              color: "var(--muted)",
-              fontSize: "0.86em",
-              fontWeight: 400,
-              marginLeft: 6,
-              display: "inline-flex",
-              alignItems: "center",
-            }}
-            title={maybeStuck ? "Rebuild may be stalled (no progress heartbeat recently)" : "Rebuilding"}
-          >
-            <svg
-              viewBox="0 0 16 16"
-              width="12"
-              height="12"
-              focusable="false"
-              aria-hidden="true"
-              className="discovery-refresh-rotating-icon"
-            >
-              <path
-                d="M13.2 5.8A5.2 5.2 0 0 0 4.3 4.1"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-              <path
-                d="M4.3 4.1H6.9M4.3 4.1V6.7"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-              <path
-                d="M2.8 10.2A5.2 5.2 0 0 0 11.7 11.9"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-              <path
-                d="M11.7 11.9H9.1M11.7 11.9V9.3"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </span>
-        ) : refreshTimeLabel ? (
-          <span
-            aria-hidden="true"
-            style={{ color: "var(--muted)", fontSize: "0.86em", fontWeight: 400, marginLeft: 6 }}
-          >
-            ({refreshTimeLabel})
-          </span>
-        ) : null}
-        {rebuildRunning && typeof rebuildProgressPct === "number" ? (
-          <span
-            aria-hidden="true"
-            style={{
-              position: "absolute",
-              left: 0,
-              right: 0,
-              bottom: 0,
-              height: 2,
-              background: "rgba(46, 204, 113, 0.22)",
-            }}
-          >
-            <span
-              style={{
-                display: "block",
-                height: "100%",
-                width: `${Math.max(0, Math.min(100, rebuildProgressPct))}%`,
-                background: "rgb(46, 204, 113)",
-                transition: "width 220ms ease-out",
-              }}
-            />
-          </span>
-        ) : null}
-      </button>
-      {open ? (
-        <div
-          role="menu"
-          style={{
-            position: "absolute",
-            right: 0,
-            top: "calc(100% + 6px)",
-            zIndex: 20,
-            minWidth: 220,
-            padding: 10,
-            border: "1px solid var(--border)",
-            borderRadius: 8,
-            background: "var(--bg)",
-            boxShadow: "0 8px 24px rgba(0,0,0,0.25)",
-            display: "grid",
-            gap: 8,
-          }}
-        >
-          <button
-            type="button"
-            title="Re-query the saved index from the server cache (no disk rescan)"
-            onClick={() => {
-              onReload();
-              if (!isHover) setOpen(false);
-            }}
-            disabled={loading || reloading || rebuildRunning}
-          >
-            {reloading ? "Refreshing…" : "Refresh"}
-          </button>
-          <button
-            type="button"
-            title="Rescan output folders and rebuild the list index (can take a while)"
-            onClick={() => {
-              onUpdate();
-              if (!isHover) setOpen(false);
-            }}
-            disabled={loading || rebuildRunning}
-          >
-            {rebuildRunning
-              ? `Rebuilding${typeof rebuildProgressPct === "number" ? `… ${rebuildProgressPct}%` : "…"}`
-              : "Rebuild"}
-          </button>
-          {rebuildLastError ? (
-            <div style={{ color: "var(--bad)", fontSize: 12 }} role="status">
-              Last rebuild error: {rebuildLastError}
-            </div>
-          ) : null}
-          <label style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 120 }}>
-            <span style={{ fontSize: 12, color: "var(--muted)" }}>Auto-refresh</span>
-            <select
-              value={pollMin}
-              onChange={(e) => {
-                const v = Number(e.target.value) as (typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number];
-                const next = DISCOVERY_LIBRARY_POLL_CHOICES.includes(v) ? v : 0;
-                onPollMinChange(next);
-              }}
-            >
-              <option value={0}>Off</option>
-              <option value={1}>1 min</option>
-              <option value={5}>5 min</option>
-              <option value={10}>10 min</option>
-              <option value={15}>15 min</option>
-              <option value={30}>30 min</option>
-              <option value={60}>60 min</option>
-            </select>
-          </label>
-        </div>
-      ) : null}
+    <div className="discovery-meta-inline-viewer" aria-label="Selected asset preview">
+      <div className="discovery-meta-inline-viewer__frame">
+        {playUrl ? (
+          <video
+            key={k}
+            src={playUrl}
+            controls
+            playsInline
+            loop={videoAutoplay}
+            autoPlay={videoAutoplay}
+            muted={videoAutoplay}
+          />
+        ) : thumb ? (
+          <img key={k} src={thumb} alt="" decoding="async" />
+        ) : (
+          <div className="discovery-meta-inline-viewer__empty">No preview for this type</div>
+        )}
+      </div>
     </div>
   );
 }
@@ -491,37 +249,6 @@ function loadSaved(): Set<string> {
   } catch {
     return new Set();
   }
-}
-
-function loadKeySet(key: string): Set<string> {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return new Set();
-    const a = JSON.parse(raw) as unknown;
-    if (!Array.isArray(a)) return new Set();
-    return new Set(a.filter((x): x is string => typeof x === "string"));
-  } catch {
-    return new Set();
-  }
-}
-
-function persistKeySet(key: string, s: Set<string>) {
-  localStorage.setItem(key, JSON.stringify(Array.from(s)));
-}
-
-function scheduleIdle(fn: () => void): () => void {
-  const w = window as Window & {
-    requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
-    cancelIdleCallback?: (id: number) => void;
-  };
-  if (typeof w.requestIdleCallback === "function") {
-    const id = w.requestIdleCallback(fn, { timeout: 800 });
-    return () => {
-      if (typeof w.cancelIdleCallback === "function") w.cancelIdleCallback(id);
-    };
-  }
-  const t = window.setTimeout(fn, 0);
-  return () => window.clearTimeout(t);
 }
 
 function persistSaved(s: Set<string>) {
@@ -987,12 +714,6 @@ function fileUrlFromRel(relpath: string): string {
   return "/files/" + encodeURIComponent(relpath.replace(/\\/g, "/"));
 }
 
-function basenameRelPosix(rel: string): string {
-  const s = rel.replace(/\\/g, "/").trim();
-  const i = s.lastIndexOf("/");
-  return i >= 0 ? s.slice(i + 1) : s;
-}
-
 /**
  * Workspace-relative path for “open this asset in Comfy like a workflow” — prefer PNG thumb/metadata when present.
  */
@@ -1040,128 +761,6 @@ function discoveryItemKey(it: DiscoveryLibraryItem): string {
   return it.group_id || it.relpath;
 }
 
-function inferExemplarInputProfileFromItem(it: DiscoveryLibraryItem): DiscoveryExemplarInputProfile | undefined {
-  const raw = it.class_types_preview ?? [];
-  if (!raw.length) return undefined;
-  let uses_image_start = false;
-  let uses_video_start = false;
-  for (const cls of raw) {
-    const c = String(cls).toLowerCase();
-    if (c.includes("loadimage") || c.includes("load_image") || c.includes("imageload")) uses_image_start = true;
-    if (
-      c.includes("vhs_loadvideo") ||
-      c.includes("loadvideo") ||
-      c.includes("load_video") ||
-      c.includes("loadvideoffmpeg") ||
-      c.includes("videoloader") ||
-      c.includes("loadvideopackage")
-    ) {
-      uses_video_start = true;
-    }
-  }
-  if (!uses_image_start && !uses_video_start) return undefined;
-  return { uses_image_start, uses_video_start };
-}
-
-function discoveryAssetMediaAvailability(it: DiscoveryLibraryItem): { hasImage: boolean; hasVideo: boolean } {
-  const hasVideo =
-    Boolean(discoveryPlayUrl(it)) ||
-    isVideo(it.relpath) ||
-    Boolean(it.video_relpath && isVideo(it.video_relpath)) ||
-    Boolean(it.members?.some((m) => isVideo(m.relpath)));
-  const hasImage =
-    Boolean(discoveryThumbUrl(it)) ||
-    isRasterImage(it.name) ||
-    isRasterImage(it.relpath) ||
-    Boolean(it.thumb_relpath && isRasterImage(it.thumb_relpath)) ||
-    Boolean(it.members?.some((m) => isRasterImage(m.name)));
-  return { hasImage, hasVideo };
-}
-
-function exemplarInputProfileForKey(
-  key: string,
-  exemplarSets: DiscoveryExemplarSets,
-  itemByKey: Map<string, DiscoveryLibraryItem>,
-): DiscoveryExemplarInputProfile | undefined {
-  const ent = exemplarSets.library.find((e) => e.key === key);
-  const fromLib = ent?.input_profile;
-  if (fromLib && (fromLib.uses_image_start || fromLib.uses_video_start)) return fromLib;
-  const row = itemByKey.get(key);
-  if (row) return inferExemplarInputProfileFromItem(row);
-  return undefined;
-}
-
-function exemplarCompatibleWithContext(
-  profile: DiscoveryExemplarInputProfile | undefined,
-  avail: { hasImage: boolean; hasVideo: boolean },
-): boolean {
-  if (!profile || (!profile.uses_image_start && !profile.uses_video_start)) return true;
-  return (!profile.uses_image_start || avail.hasImage) && (!profile.uses_video_start || avail.hasVideo);
-}
-
-function discoveryAppendExemplarLibraryKey(
-  doc: DiscoveryExemplarSets,
-  key: string,
-  sourceItem?: DiscoveryLibraryItem | null,
-): DiscoveryExemplarSets {
-  if (doc.library.some((e) => e.key === key)) return doc;
-  const entry: DiscoveryExemplarLibraryEntry = { key, added_at: new Date().toISOString() };
-  const prof = sourceItem ? inferExemplarInputProfileFromItem(sourceItem) : undefined;
-  if (prof) entry.input_profile = prof;
-  const nm = sourceItem?.name?.trim();
-  if (nm) entry.source_name = nm;
-  return { ...doc, library: [...doc.library, entry] };
-}
-
-/** Persisted menu label: custom display_name, else live row name, else key. */
-function exemplarCatalogDisplayLabel(
-  ent: DiscoveryExemplarLibraryEntry | undefined,
-  row: DiscoveryLibraryItem | undefined,
-): string {
-  const custom = ent?.display_name?.trim();
-  if (custom) return custom;
-  const live = row?.name?.trim();
-  if (live) return live;
-  return (ent?.key ?? "").trim() || "—";
-}
-
-/** Original exemplar name for UI / JSON: frozen source_name, else live row name, else key. */
-function exemplarCatalogSourceLabel(
-  ent: DiscoveryExemplarLibraryEntry | undefined,
-  row: DiscoveryLibraryItem | undefined,
-): string {
-  const src = ent?.source_name?.trim();
-  if (src) return src;
-  const live = row?.name?.trim();
-  if (live) return live;
-  return (ent?.key ?? "").trim() || "—";
-}
-
-function discoverySetExemplarDisplayName(doc: DiscoveryExemplarSets, key: string, displayName: string): DiscoveryExemplarSets {
-  const trimmed = displayName.trim();
-  return {
-    ...doc,
-    library: doc.library.map((e) => {
-      if (e.key !== key) return e;
-      if (!trimmed) {
-        const next: DiscoveryExemplarLibraryEntry = { ...e };
-        delete next.display_name;
-        return next;
-      }
-      return { ...e, display_name: trimmed };
-    }),
-  };
-}
-
-/** Remove key from exemplar library and working set (same semantics as per-row Delete in Workflows). */
-function discoveryRemoveExemplarLibraryKey(doc: DiscoveryExemplarSets, key: string): DiscoveryExemplarSets {
-  return {
-    ...doc,
-    library: doc.library.filter((e) => e.key !== key),
-    working_set: doc.working_set.filter((e) => e.key !== key),
-  };
-}
-
 function discoveryPlayUrl(it: DiscoveryLibraryItem): string | null {
   if (it.video_url) return it.video_url;
   if (isVideo(it.relpath)) return it.url;
@@ -1174,268 +773,18 @@ function discoveryThumbUrl(it: DiscoveryLibraryItem): string | null {
   return null;
 }
 
-/** Preview URL for a grouped member file when it is a raster image; videos use a placeholder tile. */
-function discoveryMemberThumbSrc(m: DiscoveryMember): string | null {
-  if (isRasterImage(m.name)) return fileUrlFromRel(m.relpath);
-  return null;
-}
-
-/** Whether this member path is the merged item’s primary video / thumb / canonical relpath. */
-function discoveryMemberIsPrimaryOutput(it: DiscoveryLibraryItem, m: DiscoveryMember): boolean {
-  const norm = m.relpath.replace(/\\/g, "/");
-  if (norm === it.relpath.replace(/\\/g, "/")) return true;
-  if (it.video_relpath && norm === it.video_relpath.replace(/\\/g, "/")) return true;
-  if (it.thumb_relpath && norm === it.thumb_relpath.replace(/\\/g, "/")) return true;
-  return false;
-}
-
-function discoveryThumbSrcForRelPath(relpath: string | null | undefined): string | null {
-  if (!relpath || !relpath.trim()) return null;
-  const base = basenameRelPosix(relpath);
-  if (isRasterImage(base)) return fileUrlFromRel(relpath.trim());
-  return null;
-}
-
-function libraryBadgeForProvenanceStep(it: DiscoveryLibraryItem, stepLib: string | null | undefined): string {
-  if (stepLib === "og" || stepLib === "wip") return stepLib;
-  return it.library;
-}
-
-function stepOutputRelPathForLink(
-  it: DiscoveryLibraryItem,
-  link: DiscoveryProvenanceChainLink,
-  idx: number,
-  links: DiscoveryProvenanceChainLink[]
-): string | null {
-  if (link.step_output_relpath && link.step_output_relpath.trim()) return link.step_output_relpath.trim();
-  if (idx === 0) return it.relpath;
-  const prev = links[idx - 1];
-  return prev?.parent_resolved_relpath?.trim() || null;
-}
-
-function DiscoveryProvenanceBranchNested({
-  branch,
-  nestDepth,
-}: {
-  branch: DiscoveryProvenanceBranchPayload;
-  nestDepth: number;
-}) {
-  if (nestDepth > 4) {
-    return (
-      <p className="discovery-mock-footnote" style={{ marginTop: 6 }}>
-        Nested provenance depth limit reached.
-      </p>
-    );
-  }
-  const libFrom = branch.from_discovery_primary;
-  return (
-    <div
-      style={{
-        marginTop: 10,
-        marginLeft: 8,
-        paddingLeft: 10,
-        borderLeft: "2px solid color-mix(in srgb, var(--muted) 35%, transparent)",
-      }}
-    >
-      <p className="discovery-mock-hint" style={{ margin: "0 0 8px", fontSize: 12 }}>
-        Further provenance for this source
-        {libFrom ? (
-          <>
-            {" "}
-            (indexed row <span className="mono">{basenameRelPosix(libFrom)}</span>)
-          </>
-        ) : null}
-        {branch.nested_truncated ? <span> — list truncated in index</span> : null}
-      </p>
-      <div className="discovery-assets-prov-list" role="list" aria-label="Nested provenance branch">
-        {branch.links.map((lnk, j) => {
-          const out =
-            lnk.step_output_relpath?.trim() ||
-            (j === 0 ? libFrom : branch.links[j - 1]?.parent_resolved_relpath?.trim()) ||
-            null;
-          const lib = lnk.step_output_library === "og" || lnk.step_output_library === "wip" ? lnk.step_output_library : "og";
-          const thumb = discoveryThumbSrcForRelPath(out);
-          const vidPh = Boolean(out && isVideo(out) && !thumb);
-          return (
-            <div key={`nested-${nestDepth}-${j}-${lnk.depth}`} role="listitem">
-              <DiscoveryProvenanceThumbRow
-                name={out ? basenameRelPosix(out) : `Step ${lnk.depth + 1}`}
-                library={lib}
-                metaLine={
-                  <span className="mono" style={{ fontSize: 11 }}>
-                    {lnk.workflow_fingerprint?.slice(0, 12)}… · {lnk.embed_source ?? "—"}
-                  </span>
-                }
-                thumbSrc={thumb}
-                showVideoPlaceholder={vidPh}
-                onActivate={() => {
-                  if (out) window.open(fileUrlFromRel(out), "_blank", "noopener,noreferrer");
-                }}
-              />
-              {lnk.branch_provenance ? (
-                <DiscoveryProvenanceBranchNested branch={lnk.branch_provenance} nestDepth={nestDepth + 1} />
-              ) : null}
-            </div>
-          );
-        })}
-      </div>
-      {branch.terminal_source?.relpath ? (
-        <div style={{ marginTop: 8 }} role="listitem">
-          <DiscoveryProvenanceThumbRow
-            name={basenameRelPosix(branch.terminal_source.relpath)}
-            library={
-              branch.terminal_source.library === "og" || branch.terminal_source.library === "wip"
-                ? branch.terminal_source.library
-                : "og"
-            }
-            metaLine={
-              <span className="mono" style={{ fontSize: 11 }}>
-                Original · {branch.terminal_source.chain_halted_reason ?? "—"}
-              </span>
-            }
-            thumbSrc={discoveryThumbSrcForRelPath(branch.terminal_source.relpath)}
-            showVideoPlaceholder={isVideo(branch.terminal_source.relpath) && !discoveryThumbSrcForRelPath(branch.terminal_source.relpath)}
-            onActivate={() => window.open(fileUrlFromRel(branch.terminal_source!.relpath), "_blank", "noopener,noreferrer")}
-          />
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function DiscoveryProvenanceGenerationChainView({
-  chain,
-  it,
-}: {
-  chain: Extract<DiscoveryProvenanceChainResponse, { ok: true }>;
-  it: DiscoveryLibraryItem;
-}) {
-  const { links, terminal_source: terminal, caveat } = chain;
-
-  if (links.length === 0) {
-    return (
-      <>
-        <p className="discovery-mock-hint" style={{ marginBottom: 10 }}>
-          {caveat}
-        </p>
-        <p className="discovery-mock-hint">No embedded PNG prompt found for this selection.</p>
-        <div className="discovery-assets-prov-list" role="list" aria-label="Selected asset only">
-          <div role="listitem">
-            <DiscoveryProvenanceThumbRow
-              name={it.name}
-              library={it.library}
-              metaLine={<span className="mono">No generation metadata in index</span>}
-              thumbSrc={discoveryThumbUrl(it)}
-              showVideoPlaceholder={!discoveryThumbUrl(it) && Boolean(discoveryPlayUrl(it))}
-              isOutput
-              onActivate={() => window.open(it.url, "_blank", "noopener,noreferrer")}
-            />
-          </div>
-        </div>
-      </>
-    );
-  }
-
-  return (
-    <>
-      <p className="discovery-mock-hint" style={{ marginBottom: 10 }}>
-        {caveat}
-      </p>
-      <div className="discovery-assets-prov-list" role="list" aria-label="Generation chain (newest first)">
-        {links.map((link, idx) => {
-          const outRel = stepOutputRelPathForLink(it, link, idx, links);
-          const name = outRel ? basenameRelPosix(outRel) : `Step ${link.depth + 1}`;
-          const thumb = discoveryThumbSrcForRelPath(outRel);
-          const vidPh = Boolean(outRel && isVideo(outRel) && !thumb);
-          const lib = libraryBadgeForProvenanceStep(it, link.step_output_library ?? null);
-          return (
-            <div key={`prov-main-${idx}-${link.depth}`} role="listitem">
-              <div>
-                <DiscoveryProvenanceThumbRow
-                  name={name}
-                  library={lib}
-                  metaLine={
-                    <span className="mono" style={{ fontSize: 11 }}>
-                      Step {link.depth + 1} · {link.workflow_fingerprint.slice(0, 12)}… · {link.embed_source ?? "—"}
-                    </span>
-                  }
-                  thumbSrc={thumb}
-                  showVideoPlaceholder={vidPh}
-                  isOutput={idx === 0}
-                  onActivate={() => {
-                    if (outRel) window.open(fileUrlFromRel(outRel), "_blank", "noopener,noreferrer");
-                  }}
-                />
-              </div>
-              {link.parent_resolved_relpath ? (
-                <p className="discovery-mock-footnote" style={{ margin: "4px 0 6px 44px", fontSize: 11 }}>
-                  Input →{" "}
-                  <a
-                    href={fileUrlFromRel(link.parent_resolved_relpath)}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mono"
-                    style={{ wordBreak: "break-all" }}
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    {basenameRelPosix(link.parent_resolved_relpath)}
-                  </a>
-                  {link.input_kind ? ` · ${link.input_kind}` : ""}
-                </p>
-              ) : null}
-              {link.branch_provenance ? (
-                <DiscoveryProvenanceBranchNested branch={link.branch_provenance} nestDepth={1} />
-              ) : null}
-            </div>
-          );
-        })}
-      </div>
-      {terminal?.relpath ? (
-        <>
-          <h4 className="discovery-mock-section-title" style={{ marginTop: 14, marginBottom: 6, fontSize: 13 }}>
-            Original source media
-          </h4>
-          <div className="discovery-assets-prov-list" role="list" aria-label="End of provenance chain">
-            <div role="listitem">
-              <DiscoveryProvenanceThumbRow
-                name={basenameRelPosix(terminal.relpath)}
-                library={
-                  terminal.library === "og" || terminal.library === "wip"
-                    ? terminal.library
-                    : libraryBadgeForProvenanceStep(it, null)
-                }
-                metaLine={
-                  <span className="mono" style={{ fontSize: 11 }}>
-                    No further embedded workflow
-                    {terminal.chain_halted_reason ? ` · ${terminal.chain_halted_reason}` : ""}
-                  </span>
-                }
-                thumbSrc={discoveryThumbSrcForRelPath(terminal.relpath)}
-                showVideoPlaceholder={isVideo(terminal.relpath) && !discoveryThumbSrcForRelPath(terminal.relpath)}
-                onActivate={() => window.open(fileUrlFromRel(terminal.relpath), "_blank", "noopener,noreferrer")}
-              />
-            </div>
-          </div>
-        </>
-      ) : null}
-    </>
-  );
-}
-
 function DiscoveryItemMetaBody({
   it,
   k,
-  saved,
-  onToggleSaved,
-  exemplarInLibrary,
-  onExemplarInLibraryChange,
+  exemplarMember,
+  onSendToExemplarLibrary,
+  onGoToExemplarLibrary,
 }: {
   it: DiscoveryLibraryItem;
   k: string;
-  saved: Set<string>;
-  onToggleSaved: (key: string) => void;
-  exemplarInLibrary?: boolean;
-  onExemplarInLibraryChange?: (next: boolean) => void;
+  exemplarMember: boolean;
+  onSendToExemplarLibrary: () => void;
+  onGoToExemplarLibrary: () => void;
 }) {
   const prev = it.class_types_preview ?? [];
   const play = discoveryPlayUrl(it);
@@ -1444,31 +793,18 @@ function DiscoveryItemMetaBody({
     <>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
         <span style={{ fontWeight: 700, fontSize: 15, wordBreak: "break-word", flex: "1 1 200px" }}>{it.name}</span>
-        <button type="button" className="icon-btn" onClick={() => onToggleSaved(k)} style={{ fontSize: 18 }}>
-          {saved.has(k) ? "★ Saved" : "☆ Save"}
+        <button
+          type="button"
+          className="discovery-exemplar-meta-btn"
+          onClick={() => (exemplarMember ? onGoToExemplarLibrary() : onSendToExemplarLibrary())}
+          title={
+            exemplarMember
+              ? "Open the Exemplar library tab (remove items only there)"
+              : "Add to Exemplar library (remove only from Exemplar library tab)"
+          }
+        >
+          {exemplarMember ? "In Exemplar library" : "Send to Exemplar library"}
         </button>
-        {onExemplarInLibraryChange ? (
-          <label
-            className="icon-btn"
-            style={{
-              fontSize: 13,
-              whiteSpace: "nowrap",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              cursor: "pointer",
-              userSelect: "none",
-            }}
-            title="Server exemplar library (Workflows tab). Uncheck to remove."
-          >
-            <input
-              type="checkbox"
-              checked={Boolean(exemplarInLibrary)}
-              onChange={(e) => onExemplarInLibraryChange(e.target.checked)}
-            />
-            <span>Exemplars</span>
-          </label>
-        ) : null}
       </div>
       {it.video_relpath ? (
         <div className="mono" style={{ fontSize: 12, color: "var(--muted)", wordBreak: "break-all", marginBottom: 4 }}>
@@ -1554,9 +890,9 @@ function DiscoveryItemMetaBody({
 
 type ThumbRowProps = {
   it: DiscoveryLibraryItem;
-  saved: boolean;
-  isNew?: boolean;
-  onToggleSaved: () => void;
+  inExemplarLibrary: boolean;
+  onSendToExemplarLibrary: () => void;
+  onGoToExemplarLibrary: () => void;
   onActivate: () => void;
   selected?: boolean;
   /** Stable id for scroll-into-view (phone + desktop lists). */
@@ -1567,9 +903,9 @@ type ThumbRowProps = {
 
 function DiscoveryListThumbRow({
   it,
-  saved,
-  isNew,
-  onToggleSaved,
+  inExemplarLibrary,
+  onSendToExemplarLibrary,
+  onGoToExemplarLibrary,
   onActivate,
   selected,
   listRowId,
@@ -1586,7 +922,6 @@ function DiscoveryListThumbRow({
       tabIndex={isDesktopOption ? -1 : 0}
       aria-selected={selected ? true : undefined}
       onClick={onActivate}
-      style={{ position: "relative" }}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
@@ -1594,27 +929,6 @@ function DiscoveryListThumbRow({
         }
       }}
     >
-      {isNew ? (
-        <span
-          style={{
-            position: "absolute",
-            top: 6,
-            right: 8,
-            fontSize: 9,
-            fontWeight: 600,
-            textTransform: "uppercase",
-            letterSpacing: 0.2,
-            padding: "0 4px",
-            borderRadius: 999,
-            color: "#3f2500",
-            background: "rgba(255, 181, 71, 0.72)",
-            border: "1px solid rgba(255, 181, 71, 0.48)",
-            pointerEvents: "none",
-          }}
-        >
-          new
-        </span>
-      ) : null}
       <div className="discovery-phone-thumb" aria-hidden>
         {thumb ? (
           <img src={thumb} alt="" loading="lazy" decoding="async" />
@@ -1645,122 +959,21 @@ function DiscoveryListThumbRow({
       </div>
       <button
         type="button"
-        className="icon-btn"
-        title={saved ? "Remove from saved" : "Save for later"}
-        aria-label={saved ? "Remove from saved" : "Save for later"}
+        className="discovery-exemplar-row-btn"
+        title={
+          inExemplarLibrary
+            ? "In Exemplar library — open the Exemplar library tab (remove items only there)"
+            : "Send to Exemplar library — add this item (remove only in the Exemplar library tab)"
+        }
+        aria-label={inExemplarLibrary ? "In Exemplar library — go to tab" : "Send to Exemplar library"}
         onClick={(e) => {
           e.stopPropagation();
-          onToggleSaved();
+          if (inExemplarLibrary) onGoToExemplarLibrary();
+          else onSendToExemplarLibrary();
         }}
-        style={{ fontSize: 20, lineHeight: 1, flexShrink: 0 }}
       >
-        {saved ? "★" : "☆"}
+        {inExemplarLibrary ? "In library" : "Send…"}
       </button>
-    </div>
-  );
-}
-
-type DiscoveryProvenanceThumbRowProps = {
-  name: string;
-  library: string;
-  /** Short secondary line (e.g. kind label, size — members have no mtime in the index). */
-  metaLine: React.ReactNode;
-  thumbSrc: string | null;
-  showVideoPlaceholder: boolean;
-  /** Primary file for this library row (merged output). */
-  isOutput?: boolean;
-  showSavedButton?: boolean;
-  saved?: boolean;
-  onToggleSaved?: () => void;
-  onActivate: () => void;
-};
-
-/** Same layout as `DiscoveryListThumbRow`, for co-located bundle files in the Assets tab. */
-function DiscoveryProvenanceThumbRow({
-  name,
-  library,
-  metaLine,
-  thumbSrc,
-  showVideoPlaceholder,
-  isOutput,
-  showSavedButton,
-  saved,
-  onToggleSaved,
-  onActivate,
-}: DiscoveryProvenanceThumbRowProps) {
-  return (
-    <div
-      className={`discovery-phone-row discovery-assets-prov-row${isOutput ? " discovery-assets-prov-row--output" : ""}`}
-      role="button"
-      tabIndex={0}
-      onClick={onActivate}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onActivate();
-        }
-      }}
-    >
-      <div className="discovery-phone-thumb" aria-hidden>
-        {thumbSrc ? (
-          <img src={thumbSrc} alt="" loading="lazy" decoding="async" />
-        ) : showVideoPlaceholder ? (
-          <span className="discovery-phone-thumb-placeholder">▶ Video</span>
-        ) : (
-          <span className="discovery-phone-thumb-placeholder">File</span>
-        )}
-      </div>
-      <div style={{ flex: "1 1 auto", minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }}>
-        <div style={{ fontWeight: 600, fontSize: 14, wordBreak: "break-word", lineHeight: 1.25 }}>{name}</div>
-        <div style={{ fontSize: 12, color: "var(--muted)", display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-          <span
-            style={{
-              fontSize: 10,
-              fontWeight: 600,
-              textTransform: "uppercase",
-              padding: "1px 6px",
-              borderRadius: 4,
-              background: library === "og" ? "rgba(90,162,255,0.2)" : "rgba(70,211,154,0.18)",
-            }}
-          >
-            {library}
-          </span>
-          {metaLine}
-          {isOutput ? (
-            <span
-              style={{
-                fontSize: 10,
-                fontWeight: 700,
-                textTransform: "uppercase",
-                padding: "1px 6px",
-                borderRadius: 4,
-                background: "rgba(120, 140, 255, 0.22)",
-                color: "var(--fg)",
-              }}
-              title="Canonical file for this merged discovery row"
-            >
-              Output
-            </span>
-          ) : null}
-        </div>
-      </div>
-      {showSavedButton && onToggleSaved ? (
-        <button
-          type="button"
-          className="icon-btn"
-          title={saved ? "Remove from saved" : "Save for later"}
-          aria-label={saved ? "Remove from saved" : "Save for later"}
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleSaved();
-          }}
-          style={{ fontSize: 20, lineHeight: 1, flexShrink: 0 }}
-        >
-          {saved ? "★" : "☆"}
-        </button>
-      ) : (
-        <span style={{ width: 36, flexShrink: 0 }} aria-hidden />
-      )}
     </div>
   );
 }
@@ -2702,52 +1915,8 @@ function DiscoveryMockBadge() {
   );
 }
 
-function DiscoveryMockAssetsPanel({
-  it,
-  saved,
-  onToggleSaved,
-}: {
-  it: DiscoveryLibraryItem | null;
-  saved?: Set<string>;
-  onToggleSaved?: (key: string) => void;
-}) {
+function DiscoveryMockAssetsPanel({ it }: { it: DiscoveryLibraryItem | null }) {
   const [advOpen, setAdvOpen] = useState(false);
-  const [chainRes, setChainRes] = useState<DiscoveryProvenanceChainResponse | null>(null);
-  const [chainErr, setChainErr] = useState("");
-  const [chainLoading, setChainLoading] = useState(false);
-
-  useEffect(() => {
-    if (!it) {
-      setChainRes(null);
-      setChainErr("");
-      setChainLoading(false);
-      return;
-    }
-    if (it.provenance?.ok === true) {
-      setChainRes(it.provenance);
-      setChainErr("");
-      setChainLoading(false);
-      return;
-    }
-    let cancelled = false;
-    setChainLoading(true);
-    setChainErr("");
-    setChainRes(null);
-    void fetchDiscoveryProvenanceChain(it)
-      .then((r) => {
-        if (!cancelled) setChainRes(r);
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) setChainErr(String(e));
-      })
-      .finally(() => {
-        if (!cancelled) setChainLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [it]);
-
   if (!it) {
     return (
       <div className="discovery-mock-panel">
@@ -2758,106 +1927,9 @@ function DiscoveryMockAssetsPanel({
       </div>
     );
   }
-  const key = discoveryItemKey(it);
-  const showSaved = Boolean(saved && onToggleSaved);
-  const savedSelected = Boolean(saved?.has(key));
-  const members = it.members;
-
-  const bundleRows =
-    members && members.length > 0 ? (
-      <div className="discovery-assets-prov-list" role="list" aria-label="Co-located outputs in this discovery group">
-        {members.map((m) => {
-          const thumbSrc = discoveryMemberThumbSrc(m);
-          const vidPh = !thumbSrc && isVideo(m.name);
-          const primary = discoveryMemberIsPrimaryOutput(it, m);
-          return (
-            <div key={m.relpath} role="listitem">
-              <DiscoveryProvenanceThumbRow
-                name={m.name}
-                library={it.library}
-                metaLine={
-                  <span className="mono" style={{ fontSize: 11 }}>
-                    {m.kind}
-                  </span>
-                }
-                thumbSrc={thumbSrc}
-                showVideoPlaceholder={vidPh}
-                isOutput={primary}
-                showSavedButton={Boolean(showSaved && primary)}
-                saved={Boolean(showSaved && primary && savedSelected)}
-                onToggleSaved={
-                  showSaved && primary && onToggleSaved ? () => onToggleSaved(key) : undefined
-                }
-                onActivate={() => {
-                  window.open(fileUrlFromRel(m.relpath), "_blank", "noopener,noreferrer");
-                }}
-              />
-            </div>
-          );
-        })}
-      </div>
-    ) : (
-      <div className="discovery-assets-prov-list" role="list" aria-label="Single primary file">
-        <div role="listitem">
-          <DiscoveryProvenanceThumbRow
-            name={it.name}
-            library={it.library}
-            metaLine={
-              <>
-                <span className="mono">{fmtTime(it.mtime)}</span>
-                <span>{fmtSize(it.size)}</span>
-              </>
-            }
-            thumbSrc={discoveryThumbUrl(it)}
-            showVideoPlaceholder={!discoveryThumbUrl(it) && Boolean(discoveryPlayUrl(it))}
-            isOutput
-            showSavedButton={showSaved}
-            saved={showSaved ? savedSelected : false}
-            onToggleSaved={showSaved && onToggleSaved ? () => onToggleSaved(key) : undefined}
-            onActivate={() => {
-              window.open(it.url, "_blank", "noopener,noreferrer");
-            }}
-          />
-        </div>
-      </div>
-    );
-
-  let generationChainBlock: React.ReactNode = null;
-  if (chainLoading) {
-    generationChainBlock = <p className="discovery-mock-hint">Loading generation chain…</p>;
-  } else if (chainErr) {
-    generationChainBlock = (
-      <p style={{ margin: 0, fontSize: 13, color: "var(--bad)" }} role="alert">
-        {chainErr}
-      </p>
-    );
-  } else if (chainRes && chainRes.ok === false) {
-    generationChainBlock = (
-      <p style={{ margin: 0, fontSize: 13, color: "var(--bad)" }} role="alert">
-        {chainRes.detail ?? chainRes.error ?? "Could not load provenance chain."}
-      </p>
-    );
-  } else if (chainRes && chainRes.ok === true) {
-    generationChainBlock = (
-      <>
-        <DiscoveryProvenanceGenerationChainView chain={chainRes} it={it} />
-        {chainRes.stops.length > 0 ? (
-          <p className="discovery-mock-footnote" style={{ marginTop: 10 }}>
-            Chain stopped:{" "}
-            {chainRes.stops.map((s, i) => (
-              <span key={i} className="mono" style={{ fontSize: 11 }}>
-                {typeof s === "object" && s !== null && "reason" in s
-                  ? String((s as { reason?: string }).reason ?? JSON.stringify(s))
-                  : JSON.stringify(s)}
-                {i < chainRes.stops.length - 1 ? "; " : ""}
-              </span>
-            ))}
-          </p>
-        ) : null}
-      </>
-    );
-  }
-
+  const name = it.name;
+  const short =
+    name.length > 36 ? `${name.slice(0, 34)}…` : name;
   return (
     <div className="discovery-mock-panel" aria-label="Assets mock">
       <div className="discovery-mock-banner">
@@ -2887,548 +1959,297 @@ function DiscoveryMockAssetsPanel({
         </div>
       ) : null}
 
-      <h3 className="discovery-mock-section-title">Provenance (generation chain)</h3>
-      <p className="discovery-mock-hint">
-        Each step reads the Comfy API prompt embedded in a PNG next to the output, fingerprints that graph, and follows
-        the first LoadImage / VHS_LoadVideo path that resolves under this workspace. The discovery index (v6+) stores
-        this chain per row when you rebuild the index; otherwise it loads live from the API. When another indexed row is
-        the source file for a step, an indented branch shows that row&apos;s chain. This is not the same as
-        co-located outputs below.
+      <h3 className="discovery-mock-section-title">Provenance sketch</h3>
+      <p className="discovery-mock-hint">Diagram mock — shortcuts would open historical artifacts.</p>
+      <div className="discovery-mock-prov" role="presentation">
+        <div className="discovery-mock-prov__flow">
+          <button type="button" className="discovery-mock-node">
+            Starter still.png
+          </button>
+          <span className="discovery-mock-arrow" aria-hidden="true">
+            →
+          </span>
+          <button type="button" className="discovery-mock-node">
+            Intermediate.mp4
+          </button>
+          <span className="discovery-mock-arrow" aria-hidden="true">
+            →
+          </span>
+          <button type="button" className="discovery-mock-node discovery-mock-node--current">
+            Current: {short}
+          </button>
+        </div>
+        <div className="discovery-mock-prov__branch">
+          <button type="button" className="discovery-mock-node discovery-mock-node--small">
+            Parallel branch preview.png
+          </button>
+        </div>
+      </div>
+      <p className="discovery-mock-footnote">
+        Non-contract: real lineage would come from indexed parent/child edges or embeds.
       </p>
-      {generationChainBlock}
-
-      <h3 className="discovery-mock-section-title" style={{ marginTop: 18 }}>
-        Co-located outputs
-      </h3>
-      <p className="discovery-mock-hint">
-        Files in the same discovery group (usually same filename stem: e.g. PNG + MP4). This is not provenance; it is
-        how the library merges companions.
-      </p>
-      {bundleRows}
     </div>
   );
 }
 
-function DiscoveryWorkflowsPanel({
+function DiscoveryExemplarPinnedList({
+  entries,
+  onRemove,
+}: {
+  entries: DiscoveryLibraryItem[];
+  onRemove: (key: string) => void;
+}) {
+  if (entries.length === 0) {
+    return (
+      <p className="discovery-mock-hint" style={{ marginTop: 0 }}>
+        Nothing pinned yet. Use <strong>Send to Exemplar library</strong> on list rows or in Details. Remove entries only
+        here.
+      </p>
+    );
+  }
+  return (
+    <ul style={{ margin: "0 0 12px", padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: 8 }}>
+      {entries.map((ent) => {
+        const key = discoveryItemKey(ent);
+        return (
+          <li
+            key={key}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              padding: "8px 10px",
+              border: "1px solid var(--border)",
+              borderRadius: 8,
+              background: "rgba(255,255,255,0.04)",
+            }}
+          >
+            <span className="mono" style={{ flex: "1 1 auto", minWidth: 0, fontSize: 12, wordBreak: "break-all" }}>
+              {ent.name}
+            </span>
+            <button
+              type="button"
+              className="discovery-mock-button-ghost"
+              style={{ flexShrink: 0, fontSize: 12 }}
+              onClick={() => onRemove(key)}
+            >
+              Remove
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/** Browse exemplar-linked workflows (mock) — not the same as per-asset workflow on the Workflow tab. */
+function DiscoveryMockExemplarLibraryPanel({
   it,
-  libraryItems,
-  onSelectItem,
-  onOpenParameters,
-  itemByKey,
-  exemplarSets,
-  onExemplarPatch,
-  exemplarReady,
-  exemplarLoadError,
-  exemplarSaveError,
+  exemplarEntries,
+  onRemoveFromExemplarLibrary,
 }: {
   it: DiscoveryLibraryItem | null;
-  libraryItems: DiscoveryLibraryItem[];
-  onSelectItem: (item: DiscoveryLibraryItem) => void;
-  onOpenParameters: () => void;
-  itemByKey: Map<string, DiscoveryLibraryItem>;
-  exemplarSets: DiscoveryExemplarSets;
-  onExemplarPatch: (upd: (prev: DiscoveryExemplarSets) => DiscoveryExemplarSets) => void;
-  exemplarReady: boolean;
-  exemplarLoadError: string;
-  exemplarSaveError: string;
+  exemplarEntries: DiscoveryLibraryItem[];
+  onRemoveFromExemplarLibrary: (key: string) => void;
 }) {
-  const sameFingerprintPeers = useMemo(() => {
-    if (!it?.workflow_fingerprint) return [];
-    const fp = it.workflow_fingerprint;
-    const selfKey = discoveryItemKey(it);
-    return libraryItems
-      .filter((x) => x.workflow_fingerprint === fp && discoveryItemKey(x) !== selfKey)
-      .slice()
-      .sort((a, b) => b.mtime - a.mtime);
-  }, [it, libraryItems]);
-
-  const curKey = it ? discoveryItemKey(it) : null;
-  const inLibrary = curKey ? exemplarSets.library.some((e) => e.key === curKey) : false;
-  const inWorking = curKey ? exemplarSets.working_set.some((e) => e.key === curKey) : false;
-
-  const prov = it?.provenance;
-  const provOk = prov != null && typeof prov === "object" && "ok" in prov && prov.ok === true;
-  const classPreview = (it?.class_types_preview ?? []).slice(0, 16);
-
-  const mediaAvail = useMemo(
-    () => (it ? discoveryAssetMediaAvailability(it) : { hasImage: true, hasVideo: true }),
-    [it],
-  );
-
-  const workingVisibleRealIdx = useMemo(() => {
-    const out: number[] = [];
-    exemplarSets.working_set.forEach((ws, idx) => {
-      const p = exemplarInputProfileForKey(ws.key, exemplarSets, itemByKey);
-      if (exemplarCompatibleWithContext(p, mediaAvail)) out.push(idx);
-    });
-    return out;
-  }, [exemplarSets, itemByKey, mediaAvail]);
-
-  const libraryFiltered = useMemo(() => {
-    return exemplarSets.library.filter((ent) =>
-      exemplarCompatibleWithContext(exemplarInputProfileForKey(ent.key, exemplarSets, itemByKey), mediaAvail),
+  const [advOpen, setAdvOpen] = useState(false);
+  const [activeMockTag, setActiveMockTag] = useState<string | null>("i2v");
+  const mockTags = ["i2v", "extend", "upscale", "color", "wip", "fb9"];
+  const browseContext = it;
+  if (!browseContext && exemplarEntries.length === 0) {
+    return (
+      <div className="discovery-mock-panel">
+        <div className="discovery-mock-banner">
+          <DiscoveryMockBadge />
+          <span>Select a library item or send one to the exemplar library.</span>
+        </div>
+      </div>
     );
-  }, [exemplarSets, itemByKey, mediaAvail]);
+  }
+  return (
+    <div className="discovery-mock-panel" aria-label="Exemplar library mock">
+      <div className="discovery-mock-banner">
+        <DiscoveryMockBadge />
+        <span>Ideas only — not a contract.</span>
+      </div>
 
-  const hiddenWorkingCount = exemplarSets.working_set.length - workingVisibleRealIdx.length;
-  const hiddenLibraryCount = exemplarSets.library.length - libraryFiltered.length;
+      <h3 className="discovery-mock-section-title">Your exemplar library</h3>
+      <DiscoveryExemplarPinnedList entries={exemplarEntries} onRemove={onRemoveFromExemplarLibrary} />
+
+      {!browseContext ? (
+        <p className="discovery-mock-hint">Select a row in the list to see mock browse tools in this tab.</p>
+      ) : null}
+
+      {browseContext ? (
+        <>
+      <p className="discovery-mock-lead">
+        Discover workflows as carried by <strong>exemplar assets</strong> (PNG / MP4); categorize with tags (mock).
+      </p>
+
+      <div className="discovery-mock-search-row">
+        <input
+          type="search"
+          className="discovery-mock-input"
+          placeholder="Search exemplar workflows…"
+          readOnly
+          aria-readonly="true"
+        />
+        <button type="button" className="discovery-mock-button-ghost" onClick={() => setAdvOpen((o) => !o)}>
+          {advOpen ? "Hide advanced" : "Advanced search…"}
+        </button>
+      </div>
+      {advOpen ? (
+        <div className="discovery-mock-adv">
+          <p className="discovery-mock-hint">
+            Mock: fingerprint, node class, embedded vs file path, same-graph cluster…
+          </p>
+        </div>
+      ) : null}
+
+      <h3 className="discovery-mock-section-title">Tag navigation (mock)</h3>
+      <div className="discovery-mock-tag-strip" role="toolbar" aria-label="Mock tag filters">
+        {mockTags.map((tag) => (
+          <button
+            key={tag}
+            type="button"
+            className={
+              "discovery-mock-tag" + (activeMockTag === tag ? " discovery-mock-tag--active" : "")
+            }
+            onClick={() => setActiveMockTag(activeMockTag === tag ? null : tag)}
+          >
+            #{tag}
+          </button>
+        ))}
+      </div>
+
+      <h3 className="discovery-mock-section-title">Exemplar library (mock)</h3>
+      <p className="discovery-mock-hint">Categorized exemplars — tagging and browse are placeholders.</p>
+      <div className="discovery-mock-library">
+        <div className="discovery-mock-library-cat">
+          <div className="discovery-mock-library-cat-title">FB9 · GEX family</div>
+          <button type="button" className="discovery-mock-library-row">
+            <span className="discovery-mock-library-row-title">FEAR_FB9_GEX… (exemplar)</span>
+            <span className="discovery-mock-library-row-tags">
+              <span className="discovery-mock-tag-pill">i2v</span>
+              <span className="discovery-mock-tag-pill">fb9</span>
+            </span>
+          </button>
+          <button type="button" className="discovery-mock-library-row">
+            <span className="discovery-mock-library-row-title">Variant · wide aspect</span>
+            <span className="discovery-mock-library-row-tags">
+              <span className="discovery-mock-tag-pill">wip</span>
+            </span>
+          </button>
+        </div>
+        <div className="discovery-mock-library-cat">
+          <div className="discovery-mock-library-cat-title">Extensions</div>
+          <button type="button" className="discovery-mock-library-row">
+            <span className="discovery-mock-library-row-title">Upscale tail template</span>
+            <span className="discovery-mock-library-row-tags">
+              <span className="discovery-mock-tag-pill">upscale</span>
+              <span className="discovery-mock-tag-pill">extend</span>
+            </span>
+          </button>
+        </div>
+      </div>
+      <p className="discovery-mock-footnote">
+        Non-contract: library rows would resolve to real exemplar paths or index rows. Selection:{" "}
+        <span className="mono">{browseContext.relpath}</span>
+      </p>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+/** Selected asset: workflow identity, graph hints, and related-workflow shortcuts (mock). Queue editing stays on Parameters. */
+function DiscoveryWorkflowTabPanel({ it }: { it: DiscoveryLibraryItem | null }) {
+  const [pathCopied, setPathCopied] = useState(false);
+  const wfPath = it ? discoveryWorkflowFilePathForClipboard(it) : "";
+  const prev = it?.class_types_preview ?? [];
+
+  const onCopyWorkflowPath = useCallback(async () => {
+    if (!it) return;
+    const ok = await copyTextToClipboard(discoveryWorkflowFilePathForClipboard(it));
+    if (ok) {
+      setPathCopied(true);
+      window.setTimeout(() => setPathCopied(false), 2500);
+    }
+  }, [it]);
+
+  if (!it) {
+    return (
+      <div className="discovery-mock-panel">
+        <div className="discovery-mock-banner">
+          <DiscoveryMockBadge />
+          <span>Select a library item to view workflow information.</span>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="discovery-mock-panel" aria-label="Workflows">
+    <div className="discovery-mock-panel" aria-label="Workflow context">
       <div className="discovery-mock-banner">
-        <span className="discovery-mock-badge" style={{ opacity: 0.85 }}>
-          v1
-        </span>
-        <span>Server-synced exemplar sets — keys match Discovery rows (desktop and phone).</span>
+        <DiscoveryMockBadge />
+        <span>Workflow for the selected asset — load and queue on Parameters.</span>
       </div>
-
-      {!exemplarReady ? (
-        <p className="discovery-mock-hint" style={{ marginTop: 0 }}>
-          Loading exemplar sets from server…
-        </p>
-      ) : null}
-      {exemplarLoadError ? (
-        <p style={{ margin: "8px 0", color: "var(--bad)", fontSize: 13 }} role="alert">
-          Could not load exemplar sets: {exemplarLoadError}
-        </p>
-      ) : null}
-      {exemplarSaveError ? (
-        <p style={{ margin: "8px 0", color: "var(--bad)", fontSize: 13 }} role="alert">
-          Save failed: {exemplarSaveError}
-        </p>
-      ) : null}
-
-      <h3 className="discovery-mock-section-title">Working set</h3>
       <p className="discovery-mock-hint" style={{ marginTop: 0 }}>
-        Ordered queue of exemplars for this session. Rows are filtered by the{" "}
-        <strong>current asset’s</strong> available image/video inputs vs each exemplar’s inferred workflow loaders.
-        Reorder with ↑↓ (desktop); tap a resolved row to select it in the list.
+        The <strong>Parameters</strong> tab loads the embedded Comfy prompt (when present), edits node fields, and submits
+        to the queue. This tab summarizes workflow identity and related-entry placeholders.
       </p>
-      {it && (hiddenWorkingCount > 0 || hiddenLibraryCount > 0) ? (
-        <p className="discovery-mock-hint" style={{ marginTop: 0, fontSize: 12 }}>
-          {hiddenWorkingCount > 0 ? (
-            <>
-              {hiddenWorkingCount} working-set entr{hiddenWorkingCount === 1 ? "y" : "ies"} hidden for this asset.
-            </>
-          ) : null}
-          {hiddenWorkingCount > 0 && hiddenLibraryCount > 0 ? " " : null}
-          {hiddenLibraryCount > 0 ? (
-            <>
-              {hiddenLibraryCount} librar{hiddenLibraryCount === 1 ? "y" : "ies"} entr{hiddenLibraryCount === 1 ? "y" : "ies"} hidden.
-            </>
-          ) : null}
-        </p>
-      ) : null}
-      {exemplarSets.working_set.length === 0 ? (
-        <p style={{ margin: 0, color: "var(--muted)", fontSize: 13 }}>Empty — add from the library or “Add current” below.</p>
-      ) : workingVisibleRealIdx.length === 0 ? (
-        <p style={{ margin: 0, color: "var(--muted)", fontSize: 13 }}>
-          No working-set entries match this asset’s media (switch selection or clear filters on the list).
-        </p>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {workingVisibleRealIdx.map((realIdx, visPos) => {
-            const ws = exemplarSets.working_set[realIdx];
-            const row = itemByKey.get(ws.key);
-            const thumb = row ? discoveryThumbUrl(row) : null;
-            return (
-              <div
-                key={`ws-${ws.key}-${realIdx}`}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  flexWrap: "wrap",
-                  padding: "6px 8px",
-                  border: "1px solid var(--border)",
-                  borderRadius: 6,
-                  fontSize: 13,
-                }}
-              >
-                {thumb ? (
-                  <img src={thumb} alt="" width={40} height={40} style={{ objectFit: "cover", borderRadius: 4 }} />
-                ) : (
-                  <div
-                    style={{
-                      width: 40,
-                      height: 40,
-                      background: "var(--border)",
-                      borderRadius: 4,
-                      flexShrink: 0,
-                    }}
-                    title="No thumbnail in index"
-                  />
-                )}
-                <div style={{ flex: "1 1 120px", minWidth: 0 }}>
-                  {(() => {
-                    const libEnt = exemplarSets.library.find((e) => e.key === ws.key);
-                    const menuLabel = exemplarCatalogDisplayLabel(libEnt, row);
-                    const sourceLabel = exemplarCatalogSourceLabel(libEnt, row);
-                    return (
-                      <>
-                        <button
-                          type="button"
-                          className="discovery-mock-library-row-title"
-                          style={{
-                            background: "none",
-                            border: "none",
-                            padding: 0,
-                            cursor: row ? "pointer" : "default",
-                            textAlign: "left",
-                            color: "inherit",
-                            font: "inherit",
-                            width: "100%",
-                          }}
-                          disabled={!row}
-                          onClick={() => row && onSelectItem(row)}
-                        >
-                          {menuLabel}
-                        </button>
-                        {row && libEnt?.display_name?.trim() ? (
-                          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }} className="mono">
-                            Original exemplar: {sourceLabel}
-                          </div>
-                        ) : null}
-                        {!row ? (
-                          <span style={{ fontSize: 11, color: "var(--muted)" }} className="mono">
-                            Not in current index — widen filters or rebuild.
-                          </span>
-                        ) : null}
-                      </>
-                    );
-                  })()}
-                </div>
-                <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
-                  <button
-                    type="button"
-                    className="discovery-mock-button-ghost"
-                    disabled={visPos <= 0}
-                    title="Move up"
-                    onClick={() =>
-                      onExemplarPatch((d) => {
-                        const prevReal = workingVisibleRealIdx[visPos - 1];
-                        const ws2 = d.working_set.slice();
-                        const t = ws2[prevReal];
-                        ws2[prevReal] = ws2[realIdx];
-                        ws2[realIdx] = t;
-                        return { ...d, working_set: ws2 };
-                      })
-                    }
-                  >
-                    ↑
-                  </button>
-                  <button
-                    type="button"
-                    className="discovery-mock-button-ghost"
-                    disabled={visPos >= workingVisibleRealIdx.length - 1}
-                    title="Move down"
-                    onClick={() =>
-                      onExemplarPatch((d) => {
-                        const nextReal = workingVisibleRealIdx[visPos + 1];
-                        const ws2 = d.working_set.slice();
-                        const t = ws2[nextReal];
-                        ws2[nextReal] = ws2[realIdx];
-                        ws2[realIdx] = t;
-                        return { ...d, working_set: ws2 };
-                      })
-                    }
-                  >
-                    ↓
-                  </button>
-                  <button
-                    type="button"
-                    className="discovery-mock-button-ghost"
-                    title="Remove from working set"
-                    onClick={() =>
-                      onExemplarPatch((d) => ({
-                        ...d,
-                        working_set: d.working_set.filter((_, i) => i !== realIdx),
-                      }))
-                    }
-                  >
-                    Remove
-                  </button>
-                </div>
-              </div>
-            );
-          })}
+
+      <h3 className="discovery-mock-section-title">This asset</h3>
+      <div style={{ fontSize: 13, marginBottom: 10 }}>
+        <div style={{ color: "var(--muted)", marginBottom: 4 }}>Workflow file (workspace-relative, POSIX)</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+          <span className="mono discovery-comfy-queue-path-text" style={{ wordBreak: "break-all" }}>
+            {wfPath}
+          </span>
+          <button type="button" className="discovery-mock-button-ghost" onClick={() => void onCopyWorkflowPath()}>
+            {pathCopied ? "Copied" : "Copy path"}
+          </button>
         </div>
-      )}
-
-      <h3 className="discovery-mock-section-title" style={{ marginTop: 18 }}>
-        Exemplar library
-      </h3>
-      <p className="discovery-mock-hint" style={{ marginTop: 0 }}>
-        Curated reference outputs (embedded workflows). Toggle <strong>Exemplar library</strong> for the current selection,
-        then promote rows to the working set. Optional <strong>custom menu label</strong> per row; the saved document keeps{" "}
-        <span className="mono">source_name</span> (original name when added) separate from <span className="mono">display_name</span>.
-      </p>
-      <div className="discovery-mock-chip-row" style={{ marginBottom: 10 }}>
-        <label
-          className="discovery-mock-chip"
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 8,
-            cursor: !it ? "not-allowed" : "pointer",
-            opacity: !it ? 0.55 : 1,
-          }}
-          title={
-            !it
-              ? "Select a list item first"
-              : "Curated exemplar library. Uncheck to remove this asset from the library and working set."
-          }
-        >
-          <input
-            type="checkbox"
-            checked={Boolean(it && inLibrary)}
-            disabled={!it}
-            onChange={(e) => {
-              if (!curKey || !it) return;
-              const next = e.target.checked;
-              onExemplarPatch((d) =>
-                next ? discoveryAppendExemplarLibraryKey(d, curKey, it) : discoveryRemoveExemplarLibraryKey(d, curKey),
-              );
-            }}
-          />
-          <span>Exemplar library</span>
-        </label>
-        <button
-          type="button"
-          className="discovery-mock-chip"
-          disabled={!it || inWorking}
-          title={!it ? "Select a list item first" : inWorking ? "Already in working set" : "Add to working set"}
-          onClick={() => {
-            if (!curKey || inWorking) return;
-            onExemplarPatch((d) => {
-              if (d.working_set.some((e) => e.key === curKey)) return d;
-              return { ...d, working_set: [...d.working_set, { key: curKey }] };
-            });
-          }}
-        >
-          Add current to working set
-        </button>
       </div>
-      {exemplarSets.library.length === 0 ? (
-        <p style={{ margin: 0, color: "var(--muted)", fontSize: 13 }}>Library is empty.</p>
-      ) : libraryFiltered.length === 0 ? (
-        <p style={{ margin: 0, color: "var(--muted)", fontSize: 13 }}>
-          No library entries match this asset’s available media (image vs video). Select a different asset or add new exemplars from a matching output.
-        </p>
-      ) : (
-        <div className="discovery-mock-library">
-          <div className="discovery-mock-library-cat">
-            {libraryFiltered.map((ent) => {
-              const row = itemByKey.get(ent.key);
-              const wsin = exemplarSets.working_set.some((e) => e.key === ent.key);
-              const prof = ent.input_profile ?? (row ? inferExemplarInputProfileFromItem(row) : undefined);
-              const profHint =
-                prof && (prof.uses_image_start || prof.uses_video_start)
-                  ? ` · loaders: ${prof.uses_image_start ? "image" : ""}${prof.uses_image_start && prof.uses_video_start ? "+" : ""}${prof.uses_video_start ? "video" : ""}`
-                  : "";
-              const menuTitle = exemplarCatalogDisplayLabel(ent, row);
-              const sourceTitle = exemplarCatalogSourceLabel(ent, row);
-              return (
-                <div
-                  key={ent.key}
-                  style={{
-                    display: "flex",
-                    alignItems: "flex-start",
-                    gap: 8,
-                    flexWrap: "wrap",
-                    padding: "6px 0",
-                    borderBottom: "1px solid var(--border)",
-                  }}
-                >
-                  <div style={{ flex: "1 1 200px", minWidth: 0, display: "flex", flexDirection: "column", gap: 6 }}>
-                    <button
-                      type="button"
-                      className="discovery-mock-library-row"
-                      style={{ justifyContent: "flex-start", textAlign: "left", width: "100%" }}
-                      onClick={() => row && onSelectItem(row)}
-                      disabled={!row}
-                    >
-                      <span className="discovery-mock-library-row-title">{menuTitle}</span>
-                      <span className="discovery-mock-library-row-tags mono" style={{ fontSize: 11 }}>
-                        {row ? row.library : "—"}
-                        {profHint ? <span style={{ color: "var(--muted)" }}>{profHint}</span> : null}
-                      </span>
-                    </button>
-                    <input
-                      type="text"
-                      className="mono"
-                      style={{
-                        width: "100%",
-                        boxSizing: "border-box",
-                        fontSize: 12,
-                        padding: "4px 8px",
-                        borderRadius: 4,
-                        border: "1px solid var(--border)",
-                        background: "var(--panel)",
-                        color: "var(--text)",
-                      }}
-                      placeholder="Custom menu label (optional)"
-                      value={ent.display_name ?? ""}
-                      onChange={(e) =>
-                        onExemplarPatch((d) => discoverySetExemplarDisplayName(d, ent.key, e.target.value))
-                      }
-                      onClick={(e) => e.stopPropagation()}
-                      aria-label={`Custom menu label; original exemplar: ${sourceTitle}`}
-                    />
-                    <div style={{ fontSize: 11, color: "var(--muted)" }}>
-                      Original exemplar: <span className="mono">{sourceTitle}</span>
-                    </div>
-                  </div>
-                  <div style={{ display: "flex", gap: 4, flexShrink: 0, alignSelf: "flex-start" }}>
-                    <button
-                      type="button"
-                      className="discovery-mock-button-ghost"
-                      disabled={wsin}
-                      title={wsin ? "Already in working set" : "Add to working set"}
-                      onClick={() =>
-                        onExemplarPatch((d) => {
-                          if (d.working_set.some((e) => e.key === ent.key)) return d;
-                          return { ...d, working_set: [...d.working_set, { key: ent.key }] };
-                        })
-                      }
-                    >
-                      → Set
-                    </button>
-                    <button
-                      type="button"
-                      className="discovery-mock-button-ghost"
-                      onClick={() =>
-                        onExemplarPatch((d) => ({
-                          ...d,
-                          library: d.library.filter((e) => e.key !== ent.key),
-                          working_set: d.working_set.filter((e) => e.key !== ent.key),
-                        }))
-                      }
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      <h3 className="discovery-mock-section-title" style={{ marginTop: 22 }}>
-        Graph identity
-      </h3>
-      {!it ? (
-        <p style={{ margin: 0, color: "var(--muted)", fontSize: 14 }}>Select a library item for fingerprint and class preview.</p>
-      ) : (
-      <>
-      <div style={{ display: "grid", gap: 8, fontSize: 13 }}>
-        <div>
+      {it.workflow_fingerprint ? (
+        <div style={{ fontSize: 13, marginBottom: 10 }}>
           <span style={{ color: "var(--muted)" }}>Workflow fingerprint </span>
-          {it.workflow_fingerprint ? (
-            <span className="mono" title={it.workflow_fingerprint}>
-              {it.workflow_fingerprint}
-            </span>
+          <span className="mono">{it.workflow_fingerprint}</span>
+          {it.has_embedded_prompt ? (
+            <span style={{ color: "var(--good)", marginLeft: 8 }}>prompt embedded</span>
           ) : (
-            <span style={{ color: "var(--muted)" }}>— not indexed for this row</span>
+            <span style={{ color: "var(--muted)", marginLeft: 8 }}>no embedded prompt in metadata</span>
           )}
         </div>
-        <div>
-          <span style={{ color: "var(--muted)" }}>Embedded prompt in metadata </span>
-          <span>{it.has_embedded_prompt ? "yes" : "no"}</span>
-        </div>
-        {classPreview.length ? (
-          <div>
-            <span style={{ color: "var(--muted)", display: "block", marginBottom: 4 }}>Node classes (preview)</span>
-            <span style={{ lineHeight: 1.45 }}>{classPreview.join(" · ")}</span>
-          </div>
-        ) : (
-          <p style={{ margin: 0, color: "var(--muted)" }}>No class preview on index row.</p>
-        )}
-      </div>
-
-      <h3 className="discovery-mock-section-title" style={{ marginTop: 18 }}>
-        Provenance chain
-      </h3>
-      {provOk ? (
-        <div style={{ display: "grid", gap: 8, fontSize: 13 }}>
-          <div>
-            <span style={{ color: "var(--muted)" }}>Steps in chain </span>
-            <span>{prov.links?.length ?? 0}</span>
-          </div>
-          {prov.terminal_source?.relpath ? (
-            <div>
-              <span style={{ color: "var(--muted)" }}>Terminal source </span>
-              <span className="mono" style={{ fontSize: 12 }}>
-                {prov.terminal_source.relpath}
-              </span>
-            </div>
-          ) : null}
-          {prov.terminal_source?.chain_halted_reason ? (
-            <div style={{ color: "var(--muted)", fontSize: 12 }}>{prov.terminal_source.chain_halted_reason}</div>
-          ) : null}
-          {prov.caveat ? (
-            <p className="discovery-mock-hint" style={{ margin: 0 }}>
-              {prov.caveat}
-            </p>
-          ) : null}
-        </div>
       ) : (
-        <p className="discovery-mock-hint" style={{ margin: 0 }}>
-          {prov != null && typeof prov === "object" && "ok" in prov && prov.ok === false
-            ? prov.detail || prov.error || "Provenance unavailable for this row."
-            : "No provenance on this index row — try rebuilding the discovery index, or use Details / Assets."}
-        </p>
+        <p className="discovery-mock-hint">No workflow fingerprint for this file (common for video-only rows).</p>
       )}
-
-      <h3 className="discovery-mock-section-title" style={{ marginTop: 18 }}>
-        Same fingerprint in this list
-      </h3>
-      <p className="discovery-mock-hint" style={{ marginTop: 0 }}>
-        Other rows sharing this fingerprint (current filter). Useful for finding exemplar siblings.
-      </p>
-      {!it.workflow_fingerprint ? (
-        <p style={{ margin: 0, color: "var(--muted)", fontSize: 13 }}>No fingerprint — cannot match peers.</p>
-      ) : sameFingerprintPeers.length === 0 ? (
-        <p style={{ margin: 0, color: "var(--muted)", fontSize: 13 }}>No other items with this fingerprint in the list.</p>
-      ) : (
-        <div className="discovery-mock-library">
-          <div className="discovery-mock-library-cat">
-            {sameFingerprintPeers.slice(0, 40).map((peer) => (
-              <button
-                key={discoveryItemKey(peer)}
-                type="button"
-                className="discovery-mock-library-row"
-                onClick={() => onSelectItem(peer)}
-              >
-                <span className="discovery-mock-library-row-title">{peer.name}</span>
-                <span className="discovery-mock-library-row-tags mono" style={{ fontSize: 11 }}>
-                  {peer.library}
-                </span>
-              </button>
-            ))}
-            {sameFingerprintPeers.length > 40 ? (
-              <p className="discovery-mock-hint" style={{ margin: "8px 0 0" }}>
-                … and {sameFingerprintPeers.length - 40} more (narrow filters to browse)
-              </p>
-            ) : null}
+      {prev.length ? (
+        <div style={{ fontSize: 13, marginBottom: 12 }}>
+          <div style={{ color: "var(--muted)", marginBottom: 4 }}>Node types (preview)</div>
+          <div className="mono" style={{ lineHeight: 1.45 }}>
+            {prev.join(" → ")}
           </div>
         </div>
-      )}
+      ) : null}
 
-      <h3 className="discovery-mock-section-title" style={{ marginTop: 18 }}>
-        Actions
-      </h3>
+      <h3 className="discovery-mock-section-title">Related workflows (mock)</h3>
+      <p className="discovery-mock-hint">Shortcuts to graphs tied to this asset or its lineage — placeholders only.</p>
       <div className="discovery-mock-chip-row">
-        <button type="button" className="discovery-mock-chip" onClick={onOpenParameters}>
-          Open Parameters (embed / queue)
+        <button type="button" className="discovery-mock-chip">
+          Last queued from this PNG
+        </button>
+        <button type="button" className="discovery-mock-chip">
+          Embed from paired asset
+        </button>
+        <button type="button" className="discovery-mock-chip">
+          Previous run fingerprint
         </button>
       </div>
-      <p className="discovery-mock-footnote" style={{ marginBottom: 0 }}>
-        Selection: <span className="mono">{it.relpath}</span>
+      <p className="discovery-mock-footnote">
+        Non-contract: real lineage would come from indexed parent/child edges or embeds keyed to{" "}
+        <span className="mono">{it.relpath}</span>.
       </p>
-      </>
-      )}
     </div>
   );
 }
@@ -3436,41 +2257,27 @@ function DiscoveryWorkflowsPanel({
 function DiscoveryDesktopPreview({
   it,
   saved,
-  onToggleSaved,
-  onVisitImage,
-  onVisitVideoPlay,
+  onSendToExemplarLibrary,
+  onRemoveFromExemplarLibrary,
+  onGoToExemplarLibrary,
+  exemplarLibraryItems,
+  exemplarNavRef,
   videoAutoplay,
-  onVideoAutoplayChange,
   previewVideoRef,
   trimSeekBoundsRef,
   trimKeyboardRef,
-  libraryItems,
-  onSelectLibraryItem,
-  itemByKey,
-  exemplarSets,
-  onExemplarPatch,
-  exemplarReady,
-  exemplarLoadError,
-  exemplarSaveError,
 }: {
   it: DiscoveryLibraryItem | null;
   saved: Set<string>;
-  onToggleSaved: (key: string) => void;
-  onVisitImage: (it: DiscoveryLibraryItem) => void;
-  onVisitVideoPlay: (it: DiscoveryLibraryItem) => void;
+  onSendToExemplarLibrary: (key: string) => void;
+  onRemoveFromExemplarLibrary: (key: string) => void;
+  onGoToExemplarLibrary: () => void;
+  exemplarLibraryItems: DiscoveryLibraryItem[];
+  exemplarNavRef: React.MutableRefObject<() => void>;
   videoAutoplay: boolean;
-  onVideoAutoplayChange: (on: boolean) => void;
   previewVideoRef: React.MutableRefObject<HTMLVideoElement | null>;
   trimSeekBoundsRef: DiscoveryDesktopTrimSeekRef;
   trimKeyboardRef: React.MutableRefObject<DiscoveryTrimKeyboardApi | null>;
-  libraryItems: DiscoveryLibraryItem[];
-  onSelectLibraryItem: (item: DiscoveryLibraryItem) => void;
-  itemByKey: Map<string, DiscoveryLibraryItem>;
-  exemplarSets: DiscoveryExemplarSets;
-  onExemplarPatch: (upd: (prev: DiscoveryExemplarSets) => DiscoveryExemplarSets) => void;
-  exemplarReady: boolean;
-  exemplarLoadError: string;
-  exemplarSaveError: string;
 }) {
   const playUrl = it ? discoveryPlayUrl(it) : null;
   const k = it ? discoveryItemKey(it) : "";
@@ -3488,17 +2295,44 @@ function DiscoveryDesktopPreview({
   /** Ignore `timeupdate` past-out until the rewind seek finishes (`seeked` clears this). */
   const trimLoopRewindPendingRef = useRef(false);
 
-  const previewRootRef = useRef<HTMLDivElement | null>(null);
-  const [panelTab, setPanelTab] = useState<DiscoveryDesktopPanelTab>("viewer");
+  const [detailsOpen, setDetailsOpen] = useState(DESKTOP_DETAILS_DRAWER_DEFAULT_OPEN);
+  const [metaDrawerTab, setMetaDrawerTab] = useState<DiscoveryMetaDrawerTab>("details");
+
+  useLayoutEffect(() => {
+    exemplarNavRef.current = () => {
+      setMetaDrawerTab("exemplars");
+      setDetailsOpen(true);
+    };
+    return () => {
+      exemplarNavRef.current = () => {};
+    };
+  }, [exemplarNavRef]);
+
+  useEffect(() => {
+    if (!detailsOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setDetailsOpen(false);
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [detailsOpen]);
+
+  useEffect(() => {
+    const v = previewVideoRef.current;
+    if (!v || !playUrl) return;
+    if (detailsOpen) {
+      v.pause();
+      return;
+    }
+    if (videoAutoplay) void v.play().catch(() => {});
+  }, [detailsOpen, playUrl, videoAutoplay, k]);
 
   useEffect(() => {
     if (!playUrl) previewVideoRef.current = null;
   }, [playUrl, previewVideoRef]);
-
-  useEffect(() => {
-    if (!it) return;
-    if (!playUrl) onVisitImage(it);
-  }, [it, playUrl, onVisitImage]);
 
   useEffect(() => {
     trimSeekBoundsRef.current = { markIn, markOut, duration: previewDuration };
@@ -3783,243 +2617,299 @@ function DiscoveryDesktopPreview({
     return previewVideoRef.current?.paused ?? true;
   }, [playUrl, previewPlayEpoch, previewVideoRef]);
 
-  const exemplarHasCurrent = it ? exemplarSets.library.some((e) => e.key === discoveryItemKey(it)) : false;
-
-  const autoplayStrip = (
-    <div className="discovery-desktop-preview-topbar">
-      <label className="discovery-desktop-preview-autoplay">
-        <input type="checkbox" checked={videoAutoplay} onChange={(e) => onVideoAutoplayChange(e.target.checked)} />
-        <span>Autoplay (muted)</span>
-      </label>
-      {it ? (
-        <label
-          className="discovery-desktop-preview-autoplay"
-          style={{ marginLeft: "auto" }}
-          title="Server exemplar library. Uncheck to remove from library and working set."
-        >
-          <input
-            type="checkbox"
-            checked={exemplarHasCurrent}
-            onChange={(e) => {
-              const next = e.target.checked;
-              const key = discoveryItemKey(it);
-              onExemplarPatch((d) =>
-                next ? discoveryAppendExemplarLibraryKey(d, key, it) : discoveryRemoveExemplarLibraryKey(d, key),
-              );
-            }}
-          />
-          <span>Exemplars</span>
-        </label>
-      ) : null}
-    </div>
-  );
-
-  const tablist = (
-    <div
-      className="discovery-desktop-panel-tablist discovery-desktop-panel-tablist--wrap"
-      role="tablist"
-      aria-label="Right panel"
-    >
-      {DISCOVERY_DESKTOP_PANEL_TABS.map((t) => (
-        <button
-          key={t.id}
-          type="button"
-          role="tab"
-          id={discoveryDesktopPanelLabelId(t.id)}
-          aria-controls="discovery-desktop-panel-tabpanel"
-          aria-selected={panelTab === t.id}
-          tabIndex={panelTab === t.id ? 0 : -1}
-          className={
-            "discovery-desktop-panel-tab" + (panelTab === t.id ? " discovery-desktop-panel-tab--active" : "")
-          }
-          onClick={() => setPanelTab(t.id)}
-        >
-          {t.label}
-          {t.mock ? (
-            <>
-              {" "}
-              <span className="discovery-mock-tab-hint">Mock</span>
-            </>
-          ) : null}
-        </button>
-      ))}
-    </div>
-  );
-
-  const viewerStage =
-    it && panelTab === "viewer" ? (
-      <>
-        {autoplayStrip}
-        <div className="discovery-desktop-preview-main">
-          <div className="discovery-desktop-preview-stage">
-            <div className="discovery-desktop-preview-video-slot">
-              {playUrl ? (
-                <video
-                  ref={(el) => {
-                    previewVideoRef.current = el;
-                  }}
-                  key={k}
-                  src={playUrl}
-                  onPlay={() => onVisitVideoPlay(it)}
-                  controls
-                  playsInline
-                  loop={videoAutoplay && !trimEnforcesPlayback && trimPlaybackLoop}
-                  autoPlay={videoAutoplay}
-                  muted={videoAutoplay}
-                />
-              ) : thumb ? (
-                <img key={k} src={thumb} alt="" decoding="async" />
-              ) : (
-                <div style={{ color: "var(--muted)", textAlign: "center", padding: 16 }}>No preview for this type</div>
-              )}
-            </div>
-            {playUrl ? (
-              <div className="discovery-desktop-preview-trim">
-                <div className="discovery-trim-primary-row">
-                  <div className="discovery-trim-primary-row__time mono">
-                    <span className="discovery-trim-time-readout">
-                      {fmtVideoSec(trimUiCurrentTime)}{" "}
-                      <span className="discovery-trim-range-readout-sep">/</span> {fmtVideoSec(previewDuration)}
-                    </span>
-                  </div>
-                  <div className="discovery-trim-primary-row__center">
-                    <DiscoveryTrimTransport
-                      videoRef={previewVideoRef}
-                      duration={previewDuration}
-                      markIn={markIn}
-                      markOut={markOut}
-                      mediaSyncKey={k}
-                      size="large"
-                      onSyncTime={(t) => {
-                        setTrimUiCurrentTime(t);
-                      }}
-                    />
-                  </div>
-                  <div className="discovery-trim-primary-row__io">
-                    <TrimInOutAtPlayheadButtons
-                      duration={previewDuration}
-                      markIn={markIn}
-                      markOut={markOut}
-                      setMarkIn={setMarkIn}
-                      setMarkOut={setMarkOut}
-                      getVideo={() => previewVideoRef.current}
-                      playheadSec={trimUiCurrentTime}
-                      paused={previewPaused}
-                    />
-                  </div>
-                </div>
-                <div className="discovery-trim-timeline-row">
-                  <div className="discovery-trim-timeline-row__track">
-                    <PhoneTrimTimeline
-                      duration={previewDuration}
-                      currentTime={trimUiCurrentTime}
-                      markIn={markIn}
-                      markOut={markOut}
-                      disabled={previewDuration <= 0}
-                      onSeek={(t) => {
-                        const v = previewVideoRef.current;
-                        if (!v) return;
-                        v.currentTime = t;
-                        setTrimUiCurrentTime(t);
-                      }}
-                      onMarkInChange={setMarkIn}
-                      onMarkOutChange={setMarkOut}
-                    />
-                  </div>
-                  <div className="discovery-trim-timeline-row__actions" role="group" aria-label="Trim range options">
-                    <TrimClearInOutButton
-                      onClick={() => {
-                        setMarkIn(null);
-                        setMarkOut(null);
-                      }}
-                      disabled={!trimEnforcesPlayback}
-                    />
-                    <TrimPlaybackOutIconToggle
-                      mode={trimPlaybackLoop ? "repeat" : "stop_at_end"}
-                      onModeChange={(m) => setTrimPlaybackLoop(m === "repeat")}
-                    />
-                  </div>
-                </div>
-              </div>
-            ) : null}
-          </div>
-        </div>
-      </>
-    ) : (
-      <>
-        {autoplayStrip}
-        <div className="discovery-desktop-preview-main discovery-desktop-preview-main--empty">
-          <p style={{ margin: 0, color: "var(--muted)", fontSize: 14, textAlign: "center", padding: "24px 16px" }}>
-            Select an item from the list.
-          </p>
-        </div>
-      </>
-    );
-
-  const metaPanelBody =
-    panelTab !== "viewer" ? (
-      panelTab === "workflows" ? (
-        <DiscoveryWorkflowsPanel
-          it={it}
-          libraryItems={libraryItems}
-          onSelectItem={onSelectLibraryItem}
-          onOpenParameters={() => setPanelTab("parameters")}
-          itemByKey={itemByKey}
-          exemplarSets={exemplarSets}
-          onExemplarPatch={onExemplarPatch}
-          exemplarReady={exemplarReady}
-          exemplarLoadError={exemplarLoadError}
-          exemplarSaveError={exemplarSaveError}
-        />
-      ) : !it ? (
+  if (!it) {
+    return (
+      <div className="discovery-desktop-preview discovery-desktop-preview--empty">
         <p style={{ margin: 0, color: "var(--muted)", fontSize: 14 }}>Select an item from the list.</p>
-      ) : panelTab === "details" ? (
-        <DiscoveryItemMetaBody
-          it={it}
-          k={k}
-          saved={saved}
-          onToggleSaved={onToggleSaved}
-          exemplarInLibrary={exemplarSets.library.some((e) => e.key === k)}
-          onExemplarInLibraryChange={(next) => {
-            const key = discoveryItemKey(it);
-            onExemplarPatch((d) =>
-              next ? discoveryAppendExemplarLibraryKey(d, key, it) : discoveryRemoveExemplarLibraryKey(d, key),
-            );
-          }}
-        />
-      ) : panelTab === "parameters" ? (
-        <DiscoveryComfyQueuePanel it={it} />
-      ) : (
-        <DiscoveryMockAssetsPanel it={it} saved={saved} onToggleSaved={onToggleSaved} />
-      )
-    ) : (
-      <p style={{ margin: 0, color: "var(--muted)", fontSize: 14 }}>Select an item from the list.</p>
+      </div>
     );
+  }
 
   return (
-    <div ref={previewRootRef} className="discovery-desktop-preview discovery-desktop-preview--stacked">
-      {tablist}
-      <div className="discovery-desktop-panel-body">
-        {panelTab === "viewer" ? (
-          <div
-            role="tabpanel"
-            id="discovery-desktop-panel-tabpanel"
-            aria-labelledby={discoveryDesktopPanelLabelId("viewer")}
-            className={"discovery-desktop-viewer-pane" + (!it ? " discovery-desktop-viewer-pane--empty" : "")}
-          >
-            {viewerStage}
+    <div className="discovery-desktop-preview">
+      <div className="discovery-desktop-preview-main">
+        <div className="discovery-desktop-preview-stage">
+          <div className="discovery-desktop-preview-video-slot">
+            {playUrl ? (
+              <video
+                ref={(el) => {
+                  previewVideoRef.current = el;
+                }}
+                key={k}
+                src={playUrl}
+                controls
+                playsInline
+                loop={videoAutoplay && !trimEnforcesPlayback && trimPlaybackLoop}
+                autoPlay={videoAutoplay && !detailsOpen}
+                muted={videoAutoplay}
+              />
+            ) : thumb ? (
+              <img key={k} src={thumb} alt="" decoding="async" />
+            ) : (
+              <div style={{ color: "var(--muted)", textAlign: "center", padding: 16 }}>No preview for this type</div>
+            )}
           </div>
-        ) : (
-          <div
-            role="tabpanel"
-            id="discovery-desktop-panel-tabpanel"
-            className="discovery-desktop-preview-meta"
-            aria-labelledby={discoveryDesktopPanelLabelId(panelTab)}
-          >
-            {metaPanelBody}
-          </div>
-        )}
+          {playUrl ? (
+            <div className="discovery-desktop-preview-trim">
+              <div className="discovery-trim-primary-row">
+                <div className="discovery-trim-primary-row__time mono">
+                  <span className="discovery-trim-time-readout">
+                    {fmtVideoSec(trimUiCurrentTime)}{" "}
+                    <span className="discovery-trim-range-readout-sep">/</span> {fmtVideoSec(previewDuration)}
+                  </span>
+                </div>
+                <div className="discovery-trim-primary-row__center">
+                  <DiscoveryTrimTransport
+                    videoRef={previewVideoRef}
+                    duration={previewDuration}
+                    markIn={markIn}
+                    markOut={markOut}
+                    mediaSyncKey={k}
+                    size="large"
+                    onSyncTime={(t) => {
+                      setTrimUiCurrentTime(t);
+                    }}
+                  />
+                </div>
+                <div className="discovery-trim-primary-row__io">
+                  <TrimInOutAtPlayheadButtons
+                    duration={previewDuration}
+                    markIn={markIn}
+                    markOut={markOut}
+                    setMarkIn={setMarkIn}
+                    setMarkOut={setMarkOut}
+                    getVideo={() => previewVideoRef.current}
+                    playheadSec={trimUiCurrentTime}
+                    paused={previewPaused}
+                  />
+                </div>
+              </div>
+              <div className="discovery-trim-timeline-row">
+                <div className="discovery-trim-timeline-row__track">
+                  <PhoneTrimTimeline
+                    duration={previewDuration}
+                    currentTime={trimUiCurrentTime}
+                    markIn={markIn}
+                    markOut={markOut}
+                    disabled={previewDuration <= 0}
+                    onSeek={(t) => {
+                      const v = previewVideoRef.current;
+                      if (!v) return;
+                      v.currentTime = t;
+                      setTrimUiCurrentTime(t);
+                    }}
+                    onMarkInChange={setMarkIn}
+                    onMarkOutChange={setMarkOut}
+                  />
+                </div>
+                <div className="discovery-trim-timeline-row__actions" role="group" aria-label="Trim range options">
+                  <TrimClearInOutButton
+                    onClick={() => {
+                      setMarkIn(null);
+                      setMarkOut(null);
+                    }}
+                    disabled={!trimEnforcesPlayback}
+                  />
+                  <TrimPlaybackOutIconToggle
+                    mode={trimPlaybackLoop ? "repeat" : "stop_at_end"}
+                    onModeChange={(m) => setTrimPlaybackLoop(m === "repeat")}
+                  />
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </div>
       </div>
+
+      <aside
+        className={"discovery-desktop-meta-drawer" + (detailsOpen ? " discovery-desktop-meta-drawer--open" : "")}
+        aria-hidden={!detailsOpen}
+      >
+        <div className="discovery-desktop-meta-drawer-column">
+          <div className="discovery-desktop-meta-drawer-head">
+            <div
+              className="discovery-desktop-meta-drawer-tablist discovery-desktop-meta-drawer-tablist--wrap"
+              role="tablist"
+              aria-label="Side panel"
+            >
+              <button
+                type="button"
+                role="tab"
+                id="discovery-meta-tab-details"
+                aria-controls="discovery-meta-panel-body"
+                aria-selected={metaDrawerTab === "details"}
+                tabIndex={detailsOpen ? (metaDrawerTab === "details" ? 0 : -1) : -1}
+                className={
+                  "discovery-desktop-meta-drawer-tab" +
+                  (metaDrawerTab === "details" ? " discovery-desktop-meta-drawer-tab--active" : "")
+                }
+                onClick={() => setMetaDrawerTab("details")}
+              >
+                Details
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id="discovery-meta-tab-parameters"
+                aria-controls="discovery-meta-panel-body"
+                aria-selected={metaDrawerTab === "parameters"}
+                tabIndex={detailsOpen ? (metaDrawerTab === "parameters" ? 0 : -1) : -1}
+                className={
+                  "discovery-desktop-meta-drawer-tab" +
+                  (metaDrawerTab === "parameters" ? " discovery-desktop-meta-drawer-tab--active" : "")
+                }
+                onClick={() => setMetaDrawerTab("parameters")}
+              >
+                Parameters
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id="discovery-meta-tab-assets"
+                aria-controls="discovery-meta-panel-body"
+                aria-selected={metaDrawerTab === "assets"}
+                tabIndex={detailsOpen ? (metaDrawerTab === "assets" ? 0 : -1) : -1}
+                className={
+                  "discovery-desktop-meta-drawer-tab" +
+                  (metaDrawerTab === "assets" ? " discovery-desktop-meta-drawer-tab--active" : "")
+                }
+                onClick={() => setMetaDrawerTab("assets")}
+              >
+                Assets <span className="discovery-mock-tab-hint">Mock</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id="discovery-meta-tab-exemplars"
+                aria-controls="discovery-meta-panel-body"
+                aria-selected={metaDrawerTab === "exemplars"}
+                tabIndex={detailsOpen ? (metaDrawerTab === "exemplars" ? 0 : -1) : -1}
+                className={
+                  "discovery-desktop-meta-drawer-tab" +
+                  (metaDrawerTab === "exemplars" ? " discovery-desktop-meta-drawer-tab--active" : "")
+                }
+                onClick={() => setMetaDrawerTab("exemplars")}
+              >
+                Exemplar library <span className="discovery-mock-tab-hint">Mock</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id="discovery-meta-tab-workflows"
+                aria-controls="discovery-meta-panel-body"
+                aria-selected={metaDrawerTab === "workflows"}
+                tabIndex={detailsOpen ? (metaDrawerTab === "workflows" ? 0 : -1) : -1}
+                className={
+                  "discovery-desktop-meta-drawer-tab" +
+                  (metaDrawerTab === "workflows" ? " discovery-desktop-meta-drawer-tab--active" : "")
+                }
+                onClick={() => setMetaDrawerTab("workflows")}
+              >
+                Workflow
+              </button>
+            </div>
+            <button
+              type="button"
+              className="discovery-desktop-meta-drawer-close"
+              aria-label="Close side panel"
+              onClick={() => setDetailsOpen(false)}
+            >
+              ×
+            </button>
+          </div>
+          <div
+            className="discovery-desktop-meta-tabpanel"
+            role="tabpanel"
+            id="discovery-meta-panel-body"
+            aria-labelledby={discoveryMetaPanelLabelId(metaDrawerTab)}
+          >
+            <DiscoveryMetaPanelInlineViewer it={it} videoAutoplay={videoAutoplay} />
+            <div className="discovery-desktop-preview-meta">
+              {metaDrawerTab === "details" ? (
+                <DiscoveryItemMetaBody
+                  it={it}
+                  k={k}
+                  exemplarMember={saved.has(k)}
+                  onSendToExemplarLibrary={() => onSendToExemplarLibrary(k)}
+                  onGoToExemplarLibrary={onGoToExemplarLibrary}
+                />
+              ) : metaDrawerTab === "parameters" ? (
+                <DiscoveryComfyQueuePanel it={it} />
+              ) : metaDrawerTab === "assets" ? (
+                <DiscoveryMockAssetsPanel it={it} />
+              ) : metaDrawerTab === "exemplars" ? (
+                <DiscoveryMockExemplarLibraryPanel
+                  it={it}
+                  exemplarEntries={exemplarLibraryItems}
+                  onRemoveFromExemplarLibrary={onRemoveFromExemplarLibrary}
+                />
+              ) : (
+                <DiscoveryWorkflowTabPanel it={it} />
+              )}
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      {!detailsOpen ? (
+        <div className="discovery-desktop-drawer-tab-stack" aria-label="Open side panel">
+          <button
+            type="button"
+            className="discovery-desktop-drawer-tab"
+            onClick={() => {
+              setMetaDrawerTab("details");
+              setDetailsOpen(true);
+            }}
+            aria-label="Open details"
+          >
+            Details
+          </button>
+          <button
+            type="button"
+            className="discovery-desktop-drawer-tab"
+            onClick={() => {
+              setMetaDrawerTab("parameters");
+              setDetailsOpen(true);
+            }}
+            aria-label="Open Parameters"
+          >
+            Parameters
+          </button>
+          <button
+            type="button"
+            className="discovery-desktop-drawer-tab"
+            onClick={() => {
+              setMetaDrawerTab("assets");
+              setDetailsOpen(true);
+            }}
+            aria-label="Open Assets mock"
+          >
+            Assets
+          </button>
+          <button
+            type="button"
+            className="discovery-desktop-drawer-tab"
+            onClick={() => {
+              setMetaDrawerTab("exemplars");
+              setDetailsOpen(true);
+            }}
+            aria-label="Open Exemplar library mock"
+          >
+            Exemplar library
+          </button>
+          <button
+            type="button"
+            className="discovery-desktop-drawer-tab"
+            onClick={() => {
+              setMetaDrawerTab("workflows");
+              setDetailsOpen(true);
+            }}
+            aria-label="Open Workflow tab"
+          >
+            Workflow
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -4037,26 +2927,16 @@ function DiscoveryLibraryInner() {
   const isPhone = device === "phone";
 
   const [saved, setSaved] = useState<Set<string>>(() => loadSaved());
-  const [knownKeys, setKnownKeys] = useState<Set<string>>(() => loadKeySet(DISCOVERY_KNOWN_KEY));
-  const [freshKeys, setFreshKeys] = useState<Set<string>>(() => loadKeySet(DISCOVERY_FRESH_KEY));
-  const [visitedKeys, setVisitedKeys] = useState<Set<string>>(() => loadKeySet(DISCOVERY_VISITED_KEY));
   const [qInput, setQInput] = useState("");
   const [qApplied, setQApplied] = useState("");
   const [sinceDays, setSinceDays] = useState(0);
   const [library, setLibrary] = useState<"all" | "og" | "wip">("all");
   const [savedOnly, setSavedOnly] = useState(false);
-  const [sortField, setSortField] = useState<DiscoverySortField>(DISCOVERY_SORT_DEFAULT_FIELD);
-  const [sortDirection, setSortDirection] = useState<DiscoverySortDirection>(DISCOVERY_SORT_DEFAULT_DIRECTION);
   const [data, setData] = useState<DiscoveryLibraryResponse | null>(null);
-  const [discoveryStatus, setDiscoveryStatus] = useState<DiscoveryLibraryStatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [listRefreshingCount, setListRefreshingCount] = useState(0);
+  const [listRefreshing, setListRefreshing] = useState(false);
   const [pollMin, setPollMin] = useState<(typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number]>(() => loadDiscoveryPollMin());
   const [err, setErr] = useState("");
-  const [refreshAck, setRefreshAck] = useState("");
-  const rebuildRunning = discoveryStatus?.running === true;
-  const listRefreshing = listRefreshingCount > 0;
-  const reloadRunning = listRefreshing && !rebuildRunning;
   const [desktopSelectedKey, setDesktopSelectedKey] = useState<string | null>(null);
   const [listPaneWidth, setListPaneWidth] = useState<number>(() => loadDesktopListWidth());
   const listPaneWidthRef = useRef(listPaneWidth);
@@ -4071,338 +2951,93 @@ function DiscoveryLibraryInner() {
   const desktopTrimKeyboardRef = useRef<DiscoveryTrimKeyboardApi | null>(null);
   const desktopSplitRef = useRef<HTMLDivElement | null>(null);
   const [phoneFiltersOpen, setPhoneFiltersOpen] = useState(false);
-  const [desktopFiltersOpen, setDesktopFiltersOpen] = useState(true);
   /** Phone: highlighted list row (kept after closing viewer). */
   const [phoneFocusIndex, setPhoneFocusIndex] = useState<number | null>(null);
   /** Phone: detail overlay open (list highlight can remain when false). */
   const [phoneViewerOpen, setPhoneViewerOpen] = useState(false);
   const phoneListScrollRef = useRef<HTMLDivElement | null>(null);
   const [videoAutoplay, setVideoAutoplay] = useState<boolean>(() => loadVideoAutoplay());
-  const [exemplarSets, setExemplarSets] = useState<DiscoveryExemplarSets>({ version: 1, library: [], working_set: [] });
-  const [exemplarReady, setExemplarReady] = useState(false);
-  const [exemplarLoadErr, setExemplarLoadErr] = useState("");
-  const [exemplarSaveErr, setExemplarSaveErr] = useState("");
-  const exemplarSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingExemplarRef = useRef<DiscoveryExemplarSets | null>(null);
-
-  const scheduleSaveExemplars = useCallback((next: DiscoveryExemplarSets) => {
-    pendingExemplarRef.current = next;
-    setExemplarSets(next);
-    setExemplarSaveErr("");
-    if (exemplarSaveTimerRef.current) clearTimeout(exemplarSaveTimerRef.current);
-    exemplarSaveTimerRef.current = setTimeout(() => {
-      exemplarSaveTimerRef.current = null;
-      const doc = pendingExemplarRef.current;
-      if (!doc) return;
-      void saveDiscoveryExemplarSets(doc)
-        .then((saved) => {
-          pendingExemplarRef.current = saved;
-          setExemplarSets(saved);
-          setExemplarSaveErr("");
-        })
-        .catch((e) => {
-          setExemplarSaveErr(e instanceof Error ? e.message : String(e));
-        });
-    }, 400);
-  }, []);
-
-  const exemplarSetsRef = useRef(exemplarSets);
-  exemplarSetsRef.current = exemplarSets;
-  const patchExemplar = useCallback(
-    (upd: (prev: DiscoveryExemplarSets) => DiscoveryExemplarSets) => {
-      scheduleSaveExemplars(upd(exemplarSetsRef.current));
-    },
-    [scheduleSaveExemplars],
-  );
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const d = await fetchDiscoveryExemplarSets();
-        if (!cancelled) {
-          setExemplarSets(d);
-          pendingExemplarRef.current = d;
-          setExemplarLoadErr("");
-        }
-      } catch (e) {
-        if (!cancelled) {
-          setExemplarLoadErr(e instanceof Error ? e.message : String(e));
-        }
-      } finally {
-        if (!cancelled) setExemplarReady(true);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (exemplarSaveTimerRef.current) clearTimeout(exemplarSaveTimerRef.current);
-    };
-  }, []);
-
-  const discoveryItemByKey = useMemo(() => {
-    const m = new Map<string, DiscoveryLibraryItem>();
-    for (const row of data?.items ?? []) {
-      m.set(discoveryItemKey(row), row);
-    }
-    return m;
-  }, [data?.items]);
-
-  const persistKnownCancelRef = useRef<(() => void) | null>(null);
-  const persistFreshCancelRef = useRef<(() => void) | null>(null);
-  const persistVisitedCancelRef = useRef<(() => void) | null>(null);
 
   const setVideoAutoplayFromUser = useCallback((on: boolean) => {
     setVideoAutoplay(on);
     persistVideoAutoplay(on);
   }, []);
-  const seededKnownOnceRef = useRef(false);
 
   useEffect(() => {
     const t = setTimeout(() => setQApplied(qInput.trim()), 400);
     return () => clearTimeout(t);
   }, [qInput]);
 
-  useEffect(() => {
-    persistKnownCancelRef.current?.();
-    persistKnownCancelRef.current = scheduleIdle(() => {
-      persistKeySet(DISCOVERY_KNOWN_KEY, knownKeys);
-    });
-    return () => {
-      persistKnownCancelRef.current?.();
-      persistKnownCancelRef.current = null;
-    };
-  }, [knownKeys]);
-
-  useEffect(() => {
-    persistFreshCancelRef.current?.();
-    persistFreshCancelRef.current = scheduleIdle(() => {
-      persistKeySet(DISCOVERY_FRESH_KEY, freshKeys);
-    });
-    return () => {
-      persistFreshCancelRef.current?.();
-      persistFreshCancelRef.current = null;
-    };
-  }, [freshKeys]);
-
-  useEffect(() => {
-    persistVisitedCancelRef.current?.();
-    persistVisitedCancelRef.current = scheduleIdle(() => {
-      persistKeySet(DISCOVERY_VISITED_KEY, visitedKeys);
-    });
-    return () => {
-      persistVisitedCancelRef.current?.();
-      persistVisitedCancelRef.current = null;
-    };
-  }, [visitedKeys]);
-
   const load = useCallback(
-    async (refresh: boolean, opts?: { soft?: boolean; incremental?: boolean }) => {
+    async (refresh: boolean, opts?: { soft?: boolean }) => {
       const soft = opts?.soft === true;
-      const incremental = opts?.incremental === true;
-      if (soft) setListRefreshingCount((n) => n + 1);
+      if (soft) setListRefreshing(true);
       else setLoading(true);
       setErr("");
       try {
         const res = await fetchDiscoveryLibrary({
           refresh,
-          incremental,
           q: qApplied || undefined,
           since_days: sinceDays > 0 ? sinceDays : undefined,
           library,
           limit: 1200,
         });
         setData(res);
-        if (refresh) {
-          setRefreshAck("Rebuild requested. Server is processing.");
-        } else if (soft) {
-          setRefreshAck("Refresh complete.");
-        }
       } catch (e) {
-        const msg = String(e);
-        if (/already in progress/i.test(msg)) {
-          setErr("");
-          setRefreshAck("Rebuild already in progress.");
-        } else {
-          setErr(msg);
-          setRefreshAck("");
-        }
+        setErr(String(e));
       } finally {
-        if (soft) setListRefreshingCount((n) => (n > 0 ? n - 1 : 0));
+        if (soft) setListRefreshing(false);
         else setLoading(false);
       }
     },
     [qApplied, sinceDays, library]
   );
 
-  const requestRebuild = useCallback(() => {
-    if (rebuildRunning) {
-      setRefreshAck("Rebuild already in progress.");
-      return;
-    }
-    if (listRefreshing) {
-      setRefreshAck("Please wait for refresh to finish.");
-      return;
-    }
-    const ok = window.confirm(
-      "Rebuild discovery index now?\n\nThis can take a while because it rescans output folders."
-    );
-    if (!ok) {
-      setRefreshAck("Rebuild canceled.");
-      return;
-    }
-    setRefreshAck("Rebuild requested…");
-    void load(true, { soft: true });
-  }, [rebuildRunning, listRefreshing, load]);
-
-  const requestReload = useCallback(() => {
-    if (rebuildRunning) {
-      setRefreshAck("Rebuild is in progress. Refresh is disabled until it finishes.");
-      return;
-    }
-    if (listRefreshing) {
-      setRefreshAck("Refresh already in progress.");
-      return;
-    }
-    setRefreshAck("Refresh requested…");
-    void load(false, { soft: true, incremental: true });
-  }, [rebuildRunning, listRefreshing, load]);
-
   useEffect(() => {
     void load(false);
   }, [load]);
 
   useEffect(() => {
-    let cancelled = false;
-    const pullStatus = async () => {
-      try {
-        const st = await fetchDiscoveryLibraryStatus();
-        if (!cancelled) setDiscoveryStatus(st);
-      } catch {
-        /* ignore status poll errors */
-      }
-    };
-    void pullStatus();
-    const id = window.setInterval(() => {
-      void pullStatus();
-    }, 2000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, []);
-
-  useEffect(() => {
     if (pollMin <= 0) return;
     const id = window.setInterval(() => {
       if (document.visibilityState === "hidden") return;
-      // Auto-refresh should be lightweight + timely: incremental pickup of new files.
-      void load(false, { soft: true, incremental: true });
+      void load(true, { soft: true });
     }, pollMin * 60_000);
     return () => window.clearInterval(id);
   }, [pollMin, load]);
 
-  const toggleSaved = useCallback((relpath: string) => {
+  const sendToExemplarLibrary = useCallback((key: string) => {
     setSaved((prev) => {
+      if (prev.has(key)) return prev;
       const n = new Set(prev);
-      if (n.has(relpath)) n.delete(relpath);
-      else n.add(relpath);
+      n.add(key);
       persistSaved(n);
       return n;
     });
   }, []);
 
-  const items = data?.items ?? [];
-  useEffect(() => {
-    if (items.length === 0) return;
-    const cancel = scheduleIdle(() => {
-      const keys = items.map((it) => discoveryItemKey(it));
-      setKnownKeys((prevKnown) => {
-        const nextKnown = new Set(prevKnown);
-        const added: string[] = [];
-        for (const k of keys) {
-          if (!nextKnown.has(k)) {
-            nextKnown.add(k);
-            added.push(k);
-          }
-        }
-        if (added.length === 0) return prevKnown;
-        if (prevKnown.size === 0 && !seededKnownOnceRef.current) {
-          seededKnownOnceRef.current = true;
-          return nextKnown;
-        }
-        setFreshKeys((prevFresh) => {
-          const nextFresh = new Set(prevFresh);
-          let changed = false;
-          for (const k of added) {
-            if (visitedKeys.has(k)) continue;
-            if (!nextFresh.has(k)) {
-              nextFresh.add(k);
-              changed = true;
-            }
-          }
-          return changed ? nextFresh : prevFresh;
-        });
-        return nextKnown;
-      });
-    });
-    return () => cancel();
-  }, [items, visitedKeys]);
-
-  const markVisited = useCallback((key: string) => {
-    setVisitedKeys((prev) => {
-      if (prev.has(key)) return prev;
-      const next = new Set(prev);
-      next.add(key);
-      return next;
-    });
-    setFreshKeys((prev) => {
+  const removeFromExemplarLibrary = useCallback((key: string) => {
+    setSaved((prev) => {
       if (!prev.has(key)) return prev;
-      const next = new Set(prev);
-      next.delete(key);
-      return next;
+      const n = new Set(prev);
+      n.delete(key);
+      persistSaved(n);
+      return n;
     });
   }, []);
-  const markVisitedForImageView = useCallback(
-    (it: DiscoveryLibraryItem) => {
-      if (discoveryPlayUrl(it)) return;
-      markVisited(discoveryItemKey(it));
-    },
-    [markVisited]
+
+  const desktopExemplarNavRef = useRef<() => void>(() => {});
+  const phoneExemplarNavRef = useRef<() => void>(() => {});
+
+  const items = data?.items ?? [];
+  const exemplarLibraryItems = useMemo(
+    () => items.filter((it) => saved.has(discoveryItemKey(it))),
+    [items, saved]
   );
-  const markVisitedForVideoPlay = useCallback(
-    (it: DiscoveryLibraryItem) => {
-      markVisited(discoveryItemKey(it));
-    },
-    [markVisited]
-  );
-  const rebuildHeartbeatAgeMs = discoveryStatus?.heartbeat_age_ms ?? null;
-  const rebuildLastError = discoveryStatus?.last_error ?? null;
-  const rebuildScannedFiles = discoveryStatus?.scanned_files ?? null;
-  const lastCompletedScanFiles = discoveryStatus?.last_index_timing?.files_scanned ?? data?.item_count_total ?? null;
-  const rebuildProgressPct =
-    rebuildRunning &&
-    typeof rebuildScannedFiles === "number" &&
-    Number.isFinite(rebuildScannedFiles) &&
-    rebuildScannedFiles >= 0 &&
-    typeof lastCompletedScanFiles === "number" &&
-    Number.isFinite(lastCompletedScanFiles) &&
-    lastCompletedScanFiles > 0
-      ? Math.max(0, Math.min(99, Math.round((rebuildScannedFiles / lastCompletedScanFiles) * 100)))
-      : null;
-  const sortedItems = useMemo(() => {
-    const out = [...items];
-    out.sort((a, b) => discoveryCompareItems(a, b, sortField, sortDirection));
-    return out;
-  }, [items, sortField, sortDirection]);
   const displayed = useMemo(() => {
-    if (!savedOnly) return sortedItems;
-    return sortedItems.filter((it) => saved.has(discoveryItemKey(it)));
-  }, [sortedItems, savedOnly, saved]);
+    if (!savedOnly) return items;
+    return items.filter((it) => saved.has(discoveryItemKey(it)));
+  }, [items, savedOnly, saved]);
 
   useEffect(() => {
     if (!isPhone || phoneFocusIndex === null) return;
@@ -4471,7 +3106,7 @@ function DiscoveryLibraryInner() {
       if (!(t instanceof HTMLElement)) return;
 
       if (t.closest(".discovery-desktop-resize-handle")) return;
-      if (t.closest(".discovery-desktop-preview-meta")) return;
+      if (t.closest(".discovery-desktop-meta-drawer")) return;
       if (
         t.closest(
           'input, textarea, select, [contenteditable="true"], [contenteditable="plaintext-only"]'
@@ -4630,9 +3265,45 @@ function DiscoveryLibraryInner() {
       </label>
       <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: isPhone ? 0 : 18 }}>
         <input type="checkbox" checked={savedOnly} onChange={(e) => setSavedOnly(e.target.checked)} />
-        <span style={{ fontSize: 14 }}>Saved only</span>
+        <span style={{ fontSize: 14 }}>Exemplar library only</span>
       </label>
       <span style={{ flex: "1 1 20px" }} />
+      <button
+        type="button"
+        title="Re-query the saved index from the server (no disk rescan)"
+        onClick={() => void load(false, { soft: true })}
+        disabled={loading || listRefreshing}
+      >
+        Reload
+      </button>
+      <button
+        type="button"
+        title="Rescan output folders and refresh the list (incremental index update)"
+        onClick={() => void load(true, { soft: true })}
+        disabled={loading || listRefreshing}
+      >
+        {listRefreshing ? "Updating…" : "Update"}
+      </button>
+      <label style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 120 }}>
+        <span style={{ fontSize: 12, color: "var(--muted)" }}>Auto-refresh</span>
+        <select
+          value={pollMin}
+          onChange={(e) => {
+            const v = Number(e.target.value) as (typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number];
+            const next = DISCOVERY_LIBRARY_POLL_CHOICES.includes(v) ? v : 0;
+            setPollMin(next);
+            persistDiscoveryPollMin(next);
+          }}
+        >
+          <option value={0}>Off</option>
+          <option value={1}>1 min</option>
+          <option value={5}>5 min</option>
+          <option value={10}>10 min</option>
+          <option value={15}>15 min</option>
+          <option value={30}>30 min</option>
+          <option value={60}>60 min</option>
+        </select>
+      </label>
     </>
   );
 
@@ -4655,22 +3326,6 @@ function DiscoveryLibraryInner() {
             >
               {phoneFiltersOpen ? "Hide filters" : "Filters"}
             </button>
-            <DiscoveryRefreshMenu
-              loading={loading}
-              reloading={reloadRunning}
-              rebuildRunning={rebuildRunning}
-              rebuildProgressPct={rebuildProgressPct}
-              rebuildHeartbeatAgeMs={rebuildHeartbeatAgeMs}
-              rebuildLastError={rebuildLastError}
-              pollMin={pollMin}
-              onReload={requestReload}
-              onUpdate={requestRebuild}
-              onPollMinChange={(next) => {
-                setPollMin(next);
-                persistDiscoveryPollMin(next);
-              }}
-              triggerMode="click"
-            />
           </div>
 
           <PhoneAutoplayToggle
@@ -4697,11 +3352,7 @@ function DiscoveryLibraryInner() {
                 <span className="mono">{data.item_count_filtered}</span> matches
                 {data.truncated ? " · truncated" : ""}
                 {data.from_cache ? " · cached" : ""}
-                {rebuildRunning
-                  ? ` · rebuilding${typeof rebuildProgressPct === "number" ? `… ~${rebuildProgressPct}%` : "…"}`
-                  : reloadRunning
-                    ? " · refreshing…"
-                    : ""}
+                {listRefreshing ? " · updating…" : ""}
                 {" · "}
                 <span style={{ color: "var(--text)" }}>
                   Tap a row to open the viewer · after {(PHONE_VIEWER_CONTROLS_MS / 1000).toFixed(1)}s only the video
@@ -4710,63 +3361,16 @@ function DiscoveryLibraryInner() {
               </>
             ) : null}
           </div>
-          {refreshAck ? (
-            <div style={{ fontSize: 12, color: "var(--muted)", flexShrink: 0 }} role="status" aria-live="polite">
-              {refreshAck}
-            </div>
-          ) : null}
-
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              flexShrink: 0,
-              padding: "4px 0",
-              borderTop: "1px solid var(--border)",
-              borderBottom: "1px solid var(--border)",
-            }}
-          >
-            <span style={{ fontSize: 12, color: "var(--muted)" }}>Sort</span>
-            <select value={sortField} onChange={(e) => setSortField(e.target.value as DiscoverySortField)} style={{ minWidth: 120 }}>
-              {DISCOVERY_SORT_FIELDS.map((opt) => (
-                <option key={opt.field} value={opt.field}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              className="icon-btn"
-              onClick={() => setSortDirection((v) => (v === "asc" ? "desc" : "asc"))}
-              title={sortDirection === "asc" ? "Sort ascending (click for descending)" : "Sort descending (click for ascending)"}
-              aria-label={sortDirection === "asc" ? "Sort ascending" : "Sort descending"}
-              aria-pressed={sortDirection === "desc"}
-            >
-              <svg
-                viewBox="0 0 16 16"
-                width="14"
-                height="14"
-                aria-hidden="true"
-                focusable="false"
-              >
-                <rect x="2" y="3" width={sortDirection === "asc" ? 6 : 12} height="2.2" rx="0.8" fill="currentColor" />
-                <rect x="2" y="6.9" width="9" height="2.2" rx="0.8" fill="currentColor" />
-                <rect x="2" y="10.8" width={sortDirection === "asc" ? 12 : 6} height="2.2" rx="0.8" fill="currentColor" />
-              </svg>
-            </button>
-          </div>
 
           <div ref={phoneListScrollRef} className="discovery-list-scroll">
             {displayed.map((it, idx) => (
               <DiscoveryListThumbRow
                 key={discoveryItemKey(it)}
                 it={it}
-                saved={saved.has(discoveryItemKey(it))}
-                isNew={freshKeys.has(discoveryItemKey(it)) && !visitedKeys.has(discoveryItemKey(it))}
-                onToggleSaved={() => toggleSaved(discoveryItemKey(it))}
+                inExemplarLibrary={saved.has(discoveryItemKey(it))}
+                onSendToExemplarLibrary={() => sendToExemplarLibrary(discoveryItemKey(it))}
+                onGoToExemplarLibrary={() => phoneExemplarNavRef.current()}
                 onActivate={() => {
-                  markVisitedForImageView(it);
                   setPhoneFocusIndex(idx);
                   setPhoneViewerOpen(true);
                 }}
@@ -4786,18 +3390,14 @@ function DiscoveryLibraryInner() {
             index={phoneFocusIndex}
             onClose={() => setPhoneViewerOpen(false)}
             onIndexChange={setPhoneFocusIndex}
-            onVisitImage={markVisitedForImageView}
-            onVisitVideoPlay={markVisitedForVideoPlay}
             saved={saved}
-            onToggleSaved={toggleSaved}
+            onSendToExemplarLibrary={sendToExemplarLibrary}
+            onRemoveFromExemplarLibrary={removeFromExemplarLibrary}
+            onGoToExemplarLibrary={() => phoneExemplarNavRef.current()}
+            exemplarLibraryItems={exemplarLibraryItems}
+            exemplarNavRef={phoneExemplarNavRef}
             videoAutoplay={videoAutoplay}
             onVideoAutoplayChange={setVideoAutoplayFromUser}
-            itemByKey={discoveryItemByKey}
-            exemplarSets={exemplarSets}
-            onExemplarPatch={patchExemplar}
-            exemplarReady={exemplarReady}
-            exemplarLoadError={exemplarLoadErr}
-            exemplarSaveError={exemplarSaveErr}
           />
         ) : null}
       </div>
@@ -4808,136 +3408,70 @@ function DiscoveryLibraryInner() {
   const desktopSelectedItem =
     desktopSelectedKey == null ? null : displayed.find((it) => discoveryItemKey(it) === desktopSelectedKey) ?? null;
 
-  useEffect(() => {
-    if (isPhone || !desktopSelectedItem) return;
-    markVisitedForImageView(desktopSelectedItem);
-  }, [isPhone, desktopSelectedItem, markVisitedForImageView]);
+  const desktopIndexStatusTitle =
+    !loading && data
+      ? `Index ${data.updated_at ?? "—"}${data.from_cache ? " (cached)" : " (just scanned)"}${
+          data.scan_ms != null ? ` · ${data.scan_ms} ms scan` : ""
+        }${listRefreshing ? " · updating…" : ""} · ${data.item_count_filtered} matches${
+          data.truncated ? " (truncated)" : ""
+        }`
+      : undefined;
 
   return (
     <div className="discovery-screen">
-      <div className="panel discovery-panel discovery-desktop-root" style={{ gap: 0 }}>
+      <div className="panel discovery-panel discovery-desktop-root" style={{ gap: 10 }}>
+        <header style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, flexShrink: 0 }}>
+          <a href="/" style={{ fontWeight: 600 }}>
+            ← Experiments
+          </a>
+          <h1 className="title" style={{ margin: 0, fontSize: "1.15rem" }}>
+            Og / Wip library
+          </h1>
+          <span className="discovery-subtitle" style={{ color: "var(--muted)", fontSize: 13 }}>
+            Indexed discovery (persistent scan)
+          </span>
+        </header>
+
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", flexShrink: 0 }}>{filtersBlock}</div>
+
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            fontSize: 14,
+            flexShrink: 0,
+            userSelect: "none",
+          }}
+        >
+          <input type="checkbox" checked={videoAutoplay} onChange={(e) => setVideoAutoplayFromUser(e.target.checked)} />
+          <span>Autoplay video in preview (muted; same setting as phone viewer)</span>
+        </label>
+
+        {err ? (
+          <div style={{ color: "var(--bad)", fontSize: 14, flexShrink: 0 }} role="alert">
+            {err}
+          </div>
+        ) : null}
+
+        <div className="discovery-index-status" title={desktopIndexStatusTitle}>
+          {loading ? (
+            "Loading…"
+          ) : data ? (
+            <>
+              Index <span className="mono">{data.updated_at ?? "—"}</span>
+              {data.from_cache ? " (cached)" : " (just scanned)"}
+              {data.scan_ms != null ? ` · ${data.scan_ms} ms scan` : ""}
+              {listRefreshing ? " · updating…" : ""}
+              {" · "}
+              <span className="mono">{data.item_count_filtered}</span> matches
+              {data.truncated ? " (truncated)" : ""}
+            </>
+          ) : null}
+        </div>
+
         <div ref={desktopSplitRef} className="discovery-desktop-split">
           <div className="discovery-desktop-list-pane" style={{ flex: `0 0 ${listPaneWidth}px` }}>
-            <details className="discovery-desktop-nav-details" open>
-              <summary className="discovery-desktop-nav-summary">
-                <span className="discovery-desktop-nav-summary-label">Navigation & filters</span>
-              </summary>
-              <div className="discovery-desktop-nav-details-inner">
-                <header style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, flexShrink: 0 }}>
-                  <a href="/" style={{ fontWeight: 600 }}>
-                    ← Experiments
-                  </a>
-                  <h1 className="title" style={{ margin: 0, fontSize: "1.05rem" }}>
-                    Og / Wip library
-                  </h1>
-                  <span className="discovery-subtitle" style={{ color: "var(--muted)", fontSize: 12 }}>
-                    Indexed discovery (persistent scan)
-                  </span>
-                </header>
-
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexShrink: 0, flexWrap: "wrap" }}>
-                  <button
-                    type="button"
-                    className="discovery-phone-filters-toggle"
-                    aria-expanded={desktopFiltersOpen}
-                    onClick={() => setDesktopFiltersOpen((v) => !v)}
-                    style={{ marginLeft: 0 }}
-                  >
-                    {desktopFiltersOpen ? "Hide filters" : "Filters"}
-                  </button>
-                  <DiscoveryRefreshMenu
-                    loading={loading}
-                    reloading={reloadRunning}
-                    rebuildRunning={rebuildRunning}
-                    rebuildProgressPct={rebuildProgressPct}
-                    rebuildHeartbeatAgeMs={rebuildHeartbeatAgeMs}
-                    rebuildLastError={rebuildLastError}
-                    pollMin={pollMin}
-                    onReload={requestReload}
-                    onUpdate={requestRebuild}
-                    onPollMinChange={(next) => {
-                      setPollMin(next);
-                      persistDiscoveryPollMin(next);
-                    }}
-                    triggerMode="hover"
-                  />
-                </div>
-                {desktopFiltersOpen ? (
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", flexShrink: 0 }}>{filtersBlock}</div>
-                ) : null}
-
-                {err ? (
-                  <div style={{ color: "var(--bad)", fontSize: 13, flexShrink: 0 }} role="alert">
-                    {err}
-                  </div>
-                ) : null}
-
-                <div style={{ fontSize: 12, color: "var(--muted)", flexShrink: 0, lineHeight: 1.35 }}>
-                  {loading ? (
-                    "Loading…"
-                  ) : data ? (
-                    <>
-                      Index <span className="mono">{data.updated_at ?? "—"}</span>
-                      {data.from_cache ? " (cached)" : " (just scanned)"}
-                      {data.scan_ms != null ? ` · ${data.scan_ms} ms scan` : ""}
-                      {rebuildRunning
-                        ? ` · rebuilding${typeof rebuildProgressPct === "number" ? `… ~${rebuildProgressPct}%` : "…"}`
-                        : reloadRunning
-                          ? " · refreshing…"
-                          : ""}
-                      {" · "}
-                      <span className="mono">{data.item_count_filtered}</span> matches
-                      {data.truncated ? " (truncated)" : ""}
-                    </>
-                  ) : null}
-                </div>
-                {refreshAck ? (
-                  <div style={{ fontSize: 12, color: "var(--muted)", flexShrink: 0 }} role="status" aria-live="polite">
-                    {refreshAck}
-                  </div>
-                ) : null}
-              </div>
-            </details>
-
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "6px 8px",
-                borderBottom: "1px solid var(--border)",
-                flexShrink: 0,
-              }}
-            >
-              <span style={{ fontSize: 12, color: "var(--muted)" }}>Sort</span>
-              <select value={sortField} onChange={(e) => setSortField(e.target.value as DiscoverySortField)} style={{ minWidth: 120 }}>
-                {DISCOVERY_SORT_FIELDS.map((opt) => (
-                  <option key={opt.field} value={opt.field}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                className="icon-btn"
-                onClick={() => setSortDirection((v) => (v === "asc" ? "desc" : "asc"))}
-                title={sortDirection === "asc" ? "Sort ascending (click for descending)" : "Sort descending (click for ascending)"}
-                aria-label={sortDirection === "asc" ? "Sort ascending" : "Sort descending"}
-                aria-pressed={sortDirection === "desc"}
-              >
-                <svg
-                  viewBox="0 0 16 16"
-                  width="14"
-                  height="14"
-                  aria-hidden="true"
-                  focusable="false"
-                >
-                  <rect x="2" y="3" width={sortDirection === "asc" ? 6 : 12} height="2.2" rx="0.8" fill="currentColor" />
-                  <rect x="2" y="6.9" width="9" height="2.2" rx="0.8" fill="currentColor" />
-                  <rect x="2" y="10.8" width={sortDirection === "asc" ? 12 : 6} height="2.2" rx="0.8" fill="currentColor" />
-                </svg>
-              </button>
-            </div>
             <div
               ref={desktopListScrollRef}
               className="discovery-list-scroll"
@@ -4957,11 +3491,10 @@ function DiscoveryLibraryInner() {
                 <DiscoveryListThumbRow
                   key={discoveryItemKey(it)}
                   it={it}
-                  saved={saved.has(discoveryItemKey(it))}
-                  isNew={freshKeys.has(discoveryItemKey(it)) && !visitedKeys.has(discoveryItemKey(it))}
-                  onToggleSaved={() => toggleSaved(discoveryItemKey(it))}
+                  inExemplarLibrary={saved.has(discoveryItemKey(it))}
+                  onSendToExemplarLibrary={() => sendToExemplarLibrary(discoveryItemKey(it))}
+                  onGoToExemplarLibrary={() => desktopExemplarNavRef.current()}
                   onActivate={() => {
-                    markVisitedForImageView(it);
                     setDesktopSelectedKey(discoveryItemKey(it));
                     desktopListScrollRef.current?.focus();
                   }}
@@ -4975,7 +3508,6 @@ function DiscoveryLibraryInner() {
               ) : null}
             </div>
           </div>
-
           <div
             className="discovery-desktop-resize-handle"
             role="separator"
@@ -5008,25 +3540,15 @@ function DiscoveryLibraryInner() {
           <DiscoveryDesktopPreview
             it={desktopSelectedItem}
             saved={saved}
-            onToggleSaved={toggleSaved}
-            onVisitImage={markVisitedForImageView}
-            onVisitVideoPlay={markVisitedForVideoPlay}
+            onSendToExemplarLibrary={sendToExemplarLibrary}
+            onRemoveFromExemplarLibrary={removeFromExemplarLibrary}
+            onGoToExemplarLibrary={() => desktopExemplarNavRef.current()}
+            exemplarLibraryItems={exemplarLibraryItems}
+            exemplarNavRef={desktopExemplarNavRef}
             videoAutoplay={videoAutoplay}
-            onVideoAutoplayChange={setVideoAutoplayFromUser}
             previewVideoRef={desktopPreviewVideoRef}
             trimSeekBoundsRef={desktopTrimSeekRef}
             trimKeyboardRef={desktopTrimKeyboardRef}
-            libraryItems={displayed}
-            onSelectLibraryItem={(item) => {
-              markVisitedForImageView(item);
-              setDesktopSelectedKey(discoveryItemKey(item));
-            }}
-            itemByKey={discoveryItemByKey}
-            exemplarSets={exemplarSets}
-            onExemplarPatch={patchExemplar}
-            exemplarReady={exemplarReady}
-            exemplarLoadError={exemplarLoadErr}
-            exemplarSaveError={exemplarSaveErr}
           />
         </div>
       </div>
@@ -5039,18 +3561,14 @@ type PhoneDetailProps = {
   index: number;
   onClose: () => void;
   onIndexChange: (i: number) => void;
-  onVisitImage: (it: DiscoveryLibraryItem) => void;
-  onVisitVideoPlay: (it: DiscoveryLibraryItem) => void;
   saved: Set<string>;
-  onToggleSaved: (relpath: string) => void;
+  onSendToExemplarLibrary: (key: string) => void;
+  onRemoveFromExemplarLibrary: (key: string) => void;
+  onGoToExemplarLibrary: () => void;
+  exemplarLibraryItems: DiscoveryLibraryItem[];
+  exemplarNavRef: React.MutableRefObject<() => void>;
   videoAutoplay: boolean;
   onVideoAutoplayChange: (on: boolean) => void;
-  itemByKey: Map<string, DiscoveryLibraryItem>;
-  exemplarSets: DiscoveryExemplarSets;
-  onExemplarPatch: (upd: (prev: DiscoveryExemplarSets) => DiscoveryExemplarSets) => void;
-  exemplarReady: boolean;
-  exemplarLoadError: string;
-  exemplarSaveError: string;
 };
 
 function DiscoveryPhoneDetailOverlay({
@@ -5058,30 +3576,27 @@ function DiscoveryPhoneDetailOverlay({
   index,
   onClose,
   onIndexChange,
-  onVisitImage,
-  onVisitVideoPlay,
   saved,
-  onToggleSaved,
+  onSendToExemplarLibrary,
+  onRemoveFromExemplarLibrary,
+  onGoToExemplarLibrary,
+  exemplarLibraryItems,
+  exemplarNavRef,
   videoAutoplay,
   onVideoAutoplayChange,
-  itemByKey,
-  exemplarSets,
-  onExemplarPatch,
-  exemplarReady,
-  exemplarLoadError,
-  exemplarSaveError,
 }: PhoneDetailProps) {
   const it = items[index];
   const play = discoveryPlayUrl(it);
   const thumb = discoveryThumbUrl(it);
   const k = discoveryItemKey(it);
-  const exemplarHasThis = exemplarSets.library.some((e) => e.key === k);
   const trimMedia = discoveryTrimMediaRelpath(it);
   const phoneVideoRef = useRef<HTMLVideoElement | null>(null);
   const trimLoopRewindPendingRef = useRef(false);
   const stackRef = useRef<HTMLDivElement | null>(null);
   const detailsMetaScrollRef = useRef<HTMLDivElement | null>(null);
-  const [stackActive, setStackActive] = useState<"details" | "assets" | "parameters" | "workflows">("details");
+  const [stackActive, setStackActive] = useState<
+    "details" | "assets" | "parameters" | "exemplars" | "workflows"
+  >("details");
   const detailsPageActive = stackActive === "details";
   const [viewerActionMenuOpen, setViewerActionMenuOpen] = useState(false);
   const [viewerActionMenuPos, setViewerActionMenuPos] = useState<{ x: number; y: number } | null>(null);
@@ -5114,11 +3629,6 @@ function DiscoveryPhoneDetailOverlay({
   const [visualViewerFullscreen, setVisualViewerFullscreen] = useState(false);
   const inViewerFullscreen = browserViewerFullscreen || visualViewerFullscreen;
 
-  useEffect(() => {
-    if (!it) return;
-    if (!play) onVisitImage(it);
-  }, [it, play, onVisitImage]);
-
   const viewerUiTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const filenameStatusTimersRef = useRef<[ReturnType<typeof setTimeout> | null, ReturnType<typeof setTimeout> | null]>([
     null,
@@ -5132,17 +3642,24 @@ function DiscoveryPhoneDetailOverlay({
     }
   }, []);
 
-  const scrollStackTo = useCallback((page: "details" | "assets" | "parameters" | "workflows") => {
+  const scrollStackTo = useCallback((page: "details" | "assets" | "parameters" | "exemplars" | "workflows") => {
     const el = typeof document !== "undefined" ? document.getElementById(`discovery-phone-page-${page}`) : null;
     el?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, []);
+
+  useLayoutEffect(() => {
+    exemplarNavRef.current = () => scrollStackTo("exemplars");
+    return () => {
+      exemplarNavRef.current = () => {};
+    };
+  }, [exemplarNavRef, scrollStackTo]);
 
   const onStackScroll = useCallback(() => {
     const root = stackRef.current;
     if (!root) return;
     const rootRect = root.getBoundingClientRect();
     const midY = rootRect.top + rootRect.height * 0.35;
-    const pages = ["details", "assets", "parameters", "workflows"] as const;
+    const pages = ["details", "assets", "parameters", "exemplars", "workflows"] as const;
     for (const p of pages) {
       const el = document.getElementById(`discovery-phone-page-${p}`);
       if (!el) continue;
@@ -5996,7 +4513,6 @@ function DiscoveryPhoneDetailOverlay({
                     ref={phoneVideoRef}
                     key={k}
                     src={play}
-                    onPlay={() => onVisitVideoPlay(it)}
                     controls={showVideoControls && !scrubSheetOpen}
                     controlsList="nofullscreen"
                     playsInline
@@ -6043,25 +4559,6 @@ function DiscoveryPhoneDetailOverlay({
                     >
                       {inViewerFullscreen ? "Exit FS" : "Full"}
                     </button>
-                    <label
-                      className="discovery-phone-viewer-chrome-btn"
-                      style={{ display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer" }}
-                      title="Exemplar library (server). Uncheck to remove."
-                    >
-                      <input
-                        type="checkbox"
-                        checked={exemplarHasThis}
-                        aria-label="Exemplar library"
-                        onChange={(e) => {
-                          const next = e.target.checked;
-                          const key = discoveryItemKey(it);
-                          onExemplarPatch((d) =>
-                            next ? discoveryAppendExemplarLibraryKey(d, key, it) : discoveryRemoveExemplarLibraryKey(d, key),
-                          );
-                        }}
-                      />
-                      <span>Exp</span>
-                    </label>
                   </div>
                 </div>
                 <PhoneAutoplayToggle variant="overlay" videoAutoplay={videoAutoplay} onVideoAutoplayChange={onVideoAutoplayChange} />
@@ -6080,8 +4577,8 @@ function DiscoveryPhoneDetailOverlay({
                   </button>
                 </div>
                 <p className="discovery-phone-viewer-chrome-hint">
-                  Swipe video for next / prev · scroll vertically for Assets, Parameters, and Workflows · long-press for actions
-                  · Full uses the visible viewport on phones (Safari bars may still show)
+                  Swipe video for next / prev · scroll vertically for Assets, Parameters, Exemplar library, and Workflow ·
+                  long-press for actions · Full uses the visible viewport on phones (Safari bars may still show)
                 </p>
               </div>
             ) : null}
@@ -6090,15 +4587,9 @@ function DiscoveryPhoneDetailOverlay({
             <DiscoveryItemMetaBody
               it={it}
               k={k}
-              saved={saved}
-              onToggleSaved={onToggleSaved}
-              exemplarInLibrary={exemplarHasThis}
-              onExemplarInLibraryChange={(next) => {
-                const key = discoveryItemKey(it);
-                onExemplarPatch((d) =>
-                  next ? discoveryAppendExemplarLibraryKey(d, key, it) : discoveryRemoveExemplarLibraryKey(d, key),
-                );
-              }}
+              exemplarMember={saved.has(k)}
+              onSendToExemplarLibrary={() => onSendToExemplarLibrary(k)}
+              onGoToExemplarLibrary={onGoToExemplarLibrary}
             />
           </div>
         </section>
@@ -6113,7 +4604,7 @@ function DiscoveryPhoneDetailOverlay({
             <span className="discovery-mock-tab-hint">Mock</span>
           </div>
           <div className="discovery-phone-stack__page-body">
-            <DiscoveryMockAssetsPanel it={it} saved={saved} onToggleSaved={onToggleSaved} />
+            <DiscoveryMockAssetsPanel it={it} />
           </div>
         </section>
 
@@ -6127,32 +4618,33 @@ function DiscoveryPhoneDetailOverlay({
         </section>
 
         <section
-          id="discovery-phone-page-workflows"
+          id="discovery-phone-page-exemplars"
           className="discovery-phone-stack__page discovery-phone-stack__page--panel"
-          aria-label="Workflows"
+          aria-label="Exemplar library mock"
         >
           <div className="discovery-phone-stack__page-head">
-            <span>Workflows</span>
+            <span>Exemplar library</span>
+            <span className="discovery-mock-tab-hint">Mock</span>
           </div>
           <div className="discovery-phone-stack__page-body">
-            <DiscoveryWorkflowsPanel
+            <DiscoveryMockExemplarLibraryPanel
               it={it}
-              libraryItems={items}
-              onSelectItem={(peer) => {
-                const idx = items.findIndex((x) => discoveryItemKey(x) === discoveryItemKey(peer));
-                if (idx >= 0) {
-                  onVisitImage(peer);
-                  onIndexChange(idx);
-                }
-              }}
-              onOpenParameters={() => scrollStackTo("parameters")}
-              itemByKey={itemByKey}
-              exemplarSets={exemplarSets}
-              onExemplarPatch={onExemplarPatch}
-              exemplarReady={exemplarReady}
-              exemplarLoadError={exemplarLoadError}
-              exemplarSaveError={exemplarSaveError}
+              exemplarEntries={exemplarLibraryItems}
+              onRemoveFromExemplarLibrary={onRemoveFromExemplarLibrary}
             />
+          </div>
+        </section>
+
+        <section
+          id="discovery-phone-page-workflows"
+          className="discovery-phone-stack__page discovery-phone-stack__page--panel"
+          aria-label="Workflow context"
+        >
+          <div className="discovery-phone-stack__page-head">
+            <span>Workflow</span>
+          </div>
+          <div className="discovery-phone-stack__page-body">
+            <DiscoveryWorkflowTabPanel it={it} />
           </div>
         </section>
       </div>
@@ -6181,10 +4673,17 @@ function DiscoveryPhoneDetailOverlay({
         </button>
         <button
           type="button"
+          className={stackActive === "exemplars" ? "discovery-phone-stack-nav--active" : undefined}
+          onClick={() => scrollStackTo("exemplars")}
+        >
+          Exemplars
+        </button>
+        <button
+          type="button"
           className={stackActive === "workflows" ? "discovery-phone-stack-nav--active" : undefined}
           onClick={() => scrollStackTo("workflows")}
         >
-          Workflows
+          Workflow
         </button>
       </nav>
 

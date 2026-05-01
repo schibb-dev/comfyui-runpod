@@ -1,6 +1,6 @@
 Param(
-  # Default: comfyui Experiments API on the host (docker maps 8790). Use 8791 when pairing with a local-only API.
-  [string]$Backend = "http://127.0.0.1:8790",
+  # Host dev: experiments_ui_server on 8791 (Docker uses 8790 -> container; see vite.config.ts).
+  [string]$Backend = "http://127.0.0.1:8791",
   [int]$Port = 5178,
   [switch]$NoOpen,
   [switch]$EnsureContainer,

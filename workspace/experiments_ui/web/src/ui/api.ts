@@ -18,16 +18,12 @@ import type {
   ComfyHistoryResponse,
   OrchestratorState,
   DiscoveryLibraryResponse,
-  DiscoveryLibraryStatusResponse,
   DiscoveryLibraryItem,
   DiscoveryEmbedApiPromptResponse,
-  DiscoveryProvenanceChainResponse,
-  DiscoveryExemplarSets,
 } from "./types";
 
 export async function fetchDiscoveryLibrary(opts?: {
   refresh?: boolean;
-  incremental?: boolean;
   q?: string;
   since_days?: number;
   library?: "og" | "wip" | "all";
@@ -35,61 +31,14 @@ export async function fetchDiscoveryLibrary(opts?: {
 }): Promise<DiscoveryLibraryResponse> {
   const sp = new URLSearchParams();
   if (opts?.refresh) sp.set("refresh", "1");
-  if (opts?.incremental) sp.set("incremental", "1");
   if (opts?.q != null && opts.q !== "") sp.set("q", opts.q);
   if (opts?.since_days != null && opts.since_days > 0) sp.set("since_days", String(opts.since_days));
   if (opts?.library && opts.library !== "all") sp.set("library", opts.library);
   if (opts?.limit != null && opts.limit > 0) sp.set("limit", String(opts.limit));
   const qs = sp.toString();
-  const r = await fetch(`/api/discovery/library${qs ? `?${qs}` : ""}`, { cache: "no-store" });
-  if (r.status === 409) {
-    let detail = "Discovery index rebuild is already in progress.";
-    try {
-      const j = (await r.json()) as { detail?: string };
-      if (typeof j.detail === "string" && j.detail.trim()) detail = j.detail.trim();
-    } catch {
-      /* ignore */
-    }
-    throw new Error(detail);
-  }
+  const r = await fetch(`/api/discovery/library${qs ? `?${qs}` : ""}`);
   if (!r.ok) throw new Error(`GET /api/discovery/library failed: ${r.status}`);
   return (await r.json()) as DiscoveryLibraryResponse;
-}
-
-export async function fetchDiscoveryLibraryStatus(): Promise<DiscoveryLibraryStatusResponse> {
-  const r = await fetch("/api/discovery/library-status", { cache: "no-store" });
-  if (!r.ok) throw new Error(`GET /api/discovery/library-status failed: ${r.status}`);
-  return (await r.json()) as DiscoveryLibraryStatusResponse;
-}
-
-export async function fetchDiscoveryExemplarSets(): Promise<DiscoveryExemplarSets> {
-  const r = await fetch("/api/discovery/exemplar-sets", { cache: "no-store" });
-  if (!r.ok) throw new Error(`GET /api/discovery/exemplar-sets failed: ${r.status}`);
-  return (await r.json()) as DiscoveryExemplarSets;
-}
-
-export async function saveDiscoveryExemplarSets(payload: DiscoveryExemplarSets): Promise<DiscoveryExemplarSets> {
-  const r = await fetch("/api/discovery/exemplar-sets", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (!r.ok) {
-    const t = await r.text();
-    throw new Error(`POST /api/discovery/exemplar-sets failed: ${r.status}${t ? `\n${t}` : ""}`);
-  }
-  return (await r.json()) as DiscoveryExemplarSets;
-}
-
-export async function fetchDiscoveryProvenanceChain(it: DiscoveryLibraryItem): Promise<DiscoveryProvenanceChainResponse> {
-  const sp = new URLSearchParams();
-  sp.set("relpath", it.relpath);
-  sp.set("library", it.library);
-  if (it.thumb_relpath) sp.set("thumb_relpath", it.thumb_relpath);
-  if (it.video_relpath) sp.set("video_relpath", it.video_relpath);
-  const r = await fetch(`/api/discovery/provenance-chain?${sp.toString()}`);
-  if (!r.ok) throw new Error(`GET /api/discovery/provenance-chain failed: ${r.status}`);
-  return (await r.json()) as DiscoveryProvenanceChainResponse;
 }
 
 export async function fetchDiscoveryEmbedApiPrompt(it: DiscoveryLibraryItem): Promise<DiscoveryEmbedApiPromptResponse> {

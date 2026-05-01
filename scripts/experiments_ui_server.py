@@ -283,18 +283,10 @@ def _looks_like_comfy_ui_workflow(obj: Any) -> bool:
 
 
 def _atomic_write_json(path: Path, obj: Any) -> None:
-    """Write JSON atomically. Unique temp name avoids races when multiple builds overlap (legacy)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
-    try:
-        tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        tmp.replace(path)
-    finally:
-        try:
-            if tmp.exists():
-                tmp.unlink()
-        except OSError:
-            pass
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
 
 
 _TRIM_FILE_LOCK = threading.Lock()
@@ -524,39 +516,9 @@ def _merge_discovery_group(lib: str, dir_posix: str, group_stem: str, members: L
     }
 
 
-def _discovery_log_index_build(timing: Dict[str, Any], *, refresh: bool) -> None:
-    """stderr line for docker logs / journalctl (no separate log file)."""
-    try:
-        print(
-            "[discovery-index] refresh=%s wall_ms=%s files=%s groups=%s "
-            "scan_loop_ms=%s stat_ms=%s png_meta_ms=%s content_hash_ms=%s other_scan_ms=%s merge_ms=%s sort_ms=%s provenance_ms=%s"
-            % (
-                str(refresh).lower(),
-                timing.get("wall_ms"),
-                timing.get("files_scanned"),
-                timing.get("group_count"),
-                timing.get("scan_loop_ms"),
-                timing.get("stat_ms"),
-                timing.get("png_meta_ms"),
-                timing.get("content_hash_ms"),
-                timing.get("other_scan_ms"),
-                timing.get("merge_ms"),
-                timing.get("sort_ms"),
-                timing.get("provenance_ms"),
-            ),
-            file=sys.stderr,
-            flush=True,
-        )
-    except Exception:
-        pass
-
-
-def _build_discovery_og_wip_index(
-    cfg: "ServerConfig",
-    on_progress: Optional[Callable[[int, str], None]] = None,
-) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def _build_discovery_og_wip_index(cfg: "ServerConfig") -> Dict[str, Any]:
     og_root, wip_root = _og_wip_library_roots(cfg)
-    t0_wall = time.time()
+    t0 = time.time()
     try:
         out_resolved = cfg.output_root.resolve()
     except Exception:
@@ -566,11 +528,6 @@ def _build_discovery_og_wip_index(
     # Matches FB9_GEX2_OVERHEAD_2026-04-13_00006.mp4 + .png even if they land in different subfolders.
     by_stem: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
 
-    scanned_files = 0
-    acc_stat = 0.0
-    acc_png = 0.0
-    acc_hash = 0.0
-    t_scan_loop_start = time.perf_counter()
     for lib, root in (("og", og_root), ("wip", wip_root)):
         if not root.is_dir():
             continue
@@ -592,11 +549,9 @@ def _build_discovery_og_wip_index(
                 if not rel_posix:
                     continue
                 try:
-                    t_a = time.perf_counter()
                     st = p.stat()
                     mtime = float(st.st_mtime)
                     size = int(st.st_size)
-                    acc_stat += time.perf_counter() - t_a
                 except Exception:
                     mtime = 0.0
                     size = 0
@@ -604,12 +559,8 @@ def _build_discovery_og_wip_index(
                 cls_prev: List[str] = []
                 has_prompt = False
                 if ext_lc == ".png":
-                    t_a = time.perf_counter()
                     wf_fp, cls_prev, has_prompt = _png_metadata_fields(p)
-                    acc_png += time.perf_counter() - t_a
-                t_a = time.perf_counter()
                 content_hash = _file_content_hash(p)
-                acc_hash += time.perf_counter() - t_a
                 stem_key = Path(p.name).stem.lower()
                 skey = (lib, stem_key)
                 rec = {
@@ -625,20 +576,10 @@ def _build_discovery_og_wip_index(
                     "has_embedded_prompt": has_prompt,
                 }
                 by_stem.setdefault(skey, []).append(rec)
-                scanned_files += 1
-                if on_progress and (scanned_files <= 8 or scanned_files % 200 == 0):
-                    on_progress(scanned_files, rel_posix)
         except Exception:
             continue
 
-    scan_loop_ms = int((time.perf_counter() - t_scan_loop_start) * 1000)
-    stat_ms = int(acc_stat * 1000)
-    png_meta_ms = int(acc_png * 1000)
-    content_hash_ms = int(acc_hash * 1000)
-    other_scan_ms = max(0, scan_loop_ms - stat_ms - png_meta_ms - content_hash_ms)
-
     items: List[Dict[str, Any]] = []
-    t_merge_start = time.perf_counter()
     for (lib, stem_key), members in by_stem.items():
         if not members:
             continue
@@ -650,213 +591,16 @@ def _build_discovery_og_wip_index(
         dir_posix = _normalize_rel_posix(str(Path(str(anchor.get("relpath") or "")).parent).replace("\\", "/")) or "."
         items.append(_merge_discovery_group(lib, dir_posix, stem_key, members))
 
-    merge_ms = int((time.perf_counter() - t_merge_start) * 1000)
-
-    t_sort_start = time.perf_counter()
     items.sort(key=lambda it: float(it.get("mtime") or 0), reverse=True)
-    sort_ms = int((time.perf_counter() - t_sort_start) * 1000)
-
-    t_prov_start = time.perf_counter()
-    for it in items:
-        if isinstance(it, dict):
-            try:
-                pq = _discovery_chain_query_from_item(it)
-                it["provenance"] = _discovery_build_provenance_chain(cfg, pq)
-            except Exception as e:
-                it["provenance"] = {"ok": False, "error": "provenance_index_failed", "detail": str(e)}
-    _discovery_attach_peer_provenance_branches(items, max_nested_links=12)
-    provenance_ms = int((time.perf_counter() - t_prov_start) * 1000)
-
-    wall_ms = int((time.time() - t0_wall) * 1000)
-    timing: Dict[str, Any] = {
-        "wall_ms": wall_ms,
-        "scan_loop_ms": scan_loop_ms,
-        "stat_ms": stat_ms,
-        "png_meta_ms": png_meta_ms,
-        "content_hash_ms": content_hash_ms,
-        "other_scan_ms": other_scan_ms,
-        "merge_ms": merge_ms,
-        "sort_ms": sort_ms,
-        "provenance_ms": provenance_ms,
-        "files_scanned": scanned_files,
-        "group_count": len(items),
-    }
     built = {
-        "version": 6,
+        "version": 5,
         "updated_at": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "libraries": {"og": str(og_root), "wip": str(wip_root)},
         "item_count": len(items),
         "items": items,
-        "scan_ms": wall_ms,
+        "scan_ms": int((time.time() - t0) * 1000),
     }
-    return built, timing
-
-
-def _discovery_collect_member_record(
-    cfg: "ServerConfig", p: Path, lib: str, out_resolved: Path
-) -> Optional[Dict[str, Any]]:
-    ext_lc = p.suffix.lower()
-    if ext_lc not in _DISCOVERY_MEDIA_EXTS:
-        return None
-    try:
-        rel = p.resolve().relative_to(out_resolved)
-    except Exception:
-        return None
-    rel_posix = _normalize_rel_posix(str(rel).replace("\\", "/"))
-    if not rel_posix:
-        return None
-    try:
-        st = p.stat()
-        mtime = float(st.st_mtime)
-        size = int(st.st_size)
-    except Exception:
-        mtime = 0.0
-        size = 0
-    wf_fp: Optional[str] = None
-    cls_prev: List[str] = []
-    has_prompt = False
-    if ext_lc == ".png":
-        wf_fp, cls_prev, has_prompt = _png_metadata_fields(p)
-    return {
-        "relpath": rel_posix,
-        "library": lib,
-        "name": p.name,
-        "ext": ext_lc,
-        "mtime": mtime,
-        "size": size,
-        "sha256": _file_content_hash(p),
-        "workflow_fingerprint": wf_fp,
-        "class_types_preview": cls_prev,
-        "has_embedded_prompt": has_prompt,
-    }
-
-
-def _discovery_collect_members_for_stem(
-    cfg: "ServerConfig", lib: str, stem_key: str, out_resolved: Path
-) -> List[Dict[str, Any]]:
-    og_root, wip_root = _og_wip_library_roots(cfg)
-    root = og_root if lib == "og" else wip_root
-    out: List[Dict[str, Any]] = []
-    if not root.is_dir():
-        return out
-    patt = f"{stem_key}.*"
-    try:
-        for p in root.rglob(patt):
-            try:
-                if not p.is_file():
-                    continue
-            except Exception:
-                continue
-            if Path(p.name).stem.lower() != stem_key:
-                continue
-            rec = _discovery_collect_member_record(cfg, p, lib, out_resolved)
-            if rec is not None:
-                out.append(rec)
-    except Exception:
-        return out
-    return out
-
-
-def _discovery_incremental_refresh_index(cfg: "ServerConfig", payload: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    t0 = time.time()
-    og_root, wip_root = _og_wip_library_roots(cfg)
-    try:
-        out_resolved = cfg.output_root.resolve()
-    except Exception:
-        out_resolved = cfg.output_root
-
-    items_in = payload.get("items")
-    items: List[Dict[str, Any]] = [it for it in items_in if isinstance(it, dict)] if isinstance(items_in, list) else []
-
-    known_relpaths: Set[str] = set()
-    group_idx: Dict[str, int] = {}
-    for i, it in enumerate(items):
-        gid = str(it.get("group_id") or "")
-        if gid:
-            group_idx[gid] = i
-        rp = str(it.get("relpath") or "")
-        if rp:
-            known_relpaths.add(rp)
-        mems = it.get("members")
-        if isinstance(mems, list):
-            for m in mems:
-                if isinstance(m, dict):
-                    mrp = str(m.get("relpath") or "")
-                    if mrp:
-                        known_relpaths.add(mrp)
-
-    scanned_files = 0
-    new_files = 0
-    affected: Set[Tuple[str, str]] = set()
-    for lib, root in (("og", og_root), ("wip", wip_root)):
-        if not root.is_dir():
-            continue
-        try:
-            for p in root.rglob("*"):
-                try:
-                    if not p.is_file():
-                        continue
-                except Exception:
-                    continue
-                ext_lc = p.suffix.lower()
-                if ext_lc not in _DISCOVERY_MEDIA_EXTS:
-                    continue
-                scanned_files += 1
-                try:
-                    rel = p.resolve().relative_to(out_resolved)
-                except Exception:
-                    continue
-                rel_posix = _normalize_rel_posix(str(rel).replace("\\", "/"))
-                if not rel_posix or rel_posix in known_relpaths:
-                    continue
-                new_files += 1
-                affected.add((lib, Path(p.name).stem.lower()))
-        except Exception:
-            continue
-
-    rebuilt_groups = 0
-    for lib, stem_key in affected:
-        members = _discovery_collect_members_for_stem(cfg, lib, stem_key, out_resolved)
-        if not members:
-            continue
-        vids = [m for m in members if m.get("ext") in _DISCOVERY_VIDEO_EXTS]
-        if vids:
-            anchor = max(vids, key=lambda m: (float(m.get("mtime") or 0), str(m.get("relpath") or "")))
-        else:
-            anchor = max(members, key=lambda m: (float(m.get("mtime") or 0), str(m.get("relpath") or "")))
-        dir_posix = _normalize_rel_posix(str(Path(str(anchor.get("relpath") or "")).parent).replace("\\", "/")) or "."
-        merged = _merge_discovery_group(lib, dir_posix, stem_key, members)
-        try:
-            pq = _discovery_chain_query_from_item(merged)
-            merged["provenance"] = _discovery_build_provenance_chain(cfg, pq)
-        except Exception as e:
-            merged["provenance"] = {"ok": False, "error": "provenance_index_failed", "detail": str(e)}
-        gid = str(merged.get("group_id") or "")
-        idx = group_idx.get(gid)
-        if idx is None:
-            group_idx[gid] = len(items)
-            items.append(merged)
-        else:
-            items[idx] = merged
-        rebuilt_groups += 1
-
-    items.sort(key=lambda it: float(it.get("mtime") or 0), reverse=True)
-    wall_ms = int((time.time() - t0) * 1000)
-    built = dict(payload)
-    built["version"] = max(6, int(payload.get("version") or 6))
-    built["updated_at"] = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    built["item_count"] = len(items)
-    built["items"] = items
-    built["scan_ms"] = wall_ms
-    timing = {
-        "wall_ms": wall_ms,
-        "files_scanned": scanned_files,
-        "new_files": new_files,
-        "rebuilt_groups": rebuilt_groups,
-        "group_count": len(items),
-        "incremental": True,
-    }
-    return built, timing
+    return built
 
 
 def _load_discovery_index_disk(path: Path) -> Optional[Dict[str, Any]]:
@@ -985,372 +729,6 @@ def _discovery_resolve_embed_png_abs(
         rel_api = _file_relpath_for_api(cfg.output_root, cfg.wip_root, abs_p)
         return abs_p, rel_api
     return None, None
-
-
-def _workflow_fingerprint_for_prompt_obj(prompt_obj: Dict[str, Any]) -> str:
-    raw = json.dumps(prompt_obj, sort_keys=True, ensure_ascii=False).encode("utf-8", errors="replace")
-    return hashlib.sha256(raw).hexdigest()[:24]
-
-
-def _discovery_embed_api_prompt_response_dict(cfg: "ServerConfig", q: Dict[str, List[str]]) -> Dict[str, Any]:
-    """
-    Same JSON shape as GET /api/discovery/embed-api-prompt (ok true/false payloads).
-    Used by that handler and by provenance-chain inference.
-    """
-    primary = (q.get("relpath") or [""])[0].strip()
-    if not primary:
-        return {"ok": False, "error": "missing_relpath", "detail": "relpath is required"}
-
-    abs_png, rel_png_api = _discovery_resolve_embed_png_abs(cfg, q)
-    if abs_png is None or not rel_png_api:
-        return {
-            "ok": False,
-            "error": "png_not_found",
-            "detail": "No candidate PNG under og/wip (thumb, sibling of video, or primary .png).",
-        }
-
-    try:
-        chunks = _read_png_text_chunks(abs_png)
-    except Exception as e:
-        return {"ok": False, "error": "png_read_failed", "detail": str(e), "png_relpath": rel_png_api}
-
-    praw = chunks.get("prompt")
-    wfraw = chunks.get("workflow")
-    pr_obj: Optional[Dict[str, Any]] = None
-    wf_obj: Optional[Dict[str, Any]] = None
-    if isinstance(praw, str) and praw.strip():
-        try:
-            v = json.loads(praw)
-            if isinstance(v, dict):
-                pr_obj = v
-        except Exception:
-            pass
-    if isinstance(wfraw, str) and wfraw.strip():
-        try:
-            v = json.loads(wfraw)
-            if isinstance(v, dict):
-                wf_obj = v
-        except Exception:
-            pass
-
-    if pr_obj is None and wf_obj is None:
-        return {
-            "ok": False,
-            "error": "no_embedded_json",
-            "detail": "PNG has no parsable workflow or prompt text chunk.",
-            "png_relpath": rel_png_api,
-        }
-
-    _convert_hint = (
-        "Install a Comfy extension that exposes POST /workflow/convert (e.g. workflow-to-api-converter), "
-        "or save API-format prompt into the PNG."
-    )
-
-    if pr_obj is not None:
-        if _looks_like_comfy_api_prompt(pr_obj):
-            return {
-                "ok": True,
-                "source": "embedded_png_prompt_api",
-                "png_relpath": rel_png_api,
-                "prompt": pr_obj,
-            }
-        if _looks_like_comfy_ui_workflow(pr_obj):
-            prompt, err, http = _comfy_convert_workflow_to_prompt_dict(cfg, pr_obj)
-            if prompt is not None:
-                return {
-                    "ok": True,
-                    "source": "embedded_png_prompt_chunk_via_comfy",
-                    "png_relpath": rel_png_api,
-                    "prompt": prompt,
-                    "comfy_convert_http": http,
-                }
-            return {
-                "ok": False,
-                "error": "comfy_convert_failed",
-                "detail": err,
-                "hint": _convert_hint,
-                "png_relpath": rel_png_api,
-                "comfy_convert_http": http,
-            }
-        if wf_obj is None:
-            return {
-                "ok": False,
-                "error": "unrecognized_prompt_chunk",
-                "detail": "prompt text chunk is neither API prompt nor UI workflow (nodes+links).",
-                "png_relpath": rel_png_api,
-            }
-
-    if wf_obj is not None:
-        prompt, err, http = _comfy_convert_workflow_to_prompt_dict(cfg, wf_obj)
-        if prompt is not None:
-            return {
-                "ok": True,
-                "source": "embedded_png_workflow_via_comfy",
-                "png_relpath": rel_png_api,
-                "prompt": prompt,
-                "comfy_convert_http": http,
-            }
-        return {
-            "ok": False,
-            "error": "comfy_convert_failed",
-            "detail": err,
-            "hint": _convert_hint,
-            "png_relpath": rel_png_api,
-            "comfy_convert_http": http,
-        }
-
-    return {"ok": False, "error": "no_usable_workflow", "detail": "No workflow chunk to convert.", "png_relpath": rel_png_api}
-
-
-def _discovery_resolve_embed_media_under_workspace(cfg: "ServerConfig", raw_hint: str) -> Optional[Tuple[str, Path]]:
-    """
-    Map a LoadImage / LoadVideo string from an embedded prompt to a file under output_root.
-    Returns (api_relpath, abs_path) or None.
-    """
-    s0 = (raw_hint or "").strip().replace("\\", "/")
-    if not s0:
-        return None
-    cands: List[str] = []
-    n0 = _normalize_rel_posix(s0)
-    if n0:
-        cands.append(n0)
-    if n0.startswith("output/output/"):
-        cands.append(_normalize_rel_posix(n0[len("output/") :]))
-    idx_og = n0.find("output/og/")
-    if idx_og >= 0:
-        cands.append(_normalize_rel_posix(n0[idx_og:]))
-    idx_wip = n0.find("output/wip/")
-    if idx_wip >= 0:
-        cands.append(_normalize_rel_posix(n0[idx_wip:]))
-    seen: set[str] = set()
-    for c in cands:
-        if not c or c in seen:
-            continue
-        seen.add(c)
-        p = _safe_join(cfg.output_root, c)
-        if p is not None and p.is_file():
-            rel_api = _file_relpath_for_api(cfg.output_root, cfg.wip_root, p)
-            return rel_api, p
-    base = Path(s0).name
-    if base and len(base) < 512:
-        for root in _og_wip_library_roots(cfg):
-            try:
-                matches = list(root.glob(f"**/{base}"))
-                matches.sort(key=lambda x: str(x))
-                for p in matches:
-                    if p.is_file():
-                        rel_api = _file_relpath_for_api(cfg.output_root, cfg.wip_root, p)
-                        return rel_api, p
-            except Exception:
-                continue
-    return None
-
-
-def _discovery_infer_library_from_relpath(rel: str) -> str:
-    low = rel.lower()
-    if "/og/" in low:
-        return "og"
-    if "/wip/" in low:
-        return "wip"
-    return "all"
-
-
-def _discovery_chain_query_from_item(it: Dict[str, Any]) -> Dict[str, List[str]]:
-    """Build query params for provenance / embed APIs from a merged discovery index row."""
-    rel = str(it.get("relpath") or "").strip()
-    lib = str(it.get("library") or "all").strip().lower()
-    if lib not in ("og", "wip", "all"):
-        lib = "all"
-    q: Dict[str, List[str]] = {"relpath": [rel], "library": [lib]}
-    tr = it.get("thumb_relpath")
-    if isinstance(tr, str) and tr.strip():
-        q["thumb_relpath"] = [tr.strip()]
-    vr = it.get("video_relpath")
-    if isinstance(vr, str) and vr.strip():
-        q["video_relpath"] = [vr.strip()]
-    return q
-
-
-def _discovery_finalize_provenance_chain_payload(
-    q: Dict[str, List[str]], links: List[Dict[str, Any]], stops: List[Dict[str, Any]]
-) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
-    """
-    Add step_output_relpath / library for each link; optional terminal_source (deepest resolved upstream file).
-    """
-    primary0 = (q.get("relpath") or [""])[0].strip()
-    for i, link in enumerate(links):
-        if i == 0:
-            out_rel = primary0
-        else:
-            prev = links[i - 1].get("parent_resolved_relpath")
-            out_rel = prev if isinstance(prev, str) and prev.strip() else None
-        link["step_output_relpath"] = out_rel
-        if isinstance(out_rel, str) and out_rel.strip():
-            link["step_output_library"] = _discovery_infer_library_from_relpath(out_rel)
-        else:
-            link["step_output_library"] = "all"
-
-    terminal: Optional[Dict[str, Any]] = None
-    if links:
-        last = links[-1]
-        pr = last.get("parent_resolved_relpath")
-        if isinstance(pr, str) and pr.strip():
-            rsn = None
-            if stops and isinstance(stops[-1], dict):
-                rsn = stops[-1].get("reason")
-            terminal = {
-                "relpath": pr.strip(),
-                "library": _discovery_infer_library_from_relpath(pr.strip()),
-                "chain_halted_reason": rsn,
-            }
-    return links, terminal
-
-
-def _discovery_attach_peer_provenance_branches(items: List[Dict[str, Any]], *, max_nested_links: int = 12) -> None:
-    """
-    When a link's parent_resolved_relpath matches another discovery row (primary or member),
-    attach a truncated copy of that row's indexed provenance under link['branch_provenance'].
-    No extra Comfy calls — uses already-computed per-item provenance.
-    """
-    by_rel: Dict[str, Dict[str, Any]] = {}
-    for it in items:
-        if not isinstance(it, dict):
-            continue
-        r = str(it.get("relpath") or "").strip()
-        if r:
-            by_rel[r] = it
-        for m in it.get("members") or []:
-            if isinstance(m, dict):
-                mr = str(m.get("relpath") or "").strip()
-                if mr:
-                    by_rel[mr] = it
-
-    for it in items:
-        if not isinstance(it, dict):
-            continue
-        prov = it.get("provenance")
-        if not isinstance(prov, dict) or prov.get("ok") is not True:
-            continue
-        links = prov.get("links")
-        if not isinstance(links, list):
-            continue
-        for link in links:
-            if not isinstance(link, dict):
-                continue
-            if link.get("branch_provenance") is not None:
-                continue
-            pr = link.get("parent_resolved_relpath")
-            if not isinstance(pr, str) or not pr.strip():
-                continue
-            peer = by_rel.get(pr.strip())
-            if peer is None or peer is it:
-                continue
-            pprov = peer.get("provenance")
-            if not isinstance(pprov, dict) or pprov.get("ok") is not True:
-                continue
-            plinks = pprov.get("links")
-            if not isinstance(plinks, list) or not plinks:
-                continue
-            slice_links = plinks[: max(0, int(max_nested_links))]
-            nested_links: List[Dict[str, Any]] = []
-            for lk in slice_links:
-                if not isinstance(lk, dict):
-                    continue
-                slim = dict(lk)
-                slim.pop("branch_provenance", None)
-                nested_links.append(slim)
-            branch: Dict[str, Any] = {
-                "ok": True,
-                "source": pprov.get("source"),
-                "caveat": pprov.get("caveat"),
-                "links": nested_links,
-                "stops": pprov.get("stops"),
-                "from_discovery_primary": str(peer.get("relpath") or ""),
-                "nested_truncated": len(plinks) > len(nested_links),
-            }
-            if isinstance(pprov.get("terminal_source"), dict):
-                branch["terminal_source"] = pprov.get("terminal_source")
-            link["branch_provenance"] = branch
-
-
-def _discovery_build_provenance_chain(cfg: "ServerConfig", q: Dict[str, List[str]], *, max_depth: int = 10) -> Dict[str, Any]:
-    """
-    Walk embedded API prompts: each step reads the PNG embed for the current artifact, fingerprints the prompt,
-    extracts LoadImage / VHS_LoadVideo path, resolves it under the workspace, then repeats from the parent media.
-    """
-    links: List[Dict[str, Any]] = []
-    stops: List[Dict[str, Any]] = []
-    visited_embed_png: set[str] = set()
-    cur_q = q
-    for depth in range(max_depth):
-        d = _discovery_embed_api_prompt_response_dict(cfg, cur_q)
-        if d.get("ok") is not True:
-            stops.append({"at_depth": depth, "reason": "embed_failed", "detail": d})
-            break
-        pr = d.get("prompt")
-        if not isinstance(pr, dict):
-            stops.append({"at_depth": depth, "reason": "bad_prompt_shape"})
-            break
-        png_read = d.get("png_relpath")
-        if isinstance(png_read, str) and png_read in visited_embed_png:
-            stops.append({"at_depth": depth, "reason": "cycle", "png_relpath": png_read})
-            break
-        if isinstance(png_read, str):
-            visited_embed_png.add(png_read)
-        fp = _workflow_fingerprint_for_prompt_obj(pr)
-        src = d.get("source")
-        raw_in, kind = _extract_input_media_from_prompt(pr)
-        parent_api: Optional[str] = None
-        if raw_in:
-            r = _discovery_resolve_embed_media_under_workspace(cfg, raw_in)
-            if r:
-                parent_api, _abs_p = r
-        links.append(
-            {
-                "depth": depth,
-                "artifact_relpath": png_read,
-                "embed_read_from_png": png_read,
-                "embed_source": src,
-                "workflow_fingerprint": fp,
-                "input_raw_from_prompt": raw_in,
-                "input_kind": kind,
-                "parent_resolved_relpath": parent_api,
-            }
-        )
-        if not raw_in:
-            stops.append({"at_depth": depth, "reason": "no_load_media_in_prompt"})
-            break
-        if not parent_api:
-            stops.append(
-                {
-                    "at_depth": depth,
-                    "reason": "parent_path_unresolved",
-                    "input_raw_from_prompt": raw_in,
-                }
-            )
-            break
-        lib = _discovery_infer_library_from_relpath(parent_api)
-        next_q: Dict[str, List[str]] = {"relpath": [parent_api], "library": [lib]}
-        low = parent_api.lower()
-        if low.endswith(".mp4") or low.endswith(".webm") or low.endswith(".mov"):
-            next_q["video_relpath"] = [parent_api]
-        cur_q = next_q
-
-    links, terminal = _discovery_finalize_provenance_chain_payload(q, links, stops)
-
-    out: Dict[str, Any] = {
-        "ok": True,
-        "source": "inferred_from_png_embeds",
-        "caveat": (
-            "Each step reads the embedded Comfy API prompt from a PNG next to the artifact (or the PNG itself). "
-            "The chain follows LoadImage / VHS_LoadVideo paths. Queue/submit.json lineage is not used yet."
-        ),
-        "links": links,
-        "stops": stops,
-    }
-    if terminal is not None:
-        out["terminal_source"] = terminal
-    return out
 
 
 def _resolve_wip_root(ws: Path, output_root: Path, override: str) -> Path:
@@ -1659,7 +1037,6 @@ class ServerConfig:
     tune_script: Path
     comfy_server: str
     orchestrator_state_path: Path
-    exemplar_sets_path: Path
     queue_ledger_state_path: Path
     queue_ledger_events_path: Path
     discovery_index_path: Path
@@ -1996,109 +1373,6 @@ def _write_orchestrator_state(path: Path, obj: Dict[str, Any]) -> None:
     path.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def _default_exemplar_sets() -> Dict[str, Any]:
-    return {"version": 1, "library": [], "working_set": []}
-
-
-def _normalize_exemplar_sets_payload(body: Any) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    """Validate and normalize POST body for exemplar sets. Returns (doc, error_code)."""
-    if not isinstance(body, dict):
-        return None, "expected_object"
-    lib_in = body.get("library")
-    ws_in = body.get("working_set")
-    if lib_in is None:
-        lib_in = []
-    if ws_in is None:
-        ws_in = []
-    if not isinstance(lib_in, list):
-        return None, "library_must_be_array"
-    if not isinstance(ws_in, list):
-        return None, "working_set_must_be_array"
-
-    ver = body.get("version")
-    version = 1
-    if isinstance(ver, int) and ver >= 1:
-        version = ver
-    elif isinstance(ver, float) and ver >= 1:
-        version = int(ver)
-
-    library_out: List[Dict[str, Any]] = []
-    seen_lib: set = set()
-    for ent in lib_in:
-        if not isinstance(ent, dict):
-            continue
-        k = ent.get("key")
-        if not isinstance(k, str) or not k.strip():
-            continue
-        k = k.strip()
-        if k in seen_lib:
-            continue
-        seen_lib.add(k)
-        item: Dict[str, Any] = {"key": k}
-        note = ent.get("note")
-        if isinstance(note, str):
-            item["note"] = note
-        added = ent.get("added_at")
-        if isinstance(added, str):
-            item["added_at"] = added
-        dn = ent.get("display_name")
-        if isinstance(dn, str):
-            tdn = dn.strip()
-            if tdn:
-                item["display_name"] = tdn[:512]
-        sn = ent.get("source_name")
-        if isinstance(sn, str):
-            tsn = sn.strip()
-            if tsn:
-                item["source_name"] = tsn[:512]
-        prof = ent.get("input_profile")
-        if isinstance(prof, dict):
-            ui = prof.get("uses_image_start")
-            uv = prof.get("uses_video_start")
-            if isinstance(ui, bool) or isinstance(uv, bool):
-                item["input_profile"] = {
-                    "uses_image_start": bool(ui) if isinstance(ui, bool) else False,
-                    "uses_video_start": bool(uv) if isinstance(uv, bool) else False,
-                }
-        library_out.append(item)
-
-    working_out: List[Dict[str, str]] = []
-    seen_ws: set = set()
-    for ent in ws_in:
-        if not isinstance(ent, dict):
-            continue
-        k = ent.get("key")
-        if not isinstance(k, str) or not k.strip():
-            continue
-        k = k.strip()
-        if k in seen_ws:
-            continue
-        seen_ws.add(k)
-        working_out.append({"key": k})
-
-    return {"version": version, "library": library_out, "working_set": working_out}, None
-
-
-def _read_exemplar_sets(path: Path) -> Dict[str, Any]:
-    if not path.exists():
-        return _default_exemplar_sets()
-    try:
-        obj = _read_json(path)
-    except Exception:
-        return _default_exemplar_sets()
-    if not isinstance(obj, dict):
-        return _default_exemplar_sets()
-    norm, err = _normalize_exemplar_sets_payload(obj)
-    if err or norm is None:
-        return _default_exemplar_sets()
-    return norm
-
-
-def _write_exemplar_sets(path: Path, obj: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-
 def _read_queue_ledger_state(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
@@ -2151,20 +1425,12 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/discovery/library":
             return self._handle_discovery_library_get(q)
-        if path == "/api/discovery/library-status":
-            return self._handle_discovery_library_status_get()
 
         if path == "/api/discovery/trim":
             return self._handle_discovery_trim_get(q)
 
         if path == "/api/discovery/embed-api-prompt":
             return self._handle_discovery_embed_api_prompt_get(q)
-
-        if path == "/api/discovery/provenance-chain":
-            return self._handle_discovery_provenance_chain_get(q)
-
-        if path == "/api/discovery/exemplar-sets":
-            return self._handle_discovery_exemplar_sets_get()
 
         if path == "/api/queue":
             # Optional: limit how many experiments we scan (newest first).
@@ -2433,8 +1699,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_queue_ledger_control()
         if path == "/api/discovery/trim":
             return self._handle_discovery_trim_post()
-        if path == "/api/discovery/exemplar-sets":
-            return self._handle_discovery_exemplar_sets_post()
         return _json_response(self, 404, {"error": "unknown_api_route", "path": path})
 
     def _read_request_json(self) -> Optional[Dict[str, Any]]:
@@ -2451,8 +1715,7 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_discovery_library_get(self, q: Dict[str, List[str]]) -> None:
         """
         GET /api/discovery/library
-          ?refresh=1 — full rebuild (rescan all + rewrite JSON index)
-          ?incremental=1 — incremental refresh (pick up new files, update affected stems)
+          ?refresh=1 — rescan output/output/{og,wip}, rewrite JSON index
           ?q= — case-insensitive substring on relpath or filename
           ?since_days=N — keep items with mtime within last N days
           ?library=og|wip|all
@@ -2463,11 +1726,6 @@ class Handler(BaseHTTPRequestHandler):
         for v in q.get("refresh", []):
             if str(v).strip().lower() in ("1", "true", "yes", "on"):
                 refresh = True
-                break
-        incremental = False
-        for v in q.get("incremental", []):
-            if str(v).strip().lower() in ("1", "true", "yes", "on"):
-                incremental = True
                 break
 
         qtext = (q.get("q") or [""])[0].strip().lower()
@@ -2494,149 +1752,32 @@ class Handler(BaseHTTPRequestHandler):
         idx_path = cfg.discovery_index_path
         payload: Dict[str, Any]
         from_cache = False
-        build_lock = self.server.discovery_index_build_lock
-        build_lock_held = False
-
-        def _release_build_lock() -> None:
-            nonlocal build_lock_held
-            if build_lock_held:
-                build_lock.release()
-                build_lock_held = False
-
-        # Single-flight: only one index build + atomic disk write at a time.
         if refresh or not idx_path.exists():
-            if refresh:
-                if not build_lock.acquire(blocking=False):
-                    return _json_response(
-                        self,
-                        409,
-                        {
-                            "error": "discovery_rebuild_in_progress",
-                            "detail": "Another discovery index build is already in progress. Try again shortly.",
-                        },
-                    )
-                build_lock_held = True
-                started_at = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                started_monotonic = time.time()
-                with self.server.discovery_rebuild_state_lock:
-                    self.server.discovery_rebuild_state.update(
-                        {
-                            "running": True,
-                            "started_at": started_at,
-                            "started_monotonic": started_monotonic,
-                            "last_progress_at": started_at,
-                            "last_progress_monotonic": started_monotonic,
-                            "finished_at": None,
-                            "last_error": None,
-                            "scan_ms": None,
-                            "scanned_files": 0,
-                            "last_path": None,
-                        }
-                    )
-                    self.server.discovery_rebuild_public_snapshot = dict(self.server.discovery_rebuild_state)
-            else:
-                build_lock.acquire(blocking=True)
-                build_lock_held = True
-
             try:
-                def _progress(scanned_files: int, relpath: str) -> None:
-                    stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                    now_mono = time.time()
-                    with self.server.discovery_rebuild_state_lock:
-                        self.server.discovery_rebuild_state["last_progress_at"] = stamp
-                        self.server.discovery_rebuild_state["last_progress_monotonic"] = now_mono
-                        self.server.discovery_rebuild_state["scanned_files"] = int(scanned_files)
-                        self.server.discovery_rebuild_state["last_path"] = relpath
-                        self.server.discovery_rebuild_public_snapshot = dict(self.server.discovery_rebuild_state)
-
-                payload, idx_timing = _build_discovery_og_wip_index(cfg, on_progress=_progress if refresh else None)
-                self.server.discovery_last_index_timing = idx_timing
-                _discovery_log_index_build(idx_timing, refresh=refresh)
+                payload = _build_discovery_og_wip_index(cfg)
                 _atomic_write_json(idx_path, payload)
-                if refresh:
-                    finished_at = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                    finished_mono = time.time()
-                    with self.server.discovery_rebuild_state_lock:
-                        self.server.discovery_rebuild_state.update(
-                            {
-                                "running": False,
-                                "finished_at": finished_at,
-                                "last_progress_at": finished_at,
-                                "last_progress_monotonic": finished_mono,
-                                "scan_ms": payload.get("scan_ms"),
-                                "last_error": None,
-                            }
-                        )
-                        self.server.discovery_rebuild_public_snapshot = dict(self.server.discovery_rebuild_state)
             except Exception as e:
-                if refresh:
-                    finished_at = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                    finished_mono = time.time()
-                    with self.server.discovery_rebuild_state_lock:
-                        self.server.discovery_rebuild_state.update(
-                            {
-                                "running": False,
-                                "finished_at": finished_at,
-                                "last_progress_at": finished_at,
-                                "last_progress_monotonic": finished_mono,
-                                "last_error": str(e),
-                            }
-                        )
-                        self.server.discovery_rebuild_public_snapshot = dict(self.server.discovery_rebuild_state)
                 return _json_response(self, 500, {"error": "discovery_scan_failed", "detail": str(e)})
-            finally:
-                _release_build_lock()
         else:
             loaded = _load_discovery_index_disk(idx_path)
             if loaded is None:
-                build_lock.acquire(blocking=True)
-                build_lock_held = True
                 try:
-                    payload, idx_timing = _build_discovery_og_wip_index(cfg)
-                    self.server.discovery_last_index_timing = idx_timing
-                    _discovery_log_index_build(idx_timing, refresh=False)
+                    payload = _build_discovery_og_wip_index(cfg)
                     _atomic_write_json(idx_path, payload)
                 except Exception as e:
                     return _json_response(self, 500, {"error": "discovery_scan_failed", "detail": str(e)})
-                finally:
-                    _release_build_lock()
             else:
                 payload = loaded
                 from_cache = True
-                if incremental:
-                    if not build_lock.acquire(blocking=False):
-                        from_cache = True
-                    else:
-                        build_lock_held = True
-                        try:
-                            payload, idx_timing = _discovery_incremental_refresh_index(cfg, payload)
-                            self.server.discovery_last_index_timing = idx_timing
-                            _discovery_log_index_build(idx_timing, refresh=False)
-                            _atomic_write_json(idx_path, payload)
-                            from_cache = False
-                        except Exception as e:
-                            return _json_response(self, 500, {"error": "discovery_incremental_failed", "detail": str(e)})
-                        finally:
-                            _release_build_lock()
 
         # Regroup when on-disk index predates (lib, exact-stem) merge for mp4+png pairs.
         try:
-            ver = int(payload.get("version") or 0)
-        except Exception:
-            ver = 0
-        if ver < 5:
-            build_lock.acquire(blocking=True)
-            build_lock_held = True
-            try:
-                payload, idx_timing = _build_discovery_og_wip_index(cfg)
-                self.server.discovery_last_index_timing = idx_timing
-                _discovery_log_index_build(idx_timing, refresh=False)
+            if int(payload.get("version") or 0) < 5:
+                payload = _build_discovery_og_wip_index(cfg)
                 _atomic_write_json(idx_path, payload)
                 from_cache = False
-            except Exception as e:
-                return _json_response(self, 500, {"error": "discovery_scan_failed", "detail": str(e)})
-            finally:
-                _release_build_lock()
+        except Exception as e:
+            return _json_response(self, 500, {"error": "discovery_scan_failed", "detail": str(e)})
 
         items_in = payload.get("items")
         if not isinstance(items_in, list):
@@ -2709,42 +1850,6 @@ class Handler(BaseHTTPRequestHandler):
                     else None
                 )
         return _json_response(self, 200, out)
-
-    def _handle_discovery_library_status_get(self) -> None:
-        # Never block on the rebuild lock: readers use an atomic snapshot updated under that lock.
-        snap = getattr(self.server, "discovery_rebuild_public_snapshot", None)
-        st = dict(snap) if isinstance(snap, dict) else {}
-        now = time.time()
-        running_for_ms = None
-        if st.get("running") and isinstance(st.get("started_monotonic"), (int, float)):
-            try:
-                running_for_ms = max(0, int((now - float(st["started_monotonic"])) * 1000))
-            except Exception:
-                running_for_ms = None
-        heartbeat_age_ms = None
-        if isinstance(st.get("last_progress_monotonic"), (int, float)):
-            try:
-                heartbeat_age_ms = max(0, int((now - float(st["last_progress_monotonic"])) * 1000))
-            except Exception:
-                heartbeat_age_ms = None
-        return _json_response(
-            self,
-            200,
-            {
-                "running": bool(st.get("running")),
-                "started_at": st.get("started_at"),
-                "last_progress_at": st.get("last_progress_at"),
-                "finished_at": st.get("finished_at"),
-                "last_error": st.get("last_error"),
-                "scan_ms": st.get("scan_ms"),
-                "scanned_files": st.get("scanned_files"),
-                "last_path": st.get("last_path"),
-                "running_for_ms": running_for_ms,
-                "heartbeat_age_ms": heartbeat_age_ms,
-                "snapshot_ok": isinstance(snap, dict),
-                "last_index_timing": getattr(self.server, "discovery_last_index_timing", None),
-            },
-        )
 
     def _handle_discovery_trim_get(self, q: Dict[str, List[str]]) -> None:
         """
@@ -2825,42 +1930,145 @@ class Handler(BaseHTTPRequestHandler):
         (requires an extension such as workflow-to-api-converter on the Comfy server).
         """
         cfg = self.server.cfg
-        return _json_response(self, 200, _discovery_embed_api_prompt_response_dict(cfg, q))
-
-    def _handle_discovery_provenance_chain_get(self, q: Dict[str, List[str]]) -> None:
-        """
-        GET /api/discovery/provenance-chain
-          Same query params as /api/discovery/embed-api-prompt.
-
-        Returns an inferred ancestor chain by repeatedly reading embedded prompts and following
-        LoadImage / VHS_LoadVideo inputs until no embed, unresolved path, or max depth.
-        """
-        cfg = self.server.cfg
         primary = (q.get("relpath") or [""])[0].strip()
         if not primary:
             return _json_response(self, 200, {"ok": False, "error": "missing_relpath", "detail": "relpath is required"})
-        return _json_response(self, 200, _discovery_build_provenance_chain(cfg, q))
 
-    def _handle_discovery_exemplar_sets_get(self) -> None:
-        """GET /api/discovery/exemplar-sets — curated exemplar library + ordered working set (Discovery row keys)."""
-        cfg = self.server.cfg
-        doc = _read_exemplar_sets(cfg.exemplar_sets_path)
-        return _json_response(self, 200, doc)
+        abs_png, rel_png_api = _discovery_resolve_embed_png_abs(cfg, q)
+        if abs_png is None or not rel_png_api:
+            return _json_response(
+                self,
+                200,
+                {
+                    "ok": False,
+                    "error": "png_not_found",
+                    "detail": "No candidate PNG under og/wip (thumb, sibling of video, or primary .png).",
+                },
+            )
 
-    def _handle_discovery_exemplar_sets_post(self) -> None:
-        """POST /api/discovery/exemplar-sets — replace exemplar document (validated)."""
-        cfg = self.server.cfg
-        body = self._read_request_json()
-        if body is None:
-            return _json_response(self, 400, {"error": "bad_json"})
-        norm, err = _normalize_exemplar_sets_payload(body)
-        if err or norm is None:
-            return _json_response(self, 400, {"error": "bad_exemplar_sets", "detail": err or "invalid"})
         try:
-            _write_exemplar_sets(cfg.exemplar_sets_path, norm)
+            chunks = _read_png_text_chunks(abs_png)
         except Exception as e:
-            return _json_response(self, 500, {"error": "write_failed", "detail": str(e)})
-        return _json_response(self, 200, norm)
+            return _json_response(
+                self,
+                200,
+                {"ok": False, "error": "png_read_failed", "detail": str(e), "png_relpath": rel_png_api},
+            )
+
+        praw = chunks.get("prompt")
+        wfraw = chunks.get("workflow")
+        pr_obj: Optional[Dict[str, Any]] = None
+        wf_obj: Optional[Dict[str, Any]] = None
+        if isinstance(praw, str) and praw.strip():
+            try:
+                v = json.loads(praw)
+                if isinstance(v, dict):
+                    pr_obj = v
+            except Exception:
+                pass
+        if isinstance(wfraw, str) and wfraw.strip():
+            try:
+                v = json.loads(wfraw)
+                if isinstance(v, dict):
+                    wf_obj = v
+            except Exception:
+                pass
+
+        if pr_obj is None and wf_obj is None:
+            return _json_response(
+                self,
+                200,
+                {
+                    "ok": False,
+                    "error": "no_embedded_json",
+                    "detail": "PNG has no parsable workflow or prompt text chunk.",
+                    "png_relpath": rel_png_api,
+                },
+            )
+
+        _convert_hint = (
+            "Install a Comfy extension that exposes POST /workflow/convert (e.g. workflow-to-api-converter), "
+            "or save API-format prompt into the PNG."
+        )
+
+        if pr_obj is not None:
+            if _looks_like_comfy_api_prompt(pr_obj):
+                return _json_response(
+                    self,
+                    200,
+                    {
+                        "ok": True,
+                        "source": "embedded_png_prompt_api",
+                        "png_relpath": rel_png_api,
+                        "prompt": pr_obj,
+                    },
+                )
+            if _looks_like_comfy_ui_workflow(pr_obj):
+                prompt, err, http = _comfy_convert_workflow_to_prompt_dict(cfg, pr_obj)
+                if prompt is not None:
+                    return _json_response(
+                        self,
+                        200,
+                        {
+                            "ok": True,
+                            "source": "embedded_png_prompt_chunk_via_comfy",
+                            "png_relpath": rel_png_api,
+                            "prompt": prompt,
+                            "comfy_convert_http": http,
+                        },
+                    )
+                return _json_response(
+                    self,
+                    200,
+                    {
+                        "ok": False,
+                        "error": "comfy_convert_failed",
+                        "detail": err,
+                        "hint": _convert_hint,
+                        "png_relpath": rel_png_api,
+                        "comfy_convert_http": http,
+                    },
+                )
+            if wf_obj is None:
+                return _json_response(
+                    self,
+                    200,
+                    {
+                        "ok": False,
+                        "error": "unrecognized_prompt_chunk",
+                        "detail": "prompt text chunk is neither API prompt nor UI workflow (nodes+links).",
+                        "png_relpath": rel_png_api,
+                    },
+                )
+
+        if wf_obj is not None:
+            prompt, err, http = _comfy_convert_workflow_to_prompt_dict(cfg, wf_obj)
+            if prompt is not None:
+                return _json_response(
+                    self,
+                    200,
+                    {
+                        "ok": True,
+                        "source": "embedded_png_workflow_via_comfy",
+                        "png_relpath": rel_png_api,
+                        "prompt": prompt,
+                        "comfy_convert_http": http,
+                    },
+                )
+            return _json_response(
+                self,
+                200,
+                {
+                    "ok": False,
+                    "error": "comfy_convert_failed",
+                    "detail": err,
+                    "hint": _convert_hint,
+                    "png_relpath": rel_png_api,
+                    "comfy_convert_http": http,
+                },
+            )
+
+        return _json_response(self, 200, {"ok": False, "error": "no_usable_workflow", "detail": "No workflow chunk to convert.", "png_relpath": rel_png_api})
 
     def _handle_discovery_trim_post(self) -> None:
         """
@@ -3626,22 +2834,6 @@ class ExperimentsServer(ThreadingHTTPServer):
     def __init__(self, server_address: Tuple[str, int], cfg: ServerConfig):
         super().__init__(server_address, Handler)
         self.cfg = cfg
-        self.discovery_rebuild_state_lock = threading.Lock()
-        self.discovery_rebuild_state: Dict[str, Any] = {
-            "running": False,
-            "started_at": None,
-            "started_monotonic": None,
-            "last_progress_at": None,
-            "last_progress_monotonic": None,
-            "finished_at": None,
-            "last_error": None,
-            "scan_ms": None,
-            "scanned_files": 0,
-            "last_path": None,
-        }
-        self.discovery_rebuild_public_snapshot: Dict[str, Any] = dict(self.discovery_rebuild_state)
-        self.discovery_last_index_timing: Optional[Dict[str, Any]] = None
-        self.discovery_index_build_lock = threading.Lock()
 
 
 def main() -> int:
@@ -3668,7 +2860,6 @@ def main() -> int:
     wip_root = _resolve_wip_root(ws, output_root, wip_override)
     static_dir = Path(args.static_dir) if args.static_dir else (ws / "experiments_ui" / "dist")
     orchestrator_state_path = ws / "output" / "orchestrator" / "state.json"
-    exemplar_sets_path = ws / "output" / "orchestrator" / "exemplar_sets.json"
     queue_ledger_state_path = ws / "output" / "output" / "experiments" / "_status" / "comfy_queue_ledger_state.json"
     queue_ledger_events_path = ws / "output" / "output" / "experiments" / "_status" / "comfy_queue_ledger.jsonl"
     discovery_index_path = ws / "output" / "output" / "_status" / "discovery_og_wip_index.json"
@@ -3689,7 +2880,6 @@ def main() -> int:
         tune_script=tune_script,
         comfy_server=comfy_server,
         orchestrator_state_path=orchestrator_state_path,
-        exemplar_sets_path=exemplar_sets_path,
         queue_ledger_state_path=queue_ledger_state_path,
         queue_ledger_events_path=queue_ledger_events_path,
         discovery_index_path=discovery_index_path,
@@ -3702,13 +2892,11 @@ def main() -> int:
     print(f"[experiments-ui] wip_root={cfg.wip_root}")
     print(f"[experiments-ui] static_dir={cfg.static_dir}")
     print(f"[experiments-ui] orchestrator_state={cfg.orchestrator_state_path}")
-    print(f"[experiments-ui] exemplar_sets={cfg.exemplar_sets_path}")
     print(f"[experiments-ui] queue_ledger_state={cfg.queue_ledger_state_path}")
     print(f"[experiments-ui] discovery_index={cfg.discovery_index_path}")
     print(
         "[experiments-ui] discovery_routes=GET /api/discovery/library, "
-        "/api/discovery/trim, /api/discovery/embed-api-prompt, /api/discovery/provenance-chain, "
-        "/api/discovery/exemplar-sets (+ POST)"
+        "/api/discovery/trim, /api/discovery/embed-api-prompt"
     )
     server.serve_forever()
     return 0
