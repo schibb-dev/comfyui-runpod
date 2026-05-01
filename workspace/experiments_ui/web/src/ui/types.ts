@@ -303,6 +303,11 @@ export type DiscoveryLibraryItem = {
   /** Video container frame rate when known (e.g. from metadata). */
   frame_rate?: number | null;
   members?: DiscoveryMember[];
+  /**
+   * When the discovery index is v6+ and provenance was computed at index time
+   * (GET /api/discovery/library). Same shape as GET /api/discovery/provenance-chain.
+   */
+  provenance?: DiscoveryProvenanceChainResponse;
 };
 
 export type DiscoveryLibraryResponse = {
@@ -328,8 +333,38 @@ export type DiscoveryLastIndexTiming = {
   other_scan_ms?: number;
   merge_ms?: number;
   sort_ms?: number;
+  provenance_ms?: number;
   files_scanned?: number;
   group_count?: number;
+};
+
+/** Inferred from workflow node classes when the exemplar is added (legacy rows may omit). */
+export type DiscoveryExemplarInputProfile = {
+  uses_image_start: boolean;
+  uses_video_start: boolean;
+};
+
+/** GET/POST /api/discovery/exemplar-sets — server-persisted exemplar keys (same as discoveryItemKey). */
+export type DiscoveryExemplarLibraryEntry = {
+  key: string;
+  note?: string;
+  added_at?: string;
+  /** Optional label for menus / lists; falls back to live index name or key. */
+  display_name?: string;
+  /** Snapshot of the asset display name when added (or backfilled); stays stable if the file is renamed. */
+  source_name?: string;
+  /** When set, library / working-set rows are filtered against the current asset’s available media. */
+  input_profile?: DiscoveryExemplarInputProfile;
+};
+
+export type DiscoveryExemplarWorkingEntry = {
+  key: string;
+};
+
+export type DiscoveryExemplarSets = {
+  version: number;
+  library: DiscoveryExemplarLibraryEntry[];
+  working_set: DiscoveryExemplarWorkingEntry[];
 };
 
 export type DiscoveryLibraryStatusResponse = {
@@ -349,6 +384,12 @@ export type DiscoveryLibraryStatusResponse = {
 };
 
 /** GET /api/discovery/provenance-chain — inferred ancestor chain from embedded prompts (see caveat in response). */
+export type DiscoveryProvenanceTerminalSource = {
+  relpath: string;
+  library?: string;
+  chain_halted_reason?: string | null;
+};
+
 export type DiscoveryProvenanceChainLink = {
   depth: number;
   artifact_relpath?: string | null;
@@ -358,6 +399,24 @@ export type DiscoveryProvenanceChainLink = {
   input_raw_from_prompt?: string | null;
   input_kind?: string | null;
   parent_resolved_relpath?: string | null;
+  /** Media file this step produced (merged discovery primary for depth 0, else prior step's parent). */
+  step_output_relpath?: string | null;
+  /** Library inferred from step_output path (og / wip / all). */
+  step_output_library?: string | null;
+  branch_provenance?: DiscoveryProvenanceBranchPayload;
+};
+
+/** Per-link branch when that step's parent matches another indexed discovery row (see server index). */
+export type DiscoveryProvenanceBranchPayload = {
+  ok: true;
+  source?: string;
+  caveat?: string;
+  links: DiscoveryProvenanceChainLink[];
+  stops?: unknown[];
+  terminal_source?: DiscoveryProvenanceTerminalSource;
+  /** Primary relpath of the discovery row this branch was copied from. */
+  from_discovery_primary?: string;
+  nested_truncated?: boolean;
 };
 
 export type DiscoveryProvenanceChainResponse =
@@ -367,6 +426,7 @@ export type DiscoveryProvenanceChainResponse =
       caveat: string;
       links: DiscoveryProvenanceChainLink[];
       stops: unknown[];
+      terminal_source?: DiscoveryProvenanceTerminalSource;
     }
   | {
       ok: false;

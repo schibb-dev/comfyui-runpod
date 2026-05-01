@@ -346,6 +346,8 @@ EXPERIMENTS_UI_PORT=8790
 
 - Then open `http://127.0.0.1:8790/`.
 
+Discovery’s exemplar library / working set sync uses **`GET` / `POST /api/discovery/exemplar-sets`** (persisted under `workspace/output/orchestrator/exemplar_sets.json`).
+
 If you see a message about missing React build output, restart the container once; the entrypoint will build `workspace/experiments_ui/dist` automatically when `EXPERIMENTS_UI_BUILD=true` (default).
 
 ### RunPod Deployment
