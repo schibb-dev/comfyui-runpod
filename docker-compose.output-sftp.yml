@@ -3,7 +3,7 @@
 #
 # Standalone:
 #   docker compose -f docker-compose.output-sftp.yml up -d
-# With the main stack on boot (Linux/WSL systemd), see scripts/install-systemd-boot.sh or npm run boot:install-systemd.
+# With the main stack on boot (Linux/WSL systemd), see scripts/install-systemd-boot.sh.
 #
 # Set OUTPUT_SFTP_PASSWORD in .env (see .env.example). Default here is only a dev placeholder.
 

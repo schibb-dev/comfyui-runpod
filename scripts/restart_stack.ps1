@@ -4,11 +4,21 @@
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path (Split-Path $MyInvocation.MyCommand.Path))
 
+# Match package.json / Makefile (project includes output-sftp compose overlay).
+$dc = @("compose", "-f", "docker-compose.yml", "-f", "docker-compose.output-sftp.yml")
+$ops = @(
+  "ws_event_tap",
+  "refresh_run_status",
+  "report_experiment_queue_status",
+  "queue_incomplete_experiments",
+  "queue_ledger"
+)
+
 Write-Host "=== 1/4 Stopping satellite services ===" -ForegroundColor Cyan
-docker compose stop watch_queue ws_event_tap refresh_run_status report_experiment_queue_status queue_incomplete_experiments
+docker @dc stop watch_queue @ops
 
 Write-Host "=== 2/4 Restarting ComfyUI ===" -ForegroundColor Cyan
-docker compose restart comfyui
+docker @dc restart comfyui
 
 Write-Host "Waiting for ComfyUI http://127.0.0.1:8188/queue (up to 120s)..." -ForegroundColor Yellow
 $ok = $false
@@ -22,14 +32,14 @@ for ($i = 0; $i -lt 40; $i++) {
 }
 
 if (-not $ok) {
-  Write-Host "WARNING: /queue not ready; check: docker compose logs comfyui --tail 100" -ForegroundColor Yellow
+  Write-Host "WARNING: /queue not ready; check: docker compose -f docker-compose.yml -f docker-compose.output-sftp.yml logs comfyui --tail 100" -ForegroundColor Yellow
 }
 
 Write-Host "=== 3/4 Starting watch_queue ===" -ForegroundColor Cyan
-docker compose start watch_queue
+docker @dc start watch_queue
 
 Write-Host "=== 4/4 Starting ops services ===" -ForegroundColor Cyan
-docker compose start ws_event_tap refresh_run_status report_experiment_queue_status queue_incomplete_experiments
+docker @dc start @ops
 
 Write-Host "=== Status ===" -ForegroundColor Green
-docker compose ps -a --format "table {{.Name}}\t{{.Status}}\t{{.Service}}"
+docker @dc ps -a --format "table {{.Name}}\t{{.Status}}\t{{.Service}}"

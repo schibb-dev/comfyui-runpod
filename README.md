@@ -2,6 +2,10 @@
 
 A complete Docker-based ComfyUI setup optimized for RunPod deployment with automatic model downloads, custom node installation, and workflow support. This project extends the base ComfyUI template with WAN video generation capabilities, GGUF model support, and automated LoRA management.
 
+## Documentation
+
+All markdown guides are indexed in **[DOCUMENTATION.md](DOCUMENTATION.md)** (tooling reference, deployment, workflows, and topic docs).
+
 ## TL;DR (local dev: bounce the stack)
 
 From the repo root (after `docker compose up -d` and any one-time setup in **Quick Start**):
