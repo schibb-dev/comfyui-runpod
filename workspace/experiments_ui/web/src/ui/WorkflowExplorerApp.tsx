@@ -9,6 +9,7 @@ import {
 } from "./api";
 import { MediaAssetCard } from "./MediaAssetCard";
 import { VideoAutoplayToggle } from "./VideoAutoplayToggle";
+import { VideoTrimControls, type VideoTrimPlaybackMode } from "./VideoTrimControls";
 import type {
   WorkflowExplorerAsset,
   WorkflowExplorerBrowseEntry,
@@ -36,15 +37,6 @@ function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function formatSeconds(sec: number): string {
-  if (!Number.isFinite(sec) || sec < 0) return "0:00";
-  const s = Math.floor(sec % 60);
-  const m = Math.floor((sec / 60) % 60);
-  const h = Math.floor(sec / 3600);
-  const pad = (n: number) => (n < 10 ? `0${n}` : String(n));
-  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
 }
 
 function loadFactoryBrowserVideoAutoplay(): boolean {
@@ -190,12 +182,15 @@ function BucketAddForm({
   const [videoAutoplay, setVideoAutoplay] = useState(loadFactoryBrowserVideoAutoplay);
   const [clipIn, setClipIn] = useState<number | null>(null);
   const [clipOut, setClipOut] = useState<number | null>(null);
+  const [clipPlaybackMode, setClipPlaybackMode] = useState<VideoTrimPlaybackMode>("stop_at_end");
   const [previewDuration, setPreviewDuration] = useState(0);
   const [previewCurrentTime, setPreviewCurrentTime] = useState(0);
+  const [previewOverlayVisible, setPreviewOverlayVisible] = useState(false);
   const [browseLoading, setBrowseLoading] = useState(false);
   const [browseError, setBrowseError] = useState("");
   const listRef = useRef<HTMLDivElement | null>(null);
   const previewVideoRef = useRef<HTMLVideoElement | null>(null);
+  const previewOverlayTimerRef = useRef<number | null>(null);
 
   const loadBrowse = async (next?: { root?: string; dir?: string; q?: string; mediaType?: "all" | "image" | "video" }) => {
     const root = next?.root ?? browseRoot;
@@ -250,6 +245,29 @@ function BucketAddForm({
     setVideoAutoplay(on);
     persistFactoryBrowserVideoAutoplay(on);
   };
+
+  const clearPreviewOverlayTimer = () => {
+    if (previewOverlayTimerRef.current != null) {
+      window.clearTimeout(previewOverlayTimerRef.current);
+      previewOverlayTimerRef.current = null;
+    }
+  };
+
+  const revealPreviewOverlay = () => {
+    if (!selectedEntry) return;
+    setPreviewOverlayVisible(true);
+    clearPreviewOverlayTimer();
+    previewOverlayTimerRef.current = window.setTimeout(() => {
+      setPreviewOverlayVisible(false);
+      previewOverlayTimerRef.current = null;
+    }, 5000);
+  };
+
+  useEffect(() => {
+    setPreviewOverlayVisible(false);
+    clearPreviewOverlayTimer();
+    return clearPreviewOverlayTimer;
+  }, [selectedEntry?.path]);
 
   const entries = browse?.entries || [];
   const activeIndex = activeEntryPath ? entries.findIndex((entry) => entry.path === activeEntryPath) : -1;
@@ -318,14 +336,6 @@ function BucketAddForm({
     setPreviewCurrentTime(next);
   };
 
-  const playClip = () => {
-    const video = previewVideoRef.current;
-    if (!video || !clipActive || clipIn == null) return;
-    video.currentTime = clipIn;
-    setPreviewCurrentTime(clipIn);
-    void video.play().catch(() => {});
-  };
-
   return (
     <div className="factory-add-panel">
       <div className="factory-add-actions">
@@ -350,64 +360,64 @@ function BucketAddForm({
               </div>
               <button type="button" onClick={closeBrowser}>Close</button>
             </div>
-            <div className="factory-browser-toolbar">
-              <select
-                value={browseRoot}
-                disabled={browseLoading}
-                onChange={(e) => {
-                  const root = e.target.value;
-                  setBrowseRoot(root);
-                  void loadBrowse({ root, dir: "" });
-                }}
-              >
-                {(browse?.roots || []).map((root) => (
-                  <option key={root.id} value={root.id}>
-                    {root.label}
-                  </option>
-                ))}
-              </select>
-              {browseKind === "asset" ? (
-                <select
-                  value={browseMediaType}
-                  disabled={browseLoading}
-                  onChange={(e) => {
-                    const mediaType = e.target.value as "all" | "image" | "video";
-                    setBrowseMediaType(mediaType);
-                    void loadBrowse({ mediaType });
-                  }}
-                >
-                  <option value="image">Images</option>
-                  <option value="video">Videos</option>
-                  <option value="all">Images + Videos</option>
-                </select>
-              ) : (
-                <select value="workflow" disabled>
-                  <option value="workflow">Workflows</option>
-                </select>
-              )}
-              <input
-                type="search"
-                value={browseQuery}
-                disabled={browseLoading}
-                onChange={(e) => setBrowseQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    void loadBrowse({ q: browseQuery });
-                  }
-                }}
-                placeholder="Filter current folder…"
-              />
-              <button type="button" disabled={browseLoading} onClick={() => void loadBrowse({ q: browseQuery })}>
-                Search
-              </button>
-            </div>
-            <div className="factory-browser-path">
-              <span>{browse?.root?.path || "loading roots…"}</span>
-              {browseDir ? <span>/{browseDir}</span> : null}
-            </div>
             <div className="factory-browser-main">
               <div className="factory-browser-left">
+                <div className="factory-browser-toolbar">
+                  <select
+                    value={browseRoot}
+                    disabled={browseLoading}
+                    onChange={(e) => {
+                      const root = e.target.value;
+                      setBrowseRoot(root);
+                      void loadBrowse({ root, dir: "" });
+                    }}
+                  >
+                    {(browse?.roots || []).map((root) => (
+                      <option key={root.id} value={root.id}>
+                        {root.label}
+                      </option>
+                    ))}
+                  </select>
+                  {browseKind === "asset" ? (
+                    <select
+                      value={browseMediaType}
+                      disabled={browseLoading}
+                      onChange={(e) => {
+                        const mediaType = e.target.value as "all" | "image" | "video";
+                        setBrowseMediaType(mediaType);
+                        void loadBrowse({ mediaType });
+                      }}
+                    >
+                      <option value="image">Images</option>
+                      <option value="video">Videos</option>
+                      <option value="all">Images + Videos</option>
+                    </select>
+                  ) : (
+                    <select value="workflow" disabled>
+                      <option value="workflow">Workflows</option>
+                    </select>
+                  )}
+                  <input
+                    type="search"
+                    value={browseQuery}
+                    disabled={browseLoading}
+                    onChange={(e) => setBrowseQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void loadBrowse({ q: browseQuery });
+                      }
+                    }}
+                    placeholder="Filter current folder..."
+                  />
+                  <button type="button" disabled={browseLoading} onClick={() => void loadBrowse({ q: browseQuery })}>
+                    Search
+                  </button>
+                </div>
+                <div className="factory-browser-path">
+                  <span>{browse?.root?.path || "loading roots..."}</span>
+                  {browseDir ? <span>/{browseDir}</span> : null}
+                </div>
                 <div className="factory-browser-key-hint">Arrow keys move selection · Enter opens/selects · Esc closes</div>
                 {browse?.parent !== undefined && browse?.parent !== null ? (
                   <button type="button" className="factory-browser-up" disabled={browseLoading} onClick={() => void loadBrowse({ dir: browse.parent || "" })}>
@@ -462,7 +472,15 @@ function BucketAddForm({
               <div className="factory-browser-preview">
                 {selectedEntry ? (
                   <>
-                    <div className="factory-browser-preview-frame">
+                    <div className="factory-browser-preview-head">
+                      <div className="factory-browser-preview-title">{selectedEntry.name}</div>
+                      <div className="factory-browser-preview-meta">
+                        {selectedEntry.media_type} · {formatBytes(selectedEntry.size)}
+                      </div>
+                    </div>
+                    <div
+                      className="factory-browser-preview-frame"
+                    >
                       {selectedIsImage ? (
                         <img className="factory-browser-preview-media" src={selectedEntry.url || ""} alt="" />
                       ) : selectedIsVideo ? (
@@ -475,6 +493,14 @@ function BucketAddForm({
                           autoPlay={videoAutoplay}
                           muted={videoAutoplay}
                           loop={videoAutoplay}
+                          onPlay={(e) => {
+                            if (!clipActive || clipIn == null || clipOut == null) return;
+                            const video = e.currentTarget;
+                            if (video.currentTime < clipIn || video.currentTime >= clipOut) {
+                              video.currentTime = clipIn;
+                              setPreviewCurrentTime(clipIn);
+                            }
+                          }}
                           onLoadedMetadata={(e) => {
                             const video = e.currentTarget;
                             const duration = Number.isFinite(video.duration) ? video.duration : 0;
@@ -485,14 +511,36 @@ function BucketAddForm({
                             const video = e.currentTarget;
                             setPreviewCurrentTime(video.currentTime || 0);
                             if (clipActive && clipOut != null && video.currentTime >= clipOut) {
-                              video.pause();
-                              video.currentTime = clipOut;
+                              if (clipPlaybackMode === "repeat" && clipIn != null) {
+                                video.currentTime = clipIn;
+                                void video.play().catch(() => {});
+                              } else {
+                                video.pause();
+                                video.currentTime = clipOut;
+                              }
                             }
                           }}
                         />
                       ) : (
                         <div className="factory-browser-preview-empty">No preview for this file type.</div>
                       )}
+                      <div
+                        className={
+                          "factory-browser-preview-overlay" +
+                          (previewOverlayVisible ? " factory-browser-preview-overlay--visible" : "")
+                        }
+                        aria-hidden
+                      >
+                        <div>{selectedEntry.media_type}</div>
+                        <div>{formatBytes(selectedEntry.size)}</div>
+                        <div>{selectedEntry.path}</div>
+                      </div>
+                      <div
+                        className="factory-browser-preview-overlay-hotspot"
+                        aria-hidden
+                        onMouseEnter={revealPreviewOverlay}
+                        onMouseMove={revealPreviewOverlay}
+                      />
                     </div>
                     {selectedEntry.media_type === "video" ? (
                       <VideoAutoplayToggle
@@ -503,60 +551,31 @@ function BucketAddForm({
                       />
                     ) : null}
                     {selectedEntry.media_type === "video" ? (
-                      <div className="factory-browser-clip-controls" aria-label="Preview clip controls">
-                        <div className="factory-browser-clip-time">
-                          {formatSeconds(previewCurrentTime)} / {formatSeconds(previewDuration)}
-                        </div>
-                        <input
-                          type="range"
-                          min={0}
-                          max={Math.max(0, previewDuration)}
-                          step={0.01}
-                          value={Math.min(previewCurrentTime, Math.max(0, previewDuration))}
-                          disabled={!previewDuration}
-                          onChange={(e) => seekPreview(Number(e.target.value))}
+                      <details className="factory-browser-clip-expander">
+                        <summary>
+                          Clip controls
+                        </summary>
+                        <VideoTrimControls
+                          className="factory-browser-trim-controls"
+                          videoRef={previewVideoRef}
+                          duration={previewDuration}
+                          currentTime={previewCurrentTime}
+                          markIn={clipIn}
+                          markOut={clipOut}
+                          mode={clipPlaybackMode}
+                          mediaSyncKey={selectedEntry.path}
+                          onSeek={setPreviewCurrentTime}
+                          onSyncTime={setPreviewCurrentTime}
+                          onMarkInChange={setClipIn}
+                          onMarkOutChange={setClipOut}
+                          onClear={() => {
+                            setClipIn(null);
+                            setClipOut(null);
+                          }}
+                          onModeChange={setClipPlaybackMode}
                         />
-                        <div className="factory-browser-clip-buttons">
-                          <button
-                            type="button"
-                            disabled={!previewDuration}
-                            onClick={() => setClipIn(previewCurrentTime)}
-                          >
-                            Set In
-                          </button>
-                          <button
-                            type="button"
-                            disabled={!previewDuration}
-                            onClick={() => setClipOut(previewCurrentTime)}
-                          >
-                            Set Out
-                          </button>
-                          <button type="button" disabled={!clipActive} onClick={playClip}>
-                            Play Clip
-                          </button>
-                          <button
-                            type="button"
-                            disabled={clipIn == null && clipOut == null}
-                            onClick={() => {
-                              setClipIn(null);
-                              setClipOut(null);
-                            }}
-                          >
-                            Clear
-                          </button>
-                        </div>
-                        <div className="factory-browser-clip-readout">
-                          In {clipIn == null ? "--" : formatSeconds(clipIn)} · Out{" "}
-                          {clipOut == null ? "--" : formatSeconds(clipOut)}
-                          {clipIn != null && clipOut != null && clipOut <= clipIn ? " · out must be after in" : ""}
-                        </div>
-                      </div>
+                      </details>
                     ) : null}
-                    <div className="factory-browser-preview-title">{selectedEntry.name}</div>
-                    <div className="factory-browser-preview-meta">
-                      {selectedEntry.media_type} · {formatBytes(selectedEntry.size)}
-                    </div>
-                    <div className="factory-browser-preview-path">{selectedEntry.path}</div>
                   </>
                 ) : (
                   <div className="factory-browser-preview-empty">Select an image or video to preview it here.</div>

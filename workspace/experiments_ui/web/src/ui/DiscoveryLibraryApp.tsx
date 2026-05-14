@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, us
 import { fetchDiscoveryEmbedApiPrompt, fetchDiscoveryLibrary, submitPromptToQueue } from "./api";
 import { MediaAssetCard } from "./MediaAssetCard";
 import { VideoAutoplayToggle } from "./VideoAutoplayToggle";
+import { VideoTrimControls } from "./VideoTrimControls";
 import {
   discoveryTrimMediaRelpath,
   loadDiscoveryTrimAsync,
@@ -2629,73 +2630,26 @@ function DiscoveryDesktopPreview({
             )}
           </div>
           {playUrl ? (
-            <div className="discovery-desktop-preview-trim">
-              <div className="discovery-trim-primary-row">
-                <div className="discovery-trim-primary-row__time mono">
-                  <span className="discovery-trim-time-readout">
-                    {fmtVideoSec(trimUiCurrentTime)}{" "}
-                    <span className="discovery-trim-range-readout-sep">/</span> {fmtVideoSec(previewDuration)}
-                  </span>
-                </div>
-                <div className="discovery-trim-primary-row__center">
-                  <DiscoveryTrimTransport
-                    videoRef={previewVideoRef}
-                    duration={previewDuration}
-                    markIn={markIn}
-                    markOut={markOut}
-                    mediaSyncKey={k}
-                    size="large"
-                    onSyncTime={(t) => {
-                      setTrimUiCurrentTime(t);
-                    }}
-                  />
-                </div>
-                <div className="discovery-trim-primary-row__io">
-                  <TrimInOutAtPlayheadButtons
-                    duration={previewDuration}
-                    markIn={markIn}
-                    markOut={markOut}
-                    setMarkIn={setMarkIn}
-                    setMarkOut={setMarkOut}
-                    getVideo={() => previewVideoRef.current}
-                    playheadSec={trimUiCurrentTime}
-                    paused={previewPaused}
-                  />
-                </div>
-              </div>
-              <div className="discovery-trim-timeline-row">
-                <div className="discovery-trim-timeline-row__track">
-                  <PhoneTrimTimeline
-                    duration={previewDuration}
-                    currentTime={trimUiCurrentTime}
-                    markIn={markIn}
-                    markOut={markOut}
-                    disabled={previewDuration <= 0}
-                    onSeek={(t) => {
-                      const v = previewVideoRef.current;
-                      if (!v) return;
-                      v.currentTime = t;
-                      setTrimUiCurrentTime(t);
-                    }}
-                    onMarkInChange={setMarkIn}
-                    onMarkOutChange={setMarkOut}
-                  />
-                </div>
-                <div className="discovery-trim-timeline-row__actions" role="group" aria-label="Trim range options">
-                  <TrimClearInOutButton
-                    onClick={() => {
-                      setMarkIn(null);
-                      setMarkOut(null);
-                    }}
-                    disabled={!trimEnforcesPlayback}
-                  />
-                  <TrimPlaybackOutIconToggle
-                    mode={trimPlaybackLoop ? "repeat" : "stop_at_end"}
-                    onModeChange={(m) => setTrimPlaybackLoop(m === "repeat")}
-                  />
-                </div>
-              </div>
-            </div>
+            <VideoTrimControls
+              className="discovery-desktop-preview-trim"
+              videoRef={previewVideoRef}
+              duration={previewDuration}
+              currentTime={trimUiCurrentTime}
+              markIn={markIn}
+              markOut={markOut}
+              mode={trimPlaybackLoop ? "repeat" : "stop_at_end"}
+              mediaSyncKey={k}
+              size="large"
+              onSeek={setTrimUiCurrentTime}
+              onSyncTime={setTrimUiCurrentTime}
+              onMarkInChange={setMarkIn}
+              onMarkOutChange={setMarkOut}
+              onClear={() => {
+                setMarkIn(null);
+                setMarkOut(null);
+              }}
+              onModeChange={(m) => setTrimPlaybackLoop(m === "repeat")}
+            />
           ) : null}
         </div>
       </div>
