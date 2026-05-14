@@ -315,6 +315,24 @@ export type DiscoveryLibraryResponse = {
   item_count_filtered: number;
   truncated: boolean;
   limit: number;
+  health?: {
+    generated_at?: string;
+    reason?: string;
+    from_cache?: boolean;
+    previous_updated_at?: string | null;
+    current_updated_at?: string | null;
+    previous_item_count?: number | null;
+    current_item_count?: number;
+    summary?: {
+      missing_primary?: number;
+      missing_video?: number;
+      missing_thumb?: number;
+      orphan_sidecar?: number;
+      orphan_thumb?: number;
+      removed_since_previous_index?: number;
+    };
+    samples?: Record<string, unknown[]>;
+  };
   items: DiscoveryLibraryItem[];
 };
 

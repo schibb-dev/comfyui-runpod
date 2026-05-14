@@ -3017,6 +3017,24 @@ function DiscoveryLibraryInner() {
     if (!savedOnly) return items;
     return items.filter((it) => saved.has(discoveryItemKey(it)));
   }, [items, savedOnly, saved]);
+  const healthSummary = useMemo(() => {
+    const s = data?.health?.summary;
+    if (!s) return "";
+    const parts: string[] = [];
+    const removed = Number(s.removed_since_previous_index || 0);
+    const missingPrimary = Number(s.missing_primary || 0);
+    const missingVideo = Number(s.missing_video || 0);
+    const missingThumb = Number(s.missing_thumb || 0);
+    const orphanSidecar = Number(s.orphan_sidecar || 0);
+    const orphanThumb = Number(s.orphan_thumb || 0);
+    if (removed) parts.push(`${removed} stale row${removed === 1 ? "" : "s"} removed`);
+    if (missingPrimary) parts.push(`${missingPrimary} missing primary`);
+    if (missingVideo) parts.push(`${missingVideo} missing video`);
+    if (missingThumb) parts.push(`${missingThumb} missing thumb`);
+    if (orphanSidecar) parts.push(`${orphanSidecar} orphan sidecar`);
+    if (orphanThumb) parts.push(`${orphanThumb} orphan thumb`);
+    return parts.length ? `health: ${parts.join(" · ")}` : "";
+  }, [data]);
 
   useEffect(() => {
     if (!isPhone || phoneFocusIndex === null) return;
@@ -3332,6 +3350,7 @@ function DiscoveryLibraryInner() {
                 {data.truncated ? " · truncated" : ""}
                 {data.from_cache ? " · cached" : ""}
                 {listRefreshing ? " · updating…" : ""}
+                {healthSummary ? ` · ${healthSummary}` : ""}
                 {" · "}
                 <span style={{ color: "var(--text)" }}>
                   Tap a row to open the viewer · after {(PHONE_VIEWER_CONTROLS_MS / 1000).toFixed(1)}s only the video
@@ -3393,7 +3412,7 @@ function DiscoveryLibraryInner() {
           data.scan_ms != null ? ` · ${data.scan_ms} ms scan` : ""
         }${listRefreshing ? " · updating…" : ""} · ${data.item_count_filtered} matches${
           data.truncated ? " (truncated)" : ""
-        }`
+        }${healthSummary ? ` · ${healthSummary}` : ""}`
       : undefined;
 
   return (
@@ -3445,6 +3464,12 @@ function DiscoveryLibraryInner() {
               {" · "}
               <span className="mono">{data.item_count_filtered}</span> matches
               {data.truncated ? " (truncated)" : ""}
+              {healthSummary ? (
+                <>
+                  {" · "}
+                  <span className="discovery-health-status">{healthSummary}</span>
+                </>
+              ) : null}
             </>
           ) : null}
         </div>

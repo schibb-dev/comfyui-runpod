@@ -149,6 +149,8 @@ _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _DISCOVERY_MEDIA_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm"}
 _DISCOVERY_VIDEO_EXTS = {".mp4", ".webm"}
 _DISCOVERY_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+_DISCOVERY_SIDECAR_EXTS = {".xmp", ".json"}
+_DISCOVERY_HEALTH_SAMPLE_LIMIT = 25
 
 
 def _read_png_text_chunks(png_path: Path) -> Dict[str, str]:
@@ -605,6 +607,179 @@ def _build_discovery_og_wip_index(cfg: "ServerConfig") -> Dict[str, Any]:
 
 
 def _load_discovery_index_disk(path: Path) -> Optional[Dict[str, Any]]:
+    if not path.exists():
+        return None
+    try:
+        obj = _read_json(path)
+    except Exception:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _discovery_index_health_path(path: Path) -> Path:
+    return path.with_name("discovery_index_health.json")
+
+
+def _discovery_rel_file_exists(cfg: "ServerConfig", relpath: Any) -> bool:
+    if not isinstance(relpath, str) or not relpath.strip():
+        return False
+    norm = _normalize_rel_posix(relpath.strip())
+    if not norm:
+        return False
+    full = _safe_join(cfg.output_root, norm)
+    return bool(full is not None and full.exists() and full.is_file())
+
+
+def _discovery_index_key(item: Dict[str, Any]) -> str:
+    gid = item.get("group_id")
+    if isinstance(gid, str) and gid.strip():
+        return gid.strip()
+    rel = item.get("relpath")
+    return str(rel or "")
+
+
+def _discovery_index_item_map(index_obj: Any) -> Dict[str, Dict[str, Any]]:
+    out: Dict[str, Dict[str, Any]] = {}
+    if not isinstance(index_obj, dict):
+        return out
+    items = index_obj.get("items")
+    if not isinstance(items, list):
+        return out
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        key = _discovery_index_key(item)
+        if key:
+            out[key] = item
+    return out
+
+
+def _discovery_sidecars_for_rel(cfg: "ServerConfig", relpath: Any) -> List[str]:
+    if not isinstance(relpath, str) or not relpath.strip():
+        return []
+    norm = _normalize_rel_posix(relpath.strip())
+    if not norm:
+        return []
+    full = _safe_join(cfg.output_root, norm)
+    if full is None:
+        return []
+    parent = full.parent
+    if not parent.is_dir():
+        return []
+    stem = full.stem
+    out: List[str] = []
+    try:
+        for sibling in parent.iterdir():
+            if sibling.stem != stem:
+                continue
+            if sibling.suffix.lower() not in _DISCOVERY_SIDECAR_EXTS:
+                continue
+            try:
+                rel = sibling.resolve().relative_to(cfg.output_root.resolve()).as_posix()
+            except Exception:
+                continue
+            out.append(rel)
+    except Exception:
+        return []
+    return sorted(out)
+
+
+def _discovery_sample_append(xs: List[Dict[str, Any]], item: Dict[str, Any], **extra: Any) -> None:
+    if len(xs) >= _DISCOVERY_HEALTH_SAMPLE_LIMIT:
+        return
+    row = {
+        "group_id": item.get("group_id"),
+        "name": item.get("name"),
+        "relpath": item.get("relpath"),
+        "video_relpath": item.get("video_relpath"),
+        "thumb_relpath": item.get("thumb_relpath"),
+    }
+    row.update(extra)
+    xs.append(row)
+
+
+def _build_discovery_index_health(
+    cfg: "ServerConfig",
+    *,
+    previous_index: Optional[Dict[str, Any]],
+    current_index: Dict[str, Any],
+    reason: str,
+    from_cache: bool,
+) -> Dict[str, Any]:
+    current_items = _discovery_index_item_map(current_index)
+    previous_items = _discovery_index_item_map(previous_index)
+
+    missing_primary_sample: List[Dict[str, Any]] = []
+    missing_video_sample: List[Dict[str, Any]] = []
+    missing_thumb_sample: List[Dict[str, Any]] = []
+    orphan_sidecar_sample: List[Dict[str, Any]] = []
+    orphan_thumb_sample: List[Dict[str, Any]] = []
+    removed_sample: List[Dict[str, Any]] = []
+
+    missing_primary = 0
+    missing_video = 0
+    missing_thumb = 0
+    orphan_sidecar = 0
+    orphan_thumb = 0
+
+    stale_reference_items = previous_items if previous_items else current_items
+    for item in stale_reference_items.values():
+        primary_exists = _discovery_rel_file_exists(cfg, item.get("relpath"))
+        video_exists = _discovery_rel_file_exists(cfg, item.get("video_relpath"))
+        thumb_exists = _discovery_rel_file_exists(cfg, item.get("thumb_relpath"))
+        if item.get("relpath") and not primary_exists:
+            missing_primary += 1
+            _discovery_sample_append(missing_primary_sample, item)
+        if item.get("video_relpath") and not video_exists:
+            missing_video += 1
+            _discovery_sample_append(missing_video_sample, item)
+        if item.get("thumb_relpath") and not thumb_exists:
+            missing_thumb += 1
+            _discovery_sample_append(missing_thumb_sample, item)
+        if item.get("thumb_relpath") and thumb_exists and item.get("video_relpath") and not video_exists:
+            orphan_thumb += 1
+            _discovery_sample_append(orphan_thumb_sample, item)
+        if (item.get("relpath") and not primary_exists) or (item.get("video_relpath") and not video_exists):
+            sidecars = _discovery_sidecars_for_rel(cfg, item.get("relpath") or item.get("video_relpath") or item.get("thumb_relpath"))
+            if sidecars:
+                orphan_sidecar += 1
+                _discovery_sample_append(orphan_sidecar_sample, item, sidecars=sidecars)
+
+    removed_keys = sorted(set(previous_items.keys()) - set(current_items.keys()))
+    for key in removed_keys[:_DISCOVERY_HEALTH_SAMPLE_LIMIT]:
+        item = previous_items[key]
+        _discovery_sample_append(removed_sample, item)
+
+    return {
+        "version": 1,
+        "generated_at": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "reason": reason,
+        "from_cache": from_cache,
+        "index_path": str(cfg.discovery_index_path),
+        "previous_updated_at": previous_index.get("updated_at") if isinstance(previous_index, dict) else None,
+        "current_updated_at": current_index.get("updated_at"),
+        "previous_item_count": len(previous_items) if previous_items else None,
+        "current_item_count": len(current_items),
+        "summary": {
+            "missing_primary": missing_primary,
+            "missing_video": missing_video,
+            "missing_thumb": missing_thumb,
+            "orphan_sidecar": orphan_sidecar,
+            "orphan_thumb": orphan_thumb,
+            "removed_since_previous_index": len(removed_keys),
+        },
+        "samples": {
+            "missing_primary": missing_primary_sample,
+            "missing_video": missing_video_sample,
+            "missing_thumb": missing_thumb_sample,
+            "orphan_sidecar": orphan_sidecar_sample,
+            "orphan_thumb": orphan_thumb_sample,
+            "removed_since_previous_index": removed_sample,
+        },
+    }
+
+
+def _load_discovery_health_disk(path: Path) -> Optional[Dict[str, Any]]:
     if not path.exists():
         return None
     try:
@@ -2410,12 +2585,23 @@ class Handler(BaseHTTPRequestHandler):
                 break
 
         idx_path = cfg.discovery_index_path
+        health_path = _discovery_index_health_path(idx_path)
         payload: Dict[str, Any]
+        health: Optional[Dict[str, Any]] = None
         from_cache = False
         if refresh or not idx_path.exists():
+            previous_payload = _load_discovery_index_disk(idx_path)
             try:
                 payload = _build_discovery_og_wip_index(cfg)
                 _atomic_write_json(idx_path, payload)
+                health = _build_discovery_index_health(
+                    cfg,
+                    previous_index=previous_payload,
+                    current_index=payload,
+                    reason="refresh" if previous_payload is not None else "initial_build",
+                    from_cache=False,
+                )
+                _atomic_write_json(health_path, health)
             except Exception as e:
                 return _json_response(self, 500, {"error": "discovery_scan_failed", "detail": str(e)})
         else:
@@ -2424,6 +2610,14 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     payload = _build_discovery_og_wip_index(cfg)
                     _atomic_write_json(idx_path, payload)
+                    health = _build_discovery_index_health(
+                        cfg,
+                        previous_index=None,
+                        current_index=payload,
+                        reason="rebuild_bad_cache",
+                        from_cache=False,
+                    )
+                    _atomic_write_json(health_path, health)
                 except Exception as e:
                     return _json_response(self, 500, {"error": "discovery_scan_failed", "detail": str(e)})
             else:
@@ -2433,11 +2627,35 @@ class Handler(BaseHTTPRequestHandler):
         # Regroup when on-disk index predates (lib, exact-stem) merge for mp4+png pairs.
         try:
             if int(payload.get("version") or 0) < 5:
+                previous_payload = payload
                 payload = _build_discovery_og_wip_index(cfg)
                 _atomic_write_json(idx_path, payload)
+                health = _build_discovery_index_health(
+                    cfg,
+                    previous_index=previous_payload,
+                    current_index=payload,
+                    reason="schema_upgrade",
+                    from_cache=False,
+                )
+                _atomic_write_json(health_path, health)
                 from_cache = False
         except Exception as e:
             return _json_response(self, 500, {"error": "discovery_scan_failed", "detail": str(e)})
+
+        if health is None:
+            health = _load_discovery_health_disk(health_path)
+            if not health or health.get("current_updated_at") != payload.get("updated_at"):
+                health = _build_discovery_index_health(
+                    cfg,
+                    previous_index=None,
+                    current_index=payload,
+                    reason="cache_validation",
+                    from_cache=from_cache,
+                )
+                try:
+                    _atomic_write_json(health_path, health)
+                except Exception:
+                    pass
 
         items_in = payload.get("items")
         if not isinstance(items_in, list):
@@ -2491,24 +2709,28 @@ class Handler(BaseHTTPRequestHandler):
             "item_count_filtered": total_after_filter,
             "truncated": truncated,
             "limit": limit,
+            "health": health,
             "items": filtered,
         }
         for it in out["items"]:
             if isinstance(it, dict):
+                def _live_file_url(relpath: Any) -> Optional[str]:
+                    if not isinstance(relpath, str) or not relpath.strip():
+                        return None
+                    norm = _normalize_rel_posix(relpath.strip())
+                    if not norm:
+                        return None
+                    full = _safe_join(cfg.output_root, norm)
+                    if full is None or not full.exists() or not full.is_file():
+                        return None
+                    return "/files/" + urllib.parse.quote(norm, safe="")
+
                 rp = str(it.get("relpath") or "")
-                it["url"] = "/files/" + urllib.parse.quote(rp, safe="") if rp else ""
                 vr = it.get("video_relpath")
                 tr = it.get("thumb_relpath")
-                it["video_url"] = (
-                    "/files/" + urllib.parse.quote(str(vr), safe="")
-                    if isinstance(vr, str) and vr.strip()
-                    else None
-                )
-                it["thumb_url"] = (
-                    "/files/" + urllib.parse.quote(str(tr), safe="")
-                    if isinstance(tr, str) and tr.strip()
-                    else None
-                )
+                it["url"] = _live_file_url(rp) or ""
+                it["video_url"] = _live_file_url(vr)
+                it["thumb_url"] = _live_file_url(tr)
         return _json_response(self, 200, out)
 
     def _handle_discovery_trim_get(self, q: Dict[str, List[str]]) -> None:

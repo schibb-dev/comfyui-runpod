@@ -63,6 +63,28 @@ function persistFactoryBrowserVideoAutoplay(on: boolean) {
   }
 }
 
+function FactoryCardActions({
+  onRemove,
+  busy,
+}: {
+  onRemove?: () => void;
+  busy?: boolean;
+}) {
+  if (!onRemove) return null;
+  return (
+    <details className="factory-card-actions">
+      <summary aria-label="Card actions" title="Card actions">
+        ⋯
+      </summary>
+      <div className="factory-card-actions-menu">
+        <button type="button" disabled={busy} onClick={onRemove}>
+          Remove from bucket
+        </button>
+      </div>
+    </details>
+  );
+}
+
 function FactoryAssetCard({
   asset,
   onRemove,
@@ -86,11 +108,7 @@ function FactoryAssetCard({
         badge={asset.bucket_name}
         className="factory-asset-card"
       />
-      {onRemove ? (
-        <button type="button" className="factory-remove-button" disabled={busy} onClick={onRemove}>
-          Remove
-        </button>
-      ) : null}
+      <FactoryCardActions onRemove={onRemove} busy={busy} />
     </div>
   );
 }
@@ -122,11 +140,7 @@ function FactoryWorkflowCard({
         </div>
         <div className="factory-card-path">{workflow.path}</div>
       </div>
-      {onRemove ? (
-        <button type="button" className="factory-remove-button" disabled={busy} onClick={onRemove}>
-          Remove
-        </button>
-      ) : null}
+      <FactoryCardActions onRemove={onRemove} busy={busy} />
     </div>
   );
 }
@@ -156,18 +170,15 @@ function ArrowColumn({ label }: { label: string }) {
 
 function BucketAddForm({
   label,
-  placeholder,
   browseKind,
   disabled,
   onAdd,
 }: {
   label: string;
-  placeholder: string;
   browseKind: "asset" | "workflow";
   disabled?: boolean;
   onAdd: (path: string) => Promise<void>;
 }) {
-  const [path, setPath] = useState("");
   const [browserOpen, setBrowserOpen] = useState(false);
   const [browse, setBrowse] = useState<WorkflowExplorerBrowseResponse | null>(null);
   const [browseRoot, setBrowseRoot] = useState("");
@@ -229,7 +240,6 @@ function BucketAddForm({
     }
     setActiveEntryPath(entry.path);
     setSelectedEntry(entry);
-    setPath(entry.path);
     setClipIn(null);
     setClipOut(null);
     setPreviewDuration(0);
@@ -251,7 +261,6 @@ function BucketAddForm({
     setActiveEntryPath(entry.path);
     if (!entry.is_dir) {
       setSelectedEntry(entry);
-      setPath(entry.path);
     }
     window.requestAnimationFrame(() => {
       const row = listRef.current?.querySelector<HTMLButtonElement>(`[data-entry-index="${nextIndex}"]`);
@@ -319,39 +328,11 @@ function BucketAddForm({
 
   return (
     <div className="factory-add-panel">
-      <form
-        className="factory-add-form"
-        onSubmit={async (e) => {
-          e.preventDefault();
-          const next = path.trim();
-          if (!next) return;
-          try {
-            await onAdd(next);
-            setPath("");
-          } catch {
-            /* The parent owns the error banner; keep the typed path for correction. */
-          }
-        }}
-      >
-        <label>
-          <span>{label}</span>
-          <input
-            type="text"
-            value={path}
-            disabled={disabled}
-            onChange={(e) => setPath(e.target.value)}
-            placeholder={placeholder}
-          />
-        </label>
-        <div className="factory-add-actions">
-          <button type="button" disabled={disabled || browseLoading} onClick={() => void openBrowser()}>
-            {browserOpen ? "Hide" : "Browse"}
-          </button>
-          <button type="submit" disabled={disabled || !path.trim()}>
-            Add
-          </button>
-        </div>
-      </form>
+      <div className="factory-add-actions">
+        <button type="button" disabled={disabled || browseLoading} onClick={() => void openBrowser()}>
+          {browseKind === "asset" ? "Browse Assets" : "Browse Workflows"}
+        </button>
+      </div>
       {browserOpen ? (
         <div
           className="factory-browser-modal"
@@ -481,19 +462,12 @@ function BucketAddForm({
               <div className="factory-browser-preview">
                 {selectedEntry ? (
                   <>
-                    {selectedEntry.media_type === "video" ? (
-                      <VideoAutoplayToggle
-                        className="factory-browser-autoplay"
-                        videoAutoplay={videoAutoplay}
-                        onVideoAutoplayChange={setVideoAutoplayFromUser}
-                        label="Autoplay selected videos (muted)"
-                      />
-                    ) : null}
                     <div className="factory-browser-preview-frame">
                       {selectedIsImage ? (
-                        <img src={selectedEntry.url || ""} alt="" />
+                        <img className="factory-browser-preview-media" src={selectedEntry.url || ""} alt="" />
                       ) : selectedIsVideo ? (
                         <video
+                          className="factory-browser-preview-media"
                           ref={previewVideoRef}
                           key={selectedEntry.path}
                           src={selectedEntry.url || ""}
@@ -520,6 +494,14 @@ function BucketAddForm({
                         <div className="factory-browser-preview-empty">No preview for this file type.</div>
                       )}
                     </div>
+                    {selectedEntry.media_type === "video" ? (
+                      <VideoAutoplayToggle
+                        className="factory-browser-autoplay"
+                        videoAutoplay={videoAutoplay}
+                        onVideoAutoplayChange={setVideoAutoplayFromUser}
+                        label="Autoplay selected videos (muted)"
+                      />
+                    ) : null}
                     {selectedEntry.media_type === "video" ? (
                       <div className="factory-browser-clip-controls" aria-label="Preview clip controls">
                         <div className="factory-browser-clip-time">
@@ -582,10 +564,7 @@ function BucketAddForm({
               </div>
             </div>
             <div className="factory-browser-footer">
-              <div className="factory-browser-selected-path">{path || "No file selected"}</div>
-              <button type="button" disabled={!selectedEntry} onClick={closeBrowser}>
-                Use Selected
-              </button>
+              <div className="factory-browser-selected-path">{selectedEntry?.path || "No file selected"}</div>
               <button
                 type="button"
                 disabled={!selectedEntry || disabled}
@@ -593,7 +572,6 @@ function BucketAddForm({
                   if (!selectedEntry) return;
                   try {
                     await onAdd(selectedEntry.path);
-                    setPath("");
                     closeBrowser();
                   } catch {
                     /* Parent error banner handles details. */
@@ -644,8 +622,7 @@ function RunPlanGraph({
             {plan.input_bucket_name} <span>#{plan.input_bucket_id}</span>
           </div>
           <BucketAddForm
-            label="Add asset path"
-            placeholder="/home/yuji/comfyui-runpod-data/input/example.png"
+            label="Add asset"
             browseKind="asset"
             disabled={busy}
             onAdd={(path) => onAddAsset(plan.input_bucket_id, path)}
@@ -673,8 +650,7 @@ function RunPlanGraph({
             {plan.workflow_bucket_name} <span>#{plan.workflow_bucket_id}</span>
           </div>
           <BucketAddForm
-            label="Add workflow path"
-            placeholder="/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/example.workflow.json"
+            label="Add workflow"
             browseKind="workflow"
             disabled={busy}
             onAdd={(path) => onAddWorkflow(plan.workflow_bucket_id, path)}
