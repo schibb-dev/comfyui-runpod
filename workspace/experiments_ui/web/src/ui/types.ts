@@ -336,3 +336,132 @@ export type DiscoveryEmbedApiPromptResponse =
       comfy_convert_http?: number | null;
     };
 
+export type WorkflowExplorerBucket = {
+  id: number;
+  name: string;
+  bucket_type: "asset" | "workflow";
+  asset_count?: number;
+  workflow_count?: number;
+  metadata?: Record<string, unknown>;
+};
+
+export type WorkflowExplorerAsset = {
+  id: number;
+  bucket_id: number;
+  bucket_name: string;
+  path: string;
+  media_type: string;
+  role: string;
+  status: string;
+  url?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+export type WorkflowExplorerWorkflow = {
+  id: number;
+  bucket_id: number;
+  bucket_name: string;
+  path: string;
+  workflow_type: string;
+  graph_hash?: string | null;
+  input_contract?: Record<string, unknown>;
+  output_contract?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+};
+
+export type WorkflowExplorerPlannedJob = {
+  id: number;
+  run_plan_id: number;
+  asset_item_id: number;
+  workflow_item_id: number;
+  output_asset_item_id?: number | null;
+  job_key: string;
+  status: string;
+  generated_workflow_path?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+export type WorkflowExplorerRunPlan = {
+  id: number;
+  name: string;
+  input_bucket_id: number;
+  workflow_bucket_id: number;
+  output_bucket_id: number;
+  input_bucket_name: string;
+  workflow_bucket_name: string;
+  output_bucket_name: string;
+  rules?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  input_assets: WorkflowExplorerAsset[];
+  workflow_items: WorkflowExplorerWorkflow[];
+  output_assets: WorkflowExplorerAsset[];
+  planned_jobs: WorkflowExplorerPlannedJob[];
+};
+
+export type WorkflowExplorerFactoryResponse = {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  db_path: string;
+  buckets: WorkflowExplorerBucket[];
+  assets?: WorkflowExplorerAsset[];
+  workflows?: WorkflowExplorerWorkflow[];
+  run_plans: WorkflowExplorerRunPlan[];
+};
+
+export type WorkflowExplorerAddAssetRequest = {
+  bucket_id: number;
+  path: string;
+  media_type?: string;
+  role?: string;
+  allow_missing?: boolean;
+};
+
+export type WorkflowExplorerRemoveAssetRequest = {
+  item_id: number;
+};
+
+export type WorkflowExplorerAddWorkflowRequest = {
+  bucket_id: number;
+  path: string;
+  workflow_type?: string;
+};
+
+export type WorkflowExplorerRemoveWorkflowRequest = {
+  item_id: number;
+};
+
+export type WorkflowExplorerBrowseRoot = {
+  id: string;
+  label: string;
+  kind: "asset" | "workflow" | string;
+  path: string;
+  exists?: boolean;
+};
+
+export type WorkflowExplorerBrowseEntry = {
+  name: string;
+  path: string;
+  relpath: string;
+  is_dir: boolean;
+  kind: string;
+  media_type: string;
+  size: number;
+  mtime: number;
+  url?: string | null;
+};
+
+export type WorkflowExplorerBrowseResponse = {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  roots: WorkflowExplorerBrowseRoot[];
+  root?: WorkflowExplorerBrowseRoot;
+  dir: string;
+  parent?: string | null;
+  entries: WorkflowExplorerBrowseEntry[];
+  truncated?: boolean;
+  limit?: number;
+  media_type?: "all" | "image" | "video" | string;
+};
+

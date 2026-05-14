@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { fetchDiscoveryEmbedApiPrompt, fetchDiscoveryLibrary, submitPromptToQueue } from "./api";
+import { MediaAssetCard } from "./MediaAssetCard";
+import { VideoAutoplayToggle } from "./VideoAutoplayToggle";
 import {
   discoveryTrimMediaRelpath,
   loadDiscoveryTrimAsync,
@@ -914,6 +916,7 @@ function DiscoveryListThumbRow({
   const thumb = discoveryThumbUrl(it);
   const play = discoveryPlayUrl(it);
   const isDesktopOption = Boolean(desktopListboxChild);
+  const mediaType = play ? "video" : thumb ? "image" : "file";
   return (
     <div
       id={listRowId}
@@ -929,34 +932,18 @@ function DiscoveryListThumbRow({
         }
       }}
     >
-      <div className="discovery-phone-thumb" aria-hidden>
-        {thumb ? (
-          <img src={thumb} alt="" loading="lazy" decoding="async" />
-        ) : play ? (
-          <span className="discovery-phone-thumb-placeholder">▶ Video</span>
-        ) : (
-          <span className="discovery-phone-thumb-placeholder">File</span>
-        )}
-      </div>
-      <div style={{ flex: "1 1 auto", minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }}>
-        <div style={{ fontWeight: 600, fontSize: 14, wordBreak: "break-word", lineHeight: 1.25 }}>{it.name}</div>
-        <div style={{ fontSize: 12, color: "var(--muted)", display: "flex", flexWrap: "wrap", gap: 8 }}>
-          <span
-            style={{
-              fontSize: 10,
-              fontWeight: 600,
-              textTransform: "uppercase",
-              padding: "1px 6px",
-              borderRadius: 4,
-              background: it.library === "og" ? "rgba(90,162,255,0.2)" : "rgba(70,211,154,0.18)",
-            }}
-          >
-            {it.library}
-          </span>
-          <span className="mono">{fmtTime(it.mtime)}</span>
-          <span>{fmtSize(it.size)}</span>
-        </div>
-      </div>
+      <MediaAssetCard
+        name={it.name}
+        path={it.relpath}
+        mediaType={mediaType}
+        thumbUrl={thumb}
+        videoUrl={play}
+        badge={it.library}
+        badgeClassName={it.library === "og" ? "media-asset-card__badge--og" : "media-asset-card__badge--wip"}
+        detail={`${fmtTime(it.mtime)} · ${fmtSize(it.size)}`}
+        showPath={false}
+        className="discovery-list-asset-card"
+      />
       <button
         type="button"
         className="discovery-exemplar-row-btn"
@@ -1201,20 +1188,12 @@ function PhoneAutoplayToggle({
   variant: "list" | "overlay";
 }) {
   return (
-    <label
+    <VideoAutoplayToggle
       className={variant === "list" ? "discovery-phone-autoplay-row" : "discovery-phone-detail-autoplay"}
-    >
-      <input
-        type="checkbox"
-        checked={videoAutoplay}
-        onChange={(e) => onVideoAutoplayChange(e.target.checked)}
-      />
-      <span>
-        {variant === "overlay"
-          ? "Autoplay (muted)"
-          : "Autoplay when opening a video (muted until you unmute)"}
-      </span>
-    </label>
+      videoAutoplay={videoAutoplay}
+      onVideoAutoplayChange={onVideoAutoplayChange}
+      label={variant === "overlay" ? "Autoplay (muted)" : "Autoplay when opening a video (muted until you unmute)"}
+    />
   );
 }
 

@@ -2,11 +2,12 @@ import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 
 /**
- * Dev proxy target for experiments_ui_server.py (/api, /files).
+ * Dev proxy target for the Experiments UI API/media routes (/api, /files, /factory-assets)
+ * — experiments_ui_server.py.
  *
- * Default 8791 avoids clashing with Docker Compose, which maps host :8790 → the *container's*
- * Experiments UI (see docker-compose.yml). If you proxy to 8790 while Docker holds that port,
- * traffic hits the container — not a host-started Python server — and routes can 404 or add load.
+ * Default **8790** = comfyui container on the host (docker-compose publishes :8790). Host-only Python
+ * on **8791** uses repo ./workspace/output and often breaks discovery after migrating binds to ext4.
+ * Override with EXPERIMENTS_UI_PROXY_TARGET (e.g. http://127.0.0.1:8791 when intentionally running the API locally).
  *
  * Inside the ComfyUI container, set EXPERIMENTS_UI_PROXY_TARGET=http://127.0.0.1:8790 (see dev_experiments_ui_container.ps1).
  * Docker publishes container :5178 on host :51780 by default (`EXPERIMENTS_UI_VITE_HOST_PORT`) so host Vite can use :5178.
@@ -25,7 +26,7 @@ export default defineConfig(({ mode }) => {
   // Prefer process.env so dev launchers (PowerShell, experiments-ui-dev.mjs) override stale .env values.
   const apiTarget =
     (process.env.EXPERIMENTS_UI_PROXY_TARGET || env.EXPERIMENTS_UI_PROXY_TARGET || "").trim() ||
-    "http://127.0.0.1:8791";
+    "http://127.0.0.1:8790";
   /** When the dev server is opened via Tailscale/LAN IP, HMR must use that host (not localhost). */
   const hmrPublicHost = (process.env.EXPERIMENTS_UI_HMR_HOST || env.EXPERIMENTS_UI_HMR_HOST || "").trim();
   const devPort =
@@ -56,6 +57,7 @@ export default defineConfig(({ mode }) => {
       proxy: {
         "/api": { ...proxyCommon },
         "/files": { ...proxyCommon },
+        "/factory-assets": { ...proxyCommon },
       },
       ...(hmrPublicHost
         ? {

@@ -14,7 +14,7 @@
  *   node scripts/experiments-ui-dev.mjs start
  *       → Recommended host dev: **api-watch + Vite** in one process (same as `npm run ui:dev:start`).
  *
- * Env: EXPERIMENTS_UI_PROXY_TARGET (default http://127.0.0.1:8791 for vite mode)
+ * Env: EXPERIMENTS_UI_PROXY_TARGET (default http://127.0.0.1:8790 for vite — comfyui container Experiments API)
  *      EXPERIMENTS_UI_API_HOST / EXPERIMENTS_UI_API_PORT (optional; default 127.0.0.1:8791 for `api` mode)
  *      EXPERIMENTS_UI_DEV_LOCALONLY=1 → bind Vite to 127.0.0.1 only (no Tailscale/LAN remote).
  *      EXPERIMENTS_UI_HMR_HOST → tailnet/LAN IP for HMR when the phone is not on localhost.
@@ -32,6 +32,21 @@ const webDir = path.join(repoRoot, "workspace", "experiments_ui", "web");
 const apiScript = path.join(repoRoot, "scripts", "experiments_ui_server.py");
 
 const isWin = process.platform === "win32";
+
+/** If EXPERIMENTS_UI_PROXY_TARGET is unset, load EXPERIMENTS_UI_PROXY_TARGET from repo .env (not COMFYUI_HOST_PORT — that is ComfyUI :8188, not /api discovery). */
+function loadRepoDotEnvForProxy() {
+  if (process.env.EXPERIMENTS_UI_PROXY_TARGET?.trim()) return;
+  const envPath = path.join(repoRoot, ".env");
+  if (!fs.existsSync(envPath)) return;
+  const text = fs.readFileSync(envPath, "utf8");
+  for (const line of text.split(/\r?\n/)) {
+    const m = line.match(/^\s*EXPERIMENTS_UI_PROXY_TARGET\s*=\s*(.+)$/);
+    if (m) {
+      process.env.EXPERIMENTS_UI_PROXY_TARGET = m[1].trim().replace(/^["']|["']$/g, "");
+      return;
+    }
+  }
+}
 
 function die(msg) {
   console.error(msg);
@@ -370,7 +385,8 @@ function runApiWatch() {
 
 const opts = parseArgs(process.argv);
 if (opts.mode === "vite") {
-  const backend = process.env.EXPERIMENTS_UI_PROXY_TARGET?.trim() || "http://127.0.0.1:8791";
+  loadRepoDotEnvForProxy();
+  const backend = process.env.EXPERIMENTS_UI_PROXY_TARGET?.trim() || "http://127.0.0.1:8790";
   process.exit(runVite({ ...opts, backend }));
 } else if (opts.mode === "api") {
   runApiOnly();

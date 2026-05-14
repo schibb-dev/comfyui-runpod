@@ -20,6 +20,12 @@ import type {
   DiscoveryLibraryResponse,
   DiscoveryLibraryItem,
   DiscoveryEmbedApiPromptResponse,
+  WorkflowExplorerFactoryResponse,
+  WorkflowExplorerAddAssetRequest,
+  WorkflowExplorerRemoveAssetRequest,
+  WorkflowExplorerAddWorkflowRequest,
+  WorkflowExplorerRemoveWorkflowRequest,
+  WorkflowExplorerBrowseResponse,
 } from "./types";
 
 export async function fetchDiscoveryLibrary(opts?: {
@@ -39,6 +45,74 @@ export async function fetchDiscoveryLibrary(opts?: {
   const r = await fetch(`/api/discovery/library${qs ? `?${qs}` : ""}`);
   if (!r.ok) throw new Error(`GET /api/discovery/library failed: ${r.status}`);
   return (await r.json()) as DiscoveryLibraryResponse;
+}
+
+export async function fetchWorkflowExplorerFactory(): Promise<WorkflowExplorerFactoryResponse> {
+  const r = await fetch("/api/workflow-explorer/factory");
+  if (!r.ok) throw new Error(`GET /api/workflow-explorer/factory failed: ${r.status}`);
+  return (await r.json()) as WorkflowExplorerFactoryResponse;
+}
+
+async function postWorkflowExplorerFactoryUpdate(
+  path: "/api/workflow-explorer/factory/assets" | "/api/workflow-explorer/factory/workflows",
+  body: Record<string, unknown>,
+): Promise<WorkflowExplorerFactoryResponse> {
+  const r = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as WorkflowExplorerFactoryResponse & { error?: string; detail?: string };
+  if (!r.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`POST ${path} failed: ${r.status}${detail ? `: ${detail}` : ""}`);
+  }
+  return j;
+}
+
+export async function addWorkflowExplorerAsset(
+  req: WorkflowExplorerAddAssetRequest,
+): Promise<WorkflowExplorerFactoryResponse> {
+  return postWorkflowExplorerFactoryUpdate("/api/workflow-explorer/factory/assets", { op: "add", ...req });
+}
+
+export async function removeWorkflowExplorerAsset(
+  req: WorkflowExplorerRemoveAssetRequest,
+): Promise<WorkflowExplorerFactoryResponse> {
+  return postWorkflowExplorerFactoryUpdate("/api/workflow-explorer/factory/assets", { op: "remove", ...req });
+}
+
+export async function addWorkflowExplorerWorkflow(
+  req: WorkflowExplorerAddWorkflowRequest,
+): Promise<WorkflowExplorerFactoryResponse> {
+  return postWorkflowExplorerFactoryUpdate("/api/workflow-explorer/factory/workflows", { op: "add", ...req });
+}
+
+export async function removeWorkflowExplorerWorkflow(
+  req: WorkflowExplorerRemoveWorkflowRequest,
+): Promise<WorkflowExplorerFactoryResponse> {
+  return postWorkflowExplorerFactoryUpdate("/api/workflow-explorer/factory/workflows", { op: "remove", ...req });
+}
+
+export async function fetchWorkflowExplorerBrowse(opts?: {
+  root?: string;
+  dir?: string;
+  kind?: "asset" | "workflow" | "all";
+  media_type?: "all" | "image" | "video";
+  q?: string;
+  limit?: number;
+}): Promise<WorkflowExplorerBrowseResponse> {
+  const sp = new URLSearchParams();
+  if (opts?.root) sp.set("root", opts.root);
+  if (opts?.dir) sp.set("dir", opts.dir);
+  if (opts?.kind) sp.set("kind", opts.kind);
+  if (opts?.media_type) sp.set("media_type", opts.media_type);
+  if (opts?.q) sp.set("q", opts.q);
+  if (opts?.limit) sp.set("limit", String(opts.limit));
+  const qs = sp.toString();
+  const r = await fetch(`/api/workflow-explorer/factory/browse${qs ? `?${qs}` : ""}`);
+  if (!r.ok) throw new Error(`GET /api/workflow-explorer/factory/browse failed: ${r.status}`);
+  return (await r.json()) as WorkflowExplorerBrowseResponse;
 }
 
 export async function fetchDiscoveryEmbedApiPrompt(it: DiscoveryLibraryItem): Promise<DiscoveryEmbedApiPromptResponse> {

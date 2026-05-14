@@ -4,6 +4,7 @@ import { App } from "./ui/App";
 import { ComfyQueueMonitorApp } from "./ui/ComfyQueueMonitorApp";
 import { DiscoveryLibraryApp } from "./ui/DiscoveryLibraryApp";
 import { OrchestratorApp } from "./ui/OrchestratorApp";
+import { WorkflowExplorerApp } from "./ui/WorkflowExplorerApp";
 import "./ui/styles.css";
 
 const path = window.location.pathname || "/";
@@ -11,9 +12,11 @@ const RootView = path.startsWith("/comfy-queue")
   ? ComfyQueueMonitorApp
   : path.startsWith("/orchestrator")
     ? OrchestratorApp
-    : path.startsWith("/discovery")
-      ? DiscoveryLibraryApp
-      : App;
+    : path.startsWith("/workflow-explorer")
+      ? WorkflowExplorerApp
+      : path.startsWith("/discovery")
+        ? DiscoveryLibraryApp
+        : App;
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

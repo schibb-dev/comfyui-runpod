@@ -28,6 +28,7 @@ import mimetypes
 import os
 import posixpath
 import re
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -613,6 +614,319 @@ def _load_discovery_index_disk(path: Path) -> Optional[Dict[str, Any]]:
     return obj if isinstance(obj, dict) else None
 
 
+def _json_loads_maybe(value: Any, default: Any) -> Any:
+    if not isinstance(value, str) or not value:
+        return default
+    try:
+        return json.loads(value)
+    except Exception:
+        return default
+
+
+def _factory_row_dict(row: sqlite3.Row) -> Dict[str, Any]:
+    return {k: row[k] for k in row.keys()}
+
+
+_FACTORY_ASSET_PREVIEW_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm"}
+_FACTORY_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+_FACTORY_VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm"}
+_FACTORY_WORKFLOW_EXTS = {".json"}
+
+
+def _factory_asset_preview_url(item: Dict[str, Any]) -> Optional[str]:
+    asset_id = _safe_int(item.get("id"))
+    raw_path = item.get("path")
+    if asset_id is None or not isinstance(raw_path, str) or not raw_path.strip():
+        return None
+    suffix = Path(raw_path).suffix.lower()
+    if suffix not in _FACTORY_ASSET_PREVIEW_EXTS:
+        return None
+    return f"/factory-assets/{asset_id}/{urllib.parse.quote(Path(raw_path).name, safe='')}"
+
+
+def _factory_utc_now() -> str:
+    return _dt.datetime.now(tz=_dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def _factory_json_dumps(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _factory_media_type_for_path(path: str) -> str:
+    ext = Path(path).suffix.lower()
+    if ext in _FACTORY_IMAGE_EXTS:
+        return "image"
+    if ext in _FACTORY_VIDEO_EXTS:
+        return "video"
+    if ext == ".json":
+        return "json"
+    return "unknown"
+
+
+def _factory_role_for_media_type(media_type: str) -> str:
+    if media_type == "image":
+        return "source_image"
+    if media_type == "video":
+        return "source_video"
+    return "source_asset"
+
+
+def _factory_browse_roots(ws: Path, output_root: Path) -> List[Dict[str, Any]]:
+    return [
+        {
+            "id": "input",
+            "label": "ComfyUI input",
+            "kind": "asset",
+            "path": str((ws / "input").resolve()),
+        },
+        {
+            "id": "output",
+            "label": "ComfyUI output",
+            "kind": "asset",
+            "path": str(output_root.resolve()),
+        },
+        {
+            "id": "workflows",
+            "label": "ComfyUI workflows",
+            "kind": "workflow",
+            "path": str((ws / "comfyui_user" / "default" / "workflows").resolve()),
+        },
+    ]
+
+
+def _factory_browse_root_by_id(cfg: "ServerConfig", root_id: str) -> Optional[Dict[str, Any]]:
+    for root in cfg.factory_browse_roots:
+        if root.get("id") == root_id:
+            return root
+    return None
+
+
+def _factory_browse_entry_url(root_id: str, relpath: str, path: Path) -> Optional[str]:
+    suffix = path.suffix.lower()
+    if suffix not in _FACTORY_ASSET_PREVIEW_EXTS:
+        return None
+    sp = urllib.parse.urlencode({"root": root_id, "relpath": relpath})
+    return f"/api/workflow-explorer/factory/browse-file?{sp}"
+
+
+def _factory_browse_file_allowed(path: Path, kind: str, media_type_filter: str = "all") -> bool:
+    suffix = path.suffix.lower()
+    if kind == "workflow":
+        return suffix in _FACTORY_WORKFLOW_EXTS
+    if kind == "asset":
+        if media_type_filter == "image":
+            return suffix in _FACTORY_IMAGE_EXTS
+        if media_type_filter == "video":
+            return suffix in _FACTORY_VIDEO_EXTS
+        return suffix in _FACTORY_IMAGE_EXTS or suffix in _FACTORY_VIDEO_EXTS
+    return suffix in _FACTORY_IMAGE_EXTS or suffix in _FACTORY_VIDEO_EXTS or suffix in _FACTORY_WORKFLOW_EXTS
+
+
+def _factory_get_bucket(con: sqlite3.Connection, bucket_id: int, bucket_type: str) -> Optional[sqlite3.Row]:
+    return con.execute(
+        "SELECT * FROM buckets WHERE id = ? AND bucket_type = ?",
+        (bucket_id, bucket_type),
+    ).fetchone()
+
+
+def _factory_workflow_contract(workflow: Any) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    inputs: set[str] = set()
+    outputs: set[str] = set()
+    input_nodes: List[Dict[str, Any]] = []
+    output_nodes: List[Dict[str, Any]] = []
+
+    if not _looks_like_comfy_ui_workflow(workflow):
+        return {"media_types": ["unknown"], "nodes": []}, {"media_types": ["unknown"], "nodes": []}
+
+    for node in workflow.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        node_type = str(node.get("type") or node.get("class_type") or "")
+        mode = node.get("mode", 0)
+        title = node.get("title")
+        if node_type in {"LoadImage", "LoadImageWithFilename|pysssss"}:
+            inputs.add("image")
+            input_nodes.append({"id": node.get("id"), "type": node_type, "title": title})
+        if node_type in {"VHS_LoadVideo", "VHS_LoadVideoPath", "VHS_LoadVideoFFmpeg", "VHS_LoadVideoFFmpegPath"}:
+            inputs.add("video")
+            input_nodes.append({"id": node.get("id"), "type": node_type, "title": title})
+        if mode in (2, 4):
+            continue
+        if node_type == "VHS_VideoCombine":
+            widgets = node.get("widgets_values")
+            if not isinstance(widgets, dict) or widgets.get("save_output") is not False:
+                outputs.add("video")
+                output_nodes.append({"id": node.get("id"), "type": node_type, "title": title})
+        if node_type == "SaveImage":
+            outputs.add("image")
+            output_nodes.append({"id": node.get("id"), "type": node_type, "title": title})
+
+    return {
+        "media_types": sorted(inputs) or ["unknown"],
+        "nodes": input_nodes,
+    }, {
+        "media_types": sorted(outputs) or ["unknown"],
+        "nodes": output_nodes,
+    }
+
+
+def _factory_graph_fingerprint(workflow: Any) -> str:
+    if not _looks_like_comfy_ui_workflow(workflow):
+        return hashlib.sha256(json.dumps(workflow, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    nodes = []
+    for node in workflow.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        nodes.append(
+            {
+                "id": node.get("id"),
+                "type": node.get("type") or node.get("class_type"),
+                "mode": node.get("mode", 0),
+            }
+        )
+    links = []
+    for link in workflow.get("links") or []:
+        if isinstance(link, list):
+            links.append(link[:6])
+        elif isinstance(link, dict):
+            links.append({k: link.get(k) for k in ("origin_id", "origin_slot", "target_id", "target_slot", "type")})
+    payload = {"nodes": nodes, "links": links}
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _resolve_factory_asset_file(cfg: "ServerConfig", raw_path: str) -> Path:
+    raw_path = raw_path.strip()
+    candidates: List[Path] = []
+    original = Path(raw_path)
+    if original.is_absolute():
+        candidates.append(original)
+    else:
+        joined = _safe_join(cfg.output_root, raw_path)
+        if joined is not None:
+            candidates.append(joined)
+        joined_ws = _safe_join(cfg.workspace_root, raw_path)
+        if joined_ws is not None:
+            candidates.append(joined_ws)
+
+    normalized = raw_path.replace("\\", "/")
+    marker = "/comfyui-runpod-data/"
+    if marker in normalized:
+        rel = normalized.split(marker, 1)[1]
+        joined_ws = _safe_join(cfg.workspace_root, rel)
+        if joined_ws is not None:
+            candidates.append(joined_ws)
+
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return candidates[0] if candidates else Path(raw_path)
+
+
+def _load_factory_summary(db_path: Path) -> Dict[str, Any]:
+    if not db_path.exists():
+        return {
+            "ok": False,
+            "error": "factory_db_missing",
+            "db_path": str(db_path),
+            "buckets": [],
+            "run_plans": [],
+        }
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    try:
+        buckets: List[Dict[str, Any]] = []
+        for row in con.execute(
+            """
+            SELECT
+                b.*,
+                (SELECT COUNT(*) FROM asset_items ai WHERE ai.bucket_id = b.id) AS asset_count,
+                (SELECT COUNT(*) FROM workflow_items wi WHERE wi.bucket_id = b.id) AS workflow_count
+            FROM buckets b
+            ORDER BY b.bucket_type, b.name
+            """
+        ):
+            item = _factory_row_dict(row)
+            item["metadata"] = _json_loads_maybe(item.pop("metadata_json", ""), {})
+            buckets.append(item)
+
+        asset_rows = [
+            _factory_row_dict(row)
+            for row in con.execute(
+                """
+                SELECT ai.*, b.name AS bucket_name
+                FROM asset_items ai
+                JOIN buckets b ON b.id = ai.bucket_id
+                ORDER BY b.name, ai.path
+                """
+            )
+        ]
+        workflow_rows = [
+            _factory_row_dict(row)
+            for row in con.execute(
+                """
+                SELECT wi.*, b.name AS bucket_name
+                FROM workflow_items wi
+                JOIN buckets b ON b.id = wi.bucket_id
+                ORDER BY b.name, wi.path
+                """
+            )
+        ]
+        for item in asset_rows:
+            item["metadata"] = _json_loads_maybe(item.pop("metadata_json", ""), {})
+            item["url"] = _factory_asset_preview_url(item)
+        for item in workflow_rows:
+            item["metadata"] = _json_loads_maybe(item.pop("metadata_json", ""), {})
+            item["input_contract"] = _json_loads_maybe(item.pop("input_contract_json", ""), {})
+            item["output_contract"] = _json_loads_maybe(item.pop("output_contract_json", ""), {})
+
+        run_plans: List[Dict[str, Any]] = []
+        for row in con.execute(
+            """
+            SELECT
+                rp.*,
+                ib.name AS input_bucket_name,
+                wb.name AS workflow_bucket_name,
+                ob.name AS output_bucket_name
+            FROM run_plans rp
+            JOIN buckets ib ON ib.id = rp.input_bucket_id
+            JOIN buckets wb ON wb.id = rp.workflow_bucket_id
+            JOIN buckets ob ON ob.id = rp.output_bucket_id
+            ORDER BY rp.name
+            """
+        ):
+            plan = _factory_row_dict(row)
+            plan["rules"] = _json_loads_maybe(plan.pop("rules_json", ""), {})
+            plan["metadata"] = _json_loads_maybe(plan.pop("metadata_json", ""), {})
+            plan["input_assets"] = [x for x in asset_rows if x.get("bucket_id") == plan["input_bucket_id"]]
+            plan["workflow_items"] = [x for x in workflow_rows if x.get("bucket_id") == plan["workflow_bucket_id"]]
+            plan["output_assets"] = [x for x in asset_rows if x.get("bucket_id") == plan["output_bucket_id"]]
+            plan["planned_jobs"] = []
+            for job in con.execute(
+                """
+                SELECT * FROM planned_jobs
+                WHERE run_plan_id = ?
+                ORDER BY job_key
+                """,
+                (plan["id"],),
+            ):
+                j = _factory_row_dict(job)
+                j["metadata"] = _json_loads_maybe(j.pop("metadata_json", ""), {})
+                plan["planned_jobs"].append(j)
+            run_plans.append(plan)
+
+        return {
+            "ok": True,
+            "db_path": str(db_path),
+            "buckets": buckets,
+            "assets": asset_rows,
+            "workflows": workflow_rows,
+            "run_plans": run_plans,
+        }
+    finally:
+        con.close()
+
+
 def _now_stamp() -> str:
     return _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
 
@@ -1040,6 +1354,8 @@ class ServerConfig:
     queue_ledger_state_path: Path
     queue_ledger_events_path: Path
     discovery_index_path: Path
+    factory_db_path: Path
+    factory_browse_roots: List[Dict[str, Any]]
 
 
 def _resolve_workspace_root(base: Path) -> Path:
@@ -1402,6 +1718,9 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/files/"):
             rel = urllib.parse.unquote(path[len("/files/") :])
             return self._handle_files_get(rel)
+        if path.startswith("/factory-assets/"):
+            rel = urllib.parse.unquote(path[len("/factory-assets/") :])
+            return self._handle_factory_asset_file_get(rel)
         return self._handle_static_get(path)
 
     def do_HEAD(self) -> None:  # noqa: N802
@@ -1577,6 +1896,18 @@ class Handler(BaseHTTPRequestHandler):
             st = _read_orchestrator_state(cfg.orchestrator_state_path)
             return _json_response(self, 200, st)
 
+        if path == "/api/workflow-explorer/factory":
+            try:
+                return _json_response(self, 200, _load_factory_summary(cfg.factory_db_path))
+            except Exception as e:
+                return _json_response(self, 500, {"ok": False, "error": "factory_summary_failed", "detail": str(e)})
+
+        if path == "/api/workflow-explorer/factory/browse":
+            return self._handle_factory_browse_get(q)
+
+        if path == "/api/workflow-explorer/factory/browse-file":
+            return self._handle_factory_browse_file_get(q)
+
         if path == "/api/queue/ledger-status":
             st = _read_queue_ledger_state(cfg.queue_ledger_state_path)
             out = {
@@ -1699,6 +2030,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_queue_ledger_control()
         if path == "/api/discovery/trim":
             return self._handle_discovery_trim_post()
+        if path == "/api/workflow-explorer/factory/assets":
+            return self._handle_factory_assets_post()
+        if path == "/api/workflow-explorer/factory/workflows":
+            return self._handle_factory_workflows_post()
         return _json_response(self, 404, {"error": "unknown_api_route", "path": path})
 
     def _read_request_json(self) -> Optional[Dict[str, Any]]:
@@ -1711,6 +2046,331 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return None
         return obj if isinstance(obj, dict) else None
+
+    def _handle_factory_browse_get(self, q: Dict[str, List[str]]) -> None:
+        cfg = self.server.cfg
+        roots = [
+            {
+                "id": str(root.get("id") or ""),
+                "label": str(root.get("label") or root.get("id") or ""),
+                "kind": str(root.get("kind") or "asset"),
+                "path": str(root.get("path") or ""),
+                "exists": Path(str(root.get("path") or "")).is_dir(),
+            }
+            for root in cfg.factory_browse_roots
+        ]
+
+        kind_hint = (q.get("kind") or [""])[0].strip().lower()
+        default_root = next((r["id"] for r in roots if kind_hint and r.get("kind") == kind_hint), roots[0]["id"] if roots else "")
+        root_id = (q.get("root") or [default_root])[0].strip()
+        root_cfg = _factory_browse_root_by_id(cfg, root_id)
+        if root_cfg is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_root", "roots": roots})
+
+        root_path = Path(str(root_cfg.get("path") or ""))
+        if not root_path.is_dir():
+            return _json_response(
+                self,
+                200,
+                {
+                    "ok": True,
+                    "roots": roots,
+                    "root": {**root_cfg, "exists": False},
+                    "dir": "",
+                    "parent": None,
+                    "entries": [],
+                    "error": "root_missing",
+                },
+            )
+
+        rel_dir = _normalize_rel_posix((q.get("dir") or [""])[0].strip())
+        target = root_path.resolve() if not rel_dir else _safe_join(root_path, rel_dir)
+        if target is None or not target.is_dir():
+            return _json_response(self, 400, {"ok": False, "error": "bad_dir", "root": root_id, "dir": rel_dir, "roots": roots})
+
+        kind = (q.get("kind") or [str(root_cfg.get("kind") or "asset")])[0].strip().lower()
+        if kind not in {"asset", "workflow", "all"}:
+            kind = str(root_cfg.get("kind") or "asset")
+        media_type_filter = (q.get("media_type") or ["all"])[0].strip().lower()
+        if media_type_filter not in {"all", "image", "video"}:
+            media_type_filter = "all"
+        if kind != "asset":
+            media_type_filter = "all"
+        qtext = (q.get("q") or [""])[0].strip().lower()
+        limit = 300
+        for v in q.get("limit", []):
+            li = _safe_int(v)
+            if li is not None:
+                limit = max(1, min(2000, int(li)))
+                break
+
+        entries: List[Dict[str, Any]] = []
+        scanned = 0
+        scan_cap = max(limit * 8, 1000)
+        try:
+            iterator = os.scandir(str(target))
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "browse_failed", "detail": str(e)})
+
+        with iterator:
+            for entry in iterator:
+                scanned += 1
+                if scanned > scan_cap and len(entries) >= limit:
+                    break
+                child = target / entry.name
+                try:
+                    is_dir = entry.is_dir()
+                    is_file = entry.is_file()
+                except Exception:
+                    continue
+                if not is_dir and not is_file:
+                    continue
+                if qtext and qtext not in entry.name.lower():
+                    continue
+                if is_file and not _factory_browse_file_allowed(child, kind, media_type_filter):
+                    continue
+                try:
+                    rel = child.resolve().relative_to(root_path.resolve()).as_posix()
+                except Exception:
+                    continue
+                try:
+                    st = entry.stat()
+                    size = st.st_size
+                    mtime = st.st_mtime
+                except Exception:
+                    size = 0
+                    mtime = 0
+                media_type = "directory" if is_dir else _factory_media_type_for_path(entry.name)
+                entries.append(
+                    {
+                        "name": entry.name,
+                        "path": str(child.resolve()),
+                        "relpath": rel,
+                        "is_dir": is_dir,
+                        "kind": "directory" if is_dir else kind,
+                        "media_type": media_type,
+                        "size": size,
+                        "mtime": mtime,
+                        "url": None if is_dir else _factory_browse_entry_url(root_id, rel, child),
+                    }
+                )
+        entries.sort(key=lambda item: (not bool(item.get("is_dir")), str(item.get("name") or "").lower()))
+        truncated = len(entries) > limit or scanned > scan_cap
+        entries = entries[:limit]
+        parent = posixpath.dirname(rel_dir) if rel_dir else None
+        if parent == ".":
+            parent = ""
+        return _json_response(
+            self,
+            200,
+            {
+                "ok": True,
+                "roots": roots,
+                "root": {**root_cfg, "exists": True},
+                "dir": rel_dir,
+                "parent": parent,
+                "entries": entries,
+                "truncated": truncated,
+                "limit": limit,
+                "media_type": media_type_filter,
+            },
+        )
+
+    def _handle_factory_browse_file_get(self, q: Dict[str, List[str]]) -> None:
+        cfg = self.server.cfg
+        root_id = (q.get("root") or [""])[0].strip()
+        relpath = (q.get("relpath") or [""])[0].strip()
+        root_cfg = _factory_browse_root_by_id(cfg, root_id)
+        if root_cfg is None:
+            return _json_response(self, 400, {"error": "bad_root"})
+        root_path = Path(str(root_cfg.get("path") or ""))
+        full = _safe_join(root_path, relpath)
+        if full is None or not full.exists() or not full.is_file():
+            return _json_response(self, 404, {"error": "file_not_found", "root": root_id, "relpath": relpath})
+        if full.suffix.lower() not in _FACTORY_ASSET_PREVIEW_EXTS:
+            return _json_response(self, 415, {"error": "unsupported_preview_type", "relpath": relpath})
+        ctype, _enc = mimetypes.guess_type(str(full))
+        if not ctype:
+            ctype = "application/octet-stream"
+        try:
+            _stream_file(self, full, content_type=ctype, cache_control="public, max-age=60", allow_ranges=True)
+        except Exception as e:
+            return _json_response(self, 500, {"error": "read_failed", "detail": str(e)})
+
+    def _handle_factory_assets_post(self) -> None:
+        cfg = self.server.cfg
+        obj = self._read_request_json()
+        if obj is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        op = str(obj.get("op") or "add").strip().lower()
+        if not cfg.factory_db_path.exists():
+            return _json_response(self, 404, {"ok": False, "error": "factory_db_missing", "db_path": str(cfg.factory_db_path)})
+
+        con = sqlite3.connect(cfg.factory_db_path)
+        con.row_factory = sqlite3.Row
+        try:
+            if op == "add":
+                bucket_id = _safe_int(obj.get("bucket_id"))
+                raw_path = str(obj.get("path") or "").strip()
+                if bucket_id is None:
+                    return _json_response(self, 400, {"ok": False, "error": "missing_bucket_id"})
+                if not raw_path:
+                    return _json_response(self, 400, {"ok": False, "error": "missing_path"})
+                bucket = _factory_get_bucket(con, int(bucket_id), "asset")
+                if bucket is None:
+                    return _json_response(self, 404, {"ok": False, "error": "asset_bucket_not_found", "bucket_id": bucket_id})
+
+                resolved = _resolve_factory_asset_file(cfg, raw_path)
+                allow_missing = bool(obj.get("allow_missing") or False)
+                if not allow_missing and (not resolved.exists() or not resolved.is_file()):
+                    return _json_response(self, 404, {"ok": False, "error": "asset_file_not_found", "path": raw_path})
+
+                media_type = str(obj.get("media_type") or "").strip() or _factory_media_type_for_path(raw_path)
+                role = str(obj.get("role") or "").strip() or _factory_role_for_media_type(media_type)
+                now = _factory_utc_now()
+                metadata = {
+                    "added_by": "workflow_explorer_ui",
+                    "exists_at_add": bool(resolved.exists() and resolved.is_file()),
+                    "resolved_path_at_add": str(resolved),
+                }
+                con.execute(
+                    """
+                    INSERT INTO asset_items (bucket_id, path, media_type, role, status, metadata_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(bucket_id, path) DO UPDATE SET
+                        media_type=excluded.media_type,
+                        role=excluded.role,
+                        metadata_json=excluded.metadata_json,
+                        updated_at=excluded.updated_at
+                    """,
+                    (int(bucket_id), raw_path, media_type, role, "available", _factory_json_dumps(metadata), now, now),
+                )
+                con.commit()
+            elif op in {"remove", "delete"}:
+                item_id = _safe_int(obj.get("item_id"))
+                if item_id is None:
+                    return _json_response(self, 400, {"ok": False, "error": "missing_item_id"})
+                row = con.execute(
+                    """
+                    SELECT ai.id
+                    FROM asset_items ai
+                    JOIN buckets b ON b.id = ai.bucket_id
+                    WHERE ai.id = ? AND b.bucket_type = 'asset'
+                    """,
+                    (int(item_id),),
+                ).fetchone()
+                if row is None:
+                    return _json_response(self, 404, {"ok": False, "error": "asset_item_not_found", "item_id": item_id})
+                con.execute("DELETE FROM asset_items WHERE id = ?", (int(item_id),))
+                con.commit()
+            else:
+                return _json_response(self, 400, {"ok": False, "error": "bad_op"})
+
+            return _json_response(self, 200, _load_factory_summary(cfg.factory_db_path))
+        except sqlite3.IntegrityError as e:
+            return _json_response(self, 409, {"ok": False, "error": "factory_integrity_error", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "factory_asset_update_failed", "detail": str(e)})
+        finally:
+            con.close()
+
+    def _handle_factory_workflows_post(self) -> None:
+        cfg = self.server.cfg
+        obj = self._read_request_json()
+        if obj is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        op = str(obj.get("op") or "add").strip().lower()
+        if not cfg.factory_db_path.exists():
+            return _json_response(self, 404, {"ok": False, "error": "factory_db_missing", "db_path": str(cfg.factory_db_path)})
+
+        con = sqlite3.connect(cfg.factory_db_path)
+        con.row_factory = sqlite3.Row
+        try:
+            if op == "add":
+                bucket_id = _safe_int(obj.get("bucket_id"))
+                raw_path = str(obj.get("path") or "").strip()
+                if bucket_id is None:
+                    return _json_response(self, 400, {"ok": False, "error": "missing_bucket_id"})
+                if not raw_path:
+                    return _json_response(self, 400, {"ok": False, "error": "missing_path"})
+                bucket = _factory_get_bucket(con, int(bucket_id), "workflow")
+                if bucket is None:
+                    return _json_response(self, 404, {"ok": False, "error": "workflow_bucket_not_found", "bucket_id": bucket_id})
+
+                resolved = _resolve_factory_asset_file(cfg, raw_path)
+                if not resolved.exists() or not resolved.is_file():
+                    return _json_response(self, 404, {"ok": False, "error": "workflow_file_not_found", "path": raw_path})
+                try:
+                    workflow = _read_json(resolved)
+                except Exception as e:
+                    return _json_response(self, 400, {"ok": False, "error": "bad_workflow_json", "detail": str(e)})
+                if not _looks_like_comfy_ui_workflow(workflow):
+                    return _json_response(self, 400, {"ok": False, "error": "not_litegraph_workflow", "path": raw_path})
+
+                input_contract, output_contract = _factory_workflow_contract(workflow)
+                graph_hash = _factory_graph_fingerprint(workflow)
+                workflow_type = str(obj.get("workflow_type") or "litegraph").strip() or "litegraph"
+                now = _factory_utc_now()
+                metadata = {
+                    "added_by": "workflow_explorer_ui",
+                    "node_count": len(workflow.get("nodes") or []),
+                    "link_count": len(workflow.get("links") or []),
+                    "resolved_path_at_add": str(resolved),
+                }
+                con.execute(
+                    """
+                    INSERT INTO workflow_items (
+                        bucket_id, path, workflow_type, graph_hash, input_contract_json, output_contract_json,
+                        metadata_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(bucket_id, path) DO UPDATE SET
+                        workflow_type=excluded.workflow_type,
+                        graph_hash=excluded.graph_hash,
+                        input_contract_json=excluded.input_contract_json,
+                        output_contract_json=excluded.output_contract_json,
+                        metadata_json=excluded.metadata_json,
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        int(bucket_id),
+                        raw_path,
+                        workflow_type,
+                        graph_hash,
+                        _factory_json_dumps(input_contract),
+                        _factory_json_dumps(output_contract),
+                        _factory_json_dumps(metadata),
+                        now,
+                        now,
+                    ),
+                )
+                con.commit()
+            elif op in {"remove", "delete"}:
+                item_id = _safe_int(obj.get("item_id"))
+                if item_id is None:
+                    return _json_response(self, 400, {"ok": False, "error": "missing_item_id"})
+                row = con.execute(
+                    """
+                    SELECT wi.id
+                    FROM workflow_items wi
+                    JOIN buckets b ON b.id = wi.bucket_id
+                    WHERE wi.id = ? AND b.bucket_type = 'workflow'
+                    """,
+                    (int(item_id),),
+                ).fetchone()
+                if row is None:
+                    return _json_response(self, 404, {"ok": False, "error": "workflow_item_not_found", "item_id": item_id})
+                con.execute("DELETE FROM workflow_items WHERE id = ?", (int(item_id),))
+                con.commit()
+            else:
+                return _json_response(self, 400, {"ok": False, "error": "bad_op"})
+
+            return _json_response(self, 200, _load_factory_summary(cfg.factory_db_path))
+        except sqlite3.IntegrityError as e:
+            return _json_response(self, 409, {"ok": False, "error": "factory_integrity_error", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "factory_workflow_update_failed", "detail": str(e)})
+        finally:
+            con.close()
 
     def _handle_discovery_library_get(self, q: Dict[str, List[str]]) -> None:
         """
@@ -2789,6 +3449,43 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return _json_response(self, 500, {"error": "read_failed", "detail": str(e)})
 
+    def _handle_factory_asset_file_get(self, rel: str) -> None:
+        cfg = self.server.cfg
+        asset_id_raw = (rel.split("/", 1)[0] or "").strip()
+        asset_id = _safe_int(asset_id_raw)
+        if asset_id is None:
+            return _json_response(self, 400, {"error": "bad_asset_id"})
+        if not cfg.factory_db_path.exists():
+            return _json_response(self, 404, {"error": "factory_db_missing"})
+
+        con = sqlite3.connect(cfg.factory_db_path)
+        con.row_factory = sqlite3.Row
+        try:
+            row = con.execute("SELECT path, media_type FROM asset_items WHERE id = ?", (asset_id,)).fetchone()
+        finally:
+            con.close()
+        if row is None:
+            return _json_response(self, 404, {"error": "asset_not_found", "asset_id": asset_id})
+
+        raw_path = row["path"]
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            return _json_response(self, 404, {"error": "asset_path_missing", "asset_id": asset_id})
+        suffix = Path(raw_path).suffix.lower()
+        if suffix not in _FACTORY_ASSET_PREVIEW_EXTS:
+            return _json_response(self, 415, {"error": "unsupported_asset_preview", "asset_id": asset_id})
+
+        full = _resolve_factory_asset_file(cfg, raw_path)
+        if not full.exists() or not full.is_file():
+            return _json_response(self, 404, {"error": "asset_file_not_found", "asset_id": asset_id, "path": raw_path})
+
+        ctype, _enc = mimetypes.guess_type(str(full))
+        if not ctype:
+            ctype = "application/octet-stream"
+        try:
+            _stream_file(self, full, content_type=ctype, cache_control="public, max-age=60", allow_ranges=True)
+        except Exception as e:
+            return _json_response(self, 500, {"error": "read_failed", "detail": str(e)})
+
     def _handle_static_get(self, path: str) -> None:
         cfg = self.server.cfg
         static_dir = cfg.static_dir
@@ -2863,6 +3560,9 @@ def main() -> int:
     queue_ledger_state_path = ws / "output" / "output" / "experiments" / "_status" / "comfy_queue_ledger_state.json"
     queue_ledger_events_path = ws / "output" / "output" / "experiments" / "_status" / "comfy_queue_ledger.jsonl"
     discovery_index_path = ws / "output" / "output" / "_status" / "discovery_og_wip_index.json"
+    factory_db_path = Path(
+        os.environ.get("SNOWFLAKE_FACTORY_DB", str(ws / "comfyui_user" / "default" / "snowflake_factory.sqlite"))
+    )
     # Runtime utilities live under workspace/scripts in this repo, but /workspace/scripts may be
     # occupied by a bind-mount of repo-level scripts. Prefer ws_scripts when present.
     tune_script = ws / "scripts" / "tune_experiment.py"
@@ -2883,6 +3583,8 @@ def main() -> int:
         queue_ledger_state_path=queue_ledger_state_path,
         queue_ledger_events_path=queue_ledger_events_path,
         discovery_index_path=discovery_index_path,
+        factory_db_path=factory_db_path,
+        factory_browse_roots=_factory_browse_roots(ws, output_root),
     )
     server = ExperimentsServer((args.host, int(args.port)), cfg)
     print(f"[experiments-ui] listening on http://{args.host}:{args.port}")
@@ -2894,6 +3596,8 @@ def main() -> int:
     print(f"[experiments-ui] orchestrator_state={cfg.orchestrator_state_path}")
     print(f"[experiments-ui] queue_ledger_state={cfg.queue_ledger_state_path}")
     print(f"[experiments-ui] discovery_index={cfg.discovery_index_path}")
+    print(f"[experiments-ui] factory_db={cfg.factory_db_path}")
+    print(f"[experiments-ui] factory_browse_roots={cfg.factory_browse_roots}")
     print(
         "[experiments-ui] discovery_routes=GET /api/discovery/library, "
         "/api/discovery/trim, /api/discovery/embed-api-prompt"
