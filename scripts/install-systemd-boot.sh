@@ -67,6 +67,9 @@ done
 
 mkdir -p "$USER_SYSTEMD"
 
+INIT_SFTP_HOSTKEYS_SH="$REPO_ROOT/scripts/init_output_sftp_ssh_hostkeys.sh"
+chmod +x "$INIT_SFTP_HOSTKEYS_SH" 2>/dev/null || true
+
 DOCKER_UNIT="$USER_SYSTEMD/comfyui-runpod-docker.service"
 VITE_UNIT="$USER_SYSTEMD/comfyui-runpod-vite.service"
 
@@ -82,9 +85,11 @@ Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=$REPO_ROOT
 Environment="PATH=$compose_service_path"
+# Persisted SSH host keys for output-sftp (see docker-compose.output-sftp.yml).
+ExecStartPre=/usr/bin/env bash $INIT_SFTP_HOSTKEYS_SH
 # Relative -f paths resolve against WorkingDirectory.
-ExecStart=/bin/bash -lc "exec $QDOCKER compose -f docker-compose.yml -f docker-compose.output-sftp.yml up -d"
-ExecStop=/bin/bash -lc "exec $QDOCKER compose -f docker-compose.yml -f docker-compose.output-sftp.yml stop"
+ExecStart=/bin/bash -lc "exec $QDOCKER compose --env-file .env -f docker-compose.yml -f docker-compose.output-sftp.yml up -d"
+ExecStop=/bin/bash -lc "exec $QDOCKER compose --env-file .env -f docker-compose.yml -f docker-compose.output-sftp.yml stop"
 
 [Install]
 WantedBy=default.target
@@ -92,7 +97,7 @@ EOF
 
 cat >"$VITE_UNIT" <<EOF
 [Unit]
-Description=Experiments UI Vite (npm run ui:dev:all → comfyui :8790)
+Description=Experiments UI Vite (background; :5179 — leaves :5178 for interactive npm run ui:dev:vite)
 Documentation=file://$REPO_ROOT/scripts/install-systemd-boot.sh
 After=comfyui-runpod-docker.service network-online.target
 Wants=comfyui-runpod-docker.service
@@ -103,7 +108,8 @@ Type=simple
 WorkingDirectory=$REPO_ROOT
 Environment="PATH=$VITE_SERVICE_PATH"
 # Non-interactive: skip .bashrc (fnm is often behind an interactive-only guard). Use absolute npm: $NPM_BIN
-ExecStart=/bin/bash --noprofile --norc -lc "cd $QREPO && exec $QNPM run ui:dev:all -- --no-open"
+# Port 5179 avoids clashing with manual \`npm run ui:dev:vite\` (default 5178).
+ExecStart=/bin/bash --noprofile --norc -lc "cd $QREPO && exec $QNPM run ui:dev:vite -- --no-open --port 5179"
 # Wait (best-effort) for Experiments UI inside the container; do not block forever.
 ExecStartPre=/bin/bash -lc 'for i in \$(seq 1 90); do curl -fsS -m 2 http://127.0.0.1:8790/ >/dev/null 2>&1 && exit 0; sleep 2; done; exit 0'
 Restart=on-failure
@@ -134,3 +140,4 @@ echo "Status:     systemctl --user status comfyui-runpod-docker.service comfyui-
 echo ""
 echo "WSL2 / headless user session:  sudo loginctl enable-linger \"$USER\""
 echo "Requires: docker CLI on PATH, OUTPUT_SFTP_* in $REPO_ROOT/.env, Node/npm for Vite."
+echo "Vite (systemd) listens on :5179 so \`npm run ui:dev:vite\` can use :5178. Stop the unit if you need 5179:  systemctl --user stop comfyui-runpod-vite.service"

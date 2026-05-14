@@ -1,4 +1,4 @@
-.PHONY: help up up-minimal up-all down restart ps logs pull build \
+.PHONY: help sftp-init-hostkeys up up-minimal up-all down restart ps logs pull build \
         comfy-logs watch-logs sftp-logs \
         ops-up ops-down ops-rm ops-ps ops-logs \
         status-once report-once report-tail \
@@ -31,14 +31,18 @@ help:
 	@echo "  report-once     Print queue status summary once (inside container)"
 	@echo "  report-tail     Tail queue_status.log (inside container)"
 	@echo "  history-backfill Backfill missing history.json from outputs (inside container)"
+	@echo "  sftp-init-hostkeys  Create persisted SSH host keys for output-sftp (stable fingerprint)"
 
-up:
+sftp-init-hostkeys:
+	bash scripts/init_output_sftp_ssh_hostkeys.sh
+
+up: sftp-init-hostkeys
 	$(COMPOSE) up -d comfyui watch_queue output-sftp
 
 up-minimal:
 	docker compose up -d comfyui watch_queue
 
-up-all:
+up-all: sftp-init-hostkeys
 	$(COMPOSE) --profile ops up -d comfyui watch_queue output-sftp $(OPS_SVCS)
 
 down:

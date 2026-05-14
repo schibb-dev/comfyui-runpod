@@ -135,7 +135,7 @@ Use this when the **canonical** checkout and `**docker compose`** run from **Ubu
 5. **Credentials:** run `./scripts/setup_credentials.sh` again from WSL **or** copy `**./credentials`** from the old tree **or** rely on `**COMFYUI_BIND_CREDENTIALS_DIR`** when using the shadow layout.
 6. **Stack:** `docker compose up -d` from `**~/src/comfyui-runpod`**, then `**npm run ui:dev:start**` (API + Vite) or `**npm run ui:dev:vite**`. Optional sanity: `**./scripts/wsl_dev_check.sh**`.
 7. **Editor:** open the folder **via Remote WSL** (VS Code / Cursor) so terminals and Git use Ubuntu paths.
-8. **FileBrowser / phone:** recreate bookmarks or sync tasks — SFTP host is your PC (Tailscale/LAN), path is `**/home/<you>/src/comfyui-runpod/...`** (not `C:\…`).
+8. **FileBrowser / phone:** SFTP (port from `OUTPUT_SFTP_PORT`, default `2222`) exposes top-level folders **`input/`** and **`output/`** (same host dirs as `COMFYUI_BIND_*`). Host is your PC (Tailscale/LAN); not a Windows `C:\…` path. SSH fingerprints stay stable: **`npm run up`** runs **`scripts/init_output_sftp_ssh_hostkeys.sh`** (idempotent); keys are stored under **`.data/output-sftp-ssh-hostkeys/`** (gitignored). Override with **`OUTPUT_SFTP_SSH_HOSTKEYS_DIR`** if you want keys outside the repo checkout.
 9. **Parity check:** `**npm run ui:dev`** for Vite **inside** the container on `**http://127.0.0.1:51780/`** (see `EXPERIMENTS_UI_VITE_HOST_PORT`).
 
 **Transition tooling (explicitly migration-oriented):**

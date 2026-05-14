@@ -126,9 +126,11 @@ update_env_line() {
 update_env_line COMFYUI_BIND_INPUT_DIR "$DEST_INPUT"
 update_env_line COMFYUI_BIND_OUTPUT_DIR "$DEST_OUTPUT"
 update_env_line COMFYUI_BIND_USER_DIR "$DEST_USER"
+update_env_line COMFYUI_BIND_WORKFLOWS_DIR "$DEST_USER/default/workflows"
 update_env_line COMFYUI_BIND_CREDENTIALS_DIR "$DEST_CRED"
-# SFTP should expose the same host output tree Comfy uses
-update_env_line OUTPUT_SFTP_ROOT "$DEST_OUTPUT"
+# SFTP: expose same input/output dirs as Comfy (top-level input/ + output/ in SFTP)
+update_env_line OUTPUT_SFTP_INPUT_DIR "$DEST_INPUT"
+update_env_line OUTPUT_SFTP_OUTPUT_DIR "$DEST_OUTPUT"
 
 SOURCES_RECORD="$DEST_ROOT/.migration_sources.env"
 cat >"$SOURCES_RECORD" <<EOF

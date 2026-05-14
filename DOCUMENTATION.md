@@ -10,7 +10,7 @@ Authoritative command lists live in the repo itself:
 |--------|----------------------|
 | **npm** | Run `npm run` from the repo root (see `package.json` `scripts`). Default Docker workflows use `docker-compose.yml` plus `docker-compose.output-sftp.yml` for the SFTP sidecar. |
 | **Make** | Run `make help` (see `Makefile`). Mirrors many npm scripts. |
-| **Compose** | `docker-compose.yml` — core stack and ops profile sidecars. `docker-compose.output-sftp.yml` — read-only SFTP to a host output tree. |
+| **Compose** | `docker-compose.yml` — core stack and ops profile sidecars. `docker-compose.output-sftp.yml` — SFTP with read/write top-level `input/` and `output/` (same host paths as Comfy binds by default). |
 
 Use **`npm run up:minimal`** or **`make up-minimal`** only if you intentionally skip the SFTP container.
 

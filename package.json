@@ -6,9 +6,10 @@
   "scripts": {
     "//compose": "Most scripts use -f docker-compose.yml -f docker-compose.output-sftp.yml so output-sftp is part of the default project (no orphan warnings).",
     "//compose:minimal": "up:minimal omits SFTP (comfyui + watch_queue only).",
-    "up": "docker compose -f docker-compose.yml -f docker-compose.output-sftp.yml up -d comfyui watch_queue output-sftp",
+    "sftp:init-hostkeys": "bash scripts/init_output_sftp_ssh_hostkeys.sh",
+    "up": "bash scripts/init_output_sftp_ssh_hostkeys.sh && docker compose -f docker-compose.yml -f docker-compose.output-sftp.yml up -d comfyui watch_queue output-sftp",
     "up:minimal": "docker compose up -d comfyui watch_queue",
-    "up:all": "docker compose -f docker-compose.yml -f docker-compose.output-sftp.yml --profile ops up -d comfyui watch_queue output-sftp refresh_run_status report_experiment_queue_status queue_incomplete_experiments queue_ledger ws_event_tap",
+    "up:all": "bash scripts/init_output_sftp_ssh_hostkeys.sh && docker compose -f docker-compose.yml -f docker-compose.output-sftp.yml --profile ops up -d comfyui watch_queue output-sftp refresh_run_status report_experiment_queue_status queue_incomplete_experiments queue_ledger ws_event_tap",
     "down": "docker compose -f docker-compose.yml -f docker-compose.output-sftp.yml down",
     "restart": "docker compose -f docker-compose.yml -f docker-compose.output-sftp.yml restart comfyui watch_queue output-sftp",
     "ps": "docker compose -f docker-compose.yml -f docker-compose.output-sftp.yml ps",
@@ -37,6 +38,8 @@
     "test:acceptance": "node -e \"console.log('No acceptance tests defined yet.'); process.exit(0)\"",
 
     "//ui": "Experiments UI: cross-platform via node scripts/experiments-ui-dev.mjs; PowerShell helpers optional on Windows.",
+    "//vite": "Short alias — same as ui:dev:vite. From repo root (e.g. ~/src/comfyui-runpod): npm run vite",
+    "vite": "node scripts/experiments-ui-dev.mjs vite",
     "ui:dev:vite": "node scripts/experiments-ui-dev.mjs vite",
     "ui:dev:vite:tailscale": "node scripts/experiments-ui-dev.mjs vite --tailscale",
     "ui:dev:api": "node scripts/experiments-ui-dev.mjs api",

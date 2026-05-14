@@ -158,5 +158,5 @@ nodes:
 install:
   auto_install_requirements: true
   skip_existing: true
-  timeout: 300  # seconds
+  timeout: 900  # seconds; large node packs can take several minutes during image builds
   retry_attempts: 3

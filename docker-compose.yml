@@ -37,6 +37,9 @@ services:
       - ${COMFYUI_BIND_OUTPUT_DIR:-./workspace/output}:/ComfyUI/output
       # Persist ComfyUI user data (settings, DB, manager config, user workflows)
       - ${COMFYUI_BIND_USER_DIR:-./workspace/comfyui_user}:/ComfyUI/user
+      # Saved workflows (explicit sub-mount; defaults to <COMFYUI_BIND_USER_DIR>/default/workflows — survives reboot when set in .env)
+      - ${COMFYUI_BIND_WORKFLOWS_DIR:-${COMFYUI_BIND_USER_DIR:-./workspace/comfyui_user}/default/workflows}:/ComfyUI/user/default/workflows
+      - ${COMFYUI_BIND_WORKFLOWS_DIR:-${COMFYUI_BIND_USER_DIR:-./workspace/comfyui_user}/default/workflows}:/workspace/comfyui_user/default/workflows
       # Persist models (default E:\models on Windows; set COMFYUI_MODELS_DIR in .env to override)
       - "${COMFYUI_MODELS_DIR:-E:/models}:/ComfyUI/models"
       - "${COMFYUI_MODELS_DIR:-E:/models}:/workspace/models"
@@ -96,11 +99,21 @@ services:
       - EXPERIMENTS_UI_WIP_ROOT=${EXPERIMENTS_UI_WIP_ROOT:-}
       # Load ComfyUI-MultiGPU from custom_nodes (default on). Set false on single-GPU / if you symlink it away.
       - INSTALL_MULTIGPU=${INSTALL_MULTIGPU:-true}
+      # Custom nodes are baked into the image at build time; set true only to refresh a mounted/dev custom_nodes tree at boot.
+      - COMFYUI_BOOTSTRAP_NODES_ON_START=${COMFYUI_BOOTSTRAP_NODES_ON_START:-false}
       # Krita AI Diffusion (desktop plugin) backend — off by default so ComfyUI is not pulling Krita model sets / Acly nodes unless you opt in.
       # See docs/KRITA_AI_SETUP.md. Set both to true in .env when using Krita as a client to this ComfyUI.
       - AUTO_DOWNLOAD_KRITA_AI_MODELS=${AUTO_DOWNLOAD_KRITA_AI_MODELS:-false}
       - INSTALL_KRITA_BACKEND_NODES=${INSTALL_KRITA_BACKEND_NODES:-false}
       - KRITA_DOWNLOAD_PRESET=${KRITA_DOWNLOAD_PRESET:---recommended}
+      # Match OUTPUT_SFTP uid:gid (atmoz/sftp) so renders on bind mounts are manageable over SFTP.
+      - COMFYUI_RUN_UID=${COMFYUI_RUN_UID:-1000}
+      - COMFYUI_RUN_GID=${COMFYUI_RUN_GID:-1000}
+      - COMFYUI_RUN_AS_ROOT=${COMFYUI_RUN_AS_ROOT:-false}
+      # entrypoint.sh: skip recursive chown/chmod on bind-mounted input/output (very large trees).
+      - COMFYUI_SKIP_INPUT_OUTPUT_CHOWN=${COMFYUI_SKIP_INPUT_OUTPUT_CHOWN:-false}
+      # entrypoint.sh: skip chown on /ComfyUI/custom_nodes* and /ComfyUI/web (unusual; default fixes pysssss / Manager writes).
+      - COMFYUI_SKIP_CUSTOM_NODES_CHOWN=${COMFYUI_SKIP_CUSTOM_NODES_CHOWN:-false}
     
     # Shared memory for data loaders
     shm_size: '8gb'
@@ -115,6 +128,7 @@ services:
   watch_queue:
     image: schibbdev/comfyui-runpod:v1.2.0
     container_name: comfyui0-watch-queue
+    user: "${COMFYUI_RUN_UID:-1000}:${COMFYUI_RUN_GID:-1000}"
     depends_on:
       - comfyui
     restart: unless-stopped
@@ -151,6 +165,7 @@ services:
     profiles: ["ops"]
     image: schibbdev/comfyui-runpod:v1.2.0
     container_name: comfyui0-refresh-run-status
+    user: "${COMFYUI_RUN_UID:-1000}:${COMFYUI_RUN_GID:-1000}"
     depends_on:
       - comfyui
     restart: unless-stopped
@@ -182,6 +197,7 @@ services:
     profiles: ["ops"]
     image: schibbdev/comfyui-runpod:v1.2.0
     container_name: comfyui0-report-queue-status
+    user: "${COMFYUI_RUN_UID:-1000}:${COMFYUI_RUN_GID:-1000}"
     depends_on:
       - comfyui
     restart: unless-stopped
@@ -218,6 +234,7 @@ services:
     profiles: ["ops"]
     image: schibbdev/comfyui-runpod:v1.2.0
     container_name: comfyui0-queue-incomplete
+    user: "${COMFYUI_RUN_UID:-1000}:${COMFYUI_RUN_GID:-1000}"
     depends_on:
       - comfyui
     restart: unless-stopped
@@ -249,6 +266,7 @@ services:
     profiles: ["ops"]
     image: schibbdev/comfyui-runpod:v1.2.0
     container_name: comfyui0-queue-ledger
+    user: "${COMFYUI_RUN_UID:-1000}:${COMFYUI_RUN_GID:-1000}"
     depends_on:
       - comfyui
     restart: unless-stopped
@@ -305,6 +323,7 @@ services:
     profiles: ["ops"]
     image: schibbdev/comfyui-runpod:v1.2.0
     container_name: comfyui0-ws-event-tap
+    user: "${COMFYUI_RUN_UID:-1000}:${COMFYUI_RUN_GID:-1000}"
     depends_on:
       - comfyui
     restart: unless-stopped

@@ -73,6 +73,9 @@ workspace/comfyui_user/
 workspace/ComfyUI
 workspace/comfyui-wan
 
+# SFTP (output-sftp): persisted SSH host keys — never commit
+.data/output-sftp-ssh-hostkeys/
+
 # Docker
 .dockerignore
 

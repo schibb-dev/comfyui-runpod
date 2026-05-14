@@ -81,7 +81,12 @@ def _sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
-def install_requirements(node_dir: str, retry_attempts: int = 3, force: bool = False) -> bool:
+def install_requirements(
+    node_dir: str,
+    retry_attempts: int = 3,
+    force: bool = False,
+    timeout: int = 300,
+) -> bool:
     """
     Install requirements.txt for a node.
 
@@ -119,7 +124,7 @@ def install_requirements(node_dir: str, retry_attempts: int = 3, force: bool = F
                 [sys.executable, "-m", "pip", "install", "-r", requirements_file],
                 capture_output=True,
                 text=True,
-                timeout=300,
+                timeout=timeout,
             )
 
             if result.returncode == 0:
@@ -301,7 +306,7 @@ def bootstrap_nodes(config):
                     print(f"❌ Failed to pin required node {node_name} to {ref}")
                     return False
             if auto_install_requirements:
-                install_requirements(target_dir, retry_attempts, force=force_reinstall)
+                install_requirements(target_dir, retry_attempts, force=force_reinstall, timeout=timeout)
             if npm_build and not is_frontend_built(target_dir):
                 print(f"🏗️  {node_name} exists but frontend not built; running npm build")
                 npm_install_and_build(target_dir)
@@ -329,7 +334,7 @@ def bootstrap_nodes(config):
             
             # Install requirements if enabled
             if auto_install_requirements:
-                install_requirements(target_dir, retry_attempts, force=force_reinstall)
+                install_requirements(target_dir, retry_attempts, force=force_reinstall, timeout=timeout)
         else:
             if required:
                 print(f"❌ Failed to install required node: {node_name}")
@@ -373,7 +378,7 @@ def bootstrap_nodes(config):
             if ref and not checkout_repo_ref(target_dir, ref, timeout):
                 print(f"⚠️  Failed to pin optional node {node_name} to {ref}")
             if auto_install_requirements:
-                install_requirements(target_dir, retry_attempts, force=force_reinstall)
+                install_requirements(target_dir, retry_attempts, force=force_reinstall, timeout=timeout)
             if npm_build and not is_frontend_built(target_dir):
                 print(f"🏗️  {node_name} exists but frontend not built; running npm build")
                 npm_install_and_build(target_dir)
@@ -399,7 +404,7 @@ def bootstrap_nodes(config):
             
             # Install requirements if enabled
             if auto_install_requirements:
-                install_requirements(target_dir, retry_attempts, force=force_reinstall)
+                install_requirements(target_dir, retry_attempts, force=force_reinstall, timeout=timeout)
         else:
             print(f"⚠️  Failed to install optional node: {node_name}")
     

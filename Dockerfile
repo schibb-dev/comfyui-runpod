@@ -51,14 +51,15 @@ RUN pip install --no-cache-dir opencv-python-headless
 # ComfyUI-Crystools and other nodes may need these at runtime; install once in image.
 RUN pip install --no-cache-dir deepdiff
 
-# Bake all custom nodes from custom_nodes.yaml into the image (avoids clone at container startup).
-# When you do not mount ./custom_nodes over /ComfyUI/custom_nodes, these are used.
-# When you do mount, bootstrap at startup still runs and skips existing (so no redownload).
+# Bake all custom nodes from custom_nodes.yaml into the image (avoids clone/fetch at container startup).
+# When you do not mount ./custom_nodes over /ComfyUI/custom_nodes, these baked nodes are used.
+# Runtime bootstrap is opt-in via COMFYUI_BOOTSTRAP_NODES_ON_START=true.
 COPY custom_nodes.yaml /workspace/custom_nodes.yaml
-COPY scripts/ /workspace/scripts/
+COPY scripts/bootstrap_nodes.py /workspace/scripts/bootstrap_nodes.py
 RUN python3 /workspace/scripts/bootstrap_nodes.py
 
-# Copy our scripts and entrypoint
+# Copy runtime scripts after custom-node baking so unrelated script changes do not invalidate
+# the expensive custom_nodes image layer.
 COPY scripts/ /workspace/scripts/
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh && \
@@ -71,7 +72,9 @@ RUN git clone --depth 1 https://github.com/Acly/krita-ai-diffusion.git /opt/krit
 # Create directories for models and our workspace
 RUN mkdir -p /workspace/{workflows,models,output,input,scripts} \
     && mkdir -p /workspace/models/{checkpoints,loras,vae,upscale_models} \
-    && mkdir -p /ComfyUI/models/{checkpoints,loras,vae,upscale_models}
+    && mkdir -p /ComfyUI/models/{checkpoints,loras,vae,upscale_models} \
+    && mkdir -p /ComfyUI/web/extensions/pysssss \
+    && chown -R 1000:1000 /ComfyUI/custom_nodes /ComfyUI/web
 
 # Environment variables
 ENV PYTHONUNBUFFERED=1

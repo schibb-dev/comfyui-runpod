@@ -7,6 +7,25 @@ WORKSPACE_PATH="${WORKSPACE_PATH:-/workspace}"
 COMFYUI_PATH="${COMFYUI_PATH:-/ComfyUI}"
 CREDS_DIR="${CREDS_DIR:-$WORKSPACE_PATH/credentials}"
 
+# Workloads that write renders / UI artifacts onto bind mounts should use the same numeric
+# uid:gid as OUTPUT_SFTP (atmoz/sftp … :uid:gid:…) so SFTP clients can manage those files.
+# Bootstrap stays root so `python3 -m pip install` into the image Python keeps working.
+COMFYUI_RUN_UID="${COMFYUI_RUN_UID:-1000}"
+COMFYUI_RUN_GID="${COMFYUI_RUN_GID:-1000}"
+COMFYUI_RUN_AS_ROOT="${COMFYUI_RUN_AS_ROOT:-false}"
+
+run_as_comfy_writer() {
+  if [[ "${COMFYUI_RUN_AS_ROOT}" == "true" ]] || [[ "$(id -u)" -ne 0 ]]; then
+    "$@"
+    return $?
+  fi
+  if command -v setpriv >/dev/null 2>&1; then
+    setpriv --reuid "${COMFYUI_RUN_UID}" --regid "${COMFYUI_RUN_GID}" --init-groups -- "$@"
+    return $?
+  fi
+  "$@"
+}
+
 # Ensure workspace directories exist (mounted volumes may be empty)
 mkdir -p \
   "$WORKSPACE_PATH" \
@@ -15,6 +34,43 @@ mkdir -p \
   "$WORKSPACE_PATH/output" \
   "$WORKSPACE_PATH/models" \
   "$CREDS_DIR"
+
+# Recursively fix bind-mounted input/output on the host (same paths as SFTP) so Comfy + SFTP
+# share uid:gid and predictable modes. Dedupe /workspace/* vs /ComfyUI/* when they are the same mount.
+# Skip on huge trees: COMFYUI_SKIP_INPUT_OUTPUT_CHOWN=true
+normalize_bind_mount_input_output() {
+  [[ "${COMFYUI_SKIP_INPUT_OUTPUT_CHOWN:-false}" == "true" ]] && return 0
+  [[ "${COMFYUI_RUN_AS_ROOT}" == "true" ]] && return 0
+  [[ "$(id -u)" -ne 0 ]] && return 0
+
+  local uid="${COMFYUI_RUN_UID:-1000}"
+  local gid="${COMFYUI_RUN_GID:-1000}"
+  local paths=(
+    "$WORKSPACE_PATH/input"
+    "$WORKSPACE_PATH/output"
+    "$COMFYUI_PATH/input"
+    "$COMFYUI_PATH/output"
+  )
+  local -A seen_mount=()
+  for d in "${paths[@]}"; do
+    [[ -d "$d" ]] || continue
+    local key
+    key="$(stat -c '%d:%i' "$d" 2>/dev/null)" || continue
+    [[ -n "${seen_mount[$key]:-}" ]] && continue
+    seen_mount[$key]=1
+
+    echo "🔧 Normalizing ownership/permissions under $d → ${uid}:${gid}"
+    if ! chown -R "${uid}:${gid}" "$d" 2>/dev/null; then
+      echo "⚠️  chown failed on $d (readonly FS or host mapping); skipping chmod for this tree"
+      continue
+    fi
+    # Directories: rwxrwxr-x; files: rw-rw-r-- (stay on this mount only).
+    find "$d" -xdev -type d ! -type l -exec chmod 775 {} + 2>/dev/null || true
+    find "$d" -xdev -type f ! -type l -exec chmod 664 {} + 2>/dev/null || true
+  done
+}
+
+normalize_bind_mount_input_output
 
 # Make workflows visible to the pysssss workflow picker (Custom-Scripts):
 # pysssss defaults to scanning: $COMFYUI_PATH/pysssss-workflows
@@ -79,13 +135,36 @@ if [[ -d "$WORKSPACE_PATH/models" && ! -L "$COMFYUI_PATH/models" ]]; then
   fi
 fi
 
-# Bootstrap custom nodes based on config (writes into /ComfyUI/custom_nodes which should be volume-mounted)
-if [[ -f "$WORKSPACE_PATH/custom_nodes.yaml" ]]; then
-  echo "🚀 Bootstrapping custom nodes from $WORKSPACE_PATH/custom_nodes.yaml"
-  python3 "$WORKSPACE_PATH/scripts/bootstrap_nodes.py"
-  echo "✅ Custom nodes bootstrap completed"
+# Git 2.35+: `git -C <repo>` run as root refuses repos owned by another uid ("dubious ownership").
+# Runtime custom-node bootstrap is opt-in, but when enabled it runs as root against repos
+# that may have been chowned to COMFYUI_RUN_UID for Comfy imports.
+if [[ "$(id -u)" -eq 0 ]] && command -v git >/dev/null 2>&1; then
+  if git config --global --replace-all safe.directory '*' 2>/dev/null; then
+    echo "🔧 git: safe.directory=* (root bootstrap vs uid-owned custom_nodes clones)"
+  else
+    for base in "$COMFYUI_PATH/custom_nodes" "$COMFYUI_PATH/custom_nodes.disabled"; do
+      [[ -d "$base" ]] || continue
+      while IFS= read -r -d '' gitdir; do
+        repo="${gitdir%/.git}"
+        git config --global --add safe.directory "$repo" 2>/dev/null || true
+      done < <(find "$base" -maxdepth 3 -type d -name .git -print0 2>/dev/null || true)
+    done
+  fi
+fi
+
+# Custom nodes are baked into the image at build time from custom_nodes.yaml. Avoid
+# re-fetching/re-pinning them at every boot; enable only for dev/debug or a mounted custom_nodes tree.
+COMFYUI_BOOTSTRAP_NODES_ON_START="${COMFYUI_BOOTSTRAP_NODES_ON_START:-false}"
+if [[ "$COMFYUI_BOOTSTRAP_NODES_ON_START" == "true" ]]; then
+  if [[ -f "$WORKSPACE_PATH/custom_nodes.yaml" ]]; then
+    echo "🚀 Bootstrapping custom nodes from $WORKSPACE_PATH/custom_nodes.yaml"
+    python3 "$WORKSPACE_PATH/scripts/bootstrap_nodes.py"
+    echo "✅ Custom nodes bootstrap completed"
+  else
+    echo "ℹ️  No $WORKSPACE_PATH/custom_nodes.yaml found; skipping node bootstrap"
+  fi
 else
-  echo "ℹ️  No $WORKSPACE_PATH/custom_nodes.yaml found; skipping node bootstrap"
+  echo "⏭️  Skipping startup custom-node bootstrap (baked into image; set COMFYUI_BOOTSTRAP_NODES_ON_START=true to refresh at boot)"
 fi
 
 # Optional: disable MultiGPU node pack by physically moving it out of custom_nodes.
@@ -107,6 +186,42 @@ else
     echo "⏭️  Disabled ComfyUI-MultiGPU (set INSTALL_MULTIGPU=true to enable)"
   fi
 fi
+
+# ComfyUI runs as COMFYUI_RUN_UID (setpriv). Image-built trees are root-owned:
+# - custom_nodes*: pysssss.json, Manager .cnr-id, WAS config, etc.
+# - ComfyUI-Custom-Scripts install_js() mkdirs under $COMFYUI_PATH/web/extensions/pysssss (PermissionError if missing/unwritable).
+normalize_custom_nodes_for_writer() {
+  [[ "${COMFYUI_SKIP_CUSTOM_NODES_CHOWN:-false}" == "true" ]] && return 0
+  [[ "${COMFYUI_RUN_AS_ROOT}" == "true" ]] && return 0
+  [[ "$(id -u)" -ne 0 ]] && return 0
+
+  local uid="${COMFYUI_RUN_UID:-1000}"
+  local gid="${COMFYUI_RUN_GID:-1000}"
+  local force_chown="${COMFYUI_FORCE_CUSTOM_NODES_CHOWN:-false}"
+  chown_tree_if_needed() {
+    local d="$1"
+    [[ -d "$d" ]] || return 0
+    local owner
+    owner="$(stat -c '%u:%g' "$d" 2>/dev/null || true)"
+    if [[ "$force_chown" != "true" && "$owner" == "${uid}:${gid}" ]]; then
+      echo "✅ Ownership already ${uid}:${gid} for $d; skipping recursive chown"
+      return 0
+    fi
+
+    echo "🔧 Normalizing ownership under $d → ${uid}:${gid} (ComfyUI import + runtime writes)"
+    chown -R "${uid}:${gid}" "$d" 2>/dev/null || echo "⚠️  chown failed on $d (skip or fix FS permissions)"
+  }
+
+  local d
+  for d in "$COMFYUI_PATH/custom_nodes" "$COMFYUI_PATH/custom_nodes.disabled"; do
+    chown_tree_if_needed "$d"
+  done
+
+  mkdir -p "$COMFYUI_PATH/web/extensions/pysssss"
+  chown_tree_if_needed "$COMFYUI_PATH/web"
+}
+
+normalize_custom_nodes_for_writer
 
 # Optional: background CivitAI downloader (non-fatal)
 if [[ -x "$WORKSPACE_PATH/scripts/run_civitai_downloader.sh" ]]; then
@@ -189,11 +304,11 @@ if [[ "$EXPERIMENTS_UI" == "true" ]]; then
             pushd "$WORKSPACE_PATH/experiments_ui/web" >/dev/null
             # Prefer npm ci if lockfile exists.
             if [[ -f package-lock.json ]]; then
-              npm ci
+              run_as_comfy_writer npm ci
             else
-              npm install
+              run_as_comfy_writer npm install
             fi
-            npm run build
+            run_as_comfy_writer npm run build
             popd >/dev/null
           else
             echo "⚠️  Experiments UI web dir not found: $WORKSPACE_PATH/experiments_ui/web (skipping build)"
@@ -205,11 +320,15 @@ if [[ "$EXPERIMENTS_UI" == "true" ]]; then
     fi
 
     echo "🧪 Starting Experiments UI server on 0.0.0.0:$EXPERIMENTS_UI_PORT"
-    python3 "$WORKSPACE_PATH/scripts/experiments_ui_server.py" --host 0.0.0.0 --port "$EXPERIMENTS_UI_PORT" --workspace-root "$WORKSPACE_PATH" &
+    run_as_comfy_writer python3 "$WORKSPACE_PATH/scripts/experiments_ui_server.py" --host 0.0.0.0 --port "$EXPERIMENTS_UI_PORT" --workspace-root "$WORKSPACE_PATH" &
     ui_pid="$!"
   else
     echo "⚠️  EXPERIMENTS_UI=true but missing $WORKSPACE_PATH/scripts/experiments_ui_server.py"
   fi
+fi
+
+if [[ "${COMFYUI_RUN_AS_ROOT}" != "true" ]] && [[ "$(id -u)" -eq 0 ]]; then
+  echo "👤 ComfyUI + Experiments UI will run as uid:gid ${COMFYUI_RUN_UID}:${COMFYUI_RUN_GID} (setpriv); keep OUTPUT_SFTP / atmoz uid:gid the same."
 fi
 
 echo "▶️  Starting ComfyUI directly"
@@ -237,7 +356,7 @@ fi
 # - "real crash" (non-zero exit code, SIGKILL, OOM, etc)
 # - vs clean shutdown (SIGTERM / exit 0)
 set +e
-python3 main.py "${args[@]}" &
+run_as_comfy_writer python3 main.py "${args[@]}" &
 comfy_pid="$!"
 
 on_term() {
