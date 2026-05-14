@@ -71,9 +71,57 @@ body {
   font-size: 20px;
 }
 
+.factory-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.factory-nav a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.factory-nav a:hover {
+  text-decoration: underline;
+}
+
 .factory-muted {
   color: var(--muted);
   font-size: 13px;
+}
+
+.main-nav-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.main-nav-list a {
+  display: grid;
+  gap: 2px;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.main-nav-list a:hover {
+  border-color: rgba(90, 162, 255, 0.38);
+  background: rgba(90, 162, 255, 0.1);
+}
+
+.main-nav-list small {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .factory-error {

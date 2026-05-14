@@ -761,6 +761,13 @@ export function WorkflowExplorerApp() {
     <div className="workflow-explorer-screen">
       <div className="factory-topbar">
         <div>
+          <nav className="factory-nav" aria-label="Workflow Explorer navigation">
+            <a href="/">Experiments</a>
+            <span aria-hidden="true">/</span>
+            <a href="/discovery">Discovery</a>
+            <span aria-hidden="true">/</span>
+            <span>Workflow Explorer</span>
+          </nav>
           <h1>Workflow Explorer · Factory Spike</h1>
           <div className="factory-muted">
             First pass: input asset bucket → workflow bucket → output asset bucket

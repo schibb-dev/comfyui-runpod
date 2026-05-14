@@ -3688,9 +3688,15 @@ export function App() {
         <div className={`sidebar-scroll ${sidebarCollapsed ? "hidden" : ""}`}>
           <div className="sidebar-group-title">Data</div>
           {!sidebarCollapsed ? (
-            <div style={{ marginBottom: 12, fontSize: 13, lineHeight: 1.4 }}>
-              <a href="/discovery">Og / Wip library</a>
-              <span style={{ color: "var(--muted)" }}> — indexed discovery</span>
+            <div className="main-nav-list">
+              <a href="/discovery">
+                <span>Og / Wip library</span>
+                <small>indexed discovery</small>
+              </a>
+              <a href="/workflow-explorer">
+                <span>Workflow Explorer</span>
+                <small>factory buckets and workflow selection</small>
+              </a>
             </div>
           ) : null}
 
