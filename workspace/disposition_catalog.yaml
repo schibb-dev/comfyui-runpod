@@ -217,7 +217,7 @@ markers:
     kind: step
     process: advance
     label: Vary
-    hint: Replay with variation at queue front
+    hint: Front-queue replay with the same bindings (not a prompt variation yet)
     enabled: true
     order: 41
     hook: replay_front
