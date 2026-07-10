@@ -92,6 +92,10 @@ workspace/experiments_ui/dist/
 # Local scratch logs (repo root)
 /tmp_comfy_logs.txt
 
+# MkDocs planning docs build output
+site/
+.venv-docs/
+
 # Workspace vendored custom nodes (cloned beside repo bootstrap; do not track)
 workspace/ComfyUI-*/
 

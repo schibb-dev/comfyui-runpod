@@ -9,10 +9,17 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+_HERE = Path(__file__).resolve().parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
+from output_path_lib import normalize_prompt_output_prefixes
 
 # --- Helpers (minimal copy for standalone use) ---
 
@@ -53,7 +60,10 @@ def _http_json(method: str, url: str, payload: Optional[Dict[str, Any]] = None, 
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     with urllib.request.urlopen(req, timeout=timeout_s) as resp:
         raw = resp.read()
-    return json.loads(raw.decode("utf-8", "replace"))
+    text = raw.decode("utf-8", "replace").strip()
+    if not text:
+        return {}
+    return json.loads(text)
 
 
 def _utc_iso(ts: float) -> str:
@@ -246,6 +256,7 @@ def submit_run_to_comfyui(
         raise RuntimeError(f"prompt.json is not a dict: {prompt_path}")
     _prune_dead_nodes(prompt_obj)
     _normalize_prompt_paths_for_linux(prompt_obj)
+    normalize_prompt_output_prefixes(prompt_obj)
 
     payload: Dict[str, Any] = {"prompt": prompt_obj, "client_id": client_id}
     workflow_ui = _workflow_ui_for_run_dir(run_dir)
@@ -273,3 +284,76 @@ def submit_run_to_comfyui(
         indent=2,
     )
     return prompt_id2
+
+
+def _looks_like_comfy_api_prompt(obj: Any) -> bool:
+    if not isinstance(obj, dict) or not obj:
+        return False
+    if isinstance(obj.get("nodes"), list) and isinstance(obj.get("links"), list):
+        return False
+    for _k, v in obj.items():
+        if not isinstance(v, dict):
+            return False
+        if not isinstance(v.get("class_type"), str):
+            return False
+    return True
+
+
+def _looks_like_comfy_ui_workflow(obj: Any) -> bool:
+    return isinstance(obj, dict) and isinstance(obj.get("nodes"), list) and isinstance(obj.get("links"), list)
+
+
+def convert_ui_workflow_to_prompt(
+    server: str,
+    workflow: Dict[str, Any],
+    *,
+    timeout_s: int = 120,
+) -> Dict[str, Any]:
+    """Convert LiteGraph workflow JSON to Comfy API prompt via POST /workflow/convert."""
+    server = server.rstrip("/")
+    if _looks_like_comfy_api_prompt(workflow):
+        return workflow
+    if not _looks_like_comfy_ui_workflow(workflow):
+        raise RuntimeError("not a LiteGraph workflow or API prompt dict")
+    try:
+        out = _http_json("POST", f"{server}/workflow/convert", workflow, timeout_s=timeout_s)
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(
+            f"POST /workflow/convert failed ({e.code}): install workflow-to-api-converter or use PNG prompt fallback"
+        ) from e
+    if not isinstance(out, dict):
+        raise RuntimeError("comfy /workflow/convert returned non-object")
+    if isinstance(out.get("error"), str) and not _looks_like_comfy_api_prompt(out):
+        raise RuntimeError(out["error"])
+    if not _looks_like_comfy_api_prompt(out):
+        raise RuntimeError("comfy /workflow/convert returned unexpected shape")
+    return out
+
+
+def submit_prompt_to_comfyui(
+    server: str,
+    prompt_obj: Dict[str, Any],
+    *,
+    workflow_ui: Optional[Dict[str, Any]] = None,
+    client_id: str = "shape_factory",
+    front: bool = False,
+    timeout_s: int = 30,
+) -> Dict[str, Any]:
+    """POST API prompt to Comfy /prompt; embed UI workflow in extra_pnginfo when provided."""
+    server = server.rstrip("/")
+    prompt = json.loads(json.dumps(prompt_obj))
+    _prune_dead_nodes(prompt)
+    _normalize_prompt_paths_for_linux(prompt)
+    normalize_prompt_output_prefixes(prompt)
+    payload: Dict[str, Any] = {"prompt": prompt, "client_id": client_id}
+    if front:
+        payload["front"] = True
+    if isinstance(workflow_ui, dict) and workflow_ui:
+        payload["extra_data"] = {"extra_pnginfo": {"workflow": workflow_ui}}
+    submit = _http_json("POST", f"{server}/prompt", payload, timeout_s=timeout_s)
+    if not isinstance(submit, dict):
+        raise RuntimeError("submit response is not a JSON object")
+    prompt_id = submit.get("prompt_id")
+    if not isinstance(prompt_id, str) or not prompt_id.strip():
+        raise RuntimeError(f"submit response missing prompt_id: {submit!r}")
+    return submit

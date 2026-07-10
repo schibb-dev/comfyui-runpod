@@ -55,6 +55,27 @@ if [[ -f .env ]]; then
   check_bind COMFYUI_BIND_CREDENTIALS_DIR
 fi
 
+# Bind guard: fail on repo-relative / repo-trap output paths.
+if command -v python3 >/dev/null 2>&1; then
+  if ! python3 - "$ROOT" <<'PY'
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+sys.path.insert(0, str(root / "workspace" / "scripts"))
+from output_path_lib import bind_output_guard_messages
+
+msgs = bind_output_guard_messages(root)
+for msg in msgs:
+    print(msg)
+raise SystemExit(1 if any(m.startswith("ERROR:") for m in msgs) else 0)
+PY
+  then
+    echo "ERROR: fix COMFYUI_BIND_OUTPUT_DIR in .env before running Comfy (see docs/CURRENT_GOAL.md)"
+    exit 1
+  fi
+fi
+
 docker compose config >/dev/null
 echo "OK: docker compose config"
 
@@ -62,6 +83,17 @@ if command -v node >/dev/null 2>&1; then
   echo "OK: node $(node --version)"
 else
   echo "NOTE: node not on PATH (install Node in WSL for npm run ui:dev:start)"
+fi
+
+# Recent stray output writes (nested output/og under canonical bind, repo workspace/output, …).
+if command -v python3 >/dev/null 2>&1 && [[ -x scripts/scan_stray_outputs.py ]]; then
+  echo ""
+  echo "== stray output scan (last 48h) =="
+  if python3 scripts/scan_stray_outputs.py --since-hours 48; then
+    echo "OK: no recent stray output media"
+  else
+    echo "WARN: stray outputs detected — run: python3 scripts/flatten_output_nest.py --bind-root \"\$(grep ^COMFYUI_BIND_OUTPUT_DIR= .env | cut -d= -f2-)\" --apply"
+  fi
 fi
 
 echo "== done =="

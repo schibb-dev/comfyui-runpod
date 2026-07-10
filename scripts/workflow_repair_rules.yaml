@@ -1,0 +1,69 @@
+# Declarative prompt repair rules (P0).
+# Matched against comfy-check node_errors and/or proactive prompt inspection.
+#
+# Actions:
+#   set_string_input_empty — set API input to "" (StringConcatenate required inputs)
+#   drop_string_input      — remove API input key (Text Concatenate optional inputs)
+#   sanitize_image_string_inputs — scan UI node types; apply empty/drop by node class
+#   flatten_library_output_prefix — proactive UI + prompt (see FlattenLibraryOutputPrefix*Rule)
+#
+version: 1
+
+ui_workflow_rules:
+  - id: flatten_library_output_prefix
+    proactive: true
+    action: flatten_library_output_prefix
+    node_types:
+      - VHS_VideoCombine
+      - SaveImage
+      - SaveAnimatedWEBP
+      - SaveAnimatedPNG
+
+prompt_error_rules:
+  # Proactive: nested output/og|wip|experiments prefixes on save nodes
+  - id: flatten_library_output_prefix
+    proactive: true
+    action: flatten_library_output_prefix
+
+  # Proactive: caption / Florence chain not in API prompt after convert
+  - id: sanitize_image_string_inputs
+    proactive: true
+    action: sanitize_image_string_inputs
+    action_by_class_type:
+      StringConcatenate: set_string_input_empty
+      Text Concatenate: drop_string_input
+    default_action: set_string_input_empty
+    ui_node_types:
+      - StringConcatenate
+      - Text Concatenate
+    inputs:
+      - string_a
+      - string_b
+      - text_a
+      - text_b
+
+  # Reactive: Comfy reports IMAGE wired into STRING input
+  - id: return_type_mismatch_image_to_string
+    match:
+      error_type: return_type_mismatch
+      details_contains:
+        - "received_type(IMAGE)"
+        - "input_type(STRING)"
+    action_by_class_type:
+      StringConcatenate: set_string_input_empty
+      Text Concatenate: drop_string_input
+    default_action: set_string_input_empty
+
+  # Reactive: required string input missing after prior sanitize
+  - id: required_string_input_missing
+    match:
+      error_type: required_input_missing
+      input_name_in:
+        - string_a
+        - string_b
+        - text_a
+        - text_b
+    action_by_class_type:
+      StringConcatenate: set_string_input_empty
+      Text Concatenate: drop_string_input
+    default_action: set_string_input_empty
