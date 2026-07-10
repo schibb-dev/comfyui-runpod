@@ -39,7 +39,8 @@ RUN pip install --no-cache-dir \
     insightface \
     onnxruntime \
     aiohttp \
-    tqdm
+    tqdm \
+    websockets
 
 # Pin NumPy to <2 so OpenCV (cv2) and other binary extensions built for NumPy 1.x work.
 # Otherwise: "numpy.core.multiarray failed to import" / "_ARRAY_API not found" when custom nodes import cv2.
@@ -53,7 +54,11 @@ RUN pip install --no-cache-dir deepdiff
 
 # Bake all custom nodes from custom_nodes.yaml into the image (avoids clone/fetch at container startup).
 # When you do not mount ./custom_nodes over /ComfyUI/custom_nodes, these baked nodes are used.
-# Runtime bootstrap is opt-in via COMFYUI_BOOTSTRAP_NODES_ON_START=true.
+# Runtime bootstrap is opt-in via COMFYUI_BOOTSTRAP_NODES_ON_START=true (or auto when Krita nodes missing).
+# Acly/Krita bridge nodes (comfyui-tooling-nodes, comfyui-inpaint-nodes) install only when true.
+# Set INSTALL_KRITA_BACKEND_NODES=true in .env before `docker compose build` to bake them into the image.
+ARG INSTALL_KRITA_BACKEND_NODES=false
+ENV INSTALL_KRITA_BACKEND_NODES=${INSTALL_KRITA_BACKEND_NODES}
 COPY custom_nodes.yaml /workspace/custom_nodes.yaml
 COPY scripts/bootstrap_nodes.py /workspace/scripts/bootstrap_nodes.py
 RUN python3 /workspace/scripts/bootstrap_nodes.py

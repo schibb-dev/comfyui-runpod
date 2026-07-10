@@ -1,0 +1,7 @@
+# Copy to Windows:  %UserProfile%\.wslconfig
+# Then from PowerShell:  wsl --shutdown
+# Reopen Ubuntu. Old C:\Users\<you>\wsl-swap.vhdx can be deleted after verify.
+
+[wsl2]
+swapFile=E:\\WSL\\wsl-swap.vhdx
+swap=8192

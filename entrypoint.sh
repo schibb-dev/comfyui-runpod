@@ -154,7 +154,25 @@ fi
 
 # Custom nodes are baked into the image at build time from custom_nodes.yaml. Avoid
 # re-fetching/re-pinning them at every boot; enable only for dev/debug or a mounted custom_nodes tree.
+INSTALL_KRITA_BACKEND_NODES="${INSTALL_KRITA_BACKEND_NODES:-false}"
+export INSTALL_KRITA_BACKEND_NODES
+
+krita_backend_nodes_missing() {
+  local name
+  for name in comfyui-tooling-nodes comfyui-inpaint-nodes; do
+    [[ -d "$COMFYUI_PATH/custom_nodes/$name" ]] || return 0
+  done
+  return 1
+}
+
 COMFYUI_BOOTSTRAP_NODES_ON_START="${COMFYUI_BOOTSTRAP_NODES_ON_START:-false}"
+if [[ "$INSTALL_KRITA_BACKEND_NODES" == "true" ]] && krita_backend_nodes_missing; then
+  if [[ "$COMFYUI_BOOTSTRAP_NODES_ON_START" != "true" ]]; then
+    echo "🔧 INSTALL_KRITA_BACKEND_NODES=true but Acly backend nodes are missing; enabling startup bootstrap"
+    COMFYUI_BOOTSTRAP_NODES_ON_START=true
+  fi
+fi
+
 if [[ "$COMFYUI_BOOTSTRAP_NODES_ON_START" == "true" ]]; then
   if [[ -f "$WORKSPACE_PATH/custom_nodes.yaml" ]]; then
     echo "🚀 Bootstrapping custom nodes from $WORKSPACE_PATH/custom_nodes.yaml"

@@ -154,6 +154,13 @@ nodes:
       required: false
       description: "Nunchaku svdq model support (optional for Krita AI)"
 
+    # Shape factory / programmatic submit: POST /workflow/convert (UI workflow → API prompt)
+    - name: comfyui-workflow-to-api-converter-endpoint
+      repo: https://github.com/SethRobinson/comfyui-workflow-to-api-converter-endpoint.git
+      branch: main
+      required: false
+      description: "Server-side workflow→API converter endpoint for shape_factory submit"
+
 # Installation settings
 install:
   auto_install_requirements: true

@@ -8,6 +8,9 @@
 version: 1
 
 mappings:
+  # pysssss (ComfyUI-Custom-Scripts) load node — extra filename output; core LoadImage is equivalent for our graphs
+  "LoadImageWithFilename|pysssss": "LoadImage"
+
   # Easy-Use / core renames (verify against YOUR /object_info — names differ by pack version)
   "Text Concatenate": "StringConcatenate"
 

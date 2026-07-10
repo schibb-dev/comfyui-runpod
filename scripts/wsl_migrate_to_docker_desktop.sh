@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Migrate WSL Ubuntu from native dockerd (docker-ce) to Docker Desktop's engine.
+# Migrate WSL Ubuntu from snap or apt dockerd to Docker Desktop's engine.
 #
 # BEFORE running:
 #   1. Docker Desktop → Settings → Resources → WSL integration → enable your Ubuntu distro → Apply.
@@ -23,33 +23,43 @@ fi
 echo "== Preflight: docker daemon identity (expect Ubuntu host name before migration) =="
 docker info 2>/dev/null | grep -E '^ Name:|^ Operating System:' || true
 
-echo ""
-echo "Stopping native Docker daemon services..."
-sudo systemctl stop docker.socket 2>/dev/null || true
-sudo systemctl stop docker 2>/dev/null || true
-sudo systemctl stop containerd 2>/dev/null || true
+if command -v snap >/dev/null 2>&1 && snap list docker >/dev/null 2>&1; then
+  echo ""
+  echo "Stopping snap docker..."
+  sudo snap stop docker
+  echo "Removing snap docker (images/volumes live in snap data; Docker Desktop will hold them after migration)..."
+  sudo snap remove --purge docker
+elif systemctl list-unit-files docker.service >/dev/null 2>&1; then
+  echo ""
+  echo "Stopping native Docker daemon services..."
+  sudo systemctl stop docker.socket 2>/dev/null || true
+  sudo systemctl stop docker 2>/dev/null || true
+  sudo systemctl stop containerd 2>/dev/null || true
+
+  echo ""
+  echo "Disabling services so dockerd does not respawn on boot..."
+  sudo systemctl disable docker.socket 2>/dev/null || true
+  sudo systemctl disable docker 2>/dev/null || true
+  sudo systemctl disable containerd 2>/dev/null || true
+
+  echo ""
+  echo "Removing docker-ce stack (CLI returns via Docker Desktop WSL integration after reboot)..."
+  sudo apt-get remove --purge -y \
+    docker-ce \
+    docker-ce-cli \
+    containerd.io \
+    docker-buildx-plugin \
+    docker-compose-plugin \
+    docker-ce-rootless-extras \
+    || true
+
+  sudo apt-get autoremove -y
+else
+  echo "No snap docker or docker-ce detected; assuming Docker Desktop already provides the engine."
+fi
 
 echo ""
-echo "Disabling services so dockerd does not respawn on boot..."
-sudo systemctl disable docker.socket 2>/dev/null || true
-sudo systemctl disable docker 2>/dev/null || true
-sudo systemctl disable containerd 2>/dev/null || true
-
-echo ""
-echo "Removing docker-ce stack (CLI returns via Docker Desktop WSL integration after reboot)..."
-sudo apt-get remove --purge -y \
-  docker-ce \
-  docker-ce-cli \
-  containerd.io \
-  docker-buildx-plugin \
-  docker-compose-plugin \
-  docker-ce-rootless-extras \
-  || true
-
-sudo apt-get autoremove -y
-
-echo ""
-echo "== Done with apt purge =="
+echo "== Done removing local docker engine =="
 echo "Next (Windows PowerShell, admin optional):"
 echo "  wsl --shutdown"
 echo "Then start Docker Desktop, reopen Ubuntu, and verify:"

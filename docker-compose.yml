@@ -8,6 +8,8 @@ services:
         # `precompute_freqs_cis` — required for welltop-cn ComfyUI-TeaCache in the WAN base image.
         # Override in `.env`: COMFYUI_REF=origin/master for bleeding-edge (TeaCache will break until upstream fixes).
         COMFYUI_REF: ${COMFYUI_REF:-38d049382533c6662d815b08ca3395e96cca9f57}
+        # Bake Acly/Krita backend nodes at image build when true (.env → docker compose build).
+        INSTALL_KRITA_BACKEND_NODES: ${INSTALL_KRITA_BACKEND_NODES:-false}
     image: schibbdev/comfyui-runpod:v1.2.0
     container_name: comfyui0-runpod
     
@@ -49,6 +51,9 @@ services:
       - ./custom_nodes.yaml:/workspace/custom_nodes.yaml:ro
       # Scripts directory for bootstrap and utilities
       - ./scripts:/workspace/scripts:ro
+      # Shape factory pools/jobs/pipelines (read-only map API; jobs dir writable for UI queue)
+      - ./.data:/workspace/.data:ro
+      - ./.data/shape_factory/jobs:/workspace/.data/shape_factory/jobs
       # Workspace scripts (tuning/watch utilities used at runtime)
       - ./workspace/scripts:/workspace/ws_scripts:ro
       # Custom nodes: use the image's baked-in nodes (from custom_nodes.yaml at build time).
@@ -118,8 +123,9 @@ services:
     # Shared memory for data loaders
     shm_size: '8gb'
     
-    # Restart policy
-    restart: unless-stopped
+    # WSL2 + Docker Desktop: avoid unless-stopped — the daemon revives containers before bind
+    # mounts are ready after reboot. Start/stop via systemd (install-systemd-boot.sh) or compose up.
+    restart: "no"
     
     # Keep container running
     stdin_open: true
@@ -131,7 +137,7 @@ services:
     user: "${COMFYUI_RUN_UID:-1000}:${COMFYUI_RUN_GID:-1000}"
     depends_on:
       - comfyui
-    restart: unless-stopped
+    restart: "no"
     # The image entrypoint starts ComfyUI + optional services; for watch_queue we want
     # to run the queue watcher only, so bypass the image entrypoint.
     entrypoint: ["python3", "/workspace/ws_scripts/watch_queue.py"]
@@ -150,7 +156,7 @@ services:
       retries: 3
       start_period: 20s
     command:
-      - /workspace/output/output/experiments
+      - /workspace/output/experiments
       - --server
       - http://comfyui:8188
       - --poll
@@ -168,7 +174,7 @@ services:
     user: "${COMFYUI_RUN_UID:-1000}:${COMFYUI_RUN_GID:-1000}"
     depends_on:
       - comfyui
-    restart: unless-stopped
+    restart: "no"
     entrypoint: ["sh", "-lc"]
     environment:
       - SERVER_URL=http://comfyui:8188
@@ -200,7 +206,7 @@ services:
     user: "${COMFYUI_RUN_UID:-1000}:${COMFYUI_RUN_GID:-1000}"
     depends_on:
       - comfyui
-    restart: unless-stopped
+    restart: "no"
     entrypoint: ["sh", "-lc"]
     environment:
       - SERVER_URL=http://comfyui:8188
@@ -221,8 +227,8 @@ services:
       start_period: 20s
     command:
       - >-
-        mkdir -p /workspace/output/output/experiments/_status;
-        LOG=/workspace/output/output/experiments/_status/queue_status.log;
+        mkdir -p /workspace/output/experiments/_status;
+        LOG=/workspace/output/experiments/_status/queue_status.log;
         while true; do
           echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)]";
           python3 /workspace/ws_scripts/report_experiment_queue_status.py --server "$$SERVER_URL" --newest-first --limit "$$REPORT_LIMIT" --summary-only;
@@ -237,7 +243,7 @@ services:
     user: "${COMFYUI_RUN_UID:-1000}:${COMFYUI_RUN_GID:-1000}"
     depends_on:
       - comfyui
-    restart: unless-stopped
+    restart: "no"
     entrypoint: ["sh", "-lc"]
     environment:
       - SERVER_URL=http://comfyui:8188
@@ -269,7 +275,7 @@ services:
     user: "${COMFYUI_RUN_UID:-1000}:${COMFYUI_RUN_GID:-1000}"
     depends_on:
       - comfyui
-    restart: unless-stopped
+    restart: "no"
     entrypoint: ["sh", "-lc"]
     environment:
       - SERVER_URL=http://comfyui:8188
@@ -326,7 +332,7 @@ services:
     user: "${COMFYUI_RUN_UID:-1000}:${COMFYUI_RUN_GID:-1000}"
     depends_on:
       - comfyui
-    restart: unless-stopped
+    restart: "no"
     # Primary runtime timing source: listen to ComfyUI /ws and write per-run metrics.json fields.
     entrypoint: ["sh", "-lc"]
     environment:

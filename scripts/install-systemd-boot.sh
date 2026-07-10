@@ -67,8 +67,10 @@ done
 
 mkdir -p "$USER_SYSTEMD"
 
+WAIT_COMPOSE_BOOT_SH="$REPO_ROOT/scripts/wait_for_compose_boot.sh"
 INIT_SFTP_HOSTKEYS_SH="$REPO_ROOT/scripts/init_output_sftp_ssh_hostkeys.sh"
-chmod +x "$INIT_SFTP_HOSTKEYS_SH" 2>/dev/null || true
+chmod +x "$WAIT_COMPOSE_BOOT_SH" "$INIT_SFTP_HOSTKEYS_SH" 2>/dev/null || true
+QWAIT="$(printf '%q' "$WAIT_COMPOSE_BOOT_SH")"
 
 DOCKER_UNIT="$USER_SYSTEMD/comfyui-runpod-docker.service"
 VITE_UNIT="$USER_SYSTEMD/comfyui-runpod-vite.service"
@@ -85,10 +87,12 @@ Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=$REPO_ROOT
 Environment="PATH=$compose_service_path"
+# Docker Desktop must be up and COMFYUI_BIND_* dirs must exist (avoids empty bind mounts on boot).
+ExecStartPre=/usr/bin/env bash $QWAIT
 # Persisted SSH host keys for output-sftp (see docker-compose.output-sftp.yml).
 ExecStartPre=/usr/bin/env bash $INIT_SFTP_HOSTKEYS_SH
-# Relative -f paths resolve against WorkingDirectory.
-ExecStart=/bin/bash -lc "exec $QDOCKER compose --env-file .env -f docker-compose.yml -f docker-compose.output-sftp.yml up -d"
+# Relative -f paths resolve against WorkingDirectory. restart: "no" in compose — this unit owns startup.
+ExecStart=/bin/bash -lc "exec $QDOCKER compose --env-file .env -f docker-compose.yml -f docker-compose.output-sftp.yml up -d comfyui watch_queue output-sftp"
 ExecStop=/bin/bash -lc "exec $QDOCKER compose --env-file .env -f docker-compose.yml -f docker-compose.output-sftp.yml stop"
 
 [Install]
@@ -139,5 +143,7 @@ fi
 echo "Status:     systemctl --user status comfyui-runpod-docker.service comfyui-runpod-vite.service"
 echo ""
 echo "WSL2 / headless user session:  sudo loginctl enable-linger \"$USER\""
+echo "After changing restart policy or boot scripts, recreate once so Docker picks up compose settings:"
+echo "  cd $REPO_ROOT && npm run comfy:recreate && docker compose -f docker-compose.yml -f docker-compose.output-sftp.yml up -d watch_queue output-sftp"
 echo "Requires: docker CLI on PATH, OUTPUT_SFTP_* in $REPO_ROOT/.env, Node/npm for Vite."
 echo "Vite (systemd) listens on :5179 so \`npm run ui:dev:vite\` can use :5178. Stop the unit if you need 5179:  systemctl --user stop comfyui-runpod-vite.service"
