@@ -101,6 +101,43 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
         self.assertIn("rating_blend", plan)
         self.assertIn("selection_weight", plan)
 
+    def test_resolve_media_path_flattens_nested_output(self) -> None:
+        from shape_factory_hourly import _resolve_media_path
+
+        bind = Path("/home/yuji/comfyui-runpod-data/output")
+        target = bind / "og" / "2026-04-03" / "FB9_GEX2_2026-04-03_00001.mp4"
+        if not target.is_file():
+            self.skipTest("canonical OG seed missing")
+        data_root = REPO_ROOT / ".data"
+        for raw in (
+            "output/output/og/2026-04-03/FB9_GEX2_2026-04-03_00001.mp4",
+            str(bind / "output" / "og" / "2026-04-03" / "FB9_GEX2_2026-04-03_00001.mp4"),
+            "output/og/2026-04-03/FB9_GEX2_2026-04-03_00001.mp4",
+        ):
+            got = _resolve_media_path(raw, data_root=data_root)
+            self.assertIsNotNone(got, msg=raw)
+            self.assertEqual(got, target.resolve())
+
+    def test_picks_from_job_recovers_missing_prompt_with_nested_video(self) -> None:
+        from shape_factory_hourly import _picks_from_job, load_yaml
+
+        data_root = REPO_ROOT / ".data"
+        shape_path = data_root / "shapes" / "FB9_GEX2.shape.yaml"
+        if not shape_path.is_file():
+            self.skipTest("FB9_GEX2 shape missing")
+        shape = load_yaml(shape_path)
+        # Prefer a real job that previously failed recovery.
+        jobs = sorted((data_root / "shape_factory" / "jobs" / "FB9_GEX2").glob("*idle-small-motions*000.job.json"))
+        if not jobs:
+            self.skipTest("no idle-small-motions job fixture")
+        job = json.loads(jobs[0].read_text(encoding="utf-8"))
+        picks = _picks_from_job(job, shape=shape, data_root=data_root)
+        self.assertIsNotNone(picks)
+        assert picks is not None
+        self.assertTrue(picks["prompt_profile"].is_file())
+        self.assertTrue(picks["source_video"].is_file())
+        self.assertIn("/og/", str(picks["source_video"]).replace("\\", "/"))
+
 
 if __name__ == "__main__":
     unittest.main()

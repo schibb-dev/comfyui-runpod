@@ -80,24 +80,81 @@ def _load_image_path(workflow: dict[str, Any], node_id: int) -> str:
 
 
 def _resolve_media_path(raw: str, *, data_root: Path) -> Optional[Path]:
+    """Resolve a job/workflow media path, including legacy nested ``output/output/`` layouts."""
     text = str(raw or "").strip().replace("\\", "/")
     if not text:
         return None
-    p = Path(text).expanduser()
-    if p.is_file():
-        return p.resolve()
-    candidates = [
-        data_root / text,
-        data_root / "output" / text,
-        Path("/home/yuji/comfyui-runpod-data") / text,
-        Path("/home/yuji/comfyui-runpod-data/output") / text.lstrip("/"),
-    ]
+    try:
+        from output_path_lib import flatten_output_prefix
+
+        text = flatten_output_prefix(text)
+    except Exception:
+        while "output/output/" in text:
+            text = text.replace("output/output/", "output/", 1)
+
+    variants: List[str] = [text]
+    if text.startswith("output/"):
+        variants.append(text[len("output/") :])
+    name = Path(text).name
+    if name and name not in variants:
+        variants.append(name)
+
+    bind_roots: List[Path] = []
+    for cand in (
+        Path("/home/yuji/comfyui-runpod-data/output"),
+        Path((__import__("os").environ.get("COMFYUI_BIND_OUTPUT_DIR") or "").strip()),
+        data_root.parent.parent / "workspace" / "output",
+        data_root / "output",
+    ):
+        try:
+            if cand.is_dir():
+                resolved = cand.resolve()
+                if resolved not in bind_roots:
+                    bind_roots.append(resolved)
+        except Exception:
+            continue
+
+    candidates: List[Path] = []
+    seen: Set[str] = set()
+
+    def add(p: Path) -> None:
+        key = str(p)
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(p)
+
+    add(Path(text).expanduser())
+    for v in variants:
+        add(Path(v).expanduser())
+        add(data_root / v)
+        add(data_root / "output" / v)
+        for root in bind_roots:
+            add(root / v)
+            if v.startswith("output/"):
+                add(root / v[len("output/") :])
+
     for cand in candidates:
         try:
             if cand.is_file():
                 return cand.resolve()
         except Exception:
             continue
+
+    # Prefer library-relative tails (og/YYYY-MM-DD/file.mp4) under bind roots.
+    parts = text.split("/")
+    for lib in ("og", "wip", "experiments"):
+        if lib not in parts:
+            continue
+        i = parts.index(lib)
+        rel_parts = parts[i:]
+        for root in bind_roots:
+            direct = root.joinpath(*rel_parts)
+            try:
+                if direct.is_file():
+                    return direct.resolve()
+            except Exception:
+                continue
     return None
 
 
@@ -212,31 +269,59 @@ def _picks_from_job(
     if not bindings:
         return None
 
-    family = str(shape.get("family_slug") or "")
+    family = str(shape.get("family_slug") or job.get("family_slug") or "")
     picks: Dict[str, Path] = {}
+    workflow: Optional[dict[str, Any]] = None
+
+    def _workflow() -> Optional[dict[str, Any]]:
+        nonlocal workflow
+        if workflow is not None:
+            return workflow
+        wf_path = str(job.get("generated_workflow_path") or "").strip()
+        if not wf_path:
+            return None
+        workflow = _load_workflow_json(Path(wf_path))
+        return workflow
+
     for slot, meta in bindings.items():
         if not isinstance(meta, dict):
             continue
         raw = str(meta.get("path") or "")
         if slot == "prompt_profile":
-            p = Path(raw)
-            if not p.is_file():
-                wf_path = str(job.get("generated_workflow_path") or "")
-                workflow = _load_workflow_json(Path(wf_path)) if wf_path else None
-                if workflow is None:
-                    return None
-                ui_picks = _picks_from_ui_workflow(
-                    workflow,
-                    shape=shape,
-                    data_root=data_root,
-                    label=str(job.get("job_key") or "job"),
-                )
-                if ui_picks is None:
-                    return None
-                return ui_picks
-            picks[slot] = p.resolve()
+            p = Path(raw).expanduser() if raw else None
+            if p is not None and p.is_file():
+                picks[slot] = p.resolve()
+                continue
+            wf = _workflow()
+            if wf is None:
+                return None
+            positive, negative = extract_prompt_texts_from_ui_workflow(wf, shape)
+            if not positive.strip():
+                return None
+            picks[slot] = _write_replay_prompt_profile(
+                family=family or str(shape.get("family_slug") or ""),
+                data_root=data_root,
+                label=str(job.get("job_key") or "job"),
+                positive=positive,
+                negative=negative,
+            )
             continue
         resolved = _resolve_media_path(raw, data_root=data_root)
+        if resolved is None:
+            # Fall back to path embedded in the generated UI workflow.
+            wf = _workflow()
+            if wf is not None:
+                req = (requires_by_slot(shape).get(slot) or {})
+                b = req.get("binding") if isinstance(req.get("binding"), dict) else {}
+                btype = str(b.get("type") or "")
+                node_id = int(b.get("node_id") or 0)
+                alt = ""
+                if btype == "vhs_load_video_path":
+                    alt = _vhs_video_path(wf, node_id)
+                elif btype == "load_image":
+                    alt = _load_image_path(wf, node_id)
+                if alt:
+                    resolved = _resolve_media_path(alt, data_root=data_root)
         if resolved is None:
             return None
         picks[slot] = resolved
