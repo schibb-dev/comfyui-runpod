@@ -10,6 +10,7 @@ import {
 import { MediaAssetCard } from "./MediaAssetCard";
 import { VideoAutoplayToggle } from "./VideoAutoplayToggle";
 import { VideoTrimControls, type VideoTrimPlaybackMode } from "./VideoTrimControls";
+import { WorkflowVideoLinker } from "./WorkflowVideoLinker";
 import type {
   WorkflowExplorerAsset,
   WorkflowExplorerBrowseEntry,
@@ -712,6 +713,7 @@ function RunPlanGraph({
 }
 
 export function WorkflowExplorerApp() {
+  const [topTab, setTopTab] = useState<"factory" | "linker">("factory");
   const [data, setData] = useState<WorkflowExplorerFactoryResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [busyAction, setBusyAction] = useState("");
@@ -761,64 +763,87 @@ export function WorkflowExplorerApp() {
     <div className="workflow-explorer-screen">
       <div className="factory-topbar">
         <div>
-          <nav className="factory-nav" aria-label="Workflow Explorer navigation">
-            <a href="/">Experiments</a>
-            <span aria-hidden="true">/</span>
-            <a href="/discovery">Discovery</a>
-            <span aria-hidden="true">/</span>
-            <span>Workflow Explorer</span>
-          </nav>
           <h1>Workflow Explorer · Factory Spike</h1>
           <div className="factory-muted">
             First pass: input asset bucket → workflow bucket → output asset bucket
           </div>
+          <div className="wx-screen-tabs" role="tablist" aria-label="Workflow Explorer sections">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={topTab === "factory"}
+              className={`wx-screen-tab${topTab === "factory" ? " wx-screen-tab--active" : ""}`}
+              onClick={() => setTopTab("factory")}
+            >
+              Factory registry
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={topTab === "linker"}
+              className={`wx-screen-tab${topTab === "linker" ? " wx-screen-tab--active" : ""}`}
+              onClick={() => setTopTab("linker")}
+            >
+              Workflow ↔ Video
+            </button>
+          </div>
         </div>
-        <button type="button" disabled={loading || Boolean(busyAction)} onClick={() => void reload()}>
-          {loading ? "Refreshing…" : busyAction || "Refresh"}
-        </button>
+        {topTab === "factory" ? (
+          <button type="button" disabled={loading || Boolean(busyAction)} onClick={() => void reload()}>
+            {loading ? "Refreshing…" : busyAction || "Refresh"}
+          </button>
+        ) : null}
       </div>
 
       {error ? <div className="factory-error">{error}</div> : null}
       {data && !data.ok ? <div className="factory-error">{data.error || "Factory data unavailable"}</div> : null}
 
-      <div className="factory-summary">
-        <div>
-          <strong>{summary.buckets}</strong>
-          <span>buckets</span>
-        </div>
-        <div>
-          <strong>{summary.plans}</strong>
-          <span>run plans</span>
-        </div>
-        <div>
-          <strong>{summary.jobs}</strong>
-          <span>planned jobs</span>
-        </div>
-        <div className="factory-db-path">{data?.db_path || "loading factory registry…"}</div>
-      </div>
+      {topTab === "factory" ? (
+        <>
+          <div className="factory-summary">
+            <div>
+              <strong>{summary.buckets}</strong>
+              <span>buckets</span>
+            </div>
+            <div>
+              <strong>{summary.plans}</strong>
+              <span>run plans</span>
+            </div>
+            <div>
+              <strong>{summary.jobs}</strong>
+              <span>planned jobs</span>
+            </div>
+            <div className="factory-db-path">{data?.db_path || "loading factory registry…"}</div>
+          </div>
 
-      <div className="factory-plans">
-        {(data?.run_plans || []).map((plan) => (
-          <RunPlanGraph
-            key={plan.id}
-            plan={plan}
-            busy={Boolean(busyAction)}
-            onAddAsset={(bucketId, path) =>
-              runFactoryUpdate("Adding asset…", () => addWorkflowExplorerAsset({ bucket_id: bucketId, path }))
-            }
-            onRemoveAsset={(assetId) =>
-              runFactoryUpdate("Removing asset…", () => removeWorkflowExplorerAsset({ item_id: assetId }))
-            }
-            onAddWorkflow={(bucketId, path) =>
-              runFactoryUpdate("Adding workflow…", () => addWorkflowExplorerWorkflow({ bucket_id: bucketId, path }))
-            }
-            onRemoveWorkflow={(workflowId) =>
-              runFactoryUpdate("Removing workflow…", () => removeWorkflowExplorerWorkflow({ item_id: workflowId }))
-            }
-          />
-        ))}
-        {data && data.ok && !data.run_plans.length ? <div className="factory-empty">No run plans in the factory registry.</div> : null}
-      </div>
+          <div className="factory-plans">
+            {(data?.run_plans || []).map((plan) => (
+              <RunPlanGraph
+                key={plan.id}
+                plan={plan}
+                busy={Boolean(busyAction)}
+                onAddAsset={(bucketId, path) =>
+                  runFactoryUpdate("Adding asset…", () => addWorkflowExplorerAsset({ bucket_id: bucketId, path }))
+                }
+                onRemoveAsset={(assetId) =>
+                  runFactoryUpdate("Removing asset…", () => removeWorkflowExplorerAsset({ item_id: assetId }))
+                }
+                onAddWorkflow={(bucketId, path) =>
+                  runFactoryUpdate("Adding workflow…", () => addWorkflowExplorerWorkflow({ bucket_id: bucketId, path }))
+                }
+                onRemoveWorkflow={(workflowId) =>
+                  runFactoryUpdate("Removing workflow…", () => removeWorkflowExplorerWorkflow({ item_id: workflowId }))
+                }
+              />
+            ))}
+            {data && data.ok && !data.run_plans.length ? (
+              <div className="factory-empty">No run plans in the factory registry.</div>
+            ) : null}
+          </div>
+        </>
+      ) : (
+        <WorkflowVideoLinker />
+      )}
     </div>
   );
 }

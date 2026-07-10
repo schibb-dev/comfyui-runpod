@@ -20,13 +20,61 @@ import type {
   DiscoveryLibraryResponse,
   DiscoveryLibraryItem,
   DiscoveryEmbedApiPromptResponse,
+  DiscoveryWorkflowFacetsResponse,
+  DiscoveryAssetLineageResponse,
+  DiscoveryAssetRatingsResponse,
+  DiscoveryAssetRatingsVerifyRequest,
+  DiscoveryAssetRatingsVerifyResponse,
+  DiscoveryRatingSamplerResponse,
+  DiscoveryLibraryItemLookupResponse,
   WorkflowExplorerFactoryResponse,
   WorkflowExplorerAddAssetRequest,
   WorkflowExplorerRemoveAssetRequest,
   WorkflowExplorerAddWorkflowRequest,
   WorkflowExplorerRemoveWorkflowRequest,
   WorkflowExplorerBrowseResponse,
+  ShapeFactoryMapResponse,
+  ShapeFactoryMapQueueRequest,
+  ShapeFactoryMapQueueResponse,
+  ShapeFactoryReplayRequest,
+  ShapeFactoryReplayResponse,
+  ShapeFactoryPromptProfile,
+  ShapeFactoryMapQueueOverrides,
+  FutureRunDraft,
+  AssetAuditResponse,
+  AssetRecoverResponse,
+  SetAssetRatingResponse,
+  SetAppetiteResponse,
+  Appetite,
+  AppetiteFacet,
+  DispositionCatalogResponse,
+  DispositionSuggestResponse,
+  ToggleDispositionResponse,
+  RunDispositionStepResponse,
+  RecordTriageCompleteResponse,
+  RecordBatchTriageCompleteResponse,
+  DispositionCatalogMarker,
+  HomeSummaryResponse,
 } from "./types";
+
+function experimentsUiStaleApiHint(): string {
+  if (!import.meta.env.DEV) return "";
+  const t = typeof __DEV_EXPERIMENTS_PROXY_TARGET__ !== "undefined" ? __DEV_EXPERIMENTS_PROXY_TARGET__ : "";
+  if (!t) return "";
+  return (
+    `\n\nDev: Vite proxies /api → ${t}. Restart that process after pulling new routes (e.g. docker compose restart for :8790, or \`node scripts/experiments-ui-dev.mjs api-watch\` for repo Python on :8791).`
+  );
+}
+
+export async function fetchHomeSummary(): Promise<HomeSummaryResponse> {
+  const r = await fetch("/api/home/summary");
+  const j = (await r.json().catch(() => ({}))) as HomeSummaryResponse & { error?: string; detail?: string };
+  if (!r.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`GET /api/home/summary failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
+}
 
 export async function fetchDiscoveryLibrary(opts?: {
   refresh?: boolean;
@@ -51,6 +99,261 @@ export async function fetchWorkflowExplorerFactory(): Promise<WorkflowExplorerFa
   const r = await fetch("/api/workflow-explorer/factory");
   if (!r.ok) throw new Error(`GET /api/workflow-explorer/factory failed: ${r.status}`);
   return (await r.json()) as WorkflowExplorerFactoryResponse;
+}
+
+export async function fetchShapeFactoryMap(opts?: {
+  members_limit?: number;
+  jobs_limit?: number;
+  family?: string;
+  skip_queue?: boolean;
+}): Promise<ShapeFactoryMapResponse> {
+  const sp = new URLSearchParams();
+  if (opts?.members_limit != null && opts.members_limit > 0) {
+    sp.set("members_limit", String(opts.members_limit));
+  }
+  if (opts?.jobs_limit != null && opts.jobs_limit > 0) {
+    sp.set("jobs_limit", String(opts.jobs_limit));
+  }
+  if (opts?.family) sp.set("family", opts.family);
+  if (opts?.skip_queue) sp.set("skip_queue", "1");
+  const qs = sp.toString();
+  const r = await fetch(`/api/shape-factory/map${qs ? `?${qs}` : ""}`);
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryMapResponse & { error?: string; detail?: string };
+  if (!r.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`GET /api/shape-factory/map failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
+}
+
+export async function fetchShapeFactoryPromptProfile(path: string): Promise<ShapeFactoryPromptProfile> {
+  const sp = new URLSearchParams();
+  sp.set("path", path);
+  const r = await fetch(`/api/shape-factory/prompt-profile?${sp.toString()}`);
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryPromptProfile & { error?: string; detail?: string };
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET /api/shape-factory/prompt-profile failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function queueShapeFactoryCombo(req: ShapeFactoryMapQueueRequest): Promise<ShapeFactoryMapQueueResponse> {
+  const r = await fetch("/api/shape-factory/queue", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryMapQueueResponse & {
+    error?: string;
+    detail?: string;
+  };
+  if (!r.ok || !j.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`POST /api/shape-factory/queue failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
+}
+
+export async function fetchAssetAudit(family: string): Promise<AssetAuditResponse> {
+  const sp = new URLSearchParams();
+  sp.set("family", family);
+  const r = await fetch(`/api/discovery/asset-audit?${sp.toString()}`);
+  const j = (await r.json().catch(() => ({}))) as AssetAuditResponse & { error?: string; detail?: string };
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`GET /api/discovery/asset-audit failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
+}
+
+export async function recoverAssets(body: {
+  family?: string;
+  names?: string[];
+  allow_remote?: boolean;
+}): Promise<AssetRecoverResponse> {
+  const r = await fetch("/api/discovery/asset-recover", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as AssetRecoverResponse & { error?: string; detail?: string };
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`POST /api/discovery/asset-recover failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
+}
+
+export async function setAssetRating(body: { relpath: string; stars: number }): Promise<SetAssetRatingResponse> {
+  const r = await fetch("/api/discovery/asset-ratings/set", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as SetAssetRatingResponse & { error?: string; detail?: string };
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`POST /api/discovery/asset-ratings/set failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
+}
+
+export async function setAssetAppetite(body: {
+  relpath: string;
+  appetite: Appetite | "";
+  facet?: AppetiteFacet;
+  job_key?: string;
+  family_slug?: string;
+}): Promise<SetAppetiteResponse> {
+  const r = await fetch("/api/discovery/asset-appetite/set", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as SetAppetiteResponse & { error?: string; detail?: string };
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`POST /api/discovery/asset-appetite/set failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
+}
+
+export async function fetchDispositionCatalog(): Promise<DispositionCatalogResponse> {
+  const r = await fetch("/api/discovery/disposition-catalog");
+  const j = (await r.json().catch(() => ({}))) as DispositionCatalogResponse & { error?: string; detail?: string };
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, (j as { detail?: string }).detail].filter(Boolean).join(": ");
+    throw new Error(`GET /api/discovery/disposition-catalog failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
+}
+
+export async function saveDispositionCatalog(body: {
+  markers?: DispositionCatalogMarker[];
+  promotion_rules?: Record<string, unknown>;
+}): Promise<DispositionCatalogResponse> {
+  const r = await fetch("/api/discovery/disposition-catalog", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as DispositionCatalogResponse & { error?: string; detail?: string };
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, (j as { detail?: string }).detail].filter(Boolean).join(": ");
+    throw new Error(`POST /api/discovery/disposition-catalog failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
+}
+
+export async function fetchDispositionSuggest(opts: {
+  relpath?: string;
+  quality?: number | null;
+  appetite?: Appetite | null;
+  facet?: AppetiteFacet;
+  predicted_score?: number;
+  explicit_quality_missing?: boolean;
+}): Promise<DispositionSuggestResponse> {
+  const sp = new URLSearchParams();
+  if (opts.relpath) sp.set("relpath", opts.relpath);
+  if (opts.quality != null) sp.set("quality", String(opts.quality));
+  if (opts.appetite) sp.set("appetite", opts.appetite);
+  if (opts.facet) sp.set("facet", opts.facet);
+  if (opts.predicted_score != null) sp.set("predicted_score", String(opts.predicted_score));
+  if (opts.explicit_quality_missing) sp.set("explicit_quality_missing", "1");
+  const r = await fetch(`/api/discovery/disposition-suggest?${sp.toString()}`);
+  const j = (await r.json().catch(() => ({}))) as DispositionSuggestResponse & { error?: string; detail?: string };
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, (j as { detail?: string }).detail].filter(Boolean).join(": ");
+    throw new Error(`GET /api/discovery/disposition-suggest failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
+}
+
+export async function toggleAssetDisposition(body: {
+  relpath: string;
+  marker: string;
+  on?: boolean;
+  note?: string;
+  quality?: number;
+  appetite?: Appetite | null;
+  facet?: AppetiteFacet;
+}): Promise<ToggleDispositionResponse> {
+  const r = await fetch("/api/discovery/asset-disposition/toggle", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as ToggleDispositionResponse & { error?: string; detail?: string };
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, (j as { detail?: string }).detail].filter(Boolean).join(": ");
+    throw new Error(`POST /api/discovery/asset-disposition/toggle failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
+}
+
+export async function runDispositionStep(body: {
+  relpath: string;
+  step_id: string;
+  job_key?: string;
+  family_slug?: string;
+  facet?: AppetiteFacet;
+}): Promise<RunDispositionStepResponse> {
+  const r = await fetch("/api/discovery/asset-disposition/run-step", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as RunDispositionStepResponse & { error?: string; detail?: string };
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`POST /api/discovery/asset-disposition/run-step failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
+}
+
+export async function recordAssetTriageComplete(body: { relpath: string }): Promise<RecordTriageCompleteResponse> {
+  const r = await fetch("/api/discovery/asset-triage/complete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as RecordTriageCompleteResponse & { error?: string; detail?: string };
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`POST /api/discovery/asset-triage/complete failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
+}
+
+export async function recordBatchTriageComplete(body: { relpaths: string[] }): Promise<RecordBatchTriageCompleteResponse> {
+  const r = await fetch("/api/discovery/asset-triage/complete-batch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as RecordBatchTriageCompleteResponse & { error?: string; detail?: string };
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`POST /api/discovery/asset-triage/complete-batch failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
+}
+
+export async function replayShapeFactory(req: ShapeFactoryReplayRequest): Promise<ShapeFactoryReplayResponse> {
+  const r = await fetch("/api/shape-factory/replay", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryReplayResponse & { error?: string; detail?: string };
+  if (!r.ok || !j.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`POST /api/shape-factory/replay failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
 }
 
 async function postWorkflowExplorerFactoryUpdate(
@@ -138,10 +441,164 @@ export async function fetchDiscoveryEmbedApiPrompt(it: DiscoveryLibraryItem): Pr
           "npm run ui:dev:api\n" +
           "npm run ui:dev:api:watch   (with npm run ui:dev:vite in another terminal)\n" +
           "npm run ui:dev:vite\n" +
-          "Docker: npm run restart"
+          "Docker: npm run restart" +
+          experimentsUiStaleApiHint(),
       );
     }
     throw new Error(`GET /api/discovery/embed-api-prompt failed: ${r.status}: ${JSON.stringify(j)}`);
+  }
+  return j;
+}
+
+export async function fetchDiscoveryWorkflowFacets(relpath: string): Promise<DiscoveryWorkflowFacetsResponse> {
+  const sp = new URLSearchParams();
+  sp.set("relpath", relpath);
+  const r = await fetch(`/api/discovery/workflow-facets?${sp.toString()}`);
+  const j = (await r.json()) as DiscoveryWorkflowFacetsResponse & { error?: string; path?: string };
+  if (!r.ok) {
+    const isStale =
+      r.status === 404 &&
+      j &&
+      typeof j === "object" &&
+      j.error === "unknown_api_route" &&
+      String(j.path || "").includes("workflow-facets");
+    if (isStale) {
+      throw new Error(
+        "Experiments API is outdated (missing GET /api/discovery/workflow-facets). Restart the process that serves /api " +
+          "(the Vite proxy target in EXPERIMENTS_UI_PROXY_TARGET, often the ComfyUI container or python experiments_ui_server.py).\n\n" +
+          "Local dev: npm run ui:dev:api   or   npm run ui:dev:api:watch   (and restart if not using watch)\n" +
+          "Combined: npm run ui:dev:start / ui:dev:all\n" +
+          "Docker: restart the service that binds the Experiments API port (e.g. npm run restart)." +
+          experimentsUiStaleApiHint(),
+      );
+    }
+    throw new Error(`GET /api/discovery/workflow-facets failed: ${r.status}: ${JSON.stringify(j)}`);
+  }
+  return j;
+}
+
+export async function fetchDiscoveryLibraryItem(opts: {
+  groupId?: string;
+  relpath?: string;
+}): Promise<DiscoveryLibraryItemLookupResponse> {
+  const sp = new URLSearchParams();
+  if (opts.groupId?.trim()) sp.set("group_id", opts.groupId.trim());
+  if (opts.relpath?.trim()) sp.set("relpath", opts.relpath.trim());
+  const r = await fetch(`/api/discovery/library/item?${sp.toString()}`);
+  const j = (await r.json()) as DiscoveryLibraryItemLookupResponse & { error?: string };
+  if (!r.ok) {
+    throw new Error(`GET /api/discovery/library/item failed: ${r.status}${j.error ? `: ${j.error}` : ""}`);
+  }
+  return j;
+}
+
+export async function fetchDiscoveryAssetLineage(
+  relpath: string,
+  opts?: { maxDepth?: number; persist?: boolean; peekGroupId?: string; graphOnly?: boolean; inferParents?: boolean }
+): Promise<DiscoveryAssetLineageResponse> {
+  const sp = new URLSearchParams();
+  sp.set("relpath", relpath);
+  if (opts?.maxDepth != null && Number.isFinite(opts.maxDepth)) sp.set("max_depth", String(opts.maxDepth));
+  if (opts?.persist) sp.set("persist", "1");
+  if (opts?.graphOnly) sp.set("graph_only", "1");
+  if (opts?.inferParents === false) sp.set("infer_parents", "0");
+  else if (opts?.graphOnly) sp.set("infer_parents", "1");
+  if (opts?.peekGroupId) sp.set("peek_group_id", opts.peekGroupId);
+  const r = await fetch(`/api/discovery/asset-lineage?${sp.toString()}`);
+  const j = (await r.json()) as DiscoveryAssetLineageResponse & { error?: string; path?: string };
+  if (!r.ok) {
+    const isStale =
+      r.status === 404 &&
+      j &&
+      typeof j === "object" &&
+      j.error === "unknown_api_route" &&
+      String((j as { path?: string }).path || "").includes("asset-lineage");
+    if (isStale) {
+      throw new Error(
+        "Experiments API is outdated (missing GET /api/discovery/asset-lineage). Restart the process that serves /api." +
+          experimentsUiStaleApiHint(),
+      );
+    }
+    throw new Error(`GET /api/discovery/asset-lineage failed: ${r.status}: ${JSON.stringify(j)}`);
+  }
+  return j;
+}
+
+export async function fetchDiscoveryAssetRatings(relpath: string): Promise<DiscoveryAssetRatingsResponse> {
+  const sp = new URLSearchParams();
+  sp.set("relpath", relpath);
+  const r = await fetch(`/api/discovery/asset-ratings?${sp.toString()}`);
+  const j = (await r.json()) as DiscoveryAssetRatingsResponse & { error?: string; path?: string };
+  if (!r.ok) {
+    const isStale =
+      r.status === 404 &&
+      j &&
+      typeof j === "object" &&
+      j.error === "unknown_api_route" &&
+      String((j as { path?: string }).path || "").includes("asset-ratings");
+    if (isStale) {
+      throw new Error(
+        "Experiments API is outdated (missing GET /api/discovery/asset-ratings). Restart the process that serves /api." +
+          experimentsUiStaleApiHint(),
+      );
+    }
+    throw new Error(`GET /api/discovery/asset-ratings failed: ${r.status}: ${JSON.stringify(j)}`);
+  }
+  return j;
+}
+
+export async function fetchDiscoveryRatingSampler(opts?: {
+  refresh?: boolean;
+  limit?: number;
+  minPredicted?: number;
+}): Promise<DiscoveryRatingSamplerResponse> {
+  const sp = new URLSearchParams();
+  if (opts?.refresh) sp.set("refresh", "1");
+  if (opts?.limit != null) sp.set("limit", String(opts.limit));
+  if (opts?.minPredicted != null) sp.set("min_predicted", String(opts.minPredicted));
+  const r = await fetch(`/api/discovery/rating-sampler?${sp.toString()}`);
+  const j = (await r.json()) as DiscoveryRatingSamplerResponse & { error?: string; path?: string };
+  if (!r.ok) {
+    const isStale =
+      r.status === 404 &&
+      j &&
+      typeof j === "object" &&
+      j.error === "unknown_api_route" &&
+      String((j as { path?: string }).path || "").includes("rating-sampler");
+    if (isStale) {
+      throw new Error(
+        "Experiments API is outdated (missing GET /api/discovery/rating-sampler). Restart the process that serves /api." +
+          experimentsUiStaleApiHint(),
+      );
+    }
+    throw new Error(`GET /api/discovery/rating-sampler failed: ${r.status}: ${JSON.stringify(j)}`);
+  }
+  return j;
+}
+
+export async function postDiscoveryAssetRatingsVerify(
+  body: DiscoveryAssetRatingsVerifyRequest
+): Promise<DiscoveryAssetRatingsVerifyResponse> {
+  const r = await fetch("/api/discovery/asset-ratings/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json()) as DiscoveryAssetRatingsVerifyResponse & { error?: string; path?: string };
+  if (!r.ok) {
+    const isStale =
+      r.status === 404 &&
+      j &&
+      typeof j === "object" &&
+      j.error === "unknown_api_route" &&
+      String((j as { path?: string }).path || "").includes("asset-ratings");
+    if (isStale) {
+      throw new Error(
+        "Experiments API is outdated (missing POST /api/discovery/asset-ratings/verify). Restart the process that serves /api." +
+          experimentsUiStaleApiHint(),
+      );
+    }
+    throw new Error(`POST /api/discovery/asset-ratings/verify failed: ${r.status}: ${JSON.stringify(j)}`);
   }
   return j;
 }

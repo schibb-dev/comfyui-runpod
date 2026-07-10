@@ -303,6 +303,15 @@ export type DiscoveryLibraryItem = {
   /** Video container frame rate when known (e.g. from metadata). */
   frame_rate?: number | null;
   members?: DiscoveryMember[];
+  /** Compact rating rollup attached by the library list (explicit XMP + source-inferred + appetite). */
+  ratings?: {
+    rating_explicit?: number;
+    rating_inferred?: number;
+    rating_effective?: number;
+    rating_evidence?: { n?: number; keepers_4plus?: number };
+    appetite?: Appetite | null;
+    appetite_facet?: AppetiteFacet | null;
+  };
 };
 
 export type DiscoveryLibraryResponse = {
@@ -353,6 +362,476 @@ export type DiscoveryEmbedApiPromptResponse =
       png_relpath?: string;
       comfy_convert_http?: number | null;
     };
+
+/** GET /api/discovery/asset-ratings — per-asset explicit + inferred ratings with evidence. */
+export type DiscoveryAssetRatingsContributor = {
+  output_discovery_key?: string;
+  rating?: number;
+  via_source?: string;
+};
+
+export type DiscoveryAssetRatingsHumanReview = {
+  verified?: boolean;
+  verified_at?: string | null;
+  override_rating?: number | null;
+  note?: string | null;
+};
+
+export type DiscoveryAssetRatingsLensBlock = {
+  inferred?: number;
+  n?: number;
+  keepers_4plus?: number;
+  contributors?: DiscoveryAssetRatingsContributor[];
+  basename?: string;
+  graph_hash?: string;
+  catalog_slug?: string;
+  shape_id?: string;
+  shape_recipe?: string;
+  human?: DiscoveryAssetRatingsHumanReview;
+};
+
+export type DiscoveryAssetRatingsResponse = {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  query_relpath?: string;
+  asset_key?: string;
+  ratings_index_path?: string;
+  human_verifications_path?: string;
+  rating_effective?: number | null;
+  basename?: string | null;
+  explicit?: {
+    rating?: number;
+    xmp?: string;
+    verification?: {
+      ok?: boolean;
+      match?: boolean;
+      xmp_on_disk?: number | null;
+      index_explicit?: number | null;
+      xmp_path?: string;
+      xmp_mtime_iso?: string;
+      error?: string;
+    };
+  } | null;
+  as_source?: DiscoveryAssetRatingsLensBlock | null;
+  workflow?: DiscoveryAssetRatingsLensBlock | null;
+  recipe?: DiscoveryAssetRatingsLensBlock | null;
+  sources_cited?: Array<{
+    basename?: string;
+    via_source?: string;
+    source_inferred?: number;
+    source_n?: number;
+  }>;
+  appetite?: Appetite | null;
+  appetite_facet?: AppetiteFacet | null;
+  disposition_markers?: string[];
+  disposition_notes?: Record<string, string>;
+  disposition_updated_at?: string | null;
+  disposition_outcomes?: DispositionOutcome[];
+  disposition_last_outcome?: DispositionOutcome | null;
+  disposition_archived?: boolean;
+  disposition_saved?: boolean;
+  needs_triage?: boolean;
+  last_triaged_at?: string | null;
+  triage_pass_count?: number;
+  index_updated_at?: string;
+};
+
+export type DispositionOutcome = {
+  at?: string;
+  action?: string;
+  detail?: unknown;
+};
+
+export type DiscoveryAssetRatingsVerifyRequest = {
+  relpath: string;
+  lens: "as_source" | "workflow" | "recipe";
+  verified: boolean;
+  override_rating?: number | null;
+  note?: string;
+};
+
+export type DiscoveryAssetRatingsVerifyResponse = {
+  ok: boolean;
+  error?: string;
+  asset_key?: string;
+  lens?: string;
+  saved?: DiscoveryAssetRatingsHumanReview;
+  ratings?: DiscoveryAssetRatingsResponse;
+};
+
+/** Two-axis rating: appetite ("do more WITH this") is distinct from the quality star. */
+export type Appetite = "less" | "neutral" | "more" | "fast_track";
+export type AppetiteFacet = "both" | "source" | "processing";
+
+/** GET /api/discovery/rating-sampler — heuristic queue of videos to rate next. */
+export type DiscoveryRatingSamplerCandidate = {
+  relpath: string;
+  group_id?: string;
+  predicted_score?: number;
+  heuristic_confidence?: number;
+  evidence?: string[];
+  signals?: Record<string, number | string>;
+  vision_recommended?: boolean;
+  vision_reasons?: string[];
+  discovery_href?: string;
+  /** Stratified session slice: easy_down | easy_up | middle */
+  session_bucket?: "easy_down" | "easy_up" | "middle";
+  /** Current appetite (direction) recorded for this asset, if any. */
+  appetite?: Appetite | null;
+  appetite_facet?: AppetiteFacet | null;
+  disposition_markers?: string[];
+  tags?: string[];
+  needs_triage?: boolean;
+  last_triaged_at?: string | null;
+  triage_pass_count?: number;
+};
+
+export type DispositionMarkerKind = "entry" | "step";
+
+export type DispositionHook =
+  | "none"
+  | "replay"
+  | "replay_front"
+  | "extend"
+  | "open_trim"
+  | "trash"
+  | "archive"
+  | "extract_frame"
+  | "sampler_pin"
+  | "appetite_more"
+  | "set_marker";
+
+export type DispositionCatalogMarker = {
+  id: string;
+  kind: DispositionMarkerKind;
+  process?: string;
+  label: string;
+  hint?: string;
+  enabled?: boolean;
+  order?: number;
+  hook?: DispositionHook | string;
+  narrows_to?: string[];
+  promote_when?: string[];
+  hook_args?: Record<string, unknown>;
+};
+
+export type DispositionPromotions = {
+  promote: string[];
+  secondary: string[];
+  matched_rules?: string[];
+};
+
+export type DispositionCatalogResponse = {
+  ok: boolean;
+  catalog?: {
+    version?: number;
+    schema?: string;
+    promotion_rules?: Record<string, unknown>;
+    markers?: DispositionCatalogMarker[];
+  };
+  entries?: DispositionCatalogMarker[];
+  steps?: DispositionCatalogMarker[];
+  catalog_path?: string;
+  seed_path?: string;
+  error?: string;
+};
+
+export type DispositionSuggestResponse = {
+  ok: boolean;
+  relpath?: string;
+  promotions?: DispositionPromotions;
+  inputs?: Record<string, unknown>;
+  error?: string;
+};
+
+export type ToggleDispositionResponse = {
+  ok: boolean;
+  saved?: {
+    relpath?: string;
+    marker?: string;
+    on?: boolean;
+    markers?: string[];
+    notes?: Record<string, string>;
+    cleared?: boolean;
+    updated_at?: string | null;
+  };
+  promotions?: DispositionPromotions;
+  error?: string;
+};
+
+export type RunDispositionStepResponse = {
+  ok: boolean;
+  step_id?: string;
+  hook?: string;
+  result?: Record<string, unknown>;
+  error?: string;
+  detail?: string;
+};
+
+export type RecordTriageCompleteResponse = {
+  ok: boolean;
+  saved?: {
+    relpath?: string;
+    last_triaged_at?: string;
+    pass_count?: number;
+    needs_triage?: boolean;
+  };
+  error?: string;
+  detail?: string;
+};
+
+export type RecordBatchTriageCompleteResponse = {
+  ok: boolean;
+  committed?: Array<{ relpath?: string; pass_count?: number }>;
+  skipped?: string[];
+  committed_count?: number;
+  skipped_count?: number;
+  error?: string;
+  detail?: string;
+};
+
+export type DiscoveryRatingSamplerResponse = {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  session_path?: string;
+  created_at?: string;
+  bootstrapped?: boolean;
+  session_mix?: { easy_down?: number; easy_up?: number; middle?: number };
+  stats?: {
+    unrated_videos?: number;
+    scored_pool?: number;
+    selected?: number;
+    bucket_easy_down?: number;
+    bucket_easy_up?: number;
+    bucket_middle?: number;
+    vision_recommended?: number;
+    vision_priority_shortlist?: number;
+  };
+  candidates?: DiscoveryRatingSamplerCandidate[];
+  vision_priority?: DiscoveryRatingSamplerCandidate[];
+  vision_gaps?: {
+    reasons?: { reason: string; count: number }[];
+    guidance?: string[];
+  };
+  next_steps?: string[];
+};
+
+/** GET /api/discovery/asset-audit — missing load_image source refs for a family. */
+export type AssetAuditMissing = {
+  basename: string;
+  sha?: string | null;
+  slot?: string;
+  job_key?: string | null;
+  output?: string | null;
+};
+
+export type AssetAuditResponse = {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  family?: string;
+  scanned?: number;
+  missing_count?: number;
+  missing?: AssetAuditMissing[];
+};
+
+/** POST /api/discovery/asset-recover — locate/verify/place a source into input/. */
+export type AssetRecoverResult = {
+  name: string;
+  ok: boolean;
+  method?: "present" | "local" | "remote" | "walk" | "none";
+  source?: string;
+  relpath?: string;
+  content_id?: string | null;
+  error?: string;
+};
+
+export type AssetRecoverResponse = {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  recovered?: number;
+  total?: number;
+  note?: string;
+  results?: AssetRecoverResult[];
+};
+
+/** POST /api/discovery/asset-ratings/set — write an explicit XMP star + refresh index. */
+export type SetAssetRatingResponse = {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  saved?: {
+    ok?: boolean;
+    relpath?: string;
+    stars?: number;
+    cleared?: boolean;
+    xmp_path?: string | null;
+    discovery_key?: string;
+    short_key?: string;
+    sources?: string[];
+  };
+  ratings?: DiscoveryAssetRatingsResponse | null;
+};
+
+/** POST /api/discovery/asset-appetite/set — record a "do more WITH this" direction + facet. */
+export type SetAppetiteResponse = {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  saved?: {
+    ok?: boolean;
+    relpath?: string;
+    appetite?: Appetite | "";
+    facet?: AppetiteFacet | null;
+    cleared?: boolean;
+    discovery_key?: string;
+    short_key?: string;
+    /** Present when appetite === "fast_track": the immediate Extend/replay result. */
+    queued?: {
+      ok?: boolean;
+      reason?: string;
+      extend_fallback?: string;
+      job_key?: string;
+      [k: string]: unknown;
+    };
+  };
+};
+
+/** GET /api/discovery/workflow-facets — exploratory PNG+MP4 workflow metadata + derived facet hashes. */
+export type DiscoveryWorkflowFacetsResponse = {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  query_relpath?: string;
+  discovery_index_path?: string;
+  item?: Record<string, unknown>;
+  mp4?: Record<string, unknown>;
+  png_workflow_probes?: unknown[];
+  provenance?: Record<string, unknown>;
+  ratings_index_path?: string;
+  workflow_ratings?: {
+    graph_hash?: string;
+    rating_inferred?: number;
+    rating_effective?: number;
+    rating_evidence?: { n?: number; keepers_4plus?: number };
+    catalog_slug?: string;
+  };
+};
+
+/** Summarized Discovery row returned by GET /api/discovery/asset-lineage. */
+export type DiscoveryAssetLineageItemSummary = {
+  group_id?: string;
+  name?: string;
+  library?: string;
+  relpath?: string;
+  workspace_relpath?: string | null;
+  video_relpath?: string | null;
+  thumb_relpath?: string | null;
+  media_kind?: string;
+  url?: string | null;
+  thumb_url?: string | null;
+  video_url?: string | null;
+  /** True for Comfy ``input/`` uploads (not in the og/wip index). */
+  external?: boolean;
+  /** Hand-tagged XMP star rating on this output (when indexed). */
+  rating_explicit?: number;
+  /** Lineage-backed inferred score from downstream keepers. */
+  rating_inferred?: number;
+  /** Blended score for sorting badges. */
+  rating_effective?: number;
+  rating_evidence?: { n?: number; keepers_4plus?: number };
+};
+
+export type DiscoveryAssetLineageExternalSource = {
+  via_source_raw?: string;
+  abs_path?: string;
+  workspace_relpath?: string | null;
+  kind?: string;
+};
+
+export type DiscoveryAssetLineageExpansion = {
+  depth: number;
+  item: DiscoveryAssetLineageItemSummary;
+  parent_group_ids: string[];
+  parents: DiscoveryAssetLineageItemSummary[];
+  external_sources?: DiscoveryAssetLineageExternalSource[];
+  source_strings_seen: number;
+};
+
+/** One row walking up the merged parent graph (seed → ancestors). */
+export type DiscoveryAssetLineageAncestryNavEntry = {
+  depth: number;
+  role: "seed" | "ancestor" | "source" | "root";
+  group_id?: string;
+  item?: DiscoveryAssetLineageItemSummary;
+  external?: boolean;
+  via_source_raw?: string;
+};
+
+/** Another indexed child that shares at least one parent with the seed. */
+export type DiscoveryAssetLineageSiblingRow = {
+  group_id?: string;
+  item?: DiscoveryAssetLineageItemSummary;
+  shared_parent_group_ids?: string[];
+};
+
+/** Edge row with optional resolved child summary (direct children / descendants lists). */
+export type DiscoveryAssetLineageEdgeRow = {
+  parent_group_id?: string;
+  child_group_id?: string;
+  via_source_raw?: string;
+  child?: DiscoveryAssetLineageItemSummary | null;
+  /** Present on transitive descendant rows (BFS generation from seed). */
+  generation?: number;
+};
+
+/** Sidecar file merged into the same Discovery row as the primary asset. */
+export type DiscoverySameRowMemberSummary = {
+  relpath?: string;
+  name?: string;
+  kind?: string;
+};
+
+/** GET /api/discovery/asset-lineage — inferred parent/child edges from embedded prompt paths + optional graph persistence. */
+export type DiscoveryAssetLineageResponse = {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  query_relpath?: string;
+  discovery_index_path?: string;
+  ratings_index_path?: string;
+  lineage_graph_path?: string;
+  max_depth?: number;
+  persist?: boolean;
+  persisted_new_edges?: number;
+  peek_parent_group_id?: string;
+  seed?: DiscoveryAssetLineageItemSummary;
+  graph_only?: boolean;
+  infer_parents?: boolean;
+  provenance_chain?: DiscoveryAssetLineageAncestryNavEntry[];
+  external_sources?: DiscoveryAssetLineageExternalSource[];
+  ancestry_nav?: DiscoveryAssetLineageAncestryNavEntry[];
+  siblings?: DiscoveryAssetLineageSiblingRow[];
+  descendants_direct_seed?: DiscoveryAssetLineageEdgeRow[];
+  descendants_transitive?: DiscoveryAssetLineageEdgeRow[];
+  same_row_members?: DiscoverySameRowMemberSummary[];
+  merged_edge_count?: number;
+  expansions?: DiscoveryAssetLineageExpansion[];
+  edges?: unknown[];
+  unresolved_source_strings?: string[];
+  descendants?: unknown[];
+  errors?: string[];
+  notes?: string[];
+};
+
+export type DiscoveryLibraryItemLookupResponse = {
+  ok: boolean;
+  error?: string;
+  item?: DiscoveryLibraryItem;
+};
 
 export type WorkflowExplorerBucket = {
   id: number;
@@ -481,5 +960,303 @@ export type WorkflowExplorerBrowseResponse = {
   truncated?: boolean;
   limit?: number;
   media_type?: "all" | "image" | "video" | string;
+};
+
+export type ShapeFactoryMapMediaRef = {
+  path?: string;
+  basename?: string;
+  relpath?: string;
+  url?: string;
+  thumb_url?: string;
+  thumb_relpath?: string;
+  role?: string;
+  binding_type?: string;
+  source?: string;
+  kind?: string;
+  job_key?: string;
+  added_at?: string;
+  source_kind?: string;
+  inferred?: boolean;
+  /** Recovered source still for seeded (job-less) outputs, inferred from the embedded LoadImage. */
+  source_still?: ShapeFactoryMapMediaRef;
+};
+
+export type ShapeFactoryMapMember = ShapeFactoryMapMediaRef;
+
+export type ShapeFactoryMapDepositPool = {
+  pool_id: string;
+  slot?: string;
+  description?: string;
+  member_count?: number;
+  members_preview?: ShapeFactoryMapMember[];
+  latest_member?: ShapeFactoryMapMember | null;
+};
+
+export type ShapeFactoryMapInputPool = {
+  name?: string;
+  slot?: string;
+  description?: string;
+  feeds_from?: Array<{ pool_id?: string; from_index?: string; limit?: number }> | null;
+  member_glob_count?: number;
+  members_preview?: ShapeFactoryMapMember[];
+  member_preview_count?: number;
+};
+
+export type ShapeFactoryMapShape = {
+  shape_path?: string;
+  shape_id?: string;
+  family_slug?: string;
+  graph_hash?: string;
+  template?: string;
+  requires?: Array<{ slot?: string; role?: string; media?: string; optional?: boolean }>;
+  deposits?: Array<{ slot?: string; to_pool?: string }>;
+};
+
+export type ShapeFactoryMapProjectedPair = {
+  pair_key?: string;
+  combo_key?: string;
+  phase?: "job" | "future" | "seed";
+  gap?: "none" | "source" | "output";
+  gap_note?: string;
+  source?: ShapeFactoryMapMediaRef;
+  bindings?: Record<string, ShapeFactoryMapMediaRef>;
+};
+
+export type ShapeFactoryMapFamily = {
+  family_slug: string;
+  shape: ShapeFactoryMapShape;
+  pools_yaml?: string | null;
+  index_path?: string;
+  index_updated_at?: string;
+  input_pools?: ShapeFactoryMapInputPool[];
+  deposit_pools?: ShapeFactoryMapDepositPool[];
+  projected_pairs?: ShapeFactoryMapProjectedPair[];
+};
+
+export type ShapeFactoryMapQueueRequest = {
+  family_slug: string;
+  combo_key?: string;
+  bindings: Record<string, string>;
+  front?: boolean;
+  overrides?: ShapeFactoryMapQueueOverrides;
+};
+
+export type ShapeFactoryPromptProfile = {
+  ok?: boolean;
+  path?: string;
+  basename?: string;
+  label?: string;
+  positive?: string;
+  negative?: string;
+  profile?: Record<string, unknown>;
+};
+
+export type ShapeFactoryMapQueueOverrides = {
+  prompt_profile?: {
+    label?: string;
+    positive?: string;
+    negative?: string;
+  };
+  parameters?: {
+    frames?: number;
+    steps?: number;
+    overlap?: number;
+    frame_load_cap?: number;
+  };
+};
+
+export type FutureRunDraft = {
+  promptProfile: {
+    label: string;
+    positive: string;
+    negative: string;
+  };
+  parameters: {
+    frames: string;
+    steps: string;
+    overlap: string;
+    frame_load_cap: string;
+  };
+};
+
+export type ShapeFactoryMapQueueResponse = {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  family_slug?: string;
+  combo_key?: string;
+  job_key?: string;
+  job_path?: string;
+  workflow_path?: string;
+  prompt_id?: string;
+  dry_run?: boolean;
+  skipped?: boolean;
+};
+
+/** POST /api/shape-factory/replay — re-run (or extend) a prior job/pair. */
+export type ShapeFactoryReplayRequest = {
+  job_key?: string;
+  family_slug?: string;
+  extend?: boolean;
+  front?: boolean;
+  overrides?: ShapeFactoryMapQueueOverrides;
+};
+
+export type ShapeFactoryReplayResponse = ShapeFactoryMapQueueResponse & {
+  extend?: boolean;
+  replay_of_job_key?: string | null;
+};
+
+/** GET /api/home/summary — resume-the-loop dashboard aggregation. */
+export type HomeSummaryFreshOutput = {
+  group_id?: string | null;
+  relpath?: string;
+  name?: string;
+  library?: string;
+  mtime?: number;
+  url?: string;
+  video_url?: string | null;
+  thumb_url?: string | null;
+  ratings?: DiscoveryLibraryItem["ratings"];
+};
+
+export type HomeSummaryResponse = {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  errors?: Record<string, string>;
+  rating?: {
+    ok?: boolean;
+    error?: string;
+    session_path?: string | null;
+    unrated_videos?: number | null;
+    scored_pool?: number | null;
+    selected?: number | null;
+    buckets?: { easy_down?: number | null; easy_up?: number | null; middle?: number | null };
+    vision_recommended?: number | null;
+  };
+  fresh_outputs?: HomeSummaryFreshOutput[];
+  attention?: {
+    missing_sources_total?: number;
+    families?: Array<{ family_slug?: string; missing?: number }>;
+    library_health?: {
+      missing_primary?: number;
+      missing_video?: number;
+      missing_thumb?: number;
+      orphan_sidecar?: number;
+      orphan_thumb?: number;
+      removed_since_previous_index?: number;
+    } | null;
+  };
+  jobs?: {
+    total?: number | null;
+    summary?: Record<string, number>;
+  };
+  hourly?: {
+    next_sample?: {
+      cursor?: number;
+      sample_index?: number;
+      sample_id?: string;
+      pick_index?: number;
+      gex2_prompt?: string;
+      note?: string;
+      phase_if_idle?: string;
+    } | null;
+    state_path?: string;
+  };
+};
+
+export type ShapeFactoryMapPipelineStep = {
+  id?: string;
+  shape?: string;
+  pools?: string;
+  pick?: string;
+  pick_index?: number;
+  family_slug?: string;
+  binds_from_pool?: string;
+  binds_pick?: string;
+  deposits_to?: string;
+};
+
+export type ShapeFactoryMapPipeline = {
+  pipeline_id?: string;
+  description?: string;
+  path?: string;
+  steps?: ShapeFactoryMapPipelineStep[];
+};
+
+export type ShapeFactoryMapEdge = {
+  from: string;
+  to: string;
+  kind: string;
+  slot?: string;
+  pick?: string | number;
+  pipeline_id?: string;
+  step_id?: string;
+  from_step?: string;
+  to_step?: string;
+};
+
+export type ShapeFactoryMapJob = {
+  job_key?: string;
+  family_slug?: string;
+  status?: string;
+  graph_hash?: string;
+  shape_id?: string;
+  prompt_id?: string;
+  bindings?: Record<string, ShapeFactoryMapMediaRef>;
+  deposit_to?: string;
+  generated_workflow_path?: string;
+  template_path?: string;
+  outputs?: Array<ShapeFactoryMapMediaRef>;
+  exec_sec?: number;
+  created_at?: string;
+  pick_index?: number;
+  pick_mode?: string;
+};
+
+export type ShapeFactoryMapResponse = {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  hint?: string;
+  schema_version?: string;
+  updated_at?: string;
+  data_root?: string;
+  paths?: Record<string, string>;
+  families?: ShapeFactoryMapFamily[];
+  pipelines?: ShapeFactoryMapPipeline[];
+  edges?: ShapeFactoryMapEdge[];
+  jobs?: {
+    summary?: Record<string, number>;
+    total?: number;
+    items?: ShapeFactoryMapJob[];
+    pending_submit?: ShapeFactoryMapJob[];
+    inflight?: ShapeFactoryMapJob[];
+    active?: ShapeFactoryMapJob[];
+  };
+  queue?: {
+    ok?: boolean;
+    skipped?: boolean;
+    error?: string;
+    detail?: string;
+    running_count?: number;
+    pending_count?: number;
+    shape_factory_matches?: Array<{ prompt_id?: string; queue_state?: string; job?: ShapeFactoryMapJob }>;
+  };
+  hourly?: {
+    state_path?: string;
+    state?: Record<string, unknown>;
+    chain_manifest?: string | null;
+    next_sample?: {
+      cursor?: number;
+      sample_index?: number;
+      sample_id?: string;
+      pick_index?: number;
+      gex2_prompt?: string;
+      note?: string;
+      phase_if_idle?: string;
+    } | null;
+  };
 };
 

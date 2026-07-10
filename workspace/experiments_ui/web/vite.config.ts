@@ -1,5 +1,29 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * When running `npm run dev` from `workspace/experiments_ui/web`, `process.env` may not include
+ * repo-root `.env`. Mirror `scripts/experiments-ui-dev.mjs`: read `EXPERIMENTS_UI_PROXY_TARGET`
+ * from `<repo>/.env` so Vite proxies /api to the same backend as the launcher.
+ */
+function hydrateExperimentsUiProxyTargetFromRepoDotenv(): void {
+  if (process.env.EXPERIMENTS_UI_PROXY_TARGET?.trim()) return;
+  const envPath = path.resolve(__dirname, "../../../.env");
+  if (!fs.existsSync(envPath)) return;
+  const text = fs.readFileSync(envPath, "utf8");
+  for (const line of text.split(/\r?\n/)) {
+    const m = line.match(/^\s*EXPERIMENTS_UI_PROXY_TARGET\s*=\s*(.+)$/);
+    if (m) {
+      process.env.EXPERIMENTS_UI_PROXY_TARGET = m[1].trim().replace(/^["']|["']$/g, "");
+      return;
+    }
+  }
+}
 
 /**
  * Dev proxy target for the Experiments UI API/media routes (/api, /files, /factory-assets)
@@ -22,11 +46,18 @@ import react from "@vitejs/plugin-react";
  * EXPERIMENTS_UI_ALLOW_ANY_DEV_HOST=1 → server.allowedHosts true (only for trusted dev networks).
  */
 export default defineConfig(({ mode }) => {
+  hydrateExperimentsUiProxyTargetFromRepoDotenv();
   const env = loadEnv(mode, process.cwd(), "");
   // Prefer process.env so dev launchers (PowerShell, experiments-ui-dev.mjs) override stale .env values.
   const apiTarget =
     (process.env.EXPERIMENTS_UI_PROXY_TARGET || env.EXPERIMENTS_UI_PROXY_TARGET || "").trim() ||
     "http://127.0.0.1:8790";
+  if (mode === "development") {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[vite] proxy /api,/files,/factory-assets → ${apiTarget} (set EXPERIMENTS_UI_PROXY_TARGET or repo .env; restart THAT process after pulling new discovery routes).`,
+    );
+  }
   /** When the dev server is opened via Tailscale/LAN IP, HMR must use that host (not localhost). */
   const hmrPublicHost = (process.env.EXPERIMENTS_UI_HMR_HOST || env.EXPERIMENTS_UI_HMR_HOST || "").trim();
   const devPort =
@@ -46,6 +77,9 @@ export default defineConfig(({ mode }) => {
   const proxyCommon = { target: apiTarget, changeOrigin: true, secure: false } as const;
 
   return {
+    define: {
+      __DEV_EXPERIMENTS_PROXY_TARGET__: JSON.stringify(mode === "development" ? apiTarget : ""),
+    },
     plugins: [react()],
     server: {
       host: devListenHost,

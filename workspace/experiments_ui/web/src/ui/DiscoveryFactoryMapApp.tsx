@@ -1,0 +1,1891 @@
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { fetchShapeFactoryMap, queueShapeFactoryCombo, recoverAssets, replayShapeFactory } from "./api";
+import { AssetInspector, type InspectorAsset } from "./AssetInspector";
+import { buildQueueOverrides, FutureRunEditor } from "./factoryMapFutureRunEditor";
+import { discoveryLibraryHref } from "./discoveryDeepLink";
+import { MediaFullscreenModal, type MediaFullscreenPayload } from "./MediaFullscreenModal";
+import { formatIsoDateTime } from "./locale";
+import {
+  buildSourceOutputPairs,
+  countPairPhases,
+  primarySourceBinding,
+  shortPairLabel,
+  summarizePairGaps,
+  type SourceOutputPair,
+} from "./factoryMapPairs";
+import {
+  factoryMapFamilyHref,
+  factoryMapIndexHref,
+  factoryMapPipelineHref,
+  familySlugFromShapePath,
+  parseFactoryMapRoute,
+  pipelineFamilySlugs,
+  stepFamilySlug,
+  type FactoryMapRoute,
+} from "./factoryMapRoute";
+import {
+  getFamilyActivity,
+  getPipelineActivity,
+  summarizeFamiliesSection,
+  summarizePipelinesSection,
+  type FactoryMapActivity,
+  type FactoryMapIndexContext,
+} from "./factoryMapSummaries";
+import type {
+  ShapeFactoryMapFamily,
+  ShapeFactoryMapJob,
+  ShapeFactoryMapMediaRef,
+  ShapeFactoryMapPipeline,
+  ShapeFactoryMapPipelineStep,
+  ShapeFactoryMapResponse,
+  FutureRunDraft,
+} from "./types";
+
+const POLL_MS = 30_000;
+
+function shortHash(value?: string | null): string {
+  return value ? value.slice(0, 12) : "—";
+}
+
+function statusClass(status?: string): string {
+  const s = (status || "").toLowerCase();
+  if (s === "complete") return "sfmap-status sfmap-status--complete";
+  if (s === "running") return "sfmap-status sfmap-status--running";
+  if (s === "queued") return "sfmap-status sfmap-status--queued";
+  if (s === "pending") return "sfmap-status sfmap-status--pending";
+  if (s === "future") return "sfmap-status sfmap-status--future";
+  if (s === "error") return "sfmap-status sfmap-status--error";
+  return "sfmap-status";
+}
+
+function jobCountsForFamily(jobs: ShapeFactoryMapJob[], familySlug: string): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const j of jobs) {
+    if (j.family_slug !== familySlug) continue;
+    const st = (j.status || "unknown").toLowerCase();
+    counts[st] = (counts[st] || 0) + 1;
+  }
+  return counts;
+}
+
+function FactoryMapShell({
+  route,
+  loading,
+  onRefresh,
+  children,
+}: {
+  route: FactoryMapRoute;
+  loading: boolean;
+  onRefresh: () => void;
+  children: React.ReactNode;
+}) {
+  const isFamily = route.view === "family";
+  const isPipeline = route.view === "pipeline";
+  return (
+    <div className="discovery-screen">
+      <div className="panel discovery-panel discovery-factory-map-root">
+        <header className="discovery-factory-map-header">
+          <div>
+            <h1 className="title" style={{ margin: 0, fontSize: "1.15rem" }}>
+              Factory map
+            </h1>
+            <p className="factory-muted" style={{ margin: "4px 0 0" }}>
+              Shape families — pools, jobs, and queue observation
+            </p>
+            {isFamily ? (
+              <nav className="sfmap-breadcrumb" aria-label="Factory map breadcrumb">
+                <a href={factoryMapIndexHref()}>All families</a>
+                <span aria-hidden="true">/</span>
+                <span className="sfmap-breadcrumb__current">{route.familySlug}</span>
+              </nav>
+            ) : isPipeline ? (
+              <nav className="sfmap-breadcrumb" aria-label="Factory map breadcrumb">
+                <a href={factoryMapIndexHref()}>All families</a>
+                <span aria-hidden="true">/</span>
+                <span className="sfmap-breadcrumb__current">{route.pipelineId}</span>
+              </nav>
+            ) : null}
+          </div>
+          <button type="button" disabled={loading} onClick={onRefresh}>
+            {loading ? "Loading…" : "Refresh"}
+          </button>
+        </header>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function FactoryMapFamilyNav({
+  families,
+  activeSlug,
+}: {
+  families: ShapeFactoryMapFamily[];
+  activeSlug?: string | null;
+}) {
+  if (!families.length) return null;
+  return (
+    <nav className="sfmap-family-nav" aria-label="Shape families">
+      <a
+        href={factoryMapIndexHref()}
+        className={`sfmap-family-nav__link${!activeSlug ? " sfmap-family-nav__link--active" : ""}`}
+        aria-current={!activeSlug ? "page" : undefined}
+      >
+        All
+      </a>
+      {families.map((fam) => {
+        const slug = fam.family_slug;
+        const active = activeSlug === slug;
+        return (
+          <a
+            key={slug}
+            href={factoryMapFamilyHref(slug)}
+            className={`sfmap-family-nav__link${active ? " sfmap-family-nav__link--active" : ""}`}
+            aria-current={active ? "page" : undefined}
+          >
+            {slug}
+          </a>
+        );
+      })}
+    </nav>
+  );
+}
+
+function FactoryMapAccordionSection({
+  sectionId,
+  title,
+  summaryLine,
+  activities,
+  defaultOpen,
+  hint,
+  children,
+}: {
+  sectionId: string;
+  title: string;
+  summaryLine: string;
+  activities?: FactoryMapActivity[];
+  defaultOpen?: boolean;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  const activeItems = (activities || []).filter((a) => a.active);
+  return (
+    <details className="sfmap-accordion" id={sectionId} open={defaultOpen}>
+      <summary className="sfmap-accordion__summary">
+        <span className="sfmap-accordion__summary-start">
+          <span className="sfmap-accordion__caret" aria-hidden="true">
+            ▶
+          </span>
+          <span className="sfmap-accordion__title">{title}</span>
+        </span>
+        <span className="sfmap-accordion__summary-line factory-muted">{summaryLine}</span>
+        {activeItems.length > 0 ? (
+          <span className="sfmap-accordion__summary-badges">
+            {activeItems.map((activity, idx) => (
+              <span key={idx} className="sfmap-activity-badge sfmap-activity-badge--compact">
+                {activity.label}
+              </span>
+            ))}
+          </span>
+        ) : null}
+      </summary>
+      <div className="sfmap-accordion__body">
+        {hint ? <p className="sfmap-index-section__hint factory-muted">{hint}</p> : null}
+        {children}
+      </div>
+    </details>
+  );
+}
+
+function FactoryMapPipelineNav({
+  pipelines,
+  activeId,
+}: {
+  pipelines: ShapeFactoryMapPipeline[];
+  activeId?: string | null;
+}) {
+  if (!pipelines.length) return null;
+  return (
+    <nav className="sfmap-pipeline-nav" aria-label="Pipelines">
+      <span className="sfmap-pipeline-nav__label">Pipelines</span>
+      {!activeId ? (
+        <span className="sfmap-pipeline-nav__link sfmap-pipeline-nav__link--active" aria-current="page">
+          All
+        </span>
+      ) : (
+        <a href={factoryMapIndexHref()} className="sfmap-pipeline-nav__link">
+          All
+        </a>
+      )}
+      {pipelines.map((pipe) => {
+        const id = pipe.pipeline_id || "";
+        if (!id) return null;
+        const active = activeId === id;
+        return (
+          <a
+            key={id}
+            href={factoryMapPipelineHref(id)}
+            className={`sfmap-pipeline-nav__link${active ? " sfmap-pipeline-nav__link--active" : ""}`}
+            aria-current={active ? "page" : undefined}
+          >
+            {id}
+          </a>
+        );
+      })}
+    </nav>
+  );
+}
+
+function ArrowColumn({ label }: { label: string }) {
+  return (
+    <div className="factory-arrow-column" aria-hidden="true">
+      <div className="factory-arrow-label">{label}</div>
+      <div className="factory-arrow-line">→</div>
+    </div>
+  );
+}
+
+function mediaLooksLikeVideo(media: ShapeFactoryMapMediaRef): boolean {
+  const hint = media.relpath || media.path || media.url || media.basename || "";
+  return /\.mp4($|\?)/i.test(hint);
+}
+
+function mediaHasInspector(media: ShapeFactoryMapMediaRef): boolean {
+  return Boolean(media.url || media.thumb_url || media.relpath);
+}
+
+function MediaAssetInspector({
+  title,
+  subtitle,
+  media,
+  meta,
+  onOpenMedia,
+  compact,
+}: {
+  title?: string;
+  subtitle?: string;
+  media: ShapeFactoryMapMediaRef;
+  meta?: string[];
+  onOpenMedia: (media: MediaFullscreenPayload) => void;
+  compact?: boolean;
+}) {
+  const displayTitle = title || media.basename || "asset";
+  const discoveryRel = media.relpath || media.thumb_relpath;
+
+  return (
+    <div className={"sfmap-media-inspector" + (compact ? " sfmap-media-inspector--compact" : "")}>
+      {!compact && media.thumb_url ? (
+        <button
+          type="button"
+          className="sfmap-detail-preview"
+          onClick={() =>
+            onOpenMedia({
+              kind: media.url ? "video" : "image",
+              url: media.url || media.thumb_url!,
+              title: media.basename || displayTitle,
+            })
+          }
+        >
+          <img src={media.thumb_url} alt="" loading="lazy" />
+        </button>
+      ) : null}
+      <div className="sfmap-detail-kv mono">{displayTitle}</div>
+      {subtitle ? <div className="sfmap-detail-meta">{subtitle}</div> : null}
+      {meta?.length ? <div className="sfmap-detail-meta">{meta.join(" · ")}</div> : null}
+      {media.relpath ? (
+        <div className="sfmap-detail-kv mono sfmap-detail-path">{media.relpath}</div>
+      ) : media.path ? (
+        <div className="sfmap-detail-kv mono sfmap-detail-path">{media.path}</div>
+      ) : null}
+      <div className="sfmap-detail-actions">
+        {media.url ? (
+          <button
+            type="button"
+            onClick={() =>
+              onOpenMedia({
+                kind: mediaLooksLikeVideo(media) ? "video" : "image",
+                url: media.url!,
+                title: media.basename || displayTitle,
+              })
+            }
+          >
+            Open video
+          </button>
+        ) : null}
+        {media.thumb_url && media.thumb_url !== media.url ? (
+          <button
+            type="button"
+            onClick={() =>
+              onOpenMedia({
+                kind: "image",
+                url: media.thumb_url!,
+                title: media.basename || displayTitle,
+              })
+            }
+          >
+            Open thumb
+          </button>
+        ) : null}
+        {discoveryRel ? (
+          <a href={discoveryLibraryHref(discoveryRel)} title="Open in discovery library">
+            Discovery library
+          </a>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function JobRow({
+  job,
+  selected,
+  onSelect,
+}: {
+  job: ShapeFactoryMapJob;
+  selected?: boolean;
+  onSelect: (anchor: HTMLElement) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={"sfmap-job-row" + (selected ? " sfmap-job-row--selected" : "")}
+      onClick={(e) => onSelect(e.currentTarget)}
+    >
+      <span className={statusClass(job.status)}>{job.status || "?"}</span>
+      <span className="sfmap-job-row__key mono">{job.job_key || "—"}</span>
+      {job.exec_sec != null ? (
+        <span className="sfmap-job-row__meta">{Math.round(Number(job.exec_sec))}s</span>
+      ) : null}
+    </button>
+  );
+}
+
+function DetailPanel({
+  familySlug,
+  selectedPair,
+  selectedJob,
+  jobForMember,
+  onOpenMedia,
+  onQueued,
+}: {
+  familySlug: string;
+  selectedPair: SourceOutputPair | null;
+  selectedJob: ShapeFactoryMapJob | null;
+  jobForMember: ShapeFactoryMapJob | null;
+  onOpenMedia: (media: MediaFullscreenPayload) => void;
+  onQueued?: () => void;
+}) {
+  const job = selectedJob || jobForMember;
+  const bindings = selectedPair?.bindings || job?.bindings;
+  const source =
+    selectedPair?.source || primarySourceBinding(bindings, selectedPair?.source);
+  const output = selectedPair?.output;
+  const [queueBusy, setQueueBusy] = useState(false);
+  const [queueError, setQueueError] = useState("");
+  const [queueOk, setQueueOk] = useState("");
+  const [runDraft, setRunDraft] = useState<FutureRunDraft | null>(null);
+  const [runBaseline, setRunBaseline] = useState<FutureRunDraft | null>(null);
+  const [recoverBusy, setRecoverBusy] = useState(false);
+  const [recoverMsg, setRecoverMsg] = useState("");
+
+  const missingSourceName = useMemo(() => {
+    if (selectedPair?.gap !== "source" || selectedPair?.phase === "future") return "";
+    const b = bindings || {};
+    const row =
+      b.source_still ||
+      b.source_video ||
+      Object.values(b).find((r) => r?.binding_type === "load_image");
+    const raw = row?.basename || row?.path || "";
+    return raw ? raw.split(/[\\/]/).pop() || "" : "";
+  }, [bindings, selectedPair?.gap, selectedPair?.phase]);
+
+  const handleRecover = useCallback(async () => {
+    if (!missingSourceName) return;
+    setRecoverBusy(true);
+    setRecoverMsg("");
+    try {
+      const res = await recoverAssets({ names: [missingSourceName] });
+      const r = res.results?.[0];
+      if (r?.ok) {
+        setRecoverMsg(`Recovered (${r.method})`);
+        onQueued?.();
+      } else {
+        setRecoverMsg(`Failed: ${r?.error || "not_found"}`);
+      }
+    } catch (e) {
+      setRecoverMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRecoverBusy(false);
+    }
+  }, [missingSourceName, onQueued]);
+
+  const canQueue =
+    selectedPair?.phase === "future" &&
+    Boolean(selectedPair.bindings && Object.keys(selectedPair.bindings).length);
+
+  const replayJobKey = selectedPair?.jobKey || selectedJob?.job_key || jobForMember?.job_key || "";
+  const canReplay = Boolean(replayJobKey) && selectedPair?.phase !== "future";
+  const hasVideoSource = useMemo(() => {
+    const b = bindings || {};
+    return Object.entries(b).some(([slot, ref]) => slot.toLowerCase().includes("video") && Boolean(ref?.path));
+  }, [bindings]);
+  const [replayBusy, setReplayBusy] = useState("");
+  const [replayMsg, setReplayMsg] = useState("");
+
+  const handleReplay = useCallback(
+    async (extend: boolean) => {
+      if (!replayJobKey) return;
+      setReplayBusy(extend ? "extend" : "replay");
+      setReplayMsg("");
+      try {
+        const res = await replayShapeFactory({ job_key: replayJobKey, extend });
+        setReplayMsg(res.prompt_id ? `Queued · prompt ${res.prompt_id}` : res.job_key ? `Job ${res.job_key}` : "Queued");
+        onQueued?.();
+      } catch (e) {
+        setReplayMsg(e instanceof Error ? e.message : String(e));
+      } finally {
+        setReplayBusy("");
+      }
+    },
+    [replayJobKey, onQueued],
+  );
+
+  useEffect(() => {
+    setQueueError("");
+    setQueueOk("");
+    setRunDraft(null);
+    setRunBaseline(null);
+    setRecoverMsg("");
+    setReplayMsg("");
+  }, [selectedPair?.pairKey]);
+
+  const handleDraftChange = useCallback((draft: FutureRunDraft, baseline: FutureRunDraft) => {
+    setRunDraft(draft);
+    setRunBaseline(baseline);
+  }, []);
+
+  const handleQueue = useCallback(async () => {
+    if (!canQueue || !selectedPair?.bindings) return;
+    setQueueBusy(true);
+    setQueueError("");
+    setQueueOk("");
+    try {
+      const bindingPaths: Record<string, string> = {};
+      for (const [slot, b] of Object.entries(selectedPair.bindings)) {
+        if (b.path) bindingPaths[slot] = b.path;
+      }
+      const overrides =
+        runDraft && runBaseline ? buildQueueOverrides(runDraft, runBaseline) : undefined;
+      const res = await queueShapeFactoryCombo({
+        family_slug: familySlug,
+        combo_key: selectedPair.comboKey,
+        bindings: bindingPaths,
+        overrides,
+      });
+      setQueueOk(
+        res.prompt_id
+          ? `Queued · prompt ${res.prompt_id}`
+          : res.job_key
+            ? `Job ${res.job_key} created`
+            : "Queued",
+      );
+      onQueued?.();
+    } catch (e) {
+      setQueueError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setQueueBusy(false);
+    }
+  }, [canQueue, familySlug, onQueued, runBaseline, runDraft, selectedPair?.bindings, selectedPair?.comboKey]);
+
+  if (!job && !selectedPair) {
+    return (
+      <div className="sfmap-detail sfmap-detail--empty">
+        Select a run to inspect source → output mapping and job details.
+      </div>
+    );
+  }
+
+  return (
+    <div className="sfmap-detail">
+      {selectedPair || source || output ? (
+        <section className="sfmap-detail-section">
+          <h3>Source → Output</h3>
+          {selectedPair?.gap !== "none" && selectedPair?.gapNote ? (
+            <div className="sfmap-detail-meta sfmap-detail-gap-note">
+              {selectedPair.phase === "future"
+                ? "Possible run — no job submitted yet"
+                : selectedPair.gap === "output"
+                  ? `Output not deposited yet (${selectedPair.gapNote})`
+                  : `Source missing (${selectedPair.gapNote})`}
+            </div>
+          ) : null}
+          {missingSourceName ? (
+            <div className="sfmap-recover-row">
+              <button
+                type="button"
+                className="sfmap-recover-btn"
+                onClick={handleRecover}
+                disabled={recoverBusy}
+                title={`Locate/recover ${missingSourceName} into input/`}
+              >
+                {recoverBusy ? "Recovering…" : "Recover source"}
+              </button>
+              <code className="factory-muted sfmap-recover-name">{missingSourceName}</code>
+              {recoverMsg ? <span className="factory-muted">{recoverMsg}</span> : null}
+            </div>
+          ) : null}
+          <div className="sfmap-pair-detail">
+            {source && mediaHasInspector(source) ? (
+              <MediaAssetInspector title="Source" media={source} onOpenMedia={onOpenMedia} compact />
+            ) : (
+              <div className="sfmap-pair-detail__missing">No source</div>
+            )}
+            <span className="sfmap-pair-detail__arrow" aria-hidden="true">
+              →
+            </span>
+            {output && mediaHasInspector(output) ? (
+              <MediaAssetInspector title="Output" media={output} onOpenMedia={onOpenMedia} compact />
+            ) : (
+              <div className="sfmap-pair-detail__missing">
+                {selectedPair?.phase === "future"
+                  ? "Future"
+                  : selectedPair?.gap === "output"
+                    ? selectedPair.gapNote || "Pending"
+                    : "No output"}
+              </div>
+            )}
+          </div>
+        </section>
+      ) : null}
+
+      {output?.relpath && selectedPair?.phase !== "future" ? (
+        <section className="sfmap-detail-section">
+          <h3>Signals</h3>
+          <AssetInspector
+            asset={
+              {
+                relpath: output.relpath,
+                library: "og",
+                name: output.basename || output.relpath,
+                url: output.url,
+                thumb_url: output.thumb_url,
+              } as InspectorAsset
+            }
+            showMedia={false}
+          />
+        </section>
+      ) : null}
+
+      {canReplay ? (
+        <section className="sfmap-detail-section sfmap-replay-section">
+          <h3>Run again</h3>
+          <div className="sfmap-replay-row">
+            <button
+              type="button"
+              className="drt-btn"
+              disabled={Boolean(replayBusy)}
+              onClick={() => void handleReplay(false)}
+              title="Re-run this combo with the same bindings"
+            >
+              {replayBusy === "replay" ? "Queuing…" : "Replay"}
+            </button>
+            {hasVideoSource ? (
+              <button
+                type="button"
+                className="drt-btn"
+                disabled={Boolean(replayBusy)}
+                onClick={() => void handleReplay(true)}
+                title="Chain this run's output as the next video source"
+              >
+                {replayBusy === "extend" ? "Queuing…" : "Extend →"}
+              </button>
+            ) : null}
+            {replayMsg ? (
+              <span className="factory-muted sfmap-replay-msg">
+                {replayMsg}
+                {replayMsg.startsWith("Queued") ? (
+                  <>
+                    {" · "}
+                    <a href="/comfy-queue">queue monitor</a>
+                  </>
+                ) : null}
+              </span>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
+
+      {job ? (
+        <>
+          <section className="sfmap-detail-section">
+            <h3>Job</h3>
+            <div className="sfmap-detail-kv">
+              <span className={statusClass(job.status)}>{job.status}</span>
+              {job.family_slug ? <> · {job.family_slug}</> : null}
+              {job.exec_sec != null ? <> · {Math.round(Number(job.exec_sec))}s</> : null}
+            </div>
+            <div className="sfmap-detail-kv mono">{job.job_key}</div>
+            {job.deposit_to ? (
+              <div className="sfmap-detail-kv">
+                deposit <span className="mono">{job.deposit_to}</span>
+              </div>
+            ) : null}
+            {job.prompt_id ? <div className="sfmap-detail-kv mono">prompt {job.prompt_id}</div> : null}
+            {job.graph_hash ? (
+              <div className="sfmap-detail-kv">
+                graph <span className="mono">{shortHash(job.graph_hash)}</span>
+              </div>
+            ) : null}
+          </section>
+
+          {job.bindings && Object.keys(job.bindings).length ? (
+            <section className="sfmap-detail-section">
+              <h3>Bindings</h3>
+              <ul className="sfmap-binding-list">
+                {Object.entries(job.bindings)
+                  .filter(
+                    ([slot]) =>
+                      !(
+                        (slot === "source_video" || slot === "source_still" || slot === "source_video_ref") &&
+                        source &&
+                        mediaHasInspector(source)
+                      ),
+                  )
+                  .map(([slot, b]) => (
+                  <li key={slot}>
+                    {mediaHasInspector(b) ? (
+                      <MediaAssetInspector
+                        title={slot}
+                        subtitle={[b.role, b.binding_type].filter(Boolean).join(" · ") || undefined}
+                        media={b}
+                        onOpenMedia={onOpenMedia}
+                        compact
+                      />
+                    ) : (
+                      <>
+                        <strong>{slot}</strong>
+                        {b.role ? <> · {b.role}</> : null}
+                        <div className="mono sfmap-detail-path">{b.basename || b.path}</div>
+                      </>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+
+          {job.generated_workflow_path ? (
+            <section className="sfmap-detail-section">
+              <h3>Workflow</h3>
+              <div className="sfmap-detail-kv mono sfmap-detail-path">{job.generated_workflow_path}</div>
+            </section>
+          ) : null}
+
+          {job.outputs?.length ? (
+            <section className="sfmap-detail-section">
+              <h3>Outputs</h3>
+              <ul className="sfmap-binding-list">
+                {job.outputs.map((o, i) => (
+                  <li key={`${o.path || i}`}>
+                    {mediaHasInspector(o) ? (
+                      <MediaAssetInspector
+                        title={o.basename || o.relpath || "output"}
+                        media={o}
+                        onOpenMedia={onOpenMedia}
+                        compact
+                      />
+                    ) : (
+                      <span className="mono">{o.basename || o.path}</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+        </>
+      ) : selectedPair?.phase === "future" && bindings && Object.keys(bindings).length ? (
+        <section className="sfmap-detail-section">
+          <h3>Bindings</h3>
+          <ul className="sfmap-binding-list">
+            {Object.entries(bindings)
+              .filter(
+                ([slot]) =>
+                  !(
+                    (slot === "source_video" || slot === "source_still" || slot === "source_video_ref") &&
+                    source &&
+                    mediaHasInspector(source)
+                  ),
+              )
+              .map(([slot, b]) => (
+                <li key={slot}>
+                  {mediaHasInspector(b) ? (
+                    <MediaAssetInspector
+                      title={slot}
+                      media={b}
+                      onOpenMedia={onOpenMedia}
+                      compact
+                    />
+                  ) : (
+                    <>
+                      <strong>{slot}</strong>
+                      <div className="mono sfmap-detail-path">{b.basename || b.path}</div>
+                    </>
+                  )}
+                </li>
+              ))}
+          </ul>
+        </section>
+      ) : null}
+
+      {canQueue ? (
+        <FutureRunEditor
+          promptProfilePath={bindings?.prompt_profile?.path}
+          onDraftChange={handleDraftChange}
+        />
+      ) : null}
+
+      {canQueue ? (
+        <section className="sfmap-detail-section sfmap-detail-queue">
+          <button type="button" className="sfmap-queue-run-btn" disabled={queueBusy} onClick={() => void handleQueue()}>
+            {queueBusy ? "Queueing…" : "Queue run"}
+          </button>
+          {queueOk ? <div className="sfmap-detail-meta sfmap-queue-ok">{queueOk}</div> : null}
+          {queueError ? (
+            <div className="sfmap-detail-meta sfmap-queue-error" role="alert">
+              {queueError}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+const INSPECTOR_TOOLTIP_WIDTH = 300;
+const INSPECTOR_TOOLTIP_GAP = 10;
+const INSPECTOR_SCROLL_PAD_MARGIN = 48;
+const FACTORY_MAP_SCROLL_SELECTOR = ".discovery-factory-map-scroll";
+
+function factoryMapScrollRoot(): HTMLElement | null {
+  const el = document.querySelector(FACTORY_MAP_SCROLL_SELECTOR);
+  return el instanceof HTMLElement ? el : null;
+}
+
+function bindInspectorScrollSync(onMove: () => void): () => void {
+  const opts: AddEventListenerOptions = { passive: true, capture: true };
+  window.addEventListener("resize", onMove);
+  const scrollRoot = factoryMapScrollRoot();
+  scrollRoot?.addEventListener("scroll", onMove, opts);
+  document.querySelectorAll(".sfmap-job-list").forEach((el) => {
+    el.addEventListener("scroll", onMove, opts);
+  });
+  return () => {
+    window.removeEventListener("resize", onMove);
+    scrollRoot?.removeEventListener("scroll", onMove, opts);
+    document.querySelectorAll(".sfmap-job-list").forEach((el) => {
+      el.removeEventListener("scroll", onMove, opts);
+    });
+  };
+}
+
+function inspectorOverlayPosition(anchor: HTMLElement): {
+  top: number;
+  left: number;
+  arrowLeft: number;
+} {
+  const rect = anchor.getBoundingClientRect();
+  const margin = 8;
+  const top = rect.bottom + INSPECTOR_TOOLTIP_GAP;
+  let left = rect.left + rect.width / 2 - INSPECTOR_TOOLTIP_WIDTH / 2;
+  left = Math.min(Math.max(margin, left), window.innerWidth - INSPECTOR_TOOLTIP_WIDTH - margin);
+  const anchorCenter = rect.left + rect.width / 2;
+  const arrowLeft = Math.min(Math.max(14, anchorCenter - left), INSPECTOR_TOOLTIP_WIDTH - 14);
+  return { top, left, arrowLeft };
+}
+
+/** How much extra scroll range is needed so a fixed southern tooltip fits in the viewport. */
+function inspectorScrollPadPx(tooltipEl: HTMLElement, scrollRoot: HTMLElement): number {
+  const viewportBottom = window.innerHeight;
+  const tooltipBottom = tooltipEl.getBoundingClientRect().bottom;
+  const shortfall = tooltipBottom - viewportBottom + INSPECTOR_SCROLL_PAD_MARGIN;
+  if (shortfall <= 0) return 0;
+
+  const scrollRoom = scrollRoot.scrollHeight - scrollRoot.scrollTop - scrollRoot.clientHeight;
+  const extra = Math.max(0, shortfall - scrollRoom);
+  return Math.ceil(shortfall + extra);
+}
+
+/** Floating tooltip below anchor (southern) — overlays content, does not shift layout. */
+function InspectorTooltipOverlay({
+  open,
+  anchorEl,
+  onClose,
+  onScrollPad,
+  children,
+}: {
+  open: boolean;
+  anchorEl: HTMLElement | null;
+  onClose: () => void;
+  onScrollPad: (neededPx: number) => void;
+  children: React.ReactNode;
+}) {
+  const tooltipRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState(() =>
+    anchorEl ? inspectorOverlayPosition(anchorEl) : { top: 0, left: 0, arrowLeft: 24 },
+  );
+
+  const syncPosition = useCallback(() => {
+    if (anchorEl) setPos(inspectorOverlayPosition(anchorEl));
+  }, [anchorEl]);
+
+  const reportScrollPad = useCallback(() => {
+    const tooltip = tooltipRef.current;
+    const scrollRoot = factoryMapScrollRoot();
+    if (!tooltip || !scrollRoot) return;
+    const needed = inspectorScrollPadPx(tooltip, scrollRoot);
+    if (needed > 0) onScrollPad(needed);
+  }, [onScrollPad]);
+
+  useLayoutEffect(() => {
+    if (!open || !anchorEl) return;
+    syncPosition();
+  }, [open, anchorEl, syncPosition]);
+
+  useLayoutEffect(() => {
+    if (!open || !anchorEl) return;
+    reportScrollPad();
+  }, [open, anchorEl, pos, reportScrollPad]);
+
+  useEffect(() => {
+    if (!open || !anchorEl) return;
+    const onMove = () => {
+      requestAnimationFrame(() => {
+        syncPosition();
+      });
+    };
+    return bindInspectorScrollSync(onMove);
+  }, [open, anchorEl, syncPosition]);
+
+  useEffect(() => {
+    if (!open || !tooltipRef.current) return;
+    const tooltip = tooltipRef.current;
+    const ro = new ResizeObserver(() => reportScrollPad());
+    ro.observe(tooltip);
+    return () => ro.disconnect();
+  }, [open, reportScrollPad]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (anchorEl?.contains(target)) return;
+      if (tooltipRef.current?.contains(target)) return;
+      onClose();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [open, anchorEl, onClose]);
+
+  if (!open || !anchorEl) return null;
+
+  return createPortal(
+    <div
+      ref={tooltipRef}
+      className="sfmap-inspector-tooltip sfmap-inspector-tooltip--south"
+      role="dialog"
+      aria-label="Inspector"
+      aria-modal="false"
+      style={{
+        top: pos.top,
+        left: pos.left,
+        width: INSPECTOR_TOOLTIP_WIDTH,
+        ["--sfmap-tooltip-arrow-left" as string]: `${pos.arrowLeft}px`,
+      }}
+    >
+      <div className="sfmap-inspector-tooltip__body">{children}</div>
+    </div>,
+    document.body,
+  );
+}
+
+function FamilyGraph({ family }: { family: ShapeFactoryMapFamily }) {
+  const shape = family.shape || {};
+  const deposit = (family.deposit_pools || [])[0];
+  return (
+    <div className="factory-plan sfmap-family-plan">
+      <div className="factory-plan-header">
+        <div>
+          <h2>{family.family_slug}</h2>
+          <div className="factory-muted">
+            {shape.shape_id || "shape"} · graph {shortHash(shape.graph_hash)}
+          </div>
+        </div>
+        {deposit?.member_count != null ? (
+          <div className="factory-pill">
+            {deposit.member_count} in {deposit.pool_id}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="factory-graph">
+        <section className="factory-column">
+          <h3>Input pools</h3>
+          <div className="factory-card-list">
+            {(family.input_pools || []).map((pool) => (
+              <div key={`${pool.name}-${pool.slot}`} className="factory-card sfmap-input-pool-card">
+                <div className="factory-card-title">{pool.name || pool.slot}</div>
+                <div className="factory-card-meta">{pool.description}</div>
+                {pool.feeds_from?.length ? (
+                  <div className="factory-card-meta">
+                    from {pool.feeds_from.map((f) => f.pool_id).filter(Boolean).join(", ")}
+                  </div>
+                ) : (
+                  <div className="factory-card-meta">{pool.member_glob_count || 0} glob source(s)</div>
+                )}
+              </div>
+            ))}
+            {!family.input_pools?.length ? <div className="factory-empty">No input pools</div> : null}
+          </div>
+        </section>
+
+        <ArrowColumn label="binds" />
+
+        <section className="factory-column">
+          <h3>Shape</h3>
+          <div className="factory-card">
+            <div className="factory-card-title">{shape.shape_id || family.family_slug}</div>
+            <div className="factory-card-meta mono">hash {shortHash(shape.graph_hash)}</div>
+            <ul className="sfmap-slot-list">
+              {(shape.requires || []).map((r) => (
+                <li key={r.slot}>
+                  {r.slot} <span className="sfmap-slot-role">{r.role}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </section>
+
+        <ArrowColumn label="deposit" />
+
+        <section className="factory-column">
+          <h3>{deposit?.pool_id || "Deposit pool"}</h3>
+          <div className="factory-card-meta">{deposit?.description}</div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function PipelineStrip({ pipeline }: { pipeline: ShapeFactoryMapPipeline }) {
+  const steps = pipeline.steps || [];
+  return (
+    <div className="sfmap-pipeline-strip">
+      <div className="sfmap-pipeline-title">
+        <strong>{pipeline.pipeline_id}</strong>
+        <span className="factory-muted">{pipeline.description}</span>
+      </div>
+      <div className="sfmap-pipeline-steps">
+        {steps.map((step, idx) => (
+          <React.Fragment key={step.id || idx}>
+            {idx > 0 ? <span className="sfmap-pipeline-arrow">→</span> : null}
+            <div className="sfmap-pipeline-step">
+              <div className="sfmap-pipeline-step__id">{step.id}</div>
+              {step.binds_from_pool ? (
+                <div className="sfmap-pipeline-step__bind">
+                  ← {step.binds_from_pool}
+                  {step.binds_pick ? ` (${step.binds_pick})` : ""}
+                </div>
+              ) : null}
+              {step.deposits_to ? <div className="sfmap-pipeline-step__dep">→ {step.deposits_to}</div> : null}
+            </div>
+          </React.Fragment>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PipelineIndexCard({
+  pipeline,
+  jobCountsByFamily,
+  activity,
+}: {
+  pipeline: ShapeFactoryMapPipeline;
+  jobCountsByFamily: Record<string, Record<string, number>>;
+  activity?: FactoryMapActivity | null;
+}) {
+  const id = pipeline.pipeline_id || "pipeline";
+  const families = pipelineFamilySlugs(pipeline);
+  const totalJobs = families.reduce((sum, slug) => {
+    const counts = jobCountsByFamily[slug] || {};
+    return sum + Object.values(counts).reduce((a, b) => a + b, 0);
+  }, 0);
+
+  return (
+    <a
+      href={factoryMapPipelineHref(id)}
+      className={"sfmap-pipeline-index-card" + (activity?.active ? " sfmap-pipeline-index-card--active" : "")}
+    >
+      <div className="sfmap-pipeline-index-card__head">
+        <h2 className="sfmap-pipeline-index-card__title">{id}</h2>
+        <span className="sfmap-pipeline-index-card__head-end">
+          {activity?.active ? (
+            <span className="sfmap-activity-badge sfmap-activity-badge--compact" title={activity.detail}>
+              {activity.label}
+            </span>
+          ) : null}
+          <span className="sfmap-pipeline-index-card__cta">Open →</span>
+        </span>
+      </div>
+      {pipeline.description ? (
+        <p className="sfmap-pipeline-index-card__desc factory-muted">{pipeline.description.trim()}</p>
+      ) : null}
+      <div className="sfmap-pipeline-index-card__meta">
+        <span>{(pipeline.steps || []).length} steps</span>
+        {families.length ? (
+          <span>
+            families{" "}
+            {families.map((slug, i) => (
+              <React.Fragment key={slug}>
+                {i > 0 ? ", " : null}
+                <span className="mono">{slug}</span>
+              </React.Fragment>
+            ))}
+          </span>
+        ) : null}
+        {totalJobs > 0 ? <span>{totalJobs} jobs across steps</span> : null}
+      </div>
+      <PipelineStrip pipeline={pipeline} />
+    </a>
+  );
+}
+
+function PipelineStepDetail({
+  step,
+  stepNumber,
+  familiesBySlug,
+}: {
+  step: ShapeFactoryMapPipelineStep;
+  stepNumber: number;
+  familiesBySlug: Map<string, ShapeFactoryMapFamily>;
+}) {
+  const slug = stepFamilySlug(step);
+  const family = slug ? familiesBySlug.get(slug) : undefined;
+  const shape = family?.shape;
+
+  return (
+    <article className="sfmap-pipeline-step-detail">
+      <div className="sfmap-pipeline-step-detail__head">
+        <span className="sfmap-pipeline-step-detail__num">Step {stepNumber}</span>
+        <h3 className="sfmap-pipeline-step-detail__id">{step.id || `step-${stepNumber}`}</h3>
+        {slug ? (
+          <a href={factoryMapFamilyHref(slug)} className="sfmap-pipeline-step-detail__family">
+            {slug} →
+          </a>
+        ) : null}
+      </div>
+
+      <div className="sfmap-pipeline-step-detail__flow">
+        {step.binds_from_pool ? (
+          <div className="sfmap-pipeline-step-detail__bind">
+            <strong>Bind override</strong>
+            <span>
+              source from <span className="mono">{step.binds_from_pool}</span>
+              {step.binds_pick ? ` · pick ${step.binds_pick}` : null}
+            </span>
+          </div>
+        ) : (
+          <div className="sfmap-pipeline-step-detail__bind factory-muted">Inputs from family pools</div>
+        )}
+
+        <div className="sfmap-pipeline-step-detail__shape">
+          <strong>Shape</strong>
+          {shape ? (
+            <span>
+              {shape.shape_id || slug} · graph <span className="mono">{shortHash(shape.graph_hash)}</span>
+            </span>
+          ) : step.shape ? (
+            <span className="mono sfmap-detail-path">{step.shape}</span>
+          ) : (
+            <span className="factory-muted">—</span>
+          )}
+        </div>
+
+        <div className="sfmap-pipeline-step-detail__pick">
+          <strong>Pick</strong>
+          <span className="mono">
+            {step.pick || "zip"}
+            {step.pick_index != null ? ` · index ${step.pick_index}` : null}
+          </span>
+        </div>
+
+        {step.deposits_to ? (
+          <div className="sfmap-pipeline-step-detail__dep">
+            <strong>Deposit</strong>
+            <span>
+              final_video → <span className="mono">{step.deposits_to}</span>
+            </span>
+          </div>
+        ) : null}
+      </div>
+
+      {step.pools ? (
+        <div className="sfmap-pipeline-step-detail__paths">
+          <div className="sfmap-detail-kv mono sfmap-detail-path">{step.pools}</div>
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function FactoryMapPipelineView({
+  data,
+  pipeline,
+  pipelines,
+  families,
+}: {
+  data: ShapeFactoryMapResponse;
+  pipeline: ShapeFactoryMapPipeline;
+  pipelines: ShapeFactoryMapPipeline[];
+  families: ShapeFactoryMapFamily[];
+}) {
+  const familiesBySlug = useMemo(() => {
+    const m = new Map<string, ShapeFactoryMapFamily>();
+    for (const fam of families) {
+      if (fam.family_slug) m.set(fam.family_slug, fam);
+    }
+    return m;
+  }, [families]);
+
+  const involvedSlugs = pipelineFamilySlugs(pipeline);
+  const pipelineJobs = useMemo(() => {
+    const slugSet = new Set(involvedSlugs);
+    return (data.jobs?.items || []).filter((j) => j.family_slug && slugSet.has(j.family_slug));
+  }, [data, involvedSlugs]);
+
+  const jobSummary = useMemo(() => {
+    const summary: Record<string, number> = {};
+    for (const j of pipelineJobs) {
+      const st = (j.status || "unknown").toLowerCase();
+      summary[st] = (summary[st] || 0) + 1;
+    }
+    return summary;
+  }, [pipelineJobs]);
+
+  const pipelineId = pipeline.pipeline_id || "pipeline";
+
+  return (
+    <>
+      <FactoryMapFamilyNav families={families} />
+      <FactoryMapPipelineNav pipelines={pipelines} activeId={pipelineId} />
+
+      <div className="sfmap-pipeline-detail">
+        <header className="sfmap-pipeline-detail__header">
+          <h2 className="sfmap-pipeline-detail__title">{pipelineId}</h2>
+          {pipeline.description ? (
+            <p className="sfmap-pipeline-detail__desc">{pipeline.description.trim()}</p>
+          ) : null}
+          {pipeline.path ? <div className="sfmap-detail-kv mono sfmap-detail-path">{pipeline.path}</div> : null}
+        </header>
+
+        <div className="sfmap-pipeline-detail__stats">
+          <span>{(pipeline.steps || []).length} steps</span>
+          {involvedSlugs.map((slug) => (
+            <a key={slug} href={factoryMapFamilyHref(slug)} className="sfmap-pipeline-detail__family-link">
+              {slug}
+            </a>
+          ))}
+          {pipelineJobs.length ? (
+            <span>
+              {pipelineJobs.length} jobs
+              {jobSummary.complete ? ` · ${jobSummary.complete} complete` : ""}
+            </span>
+          ) : null}
+        </div>
+
+        <section className="sfmap-pipeline-detail__steps">
+          <h3 className="sfmap-index-section__title">Steps</h3>
+          <div className="sfmap-pipeline-step-list">
+            {(pipeline.steps || []).map((step, idx) => (
+              <React.Fragment key={step.id || idx}>
+                {idx > 0 ? <div className="sfmap-pipeline-step-list__arrow" aria-hidden="true">↓</div> : null}
+                <PipelineStepDetail step={step} stepNumber={idx + 1} familiesBySlug={familiesBySlug} />
+              </React.Fragment>
+            ))}
+          </div>
+        </section>
+
+        <section className="sfmap-pipeline-detail__run">
+          <h3 className="sfmap-index-section__title">Run</h3>
+          <pre className="sfmap-pipeline-detail__cmd mono">
+            {`python3 shape_factory.py pipeline run --pipeline ${pipeline.path || `.data/pipelines/${pipelineId}.pipeline.yaml`}`}
+          </pre>
+          <p className="factory-muted sfmap-index-section__hint">
+            Runs each step in order: generate → submit → wait → deposit. Step 2+ uses binds_override to pull from
+            earlier deposit pools.
+          </p>
+        </section>
+
+        {pipelineJobs.length > 0 ? (
+          <section className="sfmap-pipeline-detail__jobs">
+            <h3 className="sfmap-index-section__title">Recent jobs on this pipeline</h3>
+            <div className="sfmap-job-list">
+              {pipelineJobs.slice(0, 20).map((job) => (
+                <div key={job.job_key} className="sfmap-pipeline-job-row">
+                  <span className={statusClass(job.status)}>{job.status || "?"}</span>
+                  <a href={factoryMapFamilyHref(job.family_slug || "")} className="sfmap-pipeline-job-row__family">
+                    {job.family_slug}
+                  </a>
+                  <span className="sfmap-job-row__key mono">{job.job_key || "—"}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
+      </div>
+    </>
+  );
+}
+
+function FamilyIndexCard({
+  family,
+  jobCounts,
+  activity,
+}: {
+  family: ShapeFactoryMapFamily;
+  jobCounts: Record<string, number>;
+  activity?: FactoryMapActivity | null;
+}) {
+  const shape = family.shape || {};
+  const deposit = (family.deposit_pools || [])[0];
+  const totalJobs = Object.values(jobCounts).reduce((a, b) => a + b, 0);
+  const inflight = (jobCounts.running || 0) + (jobCounts.queued || 0);
+
+  return (
+    <a
+      href={factoryMapFamilyHref(family.family_slug)}
+      className={"sfmap-family-index-card" + (activity?.active ? " sfmap-family-index-card--active" : "")}
+    >
+      <div className="sfmap-family-index-card__head">
+        <h2 className="sfmap-family-index-card__title">{family.family_slug}</h2>
+        <span className="sfmap-family-index-card__head-end">
+          {activity?.active ? (
+            <span className="sfmap-activity-badge sfmap-activity-badge--compact" title={activity.detail}>
+              {activity.label}
+            </span>
+          ) : null}
+          <span className="sfmap-family-index-card__cta">Open →</span>
+        </span>
+      </div>
+      <div className="sfmap-family-index-card__meta">
+        <span>{shape.shape_id || "shape"}</span>
+        <span className="mono">graph {shortHash(shape.graph_hash)}</span>
+      </div>
+      {deposit ? (
+        <div className="sfmap-family-index-card__pool">
+          Deposits to <strong>{deposit.pool_id}</strong>
+          {deposit.member_count != null ? ` · ${deposit.member_count} members` : null}
+        </div>
+      ) : null}
+      {(family.input_pools || []).some((p) => p.feeds_from?.length) ? (
+        <div className="sfmap-family-index-card__pool factory-muted">
+          Pulls from{" "}
+          {(family.input_pools || [])
+            .flatMap((p) => (p.feeds_from || []).map((f) => f.pool_id))
+            .filter(Boolean)
+            .join(", ")}
+        </div>
+      ) : null}
+      <div className="sfmap-family-index-card__stats">
+        <span>{totalJobs} jobs</span>
+        {inflight > 0 ? <span>{inflight} in flight</span> : null}
+        {(jobCounts.pending || 0) > 0 ? <span>{jobCounts.pending} pending submit</span> : null}
+      </div>
+    </a>
+  );
+}
+
+function FactoryMapIndexView({
+  data,
+  families,
+  pipelines,
+}: {
+  data: ShapeFactoryMapResponse;
+  families: ShapeFactoryMapFamily[];
+  pipelines: ShapeFactoryMapPipeline[];
+}) {
+  const summary = data.jobs?.summary || {};
+  const queue = data.queue;
+  const hourly = data.hourly?.next_sample;
+  const allJobs = data.jobs?.items || [];
+
+  const jobCountsByFamily = useMemo(() => {
+    const out: Record<string, Record<string, number>> = {};
+    for (const fam of families) {
+      if (fam.family_slug) {
+        out[fam.family_slug] = jobCountsForFamily(allJobs, fam.family_slug);
+      }
+    }
+    return out;
+  }, [families, allJobs]);
+
+  const indexCtx = useMemo<FactoryMapIndexContext>(
+    () => ({
+      jobCountsByFamily,
+      hourlyPhase: (data.hourly?.state?.phase as string | undefined) ?? hourly?.phase_if_idle ?? null,
+    }),
+    [jobCountsByFamily, data.hourly?.state, hourly?.phase_if_idle],
+  );
+
+  const familyActivities = useMemo(
+    () =>
+      families.flatMap((family) => {
+        const activity = getFamilyActivity(family, indexCtx);
+        return activity?.active ? [activity] : [];
+      }),
+    [families, indexCtx],
+  );
+
+  const pipelineActivities = useMemo(
+    () =>
+      pipelines.flatMap((pipe) => {
+        const activity = getPipelineActivity(pipe, indexCtx);
+        return activity?.active ? [activity] : [];
+      }),
+    [pipelines, indexCtx],
+  );
+
+  const pipelinesDefaultOpen = pipelineActivities.some((a) => a.active);
+
+  return (
+    <>
+      <FactoryMapFamilyNav families={families} />
+      {pipelines.length > 0 ? <FactoryMapPipelineNav pipelines={pipelines} /> : null}
+
+      <div className="factory-summary sfmap-summary sfmap-summary--compact">
+        <div>
+          <strong>{families.length}</strong>
+          <span>families</span>
+        </div>
+        <div>
+          <strong>{data.jobs?.total || 0}</strong>
+          <span>jobs total</span>
+        </div>
+        <div>
+          <strong>{summary.complete || 0}</strong>
+          <span>complete</span>
+        </div>
+        <div>
+          <strong>{(summary.running || 0) + (summary.queued || 0)}</strong>
+          <span>in flight</span>
+        </div>
+        {queue?.ok ? (
+          <div>
+            <strong>{queue.running_count || 0}</strong>
+            <span>comfy running</span>
+          </div>
+        ) : null}
+        <div className="factory-db-path mono" title={data.updated_at || undefined}>
+          updated {formatIsoDateTime(data.updated_at)}
+        </div>
+      </div>
+
+      {hourly ? (
+        <div className="sfmap-hourly-banner">
+          <strong>Hourly next (if idle):</strong> {hourly.sample_id || "—"} · pick {hourly.pick_index} ·{" "}
+          {hourly.gex2_prompt}
+          {hourly.note ? <span className="factory-muted"> — {hourly.note}</span> : null}
+        </div>
+      ) : null}
+
+      <FactoryMapAccordionSection
+        sectionId="sfmap-families"
+        title="Families"
+        summaryLine={summarizeFamiliesSection(families, indexCtx)}
+        activities={familyActivities}
+        defaultOpen
+        hint="Each family is one workflow shape plus its pools and deposit registry. Open a family for pools, members, and jobs."
+      >
+        <div className="sfmap-family-index-grid">
+          {families.map((family) => (
+            <FamilyIndexCard
+              key={family.family_slug}
+              family={family}
+              jobCounts={jobCountsByFamily[family.family_slug || ""] || {}}
+              activity={getFamilyActivity(family, indexCtx)}
+            />
+          ))}
+        </div>
+      </FactoryMapAccordionSection>
+
+      {(data.pipelines || []).length > 0 ? (
+        <FactoryMapAccordionSection
+          sectionId="sfmap-pipelines"
+          title="Pipelines"
+          summaryLine={summarizePipelinesSection(pipelines, indexCtx)}
+          activities={pipelineActivities}
+          defaultOpen={pipelinesDefaultOpen}
+          hint="Multi-step recipes that wire families together. Open a pipeline for step-by-step bindings and run commands."
+        >
+          <div className="sfmap-pipeline-index-grid">
+            {pipelines.map((pipe) => (
+              <PipelineIndexCard
+                key={pipe.pipeline_id || pipe.path}
+                pipeline={pipe}
+                jobCountsByFamily={jobCountsByFamily}
+                activity={getPipelineActivity(pipe, indexCtx)}
+              />
+            ))}
+          </div>
+        </FactoryMapAccordionSection>
+      ) : null}
+    </>
+  );
+}
+
+function PairEnd({
+  media,
+  missing,
+  missingLabel,
+}: {
+  media?: ShapeFactoryMapMediaRef;
+  missing?: boolean;
+  missingLabel?: string;
+}) {
+  const thumb = media?.thumb_url || media?.url;
+  if (!missing && thumb) {
+    return (
+      <div className="sfmap-pair-end">
+        <img src={thumb} alt="" loading="lazy" />
+      </div>
+    );
+  }
+  return (
+    <div className="sfmap-pair-end sfmap-pair-end--missing" aria-hidden={!missingLabel}>
+      <span>{missingLabel || "—"}</span>
+    </div>
+  );
+}
+
+function SourceOutputPairCard({
+  pair,
+  selected,
+  onSelect,
+}: {
+  pair: SourceOutputPair;
+  selected?: boolean;
+  onSelect: (anchor: HTMLElement) => void;
+}) {
+  const status =
+    pair.phase === "future" ? "future" : pair.job?.status || pair.gapNote || "—";
+  return (
+    <button
+      type="button"
+      className={
+        "sfmap-pair-card" +
+        (selected ? " sfmap-pair-card--selected" : "") +
+        (pair.phase === "future" ? " sfmap-pair-card--future" : "")
+      }
+      onClick={(e) => onSelect(e.currentTarget)}
+      title={pair.jobKey || pair.gapNote}
+    >
+      <div className="sfmap-pair-card__track">
+        <PairEnd
+          media={pair.source}
+          missing={pair.gap === "source" || !pair.source}
+          missingLabel={pair.gap === "source" ? pair.gapNote || "no source" : undefined}
+        />
+        <span className="sfmap-pair-card__arrow" aria-hidden="true">
+          →
+        </span>
+        <PairEnd
+          media={pair.output}
+          missing={pair.gap === "output" || !pair.output}
+          missingLabel={
+            pair.phase === "future"
+              ? "future"
+              : pair.gap === "output"
+                ? pair.gapNote || "pending"
+                : undefined
+          }
+        />
+      </div>
+      <div className="sfmap-pair-card__meta">
+        <span className={statusClass(status)}>{status}</span>
+        <span className="sfmap-pair-card__label">{shortPairLabel(pair)}</span>
+      </div>
+    </button>
+  );
+}
+
+function FactoryMapFamilyView({
+  data,
+  family,
+  families,
+  onReload,
+}: {
+  data: ShapeFactoryMapResponse;
+  family: ShapeFactoryMapFamily;
+  families: ShapeFactoryMapFamily[];
+  onReload: () => void;
+}) {
+  const [selectedPairKey, setSelectedPairKey] = useState<string | null>(null);
+  const [selectedJobKey, setSelectedJobKey] = useState<string | null>(null);
+  const [inspectorAnchor, setInspectorAnchor] = useState<HTMLElement | null>(null);
+  const [inspectorScrollPad, setInspectorScrollPad] = useState(0);
+  const [mediaModal, setMediaModal] = useState<MediaFullscreenPayload | null>(null);
+
+  const openMedia = useCallback((media: MediaFullscreenPayload) => {
+    setMediaModal(media);
+  }, []);
+
+  const closeInspector = useCallback(() => {
+    setSelectedPairKey(null);
+    setSelectedJobKey(null);
+    setInspectorAnchor(null);
+  }, []);
+
+  const reportInspectorScrollPad = useCallback((neededPx: number) => {
+    if (neededPx <= 0) return;
+    setInspectorScrollPad((prev) => Math.max(prev, neededPx));
+  }, []);
+
+  useEffect(() => () => setInspectorScrollPad(0), []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (mediaModal) {
+        setMediaModal(null);
+        return;
+      }
+      closeInspector();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [closeInspector, mediaModal]);
+
+  const familyJobs = useMemo(
+    () => (data.jobs?.items || []).filter((j) => j.family_slug === family.family_slug),
+    [data, family.family_slug],
+  );
+
+  const jobsByKey = useMemo(() => {
+    const m = new Map<string, ShapeFactoryMapJob>();
+    for (const j of familyJobs) {
+      if (j.job_key) m.set(j.job_key, j);
+    }
+    return m;
+  }, [familyJobs]);
+
+  const pairs = useMemo(() => buildSourceOutputPairs(family, familyJobs), [family, familyJobs]);
+  const missingSourceCount = useMemo(
+    () => pairs.filter((p) => p.gap === "source" && p.phase !== "future").length,
+    [pairs],
+  );
+  const [recoverAllBusy, setRecoverAllBusy] = useState(false);
+  const [recoverAllMsg, setRecoverAllMsg] = useState("");
+
+  const handleRecoverAll = useCallback(async () => {
+    setRecoverAllBusy(true);
+    setRecoverAllMsg("");
+    try {
+      const res = await recoverAssets({ family: family.family_slug });
+      setRecoverAllMsg(
+        res.total ? `Recovered ${res.recovered}/${res.total}` : "Nothing to recover",
+      );
+      if (res.recovered) onReload();
+    } catch (e) {
+      setRecoverAllMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRecoverAllBusy(false);
+    }
+  }, [family.family_slug, onReload]);
+
+  const depositPool = (family.deposit_pools || [])[0];
+  const pairGapSummary = useMemo(() => summarizePairGaps(pairs), [pairs]);
+  const { runs: pairRunCount, future: pairFutureCount } = useMemo(() => countPairPhases(pairs), [pairs]);
+
+  const selectedPair = useMemo(
+    () => (selectedPairKey ? pairs.find((p) => p.pairKey === selectedPairKey) ?? null : null),
+    [pairs, selectedPairKey],
+  );
+
+  const selectedJob = selectedPair?.job ?? (selectedJobKey ? jobsByKey.get(selectedJobKey) ?? null : null);
+  const jobForMember = selectedPair?.jobKey ? jobsByKey.get(selectedPair.jobKey) ?? null : null;
+
+  const inflight = familyJobs.filter((j) => {
+    const pid = j.prompt_id;
+    if (!pid) return false;
+    return (data.queue?.shape_factory_matches || []).some((m) => m.prompt_id === pid);
+  });
+
+  const pending = familyJobs.filter((j) => j.status === "pending");
+
+  const inspectorOpen = Boolean(inspectorAnchor && (selectedPair || selectedJob));
+
+  const openPairInspector = useCallback(
+    (anchor: HTMLElement, pair: SourceOutputPair) => {
+      if (selectedPairKey === pair.pairKey) {
+        closeInspector();
+        return;
+      }
+      setSelectedPairKey(pair.pairKey);
+      setSelectedJobKey(pair.jobKey || null);
+      setInspectorAnchor(anchor);
+    },
+    [closeInspector, selectedPairKey],
+  );
+
+  const openJobInspector = useCallback(
+    (anchor: HTMLElement, jobKey: string | null | undefined) => {
+      if (!jobKey) return;
+      const pair = pairs.find((p) => p.jobKey === jobKey);
+      if (pair) {
+        openPairInspector(anchor, pair);
+        return;
+      }
+      if (selectedJobKey === jobKey) {
+        closeInspector();
+        return;
+      }
+      setSelectedPairKey(null);
+      setSelectedJobKey(jobKey);
+      setInspectorAnchor(anchor);
+    },
+    [closeInspector, openPairInspector, pairs, selectedJobKey],
+  );
+
+  return (
+    <>
+      <FactoryMapFamilyNav families={families} activeSlug={family.family_slug} />
+
+      <div className="sfmap-family-block">
+        <FamilyGraph family={family} />
+        <section className="sfmap-pool-members sfmap-pair-section">
+          <h3 className="sfmap-pool-members__title">
+            Source → Output
+            {depositPool?.pool_id ? (
+              <span className="factory-muted"> · {depositPool.pool_id}</span>
+            ) : null}
+            <span className="factory-muted">
+              {" "}
+              · {pairRunCount} run{pairRunCount === 1 ? "" : "s"}
+              {pairFutureCount ? ` · ${pairFutureCount} possible` : ""}
+              {depositPool?.member_count != null ? ` (${depositPool.member_count} deposited)` : ""}
+            </span>
+          </h3>
+          {pairGapSummary ? (
+            <div className="sfmap-pair-gap-summary factory-muted">{pairGapSummary}</div>
+          ) : null}
+          {missingSourceCount > 0 ? (
+            <div className="sfmap-missing-sources">
+              <span className="sfmap-missing-badge" title="Source stills not found on disk">
+                {missingSourceCount} missing source{missingSourceCount === 1 ? "" : "s"}
+              </span>
+              <button
+                type="button"
+                className="sfmap-recover-btn"
+                onClick={handleRecoverAll}
+                disabled={recoverAllBusy}
+              >
+                {recoverAllBusy ? "Recovering…" : "Recover all"}
+              </button>
+              {recoverAllMsg ? <span className="factory-muted">{recoverAllMsg}</span> : null}
+            </div>
+          ) : null}
+          <div className="sfmap-pair-grid">
+            {pairs.map((pair) => (
+              <SourceOutputPairCard
+                key={pair.pairKey}
+                pair={pair}
+                selected={selectedPairKey === pair.pairKey}
+                onSelect={(anchor) => openPairInspector(anchor, pair)}
+              />
+            ))}
+            {!pairs.length ? <div className="factory-empty">No source → output runs yet</div> : null}
+          </div>
+        </section>
+      </div>
+
+      <section className="sfmap-jobs-panel sfmap-jobs-panel--solo">
+        <h2>Jobs · {family.family_slug}</h2>
+        <div className="sfmap-job-list">
+          {familyJobs.slice(0, 40).map((job) => (
+            <JobRow
+              key={job.job_key}
+              job={job}
+              selected={selectedPairKey === job.job_key || selectedJobKey === job.job_key}
+              onSelect={(anchor) => openJobInspector(anchor, job.job_key)}
+            />
+          ))}
+          {!familyJobs.length ? <div className="factory-empty">No jobs for this family</div> : null}
+        </div>
+
+        {inflight.length > 0 ? (
+          <>
+            <h3>On Comfy queue</h3>
+            <div className="sfmap-job-list">
+              {inflight.map((job) => (
+                <JobRow
+                  key={`inflight-${job.job_key}`}
+                  job={job}
+                  selected={selectedPairKey === job.job_key || selectedJobKey === job.job_key}
+                  onSelect={(anchor) => openJobInspector(anchor, job.job_key)}
+                />
+              ))}
+            </div>
+          </>
+        ) : null}
+
+        {pending.length > 0 ? (
+          <>
+            <h3>Pending submit</h3>
+            <div className="sfmap-job-list">
+              {pending.slice(0, 10).map((job) => (
+                <JobRow
+                  key={`pending-${job.job_key}`}
+                  job={job}
+                  selected={selectedPairKey === job.job_key || selectedJobKey === job.job_key}
+                  onSelect={(anchor) => openJobInspector(anchor, job.job_key)}
+                />
+              ))}
+            </div>
+          </>
+        ) : null}
+      </section>
+
+      {inspectorScrollPad > 0 ? (
+        <div className="sfmap-inspector-scroll-pad" style={{ height: inspectorScrollPad }} aria-hidden="true" />
+      ) : null}
+
+      <InspectorTooltipOverlay
+        open={inspectorOpen}
+        anchorEl={inspectorAnchor}
+        onClose={closeInspector}
+        onScrollPad={reportInspectorScrollPad}
+      >
+        <DetailPanel
+          familySlug={family.family_slug}
+          selectedPair={selectedPair}
+          selectedJob={selectedJob}
+          jobForMember={jobForMember}
+          onOpenMedia={openMedia}
+          onQueued={onReload}
+        />
+      </InspectorTooltipOverlay>
+
+      <MediaFullscreenModal media={mediaModal} onClose={() => setMediaModal(null)} />
+    </>
+  );
+}
+
+export function DiscoveryFactoryMapApp() {
+  const [route, setRoute] = useState<FactoryMapRoute>(() => parseFactoryMapRoute());
+  const [data, setData] = useState<ShapeFactoryMapResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const onPop = () => setRoute(parseFactoryMapRoute());
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  const reload = useCallback(async () => {
+    setError("");
+    try {
+      const next = await fetchShapeFactoryMap({
+        members_limit: route.view === "family" ? 24 : 8,
+        jobs_limit: 120,
+      });
+      setData(next);
+      if (!next.ok) {
+        setError(next.error || "Map unavailable");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [route]);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      void reload();
+    }, POLL_MS);
+    return () => window.clearInterval(id);
+  }, [reload]);
+
+  const families = data?.families || [];
+  const pipelines = data?.pipelines || [];
+  const activeFamily =
+    route.view === "family" ? families.find((f) => f.family_slug === route.familySlug) : undefined;
+  const activePipeline =
+    route.view === "pipeline" ? pipelines.find((p) => p.pipeline_id === route.pipelineId) : undefined;
+
+  return (
+    <FactoryMapShell route={route} loading={loading} onRefresh={() => void reload()}>
+      {error ? (
+        <div className="factory-error" role="alert">
+          {error}
+        </div>
+      ) : null}
+
+      <div className="discovery-factory-map-scroll">
+        {data?.ok ? (
+          route.view === "index" ? (
+            <FactoryMapIndexView data={data} families={families} pipelines={pipelines} />
+          ) : route.view === "pipeline" ? (
+            activePipeline ? (
+              <FactoryMapPipelineView
+                data={data}
+                pipeline={activePipeline}
+                pipelines={pipelines}
+                families={families}
+              />
+            ) : (
+              <div className="sfmap-not-found">
+                <p>
+                  Pipeline <span className="mono">{route.pipelineId}</span> not found.
+                </p>
+                <a href={factoryMapIndexHref()} className="wx-screen-tab">
+                  Back to factory map
+                </a>
+              </div>
+            )
+          ) : activeFamily ? (
+            <FactoryMapFamilyView data={data} family={activeFamily} families={families} onReload={() => void reload()} />
+          ) : (
+            <div className="sfmap-not-found">
+              <p>
+                Family <span className="mono">{route.view === "family" ? route.familySlug : ""}</span> not found.
+              </p>
+              <a href={factoryMapIndexHref()} className="wx-screen-tab">
+                Back to all families
+              </a>
+            </div>
+          )
+        ) : data && !data.ok ? (
+          <div className="factory-error">{data.error || "Factory map data missing"}</div>
+        ) : loading ? (
+          <div className="factory-muted">Loading factory map…</div>
+        ) : null}
+      </div>
+    </FactoryMapShell>
+  );
+}

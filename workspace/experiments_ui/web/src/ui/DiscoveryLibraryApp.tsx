@@ -1,15 +1,34 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
-import { fetchDiscoveryEmbedApiPrompt, fetchDiscoveryLibrary, submitPromptToQueue } from "./api";
+import {
+  fetchDiscoveryEmbedApiPrompt,
+  fetchDiscoveryLibrary,
+  fetchDiscoveryLibraryItem,
+  fetchDiscoveryWorkflowFacets,
+  submitPromptToQueue,
+} from "./api";
+import { formatUnixMtime, formatIsoDateTime } from "./locale";
+import { parseDiscoveryDeepLinkRelpath } from "./discoveryDeepLink";
+import { APPETITE_ROW_GLYPH, appetiteRowTitle, discoveryRatingsRollupFromResponse } from "./discoveryRatingsRollup";
+import { DiscoveryAssetLineagePanel } from "./DiscoveryAssetLineagePanel";
+import { DiscoveryAssetRatingsPanel } from "./DiscoveryAssetRatingsPanel";
 import { MediaAssetCard } from "./MediaAssetCard";
 import { VideoAutoplayToggle } from "./VideoAutoplayToggle";
 import { VideoTrimControls } from "./VideoTrimControls";
+import { DiscoveryWorkflowFacetsPanel } from "./DiscoveryWorkflowFacetsPanel";
 import {
   discoveryTrimMediaRelpath,
   loadDiscoveryTrimAsync,
   persistDiscoveryTrimAsync,
   TRIM_CONTEXT_DISCOVERY_PLAYER,
 } from "./discoveryTrimStorage";
-import type { DiscoveryLibraryItem, DiscoveryLibraryResponse, DiscoveryMember } from "./types";
+import type {
+  DiscoveryAssetLineageItemSummary,
+  DiscoveryAssetRatingsResponse,
+  DiscoveryLibraryItem,
+  DiscoveryLibraryResponse,
+  DiscoveryMember,
+  DiscoveryWorkflowFacetsResponse,
+} from "./types";
 import {
   phoneTrimBounds,
   phoneTrimLoopSeekTarget,
@@ -26,6 +45,71 @@ import { useComfyPromptUndoKeyboard, usePromptDraftHistory, type PromptDraftMap 
 
 const SAVED_KEY = "discovery_library_saved_v1";
 const VIDEO_AUTOPLAY_KEY = "discovery_phone_video_autoplay";
+const DISCOVERY_DESKTOP_PREVIEW_LAYOUT_KEY = "discovery_desktop_preview_layout_v1";
+
+type DiscoveryDesktopPreviewLayout = "stacked" | "split";
+
+function loadDiscoveryPreviewLayout(): DiscoveryDesktopPreviewLayout {
+  try {
+    const v = localStorage.getItem(DISCOVERY_DESKTOP_PREVIEW_LAYOUT_KEY);
+    if (v === "split" || v === "stacked") return v;
+  } catch {
+    /* ignore */
+  }
+  return "stacked";
+}
+
+function persistDiscoveryPreviewLayout(layout: DiscoveryDesktopPreviewLayout) {
+  try {
+    localStorage.setItem(DISCOVERY_DESKTOP_PREVIEW_LAYOUT_KEY, layout);
+  } catch {
+    /* ignore */
+  }
+}
+
+function DiscoveryPreviewLayoutSwitch({
+  layout,
+  onChange,
+  className,
+  showLabel = true,
+}: {
+  layout: DiscoveryDesktopPreviewLayout;
+  onChange: (layout: DiscoveryDesktopPreviewLayout) => void;
+  className?: string;
+  showLabel?: boolean;
+}) {
+  return (
+    <div
+      className={"discovery-preview-layout-switch" + (className ? ` ${className}` : "")}
+      data-layout={layout}
+    >
+      {showLabel ? <span className="discovery-preview-layout-switch__label">Preview layout</span> : null}
+      <div className="segmented" role="radiogroup" aria-label="Preview layout">
+        <button
+          type="button"
+          role="radio"
+          className={"seg-btn" + (layout === "stacked" ? " active" : "")}
+          aria-checked={layout === "stacked"}
+          onClick={() => onChange("stacked")}
+          title="Overlay side panel on top of the video (stacked)"
+        >
+          Stack
+        </button>
+        <button
+          type="button"
+          role="radio"
+          className={"seg-btn" + (layout === "split" ? " active" : "")}
+          aria-checked={layout === "split"}
+          onClick={() => onChange("split")}
+          title="Keep video visible beside the side panel (split view)"
+        >
+          Split
+        </button>
+      </div>
+    </div>
+  );
+}
+
 const DESKTOP_LIST_WIDTH_KEY = "discovery_desktop_list_width_v1";
 const DESKTOP_LIST_WIDTH_DEFAULT = 400;
 const DESKTOP_LIST_MIN = 260;
@@ -81,7 +165,61 @@ function _discoverySessionGetBool01(key: string): boolean {
   }
 }
 
-type DiscoveryMetaDrawerTab = "details" | "parameters" | "assets" | "exemplars" | "workflows";
+type DiscoveryMetaDrawerTab = "details" | "parameters" | "assets" | "ratings" | "exemplars" | "workflows" | "facets";
+
+const DISCOVERY_DESKTOP_META_TABS: ReadonlyArray<{
+  id: DiscoveryMetaDrawerTab;
+  label: string;
+  title?: string;
+  ariaLabel: string;
+}> = [
+  { id: "details", label: "Details", ariaLabel: "Details" },
+  { id: "parameters", label: "Parameters", ariaLabel: "Parameters" },
+  { id: "assets", label: "Lineage", ariaLabel: "Lineage and assets" },
+  { id: "ratings", label: "Ratings", ariaLabel: "Ratings explorer" },
+  { id: "exemplars", label: "Exemplar", title: "Exemplar library", ariaLabel: "Exemplar library mock" },
+  { id: "workflows", label: "Workflow", ariaLabel: "Workflow" },
+  { id: "facets", label: "Facets", ariaLabel: "Workflow facets" },
+];
+
+function discoveryDesktopMetaTabTitle(tab: DiscoveryMetaDrawerTab): string {
+  const hit = DISCOVERY_DESKTOP_META_TABS.find((t) => t.id === tab);
+  return hit?.title ?? hit?.label ?? "Details";
+}
+
+function DiscoveryDesktopMetaDrawerTabRail({
+  activeTab,
+  drawerOpen,
+  onSelectTab,
+}: {
+  activeTab: DiscoveryMetaDrawerTab;
+  drawerOpen: boolean;
+  onSelectTab: (tab: DiscoveryMetaDrawerTab) => void;
+}) {
+  return (
+    <div className="discovery-desktop-drawer-tab-stack" role="tablist" aria-label="Side panel">
+      {DISCOVERY_DESKTOP_META_TABS.map((tab) => {
+        const selected = drawerOpen && activeTab === tab.id;
+        return (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            id={discoveryMetaPanelLabelId(tab.id)}
+            aria-controls="discovery-meta-panel-body"
+            aria-selected={selected}
+            tabIndex={drawerOpen ? (selected ? 0 : -1) : 0}
+            className={"discovery-desktop-drawer-tab" + (selected ? " discovery-desktop-drawer-tab--active" : "")}
+            aria-label={tab.ariaLabel}
+            onClick={() => onSelectTab(tab.id)}
+          >
+            {tab.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 function discoveryMetaPanelLabelId(tab: DiscoveryMetaDrawerTab): string {
   switch (tab) {
@@ -91,10 +229,14 @@ function discoveryMetaPanelLabelId(tab: DiscoveryMetaDrawerTab): string {
       return "discovery-meta-tab-parameters";
     case "assets":
       return "discovery-meta-tab-assets";
+    case "ratings":
+      return "discovery-meta-tab-ratings";
     case "exemplars":
       return "discovery-meta-tab-exemplars";
     case "workflows":
       return "discovery-meta-tab-workflows";
+    case "facets":
+      return "discovery-meta-tab-facets";
     default:
       return "discovery-meta-tab-details";
   }
@@ -256,15 +398,6 @@ function loadSaved(): Set<string> {
 
 function persistSaved(s: Set<string>) {
   localStorage.setItem(SAVED_KEY, JSON.stringify(Array.from(s)));
-}
-
-function fmtTime(ms: number): string {
-  if (!ms) return "—";
-  try {
-    return new Date(ms * 1000).toLocaleString();
-  } catch {
-    return "—";
-  }
 }
 
 function fmtSize(n: number): string {
@@ -764,6 +897,88 @@ function discoveryItemKey(it: DiscoveryLibraryItem): string {
   return it.group_id || it.relpath;
 }
 
+function discoveryRelpathStem(rel: string): string {
+  const norm = rel.trim().replace(/^\/+/, "").replace(/\\/g, "/");
+  return norm.replace(/\.(mp4|png|jpe?g|webp|gif|xmp)$/i, "");
+}
+
+function libraryItemMatchesRelpath(it: DiscoveryLibraryItem, relpath: string): boolean {
+  const stem = discoveryRelpathStem(relpath);
+  const paths = [
+    it.relpath,
+    it.video_relpath,
+    it.thumb_relpath,
+    ...(it.members?.map((m) => m.relpath) ?? []),
+  ];
+  return paths.some((p) => {
+    if (!p || !String(p).trim()) return false;
+    const n = String(p).trim().replace(/^\/+/, "");
+    return n === relpath.trim().replace(/^\/+/, "") || discoveryRelpathStem(n) === stem;
+  });
+}
+
+function discoveryRelpathLookupCandidates(relpath: string): string[] {
+  const norm = relpath.trim().replace(/^\/+/, "").replace(/\\/g, "/");
+  if (!norm) return [];
+  const out: string[] = [norm];
+  const seen = new Set(out);
+  const add = (v: string) => {
+    if (v && !seen.has(v)) {
+      seen.add(v);
+      out.push(v);
+    }
+  };
+  if (!/\.(mp4|png|jpe?g|webp|gif)$/i.test(norm)) {
+    add(`${norm}.mp4`);
+    add(`${norm}.png`);
+  }
+  return out;
+}
+
+function lineageSummaryWorkspaceRelpath(s: DiscoveryAssetLineageItemSummary): string {
+  const ws = s.workspace_relpath;
+  return (
+    (s.relpath || "").trim() ||
+    (typeof ws === "string" ? ws.trim() : "") ||
+    (s.thumb_relpath || "").trim() ||
+    (s.video_relpath || "").trim()
+  );
+}
+
+function isWorkspaceInputRelpath(r: string): boolean {
+  const norm = r.trim().replace(/^\/+/, "");
+  if (!norm) return false;
+  if (norm.toLowerCase().startsWith("input/")) return true;
+  return !norm.includes("/") && /\.(png|jpe?g|webp|gif)$/i.test(norm);
+}
+
+/** Comfy ``input/`` uploads are not in the og/wip index but should be previewable from lineage. */
+function syntheticInputLibraryItem(
+  relpath: string,
+  summary?: DiscoveryAssetLineageItemSummary
+): DiscoveryLibraryItem {
+  let norm = (relpath || lineageSummaryWorkspaceRelpath(summary || {})).trim().replace(/^\/+/, "");
+  if (!norm.toLowerCase().startsWith("input/")) {
+    const base = norm.split("/").pop() || norm;
+    if (base) norm = `input/${base}`;
+  }
+  const name = (summary?.name || "").trim() || norm.split("/").pop() || norm;
+  const url = summary?.thumb_url || summary?.url || `/files/${encodeURIComponent(norm)}`;
+  const base = norm.split("/").pop() || norm;
+  return {
+    group_id: `input:${base}`,
+    relpath: norm,
+    library: "input",
+    name,
+    mtime: 0,
+    size: 0,
+    sha256: "",
+    has_embedded_prompt: false,
+    url,
+    thumb_url: url,
+  };
+}
+
 function discoveryPlayUrl(it: DiscoveryLibraryItem): string | null {
   if (it.video_url) return it.video_url;
   if (isVideo(it.relpath)) return it.url;
@@ -825,7 +1040,7 @@ function DiscoveryItemMetaBody({
         </div>
       ) : null}
       <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
-        {fmtTime(it.mtime)} · {fmtSize(it.size)} · <span className="mono">{it.library}</span>
+        {formatUnixMtime(it.mtime)} · {fmtSize(it.size)} · <span className="mono">{it.library}</span>
       </div>
       {it.workflow_fingerprint ? (
         <div style={{ fontSize: 12, marginBottom: 8 }}>
@@ -941,10 +1156,40 @@ function DiscoveryListThumbRow({
         videoUrl={play}
         badge={it.library}
         badgeClassName={it.library === "og" ? "media-asset-card__badge--og" : "media-asset-card__badge--wip"}
-        detail={`${fmtTime(it.mtime)} · ${fmtSize(it.size)}`}
+        detail={`${formatUnixMtime(it.mtime)} · ${fmtSize(it.size)}`}
         showPath={false}
         className="discovery-list-asset-card"
       />
+      {it.ratings && it.ratings.rating_effective != null ? (
+        <span
+          className={
+            "discovery-row-rating" +
+            (it.ratings.rating_explicit != null
+              ? " discovery-row-rating--explicit"
+              : " discovery-row-rating--inferred")
+          }
+          title={
+            it.ratings.rating_explicit != null
+              ? `Explicit ${it.ratings.rating_explicit}★`
+              : `Inferred ${Number(it.ratings.rating_inferred ?? it.ratings.rating_effective).toFixed(1)}★${
+                  it.ratings.rating_evidence?.n ? ` from ${it.ratings.rating_evidence.n} rated source(s)` : ""
+                }`
+          }
+        >
+          ★{" "}
+          {it.ratings.rating_explicit != null
+            ? it.ratings.rating_explicit
+            : Number(it.ratings.rating_effective).toFixed(1)}
+        </span>
+      ) : null}
+      {it.ratings?.appetite ? (
+        <span
+          className={"discovery-row-appetite discovery-row-appetite--" + it.ratings.appetite}
+          title={appetiteRowTitle(it.ratings.appetite, it.ratings.appetite_facet)}
+        >
+          {APPETITE_ROW_GLYPH[it.ratings.appetite]}
+        </span>
+      ) : null}
       <button
         type="button"
         className="discovery-exemplar-row-btn"
@@ -1895,79 +2140,29 @@ function DiscoveryMockBadge() {
   );
 }
 
-function DiscoveryMockAssetsPanel({ it }: { it: DiscoveryLibraryItem | null }) {
-  const [advOpen, setAdvOpen] = useState(false);
+function DiscoveryMockAssetsPanel({
+  it,
+  onOpenLineageSummary,
+  resolveLibraryItem,
+}: {
+  it: DiscoveryLibraryItem | null;
+  onOpenLineageSummary: (s: DiscoveryAssetLineageItemSummary) => void;
+  resolveLibraryItem?: (s: DiscoveryAssetLineageItemSummary) => DiscoveryLibraryItem | null;
+}) {
   if (!it) {
     return (
-      <div className="discovery-mock-panel">
-        <div className="discovery-mock-banner">
-          <DiscoveryMockBadge />
-          <span>Select a library item for mock Assets tools.</span>
-        </div>
-      </div>
+      <p className="discovery-mock-hint" style={{ marginTop: 0 }}>
+        Select a library item to see provenance, siblings, and descendants.
+      </p>
     );
   }
-  const name = it.name;
-  const short =
-    name.length > 36 ? `${name.slice(0, 34)}…` : name;
   return (
-    <div className="discovery-mock-panel" aria-label="Assets mock">
-      <div className="discovery-mock-banner">
-        <DiscoveryMockBadge />
-        <span>Ideas only — not a contract.</span>
-      </div>
-      <p className="discovery-mock-lead">
-        Tools to find, filter, and organize <strong>images and video</strong> (selection-aware).
-      </p>
-      <div className="discovery-mock-search-row">
-        <input
-          type="search"
-          className="discovery-mock-input"
-          placeholder="Search assets…"
-          readOnly
-          aria-readonly="true"
-        />
-        <button type="button" className="discovery-mock-button-ghost" onClick={() => setAdvOpen((o) => !o)}>
-          {advOpen ? "Hide advanced" : "Advanced search…"}
-        </button>
-      </div>
-      {advOpen ? (
-        <div className="discovery-mock-adv">
-          <p className="discovery-mock-hint">
-            Mock filters: media kind, library, date range, size, has embedded workflow, path glob…
-          </p>
-        </div>
-      ) : null}
-
-      <h3 className="discovery-mock-section-title">Provenance sketch</h3>
-      <p className="discovery-mock-hint">Diagram mock — shortcuts would open historical artifacts.</p>
-      <div className="discovery-mock-prov" role="presentation">
-        <div className="discovery-mock-prov__flow">
-          <button type="button" className="discovery-mock-node">
-            Starter still.png
-          </button>
-          <span className="discovery-mock-arrow" aria-hidden="true">
-            →
-          </span>
-          <button type="button" className="discovery-mock-node">
-            Intermediate.mp4
-          </button>
-          <span className="discovery-mock-arrow" aria-hidden="true">
-            →
-          </span>
-          <button type="button" className="discovery-mock-node discovery-mock-node--current">
-            Current: {short}
-          </button>
-        </div>
-        <div className="discovery-mock-prov__branch">
-          <button type="button" className="discovery-mock-node discovery-mock-node--small">
-            Parallel branch preview.png
-          </button>
-        </div>
-      </div>
-      <p className="discovery-mock-footnote">
-        Non-contract: real lineage would come from indexed parent/child edges or embeds.
-      </p>
+    <div className="discovery-mock-panel" aria-label="Asset lineage">
+      <DiscoveryAssetLineagePanel
+        seedItem={it}
+        onOpenSummary={onOpenLineageSummary}
+        resolveLibraryItem={resolveLibraryItem}
+      />
     </div>
   );
 }
@@ -2246,6 +2441,12 @@ function DiscoveryDesktopPreview({
   previewVideoRef,
   trimSeekBoundsRef,
   trimKeyboardRef,
+  onOpenLineageSummary,
+  onOpenRatingsRelpath,
+  resolveSummaryToLibraryItem,
+  onJudgmentSaved,
+  previewLayout,
+  onPreviewLayoutChange,
 }: {
   it: DiscoveryLibraryItem | null;
   saved: Set<string>;
@@ -2258,6 +2459,12 @@ function DiscoveryDesktopPreview({
   previewVideoRef: React.MutableRefObject<HTMLVideoElement | null>;
   trimSeekBoundsRef: DiscoveryDesktopTrimSeekRef;
   trimKeyboardRef: React.MutableRefObject<DiscoveryTrimKeyboardApi | null>;
+  onOpenLineageSummary: (s: DiscoveryAssetLineageItemSummary) => void;
+  onOpenRatingsRelpath: (relpath: string) => void | Promise<boolean>;
+  resolveSummaryToLibraryItem: (s: DiscoveryAssetLineageItemSummary) => DiscoveryLibraryItem | null;
+  onJudgmentSaved: (relpath: string, ratings: DiscoveryAssetRatingsResponse) => void;
+  previewLayout: DiscoveryDesktopPreviewLayout;
+  onPreviewLayoutChange: (layout: DiscoveryDesktopPreviewLayout) => void;
 }) {
   const playUrl = it ? discoveryPlayUrl(it) : null;
   const k = it ? discoveryItemKey(it) : "";
@@ -2277,6 +2484,41 @@ function DiscoveryDesktopPreview({
 
   const [detailsOpen, setDetailsOpen] = useState(DESKTOP_DETAILS_DRAWER_DEFAULT_OPEN);
   const [metaDrawerTab, setMetaDrawerTab] = useState<DiscoveryMetaDrawerTab>("details");
+  const [facetsData, setFacetsData] = useState<DiscoveryWorkflowFacetsResponse | null>(null);
+  const [facetsLoading, setFacetsLoading] = useState(false);
+  const [facetsError, setFacetsError] = useState("");
+  const [facetsProbedRel, setFacetsProbedRel] = useState<string | null>(null);
+
+  const loadWorkflowFacets = useCallback(async () => {
+    if (!it) return;
+    setFacetsLoading(true);
+    setFacetsError("");
+    try {
+      const body = await fetchDiscoveryWorkflowFacets(it.relpath);
+      setFacetsData(body);
+      setFacetsProbedRel(it.relpath);
+    } catch (e) {
+      setFacetsError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setFacetsLoading(false);
+    }
+  }, [it]);
+
+  useEffect(() => {
+    setFacetsData(null);
+    setFacetsError("");
+    setFacetsProbedRel(null);
+  }, [k]);
+
+  const previewDrawerHidesMainVideo = detailsOpen && previewLayout === "stacked";
+
+  /** Stacked layout: inline video duplicates the main player; skip on tabs with their own media or long forms. */
+  const showMetaInlineViewer =
+    previewLayout !== "split" &&
+    metaDrawerTab !== "assets" &&
+    metaDrawerTab !== "parameters" &&
+    metaDrawerTab !== "workflows" &&
+    metaDrawerTab !== "facets";
 
   useLayoutEffect(() => {
     exemplarNavRef.current = () => {
@@ -2303,12 +2545,12 @@ function DiscoveryDesktopPreview({
   useEffect(() => {
     const v = previewVideoRef.current;
     if (!v || !playUrl) return;
-    if (detailsOpen) {
+    if (previewDrawerHidesMainVideo) {
       v.pause();
       return;
     }
     if (videoAutoplay) void v.play().catch(() => {});
-  }, [detailsOpen, playUrl, videoAutoplay, k]);
+  }, [previewDrawerHidesMainVideo, playUrl, videoAutoplay, k]);
 
   useEffect(() => {
     if (!playUrl) previewVideoRef.current = null;
@@ -2600,13 +2842,24 @@ function DiscoveryDesktopPreview({
   if (!it) {
     return (
       <div className="discovery-desktop-preview discovery-desktop-preview--empty">
+        <DiscoveryPreviewLayoutSwitch
+          layout={previewLayout}
+          onChange={onPreviewLayoutChange}
+          className="discovery-preview-layout-switch--empty"
+        />
         <p style={{ margin: 0, color: "var(--muted)", fontSize: 14 }}>Select an item from the list.</p>
       </div>
     );
   }
 
   return (
-    <div className="discovery-desktop-preview">
+    <div
+      className={
+        "discovery-desktop-preview" +
+        (previewLayout === "split" ? " discovery-desktop-preview--layout-split" : "") +
+        (detailsOpen ? " discovery-desktop-preview--drawer-open" : "")
+      }
+    >
       <div className="discovery-desktop-preview-main">
         <div className="discovery-desktop-preview-stage">
           <div className="discovery-desktop-preview-video-slot">
@@ -2620,7 +2873,7 @@ function DiscoveryDesktopPreview({
                 controls
                 playsInline
                 loop={videoAutoplay && !trimEnforcesPlayback && trimPlaybackLoop}
-                autoPlay={videoAutoplay && !detailsOpen}
+                autoPlay={videoAutoplay && !previewDrawerHidesMainVideo}
                 muted={videoAutoplay}
               />
             ) : thumb ? (
@@ -2659,104 +2912,37 @@ function DiscoveryDesktopPreview({
         aria-hidden={!detailsOpen}
       >
         <div className="discovery-desktop-meta-drawer-column">
-          <div className="discovery-desktop-meta-drawer-head">
-            <div
-              className="discovery-desktop-meta-drawer-tablist discovery-desktop-meta-drawer-tablist--wrap"
-              role="tablist"
-              aria-label="Side panel"
-            >
+          {detailsOpen ? (
+            <div className="discovery-desktop-meta-drawer-head">
+              <h2 className="discovery-desktop-meta-drawer-title" id="discovery-meta-drawer-active-title">
+                {discoveryDesktopMetaTabTitle(metaDrawerTab)}
+              </h2>
+              <DiscoveryPreviewLayoutSwitch
+                layout={previewLayout}
+                onChange={onPreviewLayoutChange}
+                showLabel={false}
+                className="discovery-preview-layout-switch--drawer"
+              />
               <button
                 type="button"
-                role="tab"
-                id="discovery-meta-tab-details"
-                aria-controls="discovery-meta-panel-body"
-                aria-selected={metaDrawerTab === "details"}
-                tabIndex={detailsOpen ? (metaDrawerTab === "details" ? 0 : -1) : -1}
-                className={
-                  "discovery-desktop-meta-drawer-tab" +
-                  (metaDrawerTab === "details" ? " discovery-desktop-meta-drawer-tab--active" : "")
-                }
-                onClick={() => setMetaDrawerTab("details")}
+                className="discovery-desktop-meta-drawer-close"
+                aria-label="Close side panel"
+                onClick={() => setDetailsOpen(false)}
               >
-                Details
-              </button>
-              <button
-                type="button"
-                role="tab"
-                id="discovery-meta-tab-parameters"
-                aria-controls="discovery-meta-panel-body"
-                aria-selected={metaDrawerTab === "parameters"}
-                tabIndex={detailsOpen ? (metaDrawerTab === "parameters" ? 0 : -1) : -1}
-                className={
-                  "discovery-desktop-meta-drawer-tab" +
-                  (metaDrawerTab === "parameters" ? " discovery-desktop-meta-drawer-tab--active" : "")
-                }
-                onClick={() => setMetaDrawerTab("parameters")}
-              >
-                Parameters
-              </button>
-              <button
-                type="button"
-                role="tab"
-                id="discovery-meta-tab-assets"
-                aria-controls="discovery-meta-panel-body"
-                aria-selected={metaDrawerTab === "assets"}
-                tabIndex={detailsOpen ? (metaDrawerTab === "assets" ? 0 : -1) : -1}
-                className={
-                  "discovery-desktop-meta-drawer-tab" +
-                  (metaDrawerTab === "assets" ? " discovery-desktop-meta-drawer-tab--active" : "")
-                }
-                onClick={() => setMetaDrawerTab("assets")}
-              >
-                Assets <span className="discovery-mock-tab-hint">Mock</span>
-              </button>
-              <button
-                type="button"
-                role="tab"
-                id="discovery-meta-tab-exemplars"
-                aria-controls="discovery-meta-panel-body"
-                aria-selected={metaDrawerTab === "exemplars"}
-                tabIndex={detailsOpen ? (metaDrawerTab === "exemplars" ? 0 : -1) : -1}
-                className={
-                  "discovery-desktop-meta-drawer-tab" +
-                  (metaDrawerTab === "exemplars" ? " discovery-desktop-meta-drawer-tab--active" : "")
-                }
-                onClick={() => setMetaDrawerTab("exemplars")}
-              >
-                Exemplar library <span className="discovery-mock-tab-hint">Mock</span>
-              </button>
-              <button
-                type="button"
-                role="tab"
-                id="discovery-meta-tab-workflows"
-                aria-controls="discovery-meta-panel-body"
-                aria-selected={metaDrawerTab === "workflows"}
-                tabIndex={detailsOpen ? (metaDrawerTab === "workflows" ? 0 : -1) : -1}
-                className={
-                  "discovery-desktop-meta-drawer-tab" +
-                  (metaDrawerTab === "workflows" ? " discovery-desktop-meta-drawer-tab--active" : "")
-                }
-                onClick={() => setMetaDrawerTab("workflows")}
-              >
-                Workflow
+                ×
               </button>
             </div>
-            <button
-              type="button"
-              className="discovery-desktop-meta-drawer-close"
-              aria-label="Close side panel"
-              onClick={() => setDetailsOpen(false)}
-            >
-              ×
-            </button>
-          </div>
+          ) : null}
           <div
             className="discovery-desktop-meta-tabpanel"
             role="tabpanel"
             id="discovery-meta-panel-body"
             aria-labelledby={discoveryMetaPanelLabelId(metaDrawerTab)}
+            hidden={!detailsOpen}
           >
-            <DiscoveryMetaPanelInlineViewer it={it} videoAutoplay={videoAutoplay} />
+            {showMetaInlineViewer ? (
+              <DiscoveryMetaPanelInlineViewer it={it} videoAutoplay={videoAutoplay} />
+            ) : null}
             <div className="discovery-desktop-preview-meta">
               {metaDrawerTab === "details" ? (
                 <DiscoveryItemMetaBody
@@ -2769,80 +2955,49 @@ function DiscoveryDesktopPreview({
               ) : metaDrawerTab === "parameters" ? (
                 <DiscoveryComfyQueuePanel it={it} />
               ) : metaDrawerTab === "assets" ? (
-                <DiscoveryMockAssetsPanel it={it} />
+                <DiscoveryMockAssetsPanel
+                  it={it}
+                  onOpenLineageSummary={onOpenLineageSummary}
+                  resolveLibraryItem={resolveSummaryToLibraryItem}
+                />
+              ) : metaDrawerTab === "ratings" ? (
+                <DiscoveryAssetRatingsPanel
+                  seedItem={it}
+                  onOpenRelpath={onOpenRatingsRelpath}
+                  onJudgmentSaved={onJudgmentSaved}
+                />
               ) : metaDrawerTab === "exemplars" ? (
                 <DiscoveryMockExemplarLibraryPanel
                   it={it}
                   exemplarEntries={exemplarLibraryItems}
                   onRemoveFromExemplarLibrary={onRemoveFromExemplarLibrary}
                 />
-              ) : (
+              ) : metaDrawerTab === "workflows" ? (
                 <DiscoveryWorkflowTabPanel it={it} />
+              ) : (
+                <DiscoveryWorkflowFacetsPanel
+                  relpath={it.relpath}
+                  data={facetsData}
+                  probedRelpath={facetsProbedRel}
+                  loading={facetsLoading}
+                  error={facetsError}
+                  onLoad={() => void loadWorkflowFacets()}
+                  intro="Structured view of GET /api/discovery/workflow-facets: PNG chunks, MP4 tags, graph/source/LoRA hashes."
+                />
               )}
             </div>
           </div>
         </div>
       </aside>
 
-      {!detailsOpen ? (
-        <div className="discovery-desktop-drawer-tab-stack" aria-label="Open side panel">
-          <button
-            type="button"
-            className="discovery-desktop-drawer-tab"
-            onClick={() => {
-              setMetaDrawerTab("details");
-              setDetailsOpen(true);
-            }}
-            aria-label="Open details"
-          >
-            Details
-          </button>
-          <button
-            type="button"
-            className="discovery-desktop-drawer-tab"
-            onClick={() => {
-              setMetaDrawerTab("parameters");
-              setDetailsOpen(true);
-            }}
-            aria-label="Open Parameters"
-          >
-            Parameters
-          </button>
-          <button
-            type="button"
-            className="discovery-desktop-drawer-tab"
-            onClick={() => {
-              setMetaDrawerTab("assets");
-              setDetailsOpen(true);
-            }}
-            aria-label="Open Assets mock"
-          >
-            Assets
-          </button>
-          <button
-            type="button"
-            className="discovery-desktop-drawer-tab"
-            onClick={() => {
-              setMetaDrawerTab("exemplars");
-              setDetailsOpen(true);
-            }}
-            aria-label="Open Exemplar library mock"
-          >
-            Exemplar library
-          </button>
-          <button
-            type="button"
-            className="discovery-desktop-drawer-tab"
-            onClick={() => {
-              setMetaDrawerTab("workflows");
-              setDetailsOpen(true);
-            }}
-            aria-label="Open Workflow tab"
-          >
-            Workflow
-          </button>
-        </div>
-      ) : null}
+      <DiscoveryDesktopMetaDrawerTabRail
+        activeTab={metaDrawerTab}
+        drawerOpen={detailsOpen}
+        onSelectTab={(tab) => {
+          setMetaDrawerTab(tab);
+          setDetailsOpen(true);
+        }}
+      />
     </div>
   );
 }
@@ -2871,6 +3026,9 @@ function DiscoveryLibraryInner() {
   const [pollMin, setPollMin] = useState<(typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number]>(() => loadDiscoveryPollMin());
   const [err, setErr] = useState("");
   const [desktopSelectedKey, setDesktopSelectedKey] = useState<string | null>(null);
+  /** Preview row resolved via lineage when not in the truncated library list. */
+  const [lineageJumpItem, setLineageJumpItem] = useState<DiscoveryLibraryItem | null>(null);
+  const [phoneLineageJumpItem, setPhoneLineageJumpItem] = useState<DiscoveryLibraryItem | null>(null);
   const [listPaneWidth, setListPaneWidth] = useState<number>(() => loadDesktopListWidth());
   const listPaneWidthRef = useRef(listPaneWidth);
   listPaneWidthRef.current = listPaneWidth;
@@ -2890,10 +3048,16 @@ function DiscoveryLibraryInner() {
   const [phoneViewerOpen, setPhoneViewerOpen] = useState(false);
   const phoneListScrollRef = useRef<HTMLDivElement | null>(null);
   const [videoAutoplay, setVideoAutoplay] = useState<boolean>(() => loadVideoAutoplay());
+  const [previewLayout, setPreviewLayout] = useState<DiscoveryDesktopPreviewLayout>(() => loadDiscoveryPreviewLayout());
 
   const setVideoAutoplayFromUser = useCallback((on: boolean) => {
     setVideoAutoplay(on);
     persistVideoAutoplay(on);
+  }, []);
+
+  const setPreviewLayoutFromUser = useCallback((layout: DiscoveryDesktopPreviewLayout) => {
+    setPreviewLayout(layout);
+    persistDiscoveryPreviewLayout(layout);
   }, []);
 
   useEffect(() => {
@@ -2971,6 +3135,161 @@ function DiscoveryLibraryInner() {
     if (!savedOnly) return items;
     return items.filter((it) => saved.has(discoveryItemKey(it)));
   }, [items, savedOnly, saved]);
+
+  const resolveSummaryToLibraryItem = useCallback(
+    (s: DiscoveryAssetLineageItemSummary): DiscoveryLibraryItem | null => {
+      const gid = (s.group_id || "").trim();
+      if (gid) {
+        const hit = items.find((x) => (x.group_id || "").trim() === gid);
+        if (hit) return hit;
+      }
+      const wsRel = lineageSummaryWorkspaceRelpath(s);
+      if (wsRel && isWorkspaceInputRelpath(wsRel)) {
+        return syntheticInputLibraryItem(wsRel, s);
+      }
+      const cands = [s.relpath, s.video_relpath, s.thumb_relpath].filter(
+        (x): x is string => typeof x === "string" && !!x.trim()
+      );
+      for (const r of cands) {
+        const hit = items.find(
+          (x) =>
+            x.relpath === r ||
+            x.video_relpath === r ||
+            x.thumb_relpath === r ||
+            x.members?.some((m) => m.relpath === r)
+        );
+        if (hit) return hit;
+      }
+      return null;
+    },
+    [items]
+  );
+
+  const navigateLibrarySelectionToItem = useCallback(
+    (target: DiscoveryLibraryItem) => {
+      if (isPhone) {
+        const ix = displayed.findIndex((x) => discoveryItemKey(x) === discoveryItemKey(target));
+        if (ix >= 0) {
+          setPhoneLineageJumpItem(null);
+          setPhoneFocusIndex(ix);
+          setPhoneViewerOpen(true);
+        }
+      } else {
+        setLineageJumpItem(null);
+        setDesktopSelectedKey(discoveryItemKey(target));
+        queueMicrotask(() => desktopListScrollRef.current?.focus());
+      }
+    },
+    [isPhone, displayed]
+  );
+
+  const openLineageSummary = useCallback(
+    async (s: DiscoveryAssetLineageItemSummary) => {
+      let target = resolveSummaryToLibraryItem(s);
+      const wsRel = lineageSummaryWorkspaceRelpath(s);
+      if (!target && wsRel && (s.external === true || isWorkspaceInputRelpath(wsRel))) {
+        target = syntheticInputLibraryItem(wsRel, s);
+      }
+      if (!target) {
+        try {
+          const res = await fetchDiscoveryLibraryItem({
+            groupId: s.group_id,
+            relpath: wsRel || s.relpath || s.video_relpath || s.thumb_relpath || undefined,
+          });
+          if (res.ok && res.item) target = res.item;
+        } catch {
+          if (wsRel && isWorkspaceInputRelpath(wsRel)) {
+            target = syntheticInputLibraryItem(wsRel, s);
+          } else {
+            return;
+          }
+        }
+      }
+      if (!target) return;
+      if (isPhone) {
+        const ix = displayed.findIndex((x) => discoveryItemKey(x) === discoveryItemKey(target!));
+        if (ix >= 0) {
+          setPhoneLineageJumpItem(null);
+          setPhoneFocusIndex(ix);
+        } else {
+          setPhoneLineageJumpItem(target);
+        }
+        setPhoneViewerOpen(true);
+      } else {
+        setLineageJumpItem(target);
+        setDesktopSelectedKey(discoveryItemKey(target));
+        queueMicrotask(() => desktopListScrollRef.current?.focus());
+      }
+    },
+    [isPhone, displayed, resolveSummaryToLibraryItem]
+  );
+
+  const openRatingsRelpath = useCallback(
+    async (relpath: string): Promise<boolean> => {
+      const norm = relpath.trim().replace(/^\/+/, "").replace(/\\/g, "/");
+      if (!norm) return false;
+
+      let target: DiscoveryLibraryItem | null = items.find((x) => libraryItemMatchesRelpath(x, norm)) ?? null;
+
+      if (!target) {
+        for (const candidate of discoveryRelpathLookupCandidates(norm)) {
+          try {
+            const res = await fetchDiscoveryLibraryItem({ relpath: candidate });
+            if (res.ok && res.item) {
+              target = res.item;
+              break;
+            }
+          } catch {
+            /* try next candidate */
+          }
+        }
+      }
+
+      if (!target) return false;
+
+      if (isPhone) {
+        const ix = displayed.findIndex((x) => discoveryItemKey(x) === discoveryItemKey(target!));
+        if (ix >= 0) {
+          setPhoneLineageJumpItem(null);
+          setPhoneFocusIndex(ix);
+        } else {
+          setPhoneLineageJumpItem(target);
+        }
+        setPhoneViewerOpen(true);
+      } else {
+        setLineageJumpItem(target);
+        setDesktopSelectedKey(discoveryItemKey(target));
+        queueMicrotask(() => desktopListScrollRef.current?.focus());
+      }
+      return true;
+    },
+    [items, isPhone, displayed]
+  );
+
+  const patchLibraryRatings = useCallback((relpath: string, ratings: DiscoveryAssetRatingsResponse) => {
+    const rollup = discoveryRatingsRollupFromResponse(ratings);
+    const patchItem = (it: DiscoveryLibraryItem): DiscoveryLibraryItem =>
+      libraryItemMatchesRelpath(it, relpath) ? { ...it, ratings: rollup } : it;
+
+    setData((prev) => (prev ? { ...prev, items: prev.items.map(patchItem) } : prev));
+    setLineageJumpItem((prev) => (prev && libraryItemMatchesRelpath(prev, relpath) ? patchItem(prev) : prev));
+    setPhoneLineageJumpItem((prev) => (prev && libraryItemMatchesRelpath(prev, relpath) ? patchItem(prev) : prev));
+  }, []);
+
+  const deepLinkHandledRef = useRef(false);
+  useEffect(() => {
+    if (loading || deepLinkHandledRef.current) return;
+    const rel = parseDiscoveryDeepLinkRelpath();
+    if (!rel) return;
+    deepLinkHandledRef.current = true;
+    void openRatingsRelpath(rel).then((ok) => {
+      if (!ok) {
+        setErr(`Discovery item not found: ${rel}`);
+        setQInput(rel.split("/").pop() || rel);
+      }
+    });
+  }, [loading, openRatingsRelpath]);
+
   const healthSummary = useMemo(() => {
     const s = data?.health?.summary;
     if (!s) return "";
@@ -3263,9 +3582,6 @@ function DiscoveryLibraryInner() {
       <div className="discovery-screen">
         <div className="panel discovery-panel" style={{ gap: 8 }}>
           <div className="discovery-phone-topbar">
-            <a href="/" style={{ fontWeight: 600 }}>
-              ← Experiments
-            </a>
             <h1 className="title" style={{ margin: 0, fontSize: "1.05rem", flex: "1 1 auto" }}>
               Library
             </h1>
@@ -3323,6 +3639,7 @@ function DiscoveryLibraryInner() {
                 onSendToExemplarLibrary={() => sendToExemplarLibrary(discoveryItemKey(it))}
                 onGoToExemplarLibrary={() => phoneExemplarNavRef.current()}
                 onActivate={() => {
+                  setPhoneLineageJumpItem(null);
                   setPhoneFocusIndex(idx);
                   setPhoneViewerOpen(true);
                 }}
@@ -3336,11 +3653,14 @@ function DiscoveryLibraryInner() {
           </div>
         </div>
 
-        {phoneViewerOpen && phoneFocusIndex !== null && displayed[phoneFocusIndex] ? (
+        {phoneViewerOpen && (phoneLineageJumpItem || (phoneFocusIndex !== null && displayed[phoneFocusIndex])) ? (
           <DiscoveryPhoneDetailOverlay
-            items={displayed}
-            index={phoneFocusIndex}
-            onClose={() => setPhoneViewerOpen(false)}
+            items={phoneLineageJumpItem ? [phoneLineageJumpItem] : displayed}
+            index={phoneLineageJumpItem ? 0 : phoneFocusIndex!}
+            onClose={() => {
+              setPhoneLineageJumpItem(null);
+              setPhoneViewerOpen(false);
+            }}
             onIndexChange={setPhoneFocusIndex}
             saved={saved}
             onSendToExemplarLibrary={sendToExemplarLibrary}
@@ -3350,6 +3670,10 @@ function DiscoveryLibraryInner() {
             exemplarNavRef={phoneExemplarNavRef}
             videoAutoplay={videoAutoplay}
             onVideoAutoplayChange={setVideoAutoplayFromUser}
+            onOpenLineageSummary={openLineageSummary}
+            onOpenRatingsRelpath={openRatingsRelpath}
+            onJudgmentSaved={patchLibraryRatings}
+            resolveSummaryToLibraryItem={resolveSummaryToLibraryItem}
           />
         ) : null}
       </div>
@@ -3357,8 +3681,11 @@ function DiscoveryLibraryInner() {
   }
 
   /* Desktop + tablet: list + resizable preview */
-  const desktopSelectedItem =
-    desktopSelectedKey == null ? null : displayed.find((it) => discoveryItemKey(it) === desktopSelectedKey) ?? null;
+  const desktopSelectedItem = useMemo(() => {
+    if (lineageJumpItem && desktopSelectedKey === discoveryItemKey(lineageJumpItem)) return lineageJumpItem;
+    if (desktopSelectedKey == null) return null;
+    return displayed.find((it) => discoveryItemKey(it) === desktopSelectedKey) ?? null;
+  }, [lineageJumpItem, desktopSelectedKey, displayed]);
 
   const desktopIndexStatusTitle =
     !loading && data
@@ -3373,9 +3700,6 @@ function DiscoveryLibraryInner() {
     <div className="discovery-screen">
       <div className="panel discovery-panel discovery-desktop-root" style={{ gap: 10 }}>
         <header style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, flexShrink: 0 }}>
-          <a href="/" style={{ fontWeight: 600 }}>
-            ← Experiments
-          </a>
           <h1 className="title" style={{ margin: 0, fontSize: "1.15rem" }}>
             Og / Wip library
           </h1>
@@ -3400,6 +3724,8 @@ function DiscoveryLibraryInner() {
           <span>Autoplay video in preview (muted; same setting as phone viewer)</span>
         </label>
 
+        <DiscoveryPreviewLayoutSwitch layout={previewLayout} onChange={setPreviewLayoutFromUser} />
+
         {err ? (
           <div style={{ color: "var(--bad)", fontSize: 14, flexShrink: 0 }} role="alert">
             {err}
@@ -3411,7 +3737,10 @@ function DiscoveryLibraryInner() {
             "Loading…"
           ) : data ? (
             <>
-              Index <span className="mono">{data.updated_at ?? "—"}</span>
+              Index{" "}
+              <span className="mono" title={data.updated_at ?? undefined}>
+                {formatIsoDateTime(data.updated_at)}
+              </span>
               {data.from_cache ? " (cached)" : " (just scanned)"}
               {data.scan_ms != null ? ` · ${data.scan_ms} ms scan` : ""}
               {listRefreshing ? " · updating…" : ""}
@@ -3453,6 +3782,7 @@ function DiscoveryLibraryInner() {
                   onSendToExemplarLibrary={() => sendToExemplarLibrary(discoveryItemKey(it))}
                   onGoToExemplarLibrary={() => desktopExemplarNavRef.current()}
                   onActivate={() => {
+                    setLineageJumpItem(null);
                     setDesktopSelectedKey(discoveryItemKey(it));
                     desktopListScrollRef.current?.focus();
                   }}
@@ -3507,6 +3837,12 @@ function DiscoveryLibraryInner() {
             previewVideoRef={desktopPreviewVideoRef}
             trimSeekBoundsRef={desktopTrimSeekRef}
             trimKeyboardRef={desktopTrimKeyboardRef}
+            onOpenLineageSummary={openLineageSummary}
+            onOpenRatingsRelpath={openRatingsRelpath}
+            onJudgmentSaved={patchLibraryRatings}
+            resolveSummaryToLibraryItem={resolveSummaryToLibraryItem}
+            previewLayout={previewLayout}
+            onPreviewLayoutChange={setPreviewLayoutFromUser}
           />
         </div>
       </div>
@@ -3527,6 +3863,10 @@ type PhoneDetailProps = {
   exemplarNavRef: React.MutableRefObject<() => void>;
   videoAutoplay: boolean;
   onVideoAutoplayChange: (on: boolean) => void;
+  onOpenLineageSummary: (s: DiscoveryAssetLineageItemSummary) => void;
+  onOpenRatingsRelpath: (relpath: string) => void | Promise<boolean>;
+  onJudgmentSaved: (relpath: string, ratings: DiscoveryAssetRatingsResponse) => void;
+  resolveSummaryToLibraryItem: (s: DiscoveryAssetLineageItemSummary) => DiscoveryLibraryItem | null;
 };
 
 function DiscoveryPhoneDetailOverlay({
@@ -3542,6 +3882,10 @@ function DiscoveryPhoneDetailOverlay({
   exemplarNavRef,
   videoAutoplay,
   onVideoAutoplayChange,
+  onOpenLineageSummary,
+  onOpenRatingsRelpath,
+  onJudgmentSaved,
+  resolveSummaryToLibraryItem,
 }: PhoneDetailProps) {
   const it = items[index];
   const play = discoveryPlayUrl(it);
@@ -4555,14 +4899,22 @@ function DiscoveryPhoneDetailOverlay({
         <section
           id="discovery-phone-page-assets"
           className="discovery-phone-stack__page discovery-phone-stack__page--panel"
-          aria-label="Assets mock"
+          aria-label="Asset lineage"
         >
           <div className="discovery-phone-stack__page-head">
-            <span>Assets</span>
-            <span className="discovery-mock-tab-hint">Mock</span>
+            <span>Lineage & ratings</span>
           </div>
           <div className="discovery-phone-stack__page-body">
-            <DiscoveryMockAssetsPanel it={it} />
+            <DiscoveryAssetRatingsPanel
+              seedItem={it}
+              onOpenRelpath={onOpenRatingsRelpath}
+              onJudgmentSaved={onJudgmentSaved}
+            />
+            <DiscoveryMockAssetsPanel
+              it={it}
+              onOpenLineageSummary={onOpenLineageSummary}
+              resolveLibraryItem={resolveSummaryToLibraryItem}
+            />
           </div>
         </section>
 
