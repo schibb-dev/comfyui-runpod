@@ -1384,6 +1384,8 @@ def _fast_track_extend(cfg: "ServerConfig", rel: str, body: Dict[str, Any]) -> D
         replay_body: Dict[str, Any] = {"job_key": job_key, "extend": True}
         if family:
             replay_body["family_slug"] = family
+        if body.get("front"):
+            replay_body["front"] = True
         try:
             return _shape_factory_replay_payload(cfg, replay_body)
         except ValueError as e:
@@ -2103,7 +2105,9 @@ def _run_asset_disposition_step_payload(cfg: ServerConfig, body: Dict[str, Any])
 
     og_root = _prefer_flat_library_dir(cfg.output_root, "og")
     catalog = _discovery_load_disposition_catalog(cfg)
-    extra = {k: body[k] for k in ("job_key", "family_slug", "family", "facet") if k in body}
+    extra = {k: body[k] for k in ("job_key", "family_slug", "family", "facet", "front") if k in body}
+    if "front" in extra:
+        extra["front"] = bool(extra.get("front"))
     payload = run_disposition_step(
         step_id=step_id,
         media_abs=media_abs,

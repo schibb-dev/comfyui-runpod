@@ -55,6 +55,9 @@ import type {
   RecordBatchTriageCompleteResponse,
   DispositionCatalogMarker,
   HomeSummaryResponse,
+  WorkItemsListResponse,
+  WorkItemsCreateResponse,
+  WorkItemsCancelResponse,
 } from "./types";
 
 function experimentsUiStaleApiHint(): string {
@@ -300,6 +303,7 @@ export async function runDispositionStep(body: {
   job_key?: string;
   family_slug?: string;
   facet?: AppetiteFacet;
+  front?: boolean;
 }): Promise<RunDispositionStepResponse> {
   const r = await fetch("/api/discovery/asset-disposition/run-step", {
     method: "POST",

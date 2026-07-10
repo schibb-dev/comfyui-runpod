@@ -9887,6 +9887,47 @@ tr.disabled:hover td {
   margin: 8px 0 0;
   font-size: 11px;
 }
+.disposition-advance {
+  margin-bottom: 10px;
+}
+.disposition-advance__checks {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.disposition-advance__check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  color: #d7deea;
+  cursor: pointer;
+}
+.disposition-advance__check input {
+  margin-top: 2px;
+}
+.disposition-advance__check strong {
+  display: block;
+  font-weight: 600;
+}
+.disposition-advance__hint {
+  display: block;
+  margin-top: 2px;
+  font-style: normal;
+  font-size: 11px;
+  color: #8a96aa;
+}
+.disposition-advance__check--priority {
+  margin-top: 2px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.disposition-advance__actions {
+  margin-top: 10px;
+}
+.disposition-advance__commit {
+  font-weight: 600;
+}
 .disposition-catalog-modal {
   position: fixed;
   inset: 0;

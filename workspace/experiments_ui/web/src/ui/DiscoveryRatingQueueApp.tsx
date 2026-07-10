@@ -4,6 +4,7 @@ import {
   fetchDiscoveryRatingSampler,
   fetchDispositionCatalog,
   fetchDispositionSuggest,
+  createWorkItems,
   recordBatchTriageComplete,
   runDispositionStep,
   saveDispositionCatalog,
@@ -577,8 +578,11 @@ export function DiscoveryRatingQueueApp() {
     }
     if (hook === "trash" || inner.moved) return "Moved to trash";
     if (hook === "archive" || inner.archived) return "Archived";
-    if (inner.ok && (inner.extend || inner.replay_of_job_key)) {
-      return inner.extend_fallback === "replay" ? "Queued replay" : "Queued extend / replay";
+    if (inner.ok && (inner.extend || inner.replay_of_job_key || inner.job_key || inner.prompt_id)) {
+      const recovered = inner.prompt_profile_recovered ? " (prompt recovered)" : "";
+      if (inner.extend_fallback === "replay") return `Queued replay${recovered}`;
+      if (inner.extend) return `Queued extend${recovered}`;
+      return `Queued${recovered}`;
     }
     if (hook === "set_marker" && inner.toggled) {
       const m = (inner.toggled as { markers?: string[] }).markers;
@@ -629,6 +633,70 @@ export function DiscoveryRatingQueueApp() {
       }
     },
     [current, dispositionBusy, appetite, appetiteFacet, explicitRating, derivedRating, catalogEntries, markBatchDisposition],
+  );
+
+  const commitAdvanceRoutes = useCallback(
+    async (opts: { extend: boolean; vary: boolean; queueNow: boolean }) => {
+      if (!current || dispositionBusy) return;
+      if (!opts.extend && !opts.vary) {
+        setCheckMsg("Select Extend and/or Vary before committing");
+        return;
+      }
+      setDispositionBusy(true);
+      setCheckMsg("");
+      const routes: Array<{ step_id: string }> = [];
+      if (opts.extend) routes.push({ step_id: "advance.extend" });
+      if (opts.vary) routes.push({ step_id: "advance.vary" });
+      const parts: string[] = [];
+      try {
+        const created = await createWorkItems({
+          source_relpath: current.relpath,
+          routes,
+          queue_now: opts.queueNow,
+        });
+        parts.push(`Work items: ${created.count ?? created.items?.length ?? routes.length}`);
+        for (const route of routes) {
+          setLastStepId(route.step_id);
+          try {
+            const res = await runDispositionStep({
+              relpath: current.relpath,
+              step_id: route.step_id,
+              facet: appetiteFacet,
+              front: opts.queueNow || undefined,
+            });
+            const stepLabel = catalogSteps.find((s) => s.id === route.step_id)?.label ?? route.step_id;
+            const hookResult = (res.result as Record<string, unknown> | undefined) || {};
+            const merged: Record<string, unknown> = {
+              ...hookResult,
+              ...(typeof res.work_item_error === "string" ? { error: res.work_item_error } : {}),
+            };
+            const nested = (hookResult.result as Record<string, unknown> | undefined) || hookResult;
+            if (nested && typeof nested === "object") {
+              Object.assign(merged, nested);
+            }
+            parts.push(
+              `${stepLabel}: ${formatDispositionResult(route.step_id, { hook: res.hook, result: merged, ...merged })}`,
+            );
+          } catch (e) {
+            const stepLabel = catalogSteps.find((s) => s.id === route.step_id)?.label ?? route.step_id;
+            parts.push(`${stepLabel}: ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
+        const ratings = await fetchDiscoveryAssetRatings(current.relpath);
+        applyDispositionFromRatings(ratings, setDispositionMarkers, setDispositionUpdatedAt, setDispositionLastOutcome);
+        applyTriageFromRatings(ratings, setLastTriagedAt, setTriagePassCount);
+        markBatchDisposition(current.relpath, ratings.disposition_markers ?? []);
+        const msg = parts.join(" · ");
+        setDispositionLastAction(msg);
+        setCheckMsg(msg);
+      } catch (e) {
+        setLastStepId(null);
+        setCheckMsg(e instanceof Error ? e.message : String(e));
+      } finally {
+        setDispositionBusy(false);
+      }
+    },
+    [current, dispositionBusy, appetiteFacet, catalogSteps, markBatchDisposition],
   );
 
   const runDispositionStepCurrent = useCallback(
@@ -1031,6 +1099,7 @@ export function DiscoveryRatingQueueApp() {
                         lastStepId={lastStepId}
                         busy={dispositionBusy}
                         onRunStep={(id) => void runDispositionStepCurrent(id)}
+                        onCommitAdvanceRoutes={(opts) => void commitAdvanceRoutes(opts)}
                       />
                     </div>
                   </div>
