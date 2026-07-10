@@ -23,8 +23,8 @@ cat > "$USER_SYSTEMD/shape-factory-hourly.timer" <<EOF
 Description=Run shape-factory hourly tick
 
 [Timer]
-OnBootSec=15min
-OnUnitActiveSec=1h
+OnBootSec=5min
+OnUnitActiveSec=20min
 Persistent=true
 
 [Install]

@@ -149,6 +149,7 @@ PLAN_FILE=$(mktemp)
 python3 -c "import json,sys; json.dump(json.loads(sys.argv[1]), open(sys.argv[2],'w',encoding='utf-8'), ensure_ascii=False, indent=2)" "$PLAN_JSON" "$PLAN_FILE"
 
 log "phase=gex2 — cursor=$CURSOR pick_mode=$PICK_MODE recipes=$RECIPE_COUNT source=$REPLAY_SOURCE combo=$COMBO_KEY"
+GEN_RC=0
 (
   cd "$SCRIPTS"
   python3 shape_factory.py generate \
@@ -156,7 +157,10 @@ log "phase=gex2 — cursor=$CURSOR pick_mode=$PICK_MODE recipes=$RECIPE_COUNT so
     --pools ../../.data/pools/FB9_GEX2/pools.yaml \
     --pick "$PICK_MODE" --limit 1 --picks-json "$PLAN_FILE" --job-suffix "$HOURLY_SUFFIX" \
     "${dev_args[@]}" >> "$LOG" 2>&1
-  python3 shape_factory.py submit --pending-only --family FB9_GEX2 >> "$LOG" 2>&1
+) || GEN_RC=$?
+(
+  cd "$SCRIPTS"
+  python3 shape_factory.py submit --pending-only --family FB9_GEX2 >> "$LOG" 2>&1 || true
 )
 rm -f "$PLAN_FILE"
 
@@ -170,6 +174,11 @@ data["sample_cursor"] = $NEXT_CURSOR
 data["last_pick_mode"] = "$PICK_MODE"
 data["last_combo_key"] = "$COMBO_KEY"
 data["last_replay_source"] = "$REPLAY_SOURCE"
+data["last_generate_rc"] = $GEN_RC
 Path("$STATE").write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
-log "gex2 replay queued (next cursor=$NEXT_CURSOR)"
+if [ "$GEN_RC" != "0" ]; then
+  log "gex2 generate failed rc=$GEN_RC — advanced cursor to $NEXT_CURSOR anyway"
+else
+  log "gex2 replay queued (next cursor=$NEXT_CURSOR)"
+fi

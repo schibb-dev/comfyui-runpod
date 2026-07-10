@@ -1164,6 +1164,7 @@ def generate_job_for_picks(
     dev_steps: Optional[int] = None,
     dev_tuning_override: Optional[dict[str, Any]] = None,
     adhoc_overrides: Optional[dict[str, Any]] = None,
+    recipe_output_path: Optional[str] = None,
 ) -> dict[str, Any]:
     """Generate one workflow + job metadata file for explicit slot picks."""
     if not template_path.is_file():
@@ -1247,6 +1248,15 @@ def generate_job_for_picks(
         "warnings": warnings,
         "deposits": shape.get("deposits") or {},
     }
+    if recipe_output_path:
+        out_raw = str(recipe_output_path).strip()
+        if out_raw:
+            job_meta["recipe_output_path"] = out_raw
+            seed_candidate = Path(out_raw).expanduser()
+            if seed_candidate.suffix.lower() != ".png":
+                seed_candidate = seed_candidate.with_suffix(".png")
+            if seed_candidate.is_file() and _png_has_api_prompt(seed_candidate):
+                job_meta["prompt_seed_png"] = str(seed_candidate.resolve())
     if adhoc_overrides:
         job_meta["adhoc_overrides"] = adhoc_overrides
     if dev_tuning:
@@ -1357,6 +1367,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
             raise RuntimeError(f"--picks-json must be a slot→path object or {{\"picks\": ...}}: {picks_json}")
         combos = [{str(slot): Path(str(path)).expanduser().resolve() for slot, path in picks_raw.items()}]
         pick_mode = str(raw.get("pick_mode") or "replay")
+        recipe_output_path = str(raw.get("output_path") or "").strip() or None
     else:
         fetch_limit = combo_limit + pick_index if pick_index else combo_limit
         combos = pick_combinations(pool_paths, mode=args.pick, limit=fetch_limit if args.pick == "zip" else args.limit)
@@ -1365,6 +1376,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
                 raise RuntimeError(f"pick_index={pick_index} out of range (combos={len(combos)})")
             combos = combos[pick_index : pick_index + combo_limit]
         pick_mode = str(args.pick)
+        recipe_output_path = None
     if not combos:
         print("generated_jobs=0")
         return 1
@@ -1391,6 +1403,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
             dev_tuning_path=getattr(args, "dev_tuning", None),
             dev_frames=getattr(args, "dev_frames", None),
             dev_steps=getattr(args, "dev_steps", None),
+            recipe_output_path=recipe_output_path,
         )
         print(f"generated_workflow={result['workflow_path']}")
         print(f"job_metadata={result['job_path']}")
@@ -1467,12 +1480,62 @@ def extract_api_prompt_from_png(png_path: Path) -> dict[str, Any]:
     return copy.deepcopy(prompt)
 
 
+def _png_has_api_prompt(png_path: Path) -> bool:
+    try:
+        chunks = read_png_text_chunks(png_path)
+        prompt, _workflow = extract_prompt_workflow_from_png_chunks(chunks)
+        return isinstance(prompt, dict) and bool(prompt)
+    except Exception:
+        return False
+
+
 def prompt_seed_path_for_job(job: dict[str, Any], *, data_root: Optional[Path] = None) -> Optional[Path]:
-    """Best PNG to seed API prompt: companion of video/still binding."""
+    """Best PNG to seed API prompt when /workflow/convert is unavailable."""
     bindings = job.get("bindings") if isinstance(job.get("bindings"), dict) else {}
     dr = (data_root or DEFAULT_DATA_ROOT).expanduser().resolve()
+    candidates: list[Path] = []
+    seen: set[str] = set()
+
+    def add(path_like: Optional[str | Path]) -> None:
+        if path_like is None:
+            return
+        raw = str(path_like).strip()
+        if not raw:
+            return
+        try:
+            asset = resolve_job_asset_path(raw, data_root=dr)
+        except FileNotFoundError:
+            asset = Path(raw).expanduser()
+        png = png_path_for_binding(asset) if asset.suffix.lower() != ".png" else asset
+        key = str(png)
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(png)
+
+    # Explicit stamp from hourly/OG recipe planning.
+    add(job.get("prompt_seed_png"))
+    add(job.get("recipe_output_path"))
+
     for slot in ("source_video", "source_still"):
         meta = bindings.get(slot)
+        if isinstance(meta, dict):
+            add(meta.get("path"))
+
+    for _slot, meta in bindings.items():
+        if isinstance(meta, dict):
+            add(meta.get("path"))
+
+    for png in candidates:
+        try:
+            if png.is_file() and _png_has_api_prompt(png):
+                return png.resolve()
+        except Exception:
+            continue
+
+    # Same-directory fallback: many OG source videos lack a sibling PNG, but a
+    # nearby family render PNG still carries a usable API prompt graph.
+    for meta in bindings.values():
         if not isinstance(meta, dict):
             continue
         raw = str(meta.get("path") or "").strip()
@@ -1482,9 +1545,21 @@ def prompt_seed_path_for_job(job: dict[str, Any], *, data_root: Optional[Path] =
             asset = resolve_job_asset_path(raw, data_root=dr)
         except FileNotFoundError:
             continue
-        png = png_path_for_binding(asset)
-        if png.is_file():
-            return png
+        parent = asset.parent if asset.suffix.lower() != ".png" else asset.parent
+        family = str(job.get("family_slug") or "").strip()
+        patterns = []
+        if family:
+            patterns.append(f"{family}_*.png")
+        patterns.append("*.png")
+        for pattern in patterns:
+            try:
+                hits = sorted(parent.glob(pattern))
+            except Exception:
+                hits = []
+            for hit in hits:
+                if hit.is_file() and _png_has_api_prompt(hit):
+                    return hit.resolve()
+
     return None
 
 
