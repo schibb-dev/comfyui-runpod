@@ -1,0 +1,8 @@
+flowchart LR
+  Source["Source clip one asset"]
+  Source --> ExtInst["Instance to Extend pool"]
+  Source --> VarInst["Instance to Vary pool"]
+  ExtInst --> JobE["Factory job extend chain"]
+  VarInst --> JobV["Factory job vary replay"]
+  Priority["Queue now priority flag"] -.-> ExtInst
+  Priority -.-> VarInst

@@ -43,6 +43,25 @@ python scripts/migrate_workflow_node_types.py -w workflow.json -o workflow.migra
 
 Also updates `properties["Node name for S&R"]` when it still matched the old type.
 
+**Automatic repair loop (shape factory):** `validate` and `quarantine sync` run **pattern → fix → retry**
+by default (`repair_until_stable` in `workspace/scripts/workflow_repair.py`):
+
+1. UI rules (e.g. `node_type_rename` from `scripts/workflow_node_id_map.yaml`)
+2. Validate (convert + comfy-check)
+3. Prompt rules (e.g. `prompt_string_image_mismatch` after failed comfy-check)
+4. Repeat until stable or `--max-repair-rounds`
+
+Writes a timestamped `.bak.*` backup when UI workflow files change.
+
+```bash
+cd workspace/scripts
+python3 shape_factory.py repair rules
+python3 shape_factory.py repair run --workflow /path/to/wf.json --comfy-check
+python3 shape_factory.py quarantine sync --comfy-check
+```
+
+Add YAML renames in `workflow_node_id_map.yaml`. Add Python `RepairRule` classes in `workflow_repair.py`.
+
 ## 4. Re-verify
 
 ```bash

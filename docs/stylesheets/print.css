@@ -1,0 +1,56 @@
+@media print {
+  .md-header,
+  .md-sidebar,
+  .md-footer,
+  .md-search,
+  .md-top,
+  .md-tabs,
+  .md-source,
+  .md-content__button {
+    display: none !important;
+  }
+
+  .md-main__inner {
+    margin: 0 !important;
+  }
+
+  .md-content {
+    max-width: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  .md-typeset {
+    font-size: 11pt;
+    line-height: 1.45;
+  }
+
+  .md-typeset table:not([class]) {
+    page-break-inside: avoid;
+  }
+
+  .md-typeset pre,
+  .md-typeset .mermaid,
+  .md-typeset img {
+    page-break-inside: avoid;
+  }
+
+  .md-typeset h1,
+  .md-typeset h2,
+  .md-typeset h3 {
+    page-break-after: avoid;
+  }
+
+  a[href^="http"]::after {
+    content: " (" attr(href) ")";
+    font-size: 0.85em;
+    color: #555;
+  }
+
+  a[href^="/"]::after,
+  a[href^="#"]::after,
+  a[href^="./"]::after,
+  a[href^="../"]::after {
+    content: "";
+  }
+}

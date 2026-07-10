@@ -20,6 +20,8 @@ Use **`npm run up:minimal`** or **`make up-minimal`** only if you intentionally 
 
 | Document | What it is |
 |----------|------------|
+| [docs/CURRENT_GOAL.md](docs/CURRENT_GOAL.md) | **Active handoff** — current goal (ComfyUI + GPU + mounts + Docker Desktop). Read first when resuming infra work. |
+| **Planning docs site** | **Browse / search / print** — `./scripts/serve_planning_docs.sh` → http://127.0.0.1:8000 (MkDocs Material over `docs/`). Build static HTML: `./scripts/build_planning_docs.sh` → `site/`. |
 | [README.md](README.md) | Main project guide: Quick Start, Docker, Experiments UI, WSL cutover, ops runbook, tests. |
 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | Common failures (nodes, Docker, Experiments UI ports, etc.). |
 | [CREDENTIALS.md](CREDENTIALS.md) | Where tokens live and how they are loaded (gitignored paths). |
@@ -96,6 +98,10 @@ Use **`npm run up:minimal`** or **`make up-minimal`** only if you intentionally 
 | [docs/SCHEDULED_AND_CONTAINER_JOBS_RUNDOWN.md](docs/SCHEDULED_AND_CONTAINER_JOBS_RUNDOWN.md) | Scheduled and container job rundown. |
 | [docs/WORKFLOW_COMPATIBILITY.md](docs/WORKFLOW_COMPATIBILITY.md) | Workflow compatibility notes. |
 | [docs/WORKSPACE_PROJECTS_RUNDOWN.md](docs/WORKSPACE_PROJECTS_RUNDOWN.md) | Workspace projects rundown. |
+| [docs/PLANNING_OVERVIEW.md](docs/PLANNING_OVERVIEW.md) | **Planning hub** — programs (Discovery, lineage, queue, orchestration, …), focus, doc index. |
+| [docs/DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md](docs/DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md) | Discovery / similarity / HITL / slice spike vision. |
+| [docs/WSL_MOVE_TO_E_FOLLOWUP.md](docs/WSL_MOVE_TO_E_FOLLOWUP.md) | WSL vhdx move to E: — junction workaround, verify, swap follow-up, **planned export/import to official registration**. |
+| [docs/CURSOR_AGENT_SUDO_ASKPASS.md](docs/CURSOR_AGENT_SUDO_ASKPASS.md) | Cursor agent sudo/askpass fix (cleanup script) and fallbacks if askpass still fails. |
 
 ---
 

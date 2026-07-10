@@ -11,12 +11,22 @@ This doc covers using **Krita AI Diffusion** (by Acly) with this repo’s ComfyU
 - `AUTO_DOWNLOAD_KRITA_AI_MODELS=false` — no Krita model manifest / `download_models.py` on container start  
 - `INSTALL_KRITA_BACKEND_NODES=false` — bootstrap **skips** Acly bridge nodes `comfyui-tooling-nodes` and `comfyui-inpaint-nodes`
 
-**To enable Krita backend support**, set in `.env` (then recreate/restart `comfyui`):
+**To enable Krita backend support**, copy the Krita block from `.env.example` into `.env`:
 
 ```env
-AUTO_DOWNLOAD_KRITA_AI_MODELS=true
 INSTALL_KRITA_BACKEND_NODES=true
+AUTO_DOWNLOAD_KRITA_AI_MODELS=true
+KRITA_DOWNLOAD_PRESET=--recommended
 ```
+
+Then rebuild so Acly nodes are baked into the image, and restart:
+
+```bash
+docker compose build comfyui
+docker compose up -d comfyui
+```
+
+If you skip rebuild, `INSTALL_KRITA_BACKEND_NODES=true` alone is enough: entrypoint auto-runs bootstrap once when `comfyui-tooling-nodes` / `comfyui-inpaint-nodes` are missing (no need to set `COMFYUI_BOOTSTRAP_NODES_ON_START` unless you mount `./custom_nodes` or want every-boot refresh).
 
 The following custom nodes are **used** by the Krita plugin and are listed in `custom_nodes.yaml` (optional section). The two **Acly** nodes above are gated by `INSTALL_KRITA_BACKEND_NODES`; the others are general-purpose optional nodes and still install with the rest of `optional:` unless you remove them from the YAML.
 
@@ -25,14 +35,7 @@ The following custom nodes are **used** by the Krita plugin and are listed in `c
 - **ComfyUI_IPAdapter_plus** (cubiq) – IP-Adapter for image conditioning  
 - **comfyui_controlnet_aux** (Fannovel16) – ControlNet preprocessors  
 
-If you added them recently, rebuild or restart so bootstrap installs them:
-
-```bash
-docker compose build comfyui
-docker compose up -d comfyui
-```
-
-Or, if you mount `./custom_nodes`, just restart; bootstrap will clone any missing nodes.
+If you mount `./custom_nodes` over `/ComfyUI/custom_nodes`, set `COMFYUI_BOOTSTRAP_NODES_ON_START=true` in `.env` so bootstrap refreshes that tree at each start.
 
 ### Required models (ComfyUI)
 

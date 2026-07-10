@@ -1,0 +1,9 @@
+stateDiagram-v2
+  direction LR
+  [*] --> InBatch: sampler draws batch
+  InBatch --> InBatch: Next Prev Skip rotate
+  InBatch --> Dismissed: Dismiss batch
+  Dismissed --> InPool: no disposition on clip
+  Dismissed --> Committed: has entry disposition
+  Committed --> InPool: disposition changes later
+  InPool --> InBatch: sampled again needs_triage

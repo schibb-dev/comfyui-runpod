@@ -1,6 +1,8 @@
 # Lineage index — design sketch (v0)
 
-This document sketches a **durable, queryable index** for artifact **lineage** (and related exploration) on top of the existing idea that **MP4/PNG are the primary handles** for workflows. It is a design target, not a committed implementation.
+This document sketches a **durable, queryable index** for artifact **lineage** (and related exploration) on top of the existing idea that **MP4/PNG are the primary handles** for workflows **once media exists**, while **text-conditioned runs (T2I/T2V)** may have **non-file lineage roots**. It is a design target, not a committed implementation.
+
+**Related:** inferred ratings from lineage edges — [`RATINGS_V1_PLAN.md`](./RATINGS_V1_PLAN.md). Browse/similarity — [`DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md`](./DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md).
 
 ## Goals
 
@@ -8,6 +10,7 @@ This document sketches a **durable, queryable index** for artifact **lineage** (
 - **Canonical media on disk** (and embedded metadata) remain **source of truth**; the index is **derived** and **rebuildable**
 - **Incremental maintenance** as new files land (no full rescan of the world on every click)
 - A base for **richer graph views** (landscape, faceted browse) as a **projection** of the same store
+- **Support text-rooted pipelines** (**T2I**, **T2V**, and similar): lineage and search must work when **no starter image/video file** exists—only prompts, seeds, checkpoints/LoRAs, and graph topology.
 
 ## Non-goals (v0)
 
@@ -53,10 +56,16 @@ One **generating act**: one or more **inputs** + one **primary output** (or seve
 | Field | Notes |
 |-------|--------|
 | `run_id` | |
-| `input_asset_id` | Parent / starter media |
-| `role` | `primary_video` \| `starter_image` \| `mask` \| `reference` \| `unknown` |
+| `input_asset_id` | Parent / starter media (**nullable** when the run is text‑latent‑native—see below) |
+| `role` | `primary_video` \| `starter_image` \| `mask` \| `reference` \| `unknown` \| *(planned)* `text_conditioning` \| `checkpoint` \| `lora` \| `seed_only` \| … |
 
 Edges in the lineage graph: **input_asset → output_asset** via `run`.
+
+**Text-rooted runs (T2I / T2V):** Many workflows have **no file-backed starter frame**. Options (pick later; may combine):
+
+1. **`run_input` rows with `input_asset_id` null** + structured payload (`prompt_digest`, `seed`, model refs as strings)—simple but mixes asset and non‑asset facts.
+2. **`run_condition` sidecar table** (preferred long‑term): typed blobs (`positive_prompt`, `negative_prompt`, `noise_seed`, `checkpoint`, `scheduler`) keyed by `run_id`; lineage UI renders a **“text origin”** node instead of an asset card.
+3. **Synthetic stable IDs** for recurring checkpoints (“asset‑like” rows under `library=models`) only when you want cross‑run linkage without indexing whole weight libraries.
 
 ### 4. Optional: `workflow_snapshot` (dedup layer)
 
@@ -179,12 +188,68 @@ Same tables support:
 
 - **Discovery** today builds `discovery_og_wip_index.json` — good **asset list** feed for Phase 1 ingest
 - **Experiments / queue scripts** — natural place to emit **authoritative** `run` rows (Phase 2)
+- **Semantic search / similarity aspirations** (orthogonal to lineage; complementary at the asset) — see [`DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md`](./DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md)
 
 ## Open decisions
 
 - **Identity**: path-only v0 vs hash-backed when stable enough
 - **Multi-parent** runs: explicit in `run_input` from day one (recommended) even if UI is linear first
 - **DB location**: co-locate under `workspace/output/.../_status/` with discovery index for a single backup story
+
+---
+
+## Discussion-derived plan additions (capture; not shipped)
+
+Captured from lineage / Discovery UI discussions. **No repo behavior change implied** until phased work lands.
+
+### Paths are not synonymous with “ComfyUI `input/`”
+
+- Embedded prompt strings cite **many root shapes**: bare basenames, `input/…`, `output/…`, other folders, occasional absolutes—depending on node defaults and deployment mounts.
+- **Lineage inference must stay path-resolution–driven**, not “`input/` only.” Any “managed external” tier should normalize to **workspace-relative or library-relative canonical paths** where possible, with explicit **unresolved string** bookkeeping when normalization fails.
+
+### Synthetic parents today vs “first‑class” assets later
+
+- **Today:** graph edges sometimes use **`input:<basename>`**-style synthetic `group_id`s so UI can navigate and show descendants **without** a Discovery row—while persisted JSON may lag until `workspace_input`-class edges are saved.
+- **Design tension:** purely synthetic IDs are lightweight but duplicate concepts when the **same file** could be a durable row (hash, previews, facets).
+- **Middle path (planned direction):** a **tiered promotion** story—minimal registry for **referenced** externals—not necessarily full parity with every OG/WIP output row unless promoted.
+
+### Promotion rule (candidate policy)
+
+- **Hypothesis:** an upstream file becomes a **first-class managed artifact** once it **has been used at least once** as input to generation of **an indexed output** (“observed dependence”), rather than indexing all of `uploads/` blindly.
+- **Design constraints to carry forward:**
+  - **Identity drift:** citations are often basename-only; strong management prefers **optional content hash capture** when the file resolves at least once—or explicit **historical citation** semantics if the blob is gone.
+  - **Scope / privacy:** accidental promotion exists; combine with TTL, tagging, or “pin only curated inputs” rules if needed.
+  - **What “managed” means:** can start as **`asset` rows + edges** without full thumbnail/facet parity until queried often.
+
+### Text-rooted generations (T2I / T2V)
+
+Plan explicitly for outputs whose **upstream graph starts from noise/latent + text**, not from another raster/video artifact:
+
+| Topic | Planning stance |
+|-------|-------------------|
+| **Lineage roots** | Leftmost provenance may be **`run_condition`** / structured prompt summary **or** a minimal synthetic **“text origin”** row—not `input/*.jpeg`. Descendants behave as today once an **asset** exists. |
+| **Queue authority** | Best fidelity when **`run` rows come from queue completion**: capture normalized prompt excerpts + seeds + primary checkpoint ids before PNG embed drift. |
+| **Inference fallback** | PNG/API embed paths remain valuable but incomplete for **pure latent roots** unless embed stores full conditioning; treat inferred roots as **`source=inferred`** with lower confidence than queue. |
+| **Hybrid pipelines** | Many real graphs mix **text → latent → decode → refine video** with later **image-conditioned** nodes; schema should allow **both** text-root facts **and** media `run_input`s on the **same run** or chained runs (`run_group_id`). |
+| **Search alignment** | T2I/T2V outputs lean on **semantic prompt search**, **embedding similarity**, and **workflow fingerprints**—visual similarity alone under-represents “sameness”. Combine **text embeddings** + **image/frame embeddings for outputs**. |
+
+### Search: similarity + semantically meaningful criteria (goal)
+
+Stretch goal beyond graph navigation: **search possible inputs and outputs** by:
+
+| Axis | Rough approach (planning hooks) |
+|------|--------------------------------|
+| **Visual similarity** | Per‑asset embeddings (e.g. image embedding models) attached to `asset`; ANN retrieval (SQLite vec extension, FAISS, or external vec DB). |
+| **Semantic (text)** | Normalized embedded prompts, captions, OCR on thumbs/frames, names and paths, dates → hybrid **keyword/BM25 + text embeddings**. **Critical for T2I/T2V** where prompts are primary provenance. |
+| **Workflow / recipe similarity** | Existing **`prompt_fingerprint`** / **`embed_workflow_hash`** clusters; optional litegraph-shape distance (snowflake_inventory direction). |
+| **Lineage‑aware retrieval** | “Same starter,” subtree overlap—not only string heuristics—once authoritative **`run` / `run_input`** ingestion exists. |
+
+**Practical ordering:** ship **cheap deterministic fingerprints** first; add **image thumb embeddings**; scale to **video** via sparse frame sampling when needed.
+
+### UI / ingest alignment
+
+- **Lineage UI** (nested descendants, synthetic navigation) maps cleanly to DB projections later; promote synthetics to **`asset`** with stable id alias (`input:<basename>` → row `id`) if needed.
+- **Persistent backfill** for `workspace_input`-class edges + optional **promotion job** closes the gap between interactive inference and durable queries.
 
 ---
 

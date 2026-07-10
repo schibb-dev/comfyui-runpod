@@ -1,0 +1,62 @@
+site_name: comfyui-runpod planning
+site_description: Design notes, programs, and implementation plans
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.expand
+    - search.suggest
+    - content.code.copy
+  palette:
+    - scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Light mode
+    - scheme: default
+      primary: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Dark mode
+
+plugins:
+  - search
+  - mermaid2
+
+markdown_extensions:
+  - tables
+  - fenced_code
+  - toc:
+      permalink: true
+
+extra_css:
+  - stylesheets/print.css
+
+nav:
+  - Planning hub: PLANNING_OVERVIEW.md
+  - Programs:
+    - Discovery & similarity: DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md
+    - Lineage: LINEAGE_INDEX_SKETCH.md
+    - Queue & jobs: SCHEDULED_AND_CONTAINER_JOBS_RUNDOWN.md
+    - Workspace & resubmit: WORKSPACE_PROJECTS_RUNDOWN.md
+    - Workflow compatibility: WORKFLOW_COMPATIBILITY.md
+    - Project organization: PROJECT_ORGANIZATION_PROPOSAL.md
+  - Active plans:
+    - Discovery FS watcher: DISCOVERY_INDEX_WATCHER_PLAN.md
+    - Ratings v1: RATINGS_V1_PLAN.md
+    - Bucket model: DISPOSITION_BUCKET_MODEL.md
+    - Bucket model Phase 2: BUCKET_MODEL_PHASE2_PLAN.md
+    - Asset lifecycle: ASSET_LIFECYCLE_PLAN.md
+    - Workflow repair: WORKFLOW_REPAIR_PLAN.md
+  - Reference:
+    - All docs index: INDEX.md
+    - Output path mitigation: OUTPUT_PATH_MITIGATION.md
+    - Current goal: CURRENT_GOAL.md
+    - Check-in strategy: CHECKIN_STRATEGY.md
+    - Krita AI setup: KRITA_AI_SETUP.md
+    - WSL move follow-up: WSL_MOVE_TO_E_FOLLOWUP.md
+    - Cursor agent sudo: CURSOR_AGENT_SUDO_ASKPASS.md
+    - RDP Ubuntu setup: RDP_UBUNTU_SETUP.md

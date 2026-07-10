@@ -1,0 +1,16 @@
+flowchart LR
+  subgraph judgments [Judgments optional]
+    Q[Quality stars]
+    A[Appetite]
+  end
+  subgraph commit [Commit optional]
+    D[Disposition entry]
+  end
+  subgraph session [Session end]
+    B[Dismiss batch]
+  end
+  judgments --> commit
+  commit --> B
+  judgments --> B
+  B -->|has disposition| TriageDone[Triage recorded]
+  B -->|no disposition| Pool[Back to review pool]

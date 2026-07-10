@@ -247,4 +247,34 @@ If you run **Vite on the host** with the proxy target set to `http://127.0.0.1:8
 
 After changing `experiments_ui_server.py`, restart the ComfyUI container so the background Experiments UI picks up the script: `docker compose restart comfyui`.
 
+---
+
+## After reboot: empty input/output/workflows (wrong bind mounts)
+
+**Symptoms:** ComfyUI starts but `/ComfyUI/input`, `/ComfyUI/output`, or workflows look empty; `watch_queue` or SFTP may still see data; `npm run comfy:recreate` fixes it until the next reboot.
+
+**Cause:** Two starters were fighting:
+
+1. **`restart: unless-stopped`** — Docker Desktop restarts existing containers when its daemon comes up, often **before** WSL bind paths under `COMFYUI_BIND_*` are ready. Mounts can attach to empty `docker-desktop-bind-mounts` relays.
+2. **`comfyui-runpod-docker.service`** — runs `docker compose up -d`. If the container is already **Running** from step 1, compose does **not** recreate or remount.
+
+**Fix in this repo:**
+
+- Compose services use **`restart: "no"`** so only your boot path starts them.
+- `scripts/wait_for_compose_boot.sh` waits for `docker.sock` + bind dirs before `compose up`.
+- Install/update the user unit: `bash scripts/install-systemd-boot.sh`, then `systemctl --user daemon-reload`.
+
+**One-time after upgrading:** apply the new restart policy and fresh mounts:
+
+```bash
+npm run comfy:recreate
+docker compose -f docker-compose.yml -f docker-compose.output-sftp.yml up -d watch_queue output-sftp
+```
+
+**Headless WSL boot:** `sudo loginctl enable-linger "$USER"` so `comfyui-runpod-docker.service` runs without an interactive login.
+
+**Manual start (no systemd):** `npm run up` after Docker Desktop is fully up.
+
+See also: [docker/for-win#13947](https://github.com/docker/for-win/issues/13947) (WSL2 bind mounts on Windows startup).
+
 **If ComfyUI “crashed” or hung:** check `docker compose logs comfyui --tail 200`. Messages like **“Ran out of memory when regular VAE encoding, retrying with tiled VAE encoding”** are **normal** for some workflows—ComfyUI falls back to tiled encoding and the run continues; do not treat that alone as a failure. For real crashes, look for process exit, repeated errors after the tiled retry, or CUDA errors that abort the job.

@@ -1,0 +1,24 @@
+flowchart TB
+  subgraph identity [Work product]
+    Asset["Asset: one output file relpath group_id"]
+  end
+  subgraph pass [Triage]
+    TriageIdx["triage_index: last_triaged_at"]
+  end
+  subgraph lifecycle [Lifecycle]
+    Disp["disposition_index: 0 or 1 primary entry"]
+  end
+  subgraph work [Work planned]
+    WI["Work instances: 0 to N per asset"]
+  end
+  subgraph views [Bucket views computed]
+    Review["Review needs_triage"]
+    Edit["Editing refine advance park"]
+    Orch["Orchestration in-flight jobs"]
+  end
+  Asset --> TriageIdx
+  Asset --> Disp
+  Asset --> WI
+  TriageIdx --> Review
+  Disp --> Edit
+  WI --> Orch
