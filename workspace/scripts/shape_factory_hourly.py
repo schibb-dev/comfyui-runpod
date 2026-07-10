@@ -17,6 +17,14 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from shape_factory import load_yaml, requires_by_slot
 from shape_factory_heuristics import _og_group_id_from_relpath
 from shape_factory_map import _combo_key_from_job_bindings, _combo_key_from_slot_paths
+from shape_factory_prompt_recover import (
+    extract_prompt_texts_from_ui_workflow,
+    find_ui_node,
+    load_workflow_json,
+    prompt_binding_from_shape,
+    widget_text,
+    write_replay_prompt_profile,
+)
 from shape_factory_ratings import (
     default_appetite_index_path,
     default_ratings_index_path,
@@ -40,35 +48,15 @@ def _default_job_dir(data_root: Path) -> Path:
 
 
 def _prompt_binding(shape: dict[str, Any]) -> Optional[dict[str, Any]]:
-    for req in shape.get("requires") or []:
-        if not isinstance(req, dict):
-            continue
-        binding = req.get("binding") if isinstance(req.get("binding"), dict) else {}
-        if str(binding.get("type") or "") == "prompt_bundle":
-            return binding
-    return None
+    return prompt_binding_from_shape(shape)
 
 
 def _find_node(workflow: dict[str, Any], node_id: int) -> Optional[dict[str, Any]]:
-    for node in workflow.get("nodes") or []:
-        if isinstance(node, dict) and int(node.get("id") or -1) == int(node_id):
-            return node
-    return None
+    return find_ui_node(workflow, node_id)
 
 
 def _widget_text(workflow: dict[str, Any], node_id: int, widget_index: int = 0) -> str:
-    node = _find_node(workflow, node_id)
-    if not node:
-        return ""
-    widgets = node.get("widgets_values")
-    if isinstance(widgets, list):
-        if not widgets:
-            return ""
-        idx = min(max(0, widget_index), len(widgets) - 1)
-        return str(widgets[idx] or "")
-    if isinstance(widgets, dict):
-        return str(widgets.get("text") or widgets.get("value") or "")
-    return ""
+    return widget_text(workflow, node_id, widget_index)
 
 
 def _vhs_video_path(workflow: dict[str, Any], node_id: int) -> str:
@@ -125,14 +113,13 @@ def _write_replay_prompt_profile(
     positive: str,
     negative: str,
 ) -> Path:
-    replay_dir = data_root / "pools" / family / "prompts" / "_replay"
-    replay_dir.mkdir(parents=True, exist_ok=True)
-    slug = _combo_slug(f"{label}\n{positive}\n{negative}")
-    path = replay_dir / f"{slug}.json"
-    if not path.is_file():
-        doc = {"label": label, "positive": positive, "negative": negative}
-        path.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return path
+    return write_replay_prompt_profile(
+        family=family,
+        data_root=data_root,
+        label=label,
+        positive=positive,
+        negative=negative,
+    )
 
 
 def _picks_from_ui_workflow(
@@ -147,10 +134,7 @@ def _picks_from_ui_workflow(
     if not binding:
         return None
 
-    pos_spec = binding.get("positive") if isinstance(binding.get("positive"), dict) else {}
-    neg_spec = binding.get("negative") if isinstance(binding.get("negative"), dict) else {}
-    positive = _widget_text(workflow, int(pos_spec.get("node_id") or 0), int(pos_spec.get("widget_index") or 0))
-    negative = _widget_text(workflow, int(neg_spec.get("node_id") or 0), int(neg_spec.get("widget_index") or 0))
+    positive, negative = extract_prompt_texts_from_ui_workflow(workflow, shape)
     if not positive.strip():
         return None
 
@@ -189,11 +173,7 @@ def _picks_from_ui_workflow(
 
 
 def _load_workflow_json(path: Path) -> Optional[dict[str, Any]]:
-    try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
-        return doc if isinstance(doc, dict) else None
-    except Exception:
-        return None
+    return load_workflow_json(path)
 
 
 def _png_workflow_for_output(output_mp4: Path) -> Optional[dict[str, Any]]:

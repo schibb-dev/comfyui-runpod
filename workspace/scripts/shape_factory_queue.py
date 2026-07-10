@@ -24,6 +24,7 @@ from shape_factory import (
     submit_job_file,
 )
 from shape_factory_map import _combo_key_from_slot_paths, resolve_existing_path, resolve_shape_factory_data_root
+from shape_factory_prompt_recover import resolve_or_recover_prompt_profile_binding
 
 # mxSlider node ids shared by FB9 GEX2 / GEX_FACIAL graphs (see .data/shapes/dev-fast.yaml).
 _ADHOC_PARAM_NODES = {
@@ -510,6 +511,7 @@ def replay_from_request_body(
         job_outs = job.get("outputs") if isinstance(job.get("outputs"), list) else []
         output_abs = str((sub_outs[0] if sub_outs else (job_outs[0] if job_outs else "")) or "")
     else:
+        job = None
         raw = body.get("bindings")
         if isinstance(raw, dict):
             for slot, spec in raw.items():
@@ -525,6 +527,25 @@ def replay_from_request_body(
         raise ValueError("family_slug is required")
     if not bindings:
         raise ValueError("no bindings to replay")
+
+    shape_path = _resolve_shape_path(
+        data_root / "shapes" / f"{family_slug}.shape.yaml",
+        data_root=data_root,
+        family_slug=family_slug,
+    )
+    shape = load_yaml(shape_path)
+    recovered_prompt: Optional[str] = None
+    if "prompt_profile" in bindings or any(
+        isinstance(r, dict) and str((r.get("binding") or {}).get("type") or "") == "prompt_bundle"
+        for r in (shape.get("requires") or [])
+    ):
+        bindings, recovered_prompt = resolve_or_recover_prompt_profile_binding(
+            bindings,
+            job=job,
+            shape=shape,
+            data_root=data_root,
+            family=family_slug,
+        )
 
     extend = bool(body.get("extend"))
     if extend:
@@ -551,6 +572,8 @@ def replay_from_request_body(
     if isinstance(result, dict):
         result.setdefault("replay_of_job_key", job_key or None)
         result.setdefault("extend", extend)
+        if recovered_prompt:
+            result["prompt_profile_recovered"] = recovered_prompt
     return result
 
 
