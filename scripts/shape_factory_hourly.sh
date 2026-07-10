@@ -78,9 +78,10 @@ fi
 
 dev_args=()
 if [ "$DEV_CHAIN" = "1" ]; then dev_args+=(--dev); fi
-# Distinct path + minute-resolution tag so 20-minute debug ticks are easy to find.
+# Distinct path + name stem so timer ticks are easy to find while debugging.
 HOURLY_PREFIX_ROOT="${HOURLY_PREFIX_ROOT:-og/%date:yyyy-MM-dd%/hourly}"
-HOURLY_SUFFIX="_hourly_$(date -u +%Y%m%d%H%M)"
+HOURLY_JOB_KEY_PREFIX="${HOURLY_JOB_KEY_PREFIX:-hourly}"
+HOURLY_SUFFIX="_$(date -u +%Y%m%d%H%M)"
 
 # Phase: need FACIAL for latest complete GEX2 without a submitted FACIAL using its deposit?
 NEED_FACIAL=$(python3 <<'PY'
@@ -119,6 +120,7 @@ if [ -n "$NEED_FACIAL" ]; then
       --binds-override "$BINDS" \
       --pick zip --limit 1 --job-suffix "$HOURLY_SUFFIX" \
       --output-prefix-root "$HOURLY_PREFIX_ROOT" \
+      --job-key-prefix "$HOURLY_JOB_KEY_PREFIX" \
       "${dev_args[@]}" >> "$LOG" 2>&1
     python3 shape_factory.py submit --pending-only --family FB9_GEX_FACIAL >> "$LOG" 2>&1
   )
@@ -160,6 +162,7 @@ GEN_RC=0
     --pools ../../.data/pools/FB9_GEX2/pools.yaml \
     --pick "$PICK_MODE" --limit 1 --picks-json "$PLAN_FILE" --job-suffix "$HOURLY_SUFFIX" \
     --output-prefix-root "$HOURLY_PREFIX_ROOT" \
+    --job-key-prefix "$HOURLY_JOB_KEY_PREFIX" \
     "${dev_args[@]}" >> "$LOG" 2>&1
 ) || GEN_RC=$?
 (

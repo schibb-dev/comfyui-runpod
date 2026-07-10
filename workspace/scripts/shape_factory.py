@@ -1159,6 +1159,7 @@ def generate_job_for_picks(
     pick_mode: str = "product",
     job_suffix: str = "",
     output_prefix_root: Optional[str] = None,
+    job_key_prefix: Optional[str] = None,
     dev: bool = False,
     dev_tuning_path: Optional[str] = None,
     dev_frames: Optional[int] = None,
@@ -1202,7 +1203,9 @@ def generate_job_for_picks(
         }
 
     pick_slug = slug("__".join(f"{s}-{Path(picks[s]).stem}" for s in sorted(picks)), 90)
-    job_key = slug(f"{family}__{pick_slug}__{pick_index:03d}", 120)
+    # Optional leading stem (e.g. "hourly") so filenames don't all sort under family_slug.
+    key_stem = str(job_key_prefix or "").strip() or family
+    job_key = slug(f"{key_stem}__{pick_slug}__{pick_index:03d}", 120)
 
     dev_tuning = dev_tuning_override
     if dev_tuning is None:
@@ -1387,6 +1390,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
     job_dir = Path(args.job_dir).expanduser().resolve()
     job_suffix = str(getattr(args, "job_suffix", "") or "").strip()
     output_prefix_root = str(getattr(args, "output_prefix_root", "") or "").strip() or None
+    job_key_prefix = str(getattr(args, "job_key_prefix", "") or "").strip() or None
 
     generated = 0
     for idx, picks in enumerate(combos):
@@ -1403,6 +1407,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
             pick_mode=pick_mode,
             job_suffix=job_suffix,
             output_prefix_root=output_prefix_root,
+            job_key_prefix=job_key_prefix,
             dev=bool(getattr(args, "dev", False)),
             dev_tuning_path=getattr(args, "dev_tuning", None),
             dev_frames=getattr(args, "dev_frames", None),
@@ -3809,6 +3814,12 @@ def build_parser() -> argparse.ArgumentParser:
         dest="output_prefix_root",
         help="Override shape output_prefix_root (supports %%date:yyyy-MM-dd%% tokens), e.g. og/%%date:yyyy-MM-dd%%/hourly",
     )
+    gen.add_argument(
+        "--job-key-prefix",
+        default=None,
+        dest="job_key_prefix",
+        help="Replace the family_slug leading stem in job_key/filenames (e.g. hourly → hourly__prompt_profile-…)",
+    )
     gen.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT), help="Comfy bind data root on host")
     gen.add_argument("--workflow-dir", default=str(DEFAULT_WORKFLOW_DIR), help="Output workflow JSON directory")
     gen.add_argument("--job-dir", default=str(DEFAULT_JOB_DIR), help="Output job metadata directory")
@@ -3836,6 +3847,7 @@ def build_parser() -> argparse.ArgumentParser:
         pick_index=0,
         job_suffix=None,
         output_prefix_root=None,
+        job_key_prefix=None,
         dev=False,
         dev_tuning=None,
         dev_frames=None,
