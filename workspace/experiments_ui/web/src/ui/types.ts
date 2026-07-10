@@ -312,6 +312,63 @@ export type DiscoveryLibraryItem = {
     appetite?: Appetite | null;
     appetite_facet?: AppetiteFacet | null;
   };
+  disposition_markers?: string[];
+  work_items_open_count?: number;
+  work_items_total_count?: number;
+  work_items_open?: WorkItem[];
+  work_items?: WorkItem[];
+};
+
+export type WorkItemStatus = "draft" | "queued" | "running" | "done" | "failed" | "cancelled";
+export type WorkItemPool = "extend" | "vary" | "refine_backlog" | "extract" | "investigate" | string;
+export type WorkItemPriority = "normal" | "front";
+
+export type WorkItem = {
+  work_id: string;
+  source_relpath: string;
+  source_group_id?: string | null;
+  pool: WorkItemPool;
+  priority: WorkItemPriority;
+  disposition_entry: string;
+  disposition_step?: string | null;
+  status: WorkItemStatus;
+  created_at?: string;
+  updated_at?: string;
+  factory_job_key?: string | null;
+  factory_family?: string | null;
+  child_relpaths?: string[];
+  error?: string | null;
+  idempotency_key?: string;
+};
+
+export type WorkItemsListResponse = {
+  ok: boolean;
+  items: WorkItem[];
+  count: number;
+  path?: string;
+  pool?: string;
+  filters?: Record<string, unknown>;
+  error?: string;
+  detail?: string;
+};
+
+export type WorkItemsCreateResponse = {
+  ok: boolean;
+  item?: WorkItem;
+  items?: WorkItem[];
+  created?: boolean;
+  reused?: boolean;
+  count?: number;
+  error?: string;
+  detail?: string;
+};
+
+export type WorkItemsCancelResponse = {
+  ok: boolean;
+  item?: WorkItem;
+  already_terminal?: boolean;
+  error?: string;
+  detail?: string;
 };
 
 export type DiscoveryLibraryResponse = {
@@ -434,6 +491,10 @@ export type DiscoveryAssetRatingsResponse = {
   needs_triage?: boolean;
   last_triaged_at?: string | null;
   triage_pass_count?: number;
+  work_items_open_count?: number;
+  work_items_total_count?: number;
+  work_items_open?: WorkItem[];
+  work_items?: WorkItem[];
   index_updated_at?: string;
 };
 
@@ -565,6 +626,9 @@ export type RunDispositionStepResponse = {
   step_id?: string;
   hook?: string;
   result?: Record<string, unknown>;
+  work_item?: WorkItem;
+  work_item_meta?: { created?: boolean; reused?: boolean };
+  work_item_error?: string;
   error?: string;
   detail?: string;
 };

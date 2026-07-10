@@ -1895,6 +1895,22 @@ def _discovery_disposition_index_path(cfg: "ServerConfig") -> Path:
     return cfg.discovery_index_path.with_name("disposition_index.json")
 
 
+def _discovery_work_items_index_path(cfg: "ServerConfig") -> Path:
+    return cfg.discovery_index_path.with_name("work_items_index.json")
+
+
+def _discovery_load_work_items_index(cfg: "ServerConfig") -> Optional[Dict[str, Any]]:
+    path = _discovery_work_items_index_path(cfg)
+    if not path.is_file():
+        return None
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_work_items import load_work_items_doc  # type: ignore
+
+    return load_work_items_doc(path)
+
+
 def _discovery_triage_index_path(cfg: "ServerConfig") -> Path:
     return cfg.discovery_index_path.with_name("triage_index.json")
 
@@ -2083,11 +2099,12 @@ def _run_asset_disposition_step_payload(cfg: ServerConfig, body: Dict[str, Any])
     if d.is_dir() and str(d) not in sys.path:
         sys.path.insert(0, str(d))
     from shape_factory_disposition import run_disposition_step  # type: ignore
+    from shape_factory_work_items import record_run_step_work_item  # type: ignore
 
     og_root = _prefer_flat_library_dir(cfg.output_root, "og")
     catalog = _discovery_load_disposition_catalog(cfg)
     extra = {k: body[k] for k in ("job_key", "family_slug", "family", "facet") if k in body}
-    return run_disposition_step(
+    payload = run_disposition_step(
         step_id=step_id,
         media_abs=media_abs,
         media_relpath=rel,
@@ -2096,6 +2113,152 @@ def _run_asset_disposition_step_payload(cfg: ServerConfig, body: Dict[str, Any])
         catalog=catalog,
         hook_runner=_disposition_hook_runner(cfg, rel, extra),
         extra=extra,
+    )
+    hook = str(payload.get("hook") or "")
+    hook_result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    try:
+        work = record_run_step_work_item(
+            source_relpath=rel,
+            step_id=step_id,
+            hook=hook,
+            hook_result=hook_result,
+            work_items_index_path=_discovery_work_items_index_path(cfg),
+            factory_family=str(extra.get("family_slug") or extra.get("family") or hook_result.get("family_slug") or ""),
+            recipe=step_id,
+        )
+        if work is not None:
+            payload = dict(payload)
+            payload["work_item"] = work.get("item")
+            payload["work_item_meta"] = {
+                "created": work.get("created"),
+                "reused": work.get("reused"),
+            }
+    except Exception as e:
+        payload = dict(payload)
+        payload["work_item_error"] = str(e)
+    return payload
+
+
+def _discovery_work_items_list_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_work_items import list_work_items, load_work_items_doc  # type: ignore
+
+    path = _discovery_work_items_index_path(cfg)
+    doc = load_work_items_doc(path)
+    source_relpath = (q.get("source_relpath") or q.get("relpath") or [""])[0].strip() or None
+    source_group_id = (q.get("source_group_id") or q.get("group_id") or [""])[0].strip() or None
+    pool = (q.get("pool") or [""])[0].strip() or None
+    status_raw = (q.get("status") or [""])[0].strip()
+    statuses = [s.strip() for s in status_raw.split(",") if s.strip()] if status_raw else None
+    include_terminal = (q.get("include_terminal") or ["1"])[0].strip().lower() not in ("0", "false", "no")
+    items = list_work_items(
+        doc,
+        source_relpath=source_relpath,
+        source_group_id=source_group_id,
+        pool=pool,
+        status=statuses,
+        include_terminal=include_terminal,
+    )
+    return {
+        "ok": True,
+        "items": items,
+        "count": len(items),
+        "path": str(path),
+        "filters": {
+            "source_relpath": source_relpath,
+            "source_group_id": source_group_id,
+            "pool": pool,
+            "status": statuses,
+            "include_terminal": include_terminal,
+        },
+    }
+
+
+def _discovery_work_items_pool_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
+    pool = (q.get("pool") or [""])[0].strip().lower()
+    if not pool:
+        raise ValueError("missing pool")
+    q2 = dict(q)
+    q2["pool"] = [pool]
+    if "status" not in q2:
+        q2["status"] = ["draft,queued,running"]
+        q2["include_terminal"] = ["0"]
+    payload = _discovery_work_items_list_payload(cfg, q2)
+    payload["pool"] = pool
+    return payload
+
+
+def _discovery_work_items_create_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_work_items import create_routes_batch, create_work_item  # type: ignore
+
+    path = _discovery_work_items_index_path(cfg)
+    rel = str(body.get("source_relpath") or body.get("relpath") or "").strip()
+    if not rel:
+        raise ValueError("missing source_relpath")
+    media_abs = _safe_join(cfg.output_root, rel)
+    if media_abs is None or not media_abs.is_file():
+        raise FileNotFoundError(rel)
+    routes = body.get("routes")
+    queue_now = bool(body.get("queue_now") or body.get("front"))
+    if isinstance(routes, list) and routes:
+        return create_routes_batch(
+            source_relpath=rel,
+            routes=routes,
+            work_items_index_path=path,
+            queue_now=queue_now,
+        )
+    # Single-route create
+    step_id = str(body.get("step_id") or body.get("disposition_step") or "").strip()
+    pool = str(body.get("pool") or "").strip()
+    if step_id and not pool:
+        from shape_factory_work_items import route_for_step  # type: ignore
+
+        mapped = route_for_step(step_id)
+        if not mapped:
+            raise ValueError(f"unknown step_id: {step_id}")
+        pool, entry, default_pri = mapped
+        priority = str(body.get("priority") or ("front" if queue_now else default_pri))
+        disposition_entry = str(body.get("disposition_entry") or entry)
+    else:
+        disposition_entry = str(body.get("disposition_entry") or "").strip()
+        priority = str(body.get("priority") or ("front" if queue_now else "normal"))
+        if not pool:
+            raise ValueError("missing pool or step_id")
+        if not disposition_entry:
+            raise ValueError("missing disposition_entry")
+    out = create_work_item(
+        source_relpath=rel,
+        pool=pool,
+        disposition_entry=disposition_entry,
+        disposition_step=step_id,
+        priority=priority,
+        status=str(body.get("status") or "draft"),
+        factory_family=str(body.get("factory_family") or body.get("family_slug") or "").strip(),
+        recipe=str(body.get("recipe") or step_id or "").strip(),
+        work_items_index_path=path,
+        force_new=bool(body.get("force_new")),
+    )
+    return {"ok": True, "item": out.get("item"), "created": out.get("created"), "reused": out.get("reused")}
+
+
+def _discovery_work_items_cancel_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_work_items import cancel_work_item  # type: ignore
+
+    work_id = str(body.get("work_id") or "").strip()
+    if not work_id:
+        raise ValueError("missing work_id")
+    return cancel_work_item(
+        work_id,
+        work_items_index_path=_discovery_work_items_index_path(cfg),
+        reason=str(body.get("reason") or "").strip() or None,
     )
 
 
@@ -2457,6 +2620,7 @@ def _discovery_enrich_item_ratings(
     ratings_doc: Optional[Dict[str, Any]] = None,
     appetite_doc: Optional[Dict[str, Any]] = None,
     disposition_doc: Optional[Dict[str, Any]] = None,
+    work_items_doc: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if not isinstance(item, dict):
         return item
@@ -2466,15 +2630,26 @@ def _discovery_enrich_item_ratings(
         appetite_doc = _discovery_load_appetite_index(cfg)
     if disposition_doc is None and cfg is not None:
         disposition_doc = _discovery_load_disposition_index(cfg)
-    if not ratings_doc and not appetite_doc and not disposition_doc:
+    if work_items_doc is None and cfg is not None:
+        work_items_doc = _discovery_load_work_items_index(cfg)
+    if not ratings_doc and not appetite_doc and not disposition_doc and not work_items_doc:
         return item
     ratings = _discovery_ratings_for_item(ratings_doc, item, appetite_doc)
     disp = _discovery_disposition_for_item(disposition_doc, item)
-    if not ratings and not disp:
+    work: Dict[str, Any] = {}
+    if work_items_doc:
+        d = _workspace_scripts_dir()
+        if d.is_dir() and str(d) not in sys.path:
+            sys.path.insert(0, str(d))
+        from shape_factory_work_items import work_items_for_item  # type: ignore
+
+        work = work_items_for_item(item, work_items_doc)
+    if not ratings and not disp and not work:
         return item
     merged = dict(item)
     merged.update(ratings)
     merged.update(disp)
+    merged.update(work)
     return merged
 
 
@@ -2532,6 +2707,12 @@ def _discovery_compute_asset_ratings(
     payload["disposition_last_outcome"] = disp.get("disposition_last_outcome")
     payload["disposition_archived"] = disp.get("disposition_archived")
     payload["disposition_saved"] = disp.get("disposition_saved")
+    work_doc = _discovery_load_work_items_index(cfg)
+    if work_doc:
+        from shape_factory_work_items import work_items_for_item  # type: ignore
+
+        work = work_items_for_item(item if isinstance(item, dict) else {"relpath": rel}, work_doc)
+        payload.update(work)
     triage_doc = _discovery_load_triage_index(cfg)
     if d.is_dir() and str(d) not in sys.path:
         sys.path.insert(0, str(d))
@@ -5150,6 +5331,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_discovery_disposition_catalog_get(q)
         if path == "/api/discovery/disposition-suggest":
             return self._handle_discovery_disposition_suggest_get(q)
+        if path == "/api/discovery/work-items":
+            return self._handle_discovery_work_items_get(q)
+        if path == "/api/discovery/work-items/pool":
+            return self._handle_discovery_work_items_pool_get(q)
         if path == "/api/discovery/asset-audit":
             return self._handle_discovery_asset_audit_get(q)
 
@@ -5468,6 +5653,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_discovery_asset_disposition_toggle_post()
         if path == "/api/discovery/asset-disposition/run-step":
             return self._handle_discovery_asset_disposition_run_step_post()
+        if path == "/api/discovery/work-items/create":
+            return self._handle_discovery_work_items_create_post()
+        if path == "/api/discovery/work-items/cancel":
+            return self._handle_discovery_work_items_cancel_post()
         if path == "/api/discovery/asset-triage/complete":
             return self._handle_discovery_asset_triage_complete_post()
         if path == "/api/discovery/asset-triage/complete-batch":
@@ -6598,6 +6787,63 @@ class Handler(BaseHTTPRequestHandler):
         status = 200 if payload.get("ok", True) else 400
         return _json_response(self, status, payload)
 
+    def _handle_discovery_work_items_get(self, q: Dict[str, List[str]]) -> None:
+        """GET /api/discovery/work-items?source_relpath=...&pool=...&status=..."""
+        cfg = self.server.cfg
+        try:
+            payload = _discovery_work_items_list_payload(cfg, q)
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "work_items_list_failed", "detail": str(e)})
+        return _json_response(self, 200, payload)
+
+    def _handle_discovery_work_items_pool_get(self, q: Dict[str, List[str]]) -> None:
+        """GET /api/discovery/work-items/pool?pool=extend"""
+        cfg = self.server.cfg
+        try:
+            payload = _discovery_work_items_pool_payload(cfg, q)
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "work_items_pool_failed", "detail": str(e)})
+        return _json_response(self, 200, payload)
+
+    def _handle_discovery_work_items_create_post(self) -> None:
+        """
+        POST /api/discovery/work-items/create
+          { source_relpath|relpath, routes?: [...], pool?, step_id?, queue_now? }
+        """
+        cfg = self.server.cfg
+        obj = self._read_request_json()
+        if obj is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _discovery_work_items_create_payload(cfg, obj)
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except FileNotFoundError as e:
+            return _json_response(self, 404, {"ok": False, "error": "media_missing", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "work_items_create_failed", "detail": str(e)})
+        return _json_response(self, 200, payload)
+
+    def _handle_discovery_work_items_cancel_post(self) -> None:
+        """POST /api/discovery/work-items/cancel { work_id, reason? }"""
+        cfg = self.server.cfg
+        obj = self._read_request_json()
+        if obj is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _discovery_work_items_cancel_payload(cfg, obj)
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except FileNotFoundError as e:
+            return _json_response(self, 404, {"ok": False, "error": "work_item_missing", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "work_items_cancel_failed", "detail": str(e)})
+        return _json_response(self, 200, payload)
+
     def _handle_discovery_asset_triage_complete_post(self) -> None:
         """
         POST /api/discovery/asset-triage/complete
@@ -7566,6 +7812,8 @@ def main() -> int:
         "POST /api/discovery/asset-ratings/set, POST /api/discovery/asset-appetite/set, "
         "GET/POST /api/discovery/disposition-catalog, GET /api/discovery/disposition-suggest, "
         "POST /api/discovery/asset-disposition/toggle, POST /api/discovery/asset-disposition/run-step, "
+        "GET /api/discovery/work-items, GET /api/discovery/work-items/pool, "
+        "POST /api/discovery/work-items/create, POST /api/discovery/work-items/cancel, "
         "POST /api/discovery/asset-triage/complete, POST /api/discovery/asset-triage/complete-batch"
     )
     print("[experiments-ui] home_routes=GET /api/home/summary")

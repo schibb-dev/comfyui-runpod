@@ -219,7 +219,7 @@ Never triaged; disposition changed after last triage; (planned) work completed o
 | Triage index + dismiss batch | Shipped |
 | Fixed batch rotation (Next ≠ triage) | Shipped |
 | Re-triage on disposition change | Shipped |
-| Work item index (`work_items_index.json`) | **Phase 2** — see [BUCKET_MODEL_PHASE2_PLAN.md](./BUCKET_MODEL_PHASE2_PLAN.md) |
+| Work item index (`work_items_index.json`) | **Phase 2A shipped** — see [BUCKET_MODEL_PHASE2_PLAN.md](./BUCKET_MODEL_PHASE2_PLAN.md) |
 | Advance multi-route UI (pool toggles) | **Phase 2** |
 | Queue now as priority flag (not a pool) | **Phase 2** |
 | Dedicated pool pages (`/discovery/pools/*`) | **Phase 2** |
@@ -258,7 +258,7 @@ stateDiagram-v2
 
 **Cardinality:** one asset → **many** instances (e.g. Extend + Vary at once; or a second Vary retry after failure). Dedupe is per `(pool, recipe, cooldown)` — not “one job per clip ever.”
 
-**Store:** `work_items_index.json` under `output/_status/` (planned). Today orchestration visibility is inferred from factory jobs only.
+**Store:** `work_items_index.json` under `output/_status/` (Phase 2A). Orchestration visibility still joins factory jobs for live queue state.
 
 ---
 

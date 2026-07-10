@@ -1,6 +1,6 @@
 # Bucket model — Phase 2 implementation plan
 
-**Status:** Planned — **not implemented** (2026-07-09).
+**Status:** Phase **2A shipped** (work item index + APIs + run-step hook). Phase 2B–2E planned.
 
 **Model reference:** [`DISPOSITION_BUCKET_MODEL.md`](./DISPOSITION_BUCKET_MODEL.md) (expanded sections 11–16).
 
@@ -14,10 +14,10 @@ Move from “disposition commits intent” to **durable work instances** and **n
 
 Phase 2 delivers:
 
-1. `work_items_index.json` — instances linked to source assets and factory jobs
-2. Advance UI — **multi-route** (Extend + Vary toggles; Queue now = priority per instance)
-3. Bucket **pool pages** — computed views with actions
-4. Re-triage when work completes or new child outputs land
+1. `work_items_index.json` — instances linked to source assets and factory jobs — **2A done**
+2. Advance UI — **multi-route** (Extend + Vary toggles; Queue now = priority per instance) — 2B
+3. Bucket **pool pages** — computed views with actions — 2C
+4. Re-triage when work completes or new child outputs land — 2D
 
 ---
 
@@ -25,7 +25,7 @@ Phase 2 delivers:
 
 ### Module
 
-[`workspace/scripts/shape_factory_work_items.py`](../workspace/scripts/shape_factory_work_items.py) (new)
+[`workspace/scripts/shape_factory_work_items.py`](../workspace/scripts/shape_factory_work_items.py) (**shipped**)
 
 ### Schema: `work_items_index.json`
 
@@ -75,7 +75,7 @@ Path: `output/_status/work_items_index.json`
 - Creating an instance does **not** auto-complete triage; dismiss batch still governs triage.
 - Hook runner (`run-step`) creates/updates work item row when factory job is enqueued.
 
-### API (planned)
+### API (shipped)
 
 | Endpoint | Purpose |
 |----------|---------|
@@ -83,6 +83,8 @@ Path: `output/_status/work_items_index.json`
 | `GET /api/discovery/work-items/pool?pool=extend` | Pool view |
 | `POST /api/discovery/work-items/create` | Advance multi-route commit |
 | `POST /api/discovery/work-items/cancel` | Cancel draft/queued |
+
+Library / asset-ratings enrichment includes `work_items_open_count` and open rows when the index exists.
 
 ---
 
@@ -170,11 +172,11 @@ No new orchestration **runner** — read-only visibility over existing factory +
 
 | Step | Deliverable | Est. dependency |
 |------|-------------|-----------------|
-| 2A.1 | `shape_factory_work_items.py` + schema + tests | — |
-| 2A.2 | Hook runner writes work items on `run-step` | 2A.1 |
-| 2A.3 | `GET work-items` API + enrich library rows | 2A.1 |
+| 2A.1 | `shape_factory_work_items.py` + schema + tests | **done** |
+| 2A.2 | Hook runner writes work items on `run-step` | **done** |
+| 2A.3 | `GET work-items` API + enrich library rows | **done** |
 | 2B.1 | Advance multi-checkbox UI | 2A.1 |
-| 2B.2 | `POST work-items/create` from Advance commit | 2B.1 |
+| 2B.2 | `POST work-items/create` from Advance commit | 2B.1 (API ready) |
 | 2C.1 | `pool_views.yaml` + query engine | 2A.3 |
 | 2C.2 | First pool page: `/discovery/pools/orchestration` | 2C.1 |
 | 2C.3 | Remaining pool pages | 2C.1 |

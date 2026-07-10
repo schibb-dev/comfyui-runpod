@@ -314,6 +314,76 @@ export async function runDispositionStep(body: {
   return j;
 }
 
+export async function listWorkItems(params: {
+  source_relpath?: string;
+  source_group_id?: string;
+  pool?: string;
+  status?: string;
+  include_terminal?: boolean;
+}): Promise<WorkItemsListResponse> {
+  const q = new URLSearchParams();
+  if (params.source_relpath) q.set("source_relpath", params.source_relpath);
+  if (params.source_group_id) q.set("source_group_id", params.source_group_id);
+  if (params.pool) q.set("pool", params.pool);
+  if (params.status) q.set("status", params.status);
+  if (params.include_terminal === false) q.set("include_terminal", "0");
+  const r = await fetch(`/api/discovery/work-items?${q.toString()}`);
+  const j = (await r.json().catch(() => ({}))) as WorkItemsListResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`GET /api/discovery/work-items failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
+}
+
+export async function listWorkItemsPool(pool: string): Promise<WorkItemsListResponse> {
+  const q = new URLSearchParams({ pool });
+  const r = await fetch(`/api/discovery/work-items/pool?${q.toString()}`);
+  const j = (await r.json().catch(() => ({}))) as WorkItemsListResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`GET /api/discovery/work-items/pool failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
+}
+
+export async function createWorkItems(body: {
+  source_relpath?: string;
+  relpath?: string;
+  routes?: Array<{ step_id?: string; pool?: string; priority?: string; factory_family?: string; recipe?: string }>;
+  step_id?: string;
+  pool?: string;
+  disposition_entry?: string;
+  queue_now?: boolean;
+  force_new?: boolean;
+}): Promise<WorkItemsCreateResponse> {
+  const r = await fetch("/api/discovery/work-items/create", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as WorkItemsCreateResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`POST /api/discovery/work-items/create failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
+}
+
+export async function cancelWorkItem(body: { work_id: string; reason?: string }): Promise<WorkItemsCancelResponse> {
+  const r = await fetch("/api/discovery/work-items/cancel", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as WorkItemsCancelResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`POST /api/discovery/work-items/cancel failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
+}
+
 export async function recordAssetTriageComplete(body: { relpath: string }): Promise<RecordTriageCompleteResponse> {
   const r = await fetch("/api/discovery/asset-triage/complete", {
     method: "POST",
