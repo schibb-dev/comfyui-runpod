@@ -1,0 +1,259 @@
+# Disposition catalog — entry markers route into process steps with hooks.
+# Runtime edits merge into output/.../_status/disposition_catalog.json (UI/API).
+#
+# kind: entry | step
+# hook: none | replay | replay_front | extend | open_trim | trash | archive |
+#       extract_frame | sampler_pin | appetite_more | set_marker
+#
+version: 1
+schema: comfyui-runpod.disposition-catalog.v0
+
+promotion_rules:
+  high_quality_high_appetite:
+    quality_min: 4
+    appetite_in: [more, fast_track]
+    promote: [advance]
+    secondary: [extract]
+  low_quality_high_appetite:
+    quality_max: 3
+    appetite_in: [more, fast_track]
+    promote: [refine, investigate, extract]
+    secondary: []
+  low_quality_low_appetite:
+    quality_max: 2
+    appetite_in: [less, neutral]
+    promote: [retire]
+    secondary: []
+  high_quality_low_appetite:
+    quality_min: 4
+    appetite_in: [less, neutral]
+    promote: [retire]
+    secondary: []
+  fast_track:
+    appetite_in: [fast_track]
+    promote: [advance]
+    secondary: [refine]
+  conflicting_signals:
+    appetite_in: [more, fast_track]
+    quality_max: 3
+    predicted_max: 2.5
+    promote: [investigate]
+    secondary: [refine, extract]
+  derived_only:
+    explicit_quality_missing: true
+    promote: [investigate]
+    secondary: []
+
+markers:
+  - id: refine
+    kind: entry
+    process: refine
+    label: Refine
+    hint: Known fix — tweak recipe or edit in place
+    enabled: true
+    order: 1
+    hook: none
+    narrows_to: [refine.aspect, refine.quality, refine.edit]
+    promote_when: [low_quality_high_appetite]
+
+  - id: investigate
+    kind: entry
+    process: investigate
+    label: Investigate
+    hint: Name what's worth keeping or fixing
+    enabled: true
+    order: 2
+    hook: none
+    narrows_to: [investigate.to_extract, investigate.to_advance, investigate.to_refine, investigate.to_retire]
+    promote_when: [conflicting_signals, derived_only, low_quality_high_appetite]
+
+  - id: extract
+    kind: entry
+    process: extract
+    label: Extract
+    hint: Salvage a frame, clip, or reference
+    enabled: true
+    order: 3
+    hook: none
+    narrows_to: [extract.frame, extract.clip, extract.reference]
+    promote_when: [low_quality_high_appetite]
+
+  - id: advance
+    kind: entry
+    process: advance
+    label: Advance
+    hint: Feed the next pipeline stage from this file
+    enabled: true
+    order: 4
+    hook: none
+    narrows_to: [advance.extend, advance.vary, advance.queue_now]
+    promote_when: [high_quality_high_appetite, fast_track]
+
+  - id: retire
+    kind: entry
+    process: retire
+    label: Retire
+    hint: Remove from active work
+    enabled: true
+    order: 5
+    hook: none
+    narrows_to: [retire.trash, retire.archive]
+    promote_when: [low_quality_low_appetite, high_quality_low_appetite]
+
+  - id: park
+    kind: entry
+    process: park
+    label: Re-evaluate later
+    hint: Park for a future pass — no action now (use Park / dismiss batch to commit)
+    enabled: true
+    order: 6
+    hook: sampler_pin
+    promote_when: []
+
+  - id: refine.aspect
+    kind: step
+    process: refine
+    label: Aspect
+    hint: Tweak prompt / lora / facet — regen
+    enabled: true
+    order: 10
+    hook: replay
+
+  - id: refine.quality
+    kind: step
+    process: refine
+    label: Quality
+    hint: Iterate steps, model, upscale — regen
+    enabled: true
+    order: 11
+    hook: replay
+
+  - id: refine.edit
+    kind: step
+    process: refine
+    label: Edit
+    hint: Trim or loop in place
+    enabled: true
+    order: 12
+    hook: open_trim
+
+  - id: investigate.to_extract
+    kind: step
+    process: investigate
+    label: Salvage part
+    hint: Route to extract
+    enabled: true
+    order: 20
+    hook: set_marker
+    hook_args: { marker: extract }
+
+  - id: investigate.to_advance
+    kind: step
+    process: investigate
+    label: Push pipeline
+    hint: Route to advance
+    enabled: true
+    order: 21
+    hook: set_marker
+    hook_args: { marker: advance }
+
+  - id: investigate.to_refine
+    kind: step
+    process: investigate
+    label: Known fix
+    hint: Route to refine
+    enabled: true
+    order: 22
+    hook: set_marker
+    hook_args: { marker: refine }
+
+  - id: investigate.to_retire
+    kind: step
+    process: investigate
+    label: No signal
+    hint: Route to retire
+    enabled: true
+    order: 23
+    hook: set_marker
+    hook_args: { marker: retire }
+
+  - id: extract.frame
+    kind: step
+    process: extract
+    label: Hero frame
+    hint: Extract still to input pool (placeholder)
+    enabled: true
+    order: 30
+    hook: extract_frame
+
+  - id: extract.clip
+    kind: step
+    process: extract
+    label: Clip segment
+    hint: Spin off sub-segment (placeholder)
+    enabled: true
+    order: 31
+    hook: none
+
+  - id: extract.reference
+    kind: step
+    process: extract
+    label: Reference
+    hint: Register as reference still (placeholder)
+    enabled: true
+    order: 32
+    hook: extract_frame
+
+  - id: advance.extend
+    kind: step
+    process: advance
+    label: Extend
+    hint: Chain output into video slot
+    enabled: true
+    order: 40
+    hook: extend
+
+  - id: advance.vary
+    kind: step
+    process: advance
+    label: Vary
+    hint: Replay with variation at queue front
+    enabled: true
+    order: 41
+    hook: replay_front
+
+  - id: advance.queue_now
+    kind: step
+    process: advance
+    label: Queue now
+    hint: Plain replay immediately
+    enabled: true
+    order: 42
+    hook: replay
+
+  - id: retire.trash
+    kind: step
+    process: retire
+    label: Trash
+    hint: Move to og/_trash
+    enabled: true
+    order: 50
+    hook: trash
+
+  - id: retire.archive
+    kind: step
+    process: retire
+    label: Archive
+    hint: Mark archived (soft retire)
+    enabled: true
+    order: 51
+    hook: archive
+
+  - id: repair.workflow
+    kind: step
+    process: investigate
+    label: Repair workflow
+    hint: Workflow / binding issue
+    enabled: true
+    order: 60
+    hook: none

@@ -33,6 +33,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 RATING_RE = re.compile(r'xmp:Rating="(\d+)"')
 
+SOURCE_NODE_TYPES = frozenset(
+    {"LoadImage", "VHS_LoadVideo", "VHS_LoadVideoPath", "LoadImageWithFilename|pysssss"}
+)
+
 
 def parse_xmp_rating(xmp_path: Path) -> Optional[int]:
     try:
@@ -54,6 +58,21 @@ def _mx_slider_value(node: Dict[str, Any]) -> Optional[float]:
 
 def extract_prompt_png(png_path: Path) -> Optional[Dict[str, Any]]:
     try:
+        from comfy_meta_lib import extract_prompt_workflow_from_png_chunks, read_png_text_chunks
+    except ImportError:
+        return _extract_prompt_png_pil(png_path)
+    try:
+        chunks = read_png_text_chunks(png_path)
+        prompt_obj, _workflow_obj = extract_prompt_workflow_from_png_chunks(chunks)
+        if isinstance(prompt_obj, dict):
+            return prompt_obj
+    except Exception:
+        pass
+    return _extract_prompt_png_pil(png_path)
+
+
+def _extract_prompt_png_pil(png_path: Path) -> Optional[Dict[str, Any]]:
+    try:
         from PIL import Image
     except ImportError:
         return None
@@ -63,6 +82,21 @@ def extract_prompt_png(png_path: Path) -> Optional[Dict[str, Any]]:
         raw = im.info.get("prompt")
         if isinstance(raw, str) and raw.strip():
             return json.loads(raw)
+    except Exception:
+        return None
+    return None
+
+
+def extract_workflow_png(png_path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        from comfy_meta_lib import extract_prompt_workflow_from_png_chunks, read_png_text_chunks
+    except ImportError:
+        return None
+    try:
+        chunks = read_png_text_chunks(png_path)
+        _prompt_obj, workflow_obj = extract_prompt_workflow_from_png_chunks(chunks)
+        if isinstance(workflow_obj, dict):
+            return workflow_obj
     except Exception:
         return None
     return None
@@ -134,6 +168,100 @@ class Row:
     tea_rel1: Optional[float]
     speed_Xf: Optional[float]
     error: str
+
+
+def extract_source_paths_from_prompt(prompt: Dict[str, Any]) -> List[str]:
+    """Return path-like source strings from LoadImage / VHS loader nodes."""
+    out: List[str] = []
+    if not isinstance(prompt, dict):
+        return out
+    for node in prompt.values():
+        if not isinstance(node, dict):
+            continue
+        class_type = str(node.get("class_type") or "")
+        if class_type not in SOURCE_NODE_TYPES:
+            continue
+        inputs = node.get("inputs") or {}
+        if not isinstance(inputs, dict):
+            continue
+        for key in ("image", "video", "path"):
+            val = inputs.get(key)
+            if isinstance(val, str) and val.strip():
+                out.append(val.strip())
+    return out
+
+
+def normalize_source_basename(path_like: str) -> str:
+    s = str(path_like or "").strip().replace("\\", "/")
+    if not s:
+        return ""
+    return Path(s).name
+
+
+def output_relpath_keys_from_xmp(xmp_path: Path, og_root: Path) -> Tuple[str, str]:
+    """
+    Return (short_key, discovery_key) for a rated artifact.
+
+    short_key: ``og/YYYY-MM-DD/stem``
+    discovery_key: ``output/og/YYYY-MM-DD/stem`` (matches Discovery index relpaths)
+    """
+    og_root = og_root.resolve()
+    og_parent = og_root.parent
+    rel = xmp_path.resolve().relative_to(og_parent)
+    stem_rel = str(rel.with_suffix(""))
+    discovery_rel = f"output/{stem_rel}"
+    return stem_rel, discovery_rel
+
+
+def iter_rated_og_records(
+    root: Path,
+    *,
+    name_glob: str = "*.XMP",
+    days: int = 0,
+    ffprobe: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Scan og/ for rated XMPs; attach prompt + source paths when available."""
+    root = root.resolve()
+    if not root.is_dir():
+        return []
+
+    cut = None
+    if days and days > 0:
+        cut = datetime.now() - timedelta(days=days)
+
+    records: List[Dict[str, Any]] = []
+    for xmp in sorted(root.glob(f"**/{name_glob}")):
+        try:
+            mtime = datetime.fromtimestamp(xmp.stat().st_mtime)
+        except OSError:
+            continue
+        if cut and mtime < cut:
+            continue
+        rating = parse_xmp_rating(xmp)
+        if rating is None:
+            continue
+
+        stem_name = xmp.stem
+        stem_dir = xmp.parent
+        pr, src = extract_prompt_media(stem_dir, stem_name, ffprobe=ffprobe)
+        sources = extract_source_paths_from_prompt(pr) if pr else []
+        short_key, discovery_key = output_relpath_keys_from_xmp(xmp, root)
+
+        records.append(
+            {
+                "xmp_path": str(xmp),
+                "rating": rating,
+                "mtime_iso": mtime.strftime("%Y-%m-%dT%H:%M:%S"),
+                "prompt_source": src,
+                "prompt": pr,
+                "sources": sources,
+                "source_basenames": [normalize_source_basename(s) for s in sources if normalize_source_basename(s)],
+                "output_short_key": short_key,
+                "output_discovery_key": discovery_key,
+                "error": "" if pr else "no_prompt",
+            }
+        )
+    return records
 
 
 def collect_settings(prompt: Dict[str, Any]) -> Tuple[Optional[float], ...]:

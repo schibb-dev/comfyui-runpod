@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from snowflake_inventory import graph_fingerprint, is_litegraph_workflow, read_json
+from output_path_lib import flatten_output_prefix
 
 
 DEFAULT_DB = "/home/yuji/comfyui-runpod-data/comfyui_user/default/snowflake_factory.sqlite"
@@ -384,6 +385,7 @@ def apply_asset_to_workflow(workflow: Any, asset_path: Path, input_root: Path) -
 
 def strip_video_previews_and_redirect_outputs(workflow: Any, output_prefix: str) -> dict[str, int]:
     changes = {"stripped_video_previews": 0, "redirected_outputs": 0}
+    flat_prefix = flatten_output_prefix(str(output_prefix or "").rstrip("/"))
     for node in workflow.get("nodes") or []:
         if not isinstance(node, dict):
             continue
@@ -399,7 +401,7 @@ def strip_video_previews_and_redirect_outputs(workflow: Any, output_prefix: str)
         if node.get("mode", 0) not in (2, 4) and widgets.get("save_output") is not False:
             title = str(node.get("title") or "")
             suffix = "_PREVIEW" if "preview" in title.lower() or "raw" in title.lower() else "_FINAL"
-            widgets["filename_prefix"] = f"{output_prefix}{suffix}"
+            widgets["filename_prefix"] = f"{flat_prefix}{suffix}"
             widgets["save_metadata"] = True
             changes["redirected_outputs"] += 1
     return changes

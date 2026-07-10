@@ -2,11 +2,11 @@
 """
 Inventory ComfyUI "snowflake" workflows embedded in artifacts.
 
-This is an intentionally modest spike:
-- scan JSON/PNG/video artifacts
-- extract prompt/workflow metadata when present
-- store raw extracted payloads plus simple hashes in SQLite
-- print a "what exists?" report
+Scan strategy (og mp4/png pairs):
+- **Primary (`scan`)**: JSON + PNG only — workflow metadata lives in PNG text chunks.
+- **Catalog (`scan --catalog-orphan-videos`)**: record videos with no companion image (no ffprobe).
+- **Fallback (`scan-orphan-videos`)**: ffprobe embedded metadata on orphan videos only,
+  newest-first, with `--limit` for batch assessment.
 
 It does not try to define the final taxonomy. The goal is to reveal the corpus.
 """
@@ -18,6 +18,7 @@ import collections
 import datetime as _dt
 import hashlib
 import json
+import re
 import sqlite3
 import struct
 import subprocess
@@ -37,7 +38,9 @@ from comfy_meta_lib import (
 
 
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm"}
-ARTIFACT_EXTS = {".json", ".png"} | VIDEO_EXTS
+WORKFLOW_SCAN_EXTS = {".json", ".png"}
+COMPANION_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp")
+ARTIFACT_EXTS = WORKFLOW_SCAN_EXTS | VIDEO_EXTS
 
 
 def utc_now() -> str:
@@ -120,7 +123,60 @@ def video_dimensions_duration(path: Path) -> tuple[Optional[int], Optional[int],
     return None, None, duration
 
 
+def companion_image_for_video(path: Path) -> Optional[Path]:
+    """Same-stem sidecar image next to a video (png preferred in practice)."""
+    for ext in COMPANION_IMAGE_EXTS:
+        candidate = path.with_suffix(ext)
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def is_orphan_video(path: Path) -> bool:
+    return path.suffix.lower() in VIDEO_EXTS and companion_image_for_video(path) is None
+
+
+def iter_workflow_artifacts(roots: Iterable[Path], max_files: Optional[int]) -> Iterator[Path]:
+    """JSON + PNG files for fast workflow extraction (no video ffprobe)."""
+    count = 0
+    for root in roots:
+        if root.is_file():
+            candidates = [root]
+        else:
+            candidates = (p for p in root.rglob("*") if p.is_file())
+        for path in candidates:
+            if path.suffix.lower() not in WORKFLOW_SCAN_EXTS:
+                continue
+            yield path
+            count += 1
+            if max_files is not None and count >= max_files:
+                return
+
+
+def iter_orphan_videos(
+    roots: Iterable[Path],
+    max_files: Optional[int],
+    *,
+    reverse_chronological: bool = True,
+) -> Iterator[Path]:
+    """Videos with no companion image; default newest mtime first."""
+    orphans: list[Path] = []
+    for root in roots:
+        if root.is_file():
+            candidates = [root] if is_orphan_video(root) else []
+        else:
+            candidates = [p for p in root.rglob("*") if p.is_file() and is_orphan_video(p)]
+        orphans.extend(candidates)
+    if reverse_chronological:
+        orphans.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    else:
+        orphans.sort()
+    limit = max_files if max_files is not None else len(orphans)
+    yield from orphans[:limit]
+
+
 def iter_artifacts(roots: Iterable[Path], max_files: Optional[int]) -> Iterator[Path]:
+    """Legacy iterator: all artifact kinds (json, png, video)."""
     count = 0
     for root in roots:
         if root.is_file():
@@ -729,6 +785,14 @@ def extract_from_json(path: Path) -> tuple[str, Optional[Any], Optional[Any], li
     return "no_workflow", None, None, sorted(obj.keys()) if isinstance(obj, dict) else [], None
 
 
+def extract_workflow_from_png(path: Path) -> tuple[Optional[Any], Optional[Any], list[str], Optional[int], Optional[int]]:
+    media_width, media_height = png_dimensions(path)
+    chunks = read_png_text_chunks(path)
+    metadata_keys = sorted(chunks.keys())
+    prompt, workflow = extract_prompt_workflow_from_png_chunks(chunks)
+    return workflow, prompt, metadata_keys, media_width, media_height
+
+
 def scan_one(con: sqlite3.Connection, path: Path, store_payloads: bool) -> None:
     ext = path.suffix.lower()
     status = "no_workflow"
@@ -745,33 +809,7 @@ def scan_one(con: sqlite3.Connection, path: Path, store_payloads: bool) -> None:
         if ext == ".json":
             status, workflow, prompt, metadata_keys, error = extract_from_json(path)
         elif ext == ".png":
-            media_width, media_height = png_dimensions(path)
-            chunks = read_png_text_chunks(path)
-            metadata_keys = sorted(chunks.keys())
-            prompt, workflow = extract_prompt_workflow_from_png_chunks(chunks)
-            status = "ok" if workflow is not None or prompt is not None else "no_workflow"
-        elif ext in VIDEO_EXTS:
-            tags: dict[str, Any] = {}
-            try:
-                media_width, media_height, media_duration = video_dimensions_duration(path)
-                tags = ffprobe_format_tags(path)
-            except Exception as exc:
-                error = f"ffprobe_media_info: {exc}"
-            if tags:
-                metadata_keys = sorted(tags.keys())
-                prompt, workflow = extract_prompt_workflow_from_tags(tags)
-
-            # Host machines may not have ffprobe installed, and many ComfyUI videos
-            # have same-stem PNG sidecars containing the exact prompt/workflow.
-            if workflow is None and prompt is None:
-                companion_png = path.with_suffix(".png")
-                if companion_png.exists():
-                    chunks = read_png_text_chunks(companion_png)
-                    metadata_keys = [f"companion_png:{k}" for k in sorted(chunks.keys())]
-                    prompt, workflow = extract_prompt_workflow_from_png_chunks(chunks)
-                    if media_width is None or media_height is None:
-                        media_width, media_height = png_dimensions(companion_png)
-                    snapshot_source_kind = "video_companion_png"
+            workflow, prompt, metadata_keys, media_width, media_height = extract_workflow_from_png(path)
             status = "ok" if workflow is not None or prompt is not None else "no_workflow"
         else:
             status = "unsupported"
@@ -793,6 +831,64 @@ def scan_one(con: sqlite3.Connection, path: Path, store_payloads: bool) -> None:
         insert_snapshot(con, artifact_id, snapshot_source_kind, workflow, prompt, store_payloads)
 
 
+def catalog_orphan_video(con: sqlite3.Connection, path: Path) -> str:
+    """
+    Record a video that has no companion image. No ffprobe — status only.
+    Returns the artifact status written ('orphan_video_pending').
+    """
+    upsert_artifact(
+        con,
+        path,
+        "orphan_video_pending",
+        None,
+        None,
+        None,
+        None,
+        [],
+    )
+    return "orphan_video_pending"
+
+
+def scan_one_orphan_video(con: sqlite3.Connection, path: Path, store_payloads: bool) -> str:
+    """
+    ffprobe-only workflow extraction for videos without a companion image.
+    Returns final status: ok | no_workflow | extract_error.
+    """
+    status = "no_workflow"
+    error = None
+    workflow = None
+    prompt = None
+    metadata_keys: list[str] = []
+    media_width = None
+    media_height = None
+    media_duration = None
+
+    try:
+        media_width, media_height, media_duration = video_dimensions_duration(path)
+        tags = ffprobe_format_tags(path)
+        if tags:
+            metadata_keys = sorted(tags.keys())
+            prompt, workflow = extract_prompt_workflow_from_tags(tags)
+        status = "ok" if workflow is not None or prompt is not None else "no_workflow"
+    except Exception as exc:
+        status = "extract_error"
+        error = str(exc)
+
+    artifact_id = upsert_artifact(
+        con,
+        path,
+        status,
+        error,
+        media_width,
+        media_height,
+        media_duration,
+        metadata_keys,
+    )
+    if workflow is not None or prompt is not None:
+        insert_snapshot(con, artifact_id, "video_embedded", workflow, prompt, store_payloads)
+    return status
+
+
 def extract_snapshot_payload_from_artifact(path: Path) -> tuple[str, Any, Any]:
     ext = path.suffix.lower()
     source_kind = artifact_kind(path)
@@ -805,27 +901,51 @@ def extract_snapshot_payload_from_artifact(path: Path) -> tuple[str, Any, Any]:
         if status not in {"ok", "no_workflow"}:
             raise RuntimeError(error or f"failed to extract JSON metadata from {path}")
     elif ext == ".png":
-        chunks = read_png_text_chunks(path)
-        prompt, workflow = extract_prompt_workflow_from_png_chunks(chunks)
+        workflow, prompt, _metadata_keys, _w, _h = extract_workflow_from_png(path)
     elif ext in VIDEO_EXTS:
-        try:
-            tags = ffprobe_format_tags(path)
-            prompt, workflow = extract_prompt_workflow_from_tags(tags)
-        except Exception as exc:
-            error = f"ffprobe_format_tags: {exc}"
-
-        if workflow is None and prompt is None:
-            companion_png = path.with_suffix(".png")
-            if companion_png.exists():
-                chunks = read_png_text_chunks(companion_png)
-                prompt, workflow = extract_prompt_workflow_from_png_chunks(chunks)
-                source_kind = "video_companion_png"
+        companion = companion_image_for_video(path)
+        if companion is not None:
+            workflow, prompt, _metadata_keys, _w, _h = extract_workflow_from_png(companion)
+            source_kind = "video_companion_png"
+        else:
+            try:
+                tags = ffprobe_format_tags(path)
+                prompt, workflow = extract_prompt_workflow_from_tags(tags)
+                source_kind = "video_embedded"
+            except Exception as exc:
+                error = f"ffprobe_format_tags: {exc}"
         if workflow is None and prompt is None and error:
             raise RuntimeError(error)
     else:
         raise RuntimeError(f"unsupported artifact type: {path.suffix}")
 
     return source_kind, workflow, prompt
+
+
+def catalog_orphan_videos_in_roots(
+    con: sqlite3.Connection,
+    roots: list[Path],
+    *,
+    progress: int,
+) -> int:
+    """Walk trees and index videos lacking companion images (no workflow extraction)."""
+    cataloged = 0
+    seen: set[str] = set()
+    for root in roots:
+        if root.is_file():
+            candidates = [root] if is_orphan_video(root) else []
+        else:
+            candidates = [p for p in root.rglob("*") if p.is_file() and is_orphan_video(p)]
+        for path in candidates:
+            key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            catalog_orphan_video(con, path)
+            cataloged += 1
+            if progress and cataloged % progress == 0:
+                print(f"cataloged {cataloged} orphan videos...", file=sys.stderr)
+    return cataloged
 
 
 def scan(args: argparse.Namespace) -> int:
@@ -835,14 +955,107 @@ def scan(args: argparse.Namespace) -> int:
         reset_db(con)
 
     scanned = 0
-    for path in iter_artifacts(roots, args.max_files):
+    for path in iter_workflow_artifacts(roots, args.max_files):
         scan_one(con, path, store_payloads=not args.no_store_payloads)
         scanned += 1
         if args.progress and scanned % args.progress == 0:
-            print(f"scanned {scanned} artifacts...", file=sys.stderr)
+            print(f"scanned {scanned} workflow artifacts...", file=sys.stderr)
+
+    cataloged = 0
+    if not args.skip_orphan_catalog:
+        cataloged = catalog_orphan_videos_in_roots(con, roots, progress=args.progress or 0)
+
     con.commit()
-    print(f"scanned_artifacts={scanned}")
+    print(f"scanned_workflow_artifacts={scanned}")
+    print(f"cataloged_orphan_videos={cataloged}")
     print(f"db={args.db}")
+    return 0
+
+
+def scan_orphan_videos(args: argparse.Namespace) -> int:
+    roots = [Path(p).expanduser().resolve() for p in args.paths]
+    con = open_db(Path(args.db))
+
+    orphans = list(iter_orphan_videos(roots, args.limit, reverse_chronological=True))
+    if not orphans:
+        print("orphan_videos=0")
+        return 0
+
+    stats: dict[str, int] = collections.Counter()
+    scanned = 0
+    for path in orphans:
+        status = scan_one_orphan_video(con, path, store_payloads=not args.no_store_payloads)
+        stats[status] += 1
+        scanned += 1
+        if args.progress and scanned % args.progress == 0:
+            print(f"probed {scanned}/{len(orphans)} orphan videos...", file=sys.stderr)
+    con.commit()
+
+    ok = stats.get("ok", 0)
+    print("# Orphan video embedded-workflow probe\n")
+    print(f"- Candidates (newest first): {len(orphans)}")
+    print(f"- Probed: {scanned}")
+    print(f"- Embedded workflow found (`ok`): {ok}")
+    print(f"- No embedded workflow (`no_workflow`): {stats.get('no_workflow', 0)}")
+    print(f"- Probe errors (`extract_error`): {stats.get('extract_error', 0)}")
+    if scanned:
+        print(f"- Hit rate: {ok / scanned * 100:.1f}%")
+    if orphans[: args.examples]:
+        print("\n## Newest examples")
+        for path in orphans[: args.examples]:
+            row = con.execute("SELECT status, error FROM artifacts WHERE path = ?", (str(path),)).fetchone()
+            status = row[0] if row is not None else "?"
+            err = f" error=`{row[1]}`" if row is not None and row[1] else ""
+            print(f"- `{path}` status=`{status}`{err}")
+    print(f"\ndb={args.db}")
+    return 0
+
+
+def orphan_videos_report(args: argparse.Namespace) -> int:
+    con = open_db(Path(args.db))
+    con.row_factory = sqlite3.Row
+
+    print("# Orphan videos (no companion image)\n")
+    print(f"Database: `{args.db}`\n")
+
+    pending = con.execute(
+        "SELECT COUNT(*) FROM artifacts WHERE status = 'orphan_video_pending'"
+    ).fetchone()[0]
+    probed_ok = con.execute(
+        """
+        SELECT COUNT(*) FROM artifacts a
+        JOIN workflow_snapshots s ON s.artifact_id = a.id
+        WHERE s.source_kind = 'video_embedded'
+        """
+    ).fetchone()[0]
+    probed_no = con.execute(
+        """
+        SELECT COUNT(*) FROM artifacts
+        WHERE kind = 'video' AND status = 'no_workflow'
+          AND id NOT IN (SELECT artifact_id FROM workflow_snapshots)
+        """
+    ).fetchone()[0]
+
+    print(f"- Pending ffprobe (`orphan_video_pending`): {pending}")
+    print(f"- Embedded workflow extracted (`video_embedded` snapshots): {probed_ok}")
+    print(f"- Probed, no workflow: {probed_no}")
+
+    limit = args.limit
+    pending_rows = con.execute(
+        """
+        SELECT path, mtime, status, error
+        FROM artifacts
+        WHERE status = 'orphan_video_pending'
+        ORDER BY mtime DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    if pending_rows:
+        print(f"\n## Newest pending orphan videos (limit {limit})")
+        for row in pending_rows:
+            mtime = _dt.datetime.fromtimestamp(row["mtime"], tz=_dt.timezone.utc).strftime("%Y-%m-%d")
+            print(f"- `{row['path']}` mtime={mtime}")
     return 0
 
 
@@ -1525,6 +1738,156 @@ def template_candidate(args: argparse.Namespace) -> int:
     return 0
 
 
+def family_slug_from_example(example_path: str, graph_hash: str) -> str:
+    """Derive a stable catalog slug from a representative artifact path."""
+    stem = Path(example_path).stem
+    for suffix in (".template.cleaned", ".template", ".cleaned", ".workflow"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+    stem = stem.replace("%filename%", "filename")
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", stem).strip("-._")
+    if not slug:
+        slug = f"graph-{graph_hash[:12]}"
+    if slug.lower() in {"base", "base-prompt"}:
+        slug = f"tune-{graph_hash[:8]}"
+    return slug[:72]
+
+
+def mainline_graph_families(con: sqlite3.Connection, min_artifacts: int) -> list[sqlite3.Row]:
+    con.row_factory = sqlite3.Row
+    return list(
+        con.execute(
+            """
+            SELECT
+                s.graph_hash,
+                COUNT(*) AS artifacts,
+                MAX(s.node_count) AS node_count,
+                MAX(s.link_count) AS link_count,
+                MIN(a.path) AS example_path
+            FROM workflow_snapshots s
+            JOIN artifacts a ON a.id = s.artifact_id
+            WHERE s.graph_hash IS NOT NULL
+            GROUP BY s.graph_hash
+            HAVING artifacts >= ?
+            ORDER BY artifacts DESC, graph_hash
+            """,
+            (min_artifacts,),
+        )
+    )
+
+
+def catalog_mainline(args: argparse.Namespace) -> int:
+    db_path = Path(args.db).expanduser().resolve()
+    candidates_dir = Path(args.candidates_dir).expanduser().resolve()
+    workflow_dir = Path(args.workflow_dir).expanduser().resolve()
+    index_path = Path(args.index).expanduser().resolve()
+    candidates_dir.mkdir(parents=True, exist_ok=True)
+    workflow_dir.mkdir(parents=True, exist_ok=True)
+
+    con = open_db(db_path)
+    families = mainline_graph_families(con, args.min_artifacts)
+    if not families:
+        print(f"No graph families with >= {args.min_artifacts} artifacts.")
+        return 1
+
+    used_slugs: dict[str, str] = {}
+    index_rows: list[dict[str, Any]] = []
+    ok = 0
+    failed = 0
+
+    print(f"# Catalog mainline families (>= {args.min_artifacts} artifacts)\n")
+    print(f"- Families: {len(families)}")
+    print(f"- Candidates: `{candidates_dir}`")
+    print(f"- Readable workflows: `{workflow_dir}`\n")
+
+    for row in families:
+        graph_hash = str(row["graph_hash"])
+        example_path = str(row["example_path"])
+        base_slug = family_slug_from_example(example_path, graph_hash)
+        slug = base_slug
+        if slug in used_slugs and used_slugs[slug] != graph_hash:
+            slug = f"{base_slug}-{graph_hash[:8]}"
+        used_slugs[slug] = graph_hash
+
+        candidate_path = candidates_dir / f"{slug}.candidate.json"
+        readable_name = f"{slug}-readable"
+        readable_path = workflow_dir / f"{readable_name}.json"
+
+        entry: dict[str, Any] = {
+            "slug": slug,
+            "graph_hash": graph_hash,
+            "artifacts": int(row["artifacts"]),
+            "node_count": row["node_count"],
+            "link_count": row["link_count"],
+            "example_path": example_path,
+            "candidate_path": str(candidate_path),
+            "readable_path": str(readable_path),
+        }
+
+        if args.skip_existing and candidate_path.exists() and readable_path.exists():
+            entry["status"] = "skipped_existing"
+            index_rows.append(entry)
+            print(f"skip `{slug}` artifacts={row['artifacts']}")
+            continue
+
+        print(f"catalog `{slug}` artifacts={row['artifacts']} example=`{Path(example_path).name}`")
+        try:
+            rc = template_candidate(
+                argparse.Namespace(
+                    db=str(db_path),
+                    graph_hash=graph_hash,
+                    name=slug,
+                    output=str(candidate_path),
+                    variant_limit=args.variant_limit,
+                    include_workflow=args.include_workflow,
+                    include_prompt=args.include_prompt,
+                )
+            )
+            if rc != 0:
+                raise RuntimeError(f"template-candidate failed (exit {rc})")
+            rc = workflow_draft(
+                argparse.Namespace(
+                    db=str(db_path),
+                    candidate=str(candidate_path),
+                    source_workflow=None,
+                    name=readable_name,
+                    output=str(readable_path),
+                    output_prefix=args.output_prefix,
+                    relayout=args.relayout,
+                )
+            )
+            if rc != 0:
+                raise RuntimeError(f"workflow-draft failed (exit {rc})")
+            entry["status"] = "ok"
+            ok += 1
+        except Exception as exc:
+            entry["status"] = "error"
+            entry["error"] = str(exc)
+            failed += 1
+            print(f"error `{slug}`: {exc}", file=sys.stderr)
+        index_rows.append(entry)
+
+    index_doc = {
+        "schema_version": "comfyui-runpod.catalog-mainline.v0",
+        "created_at": utc_now(),
+        "min_artifacts": args.min_artifacts,
+        "families": index_rows,
+        "summary": {
+            "total": len(families),
+            "ok": ok,
+            "failed": failed,
+            "skipped": sum(1 for r in index_rows if r.get("status") == "skipped_existing"),
+        },
+    }
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    index_path.write_text(json.dumps(index_doc, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    print(f"\ncatalog_mainline_ok={ok}")
+    print(f"catalog_mainline_failed={failed}")
+    print(f"index={index_path}")
+    return 0 if failed == 0 else 1
+
+
 def workflow_from_candidate(candidate: dict[str, Any]) -> Any:
     representative = candidate.get("representative") if isinstance(candidate.get("representative"), dict) else {}
     artifact_path = representative.get("artifact_path")
@@ -1997,13 +2360,75 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    scan_p = sub.add_parser("scan", help="Scan artifacts into the SQLite index")
+    scan_p = sub.add_parser("scan", help="Scan JSON/PNG artifacts for embedded workflows (fast; no video ffprobe)")
     scan_p.add_argument("paths", nargs="+", help="Files or directories to scan")
     scan_p.add_argument("--max-files", type=int, default=None, help="Stop after scanning N matching artifacts")
     scan_p.add_argument("--reset", action="store_true", help="Clear existing index before scanning")
     scan_p.add_argument("--no-store-payloads", action="store_true", help="Store hashes/summaries only, not raw JSON payloads")
     scan_p.add_argument("--progress", type=int, default=500, help="Print progress every N artifacts; 0 disables")
+    scan_p.add_argument(
+        "--skip-orphan-catalog",
+        action="store_true",
+        help="Do not record videos lacking a companion image (orphan_video_pending)",
+    )
     scan_p.set_defaults(func=scan)
+
+    orphan_scan_p = sub.add_parser(
+        "scan-orphan-videos",
+        help="ffprobe orphan videos (no companion image) for embedded workflows; newest first",
+    )
+    orphan_scan_p.add_argument("paths", nargs="+", help="Files or directories to scan")
+    orphan_scan_p.add_argument(
+        "--limit",
+        type=int,
+        default=100,
+        help="Max orphan videos to probe (newest mtime first); assess hit rate on a batch",
+    )
+    orphan_scan_p.add_argument("--no-store-payloads", action="store_true", help="Store hashes/summaries only")
+    orphan_scan_p.add_argument("--progress", type=int, default=25, help="Print progress every N probes; 0 disables")
+    orphan_scan_p.add_argument("--examples", type=int, default=10, help="Newest paths to list in summary")
+    orphan_scan_p.set_defaults(func=scan_orphan_videos)
+
+    orphan_report_p = sub.add_parser("orphan-videos", help="Report cataloged orphan videos (no companion image)")
+    orphan_report_p.add_argument("--limit", type=int, default=20, help="Newest pending orphans to list")
+    orphan_report_p.set_defaults(func=orphan_videos_report)
+
+    catalog_p = sub.add_parser(
+        "catalog-mainline",
+        help="Export template candidates + readable workflow drafts for all mainline graph families",
+    )
+    catalog_p.add_argument(
+        "--min-artifacts",
+        type=int,
+        default=100,
+        help="Minimum artifacts for a graph family to include (default 100)",
+    )
+    catalog_p.add_argument(
+        "--candidates-dir",
+        default="/home/yuji/src/comfyui-runpod/.data/template_candidates",
+        help="Directory for template candidate JSON bundles",
+    )
+    catalog_p.add_argument(
+        "--workflow-dir",
+        default="/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog",
+        help="Directory for ComfyUI-loadable readable workflow JSONs",
+    )
+    catalog_p.add_argument(
+        "--index",
+        default="/home/yuji/src/comfyui-runpod/.data/catalog_mainline_index.json",
+        help="Manifest index path",
+    )
+    catalog_p.add_argument("--variant-limit", type=int, default=10, help="Preset variants per layer in candidates")
+    catalog_p.add_argument("--include-workflow", action="store_true", help="Embed full LiteGraph workflow in candidates")
+    catalog_p.add_argument("--include-prompt", action="store_true", help="Embed representative API prompt in candidates")
+    catalog_p.add_argument("--relayout", action="store_true", help="Re-layout nodes in readable workflow drafts")
+    catalog_p.add_argument(
+        "--output-prefix",
+        default="output/output/og/%date:yyyy-MM-dd%",
+        help="Default output prefix root for readable workflow drafts",
+    )
+    catalog_p.add_argument("--skip-existing", action="store_true", help="Skip families already exported")
+    catalog_p.set_defaults(func=catalog_mainline)
 
     report_p = sub.add_parser("report", help="Print an inventory report from the SQLite index")
     report_p.add_argument("--limit", type=int, default=20, help="Limit rows in top-N sections")
