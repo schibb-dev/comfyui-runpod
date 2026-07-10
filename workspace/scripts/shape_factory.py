@@ -1550,15 +1550,39 @@ def apply_api_slot_bindings(
                 raise RuntimeError(f"prompt profile is not JSON object: {asset_path}")
             pos = str(profile.get("positive") or "")
             neg = str(profile.get("negative") or "")
-            for node in prompt.values():
+            pos_spec = binding.get("positive") if isinstance(binding.get("positive"), dict) else {}
+            neg_spec = binding.get("negative") if isinstance(binding.get("negative"), dict) else {}
+            pos_id = pos_spec.get("node_id")
+            neg_id = neg_spec.get("node_id")
+            pos_key = str(pos_spec.get("input") or pos_spec.get("input_key") or "text")
+            neg_key = str(neg_spec.get("input") or neg_spec.get("input_key") or "text")
+
+            def _set_text(node_key: Any, text: str, input_key: str) -> bool:
+                node = prompt.get(str(node_key))
                 if not isinstance(node, dict):
-                    continue
-                ct = str(node.get("class_type") or "")
+                    return False
                 inputs = node.setdefault("inputs", {})
-                if ct == "CLIPTextEncode" and isinstance(inputs.get("text"), str):
-                    inputs["text"] = neg
-                if ct in {"Text Multiline", "PrimitiveStringMultiline"}:
-                    inputs["text"] = pos
+                inputs[input_key] = text
+                return True
+
+            if pos_id is not None or neg_id is not None:
+                if pos_id is not None and not _set_text(pos_id, pos, pos_key):
+                    warnings.append(f"prompt positive node {pos_id!r} not found in API prompt")
+                if neg_id is not None and not _set_text(neg_id, neg, neg_key):
+                    warnings.append(f"prompt negative node {neg_id!r} not found in API prompt")
+            else:
+                warnings.append(
+                    f"prompt_bundle for slot {slot!r} missing node_id; falling back to class_type paint"
+                )
+                for node in prompt.values():
+                    if not isinstance(node, dict):
+                        continue
+                    ct = str(node.get("class_type") or "")
+                    inputs = node.setdefault("inputs", {})
+                    if ct == "CLIPTextEncode" and isinstance(inputs.get("text"), str):
+                        inputs["text"] = neg
+                    if ct in {"Text Multiline", "PrimitiveStringMultiline"}:
+                        inputs["text"] = pos
             if not pos and not neg:
                 warnings.append(f"empty prompt profile: {asset_path.name}")
 
