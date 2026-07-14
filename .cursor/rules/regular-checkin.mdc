@@ -1,0 +1,13 @@
+---
+description: Prefer small, regular git check-ins over large catch-up dumps
+alwaysApply: true
+---
+
+# Regular check-ins
+
+- Prefer **small, themed commits** while work is fresh (one logical change). See `docs/CHECKIN_STRATEGY.md`.
+- When a spike or feature slice is usable (code + tests + docs that belong with it), **offer to commit** before starting the next slice — don't wait for end-of-week dumps.
+- After a working session with substantive edits, remind once if there are still uncommitted project files.
+- **Never** stage secrets or runtime data: `.env*`, tokens, `.data/`, `tmp/`, `docs/.build/`, `workspace/output/`, `workspace/input/`, `node_modules/`, `custom_nodes/` trees.
+- Only create commits when the user asks (or explicitly agrees to a proposed commit batch). Group with clear `feat:` / `fix:` / `docs:` / `chore:` messages.
+- Do not push unless asked.

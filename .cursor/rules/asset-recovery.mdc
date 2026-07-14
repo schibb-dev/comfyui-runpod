@@ -1,0 +1,45 @@
+---
+description: How to recover missing/lost source images (content-addressed) for this project
+alwaysApply: true
+---
+
+# Recovering missing source assets
+
+Input stills in this project are **content-addressed**: the filename embeds the
+file's `sha256`, usually behind a short prefix (`SSS`/`XXX`/`YYY`/`000-`/
+`FAVBBBBB`/`qqqpp-`/etc.). Example: `SSS3ba73ecb…216d4.jpeg` → the 64-hex
+segment is `sha256(bytes)`.
+
+When you hit a missing/lost asset (e.g. a job/backfill `LoadImage` path that no
+longer exists), try to recover it in this order:
+
+1. **Local**: search all mounted roots for the 64-hex hash as a filename
+   substring (covers any prefix), including `/mnt/e/unsorted` (downloaded-but-
+   unmigrated assets often live under `/mnt/e/unsorted/Downloads/perchance.org/`).
+2. **Remote fallback** — download by the bare hash from this URL pattern:
+
+   ```
+   https://aigc.uploads.dev/image/<sha256>.jpeg
+   ```
+
+## Procedure
+
+For each missing name: extract the 64-hex `sha256`, fetch the URL above,
+**verify** `sha256(downloaded_bytes) == hash` (reject on mismatch), then save
+with the **original prefixed filename** the jobs reference into
+`/home/yuji/comfyui-runpod-data/input/`. Re-run the relevant
+`shape_factory.py backfill-jobs --family <slug> --apply` so the recovered stills
+register (by `content_id`) and light up in the factory map.
+
+```python
+import hashlib, re, urllib.request
+from pathlib import Path
+h = re.search(r"[0-9a-f]{64}", name).group(0)
+data = urllib.request.urlopen(f"https://aigc.uploads.dev/image/{h}.jpeg", timeout=45).read()
+assert hashlib.sha256(data).hexdigest() == h, "sha mismatch — do not save"
+(Path("/home/yuji/comfyui-runpod-data/input") / name).write_bytes(data)
+```
+
+Because names are content hashes, integrity verification is exact — always
+verify before saving. This is the remote leg of the Phase 2 "locate" ladder in
+`docs/ASSET_LIFECYCLE_PLAN.md`.
