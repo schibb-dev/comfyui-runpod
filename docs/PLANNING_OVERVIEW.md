@@ -66,8 +66,8 @@ Each program has: **intent**, **today**, **next** (actionable), **later**, **key
 | **Today** | Discovery library (og/wip), path search, lineage UI, workflow facets, trim/health; **no** CLIP/Florence index |
 | **Next (spike)** | ~12 videos → **offline time-slice captions** (RunPod, SSH script, NDJSON); judge tag quality vs whole-video |
 | **Later** | Sidecar index + grep; CLIP optional; HITL guided review; taxonomy versions; ANN + BM25 product search |
-| **Docs** | [`DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md`](./DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md) |
-| **Not now** | Temporal NL (“X then Y”); identity lane; full LoRA |
+| **Docs** | [`DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md`](./DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md), [`SOURCE_FACET_SIMILARITY_PLAN.md`](./SOURCE_FACET_SIMILARITY_PLAN.md) |
+| **Not now** | Temporal NL (“X then Y”); full LoRA; face-embedding identity provider |
 
 **GPU:** batch worker **off** interactive Comfy.
 

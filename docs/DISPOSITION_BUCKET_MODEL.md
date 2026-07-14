@@ -127,21 +127,21 @@ The batch is a **stable working set** until you dismiss it.
 ```mermaid
 stateDiagram-v2
   direction LR
-  [*] --> InBatch: sampler draws batch
+  [*] --> InBatch: sampler draws needs-rating batch
   InBatch --> InBatch: Next Prev Skip rotate
   InBatch --> Dismissed: Dismiss batch
-  Dismissed --> InPool: no disposition on clip
-  Dismissed --> Committed: has entry disposition
-  Committed --> InPool: disposition changes later
-  InPool --> InBatch: sampled again needs_triage
+  Dismissed --> InPool: missing quality or appetite
+  Dismissed --> Committed: quality + appetite set
+  InPool --> InBatch: sampled again needs_rating
 ```
 
 **Rules:**
 
-- **Next / Prev / Skip** only navigate inside the batch — they do **not** record triage or remove clips from the batch.
-- **Dismiss batch** calls `POST /api/discovery/asset-triage/complete-batch` for every clip in the batch; the server **commits triage only** for clips with an entry disposition.
-- Clips without disposition are unchanged in `triage_index` and stay eligible for future review batches.
-- **Re-triage:** a clip re-enters the review pool when `disposition_updated_at > last_triaged_at` (disposition changed after last committed triage).
+- **Next / Prev / Skip** only navigate inside the batch — they do **not** dismiss the batch.
+- **Dismiss batch** calls `POST /api/discovery/asset-triage/complete-batch` for every clip in the batch; the server **commits** clips that have **explicit quality + appetite**.
+- Clips missing quality or appetite stay eligible for future rate batches.
+- **Disposition** may be set during rating as a convenience; it does **not** define “done” for the rate queue.
+- A later **dispose** queue can target rated clips that still lack an entry disposition.
 
 ---
 

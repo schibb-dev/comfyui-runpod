@@ -51,7 +51,7 @@ Path: `output/_status/work_items_index.json`
       "factory_family": "FB9_GEX2",
       "child_relpaths": [],
       "error": null,
-      "idempotency_key": "extend:og:stem:foo:FB9_GEX2:idle-small-motions"
+      "idempotency_key": "extend:og:stem:foo:FB9_GEX2:catalog-default"
     }
   ]
 }

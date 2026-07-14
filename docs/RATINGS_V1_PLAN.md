@@ -35,8 +35,33 @@ A single 1–5 star conflates two different judgments. We split them:
 
 | Axis | Question | Store | Scale | Drives |
 |------|----------|-------|-------|--------|
-| **Quality** ("do more OF this") | Is this *well-executed*? | XMP `xmp:Rating` → `ratings_index.json` | 1–5 stars | **Replay** — reproduce the recipe |
+| **Quality** ("do more OF this") | Is this *well-executed*? | XMP `xmp:Rating` → `ratings_index.json` | 1–5 stars (see sub-axes) | **Replay** — reproduce the recipe |
 | **Appetite** ("do more WITH this") | Do I *want more of this direction* (even if rough)? | `appetite_index.json` | `less < neutral < more < fast_track` | **Derive/Extend** — build new descendants from it |
+
+### Quality sub-axes (added 2026-07-10)
+
+Single quality is insufficient. Explicit quality is three 1–5 axes; `explicit` is their rounded mean (also written to XMP for external tools):
+
+| Axis id | UI label | Question |
+|---------|----------|----------|
+| `subject_beauty` | Subject | How good is the subject / look of the person? |
+| `render_quality` | Render | How clean is the image/video render? |
+| `action_quality` | Action | How good is the motion / action? |
+
+Stored on each `by_output_relpath` row as:
+
+```json
+{
+  "explicit": 4,
+  "axes": {
+    "subject_beauty": 5,
+    "render_quality": 3,
+    "action_quality": 4
+  }
+}
+```
+
+**Rate-queue done** = all three axes set **and** appetite. Legacy rows with only `explicit` (no `axes`) are incomplete and re-enter the rate pool. Heuristics / disposition / hourly keep consuming the aggregate `explicit`.
 
 Key properties:
 
@@ -71,13 +96,13 @@ python3 shape_factory.py heuristics build           # reads ratings + appetite +
 
 | Layer | Question | Store | UI |
 |-------|----------|-------|-----|
-| **Quality ★** | How well executed? | XMP → `ratings_index.json` | Star bar |
+| **Quality ★** | Subject / Render / Action (aggregate → XMP) | `ratings_index.json` (+ XMP) | Three star rows |
 | **Appetite** | Want more in this direction? | `appetite_index.json` | Appetite bar |
 | **Disposition** | What work is committed next? | `disposition_index.json` | Entry chips + router steps |
 
 ### Process flow (rate page)
 
-1. Watch clip → set Quality + Appetite (judgments).
+1. Watch clip → set Subject / Render / Action + Appetite (judgments).
 2. **Suggestion engine** promotes entry markers from Q×A×facet (promote only — no silent auto-tick).
 3. User toggles an **entry marker** (`refine`, `investigate`, `extract`, `advance`, `retire`, `park`).
 4. **Router** narrows to **steps** (e.g. `refine.aspect` → replay hook, `refine.edit` → trim UI).
@@ -117,19 +142,19 @@ Sampler excludes assets with `retire` disposition from the review pool.
 
 **See also:** [DISPOSITION_BUCKET_MODEL.md](./DISPOSITION_BUCKET_MODEL.md) — diagram-first reference (markdown + PDF) for review batches, buckets, pools, and Advance routes. **Phase 2:** [BUCKET_MODEL_PHASE2_PLAN.md](./BUCKET_MODEL_PHASE2_PLAN.md) — work items, pool pages, multi-route Advance.
 
-**Triage** and **disposition** are separate:
+**Triage** / **rating** and **disposition** are separate:
 
-| Concept | Question | Store | Required at triage? |
-|---------|----------|-------|---------------------|
-| **Triage** | Have I reviewed this clip for this pass? | `triage_index.json` | — (the activity itself) |
-| **Disposition** | What editing intent applies now? | `disposition_index.json` | **No** — normal to finish with none |
+| Concept | Question | Store | Required to finish rating? |
+|---------|----------|-------|----------------------------|
+| **Rating** | Subject + Render + Action stars, and appetite? | `ratings_index` axes + `appetite_index` | **Yes** — all three axes + appetite |
+| **Disposition** | What should happen to this next? | `disposition_index.json` | **No** — optional while rating |
 
 - Disposition is **mutable** (set, change, clear anytime).
-- **Batch workflow:** Next/Prev/Skip rotate within a fixed batch without recording triage. **Dismiss batch** (`POST /api/discovery/asset-triage/complete-batch`) commits triage only for clips with an entry disposition; clips without disposition return to the pool.
-- Review sampler pool = **needs triage**: never triaged, or `disposition_updated_at > last_triaged_at` (re-triage on disposition change).
-- Phase 2 will add re-triage on work completion and new child outputs.
+- **Batch workflow:** Next/Prev/Skip rotate within a fixed batch. **Dismiss batch** commits clips that have **all three quality axes + appetite**; clips missing either return to the rate pool.
+- Rate sampler pool = **needs rating**: missing any quality axis and/or appetite (retired excluded). Disposition does not gate the rate queue.
+- A separate **Route** activity (rated but no entry disposition) may come later.
 
-Implementation: [`workspace/scripts/shape_factory_triage.py`](../workspace/scripts/shape_factory_triage.py).
+Implementation: [`workspace/scripts/shape_factory_triage.py`](../workspace/scripts/shape_factory_triage.py), [`workspace/scripts/shape_factory_rating_sampler.py`](../workspace/scripts/shape_factory_rating_sampler.py).
 
 ---
 
@@ -218,7 +243,7 @@ Example shape:
       "catalog_slug": "FB9_GEX2"
     }
   },
-  "by_shape_recipe": { "FB9_GEX2+idle-small-motions": { "inferred": 4.9, "n": 8 } },
+  "by_shape_recipe": { "FB9_GEX2+catalog-default": { "inferred": 4.9, "n": 8 } },
   "by_source_basename": { "FB9_GEX2_2026-04-03_00001.mp4": { "inferred": 4.5, "favorite_fanout": 12 } },
   "by_output_relpath": { "og/…/foo": { "explicit": 5 } }
 }
