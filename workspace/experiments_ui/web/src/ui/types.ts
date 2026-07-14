@@ -83,6 +83,7 @@ export type QueueComfyItem = {
   input_media_relpath?: string | null;
   input_media_url?: string | null;
   input_media_kind?: "image" | "video" | null;
+  input_thumb_url?: string | null;
   key_params?: Record<string, unknown>;
 };
 
@@ -98,8 +99,17 @@ export type QueueResponse = {
 export type ComfyHistoryItem = {
   prompt_id: string;
   status: string;
+  workflow_name?: string | null;
+  key_params?: Record<string, unknown>;
+  primary_video_relpath?: string | null;
+  primary_image_relpath?: string | null;
   primary_video_url?: string | null;
   primary_image_url?: string | null;
+  output_thumb_url?: string | null;
+  input_media_relpath?: string | null;
+  input_media_url?: string | null;
+  input_media_kind?: "image" | "video" | null;
+  input_thumb_url?: string | null;
   outputs: RunOutput[];
 };
 
@@ -356,9 +366,14 @@ export type WorkItemsCreateResponse = {
   ok: boolean;
   item?: WorkItem;
   items?: WorkItem[];
+  results?: Array<Record<string, unknown>>;
   created?: boolean;
   reused?: boolean;
   count?: number;
+  upgraded?: number;
+  demoted?: number;
+  skipped_running?: number;
+  queue_now?: boolean;
   error?: string;
   detail?: string;
 };
@@ -367,6 +382,20 @@ export type WorkItemsCancelResponse = {
   ok: boolean;
   item?: WorkItem;
   already_terminal?: boolean;
+  skipped_running?: boolean;
+  cancelled?: boolean;
+  error?: string;
+  detail?: string;
+};
+
+export type WorkItemsPriorityResponse = {
+  ok: boolean;
+  item?: WorkItem;
+  changed?: boolean;
+  upgraded?: boolean;
+  demoted?: boolean;
+  skipped_running?: boolean;
+  skipped_terminal?: boolean;
   error?: string;
   detail?: string;
 };
@@ -447,6 +476,22 @@ export type DiscoveryAssetRatingsLensBlock = {
   human?: DiscoveryAssetRatingsHumanReview;
 };
 
+export type QualityAxis = "subject_beauty" | "render_quality" | "action_quality";
+
+export const QUALITY_AXES: readonly QualityAxis[] = [
+  "subject_beauty",
+  "render_quality",
+  "action_quality",
+] as const;
+
+export const QUALITY_AXIS_LABELS: Record<QualityAxis, string> = {
+  subject_beauty: "Subject",
+  render_quality: "Render",
+  action_quality: "Action",
+};
+
+export type QualityAxesMap = Partial<Record<QualityAxis, number>>;
+
 export type DiscoveryAssetRatingsResponse = {
   ok: boolean;
   error?: string;
@@ -457,8 +502,11 @@ export type DiscoveryAssetRatingsResponse = {
   human_verifications_path?: string;
   rating_effective?: number | null;
   basename?: string | null;
+  axes?: QualityAxesMap | null;
   explicit?: {
     rating?: number;
+    axes?: QualityAxesMap | null;
+    axes_complete?: boolean;
     xmp?: string;
     verification?: {
       ok?: boolean;
@@ -722,7 +770,7 @@ export type AssetRecoverResponse = {
   results?: AssetRecoverResult[];
 };
 
-/** POST /api/discovery/asset-ratings/set — write an explicit XMP star + refresh index. */
+/** POST /api/discovery/asset-ratings/set — set one quality axis (or all three) + refresh index. */
 export type SetAssetRatingResponse = {
   ok: boolean;
   error?: string;
@@ -731,6 +779,9 @@ export type SetAssetRatingResponse = {
     ok?: boolean;
     relpath?: string;
     stars?: number;
+    axis?: QualityAxis | string | null;
+    axes?: QualityAxesMap;
+    explicit?: number | null;
     cleared?: boolean;
     xmp_path?: string | null;
     discovery_key?: string;
@@ -1322,5 +1373,188 @@ export type ShapeFactoryMapResponse = {
       phase_if_idle?: string;
     } | null;
   };
+};
+
+/** GET /api/shape-factory/work-products — construction-debug list of recent factory jobs. */
+export type WorkProductDetailRow = {
+  label: string;
+  value: string;
+  /** Absolute path to a JSON file that can be opened in the peek tooltip. */
+  json_path?: string;
+  /** Inline peek kind (e.g. shape contract, decoded prompt). */
+  peek?: "shape" | "prompt" | string;
+};
+
+export type WorkProductBinding = {
+  path?: string;
+  basename?: string;
+  relpath?: string | null;
+  url?: string | null;
+  thumb_url?: string | null;
+  binding_type?: string;
+  role?: string;
+};
+
+export type WorkProductPromptRow = {
+  text: string;
+  weight: number;
+  raw?: string;
+};
+
+export type WorkProductPromptProfile = {
+  path?: string;
+  basename?: string;
+  label?: string | null;
+  positive?: string;
+  negative?: string;
+  positive_rows?: WorkProductPromptRow[];
+  negative_rows?: WorkProductPromptRow[];
+  positive_excerpt?: string;
+  positive_chars?: number;
+  negative_excerpt?: string;
+  negative_chars?: number;
+  missing?: boolean;
+  error?: string;
+};
+
+export type WorkProductShapeSlot = {
+  slot?: string;
+  role?: string;
+  role_gloss?: string | null;
+  media?: string;
+  binding_type?: string;
+  node_id?: string | number;
+};
+
+export type WorkProductShapeDeposit = {
+  slot?: string;
+  to_pool?: string | null;
+};
+
+export type WorkProductShapeProfile = {
+  path?: string;
+  basename?: string;
+  shape_id?: string | null;
+  family_slug?: string | null;
+  graph_hash?: string | null;
+  template?: string | null;
+  template_basename?: string | null;
+  output_prefix_root?: string | null;
+  requires?: WorkProductShapeSlot[];
+  produces?: WorkProductShapeSlot[];
+  deposits?: WorkProductShapeDeposit[];
+  text?: string;
+  missing?: boolean;
+  error?: string;
+};
+
+export type WorkProductItem = {
+  job_key: string;
+  job_path?: string;
+  family_slug?: string;
+  created_at?: string;
+  pick_mode?: string;
+  pick_index?: number;
+  rating_kind?: string | null;
+  disposition_entry?: string | null;
+  disposition_note?: string | null;
+  step?: string | null;
+  combo_key?: string | null;
+  parent_output?: string | null;
+  parent_output_relpath?: string | null;
+  parent_output_url?: string | null;
+  parent_output_thumb_url?: string | null;
+  shape_id?: string | null;
+  shape_path?: string | null;
+  template_path?: string | null;
+  template_basename?: string | null;
+  graph_hash?: string | null;
+  output_prefix?: string | null;
+  status?: string;
+  prompt_id?: string | null;
+  submitted_at?: string | null;
+  deposited_at?: string | null;
+  output_relpath?: string | null;
+  output_url?: string | null;
+  output_thumb_url?: string | null;
+  bindings?: Record<string, WorkProductBinding>;
+  prompt_profile?: WorkProductPromptProfile | null;
+  shape_profile?: WorkProductShapeProfile | null;
+  work_items_open?: WorkItem[];
+  work_items?: WorkItem[];
+  work_items_open_count?: number;
+  work_items_total_count?: number;
+  construction?: Record<string, unknown>;
+  warnings?: unknown[];
+  details?: WorkProductDetailRow[];
+  /** Synthetic / promoted from Comfy queue — always pin first in the UI. */
+  live_from_comfy?: boolean;
+};
+
+export type WorkProductFamilyOption = {
+  slug: string;
+  shape_id?: string | null;
+  shape_path?: string;
+};
+
+export type WorkProductsResponse = {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  schema_version?: string;
+  data_root?: string;
+  jobs_root?: string;
+  hourly_only?: boolean;
+  family?: string | null;
+  limit?: number;
+  count?: number;
+  families?: WorkProductFamilyOption[];
+  /** Source family → next pipeline-step family for Extend picker defaults. */
+  extend_family_defaults?: Record<string, string>;
+  items?: WorkProductItem[];
+};
+
+/** GET /api/shape-factory/json-peek?path=... */
+export type JsonPeekResponse = {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  path?: string;
+  resolved?: string;
+  basename?: string;
+  bytes?: number;
+  truncated?: boolean;
+  max_bytes?: number;
+  parse_error?: string | null;
+  text?: string;
+};
+
+/** GET /api/comfy/live-status */
+export type ComfyLiveStatusItem = {
+  prompt_id: string;
+  has_preview?: boolean;
+  value?: number | null;
+  max?: number | null;
+  node?: string | null;
+  status?: string | null;
+  updated_at?: number | null;
+  finished_at?: number | null;
+  started_at?: number | null;
+  elapsed_s?: number | null;
+  eta_s?: number | null;
+  mime?: string | null;
+  vhs_length?: number | null;
+  vhs_rate?: number | null;
+  frames_ready?: number[];
+  frames_count?: number;
+};
+
+export type ComfyLiveStatusResponse = {
+  ok: boolean;
+  bridge?: boolean;
+  items?: ComfyLiveStatusItem[];
+  count?: number;
+  error?: string;
+  detail?: string;
 };
 

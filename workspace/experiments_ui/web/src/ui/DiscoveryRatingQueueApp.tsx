@@ -27,11 +27,14 @@ import type {
   DispositionCatalogMarker,
   DispositionOutcome,
   DispositionPromotions,
+  QualityAxis,
+  QualityAxesMap,
 } from "./types";
+import { QUALITY_AXES, QUALITY_AXIS_LABELS } from "./types";
 
 const QUEUE_LIMIT_KEY = "rating_queue_limit";
-const DEFAULT_QUEUE_LIMIT = 100;
-const QUEUE_LIMIT_OPTIONS = [25, 50, 100, 150] as const;
+const DEFAULT_QUEUE_LIMIT = 15;
+const QUEUE_LIMIT_OPTIONS = [5, 10, 15, 20, 25] as const;
 const APPETITE_FACET_KEY = "appetite_facet";
 const LOOP_PLAYBACK_KEY = "rating_queue_loop_playback";
 
@@ -66,19 +69,54 @@ function loadLoopPlayback(): boolean {
   return true;
 }
 
+function emptyQualityAxes(): QualityAxesMap {
+  return {};
+}
+
+function axesFromRatings(r: DiscoveryAssetRatingsResponse): QualityAxesMap {
+  const raw = r.axes ?? r.explicit?.axes ?? null;
+  const out: QualityAxesMap = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const axis of QUALITY_AXES) {
+    const n = raw[axis];
+    if (typeof n === "number" && n >= 1 && n <= 5) out[axis] = n;
+  }
+  return out;
+}
+
+function axesComplete(axes: QualityAxesMap): boolean {
+  return QUALITY_AXES.every((axis) => {
+    const n = axes[axis];
+    return typeof n === "number" && n >= 1 && n <= 5;
+  });
+}
+
+function aggregateFromAxes(axes: QualityAxesMap): number | null {
+  const vals = QUALITY_AXES.map((a) => axes[a]).filter((n): n is number => typeof n === "number" && n >= 1);
+  if (!vals.length) return null;
+  return Math.round(vals.reduce((s, n) => s + n, 0) / vals.length);
+}
+
 /** Split explicit XMP stars from derived/external/inferred ratings for the quality row. */
 function resolveQualityDisplay(r: DiscoveryAssetRatingsResponse): {
   explicit: number | null;
   derived: number | null;
   derivedLabel: string | null;
+  axes: QualityAxesMap;
 } {
+  const axes = axesFromRatings(r);
   const explicitBlock = r.explicit;
   const explicitRating =
     explicitBlock && typeof explicitBlock === "object" && typeof explicitBlock.rating === "number" && explicitBlock.rating >= 1
       ? explicitBlock.rating
-      : null;
-  if (explicitRating != null) {
-    return { explicit: explicitRating, derived: null, derivedLabel: null };
+      : aggregateFromAxes(axes);
+  if (axesComplete(axes) || explicitRating != null) {
+    return {
+      explicit: explicitRating ?? aggregateFromAxes(axes),
+      derived: null,
+      derivedLabel: null,
+      axes,
+    };
   }
 
   const disk =
@@ -88,6 +126,7 @@ function resolveQualityDisplay(r: DiscoveryAssetRatingsResponse): {
       explicit: null,
       derived: disk,
       derivedLabel: "External XMP on disk — stars shown below are not your explicit rating yet",
+      axes,
     };
   }
 
@@ -110,10 +149,10 @@ function resolveQualityDisplay(r: DiscoveryAssetRatingsResponse): {
     } else if (rec != null) {
       derivedLabel = "Inferred from shape recipe";
     }
-    return { explicit: null, derived: Math.round(effective), derivedLabel };
+    return { explicit: null, derived: Math.round(effective), derivedLabel, axes };
   }
 
-  return { explicit: null, derived: null, derivedLabel: null };
+  return { explicit: null, derived: null, derivedLabel: null, axes };
 }
 
 function applyQualityFromRatings(
@@ -121,21 +160,24 @@ function applyQualityFromRatings(
   setExplicit: (n: number | null) => void,
   setDerived: (n: number | null) => void,
   setDerivedLabel: (s: string | null) => void,
+  setAxes: (a: QualityAxesMap) => void,
 ) {
   try {
     const q = resolveQualityDisplay(r);
     setExplicit(q.explicit);
     setDerived(q.derived);
     setDerivedLabel(q.derivedLabel);
+    setAxes(q.axes);
   } catch {
     setExplicit(null);
     setDerived(null);
     setDerivedLabel(null);
+    setAxes(emptyQualityAxes());
   }
 }
 
-function hasEntryDisposition(markers: string[], catalog: DispositionCatalogMarker[]): boolean {
-  return markers.some((m) => catalog.some((c) => c.id === m && c.kind === "entry"));
+function isRatingComplete(axes: QualityAxesMap, appetite: Appetite | null | undefined): boolean {
+  return axesComplete(axes) && Boolean(appetite);
 }
 
 function applyTriageFromRatings(
@@ -247,12 +289,12 @@ function StatusToast({ message }: { message: string }) {
 function CandidateStrip({
   candidates,
   index,
-  batchDisposition,
+  batchRated,
   onSelect,
 }: {
   candidates: DiscoveryRatingSamplerCandidate[];
   index: number;
-  batchDisposition: Record<string, boolean>;
+  batchRated: Record<string, boolean>;
   onSelect: (i: number) => void;
 }) {
   const stripRef = useRef<HTMLDivElement>(null);
@@ -281,7 +323,7 @@ function CandidateStrip({
       <div className="drq-strip" ref={stripRef} role="listbox" aria-label="Rating queue">
         {candidates.map((c, i) => {
           const active = i === index;
-          const isDone = Boolean(batchDisposition[c.relpath]);
+          const isDone = Boolean(batchRated[c.relpath]);
           const b = bucketLabel(c.session_bucket);
           return (
             <button
@@ -331,8 +373,10 @@ export function DiscoveryRatingQueueApp() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [index, setIndex] = useState(0);
-  const [batchDisposition, setBatchDisposition] = useState<Record<string, boolean>>({});
+  const [batchRated, setBatchRated] = useState<Record<string, boolean>>({});
   const [explicitRating, setExplicitRating] = useState<number | null>(null);
+  const [qualityAxes, setQualityAxes] = useState<QualityAxesMap>(emptyQualityAxes);
+  const [activeQualityAxis, setActiveQualityAxis] = useState<QualityAxis>("subject_beauty");
   const [derivedRating, setDerivedRating] = useState<number | null>(null);
   const [derivedSourceLabel, setDerivedSourceLabel] = useState<string | null>(null);
   const [checkMsg, setCheckMsg] = useState("");
@@ -380,7 +424,7 @@ export function DiscoveryRatingQueueApp() {
         return;
       }
       setSession(data);
-      setBatchDisposition({});
+      setBatchRated({});
       setIndex(0);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -405,17 +449,18 @@ export function DiscoveryRatingQueueApp() {
   }, []);
 
   useEffect(() => {
-    if (!session?.candidates?.length || !catalogEntries.length) return;
-    setBatchDisposition((prev) => {
+    if (!session?.candidates?.length) return;
+    setBatchRated((prev) => {
       const next = { ...prev };
       for (const c of session.candidates ?? []) {
         if (next[c.relpath] === undefined) {
-          next[c.relpath] = hasEntryDisposition(c.disposition_markers ?? [], catalogEntries);
+          // Sampler only returns incomplete items; seed false unless already marked this session.
+          next[c.relpath] = false;
         }
       }
       return next;
     });
-  }, [session, catalogEntries]);
+  }, [session]);
 
   const onQueueLimitChange = (n: number) => {
     setQueueLimit(n);
@@ -437,10 +482,10 @@ export function DiscoveryRatingQueueApp() {
       if (rels.length) {
         const res = await recordBatchTriageComplete({ relpaths: rels });
         setCheckMsg(
-          `Batch dismissed — ${res.committed_count ?? 0} with disposition saved, ${res.skipped_count ?? 0} returned to pool`,
+          `Batch dismissed — ${res.committed_count ?? 0} rated (all axes + appetite), ${res.skipped_count ?? 0} returned to pool`,
         );
       }
-      setBatchDisposition({});
+      setBatchRated({});
       await load(true);
     } catch (e) {
       setCheckMsg(e instanceof Error ? e.message : String(e));
@@ -474,20 +519,22 @@ export function DiscoveryRatingQueueApp() {
     [appetite, appetiteFacet, derivedRating, explicitRating],
   );
 
-  const markBatchDisposition = useCallback(
-    (relpath: string, markers: string[]) => {
-      setBatchDisposition((prev) => ({
-        ...prev,
-        [relpath]: hasEntryDisposition(markers, catalogEntries),
-      }));
-    },
-    [catalogEntries],
-  );
+  const markBatchRated = useCallback((relpath: string, axes: QualityAxesMap, app: Appetite | null | undefined) => {
+    setBatchRated((prev) => ({
+      ...prev,
+      [relpath]: isRatingComplete(axes, app),
+    }));
+  }, []);
 
   const goNext = useCallback(() => {
-    setIndex((i) => Math.min(i + 1, Math.max(0, candidates.length - 1)));
+    setIndex((i) => {
+      const n = candidates.length;
+      if (n <= 0) return 0;
+      return (i + 1) % n;
+    });
     setCheckMsg("");
     setExplicitRating(null);
+    setQualityAxes(emptyQualityAxes());
     setDerivedRating(null);
     setDerivedSourceLabel(null);
     setAppetite(null);
@@ -501,9 +548,14 @@ export function DiscoveryRatingQueueApp() {
   }, [candidates.length]);
 
   const goPrev = useCallback(() => {
-    setIndex((i) => Math.max(0, i - 1));
+    setIndex((i) => {
+      const n = candidates.length;
+      if (n <= 0) return 0;
+      return (i - 1 + n) % n;
+    });
     setCheckMsg("");
     setExplicitRating(null);
+    setQualityAxes(emptyQualityAxes());
     setDerivedRating(null);
     setDerivedSourceLabel(null);
     setAppetite(null);
@@ -514,7 +566,7 @@ export function DiscoveryRatingQueueApp() {
     setLastStepId(null);
     setLastTriagedAt(null);
     setTriagePassCount(0);
-  }, []);
+  }, [candidates.length]);
 
   const skipCurrent = useCallback(() => {
     goNext();
@@ -549,6 +601,7 @@ export function DiscoveryRatingQueueApp() {
       try {
         const res = await setAssetAppetite({ relpath: current.relpath, appetite: state, facet });
         setAppetite(state);
+        markBatchRated(current.relpath, qualityAxes, state);
         if (state === "fast_track") {
           const q = res.saved?.queued;
           if (q?.ok) {
@@ -565,7 +618,7 @@ export function DiscoveryRatingQueueApp() {
         setAppetiteBusy(false);
       }
     },
-    [current, appetiteBusy],
+    [current, appetiteBusy, qualityAxes, markBatchRated],
   );
 
   const formatDispositionResult = (stepId: string, result: Record<string, unknown> | undefined): string => {
@@ -620,11 +673,9 @@ export function DiscoveryRatingQueueApp() {
         const msg = on ? `Saved disposition: ${label}` : `Cleared: ${label}`;
         setDispositionLastAction(msg);
         setCheckMsg(msg);
-        markBatchDisposition(current.relpath, res.saved?.markers ?? []);
         const ratings = await fetchDiscoveryAssetRatings(current.relpath);
         applyDispositionFromRatings(ratings, setDispositionMarkers, setDispositionUpdatedAt, setDispositionLastOutcome);
         applyTriageFromRatings(ratings, setLastTriagedAt, setTriagePassCount);
-        markBatchDisposition(current.relpath, ratings.disposition_markers ?? []);
         if (res.saved?.updated_at) setDispositionUpdatedAt(String(res.saved.updated_at));
       } catch (e) {
         setCheckMsg(e instanceof Error ? e.message : String(e));
@@ -632,7 +683,7 @@ export function DiscoveryRatingQueueApp() {
         setDispositionBusy(false);
       }
     },
-    [current, dispositionBusy, appetite, appetiteFacet, explicitRating, derivedRating, catalogEntries, markBatchDisposition],
+    [current, dispositionBusy, appetite, appetiteFacet, explicitRating, derivedRating, catalogEntries],
   );
 
   const commitAdvanceRoutes = useCallback(
@@ -685,7 +736,6 @@ export function DiscoveryRatingQueueApp() {
         const ratings = await fetchDiscoveryAssetRatings(current.relpath);
         applyDispositionFromRatings(ratings, setDispositionMarkers, setDispositionUpdatedAt, setDispositionLastOutcome);
         applyTriageFromRatings(ratings, setLastTriagedAt, setTriagePassCount);
-        markBatchDisposition(current.relpath, ratings.disposition_markers ?? []);
         const msg = parts.join(" · ");
         setDispositionLastAction(msg);
         setCheckMsg(msg);
@@ -696,7 +746,7 @@ export function DiscoveryRatingQueueApp() {
         setDispositionBusy(false);
       }
     },
-    [current, dispositionBusy, appetiteFacet, catalogSteps, markBatchDisposition],
+    [current, dispositionBusy, appetiteFacet, catalogSteps, ],
   );
 
   const runDispositionStepCurrent = useCallback(
@@ -727,7 +777,6 @@ export function DiscoveryRatingQueueApp() {
         const ratings = await fetchDiscoveryAssetRatings(current.relpath);
         applyDispositionFromRatings(ratings, setDispositionMarkers, setDispositionUpdatedAt, setDispositionLastOutcome);
         applyTriageFromRatings(ratings, setLastTriagedAt, setTriagePassCount);
-        markBatchDisposition(current.relpath, ratings.disposition_markers ?? []);
       } catch (e) {
         setLastStepId(null);
         setCheckMsg(e instanceof Error ? e.message : String(e));
@@ -735,7 +784,7 @@ export function DiscoveryRatingQueueApp() {
         setDispositionBusy(false);
       }
     },
-    [current, dispositionBusy, appetiteFacet, catalogSteps, markBatchDisposition],
+    [current, dispositionBusy, appetiteFacet, catalogSteps, ],
   );
 
   const saveCatalog = useCallback(async (markers: DispositionCatalogMarker[]) => {
@@ -755,19 +804,36 @@ export function DiscoveryRatingQueueApp() {
   }, []);
 
   const rateCurrent = useCallback(
-    async (stars: number) => {
+    async (stars: number, axis: QualityAxis = activeQualityAxis) => {
       if (!current || rateBusy) return;
       setRateBusy(true);
       setCheckMsg("");
       try {
-        await setAssetRating({ relpath: current.relpath, stars });
-        setExplicitRating(stars > 0 ? stars : null);
+        const res = await setAssetRating({ relpath: current.relpath, stars, axis });
+        const nextAxes: QualityAxesMap = { ...qualityAxes };
+        if (stars > 0) nextAxes[axis] = stars;
+        else delete nextAxes[axis];
+        if (res.saved?.axes && typeof res.saved.axes === "object") {
+          for (const a of QUALITY_AXES) {
+            const n = res.saved.axes[a];
+            if (typeof n === "number" && n >= 1) nextAxes[a] = n;
+            else delete nextAxes[a];
+          }
+        }
+        setQualityAxes(nextAxes);
+        const agg =
+          typeof res.saved?.explicit === "number"
+            ? res.saved.explicit
+            : aggregateFromAxes(nextAxes);
+        setExplicitRating(agg);
         setDerivedRating(null);
         setDerivedSourceLabel(null);
+        markBatchRated(current.relpath, nextAxes, appetite);
+        const label = QUALITY_AXIS_LABELS[axis];
         if (stars > 0) {
-          setCheckMsg(`Saved ${stars}★`);
+          setCheckMsg(`Saved ${label} ${stars}★`);
         } else {
-          setCheckMsg("Cleared rating");
+          setCheckMsg(`Cleared ${label}`);
         }
       } catch (e) {
         setCheckMsg(e instanceof Error ? e.message : String(e));
@@ -775,13 +841,14 @@ export function DiscoveryRatingQueueApp() {
         setRateBusy(false);
       }
     },
-    [current, rateBusy],
+    [current, rateBusy, appetite, markBatchRated, activeQualityAxis, qualityAxes],
   );
 
   useEffect(() => {
     if (!current) return;
     setVideoAspect(null);
     setExplicitRating(null);
+    setQualityAxes(emptyQualityAxes());
     setDerivedRating(null);
     setDerivedSourceLabel(null);
     setCheckMsg("");
@@ -796,15 +863,16 @@ export function DiscoveryRatingQueueApp() {
     if (current.appetite_facet) setAppetiteFacet(current.appetite_facet);
     void fetchDiscoveryAssetRatings(current.relpath)
       .then((r) => {
-        applyQualityFromRatings(r, setExplicitRating, setDerivedRating, setDerivedSourceLabel);
+        applyQualityFromRatings(r, setExplicitRating, setDerivedRating, setDerivedSourceLabel, setQualityAxes);
         if (r.appetite) setAppetite(r.appetite);
         if (r.appetite_facet) setAppetiteFacet(r.appetite_facet);
         applyDispositionFromRatings(r, setDispositionMarkers, setDispositionUpdatedAt, setDispositionLastOutcome);
         applyTriageFromRatings(r, setLastTriagedAt, setTriagePassCount);
-        markBatchDisposition(current.relpath, r.disposition_markers ?? []);
+        const axes = axesFromRatings(r);
+        markBatchRated(current.relpath, axes, (r.appetite as Appetite | null) ?? null);
       })
       .catch(() => {});
-  }, [current?.relpath]);
+  }, [current?.relpath, markBatchRated]);
 
   useEffect(() => {
     if (!current) return;
@@ -825,10 +893,16 @@ export function DiscoveryRatingQueueApp() {
         skipCurrent();
       } else if (e.key >= "1" && e.key <= "5") {
         e.preventDefault();
-        void rateCurrent(parseInt(e.key, 10));
+        void rateCurrent(parseInt(e.key, 10), activeQualityAxis);
       } else if (e.key === "0" || e.key === "Backspace") {
         e.preventDefault();
-        void rateCurrent(0);
+        void rateCurrent(0, activeQualityAxis);
+      } else if (e.key === "q" || e.key === "Q") {
+        e.preventDefault();
+        setActiveQualityAxis((prev) => {
+          const i = QUALITY_AXES.indexOf(prev);
+          return QUALITY_AXES[(i + 1) % QUALITY_AXES.length];
+        });
       } else if (e.key.toLowerCase() in APPETITE_KEYMAP) {
         e.preventDefault();
         void setAppetiteCurrent(APPETITE_KEYMAP[e.key.toLowerCase()], appetiteFacet);
@@ -843,15 +917,15 @@ export function DiscoveryRatingQueueApp() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [goNext, goPrev, skipCurrent, rateCurrent, setAppetiteCurrent, appetiteFacet, setFacet, toggleLoopPlayback]);
+  }, [goNext, goPrev, skipCurrent, rateCurrent, setAppetiteCurrent, appetiteFacet, setFacet, toggleLoopPlayback, activeQualityAxis]);
 
   const stats = session?.stats;
-  const dispositionCount = useMemo(() => {
-    return candidates.filter((c) => batchDisposition[c.relpath]).length;
-  }, [candidates, batchDisposition]);
+  const ratedCount = useMemo(() => {
+    return candidates.filter((c) => batchRated[c.relpath]).length;
+  }, [candidates, batchRated]);
 
   const bucket = current ? bucketLabel(current.session_bucket) : null;
-  const showingDerived = explicitRating == null && derivedRating != null;
+  const showingDerived = !axesComplete(qualityAxes) && explicitRating == null && derivedRating != null;
   const dispositionEntryBadge = useMemo(
     () => entryLabelForMarker(dispositionMarkers, catalogEntries),
     [dispositionMarkers, catalogEntries],
@@ -866,7 +940,7 @@ export function DiscoveryRatingQueueApp() {
       <div className="panel discovery-panel drq-root">
         <PageHeader
           title="Rate queue"
-          subtitle="Work through a fixed batch — rotate with Next/Prev. Dismiss batch when done; clips without disposition return to the pool."
+          subtitle="Work through a fixed batch — set Subject / Render / Action and appetite. Disposition is optional. Dismiss commits rated clips; the rest return to the pool."
           actions={
             <div className="drq-header-actions">
               <label className="drq-limit-label">
@@ -890,7 +964,7 @@ export function DiscoveryRatingQueueApp() {
             </div>
           }
         >
-          {candidates.length > 0 ? <SessionProgress done={dispositionCount} total={candidates.length} label="Disposition" /> : null}
+          {candidates.length > 0 ? <SessionProgress done={ratedCount} total={candidates.length} label="Rated" /> : null}
           {stats ? (
             <p className="drq-session-hint factory-muted">
               Mix: ↓{stats.bucket_easy_down ?? "—"} quick rejects · ↑{stats.bucket_easy_up ?? "—"} likely keepers · ~
@@ -902,11 +976,12 @@ export function DiscoveryRatingQueueApp() {
         <details className="drq-shortcuts">
           <summary>Keyboard shortcuts</summary>
           <div className="drq-shortcuts-grid">
-            <span><kbd>1</kbd>–<kbd>5</kbd> quality stars</span>
-            <span><kbd>0</kbd> clear stars</span>
+            <span><kbd>1</kbd>–<kbd>5</kbd> active quality axis</span>
+            <span><kbd>0</kbd> clear active axis</span>
+            <span><kbd>q</kbd> cycle Subject / Render / Action</span>
             <span><kbd>z</kbd><kbd>x</kbd><kbd>c</kbd><kbd>v</kbd> appetite</span>
             <span><kbd>g</kbd> cycle facet</span>
-            <span><kbd>←</kbd><kbd>→</kbd> prev / next in batch</span>
+            <span><kbd>←</kbd><kbd>→</kbd> prev / next (wraps)</span>
             <span><kbd>s</kbd> skip to next</span>
             <span><kbd>l</kbd> loop</span>
           </div>
@@ -1007,45 +1082,78 @@ export function DiscoveryRatingQueueApp() {
                       <div className="drq-judgment-card__head">
                         <h3 className="drq-judgment-card__title">Quality</h3>
                         <p className="drq-judgment-card__hint">
-                          Do more <em>of</em> this — saves XMP, drives replay
+                          Subject · Render · Action — aggregate saves to XMP; drives replay
                         </p>
                       </div>
                       {showingDerived && derivedSourceLabel ? (
                         <p className="drq-judgment-card__derived">{derivedSourceLabel}</p>
                       ) : null}
-                      <div className="drq-rate-bar" role="group" aria-label="Rate quality">
-                        {[1, 2, 3, 4, 5].map((n) => (
-                          <button
-                            key={n}
-                            type="button"
-                            className={
-                              "drq-star-btn" +
-                              (explicitRating != null && explicitRating >= n ? " drq-star-btn--on" : "") +
-                              (showingDerived && derivedRating != null && derivedRating >= n
-                                ? " drq-star-btn--derived"
-                                : "")
-                            }
-                            disabled={rateBusy}
-                            onClick={() => void rateCurrent(n)}
-                            title={`Rate ${n}★ (press ${n})`}
-                            aria-label={`Rate ${n} stars`}
-                          >
-                            <span className="drq-star-btn__n">{n}</span>
-                            <span className="drq-star-btn__glyph" aria-hidden="true">
-                              ★
-                            </span>
-                          </button>
-                        ))}
-                        <button
-                          type="button"
-                          className="drt-btn drq-clear-btn"
-                          disabled={rateBusy || explicitRating == null}
-                          onClick={() => void rateCurrent(0)}
-                          title="Clear rating (press 0)"
-                        >
-                          Clear
-                        </button>
+                      <div className="drq-quality-axes">
+                        {QUALITY_AXES.map((axis) => {
+                          const value = qualityAxes[axis] ?? null;
+                          const active = activeQualityAxis === axis;
+                          return (
+                            <div
+                              key={axis}
+                              className={"drq-quality-axis" + (active ? " drq-quality-axis--active" : "")}
+                            >
+                              <button
+                                type="button"
+                                className="drq-quality-axis__label"
+                                onClick={() => setActiveQualityAxis(axis)}
+                                title={`Focus ${QUALITY_AXIS_LABELS[axis]} (press q to cycle)`}
+                              >
+                                {QUALITY_AXIS_LABELS[axis]}
+                              </button>
+                              <div className="drq-rate-bar" role="group" aria-label={`Rate ${QUALITY_AXIS_LABELS[axis]}`}>
+                                {[1, 2, 3, 4, 5].map((n) => (
+                                  <button
+                                    key={n}
+                                    type="button"
+                                    className={
+                                      "drq-star-btn" +
+                                      (value != null && value >= n ? " drq-star-btn--on" : "") +
+                                      (showingDerived &&
+                                      value == null &&
+                                      derivedRating != null &&
+                                      derivedRating >= n
+                                        ? " drq-star-btn--derived"
+                                        : "")
+                                    }
+                                    disabled={rateBusy}
+                                    onClick={() => {
+                                      setActiveQualityAxis(axis);
+                                      void rateCurrent(n, axis);
+                                    }}
+                                    title={`Rate ${QUALITY_AXIS_LABELS[axis]} ${n}★`}
+                                    aria-label={`Rate ${QUALITY_AXIS_LABELS[axis]} ${n} stars`}
+                                  >
+                                    <span className="drq-star-btn__n">{n}</span>
+                                    <span className="drq-star-btn__glyph" aria-hidden="true">
+                                      ★
+                                    </span>
+                                  </button>
+                                ))}
+                                <button
+                                  type="button"
+                                  className="drt-btn drq-clear-btn"
+                                  disabled={rateBusy || value == null}
+                                  onClick={() => {
+                                    setActiveQualityAxis(axis);
+                                    void rateCurrent(0, axis);
+                                  }}
+                                  title={`Clear ${QUALITY_AXIS_LABELS[axis]}`}
+                                >
+                                  Clear
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
+                      {explicitRating != null ? (
+                        <p className="drq-rate-hint factory-muted">Aggregate ★ {explicitRating}</p>
+                      ) : null}
                     </div>
 
                     <div className="drq-judgment-card">
@@ -1105,13 +1213,13 @@ export function DiscoveryRatingQueueApp() {
                   </div>
 
                   <nav className="drq-nav" aria-label="Queue navigation">
-                    <button type="button" className="drt-btn" onClick={goPrev} disabled={index <= 0}>
+                    <button type="button" className="drt-btn" onClick={goPrev} disabled={candidates.length <= 1}>
                       ← Prev
                     </button>
                     <button type="button" className="drt-btn" onClick={skipCurrent}>
                       Skip
                     </button>
-                    <button type="button" className="drt-btn" onClick={goNext} disabled={index >= candidates.length - 1}>
+                    <button type="button" className="drt-btn" onClick={goNext} disabled={candidates.length <= 1}>
                       Next →
                     </button>
                   </nav>
@@ -1179,7 +1287,7 @@ export function DiscoveryRatingQueueApp() {
               </aside>
             </div>
 
-            <CandidateStrip candidates={candidates} index={index} batchDisposition={batchDisposition} onSelect={setIndex} />
+            <CandidateStrip candidates={candidates} index={index} batchRated={batchRated} onSelect={setIndex} />
           </>
         ) : null}
 

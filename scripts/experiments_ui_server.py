@@ -77,6 +77,7 @@ def _comfy_submit_prompt(
     front: bool = False,
     client_id: str = "experiments-ui",
     timeout_s: int = 30,
+    preview_method: str = "auto",
 ) -> Any:
     """
     POST a workflow graph to ComfyUI /prompt (same payload shape as the UI uses for requeue).
@@ -86,6 +87,9 @@ def _comfy_submit_prompt(
     payload: Dict[str, Any] = {"prompt": prompt, "client_id": client_id}
     if front:
         payload["front"] = True
+    method = str(preview_method or "").strip()
+    if method:
+        payload["extra_data"] = {"preview_method": method}
     return _http_json("POST", f"{comfy}/prompt", payload, timeout_s=timeout_s)
 
 
@@ -1331,6 +1335,8 @@ def _set_asset_rating_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[s
         raise ValueError("bad stars")
     if stars < 0 or stars > 5:
         raise ValueError("stars must be 0-5")
+    axis = body.get("axis")
+    axis_s = str(axis).strip() if axis is not None and str(axis).strip() else None
     media_abs = _safe_join(cfg.output_root, rel)
     if media_abs is None:
         raise ValueError("bad relpath")
@@ -1347,6 +1353,7 @@ def _set_asset_rating_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[s
         og_root=og_root,
         ratings_index_path=_discovery_ratings_index_path(cfg),
         ffprobe=None,
+        axis=axis_s,
     )
 
 
@@ -1377,13 +1384,16 @@ def _fast_track_extend(cfg: "ServerConfig", rel: str, body: Dict[str, Any]) -> D
     video slot), falling back to a plain replay for still-source families. Never raises.
     """
     try:
+        explicit_family = str(body.get("family_slug") or body.get("family") or "").strip()
         job_key, family = _resolve_replay_job_from_relpath(cfg, rel, body)
         if not job_key:
             return {"ok": False, "reason": "no_replay_context"}
 
         replay_body: Dict[str, Any] = {"job_key": job_key, "extend": True}
-        if family:
-            replay_body["family_slug"] = family
+        # Prefer an explicit target family from the request over the source job's family.
+        target = explicit_family or family
+        if target:
+            replay_body["family_slug"] = target
         if body.get("front"):
             replay_body["front"] = True
         try:
@@ -1474,6 +1484,65 @@ def _shape_factory_prompt_profile_payload(cfg: ServerConfig, q: Dict[str, List[s
         repo_root=_repo_root(),
         workspace_root=cfg.workspace_root,
         output_root=cfg.output_root,
+    )
+
+
+def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
+    """GET /api/shape-factory/work-products — recent jobs with construction debug details."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+    from shape_factory_work_products import attach_live_comfy_queue, list_recent_work_products  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    limit_raw = (q.get("limit") or ["40"])[0]
+    try:
+        limit = int(limit_raw)
+    except ValueError:
+        limit = 40
+    hourly_only = str((q.get("hourly_only") or ["1"])[0]).strip().lower() not in {"0", "false", "no"}
+    family = str((q.get("family") or [""])[0]).strip() or None
+    payload = list_recent_work_products(
+        data_root=data_root,
+        output_root=cfg.output_root,
+        limit=limit,
+        hourly_only=hourly_only,
+        family=family,
+    )
+    # Pin currently running/queued Comfy prompts so live previews stay visible even when
+    # the factory job is non-hourly or not yet recorded.
+    try:
+        comfy = str(cfg.comfy_server).rstrip("/")
+        queue_obj = _http_json("GET", f"{comfy}/queue", timeout_s=8)
+    except Exception:
+        queue_obj = None
+    if isinstance(queue_obj, dict):
+        payload = attach_live_comfy_queue(
+            payload,
+            queue_running=queue_obj.get("queue_running"),
+            queue_pending=queue_obj.get("queue_pending"),
+            data_root=data_root,
+            output_root=cfg.output_root,
+        )
+    return payload
+
+
+def _shape_factory_json_peek_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
+    """GET /api/shape-factory/json-peek?path=... — tooltip viewer for construction JSON files."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+    from shape_factory_work_products import peek_json_file  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    path = str((q.get("path") or [""])[0] or "").strip()
+    return peek_json_file(
+        path,
+        data_root=data_root,
+        output_root=cfg.output_root,
+        workspace_root=cfg.workspace_root,
     )
 
 
@@ -1960,13 +2029,14 @@ def _disposition_hook_runner(cfg: "ServerConfig", rel: str, body: Dict[str, Any]
         if hook == "extend":
             return _fast_track_extend(cfg, rel, merged)
         replay_body: Dict[str, Any] = {"extend": bool(merged.get("extend"))}
+        explicit_family = str(merged.get("family_slug") or merged.get("family") or "").strip()
         job_key, family = _resolve_replay_job_from_relpath(cfg, rel, merged)
         if job_key:
             replay_body["job_key"] = job_key
-        if family:
-            replay_body["family_slug"] = family
-        elif merged.get("family_slug") or merged.get("family"):
-            replay_body["family_slug"] = str(merged.get("family_slug") or merged.get("family"))
+        # Prefer an explicit target family from the request over the source job's family.
+        target = explicit_family or family
+        if target:
+            replay_body["family_slug"] = target
         if merged.get("front"):
             replay_body["front"] = True
         if not replay_body.get("job_key"):
@@ -2020,15 +2090,40 @@ def _record_batch_triage_complete_payload(cfg: ServerConfig, body: Dict[str, Any
     d = _workspace_scripts_dir()
     if d.is_dir() and str(d) not in sys.path:
         sys.path.insert(0, str(d))
-    from shape_factory_triage import has_entry_disposition, record_triage_pass  # type: ignore
+    from shape_factory_rating_sampler import is_rating_complete  # type: ignore
+    from shape_factory_ratings import (  # type: ignore
+        default_appetite_index_path,
+        default_ratings_index_path,
+    )
+    from shape_factory_triage import record_triage_pass  # type: ignore
 
     og_root = _prefer_flat_library_dir(cfg.output_root, "og")
-    disposition_doc = _discovery_load_disposition_index(cfg) or {}
-    catalog = _discovery_load_disposition_catalog(cfg)
+    ratings_path = default_ratings_index_path(og_root)
+    appetite_path = default_appetite_index_path(og_root)
+    ratings_doc: Dict[str, Any] = {}
+    appetite_doc: Dict[str, Any] = {}
+    try:
+        if ratings_path.is_file():
+            ratings_doc = json.loads(ratings_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        ratings_doc = {}
+    try:
+        if appetite_path.is_file():
+            appetite_doc = json.loads(appetite_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        appetite_doc = {}
+
+    disposition_doc = _discovery_load_disposition_index(cfg)
     committed: List[Dict[str, Any]] = []
     skipped: List[str] = []
     for rel in relpaths:
-        if not has_entry_disposition(rel, disposition_doc, catalog):
+        item = {"relpath": rel}
+        if not is_rating_complete(
+            item,
+            ratings_doc=ratings_doc if isinstance(ratings_doc, dict) else {},
+            appetite_doc=appetite_doc if isinstance(appetite_doc, dict) else {},
+            og_root=og_root,
+        ):
             skipped.append(rel)
             continue
         media_abs = _safe_join(cfg.output_root, rel)
@@ -2121,6 +2216,9 @@ def _run_asset_disposition_step_payload(cfg: ServerConfig, body: Dict[str, Any])
     hook = str(payload.get("hook") or "")
     hook_result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
     try:
+        priority_override = None
+        if "front" in extra:
+            priority_override = "front" if extra.get("front") else "normal"
         work = record_run_step_work_item(
             source_relpath=rel,
             step_id=step_id,
@@ -2129,6 +2227,7 @@ def _run_asset_disposition_step_payload(cfg: ServerConfig, body: Dict[str, Any])
             work_items_index_path=_discovery_work_items_index_path(cfg),
             factory_family=str(extra.get("family_slug") or extra.get("family") or hook_result.get("family_slug") or ""),
             recipe=step_id,
+            priority_override=priority_override,
         )
         if work is not None:
             payload = dict(payload)
@@ -2263,6 +2362,26 @@ def _discovery_work_items_cancel_payload(cfg: ServerConfig, body: Dict[str, Any]
         work_id,
         work_items_index_path=_discovery_work_items_index_path(cfg),
         reason=str(body.get("reason") or "").strip() or None,
+    )
+
+
+def _discovery_work_items_priority_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /api/discovery/work-items/priority { work_id, priority } — safe front↔normal reshape."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_work_items import set_work_item_priority  # type: ignore
+
+    work_id = str(body.get("work_id") or "").strip()
+    if not work_id:
+        raise ValueError("missing work_id")
+    priority = str(body.get("priority") or "").strip()
+    if not priority:
+        raise ValueError("missing priority")
+    return set_work_item_priority(
+        work_id,
+        priority=priority,
+        work_items_index_path=_discovery_work_items_index_path(cfg),
     )
 
 
@@ -4809,18 +4928,40 @@ def _extract_outputs_from_history(history_obj: Any) -> List[Dict[str, Any]]:
 
 
 def _pick_primary_media(outputs: List[Dict[str, Any]]) -> Tuple[Optional[str], Optional[str]]:
-    vid = None
-    img = None
-    for o in outputs:
-        rel = o.get("relpath")
-        if not isinstance(rel, str):
-            continue
-        l = rel.lower()
-        if vid is None and l.endswith(".mp4"):
-            vid = rel
-        if img is None and (l.endswith(".png") or l.endswith(".webp") or l.endswith(".jpg") or l.endswith(".jpeg")):
-            img = rel
+    """Prefer durable ``output`` library files over Comfy ``temp`` intermediates."""
+
+    def score(o: Dict[str, Any]) -> tuple:
+        rel = str(o.get("relpath") or "")
+        typ = str(o.get("type") or "").lower()
+        # Higher is better.
+        durable = 2 if typ == "output" else (1 if typ in {"input", ""} else 0)
+        under_lib = 1 if any(p in rel.replace("\\", "/") for p in ("/og/", "/wip/", "og/", "wip/")) else 0
+        return (durable, under_lib)
+
+    vids = [o for o in outputs if isinstance(o.get("relpath"), str) and str(o["relpath"]).lower().endswith(".mp4")]
+    imgs = [
+        o
+        for o in outputs
+        if isinstance(o.get("relpath"), str)
+        and str(o["relpath"]).lower().endswith((".png", ".webp", ".jpg", ".jpeg"))
+    ]
+    vids.sort(key=score, reverse=True)
+    imgs.sort(key=score, reverse=True)
+    vid = str(vids[0]["relpath"]) if vids else None
+    img = str(imgs[0]["relpath"]) if imgs else None
     return vid, img
+
+
+def _history_queue_index(record: Any) -> int:
+    """Comfy prompt tuple starts with a monotonic queue number — higher is newer."""
+    if not isinstance(record, dict):
+        return -1
+    prompt = record.get("prompt")
+    if isinstance(prompt, list) and prompt:
+        n = _safe_int(prompt[0])
+        if n is not None:
+            return int(n)
+    return -1
 
 
 def _extract_input_media_from_prompt(prompt_obj: Any) -> Tuple[Optional[str], Optional[str]]:
@@ -4841,8 +4982,8 @@ def _extract_input_media_from_prompt(prompt_obj: Any) -> Tuple[Optional[str], Op
                 last = image[-1]
                 if isinstance(last, str) and last.strip():
                     return (last.strip().replace("\\", "/"), "image")
-        if ctype in ("VHS_LoadVideo", "LoadVideo"):
-            video = inputs.get("video") or inputs.get("path")
+        if ctype in ("VHS_LoadVideo", "LoadVideo", "VHS_LoadVideoPath", "VHS_LoadVideoFFmpegPath", "VHS_LoadVideoFFmpeg"):
+            video = inputs.get("video") or inputs.get("path") or inputs.get("file")
             if isinstance(video, str) and video.strip():
                 return (video.strip().replace("\\", "/"), "video")
     return (None, None)
@@ -4870,6 +5011,10 @@ def _extract_key_params_from_prompt(prompt_obj: Any) -> Dict[str, Any]:
 def _guess_workflow_name(prompt_obj: Any, raw_item: Any) -> Optional[str]:
     if isinstance(raw_item, list) and len(raw_item) >= 4 and isinstance(raw_item[3], dict):
         meta = raw_item[3]
+        for k in ("workflow_name", "filename", "name"):
+            v = meta.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
         extra = meta.get("extra_pnginfo")
         if isinstance(extra, dict):
             wf = extra.get("workflow")
@@ -4877,18 +5022,96 @@ def _guess_workflow_name(prompt_obj: Any, raw_item: Any) -> Optional[str]:
                 name = wf.get("name")
                 if isinstance(name, str) and name.strip():
                     return name.strip()
+        client = meta.get("client_id")
+        if isinstance(client, str) and client.strip():
+            return f"client:{client.strip()[:12]}"
     if isinstance(prompt_obj, dict):
-        first_types: List[str] = []
-        for _nid, node in prompt_obj.items():
-            if not isinstance(node, dict):
-                continue
-            ct = node.get("class_type")
-            if isinstance(ct, str) and ct.strip():
-                first_types.append(ct.strip())
-            if len(first_types) >= 3:
-                break
-        if first_types:
-            return " + ".join(first_types)
+        n = sum(1 for v in prompt_obj.values() if isinstance(v, dict) and v.get("class_type"))
+        if n:
+            return f"graph ({n} nodes)"
+    return None
+
+
+def _files_url_for_rel(rel: Optional[str]) -> Optional[str]:
+    if not isinstance(rel, str) or not rel.strip():
+        return None
+    norm = _normalize_rel_posix(rel.strip().lstrip("/"))
+    if not norm:
+        return None
+    return "/files/" + urllib.parse.quote(norm)
+
+
+def _queue_resolve_input_media(cfg: "ServerConfig", prompt_obj: Any) -> Dict[str, Any]:
+    """Resolve input media path/URL/thumb for a queued Comfy prompt."""
+    raw_rel, kind = _extract_input_media_from_prompt(prompt_obj)
+    if not raw_rel:
+        return {
+            "input_media_relpath": None,
+            "input_media_url": None,
+            "input_media_kind": None,
+            "input_thumb_url": None,
+        }
+    ws_in = _discovery_workspace_input_relpath_for_source(cfg, raw_rel)
+    candidates: List[str] = []
+    raw_norm = _normalize_rel_posix(str(raw_rel).lstrip("/"))
+    stripped = raw_norm
+    # Comfy often cites ``output/og/...``; library files live under output_root as ``og/...``.
+    while stripped.lower().startswith("output/"):
+        stripped = stripped[7:]
+    for c in (ws_in, stripped, raw_norm, raw_rel):
+        if isinstance(c, str) and c.strip() and c not in candidates:
+            candidates.append(c.strip().replace("\\", "/"))
+    resolved_rel: Optional[str] = None
+    full: Optional[Path] = None
+    for cand in candidates:
+        hit = _discovery_resolve_media_file(cfg, cand)
+        if hit is not None:
+            if ws_in and hit == _safe_join(cfg.workspace_root, ws_in):
+                resolved_rel = ws_in
+            else:
+                try:
+                    resolved_rel = str(hit.relative_to(cfg.output_root.resolve())).replace("\\", "/")
+                except Exception:
+                    try:
+                        resolved_rel = str(hit.relative_to(cfg.workspace_root.resolve())).replace("\\", "/")
+                    except Exception:
+                        resolved_rel = cand
+            full = hit
+            break
+    url = _files_url_for_rel(resolved_rel) if full is not None else None
+    thumb_url = None
+    if full is not None and full.suffix.lower() in {".mp4", ".webm", ".mov", ".mkv"}:
+        for companion in (full.with_suffix(".png"), full.with_suffix(".jpg"), full.with_suffix(".webp")):
+            if companion.is_file():
+                try:
+                    thumb_rel = str(companion.relative_to(cfg.output_root.resolve())).replace("\\", "/")
+                except Exception:
+                    try:
+                        thumb_rel = str(companion.relative_to(cfg.workspace_root.resolve())).replace("\\", "/")
+                    except Exception:
+                        thumb_rel = None
+                if thumb_rel:
+                    thumb_url = _files_url_for_rel(thumb_rel)
+                    break
+    if thumb_url is None and kind == "image":
+        thumb_url = url
+    return {
+        "input_media_relpath": resolved_rel or raw_rel,
+        "input_media_url": url,
+        "input_media_kind": kind,
+        "input_thumb_url": thumb_url,
+    }
+
+
+def _history_prompt_obj(record: Any) -> Optional[Dict[str, Any]]:
+    """Comfy history value is often {prompt: [num, pid, prompt_dict, extra, ...], outputs: ...}."""
+    if not isinstance(record, dict):
+        return None
+    prompt = record.get("prompt")
+    if isinstance(prompt, list) and len(prompt) >= 3 and isinstance(prompt[2], dict):
+        return prompt[2]
+    if isinstance(prompt, dict):
+        return prompt
     return None
 
 
@@ -5345,6 +5568,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/home/summary":
             return self._handle_home_summary_get(q)
 
+        if path == "/api/comfy/live-preview":
+            return self._handle_comfy_live_preview_get(q)
+        if path == "/api/comfy/live-status":
+            return self._handle_comfy_live_status_get(q)
+
         if path == "/api/queue":
             # Optional: limit how many experiments we scan (newest first).
             limit_exps = None
@@ -5411,14 +5639,7 @@ class Handler(BaseHTTPRequestHandler):
                             if len(it) >= 3 and isinstance(it[2], dict):
                                 prompt_obj = it[2]
                         mapped = prompt_to_run.get(pid) if isinstance(pid, str) and pid else None
-                        input_rel, input_kind = _extract_input_media_from_prompt(prompt_obj)
-                        input_url = None
-                        if isinstance(input_rel, str):
-                            normalized = _normalize_rel_posix(input_rel)
-                            if normalized:
-                                full = _safe_join(cfg.output_root, normalized)
-                                if full is not None and full.exists() and full.is_file():
-                                    input_url = "/files/" + urllib.parse.quote(normalized)
+                        media = _queue_resolve_input_media(cfg, prompt_obj)
                         workflow_name = _guess_workflow_name(prompt_obj, it)
                         key_params = _extract_key_params_from_prompt(prompt_obj)
                         out.append(
@@ -5429,9 +5650,10 @@ class Handler(BaseHTTPRequestHandler):
                                 "exp_id": mapped.get("exp_id") if isinstance(mapped, dict) else None,
                                 "run_id": mapped.get("run_id") if isinstance(mapped, dict) else None,
                                 "workflow_name": workflow_name,
-                                "input_media_relpath": input_rel,
-                                "input_media_url": input_url,
-                                "input_media_kind": input_kind,
+                                "input_media_relpath": media.get("input_media_relpath"),
+                                "input_media_url": media.get("input_media_url"),
+                                "input_media_kind": media.get("input_media_kind"),
+                                "input_thumb_url": media.get("input_thumb_url"),
                                 "key_params": key_params,
                             }
                         )
@@ -5453,37 +5675,91 @@ class Handler(BaseHTTPRequestHandler):
                     limit = max(1, min(200, int(p)))
                     break
             comfy = str(cfg.comfy_server).rstrip("/")
+            # Comfy's unbounded /history is huge and oldest-first; requesting
+            # max_items and sorting by queue index keeps the UI on recent runs.
             try:
-                hist_obj = _http_json("GET", f"{comfy}/history", timeout_s=10)
+                hist_obj = _http_json("GET", f"{comfy}/history?max_items={int(limit)}", timeout_s=30)
             except Exception as e:
                 return _json_response(self, 502, {"error": "comfy_history_fetch_failed", "detail": str(e), "items": []})
             items_out: List[Dict[str, Any]] = []
             if isinstance(hist_obj, dict):
-                for pid, record in hist_obj.items():
-                    if not isinstance(pid, str):
-                        continue
+                ordered = sorted(
+                    ((pid, record) for pid, record in hist_obj.items() if isinstance(pid, str)),
+                    key=lambda kv: _history_queue_index(kv[1]),
+                    reverse=True,
+                )
+                for pid, record in ordered[:limit]:
                     outs = _extract_outputs_from_history(record)
                     pv, pi = _pick_primary_media(outs)
+                    prompt_obj = _history_prompt_obj(record)
+                    raw_prompt = record.get("prompt") if isinstance(record, dict) else None
+                    media = _queue_resolve_input_media(cfg, prompt_obj)
+                    workflow_name = _guess_workflow_name(prompt_obj, raw_prompt)
+                    key_params = _extract_key_params_from_prompt(prompt_obj)
+                    status = "complete"
+                    if isinstance(record, dict) and isinstance(record.get("status"), dict):
+                        st = record["status"].get("status_str") or record["status"].get("completed")
+                        if isinstance(st, str) and st.strip():
+                            status = st.strip()
+                        elif st is False:
+                            status = "error"
+
                     def _mk_url(rel: Optional[str]) -> Optional[str]:
                         if not isinstance(rel, str) or not rel:
                             return None
                         norm = _normalize_rel_posix(rel)
                         if not norm:
                             return None
-                        full = _safe_join(cfg.output_root, norm)
-                        if full is None or not full.exists() or not full.is_file():
+                        full = _discovery_resolve_media_file(cfg, norm)
+                        if full is None:
                             return None
-                        return "/files/" + urllib.parse.quote(norm)
+                        return _files_url_for_rel(norm)
+
+                    primary_video_url = _mk_url(pv)
+                    primary_image_url = _mk_url(pi)
+                    # Companion PNG next to the chosen video, else first image output.
+                    output_thumb = None
+                    if pv:
+                        full_v = _discovery_resolve_media_file(cfg, pv)
+                        if full_v is not None:
+                            for companion in (full_v.with_suffix(".png"), full_v.with_suffix(".jpg"), full_v.with_suffix(".webp")):
+                                if companion.is_file():
+                                    try:
+                                        thumb_rel = str(companion.relative_to(cfg.output_root.resolve())).replace("\\", "/")
+                                    except Exception:
+                                        thumb_rel = None
+                                    if thumb_rel:
+                                        output_thumb = _files_url_for_rel(thumb_rel)
+                                        break
+                    if output_thumb is None:
+                        output_thumb = primary_image_url or media.get("input_thumb_url")
+                    # Prefer a human title from the durable output basename when workflow is anonymous.
+                    title = workflow_name
+                    if not title or str(title).startswith("graph (") or str(title).startswith("client:"):
+                        for cand in (pv, pi, media.get("input_media_relpath")):
+                            bn = Path(str(cand or "")).name
+                            if bn:
+                                title = bn
+                                break
                     items_out.append(
                         {
                             "prompt_id": pid,
-                            "status": "complete",
-                            "primary_video_url": _mk_url(pv),
-                            "primary_image_url": _mk_url(pi),
+                            "status": status,
+                            "workflow_name": title,
+                            "key_params": key_params,
+                            "queue_index": _history_queue_index(record),
+                            "primary_video_relpath": pv,
+                            "primary_image_relpath": pi,
+                            "primary_video_url": primary_video_url,
+                            "primary_image_url": primary_image_url,
+                            "output_thumb_url": output_thumb,
+                            "input_media_relpath": media.get("input_media_relpath"),
+                            "input_media_url": media.get("input_media_url"),
+                            "input_media_kind": media.get("input_media_kind"),
+                            "input_thumb_url": media.get("input_thumb_url"),
                             "outputs": [{**o, "url": _mk_url(o.get("relpath"))} for o in outs],
                         }
                     )
-            items_out = items_out[:limit]
             return _json_response(self, 200, {"items": items_out})
 
         if path == "/api/orchestrator/state":
@@ -5508,6 +5784,22 @@ class Handler(BaseHTTPRequestHandler):
                 return _json_response(self, 404, {"ok": False, "error": "not_found", "detail": str(e)})
             except Exception as e:
                 return _json_response(self, 500, {"ok": False, "error": "prompt_profile_failed", "detail": str(e)})
+
+        if path == "/api/shape-factory/work-products":
+            try:
+                payload = _shape_factory_work_products_payload(cfg, q)
+                code = 200 if payload.get("ok") else 500
+                return _json_response(self, code, payload)
+            except Exception as e:
+                return _json_response(self, 500, {"ok": False, "error": "work_products_failed", "detail": str(e)})
+
+        if path == "/api/shape-factory/json-peek":
+            try:
+                payload = _shape_factory_json_peek_payload(cfg, q)
+                code = 200 if payload.get("ok") else (404 if payload.get("error") == "not_found" else 400)
+                return _json_response(self, code, payload)
+            except Exception as e:
+                return _json_response(self, 500, {"ok": False, "error": "json_peek_failed", "detail": str(e)})
 
         if path == "/api/workflow-explorer/factory":
             try:
@@ -5661,6 +5953,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_discovery_work_items_create_post()
         if path == "/api/discovery/work-items/cancel":
             return self._handle_discovery_work_items_cancel_post()
+        if path == "/api/discovery/work-items/priority":
+            return self._handle_discovery_work_items_priority_post()
         if path == "/api/discovery/asset-triage/complete":
             return self._handle_discovery_asset_triage_complete_post()
         if path == "/api/discovery/asset-triage/complete-batch":
@@ -6625,6 +6919,62 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, 500, {"ok": False, "error": "home_summary_failed", "detail": str(e)})
         return _json_response(self, 200, payload)
 
+    def _handle_comfy_live_preview_get(self, q: Dict[str, List[str]]) -> None:
+        """GET /api/comfy/live-preview?prompt_id=…&frame=N — latest or VHS frame JPEG/PNG bytes."""
+        prompt_id = str((q.get("prompt_id") or [""])[0] or "").strip()
+        if not prompt_id:
+            return _json_response(self, 400, {"ok": False, "error": "missing_prompt_id"})
+        frame: Optional[int] = None
+        raw_frame = str((q.get("frame") or [""])[0] or "").strip()
+        if raw_frame:
+            try:
+                frame = int(raw_frame)
+            except ValueError:
+                return _json_response(self, 400, {"ok": False, "error": "bad_frame"})
+        d = _workspace_scripts_dir()
+        if d.is_dir() and str(d) not in sys.path:
+            sys.path.insert(0, str(d))
+        try:
+            from comfy_live_preview import live_preview_image  # type: ignore
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "live_preview_import_failed", "detail": str(e)})
+        got = live_preview_image(prompt_id, frame=frame)
+        if got is None:
+            self.send_response(204)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
+        raw, mime = got
+        self.send_response(200)
+        self.send_header("Content-Type", mime or "image/jpeg")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(raw)
+
+    def _handle_comfy_live_status_get(self, q: Dict[str, List[str]]) -> None:
+        """GET /api/comfy/live-status?prompt_id=a,b — progress + has_preview for prompt ids."""
+        d = _workspace_scripts_dir()
+        if d.is_dir() and str(d) not in sys.path:
+            sys.path.insert(0, str(d))
+        try:
+            from comfy_live_preview import live_status_payload  # type: ignore
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "live_status_import_failed", "detail": str(e)})
+        raw_ids = (q.get("prompt_id") or q.get("prompt_ids") or [])
+        ids: List[str] = []
+        for chunk in raw_ids:
+            for part in str(chunk or "").split(","):
+                s = part.strip()
+                if s:
+                    ids.append(s)
+        try:
+            payload = live_status_payload(ids or None)
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "live_status_failed", "detail": str(e)})
+        return _json_response(self, 200, payload)
+
     def _handle_discovery_asset_recover_post(self) -> None:
         """
         POST /api/discovery/asset-recover  { family? , names?: [...], allow_remote? }
@@ -6645,11 +6995,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_discovery_asset_ratings_set_post(self) -> None:
         """
-        POST /api/discovery/asset-ratings/set  { relpath, stars: 0-5 }
+        POST /api/discovery/asset-ratings/set  { relpath, stars: 0-5, axis?: quality_axis }
 
-        Write an explicit XMP star for one output (0 clears it), update
-        ratings_index.json, and return the refreshed per-asset ratings payload so the
-        UI reflects rating_effective immediately.
+        Set one quality axis (subject_beauty / render_quality / action_quality) or, when
+        axis is omitted, set all three to the same star value. Updates derived explicit
+        aggregate + XMP, then returns the refreshed per-asset ratings payload.
         """
         cfg = self.server.cfg
         obj = self._read_request_json()
@@ -6848,6 +7198,22 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, 500, {"ok": False, "error": "work_items_cancel_failed", "detail": str(e)})
         return _json_response(self, 200, payload)
 
+    def _handle_discovery_work_items_priority_post(self) -> None:
+        """POST /api/discovery/work-items/priority { work_id, priority }"""
+        cfg = self.server.cfg
+        obj = self._read_request_json()
+        if obj is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _discovery_work_items_priority_payload(cfg, obj)
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except FileNotFoundError as e:
+            return _json_response(self, 404, {"ok": False, "error": "work_item_missing", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "work_items_priority_failed", "detail": str(e)})
+        return _json_response(self, 200, payload)
+
     def _handle_discovery_asset_triage_complete_post(self) -> None:
         """
         POST /api/discovery/asset-triage/complete
@@ -6871,7 +7237,8 @@ class Handler(BaseHTTPRequestHandler):
         """
         POST /api/discovery/asset-triage/complete-batch
           { relpaths: string[] }
-        Records triage only for clips that have an entry disposition.
+        Records triage for clips that have both explicit quality and appetite (rating complete).
+        Clips missing either return to the rate pool.
         """
         cfg = self.server.cfg
         obj = self._read_request_json()
@@ -7797,6 +8164,15 @@ def main() -> int:
         factory_browse_roots=_factory_browse_roots(ws, output_root),
     )
     server = ExperimentsServer((args.host, int(args.port)), cfg)
+    try:
+        d = _workspace_scripts_dir()
+        if d.is_dir() and str(d) not in sys.path:
+            sys.path.insert(0, str(d))
+        from comfy_live_preview import start_bridge  # type: ignore
+
+        start_bridge(str(cfg.comfy_server))
+    except Exception as e:
+        print(f"[experiments-ui] comfy live-preview bridge not started: {e}")
     print(f"[experiments-ui] listening on http://{args.host}:{args.port}")
     print(f"[experiments-ui] workspace_root={cfg.workspace_root}")
     print(f"[experiments-ui] experiments_root={cfg.experiments_root}")
@@ -7818,10 +8194,14 @@ def main() -> int:
         "POST /api/discovery/asset-disposition/toggle, POST /api/discovery/asset-disposition/run-step, "
         "GET /api/discovery/work-items, GET /api/discovery/work-items/pool, "
         "POST /api/discovery/work-items/create, POST /api/discovery/work-items/cancel, "
+        "POST /api/discovery/work-items/priority, "
         "POST /api/discovery/asset-triage/complete, POST /api/discovery/asset-triage/complete-batch"
     )
     print("[experiments-ui] home_routes=GET /api/home/summary")
-    print("[experiments-ui] shape_factory_routes=GET /api/shape-factory/map, GET /api/shape-factory/prompt-profile, POST /api/shape-factory/queue, POST /api/shape-factory/replay")
+    print(
+        "[experiments-ui] comfy_live_routes=GET /api/comfy/live-preview, GET /api/comfy/live-status"
+    )
+    print("[experiments-ui] shape_factory_routes=GET /api/shape-factory/map, GET /api/shape-factory/prompt-profile, GET /api/shape-factory/work-products, GET /api/shape-factory/json-peek, POST /api/shape-factory/queue, POST /api/shape-factory/replay")
     server.serve_forever()
     return 0
 

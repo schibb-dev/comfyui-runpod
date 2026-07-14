@@ -47,6 +47,7 @@ import type {
   SetAppetiteResponse,
   Appetite,
   AppetiteFacet,
+  QualityAxis,
   DispositionCatalogResponse,
   DispositionSuggestResponse,
   ToggleDispositionResponse,
@@ -58,6 +59,10 @@ import type {
   WorkItemsListResponse,
   WorkItemsCreateResponse,
   WorkItemsCancelResponse,
+  WorkItemsPriorityResponse,
+  WorkProductsResponse,
+  JsonPeekResponse,
+  ComfyLiveStatusResponse,
 } from "./types";
 
 function experimentsUiStaleApiHint(): string {
@@ -143,6 +148,63 @@ export async function fetchShapeFactoryPromptProfile(path: string): Promise<Shap
   return j;
 }
 
+export async function fetchShapeFactoryWorkProducts(opts?: {
+  limit?: number;
+  hourlyOnly?: boolean;
+  family?: string;
+}): Promise<WorkProductsResponse> {
+  const sp = new URLSearchParams();
+  if (opts?.limit != null) sp.set("limit", String(opts.limit));
+  if (opts?.hourlyOnly === false) sp.set("hourly_only", "0");
+  if (opts?.family) sp.set("family", opts.family);
+  const qs = sp.toString();
+  const r = await fetch(`/api/shape-factory/work-products${qs ? `?${qs}` : ""}`);
+  const j = (await r.json().catch(() => ({}))) as WorkProductsResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET /api/shape-factory/work-products failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function fetchShapeFactoryJsonPeek(path: string): Promise<JsonPeekResponse> {
+  const sp = new URLSearchParams({ path });
+  const r = await fetch(`/api/shape-factory/json-peek?${sp}`);
+  const j = (await r.json().catch(() => ({}))) as JsonPeekResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET /api/shape-factory/json-peek failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+/** URL for the latest Comfy latent preview frame (poll with cache-bust query). */
+export function comfyLivePreviewUrl(promptId: string, bust?: number | string, frame?: number): string {
+  const sp = new URLSearchParams({ prompt_id: promptId });
+  if (bust != null) sp.set("t", String(bust));
+  if (frame != null && Number.isFinite(frame)) sp.set("frame", String(frame));
+  return `/api/comfy/live-preview?${sp}`;
+}
+
+export async function fetchComfyLiveStatus(promptIds: string[]): Promise<ComfyLiveStatusResponse> {
+  const sp = new URLSearchParams();
+  const ids = promptIds.map((p) => p.trim()).filter(Boolean);
+  if (ids.length) sp.set("prompt_id", ids.join(","));
+  const r = await fetch(`/api/comfy/live-status?${sp}`);
+  const j = (await r.json().catch(() => ({}))) as ComfyLiveStatusResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET /api/comfy/live-status failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
 export async function queueShapeFactoryCombo(req: ShapeFactoryMapQueueRequest): Promise<ShapeFactoryMapQueueResponse> {
   const r = await fetch("/api/shape-factory/queue", {
     method: "POST",
@@ -190,7 +252,11 @@ export async function recoverAssets(body: {
   return j;
 }
 
-export async function setAssetRating(body: { relpath: string; stars: number }): Promise<SetAssetRatingResponse> {
+export async function setAssetRating(body: {
+  relpath: string;
+  stars: number;
+  axis?: QualityAxis;
+}): Promise<SetAssetRatingResponse> {
   const r = await fetch("/api/discovery/asset-ratings/set", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -384,6 +450,23 @@ export async function cancelWorkItem(body: { work_id: string; reason?: string })
   if (!r.ok || j.ok === false) {
     const detail = [j.error, j.detail].filter(Boolean).join(": ");
     throw new Error(`POST /api/discovery/work-items/cancel failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
+}
+
+export async function setWorkItemPriority(body: {
+  work_id: string;
+  priority: "front" | "normal" | string;
+}): Promise<WorkItemsPriorityResponse> {
+  const r = await fetch("/api/discovery/work-items/priority", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as WorkItemsPriorityResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`POST /api/discovery/work-items/priority failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
   }
   return j;
 }

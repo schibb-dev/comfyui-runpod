@@ -10,6 +10,7 @@ import { DiscoveryRatingQueueApp } from "./ui/DiscoveryRatingQueueApp";
 import { HomeDashboard } from "./ui/HomeDashboard";
 import { OrchestratorApp } from "./ui/OrchestratorApp";
 import { WorkflowExplorerApp } from "./ui/WorkflowExplorerApp";
+import { WorkProductsApp } from "./ui/WorkProductsApp";
 import { isWorkbenchLens, resolveRouteId, type AppRouteId } from "./ui/routes";
 import "./ui/styles.css";
 
@@ -20,6 +21,7 @@ const SCREENS: Record<AppRouteId, React.ComponentType> = {
   workflows: WorkflowExplorerApp,
   factory: DiscoveryFactoryMapApp,
   rate: DiscoveryRatingQueueApp,
+  "work-products": WorkProductsApp,
   library: DiscoveryLibraryApp,
   experiments: App,
 };

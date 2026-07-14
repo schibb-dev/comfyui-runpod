@@ -353,10 +353,21 @@ echo "▶️  Starting ComfyUI directly"
 cd "$COMFYUI_PATH"
 args=(--listen 0.0.0.0 --port 8188)
 
+# Latent / VHS live previews need a non-"none" preview method. Default to auto so
+# Work products and the Comfy UI get forming frames; override with COMFYUI_PREVIEW_METHOD
+# (auto|latent2rgb|taesd|none) or pass --preview-method via COMFYUI_EXTRA_ARGS.
+preview_method="${COMFYUI_PREVIEW_METHOD:-auto}"
+if [[ -n "${preview_method}" && "${preview_method}" != "none" ]]; then
+  args+=(--preview-method "${preview_method}")
+elif [[ "${preview_method}" == "none" ]]; then
+  args+=(--preview-method none)
+fi
+
 # Optional logging controls (helpful when diagnosing crash/restart loops).
 # - COMFYUI_LOG_STDOUT=true  -> mirror logs to stdout (visible via `docker logs`)
 # - COMFYUI_VERBOSE=INFO|DEBUG|WARNING|ERROR|CRITICAL -> set log level
 # - COMFYUI_EXTRA_ARGS="--foo bar" -> pass through extra CLI args
+# - COMFYUI_PREVIEW_METHOD=auto|latent2rgb|taesd|none -> sampler latent preview method
 if [[ "${COMFYUI_LOG_STDOUT:-false}" == "true" ]]; then
   args+=(--log-stdout)
 fi

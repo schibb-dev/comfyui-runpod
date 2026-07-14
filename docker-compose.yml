@@ -81,6 +81,8 @@ services:
       # Log more info to `docker logs` (use DEBUG temporarily if needed)
       - COMFYUI_LOG_STDOUT=true
       - COMFYUI_VERBOSE=INFO
+      # Enable sampler/VHS latent live previews (Work products + Comfy UI). Set none to disable.
+      - COMFYUI_PREVIEW_METHOD=${COMFYUI_PREVIEW_METHOD:-auto}
       # Enable automatic WAN model downloads
       - download_480p_native_models=true
       - download_720p_native_models=true

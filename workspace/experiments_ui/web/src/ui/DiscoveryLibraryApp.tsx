@@ -3012,7 +3012,10 @@ export function DiscoveryLibraryApp() {
 
 function DiscoveryLibraryInner() {
   const { device } = useDeviceContext();
-  const isPhone = device === "phone";
+  // Tablet has no dedicated library chrome yet — desktop split (fixed list width +
+  // side drawer) overflows badly under ~1024px, especially inside Workbench.
+  // Use the phone list/viewer flow for anything below desktop.
+  const isPhone = device === "phone" || device === "tablet";
 
   const [saved, setSaved] = useState<Set<string>>(() => loadSaved());
   const [qInput, setQInput] = useState("");
@@ -3465,6 +3468,20 @@ function DiscoveryLibraryInner() {
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [isPhone, displayed]);
 
+  // Keep persisted list width inside the live split so narrow desktop windows
+  // (or leftover wide prefs) cannot crush the preview pane.
+  useEffect(() => {
+    if (isPhone) return;
+    const clamp = () => {
+      const splitW = desktopSplitRef.current?.clientWidth ?? window.innerWidth;
+      const maxW = Math.max(DESKTOP_LIST_MIN, splitW - DESKTOP_PREVIEW_MIN - 24);
+      setListPaneWidth((w) => (w > maxW ? maxW : w));
+    };
+    clamp();
+    window.addEventListener("resize", clamp);
+    return () => window.removeEventListener("resize", clamp);
+  }, [isPhone]);
+
   const onDesktopResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     let ended = false;
@@ -3477,9 +3494,10 @@ function DiscoveryLibraryInner() {
         cleanup();
         return;
       }
+      const splitW = split?.clientWidth ?? window.innerWidth;
       const maxW = Math.max(
         DESKTOP_LIST_MIN,
-        window.innerWidth - DESKTOP_PREVIEW_MIN - 24
+        splitW - DESKTOP_PREVIEW_MIN - 24
       );
       const delta = ev.clientX - startX;
       const next = Math.min(maxW, Math.max(DESKTOP_LIST_MIN, startW + delta));

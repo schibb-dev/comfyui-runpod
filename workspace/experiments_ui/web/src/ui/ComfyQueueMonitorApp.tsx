@@ -1,48 +1,123 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { comfyCancel, comfyClear, fetchComfyHistory, fetchQueue, saveQueueItemForLater } from "./api";
+import { discoveryLibraryHref } from "./discoveryDeepLink";
+import { MediaAssetCard } from "./MediaAssetCard";
+import { PageHeader } from "./PageHeader";
 import type { ComfyHistoryItem, QueueComfyItem, QueueResponse } from "./types";
 
-function mediaUrl(item: QueueComfyItem): string | null {
-  return typeof item.input_media_url === "string" && item.input_media_url ? item.input_media_url : null;
+function basename(rel?: string | null): string {
+  const p = (rel || "").replace(/\\/g, "/");
+  return p.split("/").pop() || p || "";
 }
 
-function ItemCard({ item, kind, onRefresh }: { item: QueueComfyItem; kind: "running" | "pending"; onRefresh: () => void }) {
+function shortId(pid?: string | null, n = 10): string {
+  const s = (pid || "").trim();
+  if (!s) return "(no id)";
+  return s.length <= n ? s : `${s.slice(0, n)}…`;
+}
+
+function formatKeyParams(params?: Record<string, unknown> | null): string {
+  if (!params || typeof params !== "object") return "";
+  const order = ["seed", "noise_seed", "steps", "cfg", "sampler_name", "scheduler", "denoise", "model"];
+  const parts: string[] = [];
+  const seen = new Set<string>();
+  for (const k of order) {
+    if (!(k in params)) continue;
+    seen.add(k);
+    const v = params[k];
+    if (v == null || v === "") continue;
+    parts.push(`${k}=${String(v)}`);
+  }
+  for (const [k, v] of Object.entries(params)) {
+    if (seen.has(k) || v == null || v === "") continue;
+    parts.push(`${k}=${String(v)}`);
+    if (parts.length >= 8) break;
+  }
+  return parts.join(" · ");
+}
+
+function queueThumb(item: QueueComfyItem): string | null {
+  if (item.input_thumb_url) return item.input_thumb_url;
+  if (item.input_media_kind === "image" && item.input_media_url) return item.input_media_url;
+  // Companion PNG guess for video inputs (same convention as discovery / home).
+  if (item.input_media_relpath && /\.(mp4|webm|mov|mkv)$/i.test(item.input_media_relpath)) {
+    return "/files/" + encodeURIComponent(item.input_media_relpath.replace(/\.(mp4|webm|mov|mkv)$/i, ".png"));
+  }
+  return null;
+}
+
+function historyThumb(item: ComfyHistoryItem): string | null {
+  if (item.output_thumb_url) return item.output_thumb_url;
+  if (item.primary_image_url) return item.primary_image_url;
+  if (item.input_thumb_url) return item.input_thumb_url;
+  if (item.primary_video_relpath && /\.mp4$/i.test(item.primary_video_relpath)) {
+    return "/files/" + encodeURIComponent(item.primary_video_relpath.replace(/\.mp4$/i, ".png"));
+  }
+  return null;
+}
+
+function QueueItemRow({
+  item,
+  kind,
+  onRefresh,
+}: {
+  item: QueueComfyItem;
+  kind: "running" | "pending";
+  onRefresh: () => void;
+}) {
   const pid = item.prompt_id ?? "";
-  const inputUrl = mediaUrl(item);
-  const isVideo = item.input_media_kind === "video";
+  const thumb = queueThumb(item);
+  const videoUrl = item.input_media_kind === "video" ? item.input_media_url : null;
+  const title = item.workflow_name || basename(item.input_media_relpath) || shortId(pid, 16);
+  const detailParts = [
+    item.input_media_relpath ? basename(item.input_media_relpath) : null,
+    formatKeyParams(item.key_params),
+  ].filter(Boolean);
+  const mediaType = item.input_media_kind === "video" ? "video" : item.input_media_kind === "image" ? "image" : undefined;
+
   return (
-    <div className="panel" style={{ padding: 10, display: "grid", gap: 8 }}>
-      {inputUrl ? (
-        isVideo ? (
-          <video src={inputUrl} controls preload="metadata" style={{ width: "100%", maxHeight: 240, borderRadius: 8 }} />
-        ) : (
-          <img src={inputUrl} alt="input" style={{ width: "100%", maxHeight: 240, objectFit: "cover", borderRadius: 8 }} />
-        )
-      ) : (
-        <div style={{ color: "var(--muted)", fontSize: 12 }}>(no input thumbnail)</div>
-      )}
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
-        <code className="mono">{pid || "(no prompt_id)"}</code>
-        <span style={{ color: "var(--muted)", fontSize: 12 }}>{item.workflow_name || "workflow unknown"}</span>
-      </div>
-      <div style={{ color: "var(--muted)", fontSize: 12, overflowX: "auto" }}>
-        key params: <code className="mono">{JSON.stringify(item.key_params ?? {})}</code>
-      </div>
-      <div style={{ display: "flex", gap: 8 }}>
+    <div className="queue-monitor-row">
+      <MediaAssetCard
+        name={title}
+        path={item.input_media_relpath || pid || ""}
+        mediaType={mediaType}
+        thumbUrl={thumb}
+        videoUrl={videoUrl}
+        showVideoThumb={!thumb && Boolean(videoUrl)}
+        badge={kind === "running" ? "running" : item.external ? "external" : "pending"}
+        badgeClassName={
+          kind === "running"
+            ? "media-asset-card__badge--running"
+            : item.external
+              ? "media-asset-card__badge--external"
+              : "media-asset-card__badge--pending"
+        }
+        status={!item.external && item.exp_id ? `${item.exp_id}/${item.run_id ?? ""}` : undefined}
+        detail={detailParts.join(" · ") || undefined}
+        showPath={false}
+        className="discovery-list-asset-card"
+      />
+      <div className="queue-monitor-row__actions">
+        <code className="mono queue-monitor-row__pid" title={pid || undefined}>
+          {shortId(pid)}
+        </code>
         <button
           type="button"
           disabled={!pid}
+          title={kind === "running" ? "Interrupt current ComfyUI execution" : "Remove from pending queue"}
           onClick={() => {
             void (async () => {
+              if (!pid) return;
               await comfyCancel({ prompt_id: pid, kind });
               onRefresh();
             })();
           }}
         >
-          {kind === "running" ? "Interrupt running" : "Cancel pending"}
+          {kind === "running" ? "Interrupt" : "Cancel"}
         </button>
         <button
           type="button"
+          title="Save this queue item for later"
           onClick={() => {
             void saveQueueItemForLater({
               title: item.workflow_name || `Saved ${pid || "queue item"}`,
@@ -57,28 +132,97 @@ function ItemCard({ item, kind, onRefresh }: { item: QueueComfyItem; kind: "runn
             });
           }}
         >
-          Save for later
+          Save
         </button>
       </div>
     </div>
   );
 }
 
-function HistoryCard({ item }: { item: ComfyHistoryItem }) {
-  const video = item.primary_video_url || null;
-  const image = item.primary_image_url || null;
+function historyWorkbenchRelpath(item: ComfyHistoryItem): string | null {
+  for (const cand of [item.primary_video_relpath, item.primary_image_relpath, item.input_media_relpath]) {
+    const rel = String(cand || "")
+      .trim()
+      .replace(/^\/+/, "")
+      .replace(/\\/g, "/");
+    if (rel) return rel;
+  }
+  return null;
+}
+
+function HistoryItemRow({ item }: { item: ComfyHistoryItem }) {
+  const thumb = historyThumb(item);
+  const videoUrl = item.primary_video_url || null;
+  const title =
+    item.workflow_name ||
+    basename(item.primary_video_relpath) ||
+    basename(item.primary_image_relpath) ||
+    shortId(item.prompt_id, 16);
+  const path = item.primary_video_relpath || item.primary_image_relpath || item.input_media_relpath || item.prompt_id;
+  const workbenchRel = historyWorkbenchRelpath(item);
+  const detailParts = [
+    item.input_media_relpath ? `in ${basename(item.input_media_relpath)}` : null,
+    formatKeyParams(item.key_params),
+  ].filter(Boolean);
+  const mediaType = videoUrl ? "video" : item.primary_image_url ? "image" : undefined;
+
   return (
-    <div className="panel" style={{ padding: 10, display: "grid", gap: 8 }}>
-      <code className="mono">{item.prompt_id}</code>
-      <div style={{ color: "var(--muted)", fontSize: 12 }}>status: {item.status}</div>
-      {video ? (
-        <video src={video} controls preload="metadata" style={{ width: "100%", maxHeight: 220, borderRadius: 8 }} />
-      ) : image ? (
-        <img src={image} alt="history output" style={{ width: "100%", maxHeight: 220, objectFit: "cover", borderRadius: 8 }} />
-      ) : (
-        <div style={{ color: "var(--muted)", fontSize: 12 }}>(no media)</div>
-      )}
+    <div className="queue-monitor-row">
+      <MediaAssetCard
+        name={title}
+        path={path}
+        mediaType={mediaType}
+        thumbUrl={thumb}
+        videoUrl={videoUrl}
+        showVideoThumb={!thumb && Boolean(videoUrl)}
+        badge={item.status || "done"}
+        badgeClassName="media-asset-card__badge--history"
+        detail={detailParts.join(" · ") || undefined}
+        showPath={Boolean(item.primary_video_relpath || item.primary_image_relpath)}
+        className="discovery-list-asset-card"
+        onClick={
+          workbenchRel
+            ? () => {
+                window.location.assign(discoveryLibraryHref(workbenchRel));
+              }
+            : undefined
+        }
+      />
+      <div className="queue-monitor-row__actions">
+        <code className="mono queue-monitor-row__pid" title={item.prompt_id}>
+          {shortId(item.prompt_id)}
+        </code>
+        {workbenchRel ? (
+          <a className="queue-monitor-row__open" href={discoveryLibraryHref(workbenchRel)} title="Open in workbench">
+            Workbench
+          </a>
+        ) : null}
+      </div>
     </div>
+  );
+}
+
+function QueueSection({
+  title,
+  count,
+  empty,
+  children,
+}: {
+  title: string;
+  count: number;
+  empty: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="queue-monitor-section panel">
+      <div className="queue-monitor-section__head">
+        <h2 className="queue-monitor-section__title">{title}</h2>
+        <span className="queue-monitor-section__count mono">{count}</span>
+      </div>
+      <div className="queue-monitor-section__list">
+        {count ? children : <div className="queue-monitor-empty">{empty}</div>}
+      </div>
+    </section>
   );
 }
 
@@ -112,16 +256,18 @@ export function ComfyQueueMonitorApp() {
 
   const running = data?.comfyui?.running ?? [];
   const pending = data?.comfyui?.pending ?? [];
-  const current = useMemo(() => (running.length ? running[0] : null), [running]);
+  const subtitle = useMemo(
+    () => `running ${running.length} · pending ${pending.length} · history ${history.length}`,
+    [running.length, pending.length, history.length],
+  );
 
   return (
-    <div className="layout" style={{ display: "grid", gap: 12 }}>
-      <div className="panel" style={{ padding: 12, display: "grid", gap: 10 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-          <h1 className="title" style={{ margin: 0 }}>
-            Comfy Queue Monitor
-          </h1>
-          <div style={{ display: "flex", gap: 8 }}>
+    <div className="queue-monitor layout">
+      <PageHeader
+        title="Comfy Queue"
+        subtitle={subtitle}
+        actions={
+          <>
             <button type="button" onClick={() => void refresh()} disabled={loading}>
               Refresh
             </button>
@@ -136,35 +282,40 @@ export function ComfyQueueMonitorApp() {
             >
               Clear pending
             </button>
-          </div>
-        </div>
-        <div style={{ color: "var(--muted)", fontSize: 12 }}>
-          running <span className="mono">{running.length}</span> · pending <span className="mono">{pending.length}</span>
-        </div>
-        {error ? <div style={{ color: "var(--bad)", fontSize: 12 }}>{error}</div> : null}
-      </div>
+          </>
+        }
+      />
+      {error ? <div className="queue-monitor-error">{error}</div> : null}
 
-      <div className="panel" style={{ padding: 12, display: "grid", gap: 10 }}>
-        <h2 className="title" style={{ margin: 0 }}>
-          Current state
-        </h2>
-        {current ? <ItemCard item={current} kind="running" onRefresh={() => void refresh()} /> : <div style={{ color: "var(--muted)" }}>(idle)</div>}
-      </div>
+      <div className="queue-monitor-grid">
+        <QueueSection title="Running" count={running.length} empty="(idle)">
+          {running.map((item, i) => (
+            <QueueItemRow
+              key={`${item.prompt_id ?? "run"}:${i}`}
+              item={item}
+              kind="running"
+              onRefresh={() => void refresh()}
+            />
+          ))}
+        </QueueSection>
 
-      <div style={{ display: "grid", gap: 10 }}>
-        <h2 className="title" style={{ margin: 0 }}>
-          Pending queue
-        </h2>
-        {pending.length ? pending.map((item, i) => <ItemCard key={`${item.prompt_id ?? "pending"}:${i}`} item={item} kind="pending" onRefresh={() => void refresh()} />) : <div style={{ color: "var(--muted)" }}>(none)</div>}
-      </div>
+        <QueueSection title="Pending" count={pending.length} empty="(none)">
+          {pending.map((item, i) => (
+            <QueueItemRow
+              key={`${item.prompt_id ?? "pend"}:${i}`}
+              item={item}
+              kind="pending"
+              onRefresh={() => void refresh()}
+            />
+          ))}
+        </QueueSection>
 
-      <div style={{ display: "grid", gap: 10 }}>
-        <h2 className="title" style={{ margin: 0 }}>
-          History
-        </h2>
-        {history.length ? history.map((h) => <HistoryCard key={h.prompt_id} item={h} />) : <div style={{ color: "var(--muted)" }}>(no history)</div>}
+        <QueueSection title="History" count={history.length} empty="(no history)">
+          {history.map((h) => (
+            <HistoryItemRow key={h.prompt_id} item={h} />
+          ))}
+        </QueueSection>
       </div>
     </div>
   );
 }
-

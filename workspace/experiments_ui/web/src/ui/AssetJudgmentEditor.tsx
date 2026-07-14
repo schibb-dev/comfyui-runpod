@@ -1,10 +1,28 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { fetchDiscoveryAssetRatings, setAssetAppetite, setAssetRating } from "./api";
 import { AppetiteBar } from "./AppetiteBar";
-import type { Appetite, AppetiteFacet, DiscoveryAssetRatingsResponse } from "./types";
+import type {
+  Appetite,
+  AppetiteFacet,
+  DiscoveryAssetRatingsResponse,
+  QualityAxis,
+  QualityAxesMap,
+} from "./types";
+import { QUALITY_AXES, QUALITY_AXIS_LABELS } from "./types";
 
 function num(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+function axesFromRatings(r: DiscoveryAssetRatingsResponse): QualityAxesMap {
+  const raw = r.axes ?? r.explicit?.axes ?? null;
+  const out: QualityAxesMap = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const axis of QUALITY_AXES) {
+    const n = raw[axis];
+    if (typeof n === "number" && n >= 1 && n <= 5) out[axis] = n;
+  }
+  return out;
 }
 
 export function AssetJudgmentEditor({
@@ -20,6 +38,8 @@ export function AssetJudgmentEditor({
   onSaved?: (ratings: DiscoveryAssetRatingsResponse) => void;
 }) {
   const [explicitRating, setExplicitRating] = useState<number | null>(null);
+  const [qualityAxes, setQualityAxes] = useState<QualityAxesMap>({});
+  const [activeQualityAxis, setActiveQualityAxis] = useState<QualityAxis>("subject_beauty");
   const [derivedRating, setDerivedRating] = useState<number | null>(null);
   const [derivedSourceLabel, setDerivedSourceLabel] = useState<string | null>(null);
   const [appetite, setAppetite] = useState<Appetite | null>(null);
@@ -30,9 +50,11 @@ export function AssetJudgmentEditor({
 
   const applySeed = useCallback((r: DiscoveryAssetRatingsResponse | null | undefined) => {
     if (!r) return;
+    const axes = axesFromRatings(r);
+    setQualityAxes(axes);
     const explicit = num(r.explicit?.rating);
     setExplicitRating(explicit);
-    if (explicit == null) {
+    if (explicit == null && Object.keys(axes).length === 0) {
       const eff = num(r.rating_effective);
       const inferred = num(r.as_source?.inferred);
       const derived = eff ?? inferred;
@@ -55,6 +77,7 @@ export function AssetJudgmentEditor({
 
   useEffect(() => {
     setExplicitRating(null);
+    setQualityAxes({});
     setDerivedRating(null);
     setDerivedSourceLabel(null);
     setAppetite(null);
@@ -83,19 +106,17 @@ export function AssetJudgmentEditor({
   }, [relpath, applySeed, onSaved]);
 
   const rate = useCallback(
-    async (stars: number) => {
+    async (stars: number, axis: QualityAxis = activeQualityAxis) => {
       if (!relpath || rateBusy) return;
       setRateBusy(true);
       setMsg("");
       try {
-        await setAssetRating({ relpath, stars });
-        setExplicitRating(stars > 0 ? stars : null);
+        await setAssetRating({ relpath, stars, axis });
+        const label = QUALITY_AXIS_LABELS[axis];
         if (stars > 0) {
-          setDerivedRating(null);
-          setDerivedSourceLabel(null);
-          setMsg(`Saved ${stars}★`);
+          setMsg(`Saved ${label} ${stars}★`);
         } else {
-          setMsg("Cleared rating");
+          setMsg(`Cleared ${label}`);
         }
         await refreshAfterSave();
       } catch (e) {
@@ -104,7 +125,7 @@ export function AssetJudgmentEditor({
         setRateBusy(false);
       }
     },
-    [relpath, rateBusy, refreshAfterSave],
+    [relpath, rateBusy, refreshAfterSave, activeQualityAxis],
   );
 
   const setAppetiteState = useCallback(
@@ -139,46 +160,71 @@ export function AssetJudgmentEditor({
 
   if (!relpath) return null;
 
-  const showingDerived = explicitRating == null && derivedRating != null;
+  const showingDerived = Object.keys(qualityAxes).length === 0 && explicitRating == null && derivedRating != null;
   const busy = rateBusy || appetiteBusy;
 
-  const starBar = (
-    <div className="drq-rate-bar" role="group" aria-label="Rate quality">
-      {[1, 2, 3, 4, 5].map((n) => (
-        <button
-          key={n}
-          type="button"
-          className={
-            "drq-star-btn" +
-            (explicitRating != null && explicitRating >= n ? " drq-star-btn--on" : "") +
-            (showingDerived && derivedRating != null && derivedRating >= n ? " drq-star-btn--derived" : "")
-          }
-          disabled={busy}
-          onClick={() => void rate(n)}
-          title={`Rate ${n}★`}
-          aria-label={`Rate ${n} stars`}
-        >
-          {layout === "cards" ? (
-            <>
-              <span className="drq-star-btn__n">{n}</span>
-              <span className="drq-star-btn__glyph" aria-hidden="true">
-                ★
-              </span>
-            </>
-          ) : (
-            "★"
-          )}
-        </button>
-      ))}
-      <button
-        type="button"
-        className="drt-btn drq-clear-btn"
-        disabled={busy || explicitRating == null}
-        onClick={() => void rate(0)}
-        title="Clear rating"
-      >
-        {layout === "cards" ? "Clear" : "clear"}
-      </button>
+  const axesBars = (
+    <div className="drq-quality-axes">
+      {QUALITY_AXES.map((axis) => {
+        const value = qualityAxes[axis] ?? null;
+        const active = activeQualityAxis === axis;
+        return (
+          <div key={axis} className={"drq-quality-axis" + (active ? " drq-quality-axis--active" : "")}>
+            <button
+              type="button"
+              className="drq-quality-axis__label"
+              onClick={() => setActiveQualityAxis(axis)}
+            >
+              {QUALITY_AXIS_LABELS[axis]}
+            </button>
+            <div className="drq-rate-bar" role="group" aria-label={`Rate ${QUALITY_AXIS_LABELS[axis]}`}>
+              {[1, 2, 3, 4, 5].map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  className={
+                    "drq-star-btn" +
+                    (value != null && value >= n ? " drq-star-btn--on" : "") +
+                    (showingDerived && value == null && derivedRating != null && derivedRating >= n
+                      ? " drq-star-btn--derived"
+                      : "")
+                  }
+                  disabled={busy}
+                  onClick={() => {
+                    setActiveQualityAxis(axis);
+                    void rate(n, axis);
+                  }}
+                  title={`Rate ${QUALITY_AXIS_LABELS[axis]} ${n}★`}
+                  aria-label={`Rate ${QUALITY_AXIS_LABELS[axis]} ${n} stars`}
+                >
+                  {layout === "cards" ? (
+                    <>
+                      <span className="drq-star-btn__n">{n}</span>
+                      <span className="drq-star-btn__glyph" aria-hidden="true">
+                        ★
+                      </span>
+                    </>
+                  ) : (
+                    "★"
+                  )}
+                </button>
+              ))}
+              <button
+                type="button"
+                className="drt-btn drq-clear-btn"
+                disabled={busy || value == null}
+                onClick={() => {
+                  setActiveQualityAxis(axis);
+                  void rate(0, axis);
+                }}
+                title={`Clear ${QUALITY_AXIS_LABELS[axis]}`}
+              >
+                {layout === "cards" ? "Clear" : "clear"}
+              </button>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 
@@ -189,13 +235,16 @@ export function AssetJudgmentEditor({
           <div className="drq-judgment-card__head">
             <h3 className="drq-judgment-card__title">Quality</h3>
             <p className="drq-judgment-card__hint">
-              Hand-tagged stars — saved to XMP and the ratings index
+              Subject · Render · Action — aggregate saved to XMP
             </p>
           </div>
           {showingDerived && derivedSourceLabel ? (
             <p className="drq-judgment-card__derived">{derivedSourceLabel}</p>
           ) : null}
-          {starBar}
+          {axesBars}
+          {explicitRating != null ? (
+            <p className="drq-rate-hint factory-muted">Aggregate ★ {explicitRating}</p>
+          ) : null}
         </div>
         <div className="drq-judgment-card">
           <div className="drq-judgment-card__head">
@@ -218,7 +267,7 @@ export function AssetJudgmentEditor({
 
   return (
     <div className="asset-inspector__judgment" aria-label="Your judgment">
-      {starBar}
+      {axesBars}
       <AppetiteBar
         appetite={appetite}
         facet={appetiteFacet}
