@@ -1,0 +1,99 @@
+# Editorial similarity facets for seed *input* videos (hourly source variety).
+# Rebuild: python3 -m shape_factory_source_facets source-facets build
+#   (from workspace/scripts with PYTHONPATH=.)
+#
+# Axes: appearance | expression | identity
+# Values are provisional placeholders for the FB9 / X-Kneel pool — edit freely;
+# auto-tag / identity_embed providers will write provisional rows later.
+#
+version: 1
+schema: comfyui-runpod.source-facet-catalog.v0
+provider: editorial
+
+sources:
+  X-Kneel-FB9-2026-03-31-030342_OG_00001.mp4:
+    provisional: true
+    facets:
+      appearance: [brunette]
+      expression: [neutral]
+      identity: [subj_kneel_a]
+  X-Kneel-FB9-2026-03-31-031315_OG_00001.mp4:
+    provisional: true
+    facets:
+      appearance: [brunette]
+      expression: [smiling]
+      identity: [subj_kneel_a]
+  X-Kneel-FB9-2026-03-31-031332_OG_00001.mp4:
+    provisional: true
+    facets:
+      appearance: [brunette]
+      expression: [intense]
+      identity: [subj_kneel_a]
+  X-Kneel-FB9-2026-03-31-031527_OG_00001.mp4:
+    provisional: true
+    facets:
+      appearance: [blonde]
+      expression: [smiling]
+      identity: [subj_kneel_b]
+  X-Kneel-FB9-2026-03-31-231622_OG_00001.mp4:
+    provisional: true
+    facets:
+      appearance: [blonde]
+      expression: [laughing]
+      identity: [subj_kneel_b]
+  X-Kneel-FB9-2026-03-31-231820_OG_00001.mp4:
+    provisional: true
+    facets:
+      appearance: [blonde]
+      expression: [angry]
+      identity: [subj_kneel_b]
+  X-Kneel-FB9-2026-04-01-144236_OG_00001.mp4:
+    provisional: true
+    facets:
+      appearance: [redhead]
+      expression: [smiling]
+      identity: [subj_kneel_c]
+  X-Kneel-FB9-2026-04-02-163059_OG_00001.mp4:
+    provisional: true
+    facets:
+      appearance: [redhead]
+      expression: [neutral]
+      identity: [subj_kneel_c]
+  X-Kneel-FB9-2026-04-03-121917_OG_00001.mp4:
+    provisional: true
+    facets:
+      appearance: [brunette]
+      expression: [laughing]
+      identity: [subj_kneel_d]
+  X-Kneel-FB9-2026-04-03-140027_OG_00001.mp4:
+    provisional: true
+    facets:
+      appearance: [brunette]
+      expression: [angry]
+      identity: [subj_kneel_d]
+  X-Kneel-FB9-2026-04-03-142014_OG_00001.mp4:
+    provisional: true
+    facets:
+      appearance: [blonde]
+      expression: [intense]
+      identity: [subj_kneel_d]
+  X-Kneel-FB9-2026-04-03-145201_OG_00001.mp4:
+    provisional: true
+    facets:
+      appearance: [blonde]
+      expression: [smiling]
+      identity: [subj_kneel_e]
+  FB9_GEX2_2026-04-03_00001.mp4:
+    provisional: true
+    facets:
+      appearance: [redhead]
+      expression: [intense]
+      identity: [subj_gex2_a]
+    notes: "OG chain output reused as source — facets provisional"
+  FB9_GEX2_2026-04-04_00001.mp4:
+    provisional: true
+    facets:
+      appearance: [redhead]
+      expression: [smiling]
+      identity: [subj_gex2_a]
+    notes: "OG chain output reused as source — facets provisional"
