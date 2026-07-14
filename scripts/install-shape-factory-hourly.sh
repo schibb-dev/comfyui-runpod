@@ -15,6 +15,9 @@ Type=oneshot
 Environment=REPO=$REPO
 Environment=ADVANCE_CHAIN=1
 Environment=DEV_CHAIN=0
+Environment=HOURLY_QUEUE_MIN=1
+Environment=HOURLY_QUEUE_MAX=2
+Environment=HOURLY_PREDICTED_SHARE=0.35
 ExecStart=$REPO/scripts/shape_factory_hourly.sh
 EOF
 
@@ -24,7 +27,7 @@ Description=Run shape-factory hourly tick
 
 [Timer]
 OnBootSec=5min
-OnUnitActiveSec=20min
+OnUnitActiveSec=30min
 Persistent=true
 
 [Install]

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Hourly shape-factory maintenance + optional chain advance when Comfy queue is idle.
+# Priority when idle: GEX2→FACIAL chain, Kneel→GEX2 chain, then weighted seed family.
 # Install timer: bash scripts/install-shape-factory-hourly.sh
 set -euo pipefail
 
@@ -8,10 +9,18 @@ SCRIPTS="$REPO/workspace/scripts"
 LOG="${LOG:-$REPO/.data/shape_factory/hourly.log}"
 STATE="${STATE:-$REPO/.data/shape_factory/hourly-state.json}"
 CHAIN_MANIFEST="${CHAIN_MANIFEST:-$REPO/.data/chains/best-examples.chain.yaml}"
-BINDS="$REPO/.data/pipelines/binds/facial-from-latest-gex2.yaml"
+BINDS_FACIAL="$REPO/.data/pipelines/binds/facial-from-latest-gex2.yaml"
+BINDS_KNEEL_GEX2="$REPO/.data/pipelines/binds/gex2-from-latest-kneel.yaml"
 COMFY="${COMFY:-http://127.0.0.1:8188}"
 ADVANCE_CHAIN="${ADVANCE_CHAIN:-1}"
 DEV_CHAIN="${DEV_CHAIN:-0}"
+HOURLY_QUEUE_MIN="${HOURLY_QUEUE_MIN:-1}"
+HOURLY_QUEUE_MAX="${HOURLY_QUEUE_MAX:-2}"
+HOURLY_PREDICTED_SHARE="${HOURLY_PREDICTED_SHARE:-0.35}"
+export HOURLY_QUEUE_MIN HOURLY_QUEUE_MAX HOURLY_PREDICTED_SHARE
+
+# Families maintained every tick (deposit / submit / status).
+MAINT_FAMILIES=(FB9_GEX2 FB9_GEX_FACIAL FB9_GEX X-KNEEL-FB9 FB9-FaceBlast)
 
 mkdir -p "$(dirname "$LOG")" "$(dirname "$STATE")"
 
@@ -38,36 +47,55 @@ read_state() {
   fi
 }
 
-write_state() {
-  python3 - "$STATE" <<PY
-import json, sys
-from pathlib import Path
-data = json.loads(sys.argv[1])
-Path("$STATE").write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-PY
+shape_for_family() {
+  echo "$REPO/.data/shapes/$1.shape.yaml"
+}
+
+pools_for_family() {
+  echo "$REPO/.data/pools/$1/pools.yaml"
+}
+
+queue_policy() {
+  cd "$SCRIPTS" && python3 shape_factory_hourly.py queue-policy \
+    --pending "$1" --queue-min "$HOURLY_QUEUE_MIN" --queue-max "$HOURLY_QUEUE_MAX"
+}
+
+policy_field() {
+  python3 -c "import json,sys; print(json.loads(sys.argv[1]).get(sys.argv[2], ''))" "$1" "$2"
 }
 
 log "=== hourly tick ==="
-
-(
-  cd "$SCRIPTS"
-  python3 shape_factory.py deposit --family FB9_GEX2 >> "$LOG" 2>&1 || true
-  python3 shape_factory.py deposit --family FB9_GEX_FACIAL >> "$LOG" 2>&1 || true
-  python3 shape_factory.py submit --pending-only --family FB9_GEX2 >> "$LOG" 2>&1 || true
-  python3 shape_factory.py submit --pending-only --family FB9_GEX_FACIAL >> "$LOG" 2>&1 || true
-  python3 shape_factory.py status --family FB9_GEX2 >> "$LOG" 2>&1 || true
-  python3 shape_factory.py status --family FB9_GEX_FACIAL >> "$LOG" 2>&1 || true
-)
-
-read -r RUN PEND < <(queue_counts)
-log "comfy queue running=$RUN pending=$PEND"
 
 STATE_JSON=$(read_state)
 PHASE=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('phase','idle'))" "$STATE_JSON")
 CURSOR=$(python3 -c "import json,sys; print(int(json.loads(sys.argv[1]).get('sample_cursor',0)))" "$STATE_JSON")
 
-if [ "$RUN" != "0" ] || [ "$PEND" != "0" ]; then
-  log "queue busy — skip chain advance (phase=$PHASE)"
+read -r RUN PEND < <(queue_counts)
+SUBMIT_SLOTS=$(policy_field "$(queue_policy "$PEND")" submit_slots)
+SUBMIT_SLOTS=${SUBMIT_SLOTS:-0}
+
+(
+  cd "$SCRIPTS"
+  for fam in "${MAINT_FAMILIES[@]}"; do
+    python3 shape_factory.py deposit --quiet --family "$fam" >> "$LOG" 2>&1 || true
+    if [ "$SUBMIT_SLOTS" -gt 0 ]; then
+      python3 shape_factory.py submit --pending-only --quiet --family "$fam" --limit "$SUBMIT_SLOTS" >> "$LOG" 2>&1 || true
+      read -r RUN PEND < <(queue_counts)
+      SUBMIT_SLOTS=$(policy_field "$(queue_policy "$PEND")" submit_slots)
+      SUBMIT_SLOTS=${SUBMIT_SLOTS:-0}
+    fi
+    python3 shape_factory.py status --quiet --family "$fam" >> "$LOG" 2>&1 || true
+  done
+)
+
+read -r RUN PEND < <(queue_counts)
+POLICY_JSON=$(queue_policy "$PEND")
+ADVANCE=$(policy_field "$POLICY_JSON" advance)
+REASON=$(policy_field "$POLICY_JSON" reason)
+log "comfy queue running=$RUN pending=$PEND min=$HOURLY_QUEUE_MIN max=$HOURLY_QUEUE_MAX advance=$ADVANCE ($REASON)"
+
+if [ "$ADVANCE" != "True" ]; then
+  log "skip hourly advance (phase=$PHASE)"
   exit 0
 fi
 
@@ -83,83 +111,114 @@ HOURLY_PREFIX_ROOT="${HOURLY_PREFIX_ROOT:-og/%date:yyyy-MM-dd%/hourly}"
 HOURLY_JOB_KEY_PREFIX="${HOURLY_JOB_KEY_PREFIX:-hourly}"
 HOURLY_SUFFIX="_$(date -u +%Y%m%d%H%M)"
 
-# Phase: need FACIAL for latest complete GEX2 without a submitted FACIAL using its deposit?
-NEED_FACIAL=$(python3 <<'PY'
-import json
-from pathlib import Path
-job_dir = Path("/home/yuji/src/comfyui-runpod/.data/shape_factory/jobs")
-gex2_done = []
-for p in sorted((job_dir / "FB9_GEX2").glob("*.job.json")):
-    j = json.loads(p.read_text())
-    if j.get("status") != "complete":
-        continue
-    dep = j.get("deposit") or {}
-    vids = dep.get("videos") or []
-    if not vids:
-        continue
-    gex2_done.append((str(j.get("job_key")), vids[-1]))
-facial_sources = set()
-for p in (job_dir / "FB9_GEX_FACIAL").glob("*.job.json"):
-    j = json.loads(p.read_text())
-    sv = (j.get("bindings") or {}).get("source_video") or {}
-    facial_sources.add(str(sv.get("path") or ""))
-for job_key, vid in reversed(gex2_done):
-    if vid not in facial_sources:
-        print(job_key)
-        break
-PY
-)
-
+# Phase 1: GEX2 complete without FACIAL child
+NEED_FACIAL=$(cd "$SCRIPTS" && python3 shape_factory_hourly.py need-facial --data-root "$REPO/.data")
 if [ -n "$NEED_FACIAL" ]; then
   log "phase=facial — GEX2 complete without FACIAL ($NEED_FACIAL)"
   (
     cd "$SCRIPTS"
     python3 shape_factory.py generate \
-      --shape ../../.data/shapes/FB9_GEX_FACIAL.shape.yaml \
-      --pools ../../.data/pools/FB9_GEX_FACIAL/pools.yaml \
-      --binds-override "$BINDS" \
+      --shape "$(shape_for_family FB9_GEX_FACIAL)" \
+      --pools "$(pools_for_family FB9_GEX_FACIAL)" \
+      --binds-override "$BINDS_FACIAL" \
       --pick zip --limit 1 --job-suffix "$HOURLY_SUFFIX" \
       --output-prefix-root "$HOURLY_PREFIX_ROOT" \
       --job-key-prefix "$HOURLY_JOB_KEY_PREFIX" \
       "${dev_args[@]}" >> "$LOG" 2>&1
     python3 shape_factory.py submit --pending-only --family FB9_GEX_FACIAL >> "$LOG" 2>&1
   )
-  python3 - "$STATE_JSON" "$NEED_FACIAL" <<'PY'
+  python3 - "$STATE_JSON" "$NEED_FACIAL" "$STATE" <<'PY'
 import json, sys
+from pathlib import Path
 data = json.loads(sys.argv[1])
 data["phase"] = "facial_queued"
+data["last_family"] = "FB9_GEX_FACIAL"
+data["last_pick_mode"] = "chain"
 data["last_gex2_job"] = sys.argv[2]
-from pathlib import Path
-Path("/home/yuji/src/comfyui-runpod/.data/shape_factory/hourly-state.json").write_text(
-    json.dumps(data, indent=2) + "\n", encoding="utf-8")
+Path(sys.argv[3]).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
   log "facial step queued"
   exit 0
 fi
 
-# Phase: start next GEX2 sample — replay ("do more OF") or derive ("do more WITH") per appetite
-PLAN_JSON=$(cd "$SCRIPTS" && python3 shape_factory_hourly.py plan-step --state "$STATE" --data-root "$REPO/.data" --family FB9_GEX2)
+# Phase 2: Kneel complete without GEX2 child
+NEED_KNEEL_GEX2=$(cd "$SCRIPTS" && python3 shape_factory_hourly.py need-gex2-from-kneel --data-root "$REPO/.data")
+if [ -n "$NEED_KNEEL_GEX2" ]; then
+  log "phase=gex2_from_kneel — Kneel complete without GEX2 ($NEED_KNEEL_GEX2)"
+  (
+    cd "$SCRIPTS"
+    python3 shape_factory.py generate \
+      --shape "$(shape_for_family FB9_GEX2)" \
+      --pools "$(pools_for_family FB9_GEX2)" \
+      --binds-override "$BINDS_KNEEL_GEX2" \
+      --pick zip --limit 1 --job-suffix "$HOURLY_SUFFIX" \
+      --output-prefix-root "$HOURLY_PREFIX_ROOT" \
+      --job-key-prefix "$HOURLY_JOB_KEY_PREFIX" \
+      "${dev_args[@]}" >> "$LOG" 2>&1
+    python3 shape_factory.py submit --pending-only --family FB9_GEX2 >> "$LOG" 2>&1
+  )
+  python3 - "$STATE_JSON" "$NEED_KNEEL_GEX2" "$STATE" <<'PY'
+import json, sys
+from pathlib import Path
+data = json.loads(sys.argv[1])
+data["phase"] = "gex2_from_kneel_queued"
+data["last_family"] = "FB9_GEX2"
+data["last_pick_mode"] = "chain"
+data["last_kneel_job"] = sys.argv[2]
+Path(sys.argv[3]).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+PY
+  log "gex2-from-kneel step queued"
+  exit 0
+fi
+
+# Phase 3: weighted seed family (replay / derive / pool_product)
+FAM_JSON=$(cd "$SCRIPTS" && python3 shape_factory_hourly.py select-family --cursor "$CURSOR")
+FAMILY=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['family'])" "$FAM_JSON")
+PLAN_JSON=$(cd "$SCRIPTS" && python3 shape_factory_hourly.py plan-step --state "$STATE" --data-root "$REPO/.data" --family "$FAMILY")
 PLAN_OK=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('ok'))" "$PLAN_JSON")
 if [ "$PLAN_OK" != "True" ]; then
   PLAN_ERR=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('error',''))" "$PLAN_JSON")
-  log "GEX2 replay skipped (${PLAN_ERR:-no plan})"
+  log "seed skipped family=$FAMILY (${PLAN_ERR:-no plan})"
   exit 0
 fi
 
 PICK_MODE=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('pick_mode','replay'))" "$PLAN_JSON")
+RATING_KIND=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('rating_kind',''))" "$PLAN_JSON")
+STEP_KIND=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('step',''))" "$PLAN_JSON")
+DISP_ENTRY=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('disposition_entry',''))" "$PLAN_JSON")
 COMBO_KEY=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('combo_key',''))" "$PLAN_JSON")
 RECIPE_COUNT=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('recipe_count','?'))" "$PLAN_JSON")
 REPLAY_SOURCE=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('source',''))" "$PLAN_JSON")
 PLAN_FILE=$(mktemp)
 python3 -c "import json,sys; json.dump(json.loads(sys.argv[1]), open(sys.argv[2],'w',encoding='utf-8'), ensure_ascii=False, indent=2)" "$PLAN_JSON" "$PLAN_FILE"
 
-log "phase=gex2 — cursor=$CURSOR pick_mode=$PICK_MODE recipes=$RECIPE_COUNT source=$REPLAY_SOURCE combo=$COMBO_KEY"
+# Predicted/inferred seeds always generate as derive (even if plan said otherwise).
+if [ "$RATING_KIND" = "predicted" ] || [ "$STEP_KIND" = "predicted_derive" ]; then
+  PICK_MODE=derive
+  # Ensure plan carries derived disposition for deposit stamping.
+  python3 - "$PLAN_FILE" <<'PY'
+import json, sys
+from pathlib import Path
+p = Path(sys.argv[1])
+data = json.loads(p.read_text(encoding="utf-8"))
+data["pick_mode"] = "derive"
+data["disposition_entry"] = data.get("disposition_entry") or "derived"
+data["rating_kind"] = data.get("rating_kind") or "predicted"
+if not data.get("disposition_note"):
+    data["disposition_note"] = "hourly predicted/inferred seed — rate to validate prediction"
+p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+print(data["disposition_entry"])
+PY
+  DISP_ENTRY=$(python3 -c "import json; print(json.load(open('$PLAN_FILE')).get('disposition_entry',''))")
+fi
+
+log "phase=seed — family=$FAMILY cursor=$CURSOR pick_mode=$PICK_MODE step=$STEP_KIND rating_kind=${RATING_KIND:-?} disposition=${DISP_ENTRY:-?} recipes=$RECIPE_COUNT source=$REPLAY_SOURCE combo=$COMBO_KEY"
 GEN_RC=0
 (
   cd "$SCRIPTS"
   python3 shape_factory.py generate \
-    --shape ../../.data/shapes/FB9_GEX2.shape.yaml \
-    --pools ../../.data/pools/FB9_GEX2/pools.yaml \
+    --shape "$(shape_for_family "$FAMILY")" \
+    --pools "$(pools_for_family "$FAMILY")" \
     --pick "$PICK_MODE" --limit 1 --picks-json "$PLAN_FILE" --job-suffix "$HOURLY_SUFFIX" \
     --output-prefix-root "$HOURLY_PREFIX_ROOT" \
     --job-key-prefix "$HOURLY_JOB_KEY_PREFIX" \
@@ -167,25 +226,29 @@ GEN_RC=0
 ) || GEN_RC=$?
 (
   cd "$SCRIPTS"
-  python3 shape_factory.py submit --pending-only --family FB9_GEX2 >> "$LOG" 2>&1 || true
+  python3 shape_factory.py submit --pending-only --family "$FAMILY" >> "$LOG" 2>&1 || true
 )
 rm -f "$PLAN_FILE"
 
 NEXT_CURSOR=$((CURSOR + 1))
-python3 <<PY
-import json
+python3 - "$STATE_JSON" "$STATE" "$FAMILY" "$PICK_MODE" "$COMBO_KEY" "$REPLAY_SOURCE" "$GEN_RC" "$NEXT_CURSOR" "$RATING_KIND" "$STEP_KIND" "$DISP_ENTRY" <<'PY'
+import json, sys
 from pathlib import Path
-data = json.loads('''$STATE_JSON''')
-data["phase"] = "gex2_queued"
-data["sample_cursor"] = $NEXT_CURSOR
-data["last_pick_mode"] = "$PICK_MODE"
-data["last_combo_key"] = "$COMBO_KEY"
-data["last_replay_source"] = "$REPLAY_SOURCE"
-data["last_generate_rc"] = $GEN_RC
-Path("$STATE").write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+data = json.loads(sys.argv[1])
+data["phase"] = "seed_queued"
+data["last_family"] = sys.argv[3]
+data["sample_cursor"] = int(sys.argv[8])
+data["last_pick_mode"] = sys.argv[4]
+data["last_combo_key"] = sys.argv[5]
+data["last_replay_source"] = sys.argv[6]
+data["last_generate_rc"] = int(sys.argv[7])
+data["last_rating_kind"] = sys.argv[9]
+data["last_step"] = sys.argv[10]
+data["last_disposition_entry"] = sys.argv[11] if len(sys.argv) > 11 else ""
+Path(sys.argv[2]).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
 if [ "$GEN_RC" != "0" ]; then
-  log "gex2 generate failed rc=$GEN_RC — advanced cursor to $NEXT_CURSOR anyway"
+  log "seed generate failed family=$FAMILY rc=$GEN_RC — advanced cursor to $NEXT_CURSOR anyway"
 else
-  log "gex2 replay queued (next cursor=$NEXT_CURSOR)"
+  log "seed queued family=$FAMILY pick_mode=$PICK_MODE rating_kind=${RATING_KIND:-?} (next cursor=$NEXT_CURSOR)"
 fi
