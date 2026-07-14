@@ -27,6 +27,8 @@ from shape_factory_ratings import (
     build_job_output_index,
     default_appetite_index_path,
     default_ratings_index_path,
+    is_omit_quality_rating,
+    is_usable_quality_rating,
     utc_now,
     _lookup_job_meta,
     _norm_path_key,
@@ -237,7 +239,10 @@ class _FloatAgg:
 
 
 def _rating_to_weight(rating: float, *, explore_floor: float = 0.35) -> float:
-    normalized = max(0.0, min(5.0, float(rating)))
+    # Ratings are nominally 1–5. Zeros (and other sub-1 values) appear in the index as
+    # placeholders; clamp to [1, 5] before the power curve so we never do
+    # (-x)**1.6 → complex, which breaks max() comparisons in score_recipe.
+    normalized = max(1.0, min(5.0, float(rating)))
     return max(explore_floor, ((normalized - 1.0) / 4.0) ** 1.6 * 4.0 + 0.15)
 
 
@@ -278,7 +283,10 @@ def build_heuristics_index(
 
     seen_outputs: Set[str] = set()
     for key, row in by_output.items():
-        if not isinstance(row, dict) or row.get("explicit") is None:
+        if not isinstance(row, dict):
+            continue
+        # Unrated (None) and omit (explicit <= 0) never train pattern/lineage buckets.
+        if not is_usable_quality_rating(row.get("explicit")):
             continue
         dedupe = str(row.get("short_key") or key)
         if dedupe in seen_outputs:
@@ -525,21 +533,32 @@ def score_recipe(
 
     def consider(value: Optional[float], evidence: str, *, signal: str) -> None:
         nonlocal rating_value, best_weight
-        if value is None:
+        if not is_usable_quality_rating(value):
             return
+        numeric = float(value)
         meta["evidence"].append(evidence)
-        meta["signals"][signal] = value
-        w = _rating_to_weight(value, explore_floor=floor)
+        meta["signals"][signal] = numeric
+        w = _rating_to_weight(numeric, explore_floor=floor)
         if rating_value is None or w > best_weight:
-            rating_value = value
+            rating_value = numeric
             best_weight = w
 
     # Explicit output rating (ratings index).
+    # ``explicit: 0`` = omit from consideration (hard exclude), not explore-floor.
     if ratings_doc:
         from shape_factory_ratings import lookup_output_rating
 
         out_row = lookup_output_rating(str(recipe.get("output_path") or ""), ratings_doc)
-        if out_row and out_row.get("explicit") is not None:
+        if out_row is not None and is_omit_quality_rating(out_row.get("explicit")):
+            try:
+                meta["explicit"] = int(out_row["explicit"])
+            except (TypeError, ValueError):
+                meta["explicit"] = 0
+            meta["omit"] = True
+            meta["rating_kind"] = "omit"
+            meta["evidence"].append("output_omit")
+            return 0.0, meta
+        if out_row and is_usable_quality_rating(out_row.get("explicit")):
             consider(float(out_row["explicit"]), "output_explicit", signal="output_explicit")
             meta["explicit"] = int(out_row["explicit"])
 
@@ -677,6 +696,12 @@ def score_recipe(
         return floor, meta
 
     meta["rating_effective"] = rating_value
+    if meta.get("signals", {}).get("output_explicit") is not None:
+        meta["rating_kind"] = "explicit"
+    elif rating_value is not None:
+        meta["rating_kind"] = "predicted"
+    else:
+        meta["rating_kind"] = "none"
     return best_weight, meta
 
 

@@ -338,8 +338,14 @@ def submit_prompt_to_comfyui(
     client_id: str = "shape_factory",
     front: bool = False,
     timeout_s: int = 30,
+    preview_method: str = "auto",
 ) -> Dict[str, Any]:
-    """POST API prompt to Comfy /prompt; embed UI workflow in extra_pnginfo when provided."""
+    """POST API prompt to Comfy /prompt; embed UI workflow in extra_pnginfo when provided.
+
+    ``preview_method`` is forwarded in ``extra_data`` so Comfy's per-queue preview
+    override (PR #11261) enables latent/VHS live frames even when the process was
+    started with ``--preview-method none``.
+    """
     server = server.rstrip("/")
     prompt = json.loads(json.dumps(prompt_obj))
     _prune_dead_nodes(prompt)
@@ -348,8 +354,14 @@ def submit_prompt_to_comfyui(
     payload: Dict[str, Any] = {"prompt": prompt, "client_id": client_id}
     if front:
         payload["front"] = True
+    extra_data: Dict[str, Any] = {}
+    method = str(preview_method or "").strip()
+    if method:
+        extra_data["preview_method"] = method
     if isinstance(workflow_ui, dict) and workflow_ui:
-        payload["extra_data"] = {"extra_pnginfo": {"workflow": workflow_ui}}
+        extra_data["extra_pnginfo"] = {"workflow": workflow_ui}
+    if extra_data:
+        payload["extra_data"] = extra_data
     submit = _http_json("POST", f"{server}/prompt", payload, timeout_s=timeout_s)
     if not isinstance(submit, dict):
         raise RuntimeError("submit response is not a JSON object")

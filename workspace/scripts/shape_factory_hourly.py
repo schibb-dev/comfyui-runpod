@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -32,6 +34,7 @@ from shape_factory_ratings import (
     lookup_output_rating,
 )
 
+_OG_DATE_RE = re.compile(r"(?:^|/)og/(\d{4}-\d{2}-\d{2})(?:/|$)")
 
 def _default_data_root() -> Path:
     repo = Path(__file__).resolve().parents[2]
@@ -471,16 +474,28 @@ def _recipe_selection_weight(
     except ImportError:
         pass
 
+    from shape_factory_ratings import is_omit_quality_rating, is_usable_quality_rating
+
     meta: dict[str, Any] = {"rating_effective": None, "evidence": []}
     explore_floor = float(__import__("os").environ.get("HOURLY_RATING_EXPLORE_FLOOR", "0.35"))
     if not ratings_doc:
         return explore_floor, meta
     out_row = lookup_output_rating(str(recipe.get("output_path") or ""), ratings_doc)
-    if out_row and out_row.get("explicit") is not None:
+    if out_row is not None and is_omit_quality_rating(out_row.get("explicit")):
+        try:
+            meta["explicit"] = int(out_row["explicit"])
+        except (TypeError, ValueError):
+            meta["explicit"] = 0
+        meta["omit"] = True
+        meta["rating_kind"] = "omit"
+        meta["evidence"].append("output_omit")
+        return 0.0, meta
+    if out_row and is_usable_quality_rating(out_row.get("explicit")):
         rating_value = float(out_row["explicit"])
         meta["rating_effective"] = rating_value
+        meta["rating_kind"] = "explicit"
         meta["evidence"].append("output_explicit")
-        normalized = max(0.0, min(5.0, rating_value))
+        normalized = max(1.0, min(5.0, rating_value))
         return max(explore_floor, ((normalized - 1.0) / 4.0) ** 1.6 * 4.0 + 0.15), meta
     return explore_floor, meta
 
@@ -501,6 +516,191 @@ def _weighted_choice(
         if pick <= acc:
             return recipes[idx], idx
     return recipes[-1], len(recipes) - 1
+
+
+def _is_top_of_hour(
+    now: Optional[datetime] = None,
+    *,
+    window_minutes: Optional[int] = None,
+) -> bool:
+    """True near :00 so the half-hour timer's top-of-hour tick can prefer keepers."""
+    wall = now or datetime.now()
+    raw = window_minutes
+    if raw is None:
+        raw = int(os.environ.get("HOURLY_TOP_OF_HOUR_MINUTES", "12"))
+    window = max(0, min(59, int(raw)))
+    return int(wall.minute) < window
+
+
+def _parse_ts(raw: Any) -> Optional[float]:
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        return datetime.fromisoformat(text).timestamp()
+    except Exception:
+        return None
+
+
+def _og_path_date_ts(path_like: str) -> Optional[float]:
+    m = _OG_DATE_RE.search(str(path_like or "").replace("\\", "/"))
+    if not m:
+        return None
+    try:
+        return datetime.fromisoformat(f"{m.group(1)}T12:00:00+00:00").timestamp()
+    except Exception:
+        return None
+
+
+def _rating_event_ts(row: Optional[dict[str, Any]], *, output_path: str = "") -> Optional[float]:
+    """Best-effort timestamp for when a keeper became / was marked 5★."""
+    if isinstance(row, dict):
+        for key in ("rated_at", "quality_updated_at"):
+            ts = _parse_ts(row.get(key))
+            if ts is not None:
+                return ts
+        for path_like in (output_path, row.get("short_key"), row.get("xmp")):
+            ts = _og_path_date_ts(str(path_like or ""))
+            if ts is not None:
+                return ts
+        xmp = str(row.get("xmp") or "").strip()
+        if xmp:
+            try:
+                p = Path(xmp)
+                if p.is_file():
+                    return float(p.stat().st_mtime)
+            except Exception:
+                pass
+    return _og_path_date_ts(output_path)
+
+
+def _recent_five_star_multiplier(
+    row: Optional[dict[str, Any]],
+    *,
+    output_path: str = "",
+    now: Optional[datetime] = None,
+    top_of_hour: Optional[bool] = None,
+) -> float:
+    """
+    Weight multiplier for recent explicit 5★ keepers.
+
+    Active only at top-of-hour (unless HOURLY_RECENT_5STAR_ALWAYS=1). Decays over
+    HOURLY_RECENT_5STAR_DAYS (default 14).
+    """
+    always = str(os.environ.get("HOURLY_RECENT_5STAR_ALWAYS", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    toh = _is_top_of_hour(now) if top_of_hour is None else bool(top_of_hour)
+    if not toh and not always:
+        return 1.0
+    if not isinstance(row, dict):
+        return 1.0
+    try:
+        explicit = int(row.get("explicit"))
+    except (TypeError, ValueError):
+        return 1.0
+    if explicit != 5:
+        return 1.0
+    now_dt = now or datetime.now(timezone.utc)
+    now_ts = now_dt.timestamp() if now_dt.tzinfo else now_dt.replace(tzinfo=timezone.utc).timestamp()
+    event_ts = _rating_event_ts(row, output_path=output_path)
+    if event_ts is None:
+        return 1.0
+    age_days = max(0.0, (now_ts - event_ts) / 86400.0)
+    window_days = max(0.1, float(os.environ.get("HOURLY_RECENT_5STAR_DAYS", "14")))
+    if age_days > window_days:
+        return 1.0
+    boost = max(1.0, float(os.environ.get("HOURLY_RECENT_5STAR_BOOST", "10")))
+    frac = 1.0 - (age_days / window_days)
+    return 1.0 + (boost - 1.0) * max(0.0, min(1.0, frac))
+
+
+def _apply_recent_five_star_bias(
+    recipes: List[dict[str, Any]],
+    weights: List[float],
+    weight_meta: List[dict[str, Any]],
+    ratings_doc: Optional[dict[str, Any]],
+    *,
+    now: Optional[datetime] = None,
+) -> Tuple[List[float], dict[str, Any]]:
+    """Amplify recent 5★ recipes near the top of the hour; returns weights + bias stats."""
+    top_of_hour = _is_top_of_hour(now)
+    stats: dict[str, Any] = {
+        "top_of_hour": top_of_hour,
+        "recent_five_star_boosted": 0,
+        "recent_five_star_max_mult": 1.0,
+    }
+    if not ratings_doc or not recipes:
+        return list(weights), stats
+    out = list(weights)
+    for i, recipe in enumerate(recipes):
+        out_path = str(recipe.get("output_path") or "")
+        row = lookup_output_rating(out_path, ratings_doc) if out_path else None
+        mult = _recent_five_star_multiplier(row, output_path=out_path, now=now, top_of_hour=top_of_hour)
+        if mult > 1.0 + 1e-9:
+            out[i] = float(out[i]) * mult
+            stats["recent_five_star_boosted"] += 1
+            stats["recent_five_star_max_mult"] = max(float(stats["recent_five_star_max_mult"]), mult)
+            if i < len(weight_meta) and isinstance(weight_meta[i], dict):
+                weight_meta[i] = dict(weight_meta[i])
+                weight_meta[i]["recent_five_star_mult"] = round(mult, 3)
+    return out, stats
+
+
+def collect_pool_slot_members(
+    family: str,
+    slot: str,
+    *,
+    data_root: Optional[Path] = None,
+) -> List[Path]:
+    """Resolve ``pools.yaml`` members for a given slot (e.g. source_video / source_still)."""
+    data_root = (data_root or _default_data_root()).resolve()
+    pools_path = data_root / "pools" / family / "pools.yaml"
+    if not pools_path.is_file():
+        return []
+    try:
+        from shape_factory import resolve_pool_members
+    except ImportError:
+        return []
+    pools_doc = load_yaml(pools_path)
+    pools = pools_doc.get("pools") if isinstance(pools_doc.get("pools"), dict) else {}
+    want = str(slot or "").strip()
+    pool_def = pools.get(want) if want else None
+    if not isinstance(pool_def, dict):
+        for _name, cand in pools.items():
+            if isinstance(cand, dict) and str(cand.get("slot") or "") == want:
+                pool_def = cand
+                break
+    if not isinstance(pool_def, dict):
+        return []
+    try:
+        return list(resolve_pool_members(pool_def))
+    except Exception:
+        return []
+
+
+def collect_pool_source_videos(
+    family: str,
+    *,
+    data_root: Optional[Path] = None,
+) -> List[Path]:
+    """
+    Resolve primary media-source pool members for a family.
+
+    Prefers ``source_video`` (v2v families); falls back to ``source_still`` (i2v).
+    """
+    vids = collect_pool_slot_members(family, "source_video", data_root=data_root)
+    if vids:
+        return vids
+    return collect_pool_slot_members(family, "source_still", data_root=data_root)
 
 
 def collect_replay_recipes(
@@ -631,6 +831,8 @@ def plan_hourly_replay(
     appetite_doc = _load_appetite_index(data_root)
     blend = float(__import__("os").environ.get("HOURLY_RATING_BLEND", "0.75"))
     blend = max(0.0, min(1.0, blend))
+    recent = _recent_combo_keys(data_root=data_root, family=family)
+    recent_sources = _recent_source_basenames(recent)
 
     weights: List[float] = []
     weight_meta: List[dict[str, Any]] = []
@@ -638,15 +840,45 @@ def plan_hourly_replay(
         rated_w, meta = _recipe_selection_weight(
             recipe, ratings_doc=ratings_doc, shape=shape, heuristics_doc=heuristics_doc, appetite_doc=appetite_doc
         )
-        uniform_w = 1.0
-        final_w = (1.0 - blend) * uniform_w + blend * rated_w
+        # Omit (explicit: 0) must not keep residual uniform blend weight.
+        if meta.get("omit"):
+            final_w = 0.0
+        else:
+            uniform_w = 1.0
+            final_w = (1.0 - blend) * uniform_w + blend * rated_w
         weights.append(final_w)
         weight_meta.append(meta)
+    weights, five_star_stats = _apply_recent_five_star_bias(
+        recipes, weights, weight_meta, ratings_doc
+    )
+    weights = _apply_recent_combo_penalty(recipes, weights, recent)
+    weights = _apply_recent_source_penalty(recipes, weights, recent_sources)
+
+    eligible_recipes: List[dict[str, Any]] = []
+    eligible_weights: List[float] = []
+    eligible_meta: List[dict[str, Any]] = []
+    omit_count = 0
+    for recipe, weight, meta in zip(recipes, weights, weight_meta):
+        if meta.get("omit"):
+            omit_count += 1
+            continue
+        eligible_recipes.append(recipe)
+        eligible_weights.append(weight)
+        eligible_meta.append(meta)
+
+    if not eligible_recipes:
+        return {
+            "ok": False,
+            "error": "no_eligible_replay_recipes",
+            "family": family,
+            "recipe_count": len(recipes),
+            "omit_excluded": omit_count,
+        }
 
     rng = random.Random(int(cursor))
-    recipe, recipe_index = _weighted_choice(recipes, weights, rng)
+    recipe, recipe_index = _weighted_choice(eligible_recipes, eligible_weights, rng)
     picks = recipe.get("picks") if isinstance(recipe.get("picks"), dict) else {}
-    sel_meta = weight_meta[recipe_index] if recipe_index < len(weight_meta) else {}
+    sel_meta = eligible_meta[recipe_index] if recipe_index < len(eligible_meta) else {}
 
     return {
         "ok": True,
@@ -659,10 +891,13 @@ def plan_hourly_replay(
         "output_path": recipe.get("output_path"),
         "cursor": int(cursor),
         "recipe_count": len(recipes),
+        "eligible_recipe_count": len(eligible_recipes),
+        "omit_excluded": omit_count,
         "recipe_index": recipe_index,
-        "selection_weight": round(weights[recipe_index], 3),
+        "selection_weight": round(eligible_weights[recipe_index], 3),
         "rating_effective": sel_meta.get("rating_effective"),
         "rating_evidence": sel_meta.get("evidence"),
+        "rating_kind": sel_meta.get("rating_kind") or ("explicit" if sel_meta.get("explicit") is not None else None),
         "ratings_index_loaded": ratings_doc is not None,
         "heuristics_index_loaded": heuristics_doc is not None,
         "appetite_index_loaded": appetite_doc is not None,
@@ -670,6 +905,12 @@ def plan_hourly_replay(
         "appetite_facet": sel_meta.get("appetite_facet"),
         "appetite_value": sel_meta.get("appetite_value"),
         "rating_blend": blend,
+        "recent_combo_penalty": bool(recent),
+        "recent_source_penalty": bool(recent_sources),
+        "top_of_hour": bool(five_star_stats.get("top_of_hour")),
+        "recent_five_star_boosted": int(five_star_stats.get("recent_five_star_boosted") or 0),
+        "recent_five_star_max_mult": round(float(five_star_stats.get("recent_five_star_max_mult") or 1.0), 3),
+        "recent_five_star_mult": sel_meta.get("recent_five_star_mult"),
         "next_cursor": int(cursor) + 1,
     }
 
@@ -719,7 +960,52 @@ def _recipe_appetite(
         "value": meta.get("appetite_value"),
         "fast_track": bool(meta.get("fast_track")),
         "evidence": meta.get("appetite_evidence"),
+        "omit": bool(meta.get("omit")),
     }
+
+
+def _pick_preferring_non_recent(
+    candidates: List[Any],
+    *,
+    combo_for,
+    recent: Set[str],
+    rng: random.Random,
+) -> Optional[Any]:
+    """Pick from candidates, strongly preferring ones whose combo_key is not recent."""
+    if not candidates:
+        return None
+    fresh = [c for c in candidates if str(combo_for(c) or "") not in recent]
+    return rng.choice(fresh or candidates)
+
+
+def _load_source_facets_doc(data_root: Path) -> Optional[dict[str, Any]]:
+    try:
+        from shape_factory_source_facets import default_source_facets_path, load_source_facets
+    except ImportError:
+        return None
+    path = default_source_facets_path(_default_og_root(data_root))
+    env = __import__("os").environ.get("SHAPE_FACTORY_SOURCE_FACETS", "").strip()
+    if env:
+        path = Path(env).expanduser()
+    if not path.is_file():
+        return None
+    try:
+        doc = load_source_facets(path)
+        return doc if isinstance(doc, dict) else None
+    except Exception:
+        return None
+
+
+def _hold_axes_from_env() -> Tuple[str, ...]:
+    try:
+        from shape_factory_source_facets import HOLD_AXES
+    except ImportError:
+        HOLD_AXES = ("appearance", "expression", "identity")
+    raw = __import__("os").environ.get("HOURLY_HOLD_AXES", "").strip()
+    if not raw:
+        return tuple(HOLD_AXES)
+    parts = [p.strip().lower() for p in raw.split(",") if p.strip()]
+    return tuple(parts) if parts else tuple(HOLD_AXES)
 
 
 def _derive_rewire(
@@ -729,27 +1015,35 @@ def _derive_rewire(
     family: str,
     pool: List[dict[str, Any]],
     rng: random.Random,
-) -> Tuple[dict[str, Any], str]:
+    recent: Optional[Set[str]] = None,
+    cursor: int = 0,
+    facets_doc: Optional[dict[str, Any]] = None,
+    extra_sources: Optional[List[str]] = None,
+) -> Tuple[Optional[dict[str, Any]], str, dict[str, Any]]:
     """
     Build a "do more WITH this" recipe from a seed + its facet.
 
     facet=source: hold source picks, vary processing (alt prompt on same source).
-    facet=processing: hold prompt, vary source.
+    facet=processing: hold prompt, vary source (optionally within a similarity family).
     facet=both: Extend (chain seed output into the video slot) when possible, else fall back to source.
-    Returns (rewired_recipe, action) where action is "derive" or "extend".
+
+    Returns (rewired_recipe, action, meta). action is "derive" or "extend".
+    Returns (None, "noop", meta) when no distinct rewire is possible.
     """
     seed_picks = seed.get("picks") if isinstance(seed.get("picks"), dict) else {}
     seed_out = str(seed.get("output_path") or "")
+    seed_combo = str(seed.get("combo_key") or "")
+    recent = recent or set()
+    meta: dict[str, Any] = {}
 
-    def _rebuild(picks_map: Dict[str, str], *, output_path: Optional[str]) -> dict[str, Any]:
+    def _rebuild(picks_map: Dict[str, str], *, output_path: Optional[str], source_tag: str) -> dict[str, Any]:
         picks_paths = {slot: Path(str(p)) for slot, p in picks_map.items()}
-        rec = _recipe_from_picks(
+        return _recipe_from_picks(
             family=family,
             picks=picks_paths,
-            source=f"derive:{facet}:{seed.get('source') or seed_out}",
+            source=source_tag,
             output_path=output_path,
         )
-        return rec
 
     # Extend: chain the seed's output video into a video source slot.
     if facet == "both" and seed_out:
@@ -757,39 +1051,270 @@ def _derive_rewire(
         if video_slot is not None:
             picks_map = dict(seed_picks)
             picks_map[video_slot] = seed_out
-            return _rebuild(picks_map, output_path=None), "extend"
-        facet = "source"  # no video slot -> fall back to vary-processing
+            rec = _rebuild(picks_map, output_path=None, source_tag=f"derive:extend:{seed.get('source') or seed_out}")
+            if str(rec.get("combo_key") or "") != seed_combo:
+                return rec, "extend", meta
+        facet = "source"  # no useful extend -> fall back to vary-processing
 
     source_slots = [s for s in seed_picks if _is_source_slot(s)]
     prompt_slot = "prompt_profile" if "prompt_profile" in seed_picks else None
 
     if facet == "source" and source_slots and prompt_slot:
-        # Same source, different prompt.
-        seed_src = {s: str(seed_picks.get(s)) for s in source_slots}
-        alts = [
-            r for r in pool
-            if isinstance(r.get("picks"), dict)
-            and all(str(r["picks"].get(s)) == seed_src.get(s) for s in source_slots)
-            and str(r["picks"].get(prompt_slot)) != str(seed_picks.get(prompt_slot))
-        ]
-        if alts:
-            chosen = rng.choice(alts)
-            return _rebuild({str(k): str(v) for k, v in chosen["picks"].items()}, output_path=None), "derive"
+        # Same source, different prompt — synthesize from pool prompts (prefer non-recent).
+        alt_prompts = sorted(
+            {
+                str(r["picks"].get(prompt_slot))
+                for r in pool
+                if isinstance(r.get("picks"), dict)
+                and str(r["picks"].get(prompt_slot) or "")
+                and str(r["picks"].get(prompt_slot)) != str(seed_picks.get(prompt_slot))
+            }
+        )
+
+        def _combo_for_prompt(prompt_path: str) -> str:
+            picks_map = {str(k): str(v) for k, v in seed_picks.items()}
+            picks_map[prompt_slot] = prompt_path
+            return str(
+                _rebuild(
+                    picks_map,
+                    output_path=None,
+                    source_tag=f"derive:source:{seed.get('source') or seed_out}",
+                ).get("combo_key")
+                or ""
+            )
+
+        chosen_prompt = _pick_preferring_non_recent(
+            alt_prompts, combo_for=_combo_for_prompt, recent=recent, rng=rng
+        )
+        if chosen_prompt:
+            picks_map = {str(k): str(v) for k, v in seed_picks.items()}
+            picks_map[prompt_slot] = chosen_prompt
+            rec = _rebuild(
+                picks_map,
+                output_path=None,
+                source_tag=f"derive:source:{seed.get('source') or seed_out}",
+            )
+            if str(rec.get("combo_key") or "") != seed_combo:
+                return rec, "derive", meta
 
     if facet == "processing" and prompt_slot and source_slots:
-        # Same prompt, different source.
-        alts = [
-            r for r in pool
+        # Same prompt, different source. Prefer sources in the same similarity
+        # family on a rotating hold axis, but never trap into a tiny family that
+        # has already been exhausted recently — widen for source novelty.
+        primary = source_slots[0]
+        seed_source = str(seed_picks.get(primary) or "")
+        all_alts_set: Set[str] = {
+            str(r["picks"].get(primary))
+            for r in pool
             if isinstance(r.get("picks"), dict)
-            and str(r["picks"].get(prompt_slot)) == str(seed_picks.get(prompt_slot))
-            and any(str(r["picks"].get(s)) != str(seed_picks.get(s)) for s in source_slots)
-        ]
-        if alts:
-            chosen = rng.choice(alts)
-            return _rebuild({str(k): str(v) for k, v in chosen["picks"].items()}, output_path=None), "derive"
+            and str(r["picks"].get(primary) or "")
+            and str(r["picks"].get(primary)) != seed_source
+        }
+        # Include pools.yaml source_video members (X-Kneel library, etc.) even if
+        # they never appeared in a past recipe combo.
+        for raw in extra_sources or []:
+            s = str(raw or "").strip()
+            if not s or s == seed_source:
+                continue
+            all_alts_set.add(s)
+        all_alts = sorted(all_alts_set)
+        recent_sources = _recent_source_basenames(recent)
+        try:
+            from shape_factory_source_facets import filter_sources_by_hold_axis, hold_axis_for_cursor
+        except ImportError:
+            filter_sources_by_hold_axis = None  # type: ignore
+            hold_axis_for_cursor = None  # type: ignore
 
-    # Degenerate fallback: reproduce the seed recipe (still "more with this").
-    return _rebuild({str(k): str(v) for k, v in seed_picks.items()}, output_path=seed_out or None), "derive"
+        hold_meta: dict[str, Any] = {"candidate_count_unfiltered": len(all_alts)}
+        family_alts = list(all_alts)
+        if filter_sources_by_hold_axis and hold_axis_for_cursor:
+            hold_axis = hold_axis_for_cursor(int(cursor), axes=_hold_axes_from_env())
+            family_alts, hold_meta = filter_sources_by_hold_axis(
+                all_alts,
+                seed_source=seed_source,
+                hold_axis=hold_axis,
+                facets_doc=facets_doc,
+            )
+        family_fresh = [s for s in family_alts if not _source_in_recent(s, recent_sources)]
+        any_fresh = [s for s in all_alts if not _source_in_recent(s, recent_sources)]
+        if family_fresh:
+            alt_sources = family_fresh
+            hold_meta["source_novelty"] = True
+        elif any_fresh:
+            alt_sources = any_fresh
+            hold_meta["facet_constrained"] = False
+            hold_meta["fallback"] = "widen_for_source_novelty"
+            hold_meta["source_novelty"] = True
+        else:
+            alt_sources = family_alts or all_alts
+            hold_meta["source_novelty"] = False
+        hold_meta["candidate_count"] = len(alt_sources)
+        meta.update(hold_meta)
+
+        def _combo_for_source(source_path: str) -> str:
+            picks_map = {str(k): str(v) for k, v in seed_picks.items()}
+            picks_map[primary] = source_path
+            return str(
+                _rebuild(
+                    picks_map,
+                    output_path=None,
+                    source_tag=f"derive:processing:{seed.get('source') or seed_out}",
+                ).get("combo_key")
+                or ""
+            )
+
+        chosen_source = _pick_preferring_non_recent(
+            alt_sources, combo_for=_combo_for_source, recent=recent, rng=rng
+        )
+        if chosen_source:
+            picks_map = {str(k): str(v) for k, v in seed_picks.items()}
+            picks_map[primary] = chosen_source
+            rec = _rebuild(
+                picks_map,
+                output_path=None,
+                source_tag=f"derive:processing:{seed.get('source') or seed_out}",
+            )
+            if str(rec.get("combo_key") or "") != seed_combo:
+                return rec, "derive", meta
+
+    return None, "noop", meta
+
+
+def _combo_key_from_job_key(job_key: str) -> str:
+    """Strip hourly/family prefixes and timestamp suffixes from a job_key to a combo_key."""
+    raw = str(job_key or "").strip()
+    if "::" in raw:
+        raw = raw.split("::", 1)[-1]
+    if raw.startswith("hourly__"):
+        raw = raw[len("hourly__") :]
+    # Drop trailing __000_YYYYmmddHHMM / __000_h... style suffixes.
+    raw = re.sub(r"__000_(?:h)?\d{8,}.*$", "", raw)
+    return raw
+
+
+def _recent_combo_keys(
+    *,
+    data_root: Path,
+    family: str,
+    limit: int = 48,
+) -> Set[str]:
+    """Combo keys from the most recent hourly jobs — used to avoid repeats."""
+    out: Set[str] = set()
+    jobs_root = _default_job_dir(data_root) / family
+    if not jobs_root.is_dir():
+        return out
+    # Prefer hourly__* job files; fall back to any recent jobs if few hourlies exist.
+    hourly_paths = sorted(
+        jobs_root.glob("hourly__*.job.json"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    paths = hourly_paths[: max(1, int(limit))]
+    if len(paths) < max(1, int(limit) // 2):
+        extra = sorted(jobs_root.glob("*.job.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        seen = {p.resolve() for p in paths}
+        for path in extra:
+            if path.resolve() in seen:
+                continue
+            paths.append(path)
+            if len(paths) >= max(1, int(limit)):
+                break
+    for path in paths:
+        try:
+            job = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        ck = ""
+        if isinstance(job.get("combo_key"), str) and job.get("combo_key"):
+            ck = str(job["combo_key"])
+        else:
+            ck = _combo_key_from_job_key(str(job.get("job_key") or path.stem))
+        if ck:
+            out.add(ck)
+    state_path = data_root / "shape_factory" / "hourly-state.json"
+    if state_path.is_file():
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            last = str(state.get("last_combo_key") or "").strip()
+            if last:
+                out.add(last)
+        except Exception:
+            pass
+    return out
+
+
+def _prompt_slug_from_combo(combo_key: str) -> str:
+    raw = str(combo_key or "")
+    if "prompt_profile-" not in raw:
+        return ""
+    rest = raw.split("prompt_profile-", 1)[1]
+    return rest.split("__", 1)[0]
+
+
+def _source_basename_from_combo(combo_key: str) -> str:
+    raw = str(combo_key or "")
+    if "source_video-" not in raw:
+        return ""
+    rest = raw.split("source_video-", 1)[1]
+    # Combo keys omit extensions; recipe paths usually include .mp4 — compare basenames.
+    return rest.split("__", 1)[0]
+
+
+def _source_basename_from_path(path: str) -> str:
+    name = Path(str(path or "")).name
+    if name.lower().endswith((".mp4", ".webm", ".mov", ".mkv", ".png", ".jpg", ".jpeg", ".webp")):
+        return Path(name).stem
+    return name
+
+
+def _recent_source_basenames(recent_combos: Set[str]) -> Set[str]:
+    return {b for b in (_source_basename_from_combo(ck) for ck in recent_combos) if b}
+
+
+def _apply_recent_combo_penalty(
+    recipes: List[dict[str, Any]],
+    weights: List[float],
+    recent: Set[str],
+    *,
+    penalty: float = 0.08,
+) -> List[float]:
+    """Strongly downweight combos seen in recent hourly jobs."""
+    if not recent:
+        return weights
+    pen = max(0.01, min(1.0, float(penalty)))
+    out: List[float] = []
+    for recipe, weight in zip(recipes, weights):
+        ck = str(recipe.get("combo_key") or "")
+        out.append(float(weight) * (pen if ck in recent else 1.0))
+    return out
+
+
+def _source_in_recent(path_or_stem: str, recent_sources: Set[str]) -> bool:
+    src = _source_basename_from_path(path_or_stem)
+    if not src or not recent_sources:
+        return False
+    if src in recent_sources:
+        return True
+    return any(src == rs or src.startswith(rs) or rs.startswith(src) for rs in recent_sources)
+
+
+def _apply_recent_source_penalty(
+    recipes: List[dict[str, Any]],
+    weights: List[float],
+    recent_sources: Set[str],
+    *,
+    penalty: float = 0.12,
+) -> List[float]:
+    """Downweight recipes whose source_video was used in recent hourlies (even with a new prompt)."""
+    if not recent_sources:
+        return weights
+    pen = max(0.01, min(1.0, float(penalty)))
+    out: List[float] = []
+    for recipe, weight in zip(recipes, weights):
+        picks = recipe.get("picks") if isinstance(recipe.get("picks"), dict) else {}
+        hit = _source_in_recent(str(picks.get("source_video") or ""), recent_sources)
+        out.append(float(weight) * (pen if hit else 1.0))
+    return out
 
 
 def plan_hourly_derive(
@@ -804,6 +1329,7 @@ def plan_hourly_derive(
 
     Uses the same recipe pool as replay, but selects seeds by appetite (not quality) and
     rewires per facet (source/processing/both -> Extend). fast_track seeds are pinned.
+    Never returns a no-op exact replay of the seed — falls back to the caller (replay).
     """
     data_root = (data_root or _default_data_root()).resolve()
     shape_path = data_root / "shapes" / f"{family}.shape.yaml"
@@ -813,6 +1339,9 @@ def plan_hourly_derive(
     if not recipes:
         return {"ok": False, "error": "no_replay_recipes", "family": family, "recipe_count": 0}
 
+    pool_source_paths = collect_pool_source_videos(family, data_root=data_root)
+    pool_sources = [str(p) for p in pool_source_paths]
+
     ratings_doc = _load_ratings_index(data_root)
     heuristics_doc = _load_heuristics_index(data_root)
     appetite_doc = _load_appetite_index(data_root)
@@ -820,13 +1349,20 @@ def plan_hourly_derive(
     if appetite_doc is None and heuristics_doc is None:
         return {"ok": False, "error": "no_appetite_signal", "family": family, "recipe_count": len(recipes)}
 
+    recent = _recent_combo_keys(data_root=data_root, family=family, limit=12)
+    facets_doc = _load_source_facets_doc(data_root)
     seeds: List[dict[str, Any]] = []
     weights: List[float] = []
     fast_tracks: List[int] = []
+    omit_count = 0
     for recipe in recipes:
         info = _recipe_appetite(
             recipe, shape=shape, ratings_doc=ratings_doc, heuristics_doc=heuristics_doc, appetite_doc=appetite_doc
         )
+        # Quality omit (explicit: 0) — never seed derive even if appetite is high.
+        if info.get("omit"):
+            omit_count += 1
+            continue
         value = info.get("value")
         if value is None or float(value) <= 2.5:  # only "more"/"fast_track" (above neutral)
             continue
@@ -838,53 +1374,533 @@ def plan_hourly_derive(
         if tag_aff:
             info["tag_affinity"] = round(tag_aff, 3)
             weight *= max(0.5, min(1.5, 1.0 + 0.12 * (tag_aff - 2.5)))
+        ck = str(recipe.get("combo_key") or "")
+        if ck in recent:
+            weight *= 0.08
         seeds.append({"recipe": recipe, "info": info})
         weights.append(weight)
         if info.get("fast_track"):
             fast_tracks.append(len(seeds) - 1)
 
     if not seeds:
-        return {"ok": False, "error": "no_appetite_seeds", "family": family, "recipe_count": len(recipes)}
+        return {
+            "ok": False,
+            "error": "no_appetite_seeds",
+            "family": family,
+            "recipe_count": len(recipes),
+            "omit_excluded": omit_count,
+        }
 
     rng = random.Random(int(cursor) ^ 0x0A9E)
+    # Try several seeds until rewire produces a distinct combo.
+    attempt_order: List[int] = []
     if fast_tracks:
-        # Pin: choose only among fast_track seeds.
-        pick_i = rng.choice(fast_tracks)
-    else:
-        _seed_rec, pick_i = _weighted_choice(seeds, weights, rng)
-        pick_i = seeds.index(_seed_rec) if _seed_rec in seeds else pick_i
+        shuffled_ft = list(fast_tracks)
+        rng.shuffle(shuffled_ft)
+        attempt_order.extend(shuffled_ft)
+    remaining = [i for i in range(len(seeds)) if i not in set(attempt_order)]
+    while remaining and len(attempt_order) < min(12, len(seeds)):
+        rem_recipes = [seeds[i]["recipe"] for i in remaining]
+        rem_weights = [weights[i] for i in remaining]
+        _picked, local_i = _weighted_choice(rem_recipes, rem_weights, rng)
+        chosen_i = remaining[local_i]
+        attempt_order.append(chosen_i)
+        remaining.pop(local_i)
 
-    chosen = seeds[pick_i]
-    seed_recipe = chosen["recipe"]
-    info = chosen["info"]
-    facet = str(info.get("facet") or "both")
+    tried = 0
+    fallback: Optional[Tuple[dict[str, Any], dict[str, Any], dict[str, Any], str, int, dict[str, Any]]] = None
+    for pick_i in attempt_order:
+        chosen = seeds[pick_i]
+        seed_recipe = chosen["recipe"]
+        info = chosen["info"]
+        facet = str(info.get("facet") or "both")
+        rewired, action, hold_meta = _derive_rewire(
+            seed_recipe,
+            facet=facet,
+            family=family,
+            pool=recipes,
+            rng=rng,
+            recent=recent,
+            cursor=int(cursor),
+            facets_doc=facets_doc,
+            extra_sources=pool_sources,
+        )
+        tried += 1
+        if rewired is None:
+            continue
+        ck = str(rewired.get("combo_key") or "")
+        if not ck or ck == str(seed_recipe.get("combo_key") or ""):
+            continue
+        payload_bits = (rewired, seed_recipe, info, action, pick_i, hold_meta)
+        if ck in recent:
+            if fallback is None:
+                fallback = payload_bits
+            continue
+        rewired, seed_recipe, info, action, pick_i, hold_meta = payload_bits
+        out = {
+            "ok": True,
+            "family": family,
+            "pick_mode": action,
+            "derive_action": action,
+            "combo_key": rewired.get("combo_key"),
+            "picks": rewired.get("picks"),
+            "bindings_preview": rewired.get("bindings_preview"),
+            "source": rewired.get("source"),
+            "output_path": rewired.get("output_path"),
+            "parent_output": str(seed_recipe.get("output_path") or ""),
+            "appetite": info.get("appetite"),
+            "appetite_facet": str(info.get("facet") or facet),
+            "appetite_value": info.get("value"),
+            "appetite_evidence": info.get("evidence"),
+            "tag_affinity": info.get("tag_affinity"),
+            "fast_track": bool(info.get("fast_track")),
+            "cursor": int(cursor),
+            "recipe_count": len(recipes),
+            "omit_excluded": omit_count,
+            "pool_source_count": len(pool_sources),
+            "seed_count": len(seeds),
+            "selection_weight": round(weights[pick_i], 3),
+            "appetite_index_loaded": appetite_doc is not None,
+            "heuristics_index_loaded": heuristics_doc is not None,
+            "source_facets_loaded": facets_doc is not None,
+            "derive_attempts": tried,
+            "recent_combo_penalty": True,
+            "used_recent_fallback": False,
+            "next_cursor": int(cursor) + 1,
+        }
+        if hold_meta:
+            out["hold_axis"] = hold_meta.get("hold_axis")
+            out["hold_values"] = hold_meta.get("hold_values")
+            out["hold_candidate_count"] = hold_meta.get("candidate_count")
+            out["hold_facet_constrained"] = hold_meta.get("facet_constrained")
+            if hold_meta.get("fallback"):
+                out["hold_fallback"] = hold_meta.get("fallback")
+        return out
 
-    rewired, action = _derive_rewire(seed_recipe, facet=facet, family=family, pool=recipes, rng=rng)
+    # Prefer failing over to replay rather than re-queueing a combo we just ran.
+    if fallback is not None:
+        return {
+            "ok": False,
+            "error": "derive_only_recent_combos",
+            "family": family,
+            "recipe_count": len(recipes),
+            "seed_count": len(seeds),
+            "derive_attempts": tried,
+            "used_recent_fallback": True,
+            "combo_key": (fallback[0] or {}).get("combo_key"),
+            "hold_axis": (fallback[5] or {}).get("hold_axis"),
+            "hold_values": (fallback[5] or {}).get("hold_values"),
+            "source_facets_loaded": facets_doc is not None,
+        }
 
+    return {
+        "ok": False,
+        "error": "derive_no_distinct_combo",
+        "family": family,
+        "recipe_count": len(recipes),
+        "seed_count": len(seeds),
+        "derive_attempts": tried,
+        "source_facets_loaded": facets_doc is not None,
+    }
+
+
+# Seed families for idle hourly ticks (weights sum to 100 by default).
+_DEFAULT_SEED_FAMILY_WEIGHTS: Tuple[Tuple[str, int], ...] = (
+    ("FB9_GEX2", 70),
+    ("FB9_GEX", 30),
+    # FaceBlast / Kneel seeds paused: Comfy LoadImage rejects many still paths;
+    # keep Kneel→GEX2 chain follow-up, but do not generate new i2v seeds hourly.
+)
+
+
+def _seed_family_weights() -> List[Tuple[str, int]]:
+    """Parse HOURLY_SEED_FAMILIES=Fam:weight,... or use defaults."""
+    import os
+
+    raw = os.environ.get("HOURLY_SEED_FAMILIES", "").strip()
+    if not raw:
+        return list(_DEFAULT_SEED_FAMILY_WEIGHTS)
+    out: List[Tuple[str, int]] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" in part:
+            name, w_s = part.rsplit(":", 1)
+            try:
+                w = max(1, int(w_s))
+            except ValueError:
+                w = 1
+            out.append((name.strip(), w))
+        else:
+            out.append((part, 1))
+    return out or list(_DEFAULT_SEED_FAMILY_WEIGHTS)
+
+
+def select_seed_family(cursor: int = 0) -> str:
+    """Deterministic weighted family pick for an idle seed tick."""
+    weights = _seed_family_weights()
+    rng = random.Random(int(cursor) ^ 0xFA21)
+    total = sum(w for _, w in weights)
+    pick = rng.random() * float(total)
+    acc = 0.0
+    for fam, w in weights:
+        acc += float(w)
+        if pick <= acc:
+            return fam
+    return weights[-1][0]
+
+
+def _default_job_root(data_root: Optional[Path] = None) -> Path:
+    data_root = (data_root or _default_data_root()).resolve()
+    return _default_job_dir(data_root)
+
+
+def find_gex2_needing_facial(
+    *,
+    data_root: Optional[Path] = None,
+    job_dir: Optional[Path] = None,
+) -> Optional[str]:
+    """Return job_key of newest complete GEX2 whose deposit has no FACIAL child."""
+    root = job_dir or _default_job_root(data_root)
+    gex2_done: List[Tuple[str, str]] = []
+    gex2_root = root / "FB9_GEX2"
+    if gex2_root.is_dir():
+        for path in sorted(gex2_root.glob("*.job.json")):
+            try:
+                job = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if job.get("status") != "complete":
+                continue
+            dep = job.get("deposit") if isinstance(job.get("deposit"), dict) else {}
+            vids = dep.get("videos") or []
+            if not vids:
+                continue
+            gex2_done.append((str(job.get("job_key") or path.stem), str(vids[-1])))
+    facial_sources: Set[str] = set()
+    facial_root = root / "FB9_GEX_FACIAL"
+    if facial_root.is_dir():
+        for path in facial_root.glob("*.job.json"):
+            try:
+                job = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            sv = (job.get("bindings") or {}).get("source_video") or {}
+            if isinstance(sv, dict):
+                facial_sources.add(str(sv.get("path") or ""))
+    for job_key, vid in reversed(gex2_done):
+        if vid not in facial_sources:
+            return job_key
+    return None
+
+
+def find_kneel_needing_gex2(
+    *,
+    data_root: Optional[Path] = None,
+    job_dir: Optional[Path] = None,
+) -> Optional[str]:
+    """Return job_key of newest complete Kneel whose deposit is unused as a GEX2 source."""
+    root = job_dir or _default_job_root(data_root)
+    kneel_done: List[Tuple[str, str]] = []
+    kneel_root = root / "X-KNEEL-FB9"
+    if kneel_root.is_dir():
+        for path in sorted(kneel_root.glob("*.job.json")):
+            try:
+                job = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if job.get("status") != "complete":
+                continue
+            dep = job.get("deposit") if isinstance(job.get("deposit"), dict) else {}
+            vids = dep.get("videos") or []
+            if not vids:
+                continue
+            kneel_done.append((str(job.get("job_key") or path.stem), str(vids[-1])))
+    gex2_sources: Set[str] = set()
+    gex2_root = root / "FB9_GEX2"
+    if gex2_root.is_dir():
+        for path in gex2_root.glob("*.job.json"):
+            try:
+                job = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            sv = (job.get("bindings") or {}).get("source_video") or {}
+            if isinstance(sv, dict):
+                gex2_sources.add(str(sv.get("path") or ""))
+    for job_key, vid in reversed(kneel_done):
+        if vid not in gex2_sources:
+            return job_key
+    return None
+
+
+def plan_pool_product_fallback(
+    *,
+    cursor: int = 0,
+    data_root: Optional[Path] = None,
+    family: str = "FB9_GEX2",
+) -> Dict[str, Any]:
+    """
+    When a family has no recoverable recipes, sample one member per required slot
+    from pools.yaml so hourly can still generate.
+    """
+    from shape_factory import resolve_pool_members
+
+    data_root = (data_root or _default_data_root()).resolve()
+    shape_path = data_root / "shapes" / f"{family}.shape.yaml"
+    pools_path = data_root / "pools" / family / "pools.yaml"
+    if not shape_path.is_file() or not pools_path.is_file():
+        return {
+            "ok": False,
+            "error": "missing_shape_or_pools",
+            "family": family,
+            "recipe_count": 0,
+        }
+
+    shape = load_yaml(shape_path)
+    pools_doc = load_yaml(pools_path)
+    req_by_slot = requires_by_slot(shape)
+    pools = pools_doc.get("pools") if isinstance(pools_doc.get("pools"), dict) else {}
+
+    pool_paths: Dict[str, List[Path]] = {}
+    for _name, pool_def in pools.items():
+        if not isinstance(pool_def, dict):
+            continue
+        slot = str(pool_def.get("slot") or _name)
+        if slot not in req_by_slot:
+            continue
+        try:
+            members = list(resolve_pool_members(pool_def))
+        except Exception:
+            members = []
+        if members:
+            pool_paths[slot] = members
+
+    missing = [s for s, req in req_by_slot.items() if s not in pool_paths and not req.get("optional")]
+    if missing:
+        return {
+            "ok": False,
+            "error": "pool_product_missing_slots",
+            "family": family,
+            "missing_slots": missing,
+            "recipe_count": 0,
+        }
+
+    rng = random.Random(int(cursor) ^ 0xB00F)
+    picks: Dict[str, Path] = {}
+    for slot, members in sorted(pool_paths.items()):
+        picks[slot] = members[rng.randrange(len(members))]
+
+    recipe = _recipe_from_picks(
+        family=family,
+        picks=picks,
+        source=f"pool_product:{family}",
+        output_path=None,
+    )
     return {
         "ok": True,
         "family": family,
-        "pick_mode": action,
-        "derive_action": action,
-        "combo_key": rewired.get("combo_key"),
-        "picks": rewired.get("picks"),
-        "bindings_preview": rewired.get("bindings_preview"),
-        "source": rewired.get("source"),
-        "output_path": rewired.get("output_path"),
-        "parent_output": str(seed_recipe.get("output_path") or ""),
-        "appetite": info.get("appetite"),
-        "appetite_facet": facet,
-        "appetite_value": info.get("value"),
-        "appetite_evidence": info.get("evidence"),
-        "tag_affinity": info.get("tag_affinity"),
-        "fast_track": bool(info.get("fast_track")),
+        "pick_mode": "pool_product",
+        "step": "pool_product",
+        "combo_key": recipe.get("combo_key"),
+        "picks": recipe.get("picks"),
+        "bindings_preview": recipe.get("bindings_preview"),
+        "source": recipe.get("source"),
+        "output_path": None,
         "cursor": int(cursor),
+        "recipe_count": 0,
+        "pool_slots": {slot: len(members) for slot, members in pool_paths.items()},
+        "next_cursor": int(cursor) + 1,
+    }
+
+
+def plan_hourly_predicted_derive(
+    *,
+    cursor: int = 0,
+    data_root: Optional[Path] = None,
+    job_dir: Optional[Path] = None,
+    family: str = "FB9_GEX2",
+) -> Dict[str, Any]:
+    """
+    Prediction-driven hourly: weight by inferred/pattern/lineage scores (not explicit
+    stars), then **always** queue as derive so we can see how predictions hold up.
+    """
+    import os
+
+    data_root = (data_root or _default_data_root()).resolve()
+    shape_path = data_root / "shapes" / f"{family}.shape.yaml"
+    shape = load_yaml(shape_path) if shape_path.is_file() else {}
+
+    recipes = collect_replay_recipes(family, data_root=data_root, job_dir=job_dir)
+    if not recipes:
+        return {"ok": False, "error": "no_replay_recipes", "family": family, "recipe_count": 0}
+
+    ratings_doc = _load_ratings_index(data_root)
+    heuristics_doc = _load_heuristics_index(data_root)
+    appetite_doc = _load_appetite_index(data_root)
+    if ratings_doc is None and heuristics_doc is None:
+        return {"ok": False, "error": "no_predicted_signal", "family": family, "recipe_count": len(recipes)}
+
+    explore_floor = float(os.environ.get("HOURLY_RATING_EXPLORE_FLOOR", "0.35"))
+    min_weight = float(os.environ.get("HOURLY_PREDICTED_MIN_WEIGHT", str(max(explore_floor + 0.15, 0.6))))
+    pool_sources = [str(p) for p in collect_pool_source_videos(family, data_root=data_root)]
+    recent = _recent_combo_keys(data_root=data_root, family=family, limit=12)
+    facets_doc = _load_source_facets_doc(data_root)
+
+    seeds: List[dict[str, Any]] = []
+    weights: List[float] = []
+    omit_count = 0
+    for recipe in recipes:
+        rated_w, meta = _recipe_selection_weight(
+            recipe,
+            ratings_doc=ratings_doc,
+            shape=shape,
+            heuristics_doc=heuristics_doc,
+            appetite_doc=appetite_doc,
+        )
+        if meta.get("omit"):
+            omit_count += 1
+            continue
+        # Prefer predicted/inferred evidence; skip pure explicit keepers (those stay in replay).
+        kind = str(meta.get("rating_kind") or "")
+        if kind == "explicit":
+            continue
+        if meta.get("rating_effective") is None and float(rated_w) <= explore_floor + 1e-9:
+            continue
+        if float(rated_w) < min_weight:
+            continue
+        weight = float(rated_w)
+        ck = str(recipe.get("combo_key") or "")
+        if ck in recent:
+            weight *= 0.08
+        seeds.append({"recipe": recipe, "meta": meta})
+        weights.append(weight)
+
+    if not seeds:
+        return {
+            "ok": False,
+            "error": "no_predicted_seeds",
+            "family": family,
+            "recipe_count": len(recipes),
+            "omit_excluded": omit_count,
+        }
+
+    rng = random.Random(int(cursor) ^ 0x9AED)
+    attempt_order: List[int] = []
+    remaining = list(range(len(seeds)))
+    while remaining and len(attempt_order) < min(12, len(seeds)):
+        rem_recipes = [seeds[i]["recipe"] for i in remaining]
+        rem_weights = [weights[i] for i in remaining]
+        _picked, local_i = _weighted_choice(rem_recipes, rem_weights, rng)
+        chosen_i = remaining[local_i]
+        attempt_order.append(chosen_i)
+        remaining.pop(local_i)
+
+    tried = 0
+    fallback: Optional[Tuple[dict[str, Any], dict[str, Any], dict[str, Any], str, int, dict[str, Any]]] = None
+    for pick_i in attempt_order:
+        chosen = seeds[pick_i]
+        seed_recipe = chosen["recipe"]
+        meta = chosen["meta"]
+        # Predicted path always derives; use appetite facet when present else both.
+        app = _recipe_appetite(
+            seed_recipe,
+            shape=shape,
+            ratings_doc=ratings_doc,
+            heuristics_doc=heuristics_doc,
+            appetite_doc=appetite_doc,
+        )
+        facet = str(app.get("facet") or "both")
+        rewired, action, hold_meta = _derive_rewire(
+            seed_recipe,
+            facet=facet,
+            family=family,
+            pool=recipes,
+            rng=rng,
+            recent=recent,
+            cursor=int(cursor),
+            facets_doc=facets_doc,
+            extra_sources=pool_sources,
+        )
+        tried += 1
+        if rewired is None:
+            continue
+        ck = str(rewired.get("combo_key") or "")
+        if not ck or ck == str(seed_recipe.get("combo_key") or ""):
+            continue
+        # Force derive pick_mode even if rewire labeled extend.
+        action = "derive"
+        payload_bits = (rewired, seed_recipe, meta, action, pick_i, hold_meta)
+        if ck in recent:
+            if fallback is None:
+                fallback = payload_bits
+            continue
+        rewired, seed_recipe, meta, action, pick_i, hold_meta = payload_bits
+        out = {
+            "ok": True,
+            "family": family,
+            "pick_mode": "derive",
+            "derive_action": action,
+            "step": "predicted_derive",
+            "rating_kind": "predicted",
+            "disposition_entry": "derived",
+            "combo_key": rewired.get("combo_key"),
+            "picks": rewired.get("picks"),
+            "bindings_preview": rewired.get("bindings_preview"),
+            "source": rewired.get("source"),
+            "output_path": rewired.get("output_path"),
+            "parent_output": str(seed_recipe.get("output_path") or ""),
+            "rating_effective": meta.get("rating_effective"),
+            "rating_evidence": meta.get("evidence"),
+            "appetite": app.get("appetite"),
+            "appetite_facet": facet,
+            "appetite_value": app.get("value"),
+            "appetite_evidence": app.get("evidence"),
+            "cursor": int(cursor),
+            "recipe_count": len(recipes),
+            "omit_excluded": omit_count,
+            "pool_source_count": len(pool_sources),
+            "seed_count": len(seeds),
+            "selection_weight": round(weights[pick_i], 3),
+            "ratings_index_loaded": ratings_doc is not None,
+            "heuristics_index_loaded": heuristics_doc is not None,
+            "appetite_index_loaded": appetite_doc is not None,
+            "source_facets_loaded": facets_doc is not None,
+            "derive_attempts": tried,
+            "recent_combo_penalty": True,
+            "used_recent_fallback": False,
+            "next_cursor": int(cursor) + 1,
+        }
+        if hold_meta:
+            out["hold_axis"] = hold_meta.get("hold_axis")
+            out["hold_values"] = hold_meta.get("hold_values")
+            out["hold_candidate_count"] = hold_meta.get("candidate_count")
+            out["hold_facet_constrained"] = hold_meta.get("facet_constrained")
+            if hold_meta.get("fallback"):
+                out["hold_fallback"] = hold_meta.get("fallback")
+        return out
+
+    if fallback is not None:
+        return {
+            "ok": False,
+            "error": "predicted_only_recent_combos",
+            "family": family,
+            "recipe_count": len(recipes),
+            "seed_count": len(seeds),
+            "derive_attempts": tried,
+            "used_recent_fallback": True,
+            "rating_kind": "predicted",
+        }
+
+    return {
+        "ok": False,
+        "error": "predicted_no_distinct_combo",
+        "family": family,
         "recipe_count": len(recipes),
         "seed_count": len(seeds),
-        "selection_weight": round(weights[pick_i], 3),
-        "appetite_index_loaded": appetite_doc is not None,
-        "heuristics_index_loaded": heuristics_doc is not None,
-        "next_cursor": int(cursor) + 1,
+        "derive_attempts": tried,
+        "omit_excluded": omit_count,
+        "rating_kind": "predicted",
     }
 
 
@@ -896,34 +1912,106 @@ def plan_hourly_step(
     family: str = "FB9_GEX2",
 ) -> Dict[str, Any]:
     """
-    Choose the hourly action: Replay ("do more OF", quality) vs Derive ("do more WITH", appetite).
+    Choose the hourly action: Predicted-derive, Replay ("do more OF"), or Derive ("do more WITH").
 
-    fast_track appetite pins Derive; otherwise the split is deterministic per cursor via
-    HOURLY_DERIVE_SHARE (default 0.5). Falls back to Replay when Derive has no seeds.
+    Predicted/inferred seeds are mixed in via HOURLY_PREDICTED_SHARE and always queued as
+    derive so prediction quality can be judged on new outputs. Explicit omit stays excluded.
+
+    Near wall-clock top-of-hour, prefer replay of recent 5★ keepers over the predicted/derive mix.
     """
-    import os
-
+    data_root = (data_root or _default_data_root()).resolve()
     derive_share = float(os.environ.get("HOURLY_DERIVE_SHARE", "0.5"))
     derive_share = max(0.0, min(1.0, derive_share))
+    predicted_share = float(os.environ.get("HOURLY_PREDICTED_SHARE", "0.35"))
+    predicted_share = max(0.0, min(1.0, predicted_share))
+    top_of_hour = _is_top_of_hour()
 
+    predicted = plan_hourly_predicted_derive(
+        cursor=cursor, data_root=data_root, job_dir=job_dir, family=family
+    )
     derive = plan_hourly_derive(cursor=cursor, data_root=data_root, job_dir=job_dir, family=family)
-    if derive.get("ok") and derive.get("fast_track"):
-        derive["step"] = "derive"
-        return derive
+    # Pin fast_track only for a fresh combo whose prompt is not already dominating recent hourlies.
+    if derive.get("ok") and derive.get("fast_track") and not derive.get("used_recent_fallback"):
+        recent = _recent_combo_keys(data_root=data_root, family=family)
+        prompt = _prompt_slug_from_combo(str(derive.get("combo_key") or ""))
+        prompt_hits = sum(1 for ck in recent if _prompt_slug_from_combo(ck) == prompt) if prompt else 0
+        if prompt_hits < 2:
+            derive["step"] = "derive"
+            derive["rating_kind"] = derive.get("rating_kind") or "appetite"
+            derive["top_of_hour"] = top_of_hour
+            return derive
+
+    # Top-of-hour: skip predicted/derive lottery and favor quality replay (recent 5★ boost inside).
+    if top_of_hour:
+        replay = plan_hourly_replay(cursor=cursor, data_root=data_root, job_dir=job_dir, family=family)
+        if replay.get("ok"):
+            if str(replay.get("rating_kind") or "") == "predicted":
+                upgraded = plan_hourly_predicted_derive(
+                    cursor=cursor, data_root=data_root, job_dir=job_dir, family=family
+                )
+                if upgraded.get("ok"):
+                    upgraded["step"] = "predicted_derive"
+                    upgraded["upgraded_from"] = "replay"
+                    upgraded["top_of_hour"] = True
+                    return upgraded
+            else:
+                replay["step"] = "replay"
+                replay["rating_kind"] = replay.get("rating_kind") or "explicit"
+                replay["top_of_hour"] = True
+                return replay
+
+    want_predicted = random.Random(int(cursor) ^ 0x517A).random() < predicted_share
+    if predicted.get("ok") and want_predicted:
+        predicted["step"] = "predicted_derive"
+        predicted["top_of_hour"] = top_of_hour
+        return predicted
 
     want_derive = random.Random(int(cursor) ^ 0x5EED).random() < derive_share
     if derive.get("ok") and want_derive:
         derive["step"] = "derive"
+        derive["rating_kind"] = derive.get("rating_kind") or "appetite"
+        derive["top_of_hour"] = top_of_hour
         return derive
 
     replay = plan_hourly_replay(cursor=cursor, data_root=data_root, job_dir=job_dir, family=family)
     if replay.get("ok"):
+        # Predicted/inferred winners must never exact-replay — always derive.
+        if str(replay.get("rating_kind") or "") == "predicted":
+            upgraded = plan_hourly_predicted_derive(
+                cursor=cursor, data_root=data_root, job_dir=job_dir, family=family
+            )
+            if upgraded.get("ok"):
+                upgraded["step"] = "predicted_derive"
+                upgraded["upgraded_from"] = "replay"
+                upgraded["top_of_hour"] = top_of_hour
+                return upgraded
         replay["step"] = "replay"
+        replay["rating_kind"] = replay.get("rating_kind") or "explicit"
+        replay["top_of_hour"] = top_of_hour
         return replay
+    if predicted.get("ok"):
+        predicted["step"] = "predicted_derive"
+        predicted["top_of_hour"] = top_of_hour
+        return predicted
     if derive.get("ok"):
         derive["step"] = "derive"
+        derive["rating_kind"] = derive.get("rating_kind") or "appetite"
+        derive["top_of_hour"] = top_of_hour
         return derive
-    return replay
+
+    fallback = plan_pool_product_fallback(cursor=cursor, data_root=data_root, family=family)
+    if fallback.get("ok"):
+        fallback["top_of_hour"] = top_of_hour
+        return fallback
+    # Prefer the more informative error from replay/derive when fallback also fails.
+    if isinstance(replay, dict) and replay.get("error"):
+        out = dict(replay)
+        out["pool_product_error"] = fallback.get("error")
+        out["predicted_error"] = predicted.get("error")
+        out["top_of_hour"] = top_of_hour
+        return out
+    fallback["top_of_hour"] = top_of_hour
+    return fallback
 
 
 def plan_hourly_gex2(
@@ -942,18 +2030,48 @@ def predict_hourly_gex2(
     *,
     data_root: Optional[Path] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Map API / UI preview of the next hourly replay step."""
+    """Map API / UI preview of the next hourly step (same family selection as the shell)."""
     cursor = int(hourly_state.get("sample_cursor") or 0)
-    plan = plan_hourly_step(cursor=cursor, data_root=data_root, family="FB9_GEX2")
+    data_root = (data_root or _default_data_root()).resolve()
+    job_root = _default_job_root(data_root)
+
+    need_facial = find_gex2_needing_facial(data_root=data_root, job_dir=job_root)
+    if need_facial:
+        return {
+            "cursor": cursor,
+            "phase_if_idle": "facial",
+            "family": "FB9_GEX_FACIAL",
+            "pick_mode": "chain",
+            "step": "chain_facial",
+            "parent_job": need_facial,
+            "ok": True,
+        }
+
+    need_kneel = find_kneel_needing_gex2(data_root=data_root, job_dir=job_root)
+    if need_kneel:
+        return {
+            "cursor": cursor,
+            "phase_if_idle": "gex2_from_kneel",
+            "family": "FB9_GEX2",
+            "pick_mode": "chain",
+            "step": "chain_gex2_from_kneel",
+            "parent_job": need_kneel,
+            "ok": True,
+        }
+
+    family = select_seed_family(cursor)
+    plan = plan_hourly_step(cursor=cursor, data_root=data_root, family=family)
     if not plan.get("ok"):
         return {
             "cursor": cursor,
             "phase_if_idle": hourly_state.get("phase"),
+            "family": family,
             "error": plan.get("error"),
             "recipe_count": plan.get("recipe_count"),
         }
     preview = dict(plan)
     preview["phase_if_idle"] = hourly_state.get("phase")
+    preview["family"] = family
     preview["gex2_prompt"] = (plan.get("bindings_preview") or {}).get("prompt_profile")
     preview["source_video"] = (plan.get("bindings_preview") or {}).get("source_video")
     preview["source_still"] = (plan.get("bindings_preview") or {}).get("source_still")
@@ -961,9 +2079,15 @@ def predict_hourly_gex2(
     preview["rating_evidence"] = plan.get("rating_evidence")
     preview["selection_weight"] = plan.get("selection_weight")
     preview["step"] = plan.get("step")
+    preview["top_of_hour"] = plan.get("top_of_hour")
+    preview["recent_five_star_boosted"] = plan.get("recent_five_star_boosted")
+    preview["recent_five_star_mult"] = plan.get("recent_five_star_mult")
     preview["appetite"] = plan.get("appetite")
     preview["appetite_facet"] = plan.get("appetite_facet")
     preview["fast_track"] = plan.get("fast_track")
+    preview["hold_axis"] = plan.get("hold_axis")
+    preview["hold_values"] = plan.get("hold_values")
+    preview["hold_facet_constrained"] = plan.get("hold_facet_constrained")
     return preview
 
 
@@ -1047,6 +2171,50 @@ def pending_product_combos(
     return pending
 
 
+def queue_advance_decision(
+    *,
+    pending: int,
+    queue_min: int = 1,
+    queue_max: int = 2,
+) -> Dict[str, Any]:
+    """
+    Whether the hourly tick should queue another Comfy job.
+
+    Keep ``queue_min <= pending < queue_max`` as the steady state: top up when
+    pending drops below ``queue_min``; stop when at ``queue_max``.
+    """
+    pending_i = max(0, int(pending))
+    queue_min_i = max(0, int(queue_min))
+    queue_max_i = max(queue_min_i, int(queue_max))
+    submit_slots = max(0, queue_max_i - pending_i)
+    if pending_i >= queue_max_i:
+        return {
+            "advance": False,
+            "reason": "at_max",
+            "pending": pending_i,
+            "queue_min": queue_min_i,
+            "queue_max": queue_max_i,
+            "submit_slots": 0,
+        }
+    if pending_i >= queue_min_i:
+        return {
+            "advance": False,
+            "reason": "satisfied_min",
+            "pending": pending_i,
+            "queue_min": queue_min_i,
+            "queue_max": queue_max_i,
+            "submit_slots": submit_slots,
+        }
+    return {
+        "advance": True,
+        "reason": "below_min",
+        "pending": pending_i,
+        "queue_min": queue_min_i,
+        "queue_max": queue_max_i,
+        "submit_slots": submit_slots,
+    }
+
+
 def main() -> int:
     import argparse
 
@@ -1071,6 +2239,15 @@ def main() -> int:
     d.add_argument("--data-root", type=Path, default=None)
     d.add_argument("--family", default="FB9_GEX2")
 
+    pd = sub.add_parser(
+        "plan-predicted",
+        help="Print JSON plan: predicted/inferred seed always queued as derive",
+    )
+    pd.add_argument("--cursor", type=int, default=None)
+    pd.add_argument("--state", type=Path, default=None)
+    pd.add_argument("--data-root", type=Path, default=None)
+    pd.add_argument("--family", default="FB9_GEX2")
+
     s = sub.add_parser("plan-step", help="Print JSON plan for the next hourly step (replay OR derive)")
     s.add_argument("--cursor", type=int, default=None)
     s.add_argument("--state", type=Path, default=None)
@@ -1081,15 +2258,62 @@ def main() -> int:
     l.add_argument("--data-root", type=Path, default=None)
     l.add_argument("--family", default="FB9_GEX2")
 
+    sf = sub.add_parser("select-family", help="Print weighted seed family for a cursor")
+    sf.add_argument("--cursor", type=int, default=None)
+    sf.add_argument("--state", type=Path, default=None)
+
+    nf = sub.add_parser("need-facial", help="Print GEX2 job_key needing FACIAL child (or empty)")
+    nf.add_argument("--data-root", type=Path, default=None)
+
+    nk = sub.add_parser("need-gex2-from-kneel", help="Print Kneel job_key needing GEX2 child (or empty)")
+    nk.add_argument("--data-root", type=Path, default=None)
+
+    qp = sub.add_parser("queue-policy", help="JSON: should hourly advance given Comfy pending depth?")
+    qp.add_argument("--pending", type=int, required=True)
+    qp.add_argument("--queue-min", type=int, default=1)
+    qp.add_argument("--queue-max", type=int, default=2)
+
     args = p.parse_args()
-    data_root = args.data_root.expanduser().resolve() if args.data_root else None
+    data_root = args.data_root.expanduser().resolve() if getattr(args, "data_root", None) else None
 
     if args.cmd == "list-recipes":
         recipes = collect_replay_recipes(str(args.family), data_root=data_root)
         print(json.dumps({"family": args.family, "recipe_count": len(recipes)}, indent=2))
         return 0
 
-    if args.cmd in {"plan-gex2", "plan-replay", "plan-derive", "plan-step"}:
+    if args.cmd == "select-family":
+        cursor = args.cursor
+        if cursor is None and args.state and args.state.is_file():
+            state = json.loads(args.state.read_text(encoding="utf-8"))
+            cursor = int(state.get("sample_cursor") or 0)
+        if cursor is None:
+            cursor = 0
+        fam = select_seed_family(int(cursor))
+        print(json.dumps({"cursor": int(cursor), "family": fam}, indent=2))
+        return 0
+
+    if args.cmd == "need-facial":
+        key = find_gex2_needing_facial(data_root=data_root)
+        if key:
+            print(key)
+        return 0
+
+    if args.cmd == "need-gex2-from-kneel":
+        key = find_kneel_needing_gex2(data_root=data_root)
+        if key:
+            print(key)
+        return 0
+
+    if args.cmd == "queue-policy":
+        out = queue_advance_decision(
+            pending=int(args.pending),
+            queue_min=int(args.queue_min),
+            queue_max=int(args.queue_max),
+        )
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.cmd in {"plan-gex2", "plan-replay", "plan-derive", "plan-predicted", "plan-step"}:
         cursor = args.cursor
         if cursor is None and args.state and args.state.is_file():
             state = json.loads(args.state.read_text(encoding="utf-8"))
@@ -1098,6 +2322,8 @@ def main() -> int:
             cursor = 0
         if args.cmd == "plan-derive":
             out = plan_hourly_derive(cursor=cursor, data_root=data_root, family=str(args.family))
+        elif args.cmd == "plan-predicted":
+            out = plan_hourly_predicted_derive(cursor=cursor, data_root=data_root, family=str(args.family))
         elif args.cmd == "plan-step":
             out = plan_hourly_step(cursor=cursor, data_root=data_root, family=str(args.family))
         else:

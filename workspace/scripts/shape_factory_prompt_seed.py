@@ -28,19 +28,9 @@ def _prompt_binding(shape: dict[str, Any]) -> Optional[dict[str, Any]]:
 
 
 def _node_text(workflow: dict[str, Any], node_id: int, widget_index: int = 0) -> str:
-    for node in workflow.get("nodes") or []:
-        if not isinstance(node, dict) or int(node.get("id") or -1) != int(node_id):
-            continue
-        widgets = node.get("widgets_values")
-        if isinstance(widgets, list):
-            if not widgets:
-                return ""
-            idx = min(max(0, widget_index), len(widgets) - 1)
-            return str(widgets[idx] or "")
-        if widgets is not None:
-            return str(widgets)
-        return ""
-    return ""
+    from shape_factory_prompt_recover import resolve_node_text
+
+    return resolve_node_text(workflow, node_id, widget_index=widget_index)
 
 
 def extract_prompt_from_template(template_path: Path, binding: dict[str, Any]) -> Tuple[str, str]:

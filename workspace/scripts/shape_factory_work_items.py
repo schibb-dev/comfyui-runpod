@@ -19,6 +19,8 @@ WORK_ITEMS_VERSION = 1
 WORK_STATUSES = frozenset({"draft", "queued", "running", "done", "failed", "cancelled"})
 TERMINAL_STATUSES = frozenset({"done", "failed", "cancelled"})
 OPEN_STATUSES = frozenset({"draft", "queued", "running"})
+# Priority can be reshaped only before Comfy has picked the work up.
+PRIORITY_MUTABLE_STATUSES = frozenset({"draft", "queued"})
 PRIORITIES = frozenset({"normal", "front"})
 POOLS = frozenset({"extend", "vary", "refine_backlog", "extract", "investigate"})
 
@@ -114,6 +116,68 @@ def normalize_priority(value: Any) -> str:
 def normalize_status(value: Any) -> str:
     s = str(value or "draft").strip().lower()
     return s if s in WORK_STATUSES else "draft"
+
+
+def apply_priority_reshape(item: Dict[str, Any], desired: str) -> Dict[str, Any]:
+    """
+    Mutate ``item`` priority in place when safe.
+
+    Returns flags: ``changed``, ``upgraded``, ``demoted``, ``skipped_running``,
+    ``skipped_terminal``. Never mutates ``running`` (or terminal) items.
+    """
+    desired_n = normalize_priority(desired)
+    cur = normalize_priority(item.get("priority"))
+    st = normalize_status(item.get("status"))
+    if desired_n == cur:
+        return {
+            "changed": False,
+            "upgraded": False,
+            "demoted": False,
+            "skipped_running": False,
+            "skipped_terminal": False,
+        }
+    if st == "running":
+        return {
+            "changed": False,
+            "upgraded": False,
+            "demoted": False,
+            "skipped_running": True,
+            "skipped_terminal": False,
+        }
+    if st in TERMINAL_STATUSES or st not in PRIORITY_MUTABLE_STATUSES:
+        return {
+            "changed": False,
+            "upgraded": False,
+            "demoted": False,
+            "skipped_running": False,
+            "skipped_terminal": st in TERMINAL_STATUSES,
+        }
+    item["priority"] = desired_n
+    item["updated_at"] = utc_now()
+    return {
+        "changed": True,
+        "upgraded": desired_n == "front" and cur != "front",
+        "demoted": desired_n == "normal" and cur == "front",
+        "skipped_running": False,
+        "skipped_terminal": False,
+    }
+
+
+def set_work_item_priority(
+    work_id: str,
+    *,
+    priority: str,
+    work_items_index_path: Path,
+) -> Dict[str, Any]:
+    """Set priority with safe reshape rules (skip running / terminal)."""
+    doc = load_work_items_doc(work_items_index_path)
+    row = find_item_by_id(doc, work_id)
+    if row is None:
+        raise FileNotFoundError(f"work item not found: {work_id}")
+    flags = apply_priority_reshape(row, priority)
+    if flags.get("changed"):
+        save_work_items_doc(work_items_index_path, doc)
+    return {"ok": True, "item": copy.deepcopy(row), **flags}
 
 
 def normalize_pool(value: Any) -> str:
@@ -300,13 +364,17 @@ def create_work_item(
     if not force_new:
         existing = find_open_by_idempotency(doc, idem, cooldown_s=cooldown_s)
         if existing is not None:
-            # Allow priority upgrade to front on reuse.
-            pri = normalize_priority(priority)
-            if pri == "front" and normalize_priority(existing.get("priority")) != "front":
-                existing["priority"] = "front"
-                existing["updated_at"] = utc_now()
+            # Promote/demote priority on reuse when safe (never while running).
+            flags = apply_priority_reshape(existing, priority)
+            if flags.get("changed"):
                 save_work_items_doc(work_items_index_path, doc)
-            return {"ok": True, "item": copy.deepcopy(existing), "created": False, "reused": True}
+            return {
+                "ok": True,
+                "item": copy.deepcopy(existing),
+                "created": False,
+                "reused": True,
+                **flags,
+            }
 
     now = utc_now()
     item: Dict[str, Any] = {
@@ -388,14 +456,35 @@ def cancel_work_item(
     if row is None:
         raise FileNotFoundError(f"work item not found: {work_id}")
     st = normalize_status(row.get("status"))
+    if st == "running":
+        # Do not cancel work that Comfy has already picked up.
+        return {
+            "ok": True,
+            "item": copy.deepcopy(row),
+            "already_terminal": False,
+            "skipped_running": True,
+            "cancelled": False,
+        }
     if st in ("done", "cancelled"):
-        return {"ok": True, "item": copy.deepcopy(row), "already_terminal": True}
+        return {
+            "ok": True,
+            "item": copy.deepcopy(row),
+            "already_terminal": True,
+            "skipped_running": False,
+            "cancelled": False,
+        }
     row["status"] = "cancelled"
     if reason:
         row["error"] = str(reason).strip()
     row["updated_at"] = utc_now()
     save_work_items_doc(work_items_index_path, doc)
-    return {"ok": True, "item": copy.deepcopy(row), "already_terminal": False}
+    return {
+        "ok": True,
+        "item": copy.deepcopy(row),
+        "already_terminal": False,
+        "skipped_running": False,
+        "cancelled": True,
+    }
 
 
 def record_run_step_work_item(
@@ -431,7 +520,7 @@ def record_run_step_work_item(
     job_key = str(result.get("job_key") or "").strip() or None
     family = str(result.get("family_slug") or factory_family or "").strip()
     priority = normalize_priority(priority_override or default_priority)
-    if result.get("front") or hook_n == "replay_front":
+    if priority_override is None and (result.get("front") or hook_n == "replay_front"):
         priority = "front"
 
     status = "queued" if ok and job_key else ("failed" if not ok else "draft")
@@ -490,7 +579,10 @@ def create_routes_batch(
     Advance multi-route commit (Phase 2B API surface).
 
     Each route dict: ``{pool|step_id, priority?, factory_family?, recipe?}``.
-    ``queue_now`` upgrades all created instances to ``priority: front``.
+    ``queue_now=True`` (Now) → ``priority: front`` for all routes.
+    ``queue_now=False`` (Later) → ``priority: normal`` for all routes (overrides
+    step defaults such as advance.vary→front), and demotes reusable open items
+    when safe.
     """
     rel = str(source_relpath or "").strip().replace("\\", "/")
     if not rel:
@@ -498,22 +590,25 @@ def create_routes_batch(
     if not routes:
         raise ValueError("missing routes")
 
-    items: List[Dict[str, Any]] = []
+    results: List[Dict[str, Any]] = []
+    upgraded = 0
+    demoted = 0
+    skipped_running = 0
     for raw in routes:
         if not isinstance(raw, dict):
             continue
         step_id = str(raw.get("step_id") or raw.get("disposition_step") or "").strip()
         pool = str(raw.get("pool") or "").strip()
         entry = str(raw.get("disposition_entry") or "").strip()
-        priority = normalize_priority(raw.get("priority") or ("front" if queue_now else "normal"))
-        if queue_now:
-            priority = "front"
+        # Now/Later are explicit: ignore step default priority unless caller sets priority.
+        if raw.get("priority"):
+            priority = normalize_priority(raw.get("priority"))
+        else:
+            priority = "front" if queue_now else "normal"
         if step_id and not pool:
             mapped = route_for_step(step_id)
             if mapped:
-                pool, entry, default_pri = mapped
-                if not raw.get("priority") and not queue_now:
-                    priority = default_pri
+                pool, entry, _default_pri = mapped
         if not pool:
             raise ValueError(f"route missing pool/step_id: {raw}")
         if not entry:
@@ -538,11 +633,21 @@ def create_routes_batch(
             cooldown_s=cooldown_s,
             force_new=bool(raw.get("force_new")),
         )
-        items.append(out)
+        if out.get("upgraded"):
+            upgraded += 1
+        if out.get("demoted"):
+            demoted += 1
+        if out.get("skipped_running"):
+            skipped_running += 1
+        results.append(out)
     return {
         "ok": True,
         "source_relpath": rel,
-        "items": [x.get("item") for x in items if x.get("item")],
-        "results": items,
-        "count": len(items),
+        "items": [x.get("item") for x in results if x.get("item")],
+        "results": results,
+        "count": len(results),
+        "upgraded": upgraded,
+        "demoted": demoted,
+        "skipped_running": skipped_running,
+        "queue_now": bool(queue_now),
     }

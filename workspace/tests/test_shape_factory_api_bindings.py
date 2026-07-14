@@ -72,6 +72,69 @@ class ApplyApiSlotBindingsPromptTests(unittest.TestCase):
             self.assertEqual(prompt["2"]["inputs"]["text"], "P")
             self.assertTrue(any("falling back" in w for w in warnings))
 
+    def test_sanitize_linked_text_widget_defaults_clears_stale_idle(self) -> None:
+        from shape_factory import sanitize_linked_text_widget_defaults
+
+        workflow = {
+            "nodes": [
+                {
+                    "id": 215,
+                    "type": "CLIPTextEncode",
+                    "inputs": [
+                        {"name": "clip", "link": 1},
+                        {"name": "text", "link": 2},
+                    ],
+                    "widgets_values": ["Slow and small Movements. Idle Animation"],
+                },
+                {
+                    "id": 380,
+                    "type": "Text Multiline",
+                    "inputs": [],
+                    "widgets_values": ["real scene prompt"],
+                },
+            ]
+        }
+        cleared = sanitize_linked_text_widget_defaults(workflow)
+        self.assertEqual(cleared, 1)
+        self.assertEqual(workflow["nodes"][0]["widgets_values"], [""])
+        self.assertEqual(workflow["nodes"][1]["widgets_values"], ["real scene prompt"])
+
+    def test_apply_prompt_bundle_writes_upstream_not_linked_default(self) -> None:
+        from shape_factory import apply_prompt_bundle
+
+        with tempfile.TemporaryDirectory() as td:
+            profile = Path(td) / "prompt.json"
+            profile.write_text(
+                json.dumps({"positive": "assembled scene", "negative": ""}),
+                encoding="utf-8",
+            )
+            workflow = {
+                "links": [[839, 380, 0, 215, 1, "STRING"]],
+                "nodes": [
+                    {
+                        "id": 215,
+                        "type": "CLIPTextEncode",
+                        "inputs": [
+                            {"name": "clip", "link": 1},
+                            {"name": "text", "link": 839},
+                        ],
+                        "widgets_values": ["Slow and small Movements. Idle Animation"],
+                    },
+                    {
+                        "id": 380,
+                        "type": "Text Multiline",
+                        "inputs": [],
+                        "widgets_values": ["old scene"],
+                    },
+                ],
+            }
+            # Mis-aimed binding: encode node whose text is linked.
+            binding = {"positive": {"node_id": 215, "widget_index": 0}}
+            warnings = apply_prompt_bundle(workflow, binding, profile)
+            self.assertFalse(warnings)
+            self.assertEqual(workflow["nodes"][0]["widgets_values"], ["Slow and small Movements. Idle Animation"])
+            self.assertEqual(workflow["nodes"][1]["widgets_values"], ["assembled scene"])
+
 
 if __name__ == "__main__":
     unittest.main()

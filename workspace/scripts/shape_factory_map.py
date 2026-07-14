@@ -469,6 +469,10 @@ def _runtime_path_candidates(
                 add(data_base + s[len(host_data) :])
         if s.startswith("/workspace/.data/"):
             add(data_base + s[len("/workspace/.data") :])
+        # Recover paths corrupted by hostify when scripts lived under /workspace/ws_scripts
+        # (parents[2] → "/", so /workspace/.data/... became /.data/...).
+        if s.startswith("/.data/") or s == "/.data":
+            add(data_base + s[len("/.data") :] if s.startswith("/.data") else data_base)
     if s.startswith("/workspace/comfyui_user/"):
         rel = s[len("/workspace/comfyui_user") :]
         for host_user in (

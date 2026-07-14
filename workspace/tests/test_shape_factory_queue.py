@@ -128,8 +128,8 @@ class ShapeFactoryQueueTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
-            src = tmp_root / "idle-small-motions.json"
-            src.write_text('{"label":"idle","positive":"a","negative":""}\n', encoding="utf-8")
+            src = tmp_root / "catalog-default.json"
+            src.write_text('{"label":"catalog","positive":"a","negative":""}\n', encoding="utf-8")
             out = write_scratch_prompt_profile(
                 tmp_root,
                 family="FB9_GEX2",

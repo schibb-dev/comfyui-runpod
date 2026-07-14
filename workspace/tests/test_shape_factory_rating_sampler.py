@@ -9,6 +9,8 @@ from shape_factory_heuristics import LineageGraph
 from shape_factory_rating_sampler import (
     _sibling_keeper_boost,
     analyze_vision_gaps,
+    is_rating_complete,
+    needs_rating_item,
     score_unrated_candidate,
 )
 
@@ -75,6 +77,46 @@ class RatingSamplerTests(unittest.TestCase):
         gaps = analyze_vision_gaps(session)
         self.assertEqual(gaps["vision_recommended_total"], 3)
         self.assertGreaterEqual(len(gaps["reasons"]), 1)
+
+    def test_needs_rating_requires_quality_and_appetite(self) -> None:
+        item = {"relpath": "output/og/2026-04-03/foo.mp4"}
+        self.assertTrue(needs_rating_item(item, ratings_doc={}, appetite_doc={}))
+        # Legacy lone explicit is NOT complete — axes required.
+        ratings_legacy = {
+            "by_output_relpath": {
+                "output/og/2026-04-03/foo.mp4": {"explicit": 4},
+            }
+        }
+        self.assertTrue(needs_rating_item(item, ratings_doc=ratings_legacy, appetite_doc={}))
+        ratings = {
+            "by_output_relpath": {
+                "output/og/2026-04-03/foo.mp4": {
+                    "explicit": 4,
+                    "axes": {
+                        "subject_beauty": 5,
+                        "render_quality": 3,
+                        "action_quality": 4,
+                    },
+                },
+            }
+        }
+        self.assertTrue(needs_rating_item(item, ratings_doc=ratings, appetite_doc={}))
+        appetite = {
+            "by_output_relpath": {
+                "output/og/2026-04-03/foo.mp4": {"appetite": "more"},
+            }
+        }
+        self.assertFalse(needs_rating_item(item, ratings_doc=ratings, appetite_doc=appetite))
+        self.assertTrue(is_rating_complete(item, ratings_doc=ratings, appetite_doc=appetite))
+
+    def test_retired_never_needs_rating(self) -> None:
+        item = {"relpath": "output/og/2026-04-03/foo.mp4"}
+        disposition = {
+            "by_output_relpath": {
+                "output/og/2026-04-03/foo.mp4": {"markers": ["retire"]},
+            }
+        }
+        self.assertFalse(needs_rating_item(item, ratings_doc={}, appetite_doc={}, disposition_doc=disposition))
 
 
 if __name__ == "__main__":

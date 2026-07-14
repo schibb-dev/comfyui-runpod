@@ -26,6 +26,54 @@ APPETITE_SCHEMA_VERSION = 1
 APPETITE_STATES: Tuple[str, ...] = ("less", "neutral", "more", "fast_track")
 APPETITE_FACETS: Tuple[str, ...] = ("both", "source", "processing")
 
+# Quality is three explicit sub-axes; ``explicit`` is their rounded mean for XMP/legacy.
+QUALITY_AXES: Tuple[str, ...] = ("subject_beauty", "render_quality", "action_quality")
+QUALITY_AXIS_ALIASES: Dict[str, str] = {
+    "subject": "subject_beauty",
+    "beauty": "subject_beauty",
+    "subject_beauty": "subject_beauty",
+    "render": "render_quality",
+    "render_quality": "render_quality",
+    "action": "action_quality",
+    "action_quality": "action_quality",
+}
+
+# Valid keeper stars are 1–5. ``explicit: 0`` (or negative) means omit from
+# selection / heuristics — not "unrated" (unrated is ``explicit is None``).
+QUALITY_RATING_MIN = 1
+QUALITY_RATING_MAX = 5
+
+
+def is_usable_quality_rating(value: Any) -> bool:
+    """True when ``value`` is a real 1–5 quality score."""
+    if value is None:
+        return False
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return False
+    if numeric != numeric:  # NaN
+        return False
+    return QUALITY_RATING_MIN <= numeric <= QUALITY_RATING_MAX
+
+
+def is_omit_quality_rating(value: Any) -> bool:
+    """
+    True when an explicit rating means "leave this out of consideration".
+
+    Distinguishes from unrated (``None`` / missing): omit is an intentional
+    non-keeper mark stored as ``explicit: 0`` (legacy) or any non-positive value.
+    """
+    if value is None:
+        return False
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return False
+    if numeric != numeric:
+        return False
+    return numeric <= 0
+
 # Numeric value used when appetite is rolled up (mirrors 1-5 rating scale) and the
 # derive-selection multiplier appetite applies on top of a candidate's base weight.
 APPETITE_SCORE: Dict[str, float] = {
@@ -40,6 +88,41 @@ APPETITE_MULT: Dict[str, float] = {
     "more": 2.5,
     "fast_track": 6.0,
 }
+
+
+def normalize_quality_axis(value: Any) -> str:
+    """Return a canonical quality axis id or '' if unknown."""
+    raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return QUALITY_AXIS_ALIASES.get(raw, "")
+
+
+def normalize_axes_map(raw: Any) -> Dict[str, int]:
+    """Return only valid 1–5 axis values from a row's ``axes`` object."""
+    out: Dict[str, int] = {}
+    if not isinstance(raw, dict):
+        return out
+    for axis in QUALITY_AXES:
+        val = raw.get(axis)
+        try:
+            n = int(val)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= n <= 5:
+            out[axis] = n
+    return out
+
+
+def axes_complete(axes: Dict[str, int]) -> bool:
+    """True when all three quality axes are set to 1–5."""
+    return all(axis in axes and 1 <= int(axes[axis]) <= 5 for axis in QUALITY_AXES)
+
+
+def aggregate_explicit_from_axes(axes: Dict[str, int]) -> Optional[int]:
+    """Rounded mean of set axes (1–5), or None when empty."""
+    vals = [int(axes[a]) for a in QUALITY_AXES if a in axes]
+    if not vals:
+        return None
+    return int(round(statistics.mean(vals)))
 
 
 def normalize_appetite(value: Any) -> str:
@@ -271,6 +354,19 @@ def build_ratings_index(
     graph_contributors: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     _MAX_CONTRIBUTORS = 48
 
+    # Preserve operator-stamped fields across XMP rebuilds (rated_at, axes).
+    prior_rows: Dict[str, Dict[str, Any]] = {}
+    if out_path.is_file():
+        try:
+            prior_doc = json.loads(out_path.read_text(encoding="utf-8"))
+        except Exception:
+            prior_doc = {}
+        prior_table = prior_doc.get("by_output_relpath") if isinstance(prior_doc, dict) else None
+        if isinstance(prior_table, dict):
+            for key, row in prior_table.items():
+                if isinstance(row, dict):
+                    prior_rows[str(key)] = row
+
     joined_jobs = 0
     joined_workflow = 0
     with_prompt = 0
@@ -280,6 +376,7 @@ def build_ratings_index(
         rating = int(rec["rating"])
         discovery_key = str(rec["output_discovery_key"])
         short_key = str(rec["output_short_key"])
+        usable = is_usable_quality_rating(rating)
 
         sources = rec.get("source_basenames") or []
         source_paths = rec.get("sources") or []
@@ -295,17 +392,18 @@ def build_ratings_index(
             with_prompt += 1
         if sources:
             with_sources += 1
-            for bn, raw in zip(sources, source_paths):
-                by_source_basename[bn].add(rating)
-                arr = source_contributors[bn]
-                if len(arr) < _MAX_CONTRIBUTORS:
-                    arr.append(
-                        {
-                            "output_discovery_key": discovery_key,
-                            "rating": rating,
-                            "via_source": raw,
-                        }
-                    )
+            if usable:
+                for bn, raw in zip(sources, source_paths):
+                    by_source_basename[bn].add(rating)
+                    arr = source_contributors[bn]
+                    if len(arr) < _MAX_CONTRIBUTORS:
+                        arr.append(
+                            {
+                                "output_discovery_key": discovery_key,
+                                "rating": rating,
+                                "via_source": raw,
+                            }
+                        )
 
         gh, recipe, from_job = _graph_hash_for_record(rec, job_index, data_root)
         if gh:
@@ -314,10 +412,11 @@ def build_ratings_index(
                 joined_jobs += 1
             else:
                 joined_workflow += 1
-            by_graph_hash[gh].add(rating)
-            garr = graph_contributors[gh]
-            if len(garr) < _MAX_CONTRIBUTORS:
-                garr.append({"output_discovery_key": discovery_key, "rating": rating})
+            if usable:
+                by_graph_hash[gh].add(rating)
+                garr = graph_contributors[gh]
+                if len(garr) < _MAX_CONTRIBUTORS:
+                    garr.append({"output_discovery_key": discovery_key, "rating": rating})
             if from_job:
                 meta = _lookup_job_meta(_norm_path_key(discovery_key, data_root), job_index) or {}
                 graph_meta.setdefault(
@@ -329,7 +428,20 @@ def build_ratings_index(
                 )
             if recipe:
                 output_row["shape_recipe"] = recipe
-                by_shape_recipe[str(recipe)].add(rating)
+                if usable:
+                    by_shape_recipe[str(recipe)].add(rating)
+
+        prior = prior_rows.get(discovery_key) or prior_rows.get(short_key) or {}
+        if isinstance(prior, dict):
+            if prior.get("rated_at"):
+                output_row["rated_at"] = prior.get("rated_at")
+            prior_axes = normalize_axes_map(prior.get("axes"))
+            if prior_axes:
+                output_row["axes"] = {a: prior_axes[a] for a in QUALITY_AXES if a in prior_axes}
+                derived = aggregate_explicit_from_axes(prior_axes)
+                if derived is not None:
+                    # Prefer axis aggregate over raw XMP when Discovery has set axes.
+                    output_row["explicit"] = int(derived)
 
         by_output_relpath[discovery_key] = output_row
         by_output_relpath[short_key] = output_row
@@ -533,28 +645,59 @@ def _load_or_init_ratings_doc(ratings_index_path: Path) -> Dict[str, Any]:
     return _init_ratings_doc()
 
 
-def set_output_rating(
+def _lookup_output_row_keys(
+    media_abs: Path,
+    media_relpath: str,
+    og_root: Path,
+) -> Tuple[str, str]:
+    from correlate_output_ratings import output_relpath_keys_from_xmp
+
+    xmp_like = media_abs.with_suffix(".XMP")
+    try:
+        short_key, discovery_key = output_relpath_keys_from_xmp(xmp_like, og_root)
+    except ValueError:
+        short_key = ""
+        discovery_key = str(media_relpath or "").replace("\\", "/")
+    return short_key, discovery_key
+
+
+def _enrich_row_sources(
+    media_abs: Path,
+    row: Dict[str, Any],
+    *,
+    ffprobe: Optional[str] = None,
+) -> None:
+    from correlate_output_ratings import extract_prompt_media, extract_source_paths_from_prompt
+
+    if row.get("sources") and row.get("source_paths"):
+        return
+    stem_dir = media_abs.parent
+    stem_name = media_abs.stem
+    prompt, _label = extract_prompt_media(stem_dir, stem_name, ffprobe=ffprobe)
+    sources = extract_source_paths_from_prompt(prompt) if prompt else []
+    row["sources"] = [normalize_source_basename(s) for s in sources]
+    row["source_paths"] = sources
+
+
+def set_output_quality_axis(
     *,
     media_abs: Path,
     media_relpath: str,
+    axis: str,
     stars: int,
     og_root: Path,
     ratings_index_path: Path,
     ffprobe: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Write an explicit XMP star for one output and reflect it in ratings_index.json.
+    Set or clear one quality axis and refresh the derived ``explicit`` aggregate + XMP.
 
-    Stars 1-5 set the rating; 0 clears it. The by_output_relpath explicit entry is
-    updated in place (what selection weighting reads); inferred source/graph rollups
-    refresh on the next full ``ratings build``.
+    Stars 1–5 set the axis; 0 clears it. ``explicit`` is the rounded mean of set axes.
+    XMP ``xmp:Rating`` mirrors ``explicit`` (cleared when no axes remain).
     """
-    from correlate_output_ratings import (
-        extract_prompt_media,
-        extract_source_paths_from_prompt,
-        output_relpath_keys_from_xmp,
-    )
-
+    axis_id = normalize_quality_axis(axis)
+    if not axis_id:
+        raise ValueError(f"bad axis: {axis!r} (expected one of {QUALITY_AXES})")
     stars = int(stars)
     if stars < 0 or stars > 5:
         raise ValueError("stars must be 0-5")
@@ -563,64 +706,127 @@ def set_output_rating(
         raise FileNotFoundError(str(media_abs))
     og_root = Path(og_root).resolve()
 
-    if stars <= 0:
-        xmp_target = _clear_xmp_rating(media_abs)
-    else:
-        xmp_target = _write_xmp_rating(media_abs, stars)
-
-    xmp_like = media_abs.with_suffix(".XMP")
-    try:
-        short_key, discovery_key = output_relpath_keys_from_xmp(xmp_like, og_root)
-    except ValueError:
-        short_key = ""
-        discovery_key = str(media_relpath or "").replace("\\", "/")
-
+    short_key, discovery_key = _lookup_output_row_keys(media_abs, media_relpath, og_root)
     doc = _load_or_init_ratings_doc(ratings_index_path)
     table = doc.setdefault("by_output_relpath", {})
 
+    prev: Dict[str, Any] = {}
+    for k in (discovery_key, short_key):
+        if k and isinstance(table.get(k), dict):
+            prev = dict(table[k])
+            break
+
+    axes = normalize_axes_map(prev.get("axes"))
     if stars <= 0:
+        axes.pop(axis_id, None)
+    else:
+        axes[axis_id] = stars
+
+    explicit = aggregate_explicit_from_axes(axes)
+    xmp_like = media_abs.with_suffix(".XMP")
+    if explicit is None:
+        xmp_target = _clear_xmp_rating(media_abs)
+        # Drop the output row when nothing remains (no axes, no legacy explicit).
         for k in (discovery_key, short_key):
             if k:
                 table.pop(k, None)
-        cleared = True
-        source_basenames: List[str] = []
-    else:
-        stem_dir = media_abs.parent
-        stem_name = media_abs.stem
-        prompt, _label = extract_prompt_media(stem_dir, stem_name, ffprobe=ffprobe)
-        sources = extract_source_paths_from_prompt(prompt) if prompt else []
-        source_basenames = [normalize_source_basename(s) for s in sources]
-        row: Dict[str, Any] = {
-            "explicit": stars,
+        doc["updated_at"] = utc_now()
+        _atomic_write_json_doc(ratings_index_path, doc)
+        return {
+            "ok": True,
+            "relpath": media_relpath,
+            "axis": axis_id,
+            "stars": 0,
+            "axes": {},
+            "explicit": None,
+            "cleared": True,
+            "xmp_path": str(xmp_target) if xmp_target else None,
+            "discovery_key": discovery_key,
             "short_key": short_key,
-            "xmp": str(xmp_target or xmp_like),
-            "sources": source_basenames,
-            "source_paths": sources,
+            "sources": prev.get("sources") or [],
         }
-        prev = table.get(discovery_key)
-        if isinstance(prev, dict):
-            if prev.get("graph_hash"):
-                row["graph_hash"] = prev["graph_hash"]
-            if prev.get("shape_recipe"):
-                row["shape_recipe"] = prev["shape_recipe"]
-        for k in (discovery_key, short_key):
-            if k:
-                table[k] = row
-        cleared = False
+
+    xmp_target = _write_xmp_rating(media_abs, int(explicit))
+    now = utc_now()
+    row: Dict[str, Any] = {
+        "explicit": int(explicit),
+        "axes": {a: axes[a] for a in QUALITY_AXES if a in axes},
+        "short_key": short_key or prev.get("short_key") or "",
+        "xmp": str(xmp_target or xmp_like),
+        "sources": list(prev.get("sources") or []),
+        "source_paths": list(prev.get("source_paths") or []),
+        # Wall-clock when an operator last set quality — used by hourly top-of-hour bias.
+        "rated_at": now,
+    }
+    for keep in ("graph_hash", "shape_recipe"):
+        if prev.get(keep):
+            row[keep] = prev[keep]
+    _enrich_row_sources(media_abs, row, ffprobe=ffprobe)
+    for k in (discovery_key, short_key):
+        if k:
+            table[k] = row
 
     doc["updated_at"] = utc_now()
     _atomic_write_json_doc(ratings_index_path, doc)
-
     return {
         "ok": True,
         "relpath": media_relpath,
+        "axis": axis_id,
         "stars": stars,
-        "cleared": cleared,
+        "axes": row["axes"],
+        "explicit": int(explicit),
+        "cleared": False,
         "xmp_path": str(xmp_target) if xmp_target else None,
         "discovery_key": discovery_key,
         "short_key": short_key,
-        "sources": source_basenames,
+        "sources": row.get("sources") or [],
     }
+
+
+def set_output_rating(
+    *,
+    media_abs: Path,
+    media_relpath: str,
+    stars: int,
+    og_root: Path,
+    ratings_index_path: Path,
+    ffprobe: Optional[str] = None,
+    axis: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Set quality rating(s) for one output.
+
+    When ``axis`` is provided, updates that axis only. When omitted, sets all three
+    axes to the same star value (compat / bulk). Stars 0 clears (one axis or all).
+    """
+    stars = int(stars)
+    if stars < 0 or stars > 5:
+        raise ValueError("stars must be 0-5")
+    if axis:
+        return set_output_quality_axis(
+            media_abs=media_abs,
+            media_relpath=media_relpath,
+            axis=axis,
+            stars=stars,
+            og_root=og_root,
+            ratings_index_path=ratings_index_path,
+            ffprobe=ffprobe,
+        )
+
+    last: Dict[str, Any] = {"ok": True, "relpath": media_relpath, "stars": stars, "cleared": stars <= 0}
+    for axis_id in QUALITY_AXES:
+        last = set_output_quality_axis(
+            media_abs=media_abs,
+            media_relpath=media_relpath,
+            axis=axis_id,
+            stars=stars,
+            og_root=og_root,
+            ratings_index_path=ratings_index_path,
+            ffprobe=ffprobe,
+        )
+    last["axis"] = None
+    last["stars"] = stars
+    return last
 
 
 def verify_xmp_explicit(output_row: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -688,9 +894,13 @@ def build_asset_ratings_explorer(
                 break
 
     explicit_block: Dict[str, Any] = {}
+    axes_map: Dict[str, int] = {}
     if output_row:
+        axes_map = normalize_axes_map(output_row.get("axes"))
         explicit_block = {
             "rating": output_row.get("explicit"),
+            "axes": axes_map or None,
+            "axes_complete": axes_complete(axes_map),
             "xmp": output_row.get("xmp"),
             "verification": verify_xmp_explicit(output_row),
         }
@@ -761,6 +971,7 @@ def build_asset_ratings_explorer(
         "basename": basename or None,
         "rating_effective": rating_effective,
         "explicit": explicit_block or None,
+        "axes": axes_map or None,
         "as_source": as_source_block or None,
         "workflow": workflow_block or None,
         "recipe": recipe_block or None,

@@ -50,6 +50,53 @@ class PromptRecoverTests(unittest.TestCase):
         self.assertEqual(pos, "hello positive")
         self.assertEqual(neg, "neg text")
 
+    def test_linked_text_follows_upstream_never_stale_widget(self) -> None:
+        from shape_factory_prompt_recover import resolve_node_text
+
+        # CLIP encode has stale Idle default, but text is linked from Multiline 380.
+        wf = {
+            "links": [[839, 380, 0, 215, 1, "STRING"]],
+            "nodes": [
+                {
+                    "id": 215,
+                    "type": "CLIPTextEncode",
+                    "inputs": [
+                        {"name": "clip", "link": 1},
+                        {"name": "text", "link": 839},
+                    ],
+                    "widgets_values": ["Slow and small Movements. Idle Animation"],
+                },
+                {
+                    "id": 380,
+                    "type": "Text Multiline",
+                    "inputs": [],
+                    "widgets_values": ["real scene prompt"],
+                },
+            ],
+        }
+        self.assertEqual(resolve_node_text(wf, 215), "real scene prompt")
+        # Binding pointed at the encode node must still recover the real prompt.
+        shape = _shape_with_prompt_nodes(pos_id=215, neg_id=17)
+        wf["nodes"].append({"id": 17, "type": "CLIPTextEncode", "widgets_values": [""]})
+        pos, _neg = extract_prompt_texts_from_ui_workflow(wf, shape)
+        self.assertEqual(pos, "real scene prompt")
+
+    def test_linked_text_unresolved_does_not_use_widget_default(self) -> None:
+        from shape_factory_prompt_recover import resolve_node_text
+
+        wf = {
+            "links": [],
+            "nodes": [
+                {
+                    "id": 215,
+                    "type": "CLIPTextEncode",
+                    "inputs": [{"name": "text", "link": 999}],
+                    "widgets_values": ["Slow and small Movements. Idle Animation"],
+                }
+            ],
+        }
+        self.assertEqual(resolve_node_text(wf, 215), "")
+
     def test_write_replay_profile(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -228,6 +275,25 @@ class ReplayPromptRecoveryTests(unittest.TestCase):
                             comfy_server="http://127.0.0.1:8188",
                         )
             self.assertIn("cannot recover prompt_profile", str(ctx.exception))
+
+
+    def test_resolve_existing_asset_host_to_container_remap(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            # Simulate container layout under a fake /workspace by writing to a mapped file
+            # and resolving via data_root-relative host path remap helper.
+            data = root / "data"
+            data.mkdir()
+            # Direct data_root relative resolution
+            target = data / "pools" / "x.json"
+            target.parent.mkdir(parents=True)
+            target.write_text('{"positive":"hi"}', encoding="utf-8")
+            from shape_factory_prompt_recover import _resolve_existing_asset
+
+            self.assertEqual(
+                _resolve_existing_asset("pools/x.json", data_root=data),
+                target.resolve(),
+            )
 
 
 if __name__ == "__main__":

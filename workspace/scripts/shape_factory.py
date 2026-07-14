@@ -55,6 +55,7 @@ from shape_factory_ratings import add_ratings_subparser
 from shape_factory_heuristics import add_heuristics_subparser
 from shape_factory_rating_sampler import add_rating_sampler_subparser
 from shape_factory_tags import add_tags_subparser
+from shape_factory_source_facets import add_source_facets_subparser
 from shape_factory_seed_sources import add_seed_sources_subparser
 from shape_factory_backfill import add_backfill_subparser
 
@@ -1004,6 +1005,61 @@ def apply_vhs_load_video_path(
     return warnings
 
 
+def sanitize_linked_text_widget_defaults(workflow: dict[str, Any]) -> int:
+    """
+    Clear unused text widget defaults when a node's ``text`` input is linked.
+
+    LiteGraph often leaves stale ``widgets_values`` (e.g. an old Idle Animation
+    placeholder) after the widget is converted to a linked input. Naive readers
+    that copy widgets_values can then treat that dead string as a real prompt.
+    """
+    cleared = 0
+    for node in workflow.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        text_linked = False
+        for inp in node.get("inputs") or []:
+            if isinstance(inp, dict) and str(inp.get("name") or "") == "text" and inp.get("link") is not None:
+                text_linked = True
+                break
+        if not text_linked:
+            continue
+        widgets = node.get("widgets_values")
+        if isinstance(widgets, list):
+            for i, val in enumerate(widgets):
+                if isinstance(val, str) and val.strip():
+                    widgets[i] = ""
+                    cleared += 1
+        elif isinstance(widgets, dict):
+            text = widgets.get("text")
+            if isinstance(text, str) and text.strip():
+                widgets["text"] = ""
+                cleared += 1
+    return cleared
+
+
+def _prompt_write_target(
+    workflow: dict[str, Any],
+    node_id: int,
+) -> tuple[Optional[dict[str, Any]], int, int]:
+    """
+    Resolve the node that actually owns prompt text.
+
+    If ``text`` is linked, follow upstream and write there — never stuff a linked
+    node's unused ``widgets_values`` default (those are not live prompt data).
+    Returns (node, resolved_node_id, widget_index_for_write).
+    """
+    from shape_factory_prompt_recover import resolve_text_owner_node_id
+
+    owner_id = resolve_text_owner_node_id(workflow, int(node_id))
+    if owner_id is None:
+        return None, int(node_id), 0
+    node = find_node(workflow, owner_id)
+    if node is None:
+        return None, owner_id, 0
+    return node, owner_id, 0
+
+
 def apply_prompt_bundle(workflow: dict[str, Any], binding: dict[str, Any], profile_path: Path) -> list[str]:
     warnings: list[str] = []
     profile = json.loads(profile_path.read_text(encoding="utf-8"))
@@ -1019,10 +1075,13 @@ def apply_prompt_bundle(workflow: dict[str, Any], binding: dict[str, Any], profi
             continue
         node_id = int(spec["node_id"])
         widget_index = int(spec.get("widget_index", 0))
-        node = find_node(workflow, node_id)
+        node, resolved_id, _ = _prompt_write_target(workflow, node_id)
         if node is None:
-            warnings.append(f"prompt node {node_id} ({key}) not found")
+            warnings.append(f"prompt node {node_id} ({key}) not found or text is linked with no source")
             continue
+        if resolved_id != node_id:
+            # Binding pointed at a linked encode; write live text upstream.
+            widget_index = 0
         widgets = node.get("widgets_values")
         if isinstance(widgets, list):
             if len(widgets) <= widget_index:
@@ -1167,6 +1226,11 @@ def generate_job_for_picks(
     dev_tuning_override: Optional[dict[str, Any]] = None,
     adhoc_overrides: Optional[dict[str, Any]] = None,
     recipe_output_path: Optional[str] = None,
+    disposition_entry: Optional[str] = None,
+    disposition_note: Optional[str] = None,
+    parent_output: Optional[str] = None,
+    rating_kind: Optional[str] = None,
+    construction: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Generate one workflow + job metadata file for explicit slot picks."""
     if not template_path.is_file():
@@ -1188,6 +1252,7 @@ def generate_job_for_picks(
     workflow = read_json(template_path)
     if not is_litegraph_workflow(workflow):
         raise RuntimeError(f"not a LiteGraph workflow: {template_path}")
+    sanitize_linked_text_widget_defaults(workflow)
 
     warnings: list[str] = []
     bindings_meta: dict[str, Any] = {}
@@ -1253,6 +1318,17 @@ def generate_job_for_picks(
         "warnings": warnings,
         "deposits": shape.get("deposits") or {},
     }
+    if disposition_entry:
+        job_meta["disposition_entry"] = str(disposition_entry).strip()
+        if disposition_note:
+            job_meta["disposition_note"] = str(disposition_note).strip()
+    if parent_output:
+        job_meta["parent_output"] = str(parent_output).strip()
+    if rating_kind:
+        job_meta["rating_kind"] = str(rating_kind).strip()
+    if isinstance(construction, dict) and construction:
+        # Compact selection/debug trail from hourly plan (or other callers).
+        job_meta["construction"] = construction
     if recipe_output_path:
         out_raw = str(recipe_output_path).strip()
         if out_raw:
@@ -1373,6 +1449,21 @@ def cmd_generate(args: argparse.Namespace) -> int:
         combos = [{str(slot): Path(str(path)).expanduser().resolve() for slot, path in picks_raw.items()}]
         pick_mode = str(raw.get("pick_mode") or "replay")
         recipe_output_path = str(raw.get("output_path") or "").strip() or None
+        disposition_entry = str(raw.get("disposition_entry") or "").strip() or None
+        disposition_note = str(raw.get("disposition_note") or "").strip() or None
+        parent_output = str(raw.get("parent_output") or "").strip() or None
+        rating_kind = str(raw.get("rating_kind") or "").strip() or None
+        # Predicted hourly seeds always land as derived disposition.
+        if rating_kind == "predicted" or str(raw.get("step") or "") == "predicted_derive":
+            disposition_entry = disposition_entry or "derived"
+            pick_mode = "derive"
+        try:
+            from shape_factory_work_products import construction_from_plan
+        except ImportError:
+            construction_from_plan = None  # type: ignore
+        construction = construction_from_plan(raw) if construction_from_plan else None
+        if isinstance(raw.get("construction"), dict) and raw.get("construction"):
+            construction = {**(construction or {}), **raw["construction"]}
     else:
         fetch_limit = combo_limit + pick_index if pick_index else combo_limit
         combos = pick_combinations(pool_paths, mode=args.pick, limit=fetch_limit if args.pick == "zip" else args.limit)
@@ -1382,6 +1473,11 @@ def cmd_generate(args: argparse.Namespace) -> int:
             combos = combos[pick_index : pick_index + combo_limit]
         pick_mode = str(args.pick)
         recipe_output_path = None
+        disposition_entry = None
+        disposition_note = None
+        parent_output = None
+        rating_kind = None
+        construction = None
     if not combos:
         print("generated_jobs=0")
         return 1
@@ -1413,6 +1509,11 @@ def cmd_generate(args: argparse.Namespace) -> int:
             dev_frames=getattr(args, "dev_frames", None),
             dev_steps=getattr(args, "dev_steps", None),
             recipe_output_path=recipe_output_path,
+            disposition_entry=disposition_entry,
+            disposition_note=disposition_note,
+            parent_output=parent_output,
+            rating_kind=rating_kind,
+            construction=construction,
         )
         print(f"generated_workflow={result['workflow_path']}")
         print(f"job_metadata={result['job_path']}")
@@ -1471,8 +1572,128 @@ def job_abandoned(job: dict[str, Any]) -> bool:
     return str(submit.get("status") or "").strip().lower() == "abandoned"
 
 
+def submit_max_attempts() -> int:
+    """Max failed submit attempts before a job is abandoned (env override)."""
+    raw = os.environ.get("SHAPE_FACTORY_SUBMIT_MAX_ATTEMPTS", "3").strip()
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 3
+
+
+def submit_attempt_count(job: dict[str, Any]) -> int:
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    for key in ("attempts", "fail_count"):
+        raw = submit.get(key)
+        if isinstance(raw, int) and raw >= 0:
+            return raw
+        if isinstance(raw, str) and raw.strip().isdigit():
+            return int(raw.strip())
+    # Legacy error rows without a counter already failed at least once.
+    if str(submit.get("status") or "").strip().lower() == "error":
+        return 1
+    return 0
+
+
+def job_submit_failed(job: dict[str, Any]) -> bool:
+    """True when a prior submit attempt failed (no prompt_id) and status is error."""
+    submit = job.get("submit")
+    if not isinstance(submit, dict):
+        return False
+    return str(submit.get("status") or "").strip().lower() == "error"
+
+
+def job_retries_exhausted(job: dict[str, Any]) -> bool:
+    """True when failed attempts have reached the retry cap."""
+    if job_abandoned(job):
+        return True
+    if not job_submit_failed(job):
+        return False
+    return submit_attempt_count(job) >= submit_max_attempts()
+
+
+def is_permanent_submit_failure(exc: BaseException | str) -> bool:
+    """Failures unlikely to self-heal (still counted toward the retry cap)."""
+    msg = str(exc).lower()
+    needles = (
+        "invalid image file",
+        "custom_validation_failed",
+        "no companion png",
+        "cannot build api prompt",
+        "workflow missing",
+        "shape missing",
+        "quarantined template",
+        "not a litegraph workflow",
+    )
+    return any(n in msg for n in needles)
+
+
+def abandon_submit_failure(
+    job: dict[str, Any],
+    *,
+    error: str,
+    server: str = "",
+    previous_status: str = "error",
+    attempts: Optional[int] = None,
+) -> None:
+    """Mark a job abandoned so hourly/pending-only will never retry it."""
+    prev = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    n = int(attempts if attempts is not None else submit_attempt_count(job) or submit_max_attempts())
+    job["submit"] = {
+        "status": "abandoned",
+        "error": str(error),
+        "attempts": n,
+        "max_attempts": submit_max_attempts(),
+        "abandoned_at": utc_now(),
+        "abandoned_from": previous_status,
+        "attempted_at": utc_now(),
+        "comfy_server": server or str(prev.get("comfy_server") or ""),
+    }
+
+
+def record_submit_failure(
+    job: dict[str, Any],
+    *,
+    error: str,
+    server: str = "",
+) -> str:
+    """
+    Record a failed submit attempt.
+
+    Increments ``submit.attempts``. Returns ``\"error\"`` while retries remain,
+    otherwise marks abandoned and returns ``\"abandoned\"``.
+    """
+    prev = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    attempts = submit_attempt_count(job) + 1
+    max_attempts = submit_max_attempts()
+    if attempts >= max_attempts:
+        abandon_submit_failure(
+            job,
+            error=str(error),
+            server=server,
+            previous_status=str(prev.get("status") or "error"),
+            attempts=attempts,
+        )
+        return "abandoned"
+    job["submit"] = {
+        "status": "error",
+        "error": str(error),
+        "attempts": attempts,
+        "max_attempts": max_attempts,
+        "attempted_at": utc_now(),
+        "comfy_server": server or str(prev.get("comfy_server") or ""),
+        "retryable": True,
+        "permanent_hint": is_permanent_submit_failure(error),
+    }
+    return "error"
+
+
 def job_pending_submit(job: dict[str, Any]) -> bool:
-    return not job_already_submitted(job) and not job_abandoned(job)
+    if job_already_submitted(job) or job_abandoned(job):
+        return False
+    if job_submit_failed(job):
+        return submit_attempt_count(job) < submit_max_attempts()
+    return True
 
 
 def png_path_for_binding(asset_path: Path) -> Path:
@@ -2929,6 +3150,138 @@ def default_workspace_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def _running_in_docker() -> bool:
+    return Path("/.dockerenv").exists()
+
+
+def shape_factory_repo_root() -> Path:
+    """
+    Repo (or Docker /workspace) root that owns `.data/`.
+
+    Layouts:
+    - Host: ``<repo>/workspace/scripts/shape_factory.py`` → ``<repo>``
+    - Docker bind: ``/workspace/ws_scripts/shape_factory.py`` → ``/workspace``
+      (``parents[2]`` would be ``/``, which must not be treated as the repo)
+    """
+    here = Path(__file__).resolve()
+    scripts_dir = here.parent
+    parent = scripts_dir.parent  # workspace/ or /workspace
+
+    def _has_shapes(root: Path) -> bool:
+        return (root / ".data" / "shapes").is_dir()
+
+    # Docker bind of workspace/scripts → /workspace/ws_scripts (data next to it).
+    if scripts_dir.name == "ws_scripts":
+        if _has_shapes(parent) or (parent / ".data").is_dir():
+            return parent
+        return parent
+    # Host checkout: <repo>/workspace/scripts → <repo> (not workspace/, even if an
+    # empty workspace/.data directory exists from other tooling).
+    if scripts_dir.name == "scripts" and parent.name == "workspace":
+        return parent.parent
+    for cand in (Path("/workspace"), here.parents[2] if len(here.parents) > 2 else parent):
+        if _has_shapes(cand) or (cand / ".data").is_dir():
+            return cand
+    return parent.parent if parent.name == "workspace" else parent
+
+
+def hostify_repo_path(raw: str | Path) -> Path:
+    """Map container paths (/workspace/...) to host paths when running outside Docker."""
+    text = str(raw or "").strip()
+    if not text:
+        return Path(text)
+    # Inside the container, /workspace/... is already authoritative — rewriting via
+    # parents[2] (often "/") corrupts paths to "/.data/..." and breaks submit/replay.
+    if _running_in_docker() and text.startswith("/workspace/"):
+        return Path(text).expanduser()
+
+    # Prefer explicit repo .data over workspace/.data for factory metadata.
+    repo_root = shape_factory_repo_root()
+    repo_data = repo_root / ".data"
+    workspace = default_workspace_root()
+    comfy_user = Path("/home/yuji/comfyui-runpod-data/comfyui_user")
+    output_root = Path("/home/yuji/comfyui-runpod-data/output")
+
+    if text.startswith("/workspace/.data/") or text == "/workspace/.data":
+        rel = text[len("/workspace/.data") :].lstrip("/")
+        return (repo_data / rel).resolve() if rel else repo_data.resolve()
+    if text.startswith("/workspace/comfyui_user/") or text == "/workspace/comfyui_user":
+        rel = text[len("/workspace/comfyui_user") :].lstrip("/")
+        return (comfy_user / rel).resolve() if rel else comfy_user.resolve()
+    if text.startswith("/workspace/output/") or text == "/workspace/output":
+        rel = text[len("/workspace/output") :].lstrip("/")
+        return (output_root / rel).resolve() if rel else output_root.resolve()
+    if text.startswith("/workspace/"):
+        rel = text[len("/workspace/") :]
+        # Prefer data-root comfyui_user when the workspace copy is empty/missing.
+        if rel.startswith("comfyui_user/") or rel == "comfyui_user":
+            sub = rel[len("comfyui_user") :].lstrip("/")
+            cand = (comfy_user / sub).resolve() if sub else comfy_user.resolve()
+            if cand.exists() or not (workspace / "comfyui_user").exists():
+                return cand
+        return (workspace / rel).resolve()
+    return Path(text).expanduser()
+
+
+_JOB_PATH_FIELDS = (
+    "pools_path",
+    "shape_path",
+    "template_path",
+    "generated_workflow_path",
+    "prompt_seed_png",
+    "recipe_output_path",
+)
+
+
+def hostify_job_paths(job: dict[str, Any]) -> bool:
+    """Rewrite /workspace job path fields to host paths. Returns True if any field changed."""
+    changed = False
+    for key in _JOB_PATH_FIELDS:
+        raw = job.get(key)
+        if not isinstance(raw, str) or "/workspace" not in raw:
+            continue
+        mapped = str(hostify_repo_path(raw))
+        if mapped != raw:
+            job[key] = mapped
+            changed = True
+    dep = job.get("deposit")
+    if isinstance(dep, dict):
+        for key in ("index_path",):
+            raw = dep.get(key)
+            if isinstance(raw, str) and "/workspace" in raw:
+                mapped = str(hostify_repo_path(raw))
+                if mapped != raw:
+                    dep[key] = mapped
+                    changed = True
+        videos = dep.get("videos")
+        if isinstance(videos, list):
+            new_videos: list[str] = []
+            vids_changed = False
+            for item in videos:
+                if isinstance(item, str) and "/workspace" in item:
+                    mapped = str(hostify_repo_path(item))
+                    new_videos.append(mapped)
+                    if mapped != item:
+                        vids_changed = True
+                else:
+                    new_videos.append(item)
+            if vids_changed:
+                dep["videos"] = new_videos
+                changed = True
+    bindings = job.get("bindings")
+    if isinstance(bindings, dict):
+        for _slot, meta in bindings.items():
+            if not isinstance(meta, dict):
+                continue
+            raw = meta.get("path")
+            if isinstance(raw, str) and "/workspace" in raw:
+                mapped = str(hostify_repo_path(raw))
+                if mapped != raw:
+                    meta["path"] = mapped
+                    changed = True
+    return changed
+
+
 def resolve_job_asset_path(
     raw: str,
     *,
@@ -2939,7 +3292,7 @@ def resolve_job_asset_path(
 
     ws = workspace_root or default_workspace_root()
     output_root = data_root / "output"
-    sf_data = data_root if (data_root / "shapes").is_dir() else (Path(__file__).resolve().parents[2] / ".data")
+    sf_data = data_root if (data_root / "shapes").is_dir() else (shape_factory_repo_root() / ".data")
     return resolve_existing_path(
         raw,
         output_root=output_root,
@@ -3022,6 +3375,7 @@ def ensure_job_workflow_path(
     workflow_dir: Optional[Path] = None,
 ) -> Path:
     """Resolve generated_workflow_path on disk, rebuilding from job metadata when missing."""
+    hostify_job_paths(job)
     ws = (workspace_root or default_workspace_root()).expanduser().resolve()
     wf_dir = (workflow_dir or DEFAULT_WORKFLOW_DIR).expanduser().resolve()
     raw = str(job.get("generated_workflow_path") or "").strip()
@@ -3055,7 +3409,7 @@ def submit_job_file(
     dry_run: bool = False,
     force: bool = False,
     pending_only: bool = False,
-    client_id: str = "shape-factory",
+    client_id: str = "shape_factory",
     front: bool = False,
     timeout: int = 120,
     convert_timeout: int = 90,
@@ -3065,16 +3419,39 @@ def submit_job_file(
     """Generate prompt + submit one shape-factory job to ComfyUI."""
     job_path = job_path.expanduser().resolve()
     job = json.loads(job_path.read_text(encoding="utf-8"))
+    if hostify_job_paths(job):
+        atomic_write_json(job_path, job)
+    # Cap retries: error jobs that hit max attempts become abandoned.
+    submit_block = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    if str(submit_block.get("status") or "") == "error" and job_retries_exhausted(job):
+        abandon_submit_failure(
+            job,
+            error=str(submit_block.get("error") or "submit retries exhausted"),
+            server=str(submit_block.get("comfy_server") or server),
+            previous_status="error",
+            attempts=submit_attempt_count(job),
+        )
+        atomic_write_json(job_path, job)
     job_key = str(job.get("job_key") or job_path.stem.replace(".job", ""))
 
     if pending_only and job_already_submitted(job):
         return {"ok": True, "skipped": True, "reason": "already_submitted", "job_key": job_key, "job_path": str(job_path)}
 
-    if job_abandoned(job):
+    if job_abandoned(job) and not force:
         return {
             "ok": True,
             "skipped": True,
             "reason": "abandoned",
+            "job_key": job_key,
+            "job_path": str(job_path),
+        }
+
+    # Retry error jobs while attempts remain; skip only when exhausted (unless --force).
+    if pending_only and job_submit_failed(job) and job_retries_exhausted(job) and not force:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "submit_error",
             "job_key": job_key,
             "job_path": str(job_path),
         }
@@ -3238,9 +3615,13 @@ def cmd_submit(args: argparse.Namespace) -> int:
     print(f"- Jobs: {len(job_paths)}")
     print(f"- dry_run: {args.dry_run}\n")
 
+    quiet = bool(getattr(args, "quiet", False))
+    max_attempts_override = getattr(args, "max_attempts", None)
+    if isinstance(max_attempts_override, int) and max_attempts_override > 0:
+        os.environ["SHAPE_FACTORY_SUBMIT_MAX_ATTEMPTS"] = str(max_attempts_override)
+    print(f"- max_attempts: {submit_max_attempts()}\n")
     for job_path in job_paths:
         job_key = job_path.stem.replace(".job", "")
-        print(f"## {job_key}")
         try:
             result = submit_job_file(
                 job_path,
@@ -3257,34 +3638,44 @@ def cmd_submit(args: argparse.Namespace) -> int:
                 quarantine_path=quarantine_path,
             )
             if result.get("skipped"):
+                reason = str(result.get("reason") or "skipped")
+                if quiet and reason in {"already_submitted", "submit_error", "abandoned"}:
+                    skipped += 1
+                    continue
+                print(f"## {job_key}")
                 pid = result.get("prompt_id")
                 if pid:
                     print(f"skip (already submitted prompt_id={pid})")
                 else:
-                    print(f"skip ({result.get('reason')})")
+                    print(f"skip ({reason})")
                 skipped += 1
             elif result.get("dry_run"):
+                print(f"## {job_key}")
                 print(f"dry_run workflow={result.get('workflow_path')}")
                 if result.get("prompt_seed_png"):
                     print(f"  prompt_seed_png={result['prompt_seed_png']}")
                 submitted += 1
             else:
+                print(f"## {job_key}")
                 print(f"queued prompt_id={result.get('prompt_id')} source={result.get('prompt_source')}")
                 print(f"  prompt={result.get('prompt_path')}")
                 print(f"  submit={result.get('submit_path')}")
                 submitted += 1
         except Exception as exc:
+            print(f"## {job_key}")
             print(f"error: {exc}", file=sys.stderr)
             try:
                 job = json.loads(job_path.read_text(encoding="utf-8"))
-                status = "abandoned" if isinstance(exc, FileNotFoundError) else "error"
-                job["submit"] = {
-                    "status": status,
-                    "error": str(exc),
-                    "attempted_at": utc_now(),
-                    "comfy_server": server,
-                }
+                outcome = record_submit_failure(job, error=str(exc), server=server)
                 atomic_write_json(job_path, job)
+                if quiet and outcome == "abandoned":
+                    pass
+                elif not quiet:
+                    attempts = submit_attempt_count(job)
+                    print(
+                        f"  submit_{outcome} attempts={attempts}/{submit_max_attempts()}",
+                        file=sys.stderr,
+                    )
             except Exception:
                 pass
             failed += 1
@@ -3564,17 +3955,43 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"- Jobs: {len(job_paths)}")
     print(f"- wait: {bool(args.wait)} deposit: {bool(args.deposit)}\n")
 
+    quiet = bool(getattr(args, "quiet", False))
     while True:
         queue_ids = queue_prompt_ids(server)
-        counts = {"pending": 0, "queued": 0, "running": 0, "complete": 0, "error": 0, "unknown": 0}
+        counts = {
+            "pending": 0,
+            "queued": 0,
+            "running": 0,
+            "complete": 0,
+            "error": 0,
+            "abandoned": 0,
+            "unknown": 0,
+        }
         for job_path in job_paths:
             job = json.loads(job_path.read_text(encoding="utf-8"))
+            if hostify_job_paths(job):
+                atomic_write_json(job_path, job)
+            # Cap retries: promote exhausted error jobs to abandoned.
+            submit_block = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+            if str(submit_block.get("status") or "") == "error" and job_retries_exhausted(job):
+                abandon_submit_failure(
+                    job,
+                    error=str(submit_block.get("error") or "submit retries exhausted"),
+                    server=str(submit_block.get("comfy_server") or server),
+                    previous_status="error",
+                    attempts=submit_attempt_count(job),
+                )
+                atomic_write_json(job_path, job)
             job_key = str(job.get("job_key") or job_path.stem)
             status = update_job_status_from_comfy(job, server=server, data_root=data_root, queue_ids=queue_ids)
+            if status == "completed":
+                status = "complete"
             bucket = status if status in counts else "unknown"
             counts[bucket] = counts.get(bucket, 0) + 1
             atomic_write_json(job_path, job)
             persist_timings(job_path, job, ledger=status in {"complete", "error"})
+            if quiet and status in {"complete", "abandoned", "error"}:
+                continue
             outputs = (job.get("submit") or {}).get("outputs") if isinstance(job.get("submit"), dict) else None
             out_hint = f" outputs={len(outputs)}" if isinstance(outputs, list) else ""
             timing_hint = format_timing_hint(job)
@@ -3616,13 +4033,17 @@ def cmd_deposit(args: argparse.Namespace) -> int:
     skipped = 0
 
     print(f"# Shape factory deposit\n")
+    quiet = bool(getattr(args, "quiet", False))
     for job_path in job_paths:
         job = json.loads(job_path.read_text(encoding="utf-8"))
+        if hostify_job_paths(job):
+            atomic_write_json(job_path, job)
         job_key = str(job.get("job_key") or job_path.stem)
         submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
         status = str(submit.get("status") or "")
         if status != "complete":
-            print(f"skip {job_key} (status={status or 'pending'})")
+            if not quiet or status not in {"error", "abandoned", "pending", ""}:
+                print(f"skip {job_key} (status={status or 'pending'})")
             skipped += 1
             continue
 
@@ -3641,8 +4062,11 @@ def cmd_deposit(args: argparse.Namespace) -> int:
             skipped += 1
             continue
 
-        pools_path = Path(str(job.get("pools_path") or args.pools or "")).expanduser()
-        index_path = Path(args.index or pool_index_path_for_pools(pools_path)).expanduser().resolve()
+        pools_path = hostify_repo_path(str(job.get("pools_path") or args.pools or ""))
+        if args.index:
+            index_path = hostify_repo_path(args.index)
+        else:
+            index_path = hostify_repo_path(pool_index_path_for_pools(pools_path))
         index_doc = load_pool_index(index_path)
         index_doc["updated_at"] = utc_now()
 
@@ -3661,6 +4085,38 @@ def cmd_deposit(args: argparse.Namespace) -> int:
         dep["pools"] = targets
         dep["videos"] = [str(p) for p in video_paths]
         dep["index_path"] = str(index_path)
+
+        # Predicted/hourly jobs can request a disposition stamp on deposit.
+        disp_entry = str(job.get("disposition_entry") or "").strip()
+        if disp_entry and video_paths:
+            try:
+                from shape_factory_disposition import stamp_output_disposition
+
+                note = str(job.get("disposition_note") or "").strip() or (
+                    f"hourly predicted derive job={job_key}"
+                    if str(job.get("rating_kind") or "") == "predicted"
+                    else f"shape_factory job={job_key}"
+                )
+                stamped = []
+                for vp in video_paths:
+                    try:
+                        saved = stamp_output_disposition(
+                            media_abs=vp,
+                            marker_id=disp_entry,
+                            note=note,
+                        )
+                        stamped.append({"path": str(vp), "markers": saved.get("markers")})
+                    except Exception as exc:
+                        if not quiet:
+                            print(f"  disposition_warn {vp.name}: {exc}", file=sys.stderr)
+                if stamped:
+                    dep["disposition"] = {"entry": disp_entry, "outputs": stamped}
+                    if not quiet:
+                        print(f"  disposition={disp_entry} on {len(stamped)} output(s)")
+            except Exception as exc:
+                if not quiet:
+                    print(f"  disposition_skip: {exc}", file=sys.stderr)
+
         dep_t1 = time.time()
         dep_started = dep.get("started_ts")
         if isinstance(dep_started, (int, float)):
@@ -3794,7 +4250,7 @@ def build_parser() -> argparse.ArgumentParser:
     gen = sub.add_parser("generate", help="Generate workflows by binding pool picks to a shape")
     gen.add_argument("--shape", required=True, help="shape.yaml path")
     gen.add_argument("--pools", required=True, help="pools.yaml path")
-    gen.add_argument("--pick", choices=["zip", "product", "replay", "derive", "extend"], default="zip", help="Combine pools: zip (default), product, replay/derive/extend (with --picks-json)")
+    gen.add_argument("--pick", choices=["zip", "product", "replay", "derive", "extend", "pool_product"], default="zip", help="Combine pools: zip (default), product, replay/derive/extend/pool_product (with --picks-json)")
     gen.add_argument("--limit", type=int, default=4, help="Max jobs to generate")
     gen.add_argument("--pick-index", type=int, default=0, dest="pick_index", help="Skip first N zip combos (replay chain N)")
     gen.add_argument(
@@ -3868,7 +4324,18 @@ def build_parser() -> argparse.ArgumentParser:
     sub_p.add_argument(
         "--pending-only",
         action="store_true",
-        help="Only submit jobs that have never been queued (no prompt_id yet)",
+        help="Prefer never-queued jobs; also retry failed jobs until SHAPE_FACTORY_SUBMIT_MAX_ATTEMPTS",
+    )
+    sub_p.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress per-job skip noise (already_submitted / abandoned / submit_error)",
+    )
+    sub_p.add_argument(
+        "--max-attempts",
+        type=int,
+        default=None,
+        help="Override SHAPE_FACTORY_SUBMIT_MAX_ATTEMPTS for this run (failed submits before abandon)",
     )
     sub_p.add_argument("--dry-run", action="store_true", help="Validate jobs only; do not call Comfy")
     sub_p.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT), help="Host Comfy bind data root")
@@ -3903,6 +4370,7 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--poll", type=float, default=5.0, help="Poll interval when --wait")
     st.add_argument("--timeout", type=int, default=7200, help="Max seconds to wait")
     st.add_argument("--deposit", action="store_true", help="Run deposit after status update")
+    st.add_argument("--quiet", action="store_true", help="Hide complete/abandoned/error per-job lines")
     st.set_defaults(func=cmd_status)
 
     dep = sub.add_parser("deposit", help="Register completed job outputs into pool index")
@@ -3914,6 +4382,7 @@ def build_parser() -> argparse.ArgumentParser:
     dep.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT), help="Host Comfy bind data root")
     dep.add_argument("--pools", help="pools.yaml (default from job metadata)")
     dep.add_argument("--index", help="Override index.json path")
+    dep.add_argument("--quiet", action="store_true", help="Hide routine skip lines for incomplete jobs")
     dep.set_defaults(func=cmd_deposit)
 
     pipe = sub.add_parser("pipeline", help="Run multi-step shape pipelines")
@@ -4152,6 +4621,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_heuristics_subparser(sub)
     add_rating_sampler_subparser(sub)
     add_tags_subparser(sub)
+    add_source_facets_subparser(sub)
     add_seed_sources_subparser(sub)
     add_backfill_subparser(sub)
 

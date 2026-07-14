@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import support  # noqa: F401  — injects workspace/scripts onto sys.path
 from shape_factory_work_items import (
     WORK_ITEMS_SCHEMA,
     build_idempotency_key,
@@ -17,6 +18,8 @@ from shape_factory_work_items import (
     load_work_items_doc,
     record_run_step_work_item,
     route_for_step,
+    set_work_item_priority,
+    update_work_item,
     work_items_for_item,
 )
 
@@ -33,9 +36,9 @@ class WorkItemsSchemaTests(unittest.TestCase):
             pool="extend",
             source_group_id="og:stem:foo",
             factory_family="FB9_GEX2",
-            recipe="idle-small-motions",
+            recipe="catalog-default",
         )
-        self.assertEqual(key, "extend:og:stem:foo:FB9_GEX2:idle-small-motions")
+        self.assertEqual(key, "extend:og:stem:foo:FB9_GEX2:catalog-default")
 
 
 class WorkItemsIndexTests(unittest.TestCase):
@@ -48,7 +51,7 @@ class WorkItemsIndexTests(unittest.TestCase):
                 disposition_entry="advance",
                 disposition_step="advance.extend",
                 factory_family="FB9_GEX2",
-                recipe="idle-small-motions",
+                recipe="catalog-default",
                 work_items_index_path=path,
             )
             b = create_work_item(
@@ -57,7 +60,7 @@ class WorkItemsIndexTests(unittest.TestCase):
                 disposition_entry="advance",
                 disposition_step="advance.vary",
                 factory_family="FB9_GEX2",
-                recipe="idle-small-motions",
+                recipe="catalog-default",
                 work_items_index_path=path,
                 priority="front",
             )
@@ -114,7 +117,63 @@ class WorkItemsIndexTests(unittest.TestCase):
                 priority="front",
             )
             self.assertTrue(reused["reused"])
+            self.assertTrue(reused.get("upgraded"))
             self.assertEqual(reused["item"]["priority"], "front")
+
+    def test_later_demotes_priority_on_reuse(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "work_items_index.json"
+            create_work_item(
+                source_relpath="og/clip.mp4",
+                pool="extend",
+                disposition_entry="advance",
+                disposition_step="advance.extend",
+                work_items_index_path=path,
+                priority="front",
+            )
+            reused = create_work_item(
+                source_relpath="og/clip.mp4",
+                pool="extend",
+                disposition_entry="advance",
+                disposition_step="advance.extend",
+                work_items_index_path=path,
+                priority="normal",
+            )
+            self.assertTrue(reused["reused"])
+            self.assertTrue(reused.get("demoted"))
+            self.assertEqual(reused["item"]["priority"], "normal")
+
+    def test_priority_reshape_skips_running(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "work_items_index.json"
+            created = create_work_item(
+                source_relpath="og/clip.mp4",
+                pool="extend",
+                disposition_entry="advance",
+                work_items_index_path=path,
+                priority="front",
+            )
+            wid = created["item"]["work_id"]
+            update_work_item(wid, work_items_index_path=path, status="running")
+            out = set_work_item_priority(wid, priority="normal", work_items_index_path=path)
+            self.assertTrue(out.get("skipped_running"))
+            self.assertFalse(out.get("changed"))
+            self.assertEqual(out["item"]["priority"], "front")
+
+    def test_cancel_skips_running(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "work_items_index.json"
+            created = create_work_item(
+                source_relpath="og/clip.mp4",
+                pool="extend",
+                disposition_entry="advance",
+                work_items_index_path=path,
+            )
+            wid = created["item"]["work_id"]
+            update_work_item(wid, work_items_index_path=path, status="running")
+            out = cancel_work_item(wid, work_items_index_path=path, reason="test")
+            self.assertTrue(out.get("skipped_running"))
+            self.assertEqual(out["item"]["status"], "running")
 
     def test_cancel(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -148,6 +207,23 @@ class WorkItemsIndexTests(unittest.TestCase):
             self.assertEqual(pools, {"extend", "vary"})
             self.assertTrue(all(i["priority"] == "front" for i in out["items"]))
 
+    def test_create_routes_batch_later_demotes_prior_front(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "work_items_index.json"
+            create_routes_batch(
+                source_relpath="og/clip.mp4",
+                routes=[{"step_id": "advance.extend"}, {"step_id": "advance.vary"}],
+                work_items_index_path=path,
+                queue_now=True,
+            )
+            later = create_routes_batch(
+                source_relpath="og/clip.mp4",
+                routes=[{"step_id": "advance.extend"}, {"step_id": "advance.vary"}],
+                work_items_index_path=path,
+                queue_now=False,
+            )
+            self.assertEqual(later["demoted"], 2)
+            self.assertTrue(all(i["priority"] == "normal" for i in later["items"]))
     def test_record_run_step_sets_queued(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "work_items_index.json"

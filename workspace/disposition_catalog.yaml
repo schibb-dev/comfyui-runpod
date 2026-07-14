@@ -41,7 +41,7 @@ promotion_rules:
     secondary: [refine, extract]
   derived_only:
     explicit_quality_missing: true
-    promote: [investigate]
+    promote: [derived, investigate]
     secondary: []
 
 markers:
@@ -109,6 +109,16 @@ markers:
     order: 6
     hook: sampler_pin
     promote_when: []
+
+  - id: derived
+    kind: entry
+    process: investigate
+    label: Derived (predicted)
+    hint: Queued from predicted/inferred rating — rate the new output to validate the prediction
+    enabled: true
+    order: 7
+    hook: none
+    promote_when: [derived_only]
 
   - id: refine.aspect
     kind: step

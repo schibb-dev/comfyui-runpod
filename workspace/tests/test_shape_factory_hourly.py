@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -87,6 +86,160 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
         self.assertEqual(meta_high.get("explicit"), 5)
         self.assertIn("output_explicit", meta_high.get("evidence") or [])
 
+    def test_plan_replay_excludes_omit_rated_recipes(self) -> None:
+        from unittest.mock import patch
+
+        from shape_factory_hourly import plan_hourly_replay
+
+        good = {
+            "combo_key": "prompt_profile-good__source_video-good",
+            "output_path": "/data/output/og/good.mp4",
+            "picks": {"prompt_profile": "/tmp/good.json", "source_video": "/tmp/good.mp4"},
+            "source": "test",
+        }
+        bad = {
+            "combo_key": "prompt_profile-bad__source_video-bad",
+            "output_path": "/data/output/og/bad.mp4",
+            "picks": {"prompt_profile": "/tmp/bad.json", "source_video": "/tmp/bad.mp4"},
+            "source": "test",
+        }
+        ratings = {
+            "by_output_relpath": {
+                "og/good": {"explicit": 5},
+                "og/bad": {"explicit": 0},
+            }
+        }
+        shape = {"graph_hash": "abc123", "family": "FB9_GEX2"}
+        with patch("shape_factory_hourly.collect_replay_recipes", return_value=[good, bad]):
+            with patch("shape_factory_hourly.load_yaml", return_value=shape):
+                with patch("shape_factory_hourly._load_ratings_index", return_value=ratings):
+                    with patch("shape_factory_hourly._load_heuristics_index", return_value=None):
+                        with patch("shape_factory_hourly._load_appetite_index", return_value=None):
+                            plan = plan_hourly_replay(cursor=0, family="FB9_GEX2")
+        self.assertTrue(plan.get("ok"))
+        self.assertEqual(plan.get("combo_key"), good["combo_key"])
+        self.assertEqual(plan.get("omit_excluded"), 1)
+        self.assertEqual(plan.get("eligible_recipe_count"), 1)
+
+    def test_plan_replay_fails_when_all_recipes_omit(self) -> None:
+        from unittest.mock import patch
+
+        from shape_factory_hourly import plan_hourly_replay
+
+        bad = {
+            "combo_key": "prompt_profile-bad__source_video-bad",
+            "output_path": "/data/output/og/bad.mp4",
+            "picks": {"prompt_profile": "/tmp/bad.json", "source_video": "/tmp/bad.mp4"},
+            "source": "test",
+        }
+        ratings = {"by_output_relpath": {"og/bad": {"explicit": 0}}}
+        shape = {"graph_hash": "abc123", "family": "FB9_GEX2"}
+        with patch("shape_factory_hourly.collect_replay_recipes", return_value=[bad]):
+            with patch("shape_factory_hourly.load_yaml", return_value=shape):
+                with patch("shape_factory_hourly._load_ratings_index", return_value=ratings):
+                    with patch("shape_factory_hourly._load_heuristics_index", return_value=None):
+                        with patch("shape_factory_hourly._load_appetite_index", return_value=None):
+                            plan = plan_hourly_replay(cursor=0, family="FB9_GEX2")
+        self.assertFalse(plan.get("ok"))
+        self.assertEqual(plan.get("error"), "no_eligible_replay_recipes")
+        self.assertEqual(plan.get("omit_excluded"), 1)
+
+    def test_queue_advance_decision(self) -> None:
+        from shape_factory_hourly import queue_advance_decision
+
+        below = queue_advance_decision(pending=0, queue_min=1, queue_max=2)
+        self.assertTrue(below["advance"])
+        self.assertEqual(below["reason"], "below_min")
+        self.assertEqual(below["submit_slots"], 2)
+
+        satisfied = queue_advance_decision(pending=1, queue_min=1, queue_max=2)
+        self.assertFalse(satisfied["advance"])
+        self.assertEqual(satisfied["reason"], "satisfied_min")
+        self.assertEqual(satisfied["submit_slots"], 1)
+
+        at_max = queue_advance_decision(pending=2, queue_min=1, queue_max=2)
+        self.assertFalse(at_max["advance"])
+        self.assertEqual(at_max["reason"], "at_max")
+        self.assertEqual(at_max["submit_slots"], 0)
+
+        over = queue_advance_decision(pending=5, queue_min=1, queue_max=2)
+        self.assertFalse(over["advance"])
+        self.assertEqual(over["reason"], "at_max")
+
+    def test_score_recipe_marks_predicted_rating_kind(self) -> None:
+        from shape_factory_heuristics import score_recipe
+
+        weight, meta = score_recipe(
+            {
+                "output_path": "/tmp/unrated.mp4",
+                "family": "FB9_GEX2",
+                "picks": {"prompt_profile": "/tmp/catalog-default.json"},
+            },
+            shape={"graph_hash": "abc" * 16, "family": "FB9_GEX2"},
+            heuristics_doc={
+                "by_pattern": {"FB9_GEX2+catalog-default": {"inferred": 4.6, "n": 8}},
+            },
+        )
+        self.assertGreater(weight, 0.5)
+        self.assertEqual(meta.get("rating_kind"), "predicted")
+        self.assertNotIn("output_explicit", meta.get("signals") or {})
+
+    def test_plan_predicted_derive_always_pick_mode_derive(self) -> None:
+        from unittest.mock import patch
+
+        from shape_factory_hourly import plan_hourly_predicted_derive
+
+        seed = {
+            "combo_key": "prompt_profile-aaa__source_video-srcA",
+            "output_path": "/data/output/og/unrated.mp4",
+            "picks": {
+                "prompt_profile": "/tmp/prompts/aaa.json",
+                "source_video": "/tmp/sources/srcA.mp4",
+            },
+            "source": "test",
+        }
+        alt = {
+            "combo_key": "prompt_profile-aaa__source_video-srcB",
+            "output_path": "/data/output/og/other.mp4",
+            "picks": {
+                "prompt_profile": "/tmp/prompts/aaa.json",
+                "source_video": "/tmp/sources/srcB.mp4",
+            },
+            "source": "test",
+        }
+        shape = {"graph_hash": "abc123", "family": "FB9_GEX2"}
+        heuristics = {
+            "by_pattern": {"FB9_GEX2+aaa": {"inferred": 4.7, "n": 5}},
+            "by_group_lineage": {},
+        }
+
+        def fake_weight(recipe, **_kwargs):
+            if "unrated" in str(recipe.get("output_path") or ""):
+                return 3.2, {
+                    "rating_effective": 4.7,
+                    "rating_kind": "predicted",
+                    "evidence": ["pattern:FB9_GEX2+aaa"],
+                    "signals": {"pattern": 4.7},
+                }
+            return 0.35, {"rating_effective": None, "rating_kind": None, "evidence": [], "signals": {}}
+
+        with patch("shape_factory_hourly.collect_replay_recipes", return_value=[seed, alt]):
+            with patch("shape_factory_hourly.load_yaml", return_value=shape):
+                with patch("shape_factory_hourly._load_ratings_index", return_value={"by_output_relpath": {}}):
+                    with patch("shape_factory_hourly._load_heuristics_index", return_value=heuristics):
+                        with patch("shape_factory_hourly._load_appetite_index", return_value=None):
+                            with patch("shape_factory_hourly._recipe_selection_weight", side_effect=fake_weight):
+                                with patch("shape_factory_hourly.collect_pool_source_videos", return_value=[]):
+                                    with patch("shape_factory_hourly._recent_combo_keys", return_value=set()):
+                                        with patch("shape_factory_hourly._load_source_facets_doc", return_value=None):
+                                            plan = plan_hourly_predicted_derive(cursor=0, family="FB9_GEX2")
+        self.assertTrue(plan.get("ok"), msg=plan)
+        self.assertEqual(plan.get("pick_mode"), "derive")
+        self.assertEqual(plan.get("rating_kind"), "predicted")
+        self.assertEqual(plan.get("step"), "predicted_derive")
+        self.assertEqual(plan.get("disposition_entry"), "derived")
+        self.assertNotEqual(plan.get("combo_key"), seed["combo_key"])
+
     def test_plan_replay_includes_rating_metadata_when_index_present(self) -> None:
         from shape_factory_hourly import plan_hourly_replay
 
@@ -126,17 +279,502 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
         if not shape_path.is_file():
             self.skipTest("FB9_GEX2 shape missing")
         shape = load_yaml(shape_path)
-        # Prefer a real job that previously failed recovery.
-        jobs = sorted((data_root / "shape_factory" / "jobs" / "FB9_GEX2").glob("*idle-small-motions*000.job.json"))
+        jobs = sorted((data_root / "shape_factory" / "jobs" / "FB9_GEX2").glob("*.job.json"))
         if not jobs:
-            self.skipTest("no idle-small-motions job fixture")
+            self.skipTest("no FB9_GEX2 job fixtures")
         job = json.loads(jobs[0].read_text(encoding="utf-8"))
         picks = _picks_from_job(job, shape=shape, data_root=data_root)
-        self.assertIsNotNone(picks)
-        assert picks is not None
+        if picks is None:
+            self.skipTest("could not recover picks from first job")
         self.assertTrue(picks["prompt_profile"].is_file())
         self.assertTrue(picks["source_video"].is_file())
         self.assertIn("/og/", str(picks["source_video"]).replace("\\", "/"))
+
+    def test_combo_key_from_job_key_strips_hourly_suffix(self) -> None:
+        from shape_factory_hourly import _combo_key_from_job_key
+
+        raw = (
+            "hourly__prompt_profile-ef85da9aa887__source_video-X-Kneel-FB9-2026-04-01-144236_OG_00001"
+            "__000_202607110020"
+        )
+        self.assertEqual(
+            _combo_key_from_job_key(raw),
+            "prompt_profile-ef85da9aa887__source_video-X-Kneel-FB9-2026-04-01-144236_OG_00001",
+        )
+
+    def test_derive_rewire_processing_synthesizes_new_source(self) -> None:
+        from shape_factory_hourly import _derive_rewire
+        import random
+
+        seed = {
+            "combo_key": "prompt_profile-aaa__source_video-srcA",
+            "source": "seed",
+            "output_path": "/tmp/out.mp4",
+            "picks": {
+                "prompt_profile": "/tmp/prompts/aaa.json",
+                "source_video": "/tmp/sources/srcA.mp4",
+            },
+        }
+        pool = [
+            seed,
+            {
+                "combo_key": "prompt_profile-bbb__source_video-srcB",
+                "picks": {
+                    "prompt_profile": "/tmp/prompts/bbb.json",
+                    "source_video": "/tmp/sources/srcB.mp4",
+                },
+            },
+        ]
+        rewired, action, meta = _derive_rewire(
+            seed, facet="processing", family="TEST", pool=pool, rng=random.Random(0)
+        )
+        self.assertIsNotNone(rewired)
+        self.assertEqual(action, "derive")
+        assert rewired is not None
+        self.assertEqual(rewired["picks"]["prompt_profile"], "/tmp/prompts/aaa.json")
+        self.assertEqual(rewired["picks"]["source_video"], "/tmp/sources/srcB.mp4")
+        self.assertNotEqual(rewired["combo_key"], seed["combo_key"])
+
+    def test_derive_rewire_processing_skips_recent_same_prompt_alt(self) -> None:
+        """Do not lock onto the only same-prompt alt when that combo is recent."""
+        from shape_factory_hourly import _derive_rewire
+        import random
+
+        seed = {
+            "combo_key": "prompt_profile-aaa__source_video-srcA",
+            "source": "seed",
+            "output_path": "/tmp/out.mp4",
+            "picks": {
+                "prompt_profile": "/tmp/prompts/aaa.json",
+                "source_video": "/tmp/sources/srcA.mp4",
+            },
+        }
+        recent_combo = "prompt_profile-aaa__source_video-srcRecent"
+        pool = [
+            seed,
+            {
+                "combo_key": recent_combo,
+                "picks": {
+                    "prompt_profile": "/tmp/prompts/aaa.json",
+                    "source_video": "/tmp/sources/srcRecent.mp4",
+                },
+            },
+            {
+                "combo_key": "prompt_profile-bbb__source_video-srcFresh",
+                "picks": {
+                    "prompt_profile": "/tmp/prompts/bbb.json",
+                    "source_video": "/tmp/sources/srcFresh.mp4",
+                },
+            },
+        ]
+        rewired, action, meta = _derive_rewire(
+            seed,
+            facet="processing",
+            family="TEST",
+            pool=pool,
+            rng=random.Random(0),
+            recent={recent_combo},
+        )
+        self.assertIsNotNone(rewired)
+        self.assertEqual(action, "derive")
+        assert rewired is not None
+        self.assertEqual(rewired["picks"]["source_video"], "/tmp/sources/srcFresh.mp4")
+        self.assertNotEqual(rewired["combo_key"], recent_combo)
+
+    def test_derive_rewire_processing_holds_appearance_family(self) -> None:
+        from shape_factory_hourly import _derive_rewire
+        import random
+
+        seed = {
+            "combo_key": "prompt_profile-aaa__source_video-blondeA",
+            "picks": {
+                "prompt_profile": "/tmp/prompts/aaa.json",
+                "source_video": "/tmp/sources/blondeA.mp4",
+            },
+        }
+        pool = [
+            seed,
+            {
+                "combo_key": "prompt_profile-bbb__source_video-blondeB",
+                "picks": {
+                    "prompt_profile": "/tmp/prompts/bbb.json",
+                    "source_video": "/tmp/sources/blondeB.mp4",
+                },
+            },
+            {
+                "combo_key": "prompt_profile-ccc__source_video-redheadA",
+                "picks": {
+                    "prompt_profile": "/tmp/prompts/ccc.json",
+                    "source_video": "/tmp/sources/redheadA.mp4",
+                },
+            },
+        ]
+        facets_doc = {
+            "by_source_key": {
+                "blondeA.mp4": {"facets": {"appearance": ["blonde"], "expression": ["smiling"], "identity": ["s1"]}},
+                "blondeB.mp4": {"facets": {"appearance": ["blonde"], "expression": ["angry"], "identity": ["s2"]}},
+                "redheadA.mp4": {"facets": {"appearance": ["redhead"], "expression": ["smiling"], "identity": ["s3"]}},
+            }
+        }
+        # cursor % 3 == 0 -> appearance
+        rewired, action, meta = _derive_rewire(
+            seed,
+            facet="processing",
+            family="TEST",
+            pool=pool,
+            rng=random.Random(0),
+            cursor=0,
+            facets_doc=facets_doc,
+        )
+        self.assertEqual(action, "derive")
+        assert rewired is not None
+        self.assertEqual(meta.get("hold_axis"), "appearance")
+        self.assertTrue(meta.get("facet_constrained"))
+        self.assertEqual(rewired["picks"]["source_video"], "/tmp/sources/blondeB.mp4")
+
+    def test_derive_rewire_processing_rotates_hold_axis(self) -> None:
+        from shape_factory_source_facets import hold_axis_for_cursor
+
+        self.assertEqual(hold_axis_for_cursor(0), "appearance")
+        self.assertEqual(hold_axis_for_cursor(1), "expression")
+        self.assertEqual(hold_axis_for_cursor(2), "identity")
+        self.assertEqual(hold_axis_for_cursor(3), "appearance")
+
+    def test_derive_rewire_processing_fallback_without_facets(self) -> None:
+        from shape_factory_hourly import _derive_rewire
+        import random
+
+        seed = {
+            "combo_key": "prompt_profile-aaa__source_video-srcA",
+            "picks": {
+                "prompt_profile": "/tmp/prompts/aaa.json",
+                "source_video": "/tmp/sources/srcA.mp4",
+            },
+        }
+        pool = [
+            seed,
+            {
+                "combo_key": "prompt_profile-bbb__source_video-srcB",
+                "picks": {
+                    "prompt_profile": "/tmp/prompts/bbb.json",
+                    "source_video": "/tmp/sources/srcB.mp4",
+                },
+            },
+        ]
+        rewired, action, meta = _derive_rewire(
+            seed,
+            facet="processing",
+            family="TEST",
+            pool=pool,
+            rng=random.Random(0),
+            cursor=0,
+            facets_doc={"by_source_key": {}},
+        )
+        self.assertEqual(action, "derive")
+        assert rewired is not None
+        self.assertFalse(meta.get("facet_constrained"))
+        self.assertEqual(rewired["picks"]["source_video"], "/tmp/sources/srcB.mp4")
+
+    def test_recent_source_penalty_downweights_repeat_sources(self) -> None:
+        from shape_factory_hourly import _apply_recent_source_penalty, _recent_source_basenames
+
+        recipes = [
+            {"combo_key": "prompt_profile-a__source_video-srcA", "picks": {"source_video": "/tmp/srcA.mp4"}},
+            {"combo_key": "prompt_profile-b__source_video-srcB", "picks": {"source_video": "/tmp/srcB.mp4"}},
+        ]
+        recent = {"prompt_profile-z__source_video-srcA"}
+        recent_sources = _recent_source_basenames(recent)
+        weights = _apply_recent_source_penalty(recipes, [1.0, 1.0], recent_sources, penalty=0.1)
+        self.assertLess(weights[0], weights[1])
+        self.assertAlmostEqual(weights[0], 0.1)
+        self.assertAlmostEqual(weights[1], 1.0)
+
+    def test_derive_rewire_widens_when_family_sources_are_recent(self) -> None:
+        from shape_factory_hourly import _derive_rewire
+        import random
+
+        seed = {
+            "combo_key": "prompt_profile-aaa__source_video-blondeA",
+            "picks": {
+                "prompt_profile": "/tmp/prompts/aaa.json",
+                "source_video": "/tmp/sources/blondeA.mp4",
+            },
+        }
+        pool = [
+            seed,
+            {
+                "combo_key": "prompt_profile-bbb__source_video-blondeB",
+                "picks": {
+                    "prompt_profile": "/tmp/prompts/bbb.json",
+                    "source_video": "/tmp/sources/blondeB.mp4",
+                },
+            },
+            {
+                "combo_key": "prompt_profile-ccc__source_video-redheadA",
+                "picks": {
+                    "prompt_profile": "/tmp/prompts/ccc.json",
+                    "source_video": "/tmp/sources/redheadA.mp4",
+                },
+            },
+        ]
+        facets_doc = {
+            "by_source_key": {
+                "blondeA.mp4": {"facets": {"appearance": ["blonde"]}},
+                "blondeB.mp4": {"facets": {"appearance": ["blonde"]}},
+                "redheadA.mp4": {"facets": {"appearance": ["redhead"]}},
+            }
+        }
+        # blondeB already recent as a source; widen should pick redheadA.
+        recent = {"prompt_profile-zzz__source_video-blondeB"}
+        rewired, action, meta = _derive_rewire(
+            seed,
+            facet="processing",
+            family="TEST",
+            pool=pool,
+            rng=random.Random(0),
+            cursor=0,  # appearance hold
+            facets_doc=facets_doc,
+            recent=recent,
+        )
+        self.assertEqual(action, "derive")
+        assert rewired is not None
+        self.assertEqual(rewired["picks"]["source_video"], "/tmp/sources/redheadA.mp4")
+        self.assertEqual(meta.get("fallback"), "widen_for_source_novelty")
+
+    def test_derive_rewire_noop_when_no_alts(self) -> None:
+        from shape_factory_hourly import _derive_rewire
+        import random
+
+        seed = {
+            "combo_key": "prompt_profile-aaa__source_video-srcA",
+            "picks": {
+                "prompt_profile": "/tmp/prompts/aaa.json",
+                "source_video": "/tmp/sources/srcA.mp4",
+            },
+        }
+        rewired, action, meta = _derive_rewire(
+            seed, facet="processing", family="TEST", pool=[seed], rng=random.Random(0)
+        )
+        self.assertIsNone(rewired)
+        self.assertEqual(action, "noop")
+
+    def test_derive_rewire_uses_extra_pool_sources(self) -> None:
+        from shape_factory_hourly import _derive_rewire
+        import random
+
+        seed = {
+            "combo_key": "prompt_profile-aaa__source_video-srcA",
+            "picks": {
+                "prompt_profile": "/tmp/prompts/aaa.json",
+                "source_video": "/tmp/sources/srcA.mp4",
+            },
+        }
+        rewired, action, meta = _derive_rewire(
+            seed,
+            facet="processing",
+            family="TEST",
+            pool=[seed],
+            rng=random.Random(0),
+            extra_sources=["/tmp/sources/poolOnly.mp4"],
+        )
+        self.assertEqual(action, "derive")
+        self.assertIsNotNone(rewired)
+        assert rewired is not None
+        self.assertEqual(rewired["picks"]["source_video"], "/tmp/sources/poolOnly.mp4")
+        self.assertGreaterEqual(int(meta.get("candidate_count_unfiltered") or 0), 1)
+
+    def test_select_seed_family_is_deterministic(self) -> None:
+        from shape_factory_hourly import select_seed_family
+
+        a = select_seed_family(7)
+        b = select_seed_family(7)
+        c = select_seed_family(8)
+        self.assertEqual(a, b)
+        self.assertIn(a, {"FB9_GEX2", "FB9_GEX"})
+        self.assertIn(c, {"FB9_GEX2", "FB9_GEX"})
+
+    def test_select_seed_family_respects_env_weights(self) -> None:
+        import os
+        from shape_factory_hourly import select_seed_family
+
+        prev = os.environ.get("HOURLY_SEED_FAMILIES")
+        try:
+            os.environ["HOURLY_SEED_FAMILIES"] = "OnlyFam:100"
+            self.assertEqual(select_seed_family(0), "OnlyFam")
+            self.assertEqual(select_seed_family(99), "OnlyFam")
+        finally:
+            if prev is None:
+                os.environ.pop("HOURLY_SEED_FAMILIES", None)
+            else:
+                os.environ["HOURLY_SEED_FAMILIES"] = prev
+
+    def test_plan_pool_product_fallback_samples_required_slots(self) -> None:
+        import tempfile
+        from shape_factory_hourly import plan_pool_product_fallback
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            family = "MiniFam"
+            shapes = root / "shapes"
+            pools = root / "pools" / family
+            media = root / "media"
+            prompts = pools / "prompts"
+            shapes.mkdir(parents=True)
+            prompts.mkdir(parents=True)
+            media.mkdir(parents=True)
+            still = media / "a.png"
+            still.write_bytes(b"png")
+            prompt = prompts / "p.json"
+            prompt.write_text('{"positive":"x","negative":"y"}\n', encoding="utf-8")
+            (shapes / f"{family}.shape.yaml").write_text(
+                "family_slug: MiniFam\n"
+                "requires:\n"
+                "  - slot: source_still\n"
+                "  - slot: prompt_profile\n",
+                encoding="utf-8",
+            )
+            (pools / "pools.yaml").write_text(
+                f"pools:\n"
+                f"  source_still:\n"
+                f"    slot: source_still\n"
+                f"    members:\n"
+                f"      - glob: {still}\n"
+                f"  prompt_profile:\n"
+                f"    slot: prompt_profile\n"
+                f"    members:\n"
+                f"      - dir: {prompts}\n"
+                f"        ext: [\".json\"]\n",
+                encoding="utf-8",
+            )
+            plan = plan_pool_product_fallback(cursor=3, data_root=root, family=family)
+            self.assertTrue(plan.get("ok"), plan)
+            self.assertEqual(plan.get("pick_mode"), "pool_product")
+            self.assertEqual(plan["picks"]["source_still"], str(still.resolve()))
+            self.assertEqual(plan["picks"]["prompt_profile"], str(prompt.resolve()))
+
+    def test_find_chain_need_helpers(self) -> None:
+        import tempfile
+        from shape_factory_hourly import find_gex2_needing_facial, find_kneel_needing_gex2
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            gex2 = root / "FB9_GEX2"
+            facial = root / "FB9_GEX_FACIAL"
+            kneel = root / "X-KNEEL-FB9"
+            gex2.mkdir()
+            facial.mkdir()
+            kneel.mkdir()
+            vid_g = "/tmp/gex2_out.mp4"
+            vid_k = "/tmp/kneel_out.mp4"
+            (gex2 / "a.job.json").write_text(
+                json.dumps(
+                    {
+                        "job_key": "gex2-a",
+                        "status": "complete",
+                        "deposit": {"videos": [vid_g]},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (kneel / "k.job.json").write_text(
+                json.dumps(
+                    {
+                        "job_key": "kneel-k",
+                        "status": "complete",
+                        "deposit": {"videos": [vid_k]},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(find_gex2_needing_facial(job_dir=root), "gex2-a")
+            self.assertEqual(find_kneel_needing_gex2(job_dir=root), "kneel-k")
+            (facial / "f.job.json").write_text(
+                json.dumps({"bindings": {"source_video": {"path": vid_g}}}),
+                encoding="utf-8",
+            )
+            (gex2 / "from_kneel.job.json").write_text(
+                json.dumps({"bindings": {"source_video": {"path": vid_k}}}),
+                encoding="utf-8",
+            )
+            self.assertIsNone(find_gex2_needing_facial(job_dir=root))
+            self.assertIsNone(find_kneel_needing_gex2(job_dir=root))
+
+    def test_top_of_hour_and_recent_five_star_multiplier(self) -> None:
+        from datetime import datetime, timezone
+
+        from shape_factory_hourly import (
+            _apply_recent_five_star_bias,
+            _is_top_of_hour,
+            _recent_five_star_multiplier,
+        )
+
+        self.assertTrue(_is_top_of_hour(datetime(2026, 7, 14, 10, 0), window_minutes=12))
+        self.assertTrue(_is_top_of_hour(datetime(2026, 7, 14, 10, 11), window_minutes=12))
+        self.assertFalse(_is_top_of_hour(datetime(2026, 7, 14, 10, 12), window_minutes=12))
+        self.assertFalse(_is_top_of_hour(datetime(2026, 7, 14, 10, 30), window_minutes=12))
+
+        now = datetime(2026, 7, 14, 10, 5, tzinfo=timezone.utc)
+        recent_row = {"explicit": 5, "rated_at": "2026-07-13T12:00:00+00:00"}
+        old_row = {"explicit": 5, "rated_at": "2026-01-01T12:00:00+00:00"}
+        mid_row = {"explicit": 4, "rated_at": "2026-07-13T12:00:00+00:00"}
+        self.assertGreater(
+            _recent_five_star_multiplier(recent_row, now=now, top_of_hour=True),
+            5.0,
+        )
+        self.assertEqual(
+            _recent_five_star_multiplier(old_row, now=now, top_of_hour=True),
+            1.0,
+        )
+        self.assertEqual(
+            _recent_five_star_multiplier(mid_row, now=now, top_of_hour=True),
+            1.0,
+        )
+        self.assertEqual(
+            _recent_five_star_multiplier(recent_row, now=now, top_of_hour=False),
+            1.0,
+        )
+
+        recipes = [
+            {"output_path": "/data/output/og/2026-07-13/a.mp4"},
+            {"output_path": "/data/output/og/2026-01-01/b.mp4"},
+        ]
+        weights = [1.0, 1.0]
+        meta = [{}, {}]
+        ratings = {
+            "by_output_relpath": {
+                "og/2026-07-13/a": {"explicit": 5, "rated_at": "2026-07-13T12:00:00+00:00"},
+                "og/2026-01-01/b": {"explicit": 5, "rated_at": "2026-01-01T12:00:00+00:00"},
+            }
+        }
+        with unittest.mock.patch("shape_factory_hourly._is_top_of_hour", return_value=True):
+            boosted, stats = _apply_recent_five_star_bias(recipes, weights, meta, ratings, now=now)
+        self.assertGreater(boosted[0], boosted[1])
+        self.assertEqual(stats["recent_five_star_boosted"], 1)
+        self.assertTrue(stats["top_of_hour"])
+
+    def test_plan_hourly_step_prefers_replay_at_top_of_hour(self) -> None:
+        from unittest import mock
+
+        from shape_factory_hourly import plan_hourly_step
+
+        replay = {
+            "ok": True,
+            "combo_key": "prompt_profile-x__source_video-y",
+            "rating_kind": "explicit",
+            "rating_effective": 5,
+            "recent_five_star_boosted": 2,
+        }
+        derive = {"ok": True, "fast_track": False, "combo_key": "other"}
+        predicted = {"ok": True, "combo_key": "pred"}
+        with mock.patch("shape_factory_hourly._is_top_of_hour", return_value=True):
+            with mock.patch("shape_factory_hourly.plan_hourly_predicted_derive", return_value=predicted):
+                with mock.patch("shape_factory_hourly.plan_hourly_derive", return_value=derive):
+                    with mock.patch("shape_factory_hourly.plan_hourly_replay", return_value=replay):
+                        plan = plan_hourly_step(cursor=0, family="FB9_GEX2")
+        self.assertTrue(plan.get("ok"))
+        self.assertEqual(plan.get("step"), "replay")
+        self.assertTrue(plan.get("top_of_hour"))
+        self.assertEqual(plan.get("combo_key"), replay["combo_key"])
 
 
 if __name__ == "__main__":

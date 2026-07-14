@@ -239,6 +239,62 @@ def _append_outcome(row: Dict[str, Any], *, action: str, detail: Any = None) -> 
         row["outcomes"] = outcomes[-50:]
 
 
+def stamp_output_disposition(
+    *,
+    media_abs: Path,
+    marker_id: str,
+    note: Optional[str] = None,
+    og_root: Optional[Path] = None,
+    disposition_index_path: Optional[Path] = None,
+    catalog: Optional[Dict[str, Any]] = None,
+    media_relpath: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Set a disposition entry on a media file (creates index row as needed).
+
+    Used by hourly predicted jobs so deposited outputs land with ``derived``.
+    """
+    media_abs = Path(media_abs).expanduser().resolve()
+    if not media_abs.is_file():
+        raise FileNotFoundError(str(media_abs))
+
+    if og_root is None:
+        # Prefer .../output/og/... layout.
+        parts = media_abs.parts
+        if "og" in parts:
+            idx = parts.index("og")
+            og_root = Path(*parts[: idx + 1]) if idx > 0 else media_abs.parent
+        else:
+            og_root = media_abs.parent
+    og_root = Path(og_root).expanduser().resolve()
+
+    if disposition_index_path is None:
+        disposition_index_path = default_disposition_index_path(og_root)
+    if catalog is None:
+        catalog = load_merged_catalog(og_root=og_root)
+
+    rel = str(media_relpath or "").strip().replace("\\", "/")
+    if not rel:
+        try:
+            rel = str(media_abs.relative_to(og_root.parent if og_root.name == "og" else og_root))
+        except ValueError:
+            if "og/" in str(media_abs).replace("\\", "/"):
+                rel = "og/" + str(media_abs).replace("\\", "/").split("/og/", 1)[-1]
+            else:
+                rel = media_abs.name
+
+    return toggle_output_disposition(
+        media_abs=media_abs,
+        media_relpath=rel,
+        marker_id=str(marker_id),
+        on=True,
+        note=note,
+        og_root=og_root,
+        disposition_index_path=Path(disposition_index_path),
+        catalog=catalog,
+    )
+
+
 def toggle_output_disposition(
     *,
     media_abs: Path,
@@ -592,10 +648,6 @@ def run_disposition_hook(
         if hook_runner is None:
             return {"ok": False, "hook": hook, "error": "hook_runner_unavailable"}
         body = dict(extra)
-        if hook == "replay_front":
-            body["front"] = True
-        if hook == "extend":
-            body["extend"] = True
         if hook == "appetite_more":
             from shape_factory_ratings import set_output_appetite, default_appetite_index_path
 
@@ -608,7 +660,25 @@ def run_disposition_hook(
                 appetite_index_path=default_appetite_index_path(og_root),
             )
             return {"ok": True, "hook": hook, "appetite_set": "more"}
-        return hook_runner(hook, body)
+        # Explicit front=False (Later) demotes catalog replay_front → plain replay.
+        # Explicit front=True promotes plain replay → front of queue.
+        effective = hook
+        if hook == "replay_front" and body.get("front") is False:
+            effective = "replay"
+            body.pop("front", None)
+        elif hook == "replay_front":
+            body["front"] = True
+        elif hook == "replay" and body.get("front") is True:
+            pass
+        if effective == "extend":
+            body["extend"] = True
+        out = hook_runner(effective, body)
+        if isinstance(out, dict):
+            out = dict(out)
+            out.setdefault("hook", effective)
+            if body.get("front"):
+                out["front"] = True
+        return out
 
     return {"ok": False, "hook": hook, "error": f"unknown_hook:{hook}"}
 

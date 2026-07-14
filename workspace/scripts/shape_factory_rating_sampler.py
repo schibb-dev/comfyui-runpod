@@ -29,10 +29,12 @@ from shape_factory_heuristics import (
 )
 from shape_factory_ratings import (
     APPETITE_SCORE,
+    axes_complete,
     default_appetite_index_path,
     default_ratings_index_path,
     lookup_output_appetite,
     lookup_output_rating,
+    normalize_axes_map,
     utc_now,
 )
 from shape_factory_disposition import (
@@ -47,7 +49,7 @@ from shape_factory_triage import (
     triage_for_item,
 )
 
-SAMPLER_SCHEMA_VERSION = 5
+SAMPLER_SCHEMA_VERSION = 7
 
 # Marathon session mix: many easy rejects, few easy keepers, moderate middle (not hard-tail).
 DEFAULT_SESSION_MIX: Dict[str, float] = {
@@ -128,12 +130,14 @@ def _is_rated_item(
     *,
     og_root: Optional[Path] = None,
 ) -> bool:
+    """True when an explicit quality rating exists (index keys, ratings row, or on-disk XMP)."""
     rel = str(item.get("relpath") or "").strip().replace("\\", "/")
     if not rel:
         return True
     if rel in rated_keys:
         return True
-    if lookup_output_rating(rel, ratings_doc or {}):
+    row = lookup_output_rating(rel, ratings_doc or {})
+    if isinstance(row, dict) and row.get("explicit") is not None:
         return True
     group_id = str(item.get("group_id") or "")
     stem = Path(rel).stem.lower()
@@ -148,6 +152,7 @@ def _is_rated_item(
                 xmp = mp4.with_suffix(suffix)
                 if xmp.is_file() and parse_xmp_rating(xmp) is not None:
                     return True
+    _ = group_id
     return False
 
 
@@ -645,6 +650,74 @@ def _is_retired_item(item: dict[str, Any], disposition_doc: Optional[dict[str, A
     return is_retired_disposition(markers if isinstance(markers, list) else [])
 
 
+def item_has_explicit_quality(
+    item: dict[str, Any],
+    *,
+    ratings_doc: Optional[dict[str, Any]] = None,
+    rated_keys: Optional[Set[str]] = None,
+    og_root: Optional[Path] = None,
+) -> bool:
+    """
+    True when all three quality axes are set (1–5).
+
+    Legacy lone ``explicit`` / on-disk XMP without ``axes`` does **not** count —
+    those clips stay in the rate pool until axes are filled.
+    """
+    _ = (rated_keys, og_root)
+    rel = str(item.get("relpath") or item.get("video_relpath") or "").strip().replace("\\", "/")
+    if not rel:
+        return True
+    row = lookup_output_rating(rel, ratings_doc or {})
+    if not isinstance(row, dict):
+        return False
+    return axes_complete(normalize_axes_map(row.get("axes")))
+
+
+def item_has_appetite(item: dict[str, Any], appetite_doc: Optional[dict[str, Any]]) -> bool:
+    rel = str(item.get("relpath") or item.get("video_relpath") or "").strip().replace("\\", "/")
+    if not rel or not appetite_doc:
+        return False
+    row = lookup_output_appetite(rel, appetite_doc)
+    if not isinstance(row, dict):
+        return False
+    return bool(str(row.get("appetite") or "").strip())
+
+
+def is_rating_complete(
+    item: dict[str, Any],
+    *,
+    ratings_doc: Optional[dict[str, Any]] = None,
+    appetite_doc: Optional[dict[str, Any]] = None,
+    rated_keys: Optional[Set[str]] = None,
+    og_root: Optional[Path] = None,
+) -> bool:
+    """Rating activity is done when all quality axes and appetite are set."""
+    return item_has_explicit_quality(
+        item, ratings_doc=ratings_doc, rated_keys=rated_keys, og_root=og_root
+    ) and item_has_appetite(item, appetite_doc)
+
+
+def needs_rating_item(
+    item: dict[str, Any],
+    *,
+    ratings_doc: Optional[dict[str, Any]] = None,
+    appetite_doc: Optional[dict[str, Any]] = None,
+    disposition_doc: Optional[dict[str, Any]] = None,
+    rated_keys: Optional[Set[str]] = None,
+    og_root: Optional[Path] = None,
+) -> bool:
+    """True when the rate queue should still show this clip (missing quality and/or appetite)."""
+    if _is_retired_item(item, disposition_doc):
+        return False
+    return not is_rating_complete(
+        item,
+        ratings_doc=ratings_doc,
+        appetite_doc=appetite_doc,
+        rated_keys=rated_keys,
+        og_root=og_root,
+    )
+
+
 def collect_needs_triage_video_items(
     discovery_doc: dict[str, Any],
     *,
@@ -652,6 +725,7 @@ def collect_needs_triage_video_items(
     disposition_doc: Optional[dict[str, Any]] = None,
     triage_doc: Optional[dict[str, Any]] = None,
 ) -> List[dict[str, Any]]:
+    """Legacy triage pool (disposition-oriented). Prefer ``collect_needs_rating_video_items`` for rate queue."""
     items = discovery_doc.get("items") or []
     out: List[dict[str, Any]] = []
     for item in items:
@@ -668,6 +742,41 @@ def collect_needs_triage_video_items(
     return out
 
 
+def collect_needs_rating_video_items(
+    discovery_doc: dict[str, Any],
+    *,
+    library: str = "og",
+    ratings_doc: Optional[dict[str, Any]] = None,
+    appetite_doc: Optional[dict[str, Any]] = None,
+    disposition_doc: Optional[dict[str, Any]] = None,
+    rated_keys: Optional[Set[str]] = None,
+    og_root: Optional[Path] = None,
+) -> List[dict[str, Any]]:
+    """Videos missing explicit quality and/or appetite (rate-queue pool)."""
+    keys = rated_keys if rated_keys is not None else _rated_output_keys(ratings_doc)
+    items = discovery_doc.get("items") or []
+    out: List[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("library") or "") != library:
+            continue
+        rel = str(item.get("relpath") or "")
+        if not rel.lower().endswith(".mp4"):
+            continue
+        if not needs_rating_item(
+            item,
+            ratings_doc=ratings_doc,
+            appetite_doc=appetite_doc,
+            disposition_doc=disposition_doc,
+            rated_keys=keys,
+            og_root=og_root,
+        ):
+            continue
+        out.append(item)
+    return out
+
+
 def collect_unrated_video_items(
     discovery_doc: dict[str, Any],
     *,
@@ -677,14 +786,18 @@ def collect_unrated_video_items(
     og_root: Optional[Path] = None,
     disposition_doc: Optional[dict[str, Any]] = None,
     triage_doc: Optional[dict[str, Any]] = None,
+    appetite_doc: Optional[dict[str, Any]] = None,
 ) -> List[dict[str, Any]]:
-    """Legacy name — returns videos that need a triage pass."""
-    _ = (rated_keys, ratings_doc, og_root)
-    return collect_needs_triage_video_items(
+    """Rate-queue pool: missing quality and/or appetite (not disposition/triage-gated)."""
+    _ = triage_doc
+    return collect_needs_rating_video_items(
         discovery_doc,
         library=library,
+        ratings_doc=ratings_doc,
+        appetite_doc=appetite_doc,
         disposition_doc=disposition_doc,
-        triage_doc=triage_doc,
+        rated_keys=rated_keys,
+        og_root=og_root,
     )
 
 
@@ -697,7 +810,7 @@ def sample_rating_queue(
     heuristics_index: Optional[Path] = None,
     lineage_edges: Optional[Path] = None,
     vision_scores: Optional[Path] = None,
-    exclude_presented: bool = True,
+    exclude_presented: bool = False,
     sampler_state: Optional[Path] = None,
     seed: int = 0,
     min_predicted: float = 0.0,
@@ -736,16 +849,17 @@ def sample_rating_queue(
             if isinstance(gid, str):
                 presented.add(gid)
 
-    needs_triage = collect_unrated_video_items(
+    needs_rating = collect_unrated_video_items(
         discovery_doc,
         rated_keys=rated_keys,
         ratings_doc=ratings_doc,
         og_root=og_root,
         disposition_doc=disposition_doc,
         triage_doc=triage_doc,
+        appetite_doc=appetite_doc,
     )
     candidates: List[RatingCandidate] = []
-    for item in needs_triage:
+    for item in needs_rating:
         gid = str(item.get("group_id") or "")
         if exclude_presented and gid and gid in presented:
             continue
@@ -780,8 +894,9 @@ def sample_rating_queue(
         "og_root": str(og_root),
         "session_mix": session_mix,
         "stats": {
-            "needs_triage_videos": len(needs_triage),
-            "unrated_videos": len(needs_triage),
+            "needs_rating_videos": len(needs_rating),
+            "needs_triage_videos": len(needs_rating),
+            "unrated_videos": len(needs_rating),
             "scored_pool": len(candidates),
             "selected": len(picked),
             "bucket_easy_down": bucket_counts.get("easy_down", 0),
@@ -804,8 +919,9 @@ def sample_rating_queue(
         "candidates": [c.to_dict() for c in picked],
         "vision_priority": [c.to_dict() for c in vision_queue],
         "next_steps": [
-            "Work the interleaved queue: many quick thumbs-down, some middle, few easy keepers.",
-            "Star in Krita / file manager (XMP), then rebuild indexes.",
+            "Work the interleaved queue: set Subject / Render / Action stars and appetite on each clip.",
+            "Disposition is optional here — it routes later work, it does not finish rating.",
+            "Dismiss batch commits clips that have all three quality axes and appetite; the rest return to the pool.",
             "python3 shape_factory.py ratings build",
             "python3 shape_factory.py heuristics build",
         ],

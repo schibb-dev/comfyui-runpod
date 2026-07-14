@@ -73,6 +73,75 @@ class ShapeFactoryHeuristicsTests(unittest.TestCase):
             loaded = json.loads(out.read_text(encoding="utf-8"))
             self.assertEqual(loaded.get("version"), doc.get("version"))
 
+    def test_zero_explicit_rating_does_not_yield_complex_weight(self) -> None:
+        from shape_factory_heuristics import _rating_to_weight, score_recipe
+
+        for value in (0, -1, 0.5):
+            w = _rating_to_weight(float(value))
+            self.assertIsInstance(w, float)
+            self.assertNotIsInstance(w, complex)
+            self.assertGreaterEqual(w, 0.0)
+
+        weight, meta = score_recipe(
+            {
+                "output_path": "/data/output/og/2026-03-13/FB9_GEX_2026-03-13_00013.mp4",
+                "picks": {"source_video": "/tmp/foo.mp4"},
+            },
+            shape={"graph_hash": "x"},
+            ratings_doc={
+                "by_output_relpath": {
+                    "og/2026-03-13/FB9_GEX_2026-03-13_00013": {"explicit": 0},
+                }
+            },
+        )
+        self.assertEqual(weight, 0.0)
+        self.assertTrue(meta.get("omit"))
+        self.assertNotIn("output_explicit", meta.get("signals") or {})
+
+    def test_omit_explicit_blocks_pattern_fallback(self) -> None:
+        from shape_factory_heuristics import score_recipe
+
+        weight, meta = score_recipe(
+            {
+                "output_path": "/data/output/og/omit/clip.mp4",
+                "family": "FB9_GEX2",
+                "picks": {"prompt_profile": "/tmp/catalog-default.json"},
+            },
+            shape={"graph_hash": "abc" * 16, "family": "FB9_GEX2"},
+            ratings_doc={"by_output_relpath": {"og/omit/clip": {"explicit": 0}}},
+            heuristics_doc={
+                "by_pattern": {"FB9_GEX2+catalog-default": {"inferred": 4.8, "n": 10}},
+            },
+        )
+        self.assertEqual(weight, 0.0)
+        self.assertTrue(meta.get("omit"))
+        self.assertEqual(meta.get("evidence"), ["output_omit"])
+
+    def test_omit_ratings_excluded_from_heuristics_build(self) -> None:
+        from shape_factory_heuristics import LineageGraph, build_heuristics_index
+
+        doc = build_heuristics_index(
+            ratings_doc={
+                "by_output_relpath": {
+                    "og/a/good": {
+                        "explicit": 5,
+                        "short_key": "og/a/good",
+                        "shape_recipe": "FB9_GEX2+catalog-default",
+                    },
+                    "og/a/omit": {
+                        "explicit": 0,
+                        "short_key": "og/a/omit",
+                        "shape_recipe": "FB9_GEX2+catalog-default",
+                    },
+                }
+            },
+            lineage_graph=LineageGraph.from_edges([]),
+        )
+        pattern = doc["by_pattern"].get("FB9_GEX2+catalog-default")
+        self.assertIsNotNone(pattern)
+        self.assertEqual(int(pattern["n"]), 1)
+        self.assertEqual(float(pattern["inferred"]), 5.0)
+
 
 if __name__ == "__main__":
     unittest.main()
