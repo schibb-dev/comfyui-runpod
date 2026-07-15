@@ -61,6 +61,7 @@ import type {
   WorkItemsCancelResponse,
   WorkItemsPriorityResponse,
   WorkProductsResponse,
+  VisionSliceCaptionsResponse,
   JsonPeekResponse,
   ComfyLiveStatusResponse,
 } from "./types";
@@ -164,6 +165,18 @@ export async function fetchShapeFactoryWorkProducts(opts?: {
     const detail = [j.error, j.detail].filter(Boolean).join(": ");
     throw new Error(
       `GET /api/shape-factory/work-products failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function fetchVisionSliceCaptions(): Promise<VisionSliceCaptionsResponse> {
+  const r = await fetch("/api/vision/slice-captions");
+  const j = (await r.json().catch(() => ({}))) as VisionSliceCaptionsResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET /api/vision/slice-captions failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
     );
   }
   return j;

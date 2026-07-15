@@ -12,6 +12,7 @@ export type AppRouteId =
   | "library"
   | "rate"
   | "work-products"
+  | "vision-slices"
   | "experiments"
   | "workflows"
   | "orchestrator";
@@ -36,6 +37,7 @@ export const APP_ROUTES: AppRoute[] = [
   { id: "library", path: "/discovery", label: "Library", hint: "Discover indexed outputs", group: "pipeline" },
   { id: "rate", path: "/discovery/rate", label: "Rate", hint: "Rating bootstrap queue", group: "pipeline" },
   { id: "work-products", path: "/work-products", label: "Work products", hint: "Recent outputs · how they were constructed", group: "pipeline" },
+  { id: "vision-slices", path: "/vision/slices", label: "Vision slices", hint: "V1 time-slice captions vs video", group: "tools" },
   { id: "experiments", path: "/experiments", label: "Experiments", hint: "Tune experiments & runs", group: "tools" },
   { id: "workflows", path: "/workflow-explorer", label: "Workflows", hint: "Workflow & factory-asset explorer", group: "tools" },
   { id: "orchestrator", path: "/orchestrator", label: "Orchestrator", hint: "Projects, collections, pipelines", group: "tools" },
@@ -57,6 +59,7 @@ const MATCHERS: { id: AppRouteId; test: (p: string) => boolean }[] = [
   { id: "workflows", test: (p) => p.startsWith("/workflow-explorer") },
   { id: "experiments", test: (p) => p.startsWith("/experiments") },
   { id: "work-products", test: (p) => p.startsWith("/work-products") },
+  { id: "vision-slices", test: (p) => p.startsWith("/vision") },
   { id: "factory", test: (p) => p.startsWith("/discovery/factory-map") },
   { id: "rate", test: (p) => p.startsWith("/discovery/rate") },
   { id: "library", test: (p) => p.startsWith("/discovery") },

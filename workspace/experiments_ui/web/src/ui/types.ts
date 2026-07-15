@@ -1514,6 +1514,75 @@ export type WorkProductsResponse = {
   items?: WorkProductItem[];
 };
 
+/** GET /api/vision/slice-captions */
+export type VisionSliceVariantCaption = {
+  caption?: string;
+  tags?: string[];
+  provider?: string;
+  model_pin?: string;
+  run_id?: string;
+  task?: string;
+};
+
+export type VisionSliceCaptionRow = {
+  t0?: number;
+  t1?: number;
+  frame_t?: number;
+  slice?: string;
+  /** First available caption (compact / legacy). */
+  caption?: string;
+  /** Per comparative variant id. */
+  captions?: Record<string, VisionSliceVariantCaption>;
+  tags?: string[];
+  provider?: string;
+  model_pin?: string;
+  run_id?: string;
+};
+
+export type VisionSliceVariantMeta = {
+  id: string;
+  label?: string;
+  model_pin?: string | null;
+  task?: string | null;
+  provider?: string | null;
+  run_id?: string | null;
+  ndjson?: string;
+  caption_count?: number;
+};
+
+export type VisionSliceAsset = {
+  asset_relpath: string;
+  basename: string;
+  video_url: string;
+  slice_count: number;
+  has_whole?: boolean;
+  slices: VisionSliceCaptionRow[];
+};
+
+export type VisionSliceCaptionsResponse = {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  ndjson_path?: string;
+  manifest_path?: string | null;
+  manifest?: {
+    run_id?: string;
+    provider?: string;
+    model_pin?: string;
+    caption_count?: number;
+    asset_count?: number;
+    finished_utc?: string;
+    note?: string;
+    variant?: string;
+    task?: string;
+  } | null;
+  variants?: VisionSliceVariantMeta[];
+  asset_count?: number;
+  caption_count?: number;
+  slice_count?: number;
+  assets: VisionSliceAsset[];
+};
+
 /** GET /api/shape-factory/json-peek?path=... */
 export type JsonPeekResponse = {
   ok: boolean;

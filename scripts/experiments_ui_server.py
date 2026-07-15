@@ -1528,6 +1528,17 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
     return payload
 
 
+def _vision_slice_captions_payload(cfg: ServerConfig) -> Dict[str, Any]:
+    """GET /api/vision/slice-captions — V1 time-slice caption review (grouped by asset)."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from vision_slice_review import list_vision_slice_review  # type: ignore
+
+    status_dir = _output_status_dir(cfg.output_root)
+    return list_vision_slice_review(status_dir=status_dir)
+
+
 def _shape_factory_json_peek_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
     """GET /api/shape-factory/json-peek?path=... — tooltip viewer for construction JSON files."""
     d = _workspace_scripts_dir()
@@ -1540,6 +1551,7 @@ def _shape_factory_json_peek_payload(cfg: ServerConfig, q: Dict[str, List[str]])
     path = str((q.get("path") or [""])[0] or "").strip()
     return peek_json_file(
         path,
+
         data_root=data_root,
         output_root=cfg.output_root,
         workspace_root=cfg.workspace_root,
@@ -5792,6 +5804,14 @@ class Handler(BaseHTTPRequestHandler):
                 return _json_response(self, code, payload)
             except Exception as e:
                 return _json_response(self, 500, {"ok": False, "error": "work_products_failed", "detail": str(e)})
+
+        if path == "/api/vision/slice-captions":
+            try:
+                payload = _vision_slice_captions_payload(cfg)
+                code = 200 if payload.get("ok") else 500
+                return _json_response(self, code, payload)
+            except Exception as e:
+                return _json_response(self, 500, {"ok": False, "error": "vision_slice_captions_failed", "detail": str(e)})
 
         if path == "/api/shape-factory/json-peek":
             try:

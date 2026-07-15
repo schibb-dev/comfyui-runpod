@@ -297,7 +297,9 @@ class ComfyCaptionRunner:
         if not image_path.is_file() or image_path.stat().st_size == 0:
             raise FileNotFoundError(f"missing/empty frame: {image_path}")
 
+        t0 = time.perf_counter()
         image_ref = self._image_ref_for_load_image(image_path)
+        t_upload = time.perf_counter()
         prompt = build_florence_caption_prompt(
             image_name=image_ref,
             model=self.cfg.model,
@@ -317,11 +319,13 @@ class ComfyCaptionRunner:
             payload,
             timeout_s=self.cfg.submit_timeout_s,
         )
+        t_submit = time.perf_counter()
         prompt_id = submit.get("prompt_id")
         if not isinstance(prompt_id, str) or not prompt_id.strip():
             raise RuntimeError(f"Comfy submit missing prompt_id: {submit}")
 
         entry = self._wait_history(prompt_id)
+        t_done = time.perf_counter()
         caption = extract_caption_from_history(entry, run_node_id="3")
         return CaptionResult(
             caption=caption,
@@ -333,6 +337,12 @@ class ComfyCaptionRunner:
                 "image_ref": image_ref,
                 "server": self.server,
                 "task": self.cfg.task,
+                "timing": {
+                    "upload_s": round(t_upload - t0, 3),
+                    "submit_s": round(t_submit - t_upload, 3),
+                    "wait_s": round(t_done - t_submit, 3),
+                    "total_s": round(t_done - t0, 3),
+                },
             },
         )
 
@@ -345,18 +355,19 @@ class DryRunCaptionRunner:
         return None
 
     def caption(self, req: CaptionRequest) -> CaptionResult:
+        t0 = time.perf_counter()
         meta = req.meta or {}
         slice_kind = meta.get("slice") or "window"
-        t0 = meta.get("t0")
-        t1 = meta.get("t1")
+        t0m = meta.get("t0")
+        t1m = meta.get("t1")
         rel = req.asset_relpath or req.image_path.name
-        text = f"[dry-run] {slice_kind} {t0}-{t1}s of {rel}"
+        text = f"[dry-run] {slice_kind} {t0m}-{t1m}s of {rel}"
         return CaptionResult(
             caption=text,
             provider="dry-run",
             model_pin="dry-run",
             runner=self.runner_label,
-            raw={},
+            raw={"timing": {"total_s": round(time.perf_counter() - t0, 3)}},
         )
 
 
@@ -370,6 +381,8 @@ def make_runner(
     image_mode: str = "upload",
     comfy_input_root: Optional[Path] = None,
     dry_run: bool = False,
+    task: str = DEFAULT_COMFY_TASK,
+    max_new_tokens: int = 64,
 ) -> CaptionRunner:
     """
     Factory used by vision_slice_caption_run.
@@ -388,6 +401,8 @@ def make_runner(
             ComfyRunnerConfig(
                 server=comfy_server,
                 model=model_pin,
+                task=task,
+                max_new_tokens=max_new_tokens,
                 runner_label=label,
                 image_mode=image_mode,
                 comfy_input_root=comfy_input_root,
@@ -413,6 +428,7 @@ class TransformersFlorenceRunner:
         self._processor = None
         self._torch = None
         self._Image = None
+        self._model_load_s: Optional[float] = None
 
     def close(self) -> None:
         return None
@@ -429,6 +445,7 @@ class TransformersFlorenceRunner:
                 "Florence captioning requires torch, transformers, and Pillow. "
                 "Prefer --provider comfy against a running ComfyUI, or use --dry-run."
             ) from e
+        t0 = time.perf_counter()
         self._processor = AutoProcessor.from_pretrained(self.model_pin, trust_remote_code=True)
         self._model = AutoModelForCausalLM.from_pretrained(
             self.model_pin, trust_remote_code=True, torch_dtype="auto"
@@ -438,9 +455,14 @@ class TransformersFlorenceRunner:
         self._model.eval()
         self._torch = torch
         self._Image = Image
+        self._model_load_s = time.perf_counter() - t0
 
     def caption(self, req: CaptionRequest) -> CaptionResult:
+        t0 = time.perf_counter()
+        load_s = self._model_load_s
         self._ensure()
+        # First _ensure sets load time; capture for this result only once.
+        just_loaded = load_s is None and self._model_load_s is not None
         assert self._model is not None and self._processor is not None and self._Image is not None
         image = self._Image.open(req.image_path).convert("RGB")
         task = "<CAPTION>"
@@ -464,10 +486,15 @@ class TransformersFlorenceRunner:
             caption = str(cap).strip()
         else:
             caption = str(parsed).strip()
+        t_done = time.perf_counter()
+        timing: Dict[str, Any] = {"total_s": round(t_done - t0, 3)}
+        if just_loaded and self._model_load_s is not None:
+            timing["model_load_s"] = round(self._model_load_s, 3)
+            timing["inference_s"] = round(max(0.0, (t_done - t0) - self._model_load_s), 3)
         return CaptionResult(
             caption=caption,
             provider="florence2",
             model_pin=self.model_pin,
             runner=self.runner_label,
-            raw={},
+            raw={"timing": timing},
         )

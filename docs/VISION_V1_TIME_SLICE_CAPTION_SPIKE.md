@@ -186,6 +186,40 @@ VISION_DATA_ROOT=/home/yuji/comfyui-runpod-data/output \
 
 ---
 
+## Review UI
+
+Experiments UI **Tools → Vision slices**: `http://127.0.0.1:5179/vision/slices` (Vite) or via the app shell on the container UI.
+
+API: `GET /api/vision/slice-captions` — merges comparative variants by asset+time window; videos via `/files/<asset_relpath>`. Click a slice to seek the player to that mid-frame. Toggle variants in the page header for side-by-side text.
+
+### Comparative caption variants
+
+Each implementation writes its own NDJSON (legacy `vision_slice_captions.ndjson` is treated as `base_caption`):
+
+```text
+output/_status/vision_slice_captions__<variant>.ndjson
+output/_status/vision_slice_variants.json   # registry / labels
+```
+
+```bash
+# Example A/B (same frames_manifest, different task / weights)
+python3 workspace/scripts/vision_slice_caption_run.py \
+  --frames-manifest /tmp/vision_v1_spike12/frames_manifest.json \
+  --status-dir "$STATUS" --run-id vision_v1_spike12_detailed \
+  --provider comfy --model-pin microsoft/Florence-2-base \
+  --task detailed_caption --variant florence_detailed --max-new-tokens 256
+
+python3 workspace/scripts/vision_slice_caption_run.py \
+  --frames-manifest /tmp/vision_v1_spike12/frames_manifest.json \
+  --status-dir "$STATUS" --run-id vision_v1_spike12_promptgen \
+  --provider comfy --model-pin MiaoshouAI/Florence-2-base-PromptGen-v2.0 \
+  --task caption --variant florence_promptgen --max-new-tokens 128
+```
+
+After changing `vision_slice_review.py`, restart the Experiments UI process (or container) so `/api/vision/slice-captions` picks up the new code; Vite HMR covers the React page.
+
+---
+
 ## Success criteria
 
 - [ ] 12 videos processed with fixed 2 s windows + one whole-video caption each.

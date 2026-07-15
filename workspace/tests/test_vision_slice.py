@@ -128,16 +128,47 @@ class SampleIntegrationTests(unittest.TestCase):
                 dry_run=True,
             )
             self.assertEqual(manifest["caption_count"], doc["frame_count"])
-            ndjson = status / "vision_slice_captions.ndjson"
+            self.assertIn("timing", manifest)
+            self.assertGreaterEqual(manifest["timing"]["caption_timed_count"], 1)
+            self.assertIn("first_caption_s", manifest["timing"])
+            ndjson = status / "vision_slice_captions__base_caption.ndjson"
+            if not ndjson.is_file():
+                ndjson = status / "vision_slice_captions.ndjson"
             self.assertTrue(ndjson.is_file())
             lines = [json.loads(x) for x in ndjson.read_text(encoding="utf-8").splitlines() if x.strip()]
             self.assertEqual(len(lines), doc["frame_count"])
             self.assertTrue(lines[0]["caption"].startswith("[dry-run]"))
             self.assertEqual(lines[0]["run_id"], "vision_v1_test")
             self.assertIn("slice", lines[0])
+            self.assertIn("timing", lines[0].get("runner_raw") or {})
 
 
 class CaptionUnitTests(unittest.TestCase):
+    def test_summarize_caption_timings_load_proxy(self) -> None:
+        from vision_slice_caption_run import summarize_caption_timings
+
+        # Cold first caption then steady ~2s
+        summary = summarize_caption_timings(
+            wall_s=40.0,
+            per_caption_s=[12.0, 2.0, 2.0, 2.0],
+        )
+        self.assertEqual(summary["first_caption_s"], 12.0)
+        self.assertEqual(summary["steady_mean_s"], 2.0)
+        self.assertEqual(summary["model_load_proxy_s"], 10.0)
+        self.assertEqual(summary["captions_per_min_steady"], 30.0)
+        self.assertIn("estimated_session_s", summary)
+
+    def test_summarize_caption_timings_explicit_load(self) -> None:
+        from vision_slice_caption_run import summarize_caption_timings
+
+        summary = summarize_caption_timings(
+            wall_s=15.0,
+            per_caption_s=[8.0, 1.0],
+            model_load_s=7.5,
+        )
+        self.assertEqual(summary["model_load_s"], 7.5)
+        self.assertEqual(summary["model_load_proxy_s"], 7.0)
+
     def test_tags_from_caption(self) -> None:
         tags = tags_from_caption("A woman smiles at the camera outdoors")
         self.assertIn("woman", tags)
