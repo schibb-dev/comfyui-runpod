@@ -23,7 +23,9 @@ This page mirrors the planning-relevant sections of the repo-root [DOCUMENTATION
 
 | Document | What it is |
 |----------|------------|
-| [DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md](DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md) | Discovery / similarity / HITL vision. |
+| [DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md](DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md) | Discovery / similarity / HITL vision (V1–V5 sequence). |
+| [VISION_V1_TIME_SLICE_CAPTION_SPIKE.md](VISION_V1_TIME_SLICE_CAPTION_SPIKE.md) | P1 V1 time-slice caption spike (impl). |
+| [SOURCE_FACET_SIMILARITY_PLAN.md](SOURCE_FACET_SIMILARITY_PLAN.md) | Source facet hold axes for hourly derive. |
 | [LINEAGE_INDEX_SKETCH.md](LINEAGE_INDEX_SKETCH.md) | Lineage index sketch. |
 | [SCHEDULED_AND_CONTAINER_JOBS_RUNDOWN.md](SCHEDULED_AND_CONTAINER_JOBS_RUNDOWN.md) | Queue & container jobs. |
 | [WORKSPACE_PROJECTS_RUNDOWN.md](WORKSPACE_PROJECTS_RUNDOWN.md) | Workspace projects & resubmit MVP. |
@@ -36,7 +38,8 @@ This page mirrors the planning-relevant sections of the repo-root [DOCUMENTATION
 
 | Document | What it is |
 |----------|------------|
-| [DISCOVERY_INDEX_WATCHER_PLAN.md](DISCOVERY_INDEX_WATCHER_PLAN.md) | Discovery FS watcher + enrichment jobs. |
+| [VISION_V1_TIME_SLICE_CAPTION_SPIKE.md](VISION_V1_TIME_SLICE_CAPTION_SPIKE.md) | **Primary** — time-slice captions (~12 videos, run-anywhere). |
+| [DISCOVERY_INDEX_WATCHER_PLAN.md](DISCOVERY_INDEX_WATCHER_PLAN.md) | Discovery FS watcher + enrichment jobs (V2). |
 | [RATINGS_V1_PLAN.md](RATINGS_V1_PLAN.md) | Ratings, disposition, triage. |
 | [DISPOSITION_BUCKET_MODEL.md](DISPOSITION_BUCKET_MODEL.md) | Bucket model reference (diagram-first). |
 | [BUCKET_MODEL_PHASE2_PLAN.md](BUCKET_MODEL_PHASE2_PLAN.md) | Work items, pool pages, multi-route Advance. |

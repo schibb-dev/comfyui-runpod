@@ -63,11 +63,11 @@ Each program has: **intent**, **today**, **next** (actionable), **later**, **key
 
 | | |
 |--|--|
-| **Today** | Discovery library (og/wip), path search, lineage UI, workflow facets, trim/health; **no** CLIP/Florence index |
-| **Next (spike)** | ~12 videos → **offline time-slice captions** (RunPod, SSH script, NDJSON); judge tag quality vs whole-video |
-| **Later** | Sidecar index + grep; CLIP optional; HITL guided review; taxonomy versions; ANN + BM25 product search |
-| **Docs** | [`DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md`](./DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md), [`SOURCE_FACET_SIMILARITY_PLAN.md`](./SOURCE_FACET_SIMILARITY_PLAN.md) |
-| **Not now** | Temporal NL (“X then Y”); full LoRA; face-embedding identity provider |
+| **Today** | Discovery library (og/wip), path search, lineage UI, workflow facets, trim/health; `asset_tags` bootstrap + editorial `source_facets`; **no** CLIP/Florence index |
+| **Next (spike)** | **V1** — ~12 videos → **offline time-slice captions** (run-anywhere jobs: local idle / Docker / RunPod); judge vs whole-video — [`VISION_V1_TIME_SLICE_CAPTION_SPIKE.md`](./VISION_V1_TIME_SLICE_CAPTION_SPIKE.md) |
+| **Later (locked sequence)** | **V2** watcher + job-queue stubs → **V3a** Florence/WD14 into tags/facets → **V4** BM25/sidecar search → **V3b** CLIP/ANN and **V5** HITL as recall demands |
+| **Docs** | [`DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md`](./DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md) (V1–V5 sequence), [`VISION_V1_TIME_SLICE_CAPTION_SPIKE.md`](./VISION_V1_TIME_SLICE_CAPTION_SPIKE.md), [`SOURCE_FACET_SIMILARITY_PLAN.md`](./SOURCE_FACET_SIMILARITY_PLAN.md), [`DISCOVERY_INDEX_WATCHER_PLAN.md`](./DISCOVERY_INDEX_WATCHER_PLAN.md) |
+| **Not now** | Temporal NL (“X then Y”); full LoRA; face-embedding identity provider; shortcut V2→V3a only if V1 is explicitly parked |
 
 **GPU:** batch worker **off** interactive Comfy.
 
@@ -176,7 +176,7 @@ Each program has: **intent**, **today**, **next** (actionable), **later**, **key
 | | |
 |--|--|
 | **Today** | Docker compose, RunPod doc, GPU guides, Krita optional env, check-in strategy |
-| **Next** | RunPod **only for P1 spike**; stop pod when done |
+| **Next** | Batch vision **only via portable V1 runners** (local idle / Docker / optional RunPod); tear down paid pods when done |
 | **Later** | Submodule split per organization proposal |
 | **Docs** | [`DOCUMENTATION.md`](../DOCUMENTATION.md), `RUNPOD.md`, [`CHECKIN_STRATEGY.md`](./CHECKIN_STRATEGY.md), [`PROJECT_ORGANIZATION_PROPOSAL.md`](./PROJECT_ORGANIZATION_PROPOSAL.md), [`KRITA_AI_SETUP.md`](./KRITA_AI_SETUP.md) |
 
@@ -194,16 +194,17 @@ Each program has: **intent**, **today**, **next** (actionable), **later**, **key
 
 ## Suggested focus (right now)
 
-Avoid parallel spikes across programs. A practical default:
+Avoid parallel spikes across programs. Locked sequence for P1 vision:
 
 | Slot | Program | Action |
 |------|---------|--------|
-| **Primary spike** | **P1** | RunPod time-slice caption pass on ~12 videos |
+| **Primary spike** | **P1 / V1** | Time-slice caption pass on ~12 videos (run-anywhere) — [`VISION_V1_TIME_SLICE_CAPTION_SPIKE.md`](./VISION_V1_TIME_SLICE_CAPTION_SPIKE.md) |
 | **Background** | **P3** | Keep queue/ledger healthy; no new architecture |
-| **Parked** | P4–P6 | Until P1 spike answers “are slice tags worth indexing?” |
-| **Note-only** | P2, P5, P7–P9 | Capture pain in *Notes*; no build |
+| **Parked (P1)** | V2–V5 | Until V1 retrospective: keep / pivot / kill time slices |
+| **Parked** | P4–P6 | Until V1 answers “are slice tags worth indexing?” |
+| **Note-only** | P2, P5, P7–P9 | Capture pain in *Notes*; no build (P9: optional RunPod as one V1 runner) |
 
-Revisit this table after the P1 spike (one paragraph: keep / pivot / kill).
+Revisit this table after the V1 spike (one paragraph: keep / pivot / kill).
 
 ---
 
@@ -222,6 +223,7 @@ _Use this section during mental exploration. Promote bullets into a program’s 
 |-------|----------|
 | Planning hub | **this file** |
 | Discovery / similarity / HITL / LLM posture | [`DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md`](./DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md) |
+| P1 V1 time-slice caption spike (impl) | [`VISION_V1_TIME_SLICE_CAPTION_SPIKE.md`](./VISION_V1_TIME_SLICE_CAPTION_SPIKE.md) |
 | Discovery FS watcher + enrichment jobs (planned) | [`DISCOVERY_INDEX_WATCHER_PLAN.md`](./DISCOVERY_INDEX_WATCHER_PLAN.md) |
 | Lineage DB sketch | [`LINEAGE_INDEX_SKETCH.md`](./LINEAGE_INDEX_SKETCH.md) |
 | Bucket model Phase 2 (work items, pools) | [`BUCKET_MODEL_PHASE2_PLAN.md`](./BUCKET_MODEL_PHASE2_PLAN.md) |

@@ -8,6 +8,27 @@ This document captures **aspirational targets** from design discussion: how **br
 
 ---
 
+## Build sequence (locked 2026-07-14)
+
+Ordered slices for the looks/reads-like program. **One primary spike at a time.** GPU batch stays off interactive Comfy.
+
+| Slice | Intent | Status |
+|-------|--------|--------|
+| **V1** | Time-slice caption spike (~12 videos, **run-anywhere** batch, NDJSON) — learn if in-asset time helps | **Next** — [`VISION_V1_TIME_SLICE_CAPTION_SPIKE.md`](./VISION_V1_TIME_SLICE_CAPTION_SPIKE.md) |
+| **V2** | Discovery watcher + asset job queue with vision stubs | After V1 retrospective |
+| **V3a** | Florence or WD14 → provisional `asset_tags` / `source_facets` | After V2 |
+| **V4** | Classical sidecar / BM25 product search | After useful tags/captions |
+| **V3b** | CLIP/SigLIP embeds + ANN (looks-like) | When gist neighbors are the bottleneck |
+| **V5** | HITL guided review + taxonomy versions | After enough provisional labels |
+
+**Already useful (do not rebuild):** Discovery browse; prompt `asset_tags` bootstrap ([`shape_factory_tags.py`](../workspace/scripts/shape_factory_tags.py)); editorial source facets; ratings hooks for `vision_scores.json`. P8 still-image sorter stays a side lane until embeddings policy settles.
+
+**Parked:** face `identity_embed`; temporal NL (“X then Y”); full LoRA/adapters. Valid alternate order **V2→V3a** only if V1 is explicitly parked (factory tagging before slice UX).
+
+Default path: **V1 → keep/pivot/kill paragraph → V2 → V3a → V4 → V3b/V5 as recall demands.**
+
+---
+
 ## User-facing framing: two questions at once
 
 Around any corpus item it should eventually feel natural to ask:

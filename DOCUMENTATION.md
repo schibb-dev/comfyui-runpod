@@ -99,7 +99,8 @@ Use **`npm run up:minimal`** or **`make up-minimal`** only if you intentionally 
 | [docs/WORKFLOW_COMPATIBILITY.md](docs/WORKFLOW_COMPATIBILITY.md) | Workflow compatibility notes. |
 | [docs/WORKSPACE_PROJECTS_RUNDOWN.md](docs/WORKSPACE_PROJECTS_RUNDOWN.md) | Workspace projects rundown. |
 | [docs/PLANNING_OVERVIEW.md](docs/PLANNING_OVERVIEW.md) | **Planning hub** — programs (Discovery, lineage, queue, orchestration, …), focus, doc index. |
-| [docs/DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md](docs/DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md) | Discovery / similarity / HITL / slice spike vision. |
+| [docs/DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md](docs/DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md) | Discovery / similarity / HITL / V1–V5 sequence. |
+| [docs/VISION_V1_TIME_SLICE_CAPTION_SPIKE.md](docs/VISION_V1_TIME_SLICE_CAPTION_SPIKE.md) | P1 V1 time-slice caption spike (run-anywhere jobs, NDJSON, learn gate). |
 | [docs/WSL_MOVE_TO_E_FOLLOWUP.md](docs/WSL_MOVE_TO_E_FOLLOWUP.md) | WSL vhdx move to E: — junction workaround, verify, swap follow-up, **planned export/import to official registration**. |
 | [docs/CURSOR_AGENT_SUDO_ASKPASS.md](docs/CURSOR_AGENT_SUDO_ASKPASS.md) | Cursor agent sudo/askpass fix (cleanup script) and fallbacks if askpass still fails. |
 
