@@ -51,7 +51,10 @@ def normalize_tag(raw: str) -> str:
 
 
 def tags_from_caption(caption: str, *, max_tags: int = 16) -> List[str]:
-    words = re.findall(r"[a-z][a-z0-9]{2,}", (caption or "").lower())
+    text = caption or ""
+    if text.startswith("[dry-run]"):
+        return []
+    words = re.findall(r"[a-z][a-z0-9]{2,}", text.lower())
     out: List[str] = []
     seen = set()
     for w in words:
@@ -187,13 +190,21 @@ def build_row(
 
 
 def default_status_dir(data_root: Optional[Path]) -> Optional[Path]:
+    """Prefer ``_status`` beside ``og/`` when data_root is the output bind."""
     if data_root is None:
         return None
-    # Prefer existing _status; else default under output/
-    for cand in (data_root / "output" / "_status", data_root / "_status"):
+    root = data_root.expanduser().resolve()
+    candidates = [
+        root / "_status",
+        root / "output" / "_status",
+    ]
+    for cand in candidates:
         if cand.is_dir():
             return cand
-    return data_root / "output" / "_status"
+    # Default: next to og/ when present, else nested output/_status
+    if (root / "og").is_dir():
+        return root / "_status"
+    return root / "output" / "_status"
 
 
 def run_caption(

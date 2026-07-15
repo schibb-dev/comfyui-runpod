@@ -128,6 +128,8 @@ Under `workspace/scripts/` (**implemented** — V1 scaffolding):
 |--------|----------------|
 | [`vision_slice_sample.py`](../workspace/scripts/vision_slice_sample.py) | Inputs → ffprobe windows, ffmpeg mid-frames, `frames_manifest.json`. **CPU-only**. |
 | [`vision_slice_caption_run.py`](../workspace/scripts/vision_slice_caption_run.py) | Frames → NDJSON + `vision_slice_manifest.json`. `--dry-run` or Florence-2 via `transformers`. |
+| [`vision_slice_pick_inputs.py`](../workspace/scripts/vision_slice_pick_inputs.py) | Scan `og/`, pick ~N diverse clips → `vision_v1_inputs.txt`. |
+| [`vision_slice_dry_run.sh`](../workspace/scripts/vision_slice_dry_run.sh) | Orchestrate pick → sample → caption `--dry-run` (no GPU). |
 | [`vision_slice_sync.sh`](../workspace/scripts/vision_slice_sync.sh) | Optional rsync push/pull for remote runners (`VISION_REMOTE`). |
 
 Tests: [`test_vision_slice.py`](../workspace/tests/test_vision_slice.py).
@@ -140,13 +142,23 @@ Same entrypoints later become V2 GPU handlers.
 
 ## Operator runbook (runner-agnostic)
 
-1. **Select ~12 videos** — `vision_v1_inputs.txt` (one `asset_relpath` per line).
+**Fast path (CPU dry-run):**
+
+```bash
+VISION_DATA_ROOT=/home/yuji/comfyui-runpod-data/output \
+  ./workspace/scripts/vision_slice_dry_run.sh
+# optional: VISION_LIMIT=12 VISION_WORK_DIR=/tmp/vision_v1_work
+```
+
+**Manual steps:**
+
+1. **Select ~12 videos** — `vision_slice_pick_inputs.py` or edit `vision_v1_inputs.txt` (one `asset_relpath` per line).
 2. **Sample (any machine with videos + ffmpeg):**  
    `python3 vision_slice_sample.py --inputs … --window-sec 2 --work-dir "$VISION_WORK_DIR"`
 3. **Caption on chosen runner** (pick one):
-   - **Local:** Comfy drained → same host, same `--work-dir` / `--status-dir`.
-   - **Docker:** start GPU sidecar mounting data + work + status; same two scripts.
-   - **Remote:** `vision_slice_sync.sh push` → SSH run `vision_slice_caption_run.py` → `pull` NDJSON/manifest.
+   - **Local dry-run:** `--dry-run` (no model).
+   - **Local GPU:** Comfy drained → same host without `--dry-run`.
+   - **Docker / remote:** same CLI; use `vision_slice_sync.sh` only for remote file move.
 4. **Spot-check** — fill `vision_v1_spotcheck.md`.
 5. **Tear down** paid/remote capacity if used; leave local/Docker idle.
 6. **Retrospective** — one paragraph in Planning Overview; set Next to V2 or park V1.

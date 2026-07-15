@@ -13,10 +13,12 @@ import support  # noqa: F401
 
 from vision_slice_caption_run import (
     build_row,
+    default_status_dir,
     dry_run_caption,
     run_caption,
     tags_from_caption,
 )
+from vision_slice_pick_inputs import pick_diverse, write_inputs
 from vision_slice_sample import (
     plan_windows,
     resolve_asset_path,
@@ -164,6 +166,46 @@ class CaptionUnitTests(unittest.TestCase):
 
     def test_safe_stem(self) -> None:
         self.assertEqual(safe_stem("og/foo bar!!.mp4")[:3], "foo")
+
+    def test_default_status_beside_og(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "og").mkdir()
+            self.assertEqual(default_status_dir(root), root / "_status")
+
+
+class PickInputsTests(unittest.TestCase):
+    def test_pick_diverse_round_robin(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            og = Path(td) / "og"
+            paths = []
+            for date, name in (
+                ("2026-07-01", "a.mp4"),
+                ("2026-07-01", "b.mp4"),
+                ("2026-07-10", "c.mp4"),
+                ("2026-07-10", "hourly_d.mp4"),
+                ("2026-06-01", "e.mp4"),
+            ):
+                p = og / date / name
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(b"x")
+                paths.append(p)
+            picked = pick_diverse(paths, og_root=og, limit=3, seed=1, prefer_hourly=True)
+            self.assertEqual(len(picked), 3)
+            buckets = {p.parent.name for p in picked}
+            self.assertGreaterEqual(len(buckets), 2)
+
+    def test_write_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            og = root / "og" / "2026-07-01"
+            og.mkdir(parents=True)
+            v = og / "clip.mp4"
+            v.write_bytes(b"x")
+            out = root / "_status" / "vision_v1_inputs.txt"
+            write_inputs([v], data_root=root, out_path=out)
+            text = out.read_text(encoding="utf-8")
+            self.assertIn("og/2026-07-01/clip.mp4", text)
 
 
 if __name__ == "__main__":
