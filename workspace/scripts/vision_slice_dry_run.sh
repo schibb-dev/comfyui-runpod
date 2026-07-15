@@ -47,6 +47,7 @@ python3 "$SCRIPTS/vision_slice_caption_run.py" \
   --status-dir "$STATUS_DIR" \
   --run-id "$RUN_ID" \
   --runner "$RUNNER" \
+  --provider dry-run \
   --dry-run
 
 echo "ok: inputs=$INPUTS"

@@ -126,17 +126,35 @@ Under `workspace/scripts/` (**implemented** — V1 scaffolding):
 
 | Script | Responsibility |
 |--------|----------------|
+| [`vision_slice_runner.py`](../workspace/scripts/vision_slice_runner.py) | CaptionRunner API: dry-run, **Comfy/RunPod HTTP**, transformers. |
 | [`vision_slice_sample.py`](../workspace/scripts/vision_slice_sample.py) | Inputs → ffprobe windows, ffmpeg mid-frames, `frames_manifest.json`. **CPU-only**. |
-| [`vision_slice_caption_run.py`](../workspace/scripts/vision_slice_caption_run.py) | Frames → NDJSON + `vision_slice_manifest.json`. `--dry-run` or Florence-2 via `transformers`. |
+| [`vision_slice_caption_run.py`](../workspace/scripts/vision_slice_caption_run.py) | Frames → NDJSON via `make_runner` (`--provider comfy\|runpod\|transformers\|dry-run`). |
 | [`vision_slice_pick_inputs.py`](../workspace/scripts/vision_slice_pick_inputs.py) | Scan `og/`, pick ~N diverse clips → `vision_v1_inputs.txt`. |
 | [`vision_slice_dry_run.sh`](../workspace/scripts/vision_slice_dry_run.sh) | Orchestrate pick → sample → caption `--dry-run` (no GPU). |
 | [`vision_slice_sync.sh`](../workspace/scripts/vision_slice_sync.sh) | Optional rsync push/pull for remote runners (`VISION_REMOTE`). |
+| [`vision_v1_florence_caption.api.json`](../workspace/workflows/vision_v1_florence_caption.api.json) | Reference Comfy API prompt (same graph the Comfy runner builds). |
 
 Tests: [`test_vision_slice.py`](../workspace/tests/test_vision_slice.py).
 
 Same entrypoints later become V2 GPU handlers.
 
-**Model choice for spike (fixed):** Florence-2 (HF or runner-local weights) in caption mode on stills. Pin the exact string in the manifest. Do not chase multiple models in V1.
+**Model choice for spike (fixed):** Comfy `DownloadAndLoadFlorence2Model` default **`microsoft/Florence-2-base`** (same graph on local compose or RunPod :8188). First run downloads weights into the Comfy models cache — allow a long timeout (`ComfyRunnerConfig.timeout_s`, default 900s). Do not chase multiple models in V1.
+
+### Runner API shape (RunPod-ready)
+
+```text
+CaptionRequest(image_path, asset_relpath, meta)
+    → CaptionRunner.caption()
+    → CaptionResult(caption, provider, model_pin, runner, raw)
+```
+
+| Provider | How GPU is reached |
+|----------|-------------------|
+| `comfy` / `runpod` | HTTP to Comfy `/upload/image` + `/prompt` + `/history/{id}` — **same code**; only `--comfy-server` changes (`http://127.0.0.1:8188` vs `http://<pod>:8188`) |
+| `transformers` | In-process torch (optional) |
+| `dry-run` | No GPU |
+
+Image ingress: `--image-mode upload` (preferred when runner disk ≠ Comfy disk, including RunPod) or `input_copy` when `VISION_COMFY_INPUT_ROOT` is a shared bind.
 
 ---
 
@@ -156,9 +174,12 @@ VISION_DATA_ROOT=/home/yuji/comfyui-runpod-data/output \
 2. **Sample (any machine with videos + ffmpeg):**  
    `python3 vision_slice_sample.py --inputs … --window-sec 2 --work-dir "$VISION_WORK_DIR"`
 3. **Caption on chosen runner** (pick one):
-   - **Local dry-run:** `--dry-run` (no model).
-   - **Local GPU:** Comfy drained → same host without `--dry-run`.
-   - **Docker / remote:** same CLI; use `vision_slice_sync.sh` only for remote file move.
+   - **Local dry-run:** `--provider dry-run` (no model).
+   - **Local Comfy (compose :8188):**  
+     `python3 vision_slice_caption_run.py … --provider comfy --comfy-server http://127.0.0.1:8188 --image-mode upload --runner comfy`  
+     Prefer draining heavy Comfy queues first so Florence can use the GPU.
+   - **RunPod Comfy:** same flags with `--provider runpod --comfy-server http://<pod>:8188 --image-mode upload` (`upload` keeps runner FS ≠ pod FS).
+   - **transformers:** `--provider transformers` if you want in-process Florence without Comfy.
 4. **Spot-check** — fill `vision_v1_spotcheck.md`.
 5. **Tear down** paid/remote capacity if used; leave local/Docker idle.
 6. **Retrospective** — one paragraph in Planning Overview; set Next to V2 or park V1.

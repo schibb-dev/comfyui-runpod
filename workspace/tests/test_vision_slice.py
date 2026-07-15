@@ -19,6 +19,10 @@ from vision_slice_caption_run import (
     tags_from_caption,
 )
 from vision_slice_pick_inputs import pick_diverse, write_inputs
+from vision_slice_runner import (
+    build_florence_caption_prompt,
+    extract_caption_from_history,
+)
 from vision_slice_sample import (
     plan_windows,
     resolve_asset_path,
@@ -206,6 +210,26 @@ class PickInputsTests(unittest.TestCase):
             write_inputs([v], data_root=root, out_path=out)
             text = out.read_text(encoding="utf-8")
             self.assertIn("og/2026-07-01/clip.mp4", text)
+
+
+class ComfyRunnerApiTests(unittest.TestCase):
+    def test_build_florence_prompt_shape(self) -> None:
+        prompt = build_florence_caption_prompt(image_name="vision_v1/a.jpg", model="microsoft/Florence-2-base")
+        self.assertEqual(prompt["1"]["class_type"], "LoadImage")
+        self.assertEqual(prompt["1"]["inputs"]["image"], "vision_v1/a.jpg")
+        self.assertEqual(prompt["2"]["class_type"], "DownloadAndLoadFlorence2Model")
+        self.assertEqual(prompt["3"]["class_type"], "Florence2Run")
+        self.assertEqual(prompt["3"]["inputs"]["task"], "caption")
+        self.assertEqual(prompt["3"]["inputs"]["image"], ["1", 0])
+        self.assertEqual(prompt["3"]["inputs"]["florence2_model"], ["2", 0])
+        self.assertEqual(prompt["4"]["class_type"], "PreviewImage")
+        self.assertEqual(prompt["4"]["inputs"]["images"], ["3", 0])
+
+    def test_extract_caption_from_history(self) -> None:
+        entry = {"outputs": {"3": {"text": ["a person sitting outdoors"]}}}
+        self.assertEqual(extract_caption_from_history(entry), "a person sitting outdoors")
+        entry2 = {"outputs": {"9": {"string": ["hello"]}}}
+        self.assertEqual(extract_caption_from_history(entry2), "hello")
 
 
 if __name__ == "__main__":

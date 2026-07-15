@@ -1,0 +1,40 @@
+{
+  "_comment": "Vision V1 Florence caption API prompt template (LoadImage → Florence → PreviewImage sink). Built by vision_slice_runner.build_florence_caption_prompt.",
+  "1": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "vision_v1/FRAME.jpg"
+    }
+  },
+  "2": {
+    "class_type": "DownloadAndLoadFlorence2Model",
+    "inputs": {
+      "model": "microsoft/Florence-2-base",
+      "precision": "fp16",
+      "attention": "sdpa",
+      "convert_to_safetensors": false
+    }
+  },
+  "3": {
+    "class_type": "Florence2Run",
+    "inputs": {
+      "image": ["1", 0],
+      "florence2_model": ["2", 0],
+      "text_input": "",
+      "task": "caption",
+      "fill_mask": true,
+      "keep_model_loaded": true,
+      "max_new_tokens": 64,
+      "num_beams": 3,
+      "do_sample": false,
+      "output_mask_select": "",
+      "seed": 1
+    }
+  },
+  "4": {
+    "class_type": "PreviewImage",
+    "inputs": {
+      "images": ["3", 0]
+    }
+  }
+}

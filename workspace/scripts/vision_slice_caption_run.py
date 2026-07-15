@@ -2,8 +2,11 @@
 """
 Vision V1 — caption frames_manifest.json into NDJSON (run-anywhere).
 
-Default provider for real GPU runs: Florence-2 via transformers (optional dep).
-``--dry-run`` writes placeholder captions without loading a model.
+Providers (via ``vision_slice_runner.make_runner``):
+
+- ``--dry-run`` / ``--provider dry-run`` — placeholders, no GPU
+- ``--provider comfy`` — ComfyUI Florence2 over HTTP (local Docker or RunPod :8188)
+- ``--provider transformers`` — in-process Florence (optional torch deps)
 
 See docs/VISION_V1_TIME_SLICE_CAPTION_SPIKE.md.
 """
@@ -19,8 +22,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+from vision_slice_runner import (
+    DEFAULT_COMFY_MODEL,
+    CaptionRequest,
+    make_runner,
+)
+
 SCHEMA_VERSION = 1
-DEFAULT_MODEL_PIN = "florence-community/Florence-2-base"
+DEFAULT_MODEL_PIN = DEFAULT_COMFY_MODEL
 CAPTIONS_NDJSON = "vision_slice_captions.ndjson"
 SLICE_MANIFEST = "vision_slice_manifest.json"
 
@@ -83,83 +92,6 @@ def resolve_frame_path(frame: Dict[str, Any], *, work_dir: Path) -> Path:
     return (work_dir / rel).resolve()
 
 
-class CaptionProvider:
-    def caption_image(self, image_path: Path) -> str:
-        raise NotImplementedError
-
-
-class DryRunProvider(CaptionProvider):
-    def __init__(self, frame: Optional[Dict[str, Any]] = None) -> None:
-        self._frame = frame
-
-    def caption_image(self, image_path: Path) -> str:
-        if self._frame is not None:
-            return dry_run_caption(self._frame)
-        return f"[dry-run] {image_path.name}"
-
-
-class Florence2Provider(CaptionProvider):
-    """Lazy Florence-2 captioner (transformers)."""
-
-    def __init__(self, *, model_pin: str, device: str) -> None:
-        self.model_pin = model_pin
-        self.device = device
-        self._model = None
-        self._processor = None
-
-    def _ensure(self) -> None:
-        if self._model is not None:
-            return
-        try:
-            import torch
-            from PIL import Image  # noqa: F401
-            from transformers import AutoModelForCausalLM, AutoProcessor
-        except ImportError as e:
-            raise RuntimeError(
-                "Florence captioning requires torch, transformers, and Pillow. "
-                "Use --dry-run without a GPU stack, or install those deps on the runner."
-            ) from e
-
-        self._processor = AutoProcessor.from_pretrained(self.model_pin, trust_remote_code=True)
-        self._model = AutoModelForCausalLM.from_pretrained(
-            self.model_pin,
-            trust_remote_code=True,
-            torch_dtype="auto",
-        )
-        if self.device.startswith("cuda"):
-            self._model = self._model.to(self.device)
-        self._model.eval()
-        self._torch = torch
-        from PIL import Image
-
-        self._Image = Image
-
-    def caption_image(self, image_path: Path) -> str:
-        self._ensure()
-        assert self._model is not None and self._processor is not None
-        image = self._Image.open(image_path).convert("RGB")
-        task = "<CAPTION>"
-        inputs = self._processor(text=task, images=image, return_tensors="pt")
-        if self.device.startswith("cuda"):
-            inputs = {k: v.to(self.device) if hasattr(v, "to") else v for k, v in inputs.items()}
-        with self._torch.no_grad():
-            generated = self._model.generate(
-                input_ids=inputs["input_ids"],
-                pixel_values=inputs.get("pixel_values"),
-                max_new_tokens=64,
-                num_beams=1,
-                do_sample=False,
-            )
-        text = self._processor.batch_decode(generated, skip_special_tokens=False)[0]
-        parsed = self._processor.post_process_generation(
-            text, task=task, image_size=(image.width, image.height)
-        )
-        if isinstance(parsed, dict):
-            cap = parsed.get(task) or parsed.get("<CAPTION>") or next(iter(parsed.values()), "")
-            return str(cap).strip()
-        return str(parsed).strip()
-
-
 def build_row(
     frame: Dict[str, Any],
     *,
@@ -168,6 +100,7 @@ def build_row(
     model_pin: str,
     run_id: str,
     runner: str,
+    extra: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     row: Dict[str, Any] = {
         "schema": SCHEMA_VERSION,
@@ -186,6 +119,8 @@ def build_row(
     }
     if frame.get("slice"):
         row["slice"] = frame.get("slice")
+    if extra:
+        row["runner_raw"] = extra
     return row
 
 
@@ -201,7 +136,6 @@ def default_status_dir(data_root: Optional[Path]) -> Optional[Path]:
     for cand in candidates:
         if cand.is_dir():
             return cand
-    # Default: next to og/ when present, else nested output/_status
     if (root / "og").is_dir():
         return root / "_status"
     return root / "output" / "_status"
@@ -218,6 +152,10 @@ def run_caption(
     device: str = "cuda",
     dry_run: bool = False,
     append: bool = False,
+    provider: str = "comfy",
+    comfy_server: str = "http://127.0.0.1:8188",
+    image_mode: str = "upload",
+    comfy_input_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
     doc = load_frames_manifest(frames_manifest)
     wd = Path(work_dir or doc.get("work_dir") or frames_manifest.parent).expanduser().resolve()
@@ -228,55 +166,80 @@ def run_caption(
     if not append and ndjson_path.exists():
         ndjson_path.unlink()
 
-    provider_name = "dry-run" if dry_run else "florence2"
-    florence: Optional[Florence2Provider] = None
-    if not dry_run:
-        florence = Florence2Provider(model_pin=model_pin, device=device)
+    cap_runner = make_runner(
+        provider=provider,
+        runner_label=runner,
+        comfy_server=comfy_server,
+        model_pin=model_pin,
+        device=device,
+        image_mode=image_mode,
+        comfy_input_root=comfy_input_root,
+        dry_run=dry_run,
+    )
 
     rows: List[Dict[str, Any]] = []
     errors: List[Dict[str, str]] = []
     started = utc_now()
+    used_provider = "dry-run" if dry_run else provider
+    used_pin = "dry-run" if dry_run else model_pin
 
-    with ndjson_path.open("a", encoding="utf-8") as fh:
-        for frame in doc.get("frames") or []:
-            if not isinstance(frame, dict):
-                continue
-            try:
-                img = resolve_frame_path(frame, work_dir=wd)
-                if dry_run:
-                    caption = dry_run_caption(frame)
-                else:
-                    assert florence is not None
-                    if not img.is_file() or img.stat().st_size == 0:
-                        raise FileNotFoundError(f"missing/empty frame: {img}")
-                    caption = florence.caption_image(img)
-                row = build_row(
-                    frame,
-                    caption=caption,
-                    provider=provider_name,
-                    model_pin=model_pin if not dry_run else "dry-run",
-                    run_id=run_id,
-                    runner=runner,
-                )
-                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
-                rows.append(row)
-            except Exception as e:
-                errors.append(
-                    {
-                        "asset_relpath": str(frame.get("asset_relpath") or ""),
-                        "frame_relpath": str(frame.get("frame_relpath") or ""),
-                        "error": str(e),
-                    }
-                )
+    try:
+        with ndjson_path.open("a", encoding="utf-8") as fh:
+            for frame in doc.get("frames") or []:
+                if not isinstance(frame, dict):
+                    continue
+                try:
+                    img = resolve_frame_path(frame, work_dir=wd)
+                    result = cap_runner.caption(
+                        CaptionRequest(
+                            image_path=img,
+                            asset_relpath=str(frame.get("asset_relpath") or ""),
+                            frame_relpath=str(frame.get("frame_relpath") or ""),
+                            meta={
+                                "slice": frame.get("slice"),
+                                "t0": frame.get("t0"),
+                                "t1": frame.get("t1"),
+                                "frame_t": frame.get("frame_t"),
+                            },
+                        )
+                    )
+                    used_provider = result.provider
+                    used_pin = result.model_pin
+                    row = build_row(
+                        frame,
+                        caption=result.caption,
+                        provider=result.provider,
+                        model_pin=result.model_pin,
+                        run_id=run_id,
+                        runner=result.runner or runner,
+                        extra=result.raw or None,
+                    )
+                    fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+                    rows.append(row)
+                except Exception as e:
+                    errors.append(
+                        {
+                            "asset_relpath": str(frame.get("asset_relpath") or ""),
+                            "frame_relpath": str(frame.get("frame_relpath") or ""),
+                            "error": str(e),
+                        }
+                    )
+    finally:
+        try:
+            cap_runner.close()
+        except Exception:
+            pass
 
     finished = utc_now()
     manifest = {
         "schema": SCHEMA_VERSION,
         "run_id": run_id,
         "runner": runner,
-        "provider": provider_name,
-        "model_pin": model_pin if not dry_run else "dry-run",
-        "device": device if not dry_run else "cpu",
+        "provider": used_provider,
+        "model_pin": used_pin,
+        "comfy_server": comfy_server if provider in ("comfy", "runpod", "comfyui") else None,
+        "image_mode": image_mode if provider in ("comfy", "runpod", "comfyui") else None,
+        "device": device if provider in ("transformers", "florence2") else None,
         "dry_run": dry_run,
         "started_utc": started,
         "finished_utc": finished,
@@ -327,18 +290,42 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument(
         "--runner",
         default=os.environ.get("VISION_RUNNER", "local"),
-        help="local | docker | runpod | other (recorded in outputs)",
+        help="Label recorded in outputs: local | docker | runpod | comfy | …",
+    )
+    ap.add_argument(
+        "--provider",
+        default=os.environ.get("VISION_PROVIDER", "comfy"),
+        choices=["comfy", "runpod", "comfyui", "transformers", "florence2", "dry-run"],
+        help="Caption backend (comfy/runpod share HTTP API; transformers = in-process)",
+    )
+    ap.add_argument(
+        "--comfy-server",
+        default=os.environ.get("VISION_COMFY_SERVER", "http://127.0.0.1:8188"),
+        help="ComfyUI base URL (local or RunPod-mapped :8188)",
+    )
+    ap.add_argument(
+        "--image-mode",
+        default=os.environ.get("VISION_COMFY_IMAGE_MODE", "upload"),
+        choices=["upload", "input_copy"],
+        help="How frames reach Comfy LoadImage (upload preferred for RunPod)",
+    )
+    ap.add_argument(
+        "--comfy-input-root",
+        type=Path,
+        default=_env_path("VISION_COMFY_INPUT_ROOT"),
+        help="Host path to Comfy input/ for image_mode=input_copy",
     )
     ap.add_argument(
         "--model-pin",
         default=os.environ.get("VISION_MODEL_PIN", DEFAULT_MODEL_PIN),
+        help="Florence weights id (Comfy DownloadAndLoadFlorence2Model.model or HF id)",
     )
     ap.add_argument(
         "--device",
         default=os.environ.get("VISION_DEVICE", "cuda"),
-        help="cuda | cuda:0 | cpu (cpu only sensible with --dry-run)",
+        help="Device for --provider transformers only",
     )
-    ap.add_argument("--dry-run", action="store_true", help="Placeholder captions; no model load")
+    ap.add_argument("--dry-run", action="store_true", help="Placeholder captions; no model / Comfy")
     ap.add_argument("--append", action="store_true", help="Append to existing NDJSON instead of replace")
     args = ap.parse_args(list(argv) if argv is not None else None)
 
@@ -350,6 +337,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("error: --status-dir or VISION_STATUS_DIR (or --data-root) required", file=sys.stderr)
         return 2
 
+    provider = "dry-run" if args.dry_run else str(args.provider)
     try:
         manifest = run_caption(
             Path(args.frames_manifest),
@@ -361,6 +349,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             device=str(args.device),
             dry_run=bool(args.dry_run),
             append=bool(args.append),
+            provider=provider,
+            comfy_server=str(args.comfy_server),
+            image_mode=str(args.image_mode),
+            comfy_input_root=Path(args.comfy_input_root) if args.comfy_input_root else None,
         )
     except Exception as e:
         print(f"error: {e}", file=sys.stderr)
@@ -374,6 +366,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "ndjson": manifest.get("ndjson"),
                 "caption_count": manifest.get("caption_count"),
                 "error_count": manifest.get("error_count"),
+                "provider": manifest.get("provider"),
                 "dry_run": manifest.get("dry_run"),
             },
             indent=2,
