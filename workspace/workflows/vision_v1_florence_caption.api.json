@@ -1,5 +1,5 @@
 {
-  "_comment": "Vision V1 Florence caption API prompt template (LoadImage → Florence → PreviewImage sink). Built by vision_slice_runner.build_florence_caption_prompt.",
+  "_comment": "Vision V1 Florence caption API prompt. ShowText sinks the STRING into /history (PreviewImage alone does not).",
   "1": {
     "class_type": "LoadImage",
     "inputs": {
@@ -32,9 +32,9 @@
     }
   },
   "4": {
-    "class_type": "PreviewImage",
+    "class_type": "ShowText|pysssss",
     "inputs": {
-      "images": ["3", 0]
+      "text": ["3", 2]
     }
   }
 }

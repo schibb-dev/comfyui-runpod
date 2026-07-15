@@ -222,13 +222,13 @@ class ComfyRunnerApiTests(unittest.TestCase):
         self.assertEqual(prompt["3"]["inputs"]["task"], "caption")
         self.assertEqual(prompt["3"]["inputs"]["image"], ["1", 0])
         self.assertEqual(prompt["3"]["inputs"]["florence2_model"], ["2", 0])
-        self.assertEqual(prompt["4"]["class_type"], "PreviewImage")
-        self.assertEqual(prompt["4"]["inputs"]["images"], ["3", 0])
+        self.assertEqual(prompt["4"]["class_type"], "ShowText|pysssss")
+        self.assertEqual(prompt["4"]["inputs"]["text"], ["3", 2])
 
     def test_extract_caption_from_history(self) -> None:
-        entry = {"outputs": {"3": {"text": ["a person sitting outdoors"]}}}
+        entry = {"outputs": {"4": {"text": ["a person sitting outdoors"]}}}
         self.assertEqual(extract_caption_from_history(entry), "a person sitting outdoors")
-        entry2 = {"outputs": {"9": {"string": ["hello"]}}}
+        entry2 = {"outputs": {"3": {"string": ["hello"]}}}
         self.assertEqual(extract_caption_from_history(entry2), "hello")
 
 

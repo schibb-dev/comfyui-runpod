@@ -139,10 +139,10 @@ def build_florence_caption_prompt(
     seed: int = 1,
 ) -> Dict[str, Any]:
     """
-    Minimal API prompt: LoadImage → Florence load → Florence2Run(caption) → PreviewImage.
+    LoadImage → Florence load → Florence2Run → ShowText (caption sink).
 
-    PreviewImage is required so Comfy accepts the graph (``prompt_no_outputs`` otherwise);
-    the STRING caption is still read from Florence2Run outputs in /history.
+    ShowText|pysssss is an OUTPUT_NODE so the STRING appears in /history.
+    (PreviewImage alone only persists the image; Florence's caption was missing.)
     """
     return {
         "1": {
@@ -175,36 +175,37 @@ def build_florence_caption_prompt(
             },
         },
         "4": {
-            "class_type": "PreviewImage",
-            "inputs": {"images": ["3", 0]},
+            "class_type": "ShowText|pysssss",
+            "inputs": {"text": ["3", 2]},
         },
     }
 
 
 def extract_caption_from_history(history_entry: Dict[str, Any], *, run_node_id: str = "3") -> str:
-    """Pull Florence2Run STRING caption from a /history/{id} entry."""
+    """Pull caption STRING from ShowText sink and/or Florence2Run in /history."""
     outputs = history_entry.get("outputs") if isinstance(history_entry, dict) else None
     if not isinstance(outputs, dict):
         raise RuntimeError("history entry missing outputs")
-    node_out = outputs.get(str(run_node_id)) or outputs.get(run_node_id)
-    if not isinstance(node_out, dict):
-        # Fallback: first node with text/string
-        for _nid, blob in outputs.items():
-            if isinstance(blob, dict) and (
-                blob.get("text") is not None or blob.get("string") is not None
-            ):
-                node_out = blob
-                break
-    if not isinstance(node_out, dict):
-        raise RuntimeError(f"no Florence outputs in history keys={list(outputs.keys())}")
 
-    for key in ("text", "string", "caption"):
-        val = node_out.get(key)
-        if isinstance(val, list) and val:
-            return str(val[0]).strip()
-        if isinstance(val, str) and val.strip():
-            return val.strip()
-    raise RuntimeError(f"could not parse caption from node outputs: {list(node_out.keys())}")
+    # Prefer explicit text sink (node "4" in our template), then Florence node, then any text blob.
+    order = ["4", str(run_node_id), run_node_id, *list(outputs.keys())]
+    seen = set()
+    for nid in order:
+        if nid in seen:
+            continue
+        seen.add(nid)
+        node_out = outputs.get(str(nid))
+        if not isinstance(node_out, dict):
+            continue
+        for key in ("text", "string", "caption"):
+            val = node_out.get(key)
+            if isinstance(val, list) and val:
+                s = str(val[0]).strip()
+                if s:
+                    return s
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+    raise RuntimeError(f"could not parse caption from history outputs keys={list(outputs.keys())}")
 
 
 @dataclass
