@@ -28,6 +28,24 @@ DEFAULT_COMFY_MODEL = "microsoft/Florence-2-base"
 DEFAULT_COMFY_TASK = "caption"
 DEFAULT_CLIENT_ID = "vision_slice_v1"
 
+# Short aliases → Florence2Run enum values (Comfy rejects unknown task strings with HTTP 400).
+COMFY_TASK_ALIASES: Dict[str, str] = {
+    "tags": "prompt_gen_tags",
+    "prompt_gen_tag": "prompt_gen_tags",
+    "mixed": "prompt_gen_mixed_caption",
+    "mixed_caption": "prompt_gen_mixed_caption",
+    "mixed_plus": "prompt_gen_mixed_caption_plus",
+    "mixed_caption_plus": "prompt_gen_mixed_caption_plus",
+    "analyze": "prompt_gen_analyze",
+}
+
+
+def normalize_comfy_task(task: str) -> str:
+    t = str(task or "").strip()
+    if not t:
+        return DEFAULT_COMFY_TASK
+    return COMFY_TASK_ALIASES.get(t, t)
+
 
 @dataclass
 class CaptionRequest:
@@ -144,6 +162,7 @@ def build_florence_caption_prompt(
     ShowText|pysssss is an OUTPUT_NODE so the STRING appears in /history.
     (PreviewImage alone only persists the image; Florence's caption was missing.)
     """
+    task = normalize_comfy_task(task)
     return {
         "1": {
             "class_type": "LoadImage",
@@ -401,7 +420,7 @@ def make_runner(
             ComfyRunnerConfig(
                 server=comfy_server,
                 model=model_pin,
-                task=task,
+                task=normalize_comfy_task(task),
                 max_new_tokens=max_new_tokens,
                 runner_label=label,
                 image_mode=image_mode,

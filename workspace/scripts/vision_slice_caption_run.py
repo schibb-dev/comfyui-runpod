@@ -119,13 +119,38 @@ def normalize_tag(raw: str) -> str:
     return t
 
 
-def tags_from_caption(caption: str, *, max_tags: int = 16) -> List[str]:
-    text = caption or ""
-    if text.startswith("[dry-run]"):
+def tags_from_caption(caption: str, *, max_tags: int = 64) -> List[str]:
+    """
+    Prefer comma-separated Danbooru / PromptGen tag lists; otherwise fall back
+    to simple word tokens for free-form captions.
+
+    Rejects long prose clauses that only happen to contain commas (e.g. mixed_plus).
+    """
+    text = (caption or "").strip()
+    if not text or text.startswith("[dry-run]"):
         return []
-    words = re.findall(r"[a-z][a-z0-9]{2,}", text.lower())
     out: List[str] = []
     seen = set()
+    if text.count(",") >= 2:
+        for part in text.split(","):
+            t = re.sub(r"\s+", " ", part).strip().lower()
+            if not t or len(t) < 2 or len(t) > 48 or t in seen:
+                continue
+            if len(t.split()) > 4:
+                continue
+            if re.search(r"[.!?;:]", t):
+                continue
+            seen.add(t)
+            out.append(t)
+            if len(out) >= max_tags:
+                break
+        if len(out) >= 3:
+            long_frac = sum(1 for t in out if len(t) > 28) / float(len(out))
+            if long_frac <= 0.35:
+                return out
+        out = []
+        seen = set()
+    words = re.findall(r"[a-z][a-z0-9]{2,}", text.lower())
     for w in words:
         t = normalize_tag(w)
         if not t or t in seen:
@@ -185,6 +210,12 @@ def build_row(
         row["task"] = task
     if frame.get("slice"):
         row["slice"] = frame.get("slice")
+    if frame.get("excerpt_index") is not None:
+        row["excerpt_index"] = frame.get("excerpt_index")
+    if frame.get("excerpt_video_relpath"):
+        row["excerpt_video_relpath"] = frame.get("excerpt_video_relpath")
+    if frame.get("excerpt_local_t") is not None:
+        row["excerpt_local_t"] = frame.get("excerpt_local_t")
     if extra:
         row["runner_raw"] = extra
     return row
@@ -265,6 +296,37 @@ def run_caption(
     used_provider = "dry-run" if dry_run else provider
     used_pin = "dry-run" if dry_run else model_pin
     used_task = task
+
+    # Progress marker for the vision UI while captions stream into NDJSON.
+    # Clears stale finished_utc from a previous run of the same variant id.
+    variant_manifest_path = status_dir / f"vision_slice_manifest__{variant_id}.json"
+    progress_manifest = {
+        "schema": SCHEMA_VERSION,
+        "run_id": run_id,
+        "runner": runner,
+        "provider": used_provider,
+        "model_pin": used_pin,
+        "variant": variant_id,
+        "task": used_task,
+        "status": "running",
+        "started_utc": started,
+        "finished_utc": None,
+        "frames_manifest": str(frames_manifest.resolve()),
+        "work_dir": str(wd),
+        "status_dir": str(status_dir),
+        "asset_count": doc.get("asset_count"),
+        "frame_count": doc.get("frame_count") or len(doc.get("frames") or []),
+        "caption_count": 0,
+        "error_count": 0,
+        "ndjson": str(ndjson_path),
+    }
+    try:
+        variant_manifest_path.write_text(
+            json.dumps(progress_manifest, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
 
     try:
         with ndjson_path.open("a", encoding="utf-8") as fh:
@@ -379,7 +441,7 @@ def run_caption(
         "timing": timing_summary,
     }
     # Per-variant manifest + latest pointer (keeps UI/docs familiar)
-    variant_manifest_path = status_dir / f"vision_slice_manifest__{variant_id}.json"
+    # (progress marker written at start; this overwrites with final stats)
     variant_manifest_path.write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )

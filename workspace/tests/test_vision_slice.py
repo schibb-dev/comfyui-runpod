@@ -24,6 +24,9 @@ from vision_slice_runner import (
     extract_caption_from_history,
 )
 from vision_slice_sample import (
+    extract_excerpt_mp4,
+    plan_excerpt_span,
+    plan_excerpt_spans,
     plan_windows,
     resolve_asset_path,
     run_sample,
@@ -50,6 +53,72 @@ class PlanWindowsTests(unittest.TestCase):
 
     def test_empty(self) -> None:
         self.assertEqual(plan_windows(0.0), [])
+
+    def test_offset_excerpt(self) -> None:
+        wins = plan_windows(10.0, window_sec=2.0, max_windows=30, offset_sec=40.0)
+        self.assertEqual(len(wins), 5)
+        self.assertEqual(wins[0], (40.0, 42.0, 41.0))
+        self.assertEqual(wins[-1], (48.0, 50.0, 49.0))
+
+
+class PlanExcerptTests(unittest.TestCase):
+    def test_mid(self) -> None:
+        t0, t1 = plan_excerpt_span(100.0, excerpt_sec=10.0, mode="mid")
+        self.assertEqual((t0, t1), (45.0, 55.0))
+
+    def test_start_end(self) -> None:
+        self.assertEqual(plan_excerpt_span(100.0, excerpt_sec=10.0, mode="start"), (0.0, 10.0))
+        self.assertEqual(plan_excerpt_span(100.0, excerpt_sec=10.0, mode="end"), (90.0, 100.0))
+
+    def test_full_when_unset(self) -> None:
+        self.assertEqual(plan_excerpt_span(50.0, excerpt_sec=0.0), (0.0, 50.0))
+        self.assertEqual(plan_excerpt_span(8.0, excerpt_sec=10.0), (0.0, 8.0))
+
+    def test_two_spread_consistent(self) -> None:
+        spans = plan_excerpt_spans(174.8, excerpt_sec=10.0, count=2, mode="spread")
+        self.assertEqual(len(spans), 2)
+        # centers near 1/3 and 2/3 → ~[53.3, 63.3] and ~[106.5, 116.5]
+        self.assertAlmostEqual(spans[0][1] - spans[0][0], 10.0, places=3)
+        self.assertAlmostEqual(spans[1][1] - spans[1][0], 10.0, places=3)
+        self.assertLess(spans[0][1], spans[1][0] + 1e-6)  # non-overlapping
+        # deterministic
+        self.assertEqual(
+            spans,
+            plan_excerpt_spans(174.8, excerpt_sec=10.0, count=2, mode="spread"),
+        )
+
+
+class ExtractExcerptIdempotentTests(unittest.TestCase):
+    def test_reuses_existing_nonempty_mp4(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            video = root / "src.mp4"
+            out = root / "ex00.mp4"
+            video.write_bytes(b"fake-src")
+            out.write_bytes(b"already-cut")
+            # Would raise if ffmpeg were invoked (ffmpeg binary name is missing).
+            reused = extract_excerpt_mp4(
+                video, t0=0.0, t1=10.0, out_mp4=out, ffmpeg="ffmpeg-does-not-exist-xyz"
+            )
+            self.assertFalse(reused)
+            self.assertEqual(out.read_bytes(), b"already-cut")
+
+    def test_force_overwrites(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            video = root / "src.mp4"
+            out = root / "ex00.mp4"
+            video.write_bytes(b"fake-src")
+            out.write_bytes(b"stale")
+            with self.assertRaises(RuntimeError):
+                extract_excerpt_mp4(
+                    video,
+                    t0=0.0,
+                    t1=10.0,
+                    out_mp4=out,
+                    ffmpeg="ffmpeg-does-not-exist-xyz",
+                    force=True,
+                )
 
 
 class ResolvePathTests(unittest.TestCase):
@@ -173,6 +242,15 @@ class CaptionUnitTests(unittest.TestCase):
         tags = tags_from_caption("A woman smiles at the camera outdoors")
         self.assertIn("woman", tags)
         self.assertIn("smiles", tags)
+
+    def test_tags_from_danbooru_caption(self) -> None:
+        tags = tags_from_caption(
+            "1girl, long hair, blonde hair, open mouth, cum, uncensored"
+        )
+        self.assertEqual(
+            tags,
+            ["1girl", "long hair", "blonde hair", "open mouth", "cum", "uncensored"],
+        )
 
     def test_build_row_whole(self) -> None:
         row = build_row(
