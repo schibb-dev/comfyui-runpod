@@ -34,6 +34,91 @@ _ADHOC_PARAM_NODES = {
 }
 
 
+def _norm_media_path(path: str) -> str:
+    return str(path or "").strip().replace("\\", "/").rstrip("/")
+
+
+def _video_source_slot(shape: Dict[str, Any], bindings: Dict[str, str]) -> Optional[str]:
+    """Prefer the shape's primary video require slot; fall back to binding name hints."""
+    reqs = shape.get("requires") if isinstance(shape.get("requires"), list) else []
+    for req in reqs:
+        if not isinstance(req, dict):
+            continue
+        slot = str(req.get("slot") or "").strip()
+        if not slot:
+            continue
+        media = str(req.get("media") or "").strip().lower()
+        if media == "video" or "video" in slot.lower():
+            return slot
+    for slot in bindings:
+        if "video" in str(slot).lower():
+            return str(slot)
+    return None
+
+
+def _parent_frame_count(job: Optional[Dict[str, Any]]) -> Optional[int]:
+    """Best-effort generation length from a prior job's captured workload / probes."""
+    if not isinstance(job, dict):
+        return None
+    timings = job.get("timings") if isinstance(job.get("timings"), dict) else {}
+    workload = timings.get("workload") if isinstance(timings.get("workload"), dict) else {}
+    for key in ("frames", "output_frame_count"):
+        raw = workload.get(key)
+        if isinstance(raw, (int, float)) and int(raw) > 0:
+            return int(raw)
+    outputs = timings.get("outputs") if isinstance(timings.get("outputs"), dict) else {}
+    probes = outputs.get("probes") if isinstance(outputs.get("probes"), list) else []
+    for probe_row in probes:
+        if not isinstance(probe_row, dict):
+            continue
+        probe = probe_row.get("probe") if isinstance(probe_row.get("probe"), dict) else {}
+        fc = probe.get("frame_count")
+        if isinstance(fc, (int, float)) and int(fc) > 0:
+            return int(fc)
+    return None
+
+
+def _extend_length_parameters(
+    job: Optional[Dict[str, Any]],
+    *,
+    existing: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Build parameter overrides so extend is a *longer* run, not a same-length re-render.
+
+    Default: add another full parent-length chunk (≈ double). Override with
+    ``SHAPE_FACTORY_EXTEND_EXTRA_FRAMES``.
+    """
+    params: Dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
+    if params.get("frames") not in (None, ""):
+        # Caller already chose an explicit length.
+        return params
+
+    base = _parent_frame_count(job)
+    if base is None or base <= 0:
+        base = int(os.environ.get("SHAPE_FACTORY_EXTEND_DEFAULT_FRAMES", "80"))
+    extra_raw = os.environ.get("SHAPE_FACTORY_EXTEND_EXTRA_FRAMES", "").strip()
+    if extra_raw:
+        extra = max(1, int(extra_raw))
+    else:
+        extra = max(1, base)
+    new_frames = int(base) + int(extra)
+    params["frames"] = new_frames
+    # Keep VHS load cap from clipping the chained source when lengthening.
+    if params.get("frame_load_cap") in (None, ""):
+        params["frame_load_cap"] = new_frames
+    overlap = None
+    if isinstance(job, dict):
+        timings = job.get("timings") if isinstance(job.get("timings"), dict) else {}
+        workload = timings.get("workload") if isinstance(timings.get("workload"), dict) else {}
+        if isinstance(workload.get("overlap"), (int, float)):
+            overlap = int(workload["overlap"])
+    if overlap is not None and params.get("overlap") in (None, ""):
+        params["overlap"] = overlap
+    params["output_prefix_suffix"] = params.get("output_prefix_suffix") or "_extend"
+    return params
+
+
 def _comfy_data_root(*, workspace_root: Path, output_root: Optional[Path] = None) -> Path:
     """Comfy-facing bind root (input/ + output/ siblings).
 
@@ -280,6 +365,9 @@ def queue_shape_factory_combo(
     dry_run: bool = False,
     dev: bool = False,
     overrides: Optional[Dict[str, Any]] = None,
+    pick_mode: str = "product",
+    parent_output: Optional[str] = None,
+    construction: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Generate + submit one explicit slot binding combo.
@@ -368,6 +456,7 @@ def queue_shape_factory_combo(
     if params:
         dev_tuning_override = build_adhoc_dev_tuning(params, data_root=data_root)
 
+    mode = str(pick_mode or "product").strip() or "product"
     gen = generate_job_for_picks(
         picks=picks,
         shape=shape,
@@ -378,11 +467,13 @@ def queue_shape_factory_combo(
         workflow_dir=workflow_dir,
         job_dir=job_dir,
         pick_index=0,
-        pick_mode="product",
+        pick_mode=mode,
         job_suffix=job_suffix,
         dev=dev,
         dev_tuning_override=dev_tuning_override,
         adhoc_overrides=adhoc_meta or None,
+        parent_output=parent_output,
+        construction=construction,
     )
 
     submit: Dict[str, Any]
@@ -415,6 +506,8 @@ def queue_shape_factory_combo(
         "dry_run": bool(dry_run),
         "skipped": bool(submit.get("skipped")),
         "overrides_applied": adhoc_meta or None,
+        "pick_mode": mode,
+        "parent_output": parent_output,
         "submit": submit,
     }
 
@@ -485,8 +578,8 @@ def replay_from_request_body(
     Re-run a prior job (by ``job_key``) or an explicit binding set.
 
     ``extend=true`` chains the job's output into a video source slot (v2v/i2v-from-video)
-    so the next run continues from the previous result. Combo key is always recomputed
-    because extend mutates a binding.
+    *and* lengthens the run (more frames). A same-length re-render with the prior output
+    as source is a zero-length extend and is rejected unless frames are explicitly set.
     """
     data_root = resolve_shape_factory_data_root(repo_root=repo_root)
     job_key = str(body.get("job_key") or "").strip()
@@ -509,7 +602,12 @@ def replay_from_request_body(
         submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
         sub_outs = submit.get("outputs") if isinstance(submit.get("outputs"), list) else []
         job_outs = job.get("outputs") if isinstance(job.get("outputs"), list) else []
-        output_abs = str((sub_outs[0] if sub_outs else (job_outs[0] if job_outs else "")) or "")
+        dep = job.get("deposit") if isinstance(job.get("deposit"), dict) else {}
+        dep_vids = dep.get("videos") if isinstance(dep.get("videos"), list) else []
+        output_abs = str(
+            (sub_outs[0] if sub_outs else (job_outs[0] if job_outs else (dep_vids[-1] if dep_vids else "")))
+            or ""
+        )
     else:
         job = None
         raw = body.get("bindings")
@@ -547,14 +645,48 @@ def replay_from_request_body(
             family=family_slug,
         )
 
+    overrides = _parse_overrides(body)
     extend = bool(body.get("extend"))
+    pick_mode = "replay"
+    parent_output: Optional[str] = None
+    construction: Optional[Dict[str, Any]] = None
+
     if extend:
         if not output_abs:
             raise ValueError("extend requires a resolvable output path")
-        video_slot = next((s for s in bindings if "video" in s.lower()), None)
+        video_slot = _video_source_slot(shape, bindings)
         if video_slot is None:
             raise ValueError("extend_not_supported: shape has no video source slot")
+        prev_source = _norm_media_path(bindings.get(video_slot) or "")
+        next_source = _norm_media_path(output_abs)
         bindings[video_slot] = output_abs
+
+        # Lengthen: disposition "extend" = chain + longer run (avoid zero-length re-render).
+        params_in = overrides.get("parameters") if isinstance(overrides.get("parameters"), dict) else {}
+        length_params = _extend_length_parameters(job, existing=params_in)
+        base_frames = _parent_frame_count(job)
+        new_frames = int(length_params.get("frames") or 0)
+        source_unchanged = bool(prev_source) and prev_source == next_source
+        if new_frames <= 0 or (base_frames is not None and new_frames <= int(base_frames)):
+            raise ValueError(
+                "extend_zero_length: refused same-length re-render; "
+                "set overrides.parameters.frames higher than the parent run"
+            )
+        overrides = dict(overrides)
+        overrides["parameters"] = length_params
+        pick_mode = "extend"
+        parent_output = output_abs
+        construction = {
+            "step": "extend",
+            "derive_action": "extend",
+            "pick_mode": "extend",
+            "parent_output": output_abs,
+            "source_slot": video_slot,
+            "source_unchanged": source_unchanged,
+            "frames_before": base_frames,
+            "frames_after": new_frames,
+            "replay_of_job_key": job_key or None,
+        }
 
     result = queue_shape_factory_combo(
         family_slug=family_slug,
@@ -567,11 +699,16 @@ def replay_from_request_body(
         front=bool(body.get("front") or False),
         dry_run=bool(body.get("dry_run") or False),
         dev=bool(body.get("dev") or False),
-        overrides=_parse_overrides(body),
+        overrides=overrides,
+        pick_mode=pick_mode,
+        parent_output=parent_output,
+        construction=construction,
     )
     if isinstance(result, dict):
         result.setdefault("replay_of_job_key", job_key or None)
         result.setdefault("extend", extend)
+        if construction:
+            result["construction"] = construction
         if recovered_prompt:
             result["prompt_profile_recovered"] = recovered_prompt
     return result

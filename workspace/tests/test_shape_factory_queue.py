@@ -141,6 +141,65 @@ class ShapeFactoryQueueTests(unittest.TestCase):
             body = json.loads(out.read_text())
             self.assertEqual(body["positive"], "edited")
 
+    def test_extend_length_parameters_doubles_parent_frames(self) -> None:
+        from shape_factory_queue import _extend_length_parameters, _parent_frame_count
+
+        job = {"timings": {"workload": {"frames": 80, "overlap": 8, "output_frame_count": 97}}}
+        self.assertEqual(_parent_frame_count(job), 80)
+        params = _extend_length_parameters(job)
+        self.assertEqual(params["frames"], 160)
+        self.assertEqual(params["overlap"], 8)
+        self.assertEqual(params["frame_load_cap"], 160)
+        # Explicit frames win.
+        pinned = _extend_length_parameters(job, existing={"frames": 200})
+        self.assertEqual(pinned["frames"], 200)
+
+    def test_replay_extend_bumps_frames_and_stamps_pick_mode(self) -> None:
+        from shape_factory_queue import replay_from_request_body
+
+        data_root = REPO_ROOT / ".data"
+        parent_key = (
+            "hourly__prompt_profile-1ff2227780fb__source_video-X-FB9-POSE-2026-04-16-171828_OG_00001"
+            "__000_202607161616"
+        )
+        parent_path = data_root / "shape_factory" / "jobs" / "FB9_GEX2" / f"{parent_key}.job.json"
+        if not parent_path.is_file():
+            self.skipTest("example GEX2 parent job missing")
+
+        captured: dict = {}
+
+        def fake_queue(**kwargs):
+            captured.update(kwargs)
+            return {
+                "ok": True,
+                "family_slug": kwargs.get("family_slug"),
+                "combo_key": "test",
+                "job_key": "test",
+                "pick_mode": kwargs.get("pick_mode"),
+            }
+
+        with mock.patch("shape_factory_queue.queue_shape_factory_combo", side_effect=fake_queue):
+            out = replay_from_request_body(
+                {
+                    "job_key": parent_key,
+                    "family_slug": "FB9_GEX_FACIAL",
+                    "extend": True,
+                    "dry_run": True,
+                },
+                repo_root=REPO_ROOT,
+                workspace_root=REPO_ROOT / "workspace",
+                output_root=Path("/home/yuji/comfyui-runpod-data/output"),
+                comfy_server="http://127.0.0.1:8188",
+            )
+        self.assertTrue(out.get("ok"))
+        self.assertEqual(captured.get("pick_mode"), "extend")
+        self.assertTrue(captured.get("parent_output"))
+        params = (captured.get("overrides") or {}).get("parameters") or {}
+        self.assertGreater(int(params.get("frames") or 0), 80)
+        src = (captured.get("bindings") or {}).get("source_video") or ""
+        self.assertIn("hourly__prompt_profile-1ff2227780fb", src)
+        self.assertNotIn("X-FB9-POSE-2026-04-16-171828_OG_00001.mp4", src)
+
 
 if __name__ == "__main__":
     unittest.main()

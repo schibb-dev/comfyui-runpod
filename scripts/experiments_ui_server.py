@@ -1399,10 +1399,13 @@ def _fast_track_extend(cfg: "ServerConfig", rel: str, body: Dict[str, Any]) -> D
         try:
             return _shape_factory_replay_payload(cfg, replay_body)
         except ValueError as e:
-            if "extend" in str(e).lower():
+            # Only still-source families (no video slot) fall back to plain replay.
+            # Do not swallow extend_zero_length / missing-output errors as silent replays.
+            if "extend_not_supported" in str(e).lower():
                 replay_body["extend"] = False
                 out = _shape_factory_replay_payload(cfg, replay_body)
                 out["extend_fallback"] = "replay"
+                out["extend_fallback_reason"] = str(e)
                 return out
             raise
     except Exception as e:
@@ -2098,10 +2101,13 @@ def _disposition_hook_runner(cfg: "ServerConfig", rel: str, body: Dict[str, Any]
             return _shape_factory_replay_payload(cfg, replay_body)
         except ValueError as e:
             if hook == "extend" or merged.get("extend"):
-                replay_body["extend"] = False
-                out = _shape_factory_replay_payload(cfg, replay_body)
-                out["extend_fallback"] = "replay"
-                return out
+                # Still-source only — never demote a failed lengthen into a silent replay.
+                if "extend_not_supported" in str(e).lower():
+                    replay_body["extend"] = False
+                    out = _shape_factory_replay_payload(cfg, replay_body)
+                    out["extend_fallback"] = "replay"
+                    out["extend_fallback_reason"] = str(e)
+                    return out
             return {"ok": False, "reason": str(e)}
 
     return _run
