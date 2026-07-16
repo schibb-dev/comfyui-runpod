@@ -62,6 +62,8 @@ import type {
   WorkItemsPriorityResponse,
   WorkProductsResponse,
   VisionSliceCaptionsResponse,
+  VisionTagJudgmentResponse,
+  VisionTagJudgmentSaveResponse,
   JsonPeekResponse,
   ComfyLiveStatusResponse,
 } from "./types";
@@ -177,6 +179,50 @@ export async function fetchVisionSliceCaptions(): Promise<VisionSliceCaptionsRes
     const detail = [j.error, j.detail].filter(Boolean).join(": ");
     throw new Error(
       `GET /api/vision/slice-captions failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function fetchVisionTagJudgment(): Promise<VisionTagJudgmentResponse> {
+  const r = await fetch("/api/vision/tag-judgment");
+  const raw = await r.text();
+  let j: VisionTagJudgmentResponse = {};
+  try {
+    j = JSON.parse(raw) as VisionTagJudgmentResponse;
+  } catch {
+    j = {};
+  }
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ") || raw.slice(0, 240).trim();
+    throw new Error(
+      `GET /api/vision/tag-judgment failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function saveVisionTagJudgment(body: {
+  sample_id: string;
+  asset_relpath?: string;
+  t0?: number;
+  t1?: number;
+  slice?: string;
+  labels?: Record<string, "good" | "bad">;
+  important?: string[];
+  missing?: string[];
+  skipped?: boolean;
+}): Promise<VisionTagJudgmentSaveResponse> {
+  const r = await fetch("/api/vision/tag-judgment", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as VisionTagJudgmentSaveResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST /api/vision/tag-judgment failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
     );
   }
   return j;

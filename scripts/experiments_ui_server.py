@@ -1530,13 +1530,54 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
 
 def _vision_slice_captions_payload(cfg: ServerConfig) -> Dict[str, Any]:
     """GET /api/vision/slice-captions — V1 time-slice caption review (grouped by asset)."""
+    import importlib
+
     d = _workspace_scripts_dir()
     if d.is_dir() and str(d) not in sys.path:
         sys.path.insert(0, str(d))
-    from vision_slice_review import list_vision_slice_review  # type: ignore
+    import vision_slice_review as vsr  # type: ignore
 
+    # Workspace scripts are bind-mounted; reload so excerpt UI fields pick up edits
+    # without restarting the long-lived Experiments API process.
+    vsr = importlib.reload(vsr)
     status_dir = _output_status_dir(cfg.output_root)
-    return list_vision_slice_review(status_dir=status_dir)
+    return vsr.list_vision_slice_review(status_dir=status_dir)
+
+
+def _vision_tag_judgment_get_payload(cfg: ServerConfig) -> Dict[str, Any]:
+    """GET /api/vision/tag-judgment — blind tag judgment queue + progress + leaderboard."""
+    import importlib
+    import traceback
+
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    try:
+        import vision_tag_judgment_api as vtj  # type: ignore
+
+        vtj = importlib.reload(vtj)
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": "vision_tag_judgment_import_failed",
+            "detail": f"{e}\n{_workspace_scripts_dir()}\n{traceback.format_exc()}",
+        }
+    status_dir = _output_status_dir(cfg.output_root)
+    return vtj.get_tag_judgment_payload(status_dir)
+
+
+def _vision_tag_judgment_post_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /api/vision/tag-judgment — upsert one judgment row (idempotent by sample_id)."""
+    import importlib
+
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    import vision_tag_judgment_api as vtj  # type: ignore
+
+    vtj = importlib.reload(vtj)
+    status_dir = _output_status_dir(cfg.output_root)
+    return vtj.save_tag_judgment(status_dir, body if isinstance(body, dict) else {})
 
 
 def _shape_factory_json_peek_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
@@ -5813,6 +5854,14 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return _json_response(self, 500, {"ok": False, "error": "vision_slice_captions_failed", "detail": str(e)})
 
+        if path == "/api/vision/tag-judgment":
+            try:
+                payload = _vision_tag_judgment_get_payload(cfg)
+                code = 200 if payload.get("ok") else 500
+                return _json_response(self, code, payload)
+            except Exception as e:
+                return _json_response(self, 500, {"ok": False, "error": "vision_tag_judgment_failed", "detail": str(e)})
+
         if path == "/api/shape-factory/json-peek":
             try:
                 payload = _shape_factory_json_peek_payload(cfg, q)
@@ -5987,7 +6036,22 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_shape_factory_queue_post()
         if path == "/api/shape-factory/replay":
             return self._handle_shape_factory_replay_post()
+        if path == "/api/vision/tag-judgment":
+            return self._handle_vision_tag_judgment_post()
         return _json_response(self, 404, {"error": "unknown_api_route", "path": path})
+
+    def _handle_vision_tag_judgment_post(self) -> None:
+        """POST /api/vision/tag-judgment — save blind tag labels for one sample."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _vision_tag_judgment_post_payload(cfg, body)
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "vision_tag_judgment_failed", "detail": str(e)})
+        code = 200 if payload.get("ok") else 400
+        return _json_response(self, code, payload)
 
     def _handle_shape_factory_replay_post(self) -> None:
         """POST /api/shape-factory/replay — re-run (or extend) a prior job/pair."""

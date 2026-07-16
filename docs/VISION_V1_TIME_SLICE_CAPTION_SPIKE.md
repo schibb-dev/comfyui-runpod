@@ -130,11 +130,14 @@ Under `workspace/scripts/` (**implemented** — V1 scaffolding):
 | [`vision_slice_sample.py`](../workspace/scripts/vision_slice_sample.py) | Inputs → ffprobe windows, ffmpeg mid-frames, `frames_manifest.json`. **CPU-only**. |
 | [`vision_slice_caption_run.py`](../workspace/scripts/vision_slice_caption_run.py) | Frames → NDJSON via `make_runner` (`--provider comfy\|runpod\|transformers\|dry-run`). |
 | [`vision_slice_pick_inputs.py`](../workspace/scripts/vision_slice_pick_inputs.py) | Scan `og/`, pick ~N diverse clips → `vision_v1_inputs.txt`. |
+| [`vision_slice_quality.py`](../workspace/scripts/vision_slice_quality.py) | Classical CV quality on sampled JPEGs → `vision_slice_quality.ndjson` (sharpness, convergence, artifacting, exposure, contrast). **CPU-only**; learned VQA (DOVER/MUSIQ) deferred. |
+| [`vision_slice_quality_metrics.py`](../workspace/scripts/vision_slice_quality_metrics.py) | Pure metric helpers (unit-testable without ffmpeg). |
+| [`vision_slice_review.py`](../workspace/scripts/vision_slice_review.py) | Package captions (+ quality) for Experiments UI `/vision/slices`. |
 | [`vision_slice_dry_run.sh`](../workspace/scripts/vision_slice_dry_run.sh) | Orchestrate pick → sample → caption `--dry-run` (no GPU). |
 | [`vision_slice_sync.sh`](../workspace/scripts/vision_slice_sync.sh) | Optional rsync push/pull for remote runners (`VISION_REMOTE`). |
 | [`vision_v1_florence_caption.api.json`](../workspace/workflows/vision_v1_florence_caption.api.json) | Reference Comfy API prompt (same graph the Comfy runner builds). |
 
-Tests: [`test_vision_slice.py`](../workspace/tests/test_vision_slice.py).
+Tests: [`test_vision_slice.py`](../workspace/tests/test_vision_slice.py), [`test_vision_slice_quality.py`](../workspace/tests/test_vision_slice_quality.py), [`test_vision_slice_review.py`](../workspace/tests/test_vision_slice_review.py).
 
 Same entrypoints later become V2 GPU handlers.
 
@@ -217,6 +220,46 @@ python3 workspace/scripts/vision_slice_caption_run.py \
 ```
 
 After changing `vision_slice_review.py`, restart the Experiments UI process (or container) so `/api/vision/slice-captions` picks up the new code; Vite HMR covers the React page.
+
+### Tag model judgment experiment (dev only)
+
+**Not** a production HITL product and **not** wired into Discovery ratings. One sitting to decide which PromptGen tag model(s) to keep for later V3a work.
+
+Compete tag-list NDJSON variants (default: `cohort_x2_pg_tags`, `cohort_x2_pg_large_tags`, plus older `cohort_pg_*` when the same slice key exists). UI marks the **union** of tags blind (model ids hidden); scorer ranks base / large / ∪ / ∩.
+
+```bash
+STATUS=/home/yuji/comfyui-runpod-data/output/_status
+
+# 1) Build ~48 stratified samples → vision_tag_judgment_queue.json
+python3 workspace/scripts/vision_tag_judgment_queue.py \
+  --status-dir "$STATUS" --target-samples 48 --seed 20260716
+
+# 2) Judge in UI (blind good/bad chips)
+#    http://127.0.0.1:5179/vision/tag-judge
+#    (link from Vision slices header). Keys: g/b, n next, p prev, s skip.
+#    Judgments append to vision_tag_judgments.ndjson (idempotent by sample_id).
+
+# 3) Score anytime (also auto-runs on each save)
+python3 workspace/scripts/vision_tag_judgment_score.py --status-dir "$STATUS"
+# → vision_tag_judgment_leaderboard.json + printed table
+# → vision_tag_judgment_tag_stats.json (per-tag good/bad rates for tuning)
+```
+
+Per-tag stats (lasting value for V3a / blocklists / hard-negatives):
+
+- `commonly_correct` — high good_rate (stable vocabulary)
+- `commonly_misidentified` — high bad_rate (frequent false positives)
+- `commonly_important` — tags starred as significant (★); models also get **ImpR** = coverage of important tags
+- `contested` — mixed labels (worth manual review)
+- full `by_tag[]` in the sidecar JSON, including per-model emit/good/bad counts
+
+**Important vs good/bad:** orthogonal. Click / space cycles good→bad→unmarked; `i` or Alt+click toggles ★ important without clearing the label. Once starred, a tag stays in the session vocabulary and is pre-starred when it reappears on later samples.
+
+**Chronic false positives / true positives:** tags with ≥2 labels and ≥75% bad (or good) rate are **suggested** on new samples (dashed chips). Override when wrong — those flips are the interesting signal. Samples stay “undone” until you save.
+
+**Missing tags round:** use **Missing pass** after ★ Important. Candidates are **only** your ★ important vocabulary tags that are absent from this sample’s union. Mark each that *should have been* emitted (gold FN for important tags); leave unmarked if it correctly does not belong on this sample. Optional freeform add is for rare ★-class misses not yet in the vocab. Saved as `missing: [...]`; scorer reports `commonly_missing` and `missing_n` / extended recall.
+
+API: `GET` / `POST` `/api/vision/tag-judgment`. Restart the Experiments API process after pulling these routes if the proxy still 404s.
 
 ---
 

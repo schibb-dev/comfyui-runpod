@@ -12,6 +12,7 @@ import { OrchestratorApp } from "./ui/OrchestratorApp";
 import { WorkflowExplorerApp } from "./ui/WorkflowExplorerApp";
 import { WorkProductsApp } from "./ui/WorkProductsApp";
 import { VisionSliceReviewApp } from "./ui/VisionSliceReviewApp";
+import { VisionTagJudgeApp } from "./ui/VisionTagJudgeApp";
 import { isWorkbenchLens, resolveRouteId, type AppRouteId } from "./ui/routes";
 import "./ui/styles.css";
 
@@ -28,8 +29,9 @@ const SCREENS: Record<AppRouteId, React.ComponentType> = {
   experiments: App,
 };
 
-const active = resolveRouteId(window.location.pathname || "/");
-const RootView = SCREENS[active];
+const pathname = window.location.pathname || "/";
+const active = resolveRouteId(pathname);
+const RootView = pathname.startsWith("/vision/tag-judge") ? VisionTagJudgeApp : SCREENS[active];
 
 class ScreenErrorBoundary extends React.Component<{ children: React.ReactNode }, { error: Error | null }> {
   state: { error: Error | null } = { error: null };

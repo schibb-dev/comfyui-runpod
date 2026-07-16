@@ -1524,6 +1524,30 @@ export type VisionSliceVariantCaption = {
   task?: string;
 };
 
+export type VisionSliceFrameQuality = {
+  sharpness?: number | null;
+  convergence?: number | null;
+  artifacting?: number | null;
+  exposure?: number | null;
+  contrast?: number | null;
+};
+
+export type VisionSliceMetricRollup = {
+  mean?: number;
+  p10?: number;
+  p90?: number;
+  n?: number;
+};
+
+export type VisionSliceAssetQuality = {
+  frame_count?: number;
+  sharpness?: VisionSliceMetricRollup;
+  convergence?: VisionSliceMetricRollup;
+  artifacting?: VisionSliceMetricRollup;
+  exposure?: VisionSliceMetricRollup;
+  contrast?: VisionSliceMetricRollup;
+};
+
 export type VisionSliceCaptionRow = {
   t0?: number;
   t1?: number;
@@ -1537,6 +1561,30 @@ export type VisionSliceCaptionRow = {
   provider?: string;
   model_pin?: string;
   run_id?: string;
+  quality?: VisionSliceFrameQuality | null;
+  excerpt_index?: number | null;
+  excerpt_video_relpath?: string | null;
+  excerpt_video_url?: string | null;
+  /** Seek time inside the excerpt MP4 (seconds from excerpt start). */
+  excerpt_local_t?: number | null;
+};
+
+export type VisionSliceExcerpt = {
+  index: number;
+  video_relpath?: string;
+  video_url: string;
+  source_t0?: number | null;
+  source_t1?: number | null;
+};
+
+export type VisionSliceVariantQuality = {
+  n?: number;
+  empty_count?: number;
+  empty_rate?: number;
+  mean_chars?: number | null;
+  median_chars?: number | null;
+  mean_tags?: number | null;
+  median_tags?: number | null;
 };
 
 export type VisionSliceVariantMeta = {
@@ -1548,14 +1596,52 @@ export type VisionSliceVariantMeta = {
   run_id?: string | null;
   ndjson?: string;
   caption_count?: number;
+  frame_count?: number | null;
+  error_count?: number | null;
+  started_utc?: string | null;
+  finished_utc?: string | null;
+  status?: "complete" | "running" | "idle" | string;
+  progress_pct?: number | null;
+  wall_s?: number | null;
+  captions_per_min?: number | null;
+  timing?: {
+    wall_s?: number;
+    mean_s?: number;
+    steady_mean_s?: number;
+    captions_per_min_steady?: number;
+    [k: string]: unknown;
+  } | null;
+  quality?: VisionSliceVariantQuality;
+};
+
+export type VisionSliceReviewStats = {
+  variant_count?: number;
+  complete_count?: number;
+  running_count?: number;
+  idle_count?: number;
+  expected_frames?: number | null;
+  max_caption_count?: number;
+  slice_count?: number;
+  any_running?: boolean;
+  poll_suggested_ms?: number | null;
+  video_quality?: {
+    asset_count?: number;
+    sharpness?: number;
+    convergence?: number;
+    artifacting?: number;
+    exposure?: number;
+    contrast?: number;
+  };
 };
 
 export type VisionSliceAsset = {
   asset_relpath: string;
   basename: string;
   video_url: string;
+  excerpts?: VisionSliceExcerpt[];
   slice_count: number;
   has_whole?: boolean;
+  quality?: VisionSliceAssetQuality | null;
   slices: VisionSliceCaptionRow[];
 };
 
@@ -1577,6 +1663,8 @@ export type VisionSliceCaptionsResponse = {
     task?: string;
   } | null;
   variants?: VisionSliceVariantMeta[];
+  stats?: VisionSliceReviewStats;
+  quality_ndjson?: string | null;
   asset_count?: number;
   caption_count?: number;
   slice_count?: number;
@@ -1623,6 +1711,153 @@ export type ComfyLiveStatusResponse = {
   bridge?: boolean;
   items?: ComfyLiveStatusItem[];
   count?: number;
+  error?: string;
+  detail?: string;
+};
+
+/** GET/POST /api/vision/tag-judgment */
+export type VisionTagLabel = "good" | "bad";
+
+export type VisionTagJudgmentItem = {
+  sample_id: string;
+  asset_relpath: string;
+  basename?: string;
+  t0?: number;
+  t1?: number;
+  frame_t?: number;
+  slice?: string;
+  excerpt_index?: number | null;
+  excerpt_local_t?: number | null;
+  video_url?: string | null;
+  excerpt_video_url?: string | null;
+  frame_url?: string | null;
+  tags: string[];
+  labels?: Record<string, VisionTagLabel> | null;
+  /** Prefill for unjudged samples (chronic FPs → bad). Not counted as done until saved. */
+  suggested_labels?: Record<string, VisionTagLabel> | null;
+  /** Orthogonal to good/bad — significant tags for coverage scoring. */
+  important?: string[] | null;
+  /** Gold tags that should be present but were absent from the model union. */
+  missing?: string[] | null;
+  /** Suggested missing candidates (important vocab − sample tags). */
+  missing_candidates?: string[] | null;
+  judged_utc?: string | null;
+  skipped?: boolean;
+};
+
+export type VisionTagJudgmentScoreRow = {
+  id: string;
+  kind?: string;
+  members?: string[];
+  emitted?: number;
+  true_positives?: number;
+  false_positives?: number;
+  precision?: number | null;
+  recall?: number | null;
+  f1?: number | null;
+  fp_rate_among_judged?: number | null;
+  gold_good?: number;
+  gold_good_covered?: number;
+  important_n?: number;
+  important_hit?: number;
+  important_recall?: number | null;
+  missing_n?: number;
+  missing_hit?: number;
+  missing_recall?: number | null;
+  missing_fn?: number;
+  extended_recall?: number | null;
+};
+
+export type VisionTagJudgmentTagStat = {
+  tag: string;
+  n_labeled?: number;
+  n_good?: number;
+  n_bad?: number;
+  n_important?: number;
+  n_missing?: number;
+  good_rate?: number | null;
+  bad_rate?: number | null;
+  fp_rate?: number | null;
+  tp_rate?: number | null;
+};
+
+export type VisionTagJudgmentLeaderboard = {
+  schema?: number;
+  scored_utc?: string;
+  judged_samples?: number;
+  queue_samples?: number;
+  labeled_tags?: number;
+  good_tags?: number;
+  bad_tags?: number;
+  important_tags?: number;
+  missing_tags?: number;
+  models?: VisionTagJudgmentScoreRow[];
+  combos?: VisionTagJudgmentScoreRow[];
+  tag_stats?: {
+    tag_count?: number;
+    min_n?: number;
+    commonly_correct?: VisionTagJudgmentTagStat[];
+    commonly_misidentified?: VisionTagJudgmentTagStat[];
+    commonly_important?: VisionTagJudgmentTagStat[];
+    commonly_missing?: VisionTagJudgmentTagStat[];
+    contested?: VisionTagJudgmentTagStat[];
+    path?: string;
+    note?: string;
+  };
+  note?: string;
+};
+
+export type VisionTagJudgmentResponse = {
+  ok: boolean;
+  schema?: number;
+  queue?: {
+    built_utc?: string;
+    seed?: number;
+    variants?: string[];
+    candidate_count?: number;
+    item_count?: number;
+    note?: string;
+  };
+  items?: VisionTagJudgmentItem[];
+  done_sample_ids?: string[];
+  done_count?: number;
+  total_count?: number;
+  important_vocabulary?: string[];
+  missing_vocabulary?: string[];
+  label_priors?: {
+    min_n?: number;
+    bad_rate_threshold?: number;
+    good_rate_threshold?: number;
+    default_bad_tags?: string[];
+    default_good_tags?: string[];
+    default_bad?: Record<
+      string,
+      { label?: string; n_labeled?: number; n_bad?: number; n_good?: number; bad_rate?: number; good_rate?: number }
+    >;
+    default_good?: Record<
+      string,
+      { label?: string; n_labeled?: number; n_bad?: number; n_good?: number; bad_rate?: number; good_rate?: number }
+    >;
+  };
+  leaderboard?: VisionTagJudgmentLeaderboard | null;
+  min_score_samples?: number;
+  note?: string;
+  error?: string;
+  detail?: string;
+};
+
+export type VisionTagJudgmentSaveResponse = {
+  ok: boolean;
+  saved?: {
+    sample_id?: string;
+    labels?: Record<string, VisionTagLabel>;
+    important?: string[];
+    skipped?: boolean;
+    judged_utc?: string;
+  };
+  done_count?: number;
+  leaderboard?: VisionTagJudgmentLeaderboard | null;
+  score_error?: string;
   error?: string;
   detail?: string;
 };
