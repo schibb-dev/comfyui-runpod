@@ -1222,6 +1222,38 @@ export type ShapeFactoryReplayResponse = ShapeFactoryMapQueueResponse & {
   replay_of_job_key?: string | null;
 };
 
+/** GET /api/shape-factory/quarantine */
+export type ShapeFactoryQuarantineEntry = {
+  workflow_path?: string;
+  workflow_name?: string;
+  status?: string;
+  category?: string;
+  reasons?: string[];
+  repair_outcome?: string | null;
+  validated_at?: string | null;
+  convert_error?: string | null;
+  release_note?: string | null;
+  released_at?: string | null;
+};
+
+export type ShapeFactoryQuarantineListResponse = {
+  ok: boolean;
+  status_filter?: string;
+  quarantine_path?: string;
+  count?: number;
+  entries?: ShapeFactoryQuarantineEntry[];
+  error?: string;
+  detail?: string;
+};
+
+export type ShapeFactoryQuarantineReleaseResponse = {
+  ok: boolean;
+  entry?: ShapeFactoryQuarantineEntry;
+  quarantine_path?: string;
+  error?: string;
+  detail?: string;
+};
+
 /** GET /api/home/summary — resume-the-loop dashboard aggregation. */
 export type HomeSummaryFreshOutput = {
   group_id?: string | null;

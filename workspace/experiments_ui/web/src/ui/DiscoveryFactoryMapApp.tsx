@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { fetchShapeFactoryMap, queueShapeFactoryCombo, recoverAssets, replayShapeFactory } from "./api";
+import { fetchShapeFactoryMap, fetchShapeFactoryQuarantine, queueShapeFactoryCombo, recoverAssets, releaseShapeFactoryQuarantine, replayShapeFactory } from "./api";
 import { AssetInspector, type InspectorAsset } from "./AssetInspector";
 import { buildQueueOverrides, FutureRunEditor } from "./factoryMapFutureRunEditor";
 import { discoveryLibraryHref } from "./discoveryDeepLink";
@@ -39,6 +39,7 @@ import type {
   ShapeFactoryMapPipeline,
   ShapeFactoryMapPipelineStep,
   ShapeFactoryMapResponse,
+  ShapeFactoryQuarantineEntry,
   FutureRunDraft,
 } from "./types";
 
@@ -1315,6 +1316,120 @@ function FamilyIndexCard({
   );
 }
 
+function QuarantineWorkflowsPanel() {
+  const [entries, setEntries] = useState<ShapeFactoryQuarantineEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [notes, setNotes] = useState<Record<string, string>>({});
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetchShapeFactoryQuarantine({ status: "quarantined" });
+      setEntries(res.entries || []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setEntries([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  const onRelease = async (entry: ShapeFactoryQuarantineEntry) => {
+    const key = entry.workflow_path || entry.workflow_name || "";
+    if (!key) return;
+    setBusyKey(key);
+    setMsg(null);
+    try {
+      await releaseShapeFactoryQuarantine({
+        workflow_path: entry.workflow_path,
+        workflow_name: entry.workflow_name,
+        note: (notes[key] || "").trim() || "released from factory map",
+      });
+      setMsg(`Released ${entry.workflow_name || key}`);
+      setNotes((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+      await reload();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const summaryLine = loading
+    ? "loading…"
+    : error
+      ? "failed to load"
+      : entries.length
+        ? `${entries.length} blocked template${entries.length === 1 ? "" : "s"}`
+        : "none blocked";
+
+  return (
+    <FactoryMapAccordionSection
+      sectionId="sfmap-quarantine"
+      title="Quarantined workflows"
+      summaryLine={summaryLine}
+      activities={entries.length ? [{ active: true, label: `${entries.length} quarantined` }] : undefined}
+      defaultOpen={entries.length > 0}
+      hint="Templates blocked from factory generate/submit until a human releases them. Soft convert failures alone will not undo a release."
+    >
+      {error ? <p className="factory-error">{error}</p> : null}
+      {msg ? <p className="factory-muted sfmap-quarantine-msg">{msg}</p> : null}
+      {loading ? <p className="factory-muted">Loading quarantine registry…</p> : null}
+      {!loading && !error && entries.length === 0 ? (
+        <p className="factory-muted">No quarantined workflows.</p>
+      ) : null}
+      {!loading && entries.length > 0 ? (
+        <ul className="sfmap-quarantine-list">
+          {entries.map((entry) => {
+            const key = entry.workflow_path || entry.workflow_name || "";
+            const reasons = (entry.reasons || []).join(", ") || "—";
+            const busy = busyKey === key;
+            return (
+              <li key={key || entry.workflow_name} className="sfmap-quarantine-row">
+                <div className="sfmap-quarantine-row__meta">
+                  <strong className="sfmap-quarantine-row__name">{entry.workflow_name || "workflow"}</strong>
+                  <span className="factory-muted">
+                    {entry.category || "unknown"} · {reasons}
+                    {entry.repair_outcome ? ` · repair=${entry.repair_outcome}` : ""}
+                    {entry.validated_at ? ` · ${formatIsoDateTime(entry.validated_at)}` : ""}
+                  </span>
+                </div>
+                <div className="sfmap-quarantine-row__actions">
+                  <input
+                    type="text"
+                    className="sfmap-quarantine-note"
+                    placeholder="Release note"
+                    value={notes[key] || ""}
+                    disabled={busy}
+                    onChange={(ev) => {
+                      setNotes((prev) => ({ ...prev, [key]: ev.target.value }));
+                    }}
+                  />
+                  <button type="button" className="btn" disabled={busy || !key} onClick={() => void onRelease(entry)}>
+                    {busy ? "Releasing…" : "Release"}
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+    </FactoryMapAccordionSection>
+  );
+}
+
 function FactoryMapIndexView({
   data,
   families,
@@ -1407,6 +1522,8 @@ function FactoryMapIndexView({
           {hourly.note ? <span className="factory-muted"> — {hourly.note}</span> : null}
         </div>
       ) : null}
+
+      <QuarantineWorkflowsPanel />
 
       <FactoryMapAccordionSection
         sectionId="sfmap-families"

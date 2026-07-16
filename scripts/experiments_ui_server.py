@@ -1531,6 +1531,83 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
     return payload
 
 
+def _shape_factory_quarantine_path() -> Path:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory import resolve_quarantine_registry_path  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    return resolve_quarantine_registry_path(data_root=data_root, for_write=False)
+
+
+def _shape_factory_quarantine_list_payload(q: Dict[str, List[str]]) -> Dict[str, Any]:
+    """GET /api/shape-factory/quarantine — list registry entries."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory import (  # type: ignore
+        list_quarantine_entries,
+        load_effective_quarantine_registry,
+    )
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    status = str((q.get("status") or ["quarantined"])[0] or "quarantined").strip().lower() or "quarantined"
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    registry, path = load_effective_quarantine_registry(data_root=data_root)
+    entries = list_quarantine_entries(registry, status=status)
+    return {
+        "ok": True,
+        "status_filter": status,
+        "quarantine_path": str(path),
+        "count": len(entries),
+        "entries": entries,
+    }
+
+
+def _shape_factory_quarantine_release_payload(body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /api/shape-factory/quarantine/release — sticky human release."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory import (  # type: ignore
+        ensure_writable_quarantine_registry,
+        release_quarantine_entry,
+        save_quarantine_registry,
+    )
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    workflow_path = str(body.get("workflow_path") or "").strip() or None
+    workflow_name = str(body.get("workflow_name") or "").strip() or None
+    note = str(body.get("note") or "").strip()
+    if not workflow_path and not workflow_name:
+        raise ValueError("workflow_path or workflow_name is required")
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    registry, path = ensure_writable_quarantine_registry(data_root=data_root)
+    entry = release_quarantine_entry(
+        registry,
+        workflow_path=workflow_path,
+        workflow_name=workflow_name,
+        note=note,
+    )
+    save_quarantine_registry(path, registry)
+    return {"ok": True, "entry": entry, "quarantine_path": str(path)}
+
+
+def _quarantine_runtime_error_payload(exc: BaseException) -> Optional[Dict[str, Any]]:
+    """Detect quarantine gate failures and return a structured API error body."""
+    msg = str(exc)
+    low = msg.lower()
+    if "quarantined" not in low:
+        return None
+    return {
+        "ok": False,
+        "error": "workflow_quarantined",
+        "detail": msg,
+    }
+
+
 def _vision_slice_captions_payload(cfg: ServerConfig) -> Dict[str, Any]:
     """GET /api/vision/slice-captions — V1 time-slice caption review (grouped by asset)."""
     import importlib
@@ -5852,6 +5929,13 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return _json_response(self, 500, {"ok": False, "error": "work_products_failed", "detail": str(e)})
 
+        if path == "/api/shape-factory/quarantine":
+            try:
+                payload = _shape_factory_quarantine_list_payload(q)
+                return _json_response(self, 200, payload)
+            except Exception as e:
+                return _json_response(self, 500, {"ok": False, "error": "quarantine_list_failed", "detail": str(e)})
+
         if path == "/api/vision/slice-captions":
             try:
                 payload = _vision_slice_captions_payload(cfg)
@@ -6042,9 +6126,26 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_shape_factory_queue_post()
         if path == "/api/shape-factory/replay":
             return self._handle_shape_factory_replay_post()
+        if path == "/api/shape-factory/quarantine/release":
+            return self._handle_shape_factory_quarantine_release_post()
         if path == "/api/vision/tag-judgment":
             return self._handle_vision_tag_judgment_post()
         return _json_response(self, 404, {"error": "unknown_api_route", "path": path})
+
+    def _handle_shape_factory_quarantine_release_post(self) -> None:
+        """POST /api/shape-factory/quarantine/release — human review release."""
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _shape_factory_quarantine_release_payload(body)
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except FileNotFoundError as e:
+            return _json_response(self, 404, {"ok": False, "error": "not_found", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "quarantine_release_failed", "detail": str(e)})
+        return _json_response(self, 200, payload)
 
     def _handle_vision_tag_judgment_post(self) -> None:
         """POST /api/vision/tag-judgment — save blind tag labels for one sample."""
@@ -6071,6 +6172,11 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
         except FileNotFoundError as e:
             return _json_response(self, 404, {"ok": False, "error": "not_found", "detail": str(e)})
+        except RuntimeError as e:
+            qerr = _quarantine_runtime_error_payload(e)
+            if qerr is not None:
+                return _json_response(self, 409, qerr)
+            return _json_response(self, 502, {"ok": False, "error": "shape_factory_replay_failed", "detail": str(e)})
         except Exception as e:
             return _json_response(self, 500, {"ok": False, "error": "shape_factory_replay_failed", "detail": str(e)})
         status = 200 if payload.get("ok", True) else 400
@@ -6089,6 +6195,9 @@ class Handler(BaseHTTPRequestHandler):
         except FileNotFoundError as e:
             return _json_response(self, 404, {"ok": False, "error": "not_found", "detail": str(e)})
         except RuntimeError as e:
+            qerr = _quarantine_runtime_error_payload(e)
+            if qerr is not None:
+                return _json_response(self, 409, qerr)
             return _json_response(self, 502, {"ok": False, "error": "shape_factory_queue_failed", "detail": str(e)})
         except Exception as e:
             return _json_response(self, 500, {"ok": False, "error": "shape_factory_queue_failed", "detail": str(e)})
@@ -8291,7 +8400,7 @@ def main() -> int:
     print(
         "[experiments-ui] comfy_live_routes=GET /api/comfy/live-preview, GET /api/comfy/live-status"
     )
-    print("[experiments-ui] shape_factory_routes=GET /api/shape-factory/map, GET /api/shape-factory/prompt-profile, GET /api/shape-factory/work-products, GET /api/shape-factory/json-peek, POST /api/shape-factory/queue, POST /api/shape-factory/replay")
+    print("[experiments-ui] shape_factory_routes=GET /api/shape-factory/map, GET /api/shape-factory/prompt-profile, GET /api/shape-factory/work-products, GET /api/shape-factory/json-peek, GET /api/shape-factory/quarantine, POST /api/shape-factory/queue, POST /api/shape-factory/replay, POST /api/shape-factory/quarantine/release")
     server.serve_forever()
     return 0
 

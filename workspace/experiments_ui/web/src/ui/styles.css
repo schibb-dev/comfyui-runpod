@@ -7315,6 +7315,60 @@ tr.disabled:hover td {
   line-height: 1.45;
 }
 
+.sfmap-quarantine-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sfmap-quarantine-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 120, 80, 0.06);
+}
+
+.sfmap-quarantine-row__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.sfmap-quarantine-row__name {
+  font-size: 14px;
+}
+
+.sfmap-quarantine-row__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.sfmap-quarantine-note {
+  flex: 1 1 220px;
+  min-width: 160px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg, #111);
+  color: inherit;
+  font-size: 13px;
+}
+
+.sfmap-quarantine-msg {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
 .sfmap-pipeline-strip {
   border: 1px solid var(--border);
   border-radius: 12px;

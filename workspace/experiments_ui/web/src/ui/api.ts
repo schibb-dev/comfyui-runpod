@@ -38,6 +38,8 @@ import type {
   ShapeFactoryMapQueueResponse,
   ShapeFactoryReplayRequest,
   ShapeFactoryReplayResponse,
+  ShapeFactoryQuarantineListResponse,
+  ShapeFactoryQuarantineReleaseResponse,
   ShapeFactoryPromptProfile,
   ShapeFactoryMapQueueOverrides,
   FutureRunDraft,
@@ -167,6 +169,42 @@ export async function fetchShapeFactoryWorkProducts(opts?: {
     const detail = [j.error, j.detail].filter(Boolean).join(": ");
     throw new Error(
       `GET /api/shape-factory/work-products failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function fetchShapeFactoryQuarantine(opts?: {
+  status?: "quarantined" | "released" | "ok" | "all";
+}): Promise<ShapeFactoryQuarantineListResponse> {
+  const sp = new URLSearchParams();
+  sp.set("status", opts?.status || "quarantined");
+  const r = await fetch(`/api/shape-factory/quarantine?${sp.toString()}`);
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryQuarantineListResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET /api/shape-factory/quarantine failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function releaseShapeFactoryQuarantine(body: {
+  workflow_path?: string;
+  workflow_name?: string;
+  note?: string;
+}): Promise<ShapeFactoryQuarantineReleaseResponse> {
+  const r = await fetch("/api/shape-factory/quarantine/release", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryQuarantineReleaseResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST /api/shape-factory/quarantine/release failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
     );
   }
   return j;

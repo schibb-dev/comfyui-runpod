@@ -303,6 +303,43 @@ def _looks_like_comfy_ui_workflow(obj: Any) -> bool:
     return isinstance(obj, dict) and isinstance(obj.get("nodes"), list) and isinstance(obj.get("links"), list)
 
 
+def _workflow_submit_label(workflow_name: Optional[str]) -> Optional[str]:
+    raw = str(workflow_name or "").strip()
+    if not raw:
+        return None
+    safe = re.sub(r"[^\w.\-]+", "_", raw).strip("._")
+    return safe or None
+
+
+def _prepare_workflow_metadata(
+    workflow_ui: Optional[Dict[str, Any]],
+    *,
+    workflow_name: Optional[str] = None,
+) -> tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+    """
+    Normalize workflow metadata so Comfy's queue/history UI gets a stable label.
+
+    API prompt submissions already work with only ``extra_pnginfo.workflow``, but
+    explicit ``name``/``filename``/``workflow_name`` metadata makes them look
+    closer to native UI-submitted jobs in Comfy's history panel.
+    """
+    label = _workflow_submit_label(workflow_name)
+    workflow_copy: Optional[Dict[str, Any]] = None
+    meta: Dict[str, Any] = {}
+    if isinstance(workflow_ui, dict) and workflow_ui:
+        workflow_copy = json.loads(json.dumps(workflow_ui))
+        existing = str(workflow_copy.get("name") or "").strip()
+        if existing:
+            label = label or _workflow_submit_label(existing)
+        elif label:
+            workflow_copy["name"] = label
+    if label:
+        meta["workflow_name"] = label
+        meta["name"] = label
+        meta["filename"] = f"{label}.json"
+    return workflow_copy, meta
+
+
 def convert_ui_workflow_to_prompt(
     server: str,
     workflow: Dict[str, Any],
@@ -335,6 +372,7 @@ def submit_prompt_to_comfyui(
     prompt_obj: Dict[str, Any],
     *,
     workflow_ui: Optional[Dict[str, Any]] = None,
+    workflow_name: Optional[str] = None,
     client_id: str = "shape_factory",
     front: bool = False,
     timeout_s: int = 30,
@@ -358,8 +396,13 @@ def submit_prompt_to_comfyui(
     method = str(preview_method or "").strip()
     if method:
         extra_data["preview_method"] = method
-    if isinstance(workflow_ui, dict) and workflow_ui:
-        extra_data["extra_pnginfo"] = {"workflow": workflow_ui}
+    workflow_copy, workflow_meta = _prepare_workflow_metadata(
+        workflow_ui,
+        workflow_name=workflow_name,
+    )
+    if isinstance(workflow_copy, dict) and workflow_copy:
+        extra_data["extra_pnginfo"] = {"workflow": workflow_copy}
+    extra_data.update(workflow_meta)
     if extra_data:
         payload["extra_data"] = extra_data
     submit = _http_json("POST", f"{server}/prompt", payload, timeout_s=timeout_s)

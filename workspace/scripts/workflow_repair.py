@@ -26,12 +26,27 @@ from output_path_lib import (  # noqa: E402
     normalize_ui_workflow_output_prefixes,
 )
 
-DEFAULT_NODE_TYPE_MAP = (
-    Path(__file__).resolve().parents[2] / "scripts" / "workflow_node_id_map.yaml"
-)
-DEFAULT_REPAIR_RULES_PATH = (
-    Path(__file__).resolve().parents[2] / "scripts" / "workflow_repair_rules.yaml"
-)
+def _repo_scripts_config(name: str) -> Path:
+    """Resolve ``scripts/<name>`` for host (``workspace/scripts``) and Docker (``ws_scripts``)."""
+    here = Path(__file__).resolve()
+    scripts_dir = here.parent
+    candidates: list[Path] = []
+    # Host checkout: <repo>/workspace/scripts → <repo>/scripts/<name>
+    if scripts_dir.name == "scripts" and scripts_dir.parent.name == "workspace":
+        candidates.append(scripts_dir.parents[1] / "scripts" / name)
+    # Docker bind: /workspace/ws_scripts → /workspace/scripts/<name>
+    if scripts_dir.name == "ws_scripts":
+        candidates.append(scripts_dir.parent / "scripts" / name)
+    # Legacy: parents[2]/scripts/<name> (host when layout matches)
+    candidates.append(here.parents[2] / "scripts" / name)
+    for cand in candidates:
+        if cand.is_file():
+            return cand
+    return candidates[0]
+
+
+DEFAULT_NODE_TYPE_MAP = _repo_scripts_config("workflow_node_id_map.yaml")
+DEFAULT_REPAIR_RULES_PATH = _repo_scripts_config("workflow_repair_rules.yaml")
 
 UI_ONLY_NODE_TYPES = frozenset(
     {

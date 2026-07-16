@@ -158,7 +158,7 @@ nodes:
     - name: comfyui-workflow-to-api-converter-endpoint
       repo: https://github.com/SethRobinson/comfyui-workflow-to-api-converter-endpoint.git
       branch: main
-      required: false
+      required: true
       description: "Server-side workflow→API converter endpoint for shape_factory submit"
 
 # Installation settings

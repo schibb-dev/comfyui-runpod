@@ -1286,7 +1286,9 @@ def generate_job_for_picks(
 
     extra_suffix = str(job_suffix or "").strip()
     if extra_suffix:
-        job_key = slug(f"{job_key}{extra_suffix}", 120)
+        # Preserve the unique suffix (e.g. _ui<timestamp>); slug() truncates the end.
+        room = max(32, 120 - len(extra_suffix))
+        job_key = slug(job_key, room) + extra_suffix
 
     output_prefix = f"{prefix_root}/{job_key}"
     changes = strip_video_previews_and_redirect_outputs(workflow, output_prefix)
@@ -1397,7 +1399,10 @@ def cmd_generate(args: argparse.Namespace) -> int:
         raise RuntimeError(f"template not found: {template_path}")
 
     quarantine_path = Path(getattr(args, "quarantine_path", DEFAULT_QUARANTINE_PATH)).expanduser().resolve()
-    registry = load_quarantine_registry(quarantine_path)
+    registry, _effective = load_effective_quarantine_registry(
+        data_root=data_root,
+        quarantine_path=quarantine_path,
+    )
     assert_workflows_not_quarantined(
         registry,
         [template_path],
@@ -1931,6 +1936,8 @@ def sync_prompt_inputs_from_ui_workflow(workflow: dict[str, Any], prompt: dict[s
                 continue
             desired: list[Any] = [str(link[1]), link[2]]
             if str(link[1]) not in prompt:
+                # Bypassed/omitted UI sources: keep convert's wiring (it often already
+                # walked the bypass). Broken IMAGE→STRING links are dropped by sanitize.
                 continue
             if inputs.get(name) != desired:
                 warnings.append(f"relinked {nid}.{name}: {inputs.get(name)!r} -> {desired}")
@@ -2473,6 +2480,188 @@ def quarantine_key(path: Path) -> str:
     return str(path.expanduser().resolve())
 
 
+def quarantine_path_is_writable(path: Path) -> bool:
+    """True when we can atomically replace ``path`` (parent must be writable)."""
+    p = path.expanduser()
+    parent = p.parent
+    probe = parent / f".quarantine_write_probe_{os.getpid()}"
+    try:
+        if not parent.is_dir():
+            return False
+        probe.write_text("ok", encoding="utf-8")
+        try:
+            probe.unlink()
+        except OSError:
+            pass
+        return True
+    except OSError:
+        try:
+            if probe.exists():
+                probe.unlink()
+        except OSError:
+            pass
+        return False
+
+
+def resolve_quarantine_registry_path(
+    *,
+    data_root: Optional[Path] = None,
+    quarantine_path: Optional[Path] = None,
+    for_write: bool = False,
+) -> Path:
+    """
+    Choose the quarantine registry file.
+
+    Prefer an explicit path, then ``data_root/shape_factory/quarantine.json``,
+    then ``DEFAULT_QUARANTINE_PATH``. When the preferred file sits on a read-only
+    mount (common for ``/workspace/.data`` in Docker), fall back to the writable
+    jobs mount: ``data_root/shape_factory/jobs/quarantine.json``.
+    """
+    candidates: list[Path] = []
+    if quarantine_path is not None:
+        candidates.append(Path(quarantine_path).expanduser())
+    if data_root is not None:
+        root = Path(data_root).expanduser()
+        candidates.append(root / "shape_factory" / "quarantine.json")
+        candidates.append(root / "shape_factory" / "jobs" / "quarantine.json")
+    candidates.append(DEFAULT_QUARANTINE_PATH)
+
+    # De-dupe while preserving order.
+    seen: set[str] = set()
+    uniq: list[Path] = []
+    for c in candidates:
+        key = str(c)
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(c)
+
+    if for_write:
+        for c in uniq:
+            if quarantine_path_is_writable(c):
+                return c.resolve() if c.exists() else c
+        # Last resort: jobs overlay under data_root.
+        if data_root is not None:
+            overlay = Path(data_root).expanduser() / "shape_factory" / "jobs" / "quarantine.json"
+            overlay.parent.mkdir(parents=True, exist_ok=True)
+            return overlay
+        raise RuntimeError("no writable quarantine registry path")
+
+    # Read: prefer an existing writable overlay, else first existing file, else default.
+    for c in uniq:
+        if c.is_file() and quarantine_path_is_writable(c):
+            return c.resolve()
+    for c in uniq:
+        if c.is_file():
+            return c.resolve()
+    return uniq[0]
+
+
+def ensure_writable_quarantine_registry(
+    *,
+    data_root: Optional[Path] = None,
+    quarantine_path: Optional[Path] = None,
+) -> tuple[dict[str, Any], Path]:
+    """
+    Load the registry for mutation, seeding a writable overlay from a read-only
+    source when needed.
+    """
+    read_path = resolve_quarantine_registry_path(
+        data_root=data_root, quarantine_path=quarantine_path, for_write=False
+    )
+    write_path = resolve_quarantine_registry_path(
+        data_root=data_root, quarantine_path=quarantine_path, for_write=True
+    )
+    registry = load_quarantine_registry(read_path)
+    if write_path.resolve() != read_path.resolve() and not write_path.is_file():
+        # Seed overlay once so release/sync mutations persist.
+        save_quarantine_registry(write_path, registry)
+    elif write_path.is_file() and write_path.resolve() != read_path.resolve():
+        registry = load_quarantine_registry(write_path)
+    return registry, write_path
+
+
+def load_effective_quarantine_registry(
+    *,
+    data_root: Optional[Path] = None,
+    quarantine_path: Optional[Path] = None,
+) -> tuple[dict[str, Any], Path]:
+    """
+    Load the registry used for gates and UI list.
+
+    Prefer an existing jobs-mount overlay (``shape_factory/jobs/quarantine.json``)
+    whenever present — that is the writable copy used inside Docker when
+    ``.data/shape_factory`` is read-only.
+    """
+    if data_root is not None:
+        overlay = Path(data_root).expanduser() / "shape_factory" / "jobs" / "quarantine.json"
+        if overlay.is_file():
+            return load_quarantine_registry(overlay), overlay.resolve()
+    write_path = resolve_quarantine_registry_path(
+        data_root=data_root, quarantine_path=quarantine_path, for_write=True
+    )
+    if write_path.is_file():
+        return load_quarantine_registry(write_path), write_path
+    read_path = resolve_quarantine_registry_path(
+        data_root=data_root, quarantine_path=quarantine_path, for_write=False
+    )
+    return load_quarantine_registry(read_path), read_path
+
+
+def quarantine_workflow_name(path_or_name: Path | str) -> str:
+    raw = str(path_or_name or "").strip()
+    if not raw:
+        return ""
+    name = Path(raw).name
+    return name if name.lower().endswith(".json") else f"{name}.json"
+
+
+_STRONG_QUARANTINE_REASONS = frozenset({"missing_required_nodes", "node_errors"})
+
+
+def quarantine_failure_is_strong(reasons: list[str] | None) -> bool:
+    """True when failure should override a sticky human release."""
+    return bool(_STRONG_QUARANTINE_REASONS.intersection(str(r) for r in (reasons or [])))
+
+
+def find_quarantine_entry_key(
+    registry: dict[str, Any],
+    workflow_ref: Path | str,
+) -> Optional[str]:
+    """
+    Resolve a registry key for a workflow path or basename.
+
+    Prefer exact resolved-path match; fall back to workflow_name / basename so
+    host and container path aliases (``/home/yuji/...`` vs ``/workspace/...``)
+    hit the same entry.
+    """
+    entries = registry.get("entries") if isinstance(registry.get("entries"), dict) else {}
+    if not entries:
+        return None
+    raw = str(workflow_ref or "").strip()
+    if not raw:
+        return None
+    as_path = Path(raw).expanduser()
+    try:
+        exact = quarantine_key(as_path)
+    except Exception:
+        exact = raw
+    if exact in entries and isinstance(entries.get(exact), dict):
+        return exact
+    if raw in entries and isinstance(entries.get(raw), dict):
+        return raw
+    want_name = quarantine_workflow_name(raw)
+    if not want_name:
+        return None
+    for key, entry in entries.items():
+        if not isinstance(entry, dict):
+            continue
+        entry_name = str(entry.get("workflow_name") or Path(str(entry.get("workflow_path") or key)).name)
+        if quarantine_workflow_name(entry_name) == want_name or quarantine_workflow_name(key) == want_name:
+            return str(key)
+    return None
+
+
 def empty_quarantine_registry() -> dict[str, Any]:
     return {"schema_version": QUARANTINE_SCHEMA, "updated_at": utc_now(), "entries": {}}
 
@@ -2555,16 +2744,42 @@ def apply_report_to_quarantine_registry(
     report_path: Optional[Path] = None,
     comfy_check: bool = False,
 ) -> dict[str, Any]:
-    key = quarantine_key(workflow_path)
+    """
+    Merge a validation report into the quarantine registry.
+
+    Sticky release: if the entry is already ``released`` and the new failure is
+    soft (e.g. convert 405 only), keep ``released`` and refresh diagnostics.
+    Strong failures (missing required nodes / Comfy node_errors) re-quarantine.
+    """
+    existing_key = find_quarantine_entry_key(registry, workflow_path)
+    key = existing_key or quarantine_key(workflow_path)
+    prev = registry.get("entries", {}).get(key) if isinstance(registry.get("entries"), dict) else None
+    prev = prev if isinstance(prev, dict) else {}
     entry = quarantine_entry_from_report(
         workflow_path, report, report_path=report_path, comfy_check=comfy_check
     )
-    registry["entries"][key] = entry
+    reasons = entry.get("reasons") if isinstance(entry.get("reasons"), list) else []
+    if str(prev.get("status") or "") == "released":
+        if entry.get("status") == "ok" or not quarantine_failure_is_strong(reasons):
+            entry["status"] = "released"
+            entry["released_at"] = prev.get("released_at")
+            entry["release_note"] = prev.get("release_note")
+        else:
+            entry["released_at"] = None
+            entry["release_note"] = None
+    # Prefer the established registry key so aliases don't fork entries.
+    if existing_key:
+        entry["workflow_path"] = existing_key
+        if prev.get("workflow_name"):
+            entry["workflow_name"] = prev.get("workflow_name")
+    registry.setdefault("entries", {})[key] = entry
     return entry
 
 
 def is_workflow_blocked(registry: dict[str, Any], workflow_path: Path) -> tuple[bool, Optional[dict[str, Any]]]:
-    key = quarantine_key(workflow_path)
+    key = find_quarantine_entry_key(registry, workflow_path)
+    if not key:
+        return False, None
     entry = registry.get("entries", {}).get(key)
     if not isinstance(entry, dict):
         return False, None
@@ -2579,12 +2794,12 @@ def release_workflow_in_registry(
     *,
     note: str = "",
 ) -> dict[str, Any]:
-    key = quarantine_key(workflow_path)
+    key = find_quarantine_entry_key(registry, workflow_path) or quarantine_key(workflow_path)
     entry = registry.get("entries", {}).get(key)
     if not isinstance(entry, dict):
         entry = {
             "workflow_path": key,
-            "workflow_name": workflow_path.name,
+            "workflow_name": Path(str(workflow_path)).name,
             "category": "manual",
             "reasons": [],
             "missing_required_node_types": [],
@@ -2597,16 +2812,69 @@ def release_workflow_in_registry(
     entry["status"] = "released"
     entry["released_at"] = utc_now()
     entry["release_note"] = note.strip() or None
-    registry["entries"][key] = entry
+    entry.setdefault("workflow_path", key)
+    entry.setdefault("workflow_name", Path(str(workflow_path)).name)
+    registry.setdefault("entries", {})[key] = entry
     return entry
 
 
+def list_quarantine_entries(
+    registry: dict[str, Any],
+    *,
+    status: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """Return quarantine entries as dicts, optionally filtered by status (or ``all``)."""
+    entries = registry.get("entries") if isinstance(registry.get("entries"), dict) else {}
+    rows = [dict(e) for e in entries.values() if isinstance(e, dict)]
+    want = str(status or "").strip().lower()
+    if want and want != "all":
+        rows = [e for e in rows if str(e.get("status") or "").strip().lower() == want]
+    rows.sort(key=lambda e: (str(e.get("status") or ""), str(e.get("workflow_name") or "")))
+    return rows
+
+
+def release_quarantine_entry(
+    registry: dict[str, Any],
+    *,
+    workflow_path: Optional[str] = None,
+    workflow_name: Optional[str] = None,
+    note: str = "",
+) -> dict[str, Any]:
+    """
+    Release by absolute/relative path or workflow basename.
+
+    Raises ``FileNotFoundError`` when no matching registry entry (and no path file) exists.
+    """
+    ref = str(workflow_path or workflow_name or "").strip()
+    if not ref:
+        raise ValueError("workflow_path or workflow_name is required")
+    key = find_quarantine_entry_key(registry, ref)
+    if key is None:
+        cand = Path(ref).expanduser()
+        if cand.is_file():
+            return release_workflow_in_registry(registry, cand, note=note)
+        # Basename-only release of a known-missing entry: create released stub.
+        if workflow_name and not workflow_path:
+            stub = Path(quarantine_workflow_name(workflow_name))
+            return release_workflow_in_registry(registry, stub, note=note)
+        raise FileNotFoundError(f"no quarantine entry for {ref!r}")
+    entry = registry["entries"][key]
+    path_hint = Path(str(entry.get("workflow_path") or key))
+    return release_workflow_in_registry(registry, path_hint, note=note)
+
+
 def format_quarantine_block(entry: dict[str, Any]) -> str:
+    name = str(entry.get("workflow_name") or Path(str(entry.get("workflow_path") or "")).name or "workflow")
     reasons = ", ".join(entry.get("reasons") or []) or "unknown"
     category = entry.get("category") or "unknown"
     missing = entry.get("missing_required_node_types") or []
     missing_types = sorted({str(m.get("class_type") or "") for m in missing if m.get("class_type")})
-    parts = [f"status={entry.get('status')}", f"category={category}", f"reasons={reasons}"]
+    parts = [
+        f"workflow={name}",
+        f"status={entry.get('status')}",
+        f"category={category}",
+        f"reasons={reasons}",
+    ]
     if missing_types:
         parts.append(f"missing_modules={missing_types}")
     if entry.get("release_note"):
@@ -2928,18 +3196,18 @@ def cmd_repair(args: argparse.Namespace) -> int:
 
 def cmd_quarantine(args: argparse.Namespace) -> int:
     quarantine_path = Path(args.quarantine_path).expanduser().resolve()
-    registry = load_quarantine_registry(quarantine_path)
+    data_root = Path(getattr(args, "data_root", DEFAULT_DATA_ROOT)).expanduser().resolve()
+    registry, effective_path = load_effective_quarantine_registry(
+        data_root=data_root,
+        quarantine_path=quarantine_path,
+    )
     cmd = str(getattr(args, "quarantine_cmd", "") or "")
 
     if cmd == "list":
-        entries = registry.get("entries", {})
-        rows = [e for e in entries.values() if isinstance(e, dict)]
         status_filter = getattr(args, "status", None)
-        if status_filter:
-            rows = [e for e in rows if e.get("status") == status_filter]
-        rows.sort(key=lambda e: (str(e.get("status") or ""), str(e.get("workflow_name") or "")))
+        rows = list_quarantine_entries(registry, status=status_filter)
         print(f"# Shape factory quarantine\n")
-        print(f"- registry: {quarantine_path}")
+        print(f"- registry: {effective_path}")
         print(f"- entries: {len(rows)}\n")
         for entry in rows:
             print(f"## {entry.get('workflow_name')} [{entry.get('status')}]")
@@ -2972,11 +3240,11 @@ def cmd_quarantine(args: argparse.Namespace) -> int:
         return 0
 
     if cmd == "show":
-        wf_path = Path(args.workflow).expanduser().resolve()
-        key = quarantine_key(wf_path)
-        entry = registry.get("entries", {}).get(key)
+        wf_ref = str(args.workflow or "").strip()
+        key = find_quarantine_entry_key(registry, wf_ref)
+        entry = registry.get("entries", {}).get(key) if key else None
         if not isinstance(entry, dict):
-            print(f"no quarantine entry for {wf_path}", file=sys.stderr)
+            print(f"no quarantine entry for {wf_ref}", file=sys.stderr)
             return 1
         print(json.dumps(entry, indent=2, ensure_ascii=False))
         return 0
@@ -2999,13 +3267,22 @@ def cmd_quarantine(args: argparse.Namespace) -> int:
         return 0
 
     if cmd == "release":
-        wf_path = Path(args.workflow).expanduser().resolve()
-        if not wf_path.is_file():
-            print(f"error: workflow not found: {wf_path}", file=sys.stderr)
+        wf_ref = str(args.workflow or "").strip()
+        registry, write_path = ensure_writable_quarantine_registry(
+            data_root=data_root,
+            quarantine_path=quarantine_path,
+        )
+        try:
+            entry = release_quarantine_entry(
+                registry,
+                workflow_path=wf_ref,
+                note=str(args.note or ""),
+            )
+        except FileNotFoundError as exc:
+            print(f"error: {exc}", file=sys.stderr)
             return 1
-        entry = release_workflow_in_registry(registry, wf_path, note=str(args.note or ""))
-        save_quarantine_registry(quarantine_path, registry)
-        print(f"released {wf_path.name} note={entry.get('release_note')!r}")
+        save_quarantine_registry(write_path, registry)
+        print(f"released {entry.get('workflow_name')} note={entry.get('release_note')!r} registry={write_path}")
         return 0
 
     if cmd == "patch":
@@ -3112,6 +3389,41 @@ def cmd_quarantine(args: argparse.Namespace) -> int:
     return 1
 
 
+def _binding_patch_failures(warnings: list[str], shape: dict[str, Any], job: dict[str, Any]) -> list[str]:
+    """Return fatal companion-PNG patch failures for required media/prompt slots."""
+    fatal: list[str] = []
+    bindings = job.get("bindings") if isinstance(job.get("bindings"), dict) else {}
+    req_by_slot = requires_by_slot(shape)
+    for slot, meta in bindings.items():
+        req = req_by_slot.get(slot)
+        if not req:
+            continue
+        btype = str((req.get("binding") or {}).get("type") or "")
+        if btype == "vhs_load_video_path":
+            node_id = (req.get("binding") or {}).get("node_id")
+            needle = f"no VHS_LoadVideoPath node {node_id!r} in API prompt"
+            if any(needle in w for w in warnings):
+                fatal.append(
+                    f"companion_png_missing_video_slot:{slot} (node {node_id!r}); "
+                    "install workflow-to-api-converter or fix convert"
+                )
+        elif btype == "load_image":
+            node_id = (req.get("binding") or {}).get("node_id")
+            needle = f"no LoadImage node {node_id!r} in API prompt"
+            if any(needle in w for w in warnings):
+                fatal.append(
+                    f"companion_png_missing_image_slot:{slot} (node {node_id!r}); "
+                    "install workflow-to-api-converter or fix convert"
+                )
+        elif btype == "prompt_bundle":
+            if any(f"prompt positive node" in w and "not found" in w for w in warnings) and meta:
+                # Only fatal when the shape declared explicit node ids we failed to paint.
+                pos = ((req.get("binding") or {}).get("positive") or {}).get("node_id")
+                if pos is not None and any(f"prompt positive node {pos!r}" in w for w in warnings):
+                    fatal.append(f"companion_png_missing_prompt_positive:{slot} (node {pos!r})")
+    return fatal
+
+
 def resolve_prompt_for_job(
     job: dict[str, Any],
     shape: dict[str, Any],
@@ -3139,6 +3451,12 @@ def resolve_prompt_for_job(
     warnings.extend(apply_api_slot_bindings(prompt, shape, job, data_root))
     if isinstance(dev_spec, dict):
         apply_dev_tuning_api(prompt, dev_spec)
+    fatal = _binding_patch_failures(warnings, shape, job)
+    if fatal:
+        raise RuntimeError(
+            "companion_png fallback cannot apply required bindings "
+            f"(convert unavailable): {'; '.join(fatal)}"
+        )
     return prompt, "companion_png", warnings
 
 
@@ -3486,7 +3804,11 @@ def submit_job_file(
 
     template_path = Path(str(shape.get("template") or "")).expanduser().resolve()
     if template_path.is_file():
-        registry = load_quarantine_registry((quarantine_path or DEFAULT_QUARANTINE_PATH).expanduser().resolve())
+        qpath = (quarantine_path or DEFAULT_QUARANTINE_PATH).expanduser().resolve()
+        registry, _effective = load_effective_quarantine_registry(
+            data_root=data_root,
+            quarantine_path=qpath,
+        )
         is_blocked, entry = is_workflow_blocked(registry, template_path)
         if is_blocked and not ignore_quarantine:
             raise RuntimeError(f"quarantined template: {format_quarantine_block(entry or {})}")
@@ -3523,6 +3845,7 @@ def submit_job_file(
         server,
         prompt_obj,
         workflow_ui=workflow,
+        workflow_name=job_key,
         client_id=client_id,
         front=front,
         timeout_s=timeout,

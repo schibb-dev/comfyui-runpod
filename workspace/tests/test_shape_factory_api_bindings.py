@@ -135,6 +135,22 @@ class ApplyApiSlotBindingsPromptTests(unittest.TestCase):
             self.assertEqual(workflow["nodes"][0]["widgets_values"], ["Slow and small Movements. Idle Animation"])
             self.assertEqual(workflow["nodes"][1]["widgets_values"], ["assembled scene"])
 
+    def test_companion_png_missing_vhs_is_fatal(self) -> None:
+        from shape_factory import _binding_patch_failures
+
+        shape = {
+            "requires": [
+                {
+                    "slot": "source_video",
+                    "binding": {"type": "vhs_load_video_path", "node_id": 377},
+                }
+            ]
+        }
+        job = {"bindings": {"source_video": {"path": "/tmp/x.mp4"}}}
+        warnings = ["no VHS_LoadVideoPath node 377 in API prompt"]
+        fatal = _binding_patch_failures(warnings, shape, job)
+        self.assertTrue(any("companion_png_missing_video_slot:source_video" in f for f in fatal))
+
 
 if __name__ == "__main__":
     unittest.main()

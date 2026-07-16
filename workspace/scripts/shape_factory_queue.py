@@ -18,7 +18,7 @@ from shape_factory import (
     DEFAULT_DATA_ROOT,
     assert_workflows_not_quarantined,
     generate_job_for_picks,
-    load_quarantine_registry,
+    load_effective_quarantine_registry,
     load_yaml,
     requires_by_slot,
     submit_job_file,
@@ -364,6 +364,7 @@ def queue_shape_factory_combo(
     front: bool = False,
     dry_run: bool = False,
     dev: bool = False,
+    force: bool = False,
     overrides: Optional[Dict[str, Any]] = None,
     pick_mode: str = "product",
     parent_output: Optional[str] = None,
@@ -437,7 +438,10 @@ def queue_shape_factory_combo(
     )
 
     quarantine_path = data_root / "shape_factory" / "quarantine.json"
-    registry = load_quarantine_registry(quarantine_path)
+    registry, _effective = load_effective_quarantine_registry(
+        data_root=data_root,
+        quarantine_path=quarantine_path,
+    )
     assert_workflows_not_quarantined(registry, [template_path], ignore=False)
 
     resolved_shape_path = resolve_existing_path(
@@ -492,6 +496,7 @@ def queue_shape_factory_combo(
             data_root=comfy_data_root,
             quarantine_path=quarantine_path,
             front=front,
+            force=force,
             client_id="factory-map-ui",
         )
 
@@ -548,6 +553,7 @@ def queue_from_request_body(
         front=bool(body.get("front") or False),
         dry_run=bool(body.get("dry_run") or False),
         dev=bool(body.get("dev") or False),
+        force=bool(body.get("force") or False),
         overrides=_parse_overrides(body),
     )
 
@@ -699,6 +705,7 @@ def replay_from_request_body(
         front=bool(body.get("front") or False),
         dry_run=bool(body.get("dry_run") or False),
         dev=bool(body.get("dev") or False),
+        force=bool(body.get("force") or False),
         overrides=overrides,
         pick_mode=pick_mode,
         parent_output=parent_output,
