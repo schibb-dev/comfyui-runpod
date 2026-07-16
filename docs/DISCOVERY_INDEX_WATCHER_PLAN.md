@@ -267,13 +267,13 @@ output/_status/enrichment/
 | **G (later)** | Input FS watch after reorg |
 | **H (later)** | CLIP + Florence active; GPU worker |
 
-## Implementation checklist (not started)
+## Implementation checklist
 
 - [ ] Extract `discovery_index_lib.py`; server uses it for full build
 - [ ] `test_discovery_index_lib.py`
 - [ ] `discovery_index_watcher.py` + poll fallback
-- [ ] `asset_job_catalog.yaml` + `asset_job_lib.py` + `asset_job_worker.py`
-- [ ] Stub handlers (lineage, input, vision_clip, vision_florence)
+- [x] `asset_job_catalog.yaml` + `asset_job_lib.py` + `asset_job_worker.py` (phase C stubs)
+- [x] Stub handlers (lineage, vision_clip, vision_florence, vision_slice_caption); `input_index` deferred
 - [ ] `GET /api/discovery/indexers/status` + UI enrichment panel
 - [ ] docker-compose services + `.env.example`
 - [ ] `docs/DISCOVERY_INDEX_WATCHER.md` runbook

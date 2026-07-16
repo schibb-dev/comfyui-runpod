@@ -1,0 +1,43 @@
+# Asset enrichment job catalog — V2 framework (stubs first).
+# See docs/DISCOVERY_INDEX_WATCHER_PLAN.md
+version: 1
+jobs:
+  lineage_reindex:
+    status: stub
+    resource: cpu
+    interval_sec: 60
+    batch: 10
+    output: discovery_lineage_edges.json
+    note: Drain discovery upserts; no edge writes until phase F.
+
+  input_index:
+    status: deferred
+    reason: input_fs_reorg_pending
+    resource: cpu
+
+  vision_clip_embed:
+    status: stub
+    resource: gpu
+    interval_sec: 300
+    batch: 4
+    output_dir: enrichment/clip_embeddings/
+    model_pin: openclip-vit-b-32
+
+  vision_florence_tag:
+    status: stub
+    resource: gpu
+    interval_sec: 300
+    batch: 2
+    output_dir: enrichment/florence_tags/
+    # Day-one V3a pin from blind judgment (large now; informed union later).
+    model_pin: MiaoshouAI/Florence-2-large-PromptGen-v2.0
+    pin_file: vision_v3a_tag_pin.json
+    note: Whole-asset / slice tags via portable vision_slice_caption_run.py later.
+
+  vision_slice_caption:
+    status: stub
+    resource: gpu
+    interval_sec: 300
+    batch: 1
+    output_dir: enrichment/slice_captions/
+    note: V1 kept time slices — enqueue same sample+caption scripts as GPU jobs.
