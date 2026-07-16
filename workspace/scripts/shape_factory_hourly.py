@@ -35,6 +35,76 @@ from shape_factory_ratings import (
 )
 
 _OG_DATE_RE = re.compile(r"(?:^|/)og/(\d{4}-\d{2}-\d{2})(?:/|$)")
+_KNEEL_SOURCE_RE = re.compile(r"(?i)(?:^|[/_\-])x-?kneel|kneel-fb9|x-kneel")
+_Y2025_FOLDER_RE = re.compile(r"(?:^|/)og/2025-\d{2}-\d{2}(?:/|$)")
+_Y2025_NAME_RE = re.compile(r"(?:^|[^0-9])2025[-_]\d{2}[-_]\d{2}")
+
+
+def _recipe_source_path(recipe: dict[str, Any]) -> str:
+    picks = recipe.get("picks") if isinstance(recipe.get("picks"), dict) else {}
+    for slot in ("source_video", "source_still", "source_video_ref"):
+        raw = picks.get(slot)
+        if raw:
+            return str(raw)
+    return ""
+
+
+def _is_kneel_source(path: str) -> bool:
+    text = str(path or "").replace("\\", "/")
+    if not text:
+        return False
+    return bool(_KNEEL_SOURCE_RE.search(text) or _KNEEL_SOURCE_RE.search(Path(text).name))
+
+
+def _is_2025_source(path: str) -> bool:
+    text = str(path or "").replace("\\", "/")
+    if not text:
+        return False
+    if _Y2025_FOLDER_RE.search(text):
+        return True
+    return bool(_Y2025_NAME_RE.search(Path(text).name))
+
+
+def _source_promotion_mult(path: str) -> float:
+    """Weight multiplier for preferred library sources (X-Kneel, 2025-era OG)."""
+    kneel_b = max(1.0, float(os.environ.get("HOURLY_KNEEL_SOURCE_BOOST", "2.5")))
+    y2025_b = max(1.0, float(os.environ.get("HOURLY_2025_SOURCE_BOOST", "2.0")))
+    mult = 1.0
+    if _is_kneel_source(path):
+        mult *= kneel_b
+    if _is_2025_source(path):
+        mult *= y2025_b
+    return mult
+
+
+def _recipe_promotion_mult(recipe: dict[str, Any]) -> float:
+    """Boost recipes whose source or output is an X-Kneel / 2025-era clip."""
+    kneel_b = max(1.0, float(os.environ.get("HOURLY_KNEEL_SOURCE_BOOST", "2.5")))
+    y2025_b = max(1.0, float(os.environ.get("HOURLY_2025_SOURCE_BOOST", "2.0")))
+    paths = [_recipe_source_path(recipe), str(recipe.get("output_path") or "")]
+    mult = 1.0
+    if any(_is_kneel_source(p) for p in paths):
+        mult *= kneel_b
+    if any(_is_2025_source(p) for p in paths):
+        mult *= y2025_b
+    return mult
+
+
+def _apply_source_promotion(
+    recipes: List[dict[str, Any]],
+    weights: List[float],
+    weight_meta: Optional[List[dict[str, Any]]] = None,
+) -> List[float]:
+    """Amplify Kneel / 2025-era recipes in weighted selection."""
+    out: List[float] = []
+    for i, (recipe, weight) in enumerate(zip(recipes, weights)):
+        mult = _recipe_promotion_mult(recipe)
+        out.append(float(weight) * mult)
+        if weight_meta is not None and i < len(weight_meta) and isinstance(weight_meta[i], dict) and mult != 1.0:
+            weight_meta[i] = dict(weight_meta[i])
+            weight_meta[i]["source_promotion_mult"] = round(mult, 3)
+    return out
+
 
 def _default_data_root() -> Path:
     repo = Path(__file__).resolve().parents[2]
@@ -853,6 +923,7 @@ def plan_hourly_replay(
     )
     weights = _apply_recent_combo_penalty(recipes, weights, recent)
     weights = _apply_recent_source_penalty(recipes, weights, recent_sources)
+    weights = _apply_source_promotion(recipes, weights, weight_meta)
 
     eligible_recipes: List[dict[str, Any]] = []
     eligible_weights: List[float] = []
@@ -970,12 +1041,18 @@ def _pick_preferring_non_recent(
     combo_for,
     recent: Set[str],
     rng: random.Random,
+    weight_for: Optional[Any] = None,
 ) -> Optional[Any]:
     """Pick from candidates, strongly preferring ones whose combo_key is not recent."""
     if not candidates:
         return None
     fresh = [c for c in candidates if str(combo_for(c) or "") not in recent]
-    return rng.choice(fresh or candidates)
+    pool = fresh or candidates
+    if weight_for is None:
+        return rng.choice(pool)
+    weights = [max(0.01, float(weight_for(c))) for c in pool]
+    picked, _ = _weighted_choice(pool, weights, rng)
+    return picked
 
 
 def _load_source_facets_doc(data_root: Path) -> Optional[dict[str, Any]]:
@@ -1084,7 +1161,10 @@ def _derive_rewire(
             )
 
         chosen_prompt = _pick_preferring_non_recent(
-            alt_prompts, combo_for=_combo_for_prompt, recent=recent, rng=rng
+            alt_prompts,
+            combo_for=_combo_for_prompt,
+            recent=recent,
+            rng=rng,
         )
         if chosen_prompt:
             picks_map = {str(k): str(v) for k, v in seed_picks.items()}
@@ -1164,7 +1244,11 @@ def _derive_rewire(
             )
 
         chosen_source = _pick_preferring_non_recent(
-            alt_sources, combo_for=_combo_for_source, recent=recent, rng=rng
+            alt_sources,
+            combo_for=_combo_for_source,
+            recent=recent,
+            rng=rng,
+            weight_for=_source_promotion_mult,
         )
         if chosen_source:
             picks_map = {str(k): str(v) for k, v in seed_picks.items()}
@@ -1377,6 +1461,7 @@ def plan_hourly_derive(
         ck = str(recipe.get("combo_key") or "")
         if ck in recent:
             weight *= 0.08
+        weight *= _recipe_promotion_mult(recipe)
         seeds.append({"recipe": recipe, "info": info})
         weights.append(weight)
         if info.get("fast_track"):
@@ -1392,6 +1477,8 @@ def plan_hourly_derive(
         }
 
     rng = random.Random(int(cursor) ^ 0x0A9E)
+    promo_share = float(os.environ.get("HOURLY_PROMOTED_SOURCE_SHARE", "0.35"))
+    promo_share = max(0.0, min(1.0, promo_share))
     # Try several seeds until rewire produces a distinct combo.
     attempt_order: List[int] = []
     if fast_tracks:
@@ -1414,6 +1501,12 @@ def plan_hourly_derive(
         seed_recipe = chosen["recipe"]
         info = chosen["info"]
         facet = str(info.get("facet") or "both")
+        # Periodically force processing so Kneel/2025 pool clips enter as source_video.
+        if promo_share > 0 and pool_sources and rng.random() < promo_share:
+            facet = "processing"
+            info = dict(info)
+            info["facet"] = facet
+            info["promoted_source_override"] = True
         rewired, action, hold_meta = _derive_rewire(
             seed_recipe,
             facet=facet,
@@ -1773,6 +1866,7 @@ def plan_hourly_predicted_derive(
         ck = str(recipe.get("combo_key") or "")
         if ck in recent:
             weight *= 0.08
+        weight *= _recipe_promotion_mult(recipe)
         seeds.append({"recipe": recipe, "meta": meta})
         weights.append(weight)
 
@@ -1786,6 +1880,8 @@ def plan_hourly_predicted_derive(
         }
 
     rng = random.Random(int(cursor) ^ 0x9AED)
+    promo_share = float(os.environ.get("HOURLY_PROMOTED_SOURCE_SHARE", "0.35"))
+    promo_share = max(0.0, min(1.0, promo_share))
     attempt_order: List[int] = []
     remaining = list(range(len(seeds)))
     while remaining and len(attempt_order) < min(12, len(seeds)):
@@ -1811,6 +1907,8 @@ def plan_hourly_predicted_derive(
             appetite_doc=appetite_doc,
         )
         facet = str(app.get("facet") or "both")
+        if promo_share > 0 and pool_sources and rng.random() < promo_share:
+            facet = "processing"
         rewired, action, hold_meta = _derive_rewire(
             seed_recipe,
             facet=facet,

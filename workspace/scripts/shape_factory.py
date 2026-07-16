@@ -722,16 +722,12 @@ def resolve_glob(spec: dict[str, Any]) -> list[Path]:
     if not pattern:
         return []
     limit = spec.get("limit")
-    glob_path = Path(pattern).expanduser()
-    if "**" in pattern:
-        # e.g. /home/.../og/**/FB9*.mp4
-        root_str, _, rest = pattern.partition("**")
-        root = Path(root_str.rstrip("/"))
-        rest = rest.lstrip("/")
-        paths = [p for p in root.rglob(rest) if p.is_file()]
-    else:
-        paths = [p for p in glob_path.parent.glob(glob_path.name) if p.is_file()]
-    paths = sorted({p.resolve() for p in paths})
+    # stdlib glob so year folders like og/2025-* and nested ** patterns both work.
+    import glob as _glob
+
+    expanded = str(Path(pattern).expanduser())
+    raw_paths = _glob.glob(expanded, recursive=True)
+    paths = sorted({Path(p).resolve() for p in raw_paths if Path(p).is_file()})
     if isinstance(limit, int) and limit > 0:
         paths = paths[:limit]
     return paths

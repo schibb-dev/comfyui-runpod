@@ -776,6 +776,71 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
         self.assertTrue(plan.get("top_of_hour"))
         self.assertEqual(plan.get("combo_key"), replay["combo_key"])
 
+    def test_source_promotion_detects_kneel_and_2025(self) -> None:
+        from shape_factory_hourly import (
+            _is_2025_source,
+            _is_kneel_source,
+            _recipe_promotion_mult,
+            _source_promotion_mult,
+        )
+
+        self.assertTrue(_is_kneel_source("/data/og/2026-04-03/X-Kneel-FB9-2026-04-03-142014_OG_00001.mp4"))
+        self.assertTrue(_is_2025_source("/data/output/og/2025-10-06/135612_OG_00001.mp4"))
+        self.assertFalse(_is_2025_source("/data/output/og/2026-04-03/FB9_GEX2_2026-04-03_00001.mp4"))
+        self.assertGreater(
+            _source_promotion_mult("/data/og/2026-04-03/X-Kneel-FB9-2026-04-03_OG_00001.mp4"),
+            1.0,
+        )
+        kneel_recipe = {
+            "picks": {"source_video": "/data/og/x/X-Kneel-FB9-seed.mp4"},
+            "output_path": "/data/og/2026-04-03/FB9_GEX2_out.mp4",
+        }
+        plain = {
+            "picks": {"source_video": "/data/og/2026-04-03/FB9_GEX2_2026-04-03_00001.mp4"},
+            "output_path": "/data/og/2026-04-04/FB9_GEX2_2026-04-04_00001.mp4",
+        }
+        self.assertGreater(_recipe_promotion_mult(kneel_recipe), _recipe_promotion_mult(plain))
+
+    def test_pick_preferring_non_recent_weights_promoted_sources(self) -> None:
+        import random
+
+        from shape_factory_hourly import _pick_preferring_non_recent, _source_promotion_mult
+
+        candidates = [
+            "/tmp/og/2026-04-03/FB9_GEX2_chain.mp4",
+            "/tmp/og/2025-10-06/135612_OG_00001.mp4",
+            "/tmp/og/2026-04-03/X-Kneel-FB9-seed.mp4",
+        ]
+        counts = {c: 0 for c in candidates}
+        rng = random.Random(0)
+        for _ in range(200):
+            picked = _pick_preferring_non_recent(
+                candidates,
+                combo_for=lambda c: f"prompt_profile-x__source_video-{Path(c).stem}",
+                recent=set(),
+                rng=rng,
+                weight_for=_source_promotion_mult,
+            )
+            counts[str(picked)] += 1
+        # Promoted kneel/2025 should win more often than plain GEX2 chain.
+        self.assertGreater(
+            counts["/tmp/og/2026-04-03/X-Kneel-FB9-seed.mp4"]
+            + counts["/tmp/og/2025-10-06/135612_OG_00001.mp4"],
+            counts["/tmp/og/2026-04-03/FB9_GEX2_chain.mp4"],
+        )
+
+    def test_resolve_glob_supports_year_folder_pattern(self) -> None:
+        from shape_factory import resolve_glob
+
+        og = Path("/home/yuji/comfyui-runpod-data/output/og")
+        if not (og / "2025-10-06").is_dir():
+            self.skipTest("no 2025 og folders on this host")
+        paths = resolve_glob(
+            {"glob": str(og / "2025-*" / "*.mp4"), "limit": 20}
+        )
+        self.assertGreater(len(paths), 0)
+        self.assertTrue(all("/og/2025-" in str(p).replace("\\", "/") for p in paths))
+
 
 if __name__ == "__main__":
     unittest.main()
