@@ -1156,6 +1156,140 @@ def _synthetic_live_work_product(
     return item
 
 
+# Statuses that mean "should still be on Comfy /queue" until proven otherwise.
+IN_FLIGHT_STATUSES: frozenset[str] = frozenset(
+    {"queued", "running", "submitted", "unknown"}
+)
+
+
+def _queue_prompt_id_sets(
+    queue_running: Any = None,
+    queue_pending: Any = None,
+) -> Tuple[set[str], set[str]]:
+    running = {e["prompt_id"] for e in _comfy_queue_entries(queue_running, status="running")}
+    pending = {e["prompt_id"] for e in _comfy_queue_entries(queue_pending, status="queued")}
+    return running, pending
+
+
+def reconcile_inflight_jobs_with_comfy(
+    *,
+    data_root: Path,
+    comfy_server: str,
+    queue_running: Any = None,
+    queue_pending: Any = None,
+    persist: bool = True,
+) -> Dict[str, Any]:
+    """
+    Align factory ``job.json`` submit statuses with Comfy ``/queue`` (+ history).
+
+    Comfy is canonical for queued/running. Jobs that claim in-flight but are gone
+    from both queue and history are marked interrupted (or complete/error via history).
+    """
+    # Local import: shape_factory pulls heavier deps; keep work_products import light.
+    from shape_factory import (  # type: ignore
+        atomic_write_json,
+        queue_prompt_id_buckets,
+        update_job_status_from_comfy,
+    )
+
+    data_root = Path(data_root).expanduser().resolve()
+    server = str(comfy_server or "").rstrip("/")
+    if queue_running is None and queue_pending is None:
+        if not server:
+            return {"ok": False, "error": "missing_comfy_server", "checked": 0, "updated": 0}
+        running_ids, pending_ids = queue_prompt_id_buckets(server)
+    else:
+        running_ids, pending_ids = _queue_prompt_id_sets(queue_running, queue_pending)
+
+    jobs_root = data_root / "shape_factory" / "jobs"
+    summary: Dict[str, Any] = {
+        "ok": True,
+        "checked": 0,
+        "updated": 0,
+        "running_ids": len(running_ids),
+        "pending_ids": len(pending_ids),
+        "by_status": {},
+    }
+    if not jobs_root.is_dir():
+        return summary
+
+    by_status: Dict[str, int] = {}
+    for path in jobs_root.glob("*/*.job.json"):
+        try:
+            job = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(job, dict):
+            continue
+        submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+        if not submit:
+            continue
+        before = str(submit.get("status") or "").strip().lower()
+        prompt_id = str(submit.get("prompt_id") or "").strip()
+        in_comfy = bool(prompt_id) and (prompt_id in running_ids or prompt_id in pending_ids)
+        if not in_comfy and before not in IN_FLIGHT_STATUSES:
+            continue
+        if not prompt_id:
+            continue
+
+        summary["checked"] = int(summary["checked"]) + 1
+        new_status = update_job_status_from_comfy(
+            job,
+            server=server or "http://127.0.0.1:8188",
+            data_root=data_root,
+            running_ids=running_ids,
+            pending_ids=pending_ids,
+        )
+        after = str((job.get("submit") or {}).get("status") or new_status).strip().lower()
+        by_status[after] = by_status.get(after, 0) + 1
+        if after != before:
+            summary["updated"] = int(summary["updated"]) + 1
+            if persist:
+                try:
+                    atomic_write_json(path, job)
+                except OSError:
+                    summary["ok"] = False
+                    summary["write_error"] = str(path)
+    summary["by_status"] = by_status
+    return summary
+
+
+def demote_stale_inflight_items(
+    payload: Dict[str, Any],
+    *,
+    queue_running: Any = None,
+    queue_pending: Any = None,
+) -> Dict[str, Any]:
+    """
+    Display-layer safety: items that claim queued/running but are not on Comfy
+    ``/queue`` are demoted so the UI never shows ghost live rows.
+    """
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        return payload
+    running_ids, pending_ids = _queue_prompt_id_sets(queue_running, queue_pending)
+    live = running_ids | pending_ids
+    demoted = 0
+    items = list(payload.get("items") or [])
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        if it.get("live_from_comfy"):
+            continue
+        pid = str(it.get("prompt_id") or "").strip()
+        st = str(it.get("status") or "").strip().lower()
+        if st not in IN_FLIGHT_STATUSES:
+            continue
+        if pid and pid in live:
+            continue
+        # Prefer interrupted when we know it left the queue; keep pending if never submitted.
+        it["status"] = "interrupted" if pid else "pending"
+        it["live_from_comfy"] = False
+        demoted += 1
+    payload["items"] = items
+    payload["comfy_demoted_stale"] = demoted
+    return payload
+
+
 def attach_live_comfy_queue(
     payload: Dict[str, Any],
     *,

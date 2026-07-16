@@ -1496,7 +1496,12 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
     if d.is_dir() and str(d) not in sys.path:
         sys.path.insert(0, str(d))
     from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
-    from shape_factory_work_products import attach_live_comfy_queue, list_recent_work_products  # type: ignore
+    from shape_factory_work_products import (  # type: ignore
+        attach_live_comfy_queue,
+        demote_stale_inflight_items,
+        list_recent_work_products,
+        reconcile_inflight_jobs_with_comfy,
+    )
 
     data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
     limit_raw = (q.get("limit") or ["40"])[0]
@@ -1506,6 +1511,28 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
         limit = 40
     hourly_only = str((q.get("hourly_only") or ["1"])[0]).strip().lower() not in {"0", "false", "no"}
     family = str((q.get("family") or [""])[0]).strip() or None
+
+    # Comfy /queue is canonical for in-flight. Reconcile job.json before listing so
+    # the UI never shows ghost running/queued rows after clears/restarts.
+    comfy = str(cfg.comfy_server).rstrip("/")
+    queue_obj: Any = None
+    reconcile: Dict[str, Any] | None = None
+    try:
+        queue_obj = _http_json("GET", f"{comfy}/queue", timeout_s=8)
+    except Exception as e:
+        queue_obj = {"error": "comfy_queue_fetch_failed", "detail": str(e)}
+    if isinstance(queue_obj, dict) and "error" not in queue_obj:
+        try:
+            reconcile = reconcile_inflight_jobs_with_comfy(
+                data_root=data_root,
+                comfy_server=comfy,
+                queue_running=queue_obj.get("queue_running"),
+                queue_pending=queue_obj.get("queue_pending"),
+                persist=True,
+            )
+        except Exception as e:
+            reconcile = {"ok": False, "error": "reconcile_failed", "detail": str(e)}
+
     payload = list_recent_work_products(
         data_root=data_root,
         output_root=cfg.output_root,
@@ -1513,14 +1540,7 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
         hourly_only=hourly_only,
         family=family,
     )
-    # Pin currently running/queued Comfy prompts so live previews stay visible even when
-    # the factory job is non-hourly or not yet recorded.
-    try:
-        comfy = str(cfg.comfy_server).rstrip("/")
-        queue_obj = _http_json("GET", f"{comfy}/queue", timeout_s=8)
-    except Exception:
-        queue_obj = None
-    if isinstance(queue_obj, dict):
+    if isinstance(queue_obj, dict) and "error" not in queue_obj:
         payload = attach_live_comfy_queue(
             payload,
             queue_running=queue_obj.get("queue_running"),
@@ -1528,6 +1548,13 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
             data_root=data_root,
             output_root=cfg.output_root,
         )
+        payload = demote_stale_inflight_items(
+            payload,
+            queue_running=queue_obj.get("queue_running"),
+            queue_pending=queue_obj.get("queue_pending"),
+        )
+    if reconcile is not None:
+        payload["comfy_reconcile"] = reconcile
     return payload
 
 

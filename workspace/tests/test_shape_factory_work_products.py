@@ -363,6 +363,56 @@ class TestWorkProducts(unittest.TestCase):
         self.assertEqual(out["items"][0]["family_slug"], "FB9_GEX_FACIAL")
         self.assertEqual(out["items"][1]["job_key"], "hourly__done")
 
+    def test_demote_stale_inflight_items(self):
+        from shape_factory_work_products import demote_stale_inflight_items
+
+        payload = {
+            "ok": True,
+            "items": [
+                {"job_key": "ghost", "prompt_id": "gone", "status": "running"},
+                {"job_key": "live", "prompt_id": "alive", "status": "queued", "live_from_comfy": True},
+                {"job_key": "done", "prompt_id": "x", "status": "complete"},
+            ],
+        }
+        out = demote_stale_inflight_items(
+            payload,
+            queue_running=[[0, "alive", {}]],
+            queue_pending=[],
+        )
+        self.assertEqual(out["items"][0]["status"], "interrupted")
+        self.assertEqual(out["items"][1]["status"], "queued")
+        self.assertEqual(out["items"][2]["status"], "complete")
+        self.assertEqual(out.get("comfy_demoted_stale"), 1)
+
+    def test_reconcile_inflight_persists_queued_vs_running(self):
+        from shape_factory_work_products import reconcile_inflight_jobs_with_comfy
+
+        with tempfile.TemporaryDirectory() as td:
+            data = Path(td)
+            jobs = data / "shape_factory" / "jobs" / "Fam"
+            jobs.mkdir(parents=True)
+            path = jobs / "job_a.job.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "job_key": "job_a",
+                        "submit": {"prompt_id": "pend-1", "status": "running"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            summary = reconcile_inflight_jobs_with_comfy(
+                data_root=data,
+                comfy_server="http://example.invalid",
+                queue_running=[[0, "run-1", {}]],
+                queue_pending=[[1, "pend-1", {}]],
+                persist=True,
+            )
+            self.assertTrue(summary.get("ok"))
+            self.assertEqual(summary.get("updated"), 1)
+            doc = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(doc["submit"]["status"], "queued")
+
     def test_relpath_under_remaps_host_output(self):
         root = Path("/workspace/output")
         rel = _relpath_under(

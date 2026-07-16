@@ -4025,15 +4025,26 @@ def fetch_comfy_history(server: str, prompt_id: str, *, timeout_s: int = 30) -> 
 
 
 def queue_prompt_ids(server: str, *, timeout_s: int = 15) -> set[str]:
+    running, pending = queue_prompt_id_buckets(server, timeout_s=timeout_s)
+    return running | pending
+
+
+def queue_prompt_id_buckets(server: str, *, timeout_s: int = 15) -> tuple[set[str], set[str]]:
+    """Return ``(running_ids, pending_ids)`` from Comfy ``/queue``."""
     q = fetch_comfy_queue(server, timeout_s=timeout_s)
-    ids: set[str] = set()
-    for key in ("queue_running", "queue_pending"):
+    running: set[str] = set()
+    pending: set[str] = set()
+
+    def _add(bucket: set[str], key: str) -> None:
         for item in q.get(key) or []:
             if isinstance(item, (list, tuple)) and len(item) >= 2:
                 pid = item[1]
                 if isinstance(pid, str) and pid.strip():
-                    ids.add(pid.strip())
-    return ids
+                    bucket.add(pid.strip())
+
+    _add(running, "queue_running")
+    _add(pending, "queue_pending")
+    return running, pending
 
 
 def history_status_str(history: dict[str, Any]) -> str:
@@ -4211,6 +4222,8 @@ def update_job_status_from_comfy(
     server: str,
     data_root: Path,
     queue_ids: Optional[set[str]] = None,
+    running_ids: Optional[set[str]] = None,
+    pending_ids: Optional[set[str]] = None,
     now: Optional[float] = None,
 ) -> str:
     submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
@@ -4219,12 +4232,21 @@ def update_job_status_from_comfy(
         return str(submit.get("status") or "pending")
 
     now_ts = float(now if now is not None else time.time())
-    if queue_ids is None:
-        queue_ids = queue_prompt_ids(server)
-    if prompt_id in queue_ids:
+    if running_ids is None or pending_ids is None:
+        running_ids, pending_ids = queue_prompt_id_buckets(server)
+        if queue_ids is not None:
+            # Legacy combined set: ensure membership is still recognized.
+            pending_ids = set(pending_ids) | (set(queue_ids) - set(running_ids))
+    running_ids = set(running_ids or ())
+    pending_ids = set(pending_ids or ())
+    if prompt_id in running_ids:
         submit["status"] = "running"
         update_job_timings_on_status(job, status="running", history=None, now=now_ts, data_root=data_root)
         return "running"
+    if prompt_id in pending_ids:
+        submit["status"] = "queued"
+        update_job_timings_on_status(job, status="queued", history=None, now=now_ts, data_root=data_root)
+        return "queued"
 
     history = fetch_comfy_history(server, prompt_id)
     if history is None:
@@ -4237,8 +4259,11 @@ def update_job_status_from_comfy(
                 job, status="complete", history=None, now=now_ts, data_root=data_root
             )
             return "complete"
-        if submit.get("status") in {"queued", "running"}:
-            submit["status"] = "unknown"
+        if submit.get("status") in {"queued", "running", "unknown"}:
+            # Cleared/interrupted: gone from queue and history (e.g. Comfy restart).
+            submit["status"] = "interrupted"
+            submit["interrupted_at"] = utc_now()
+            submit["interrupted_reason"] = "missing_from_comfy_queue_and_history"
         return str(submit.get("status") or "unknown")
 
     status = history_status_str(history)
@@ -4276,7 +4301,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     quiet = bool(getattr(args, "quiet", False))
     while True:
-        queue_ids = queue_prompt_ids(server)
+        running_ids, pending_ids = queue_prompt_id_buckets(server)
         counts = {
             "pending": 0,
             "queued": 0,
@@ -4284,6 +4309,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             "complete": 0,
             "error": 0,
             "abandoned": 0,
+            "interrupted": 0,
             "unknown": 0,
         }
         for job_path in job_paths:
@@ -4302,14 +4328,20 @@ def cmd_status(args: argparse.Namespace) -> int:
                 )
                 atomic_write_json(job_path, job)
             job_key = str(job.get("job_key") or job_path.stem)
-            status = update_job_status_from_comfy(job, server=server, data_root=data_root, queue_ids=queue_ids)
+            status = update_job_status_from_comfy(
+                job,
+                server=server,
+                data_root=data_root,
+                running_ids=running_ids,
+                pending_ids=pending_ids,
+            )
             if status == "completed":
                 status = "complete"
             bucket = status if status in counts else "unknown"
             counts[bucket] = counts.get(bucket, 0) + 1
             atomic_write_json(job_path, job)
             persist_timings(job_path, job, ledger=status in {"complete", "error"})
-            if quiet and status in {"complete", "abandoned", "error"}:
+            if quiet and status in {"complete", "abandoned", "error", "interrupted"}:
                 continue
             outputs = (job.get("submit") or {}).get("outputs") if isinstance(job.get("submit"), dict) else None
             out_hint = f" outputs={len(outputs)}" if isinstance(outputs, list) else ""
@@ -4329,7 +4361,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             )
             cmd_deposit(dep_args)
 
-        pending = counts.get("queued", 0) + counts.get("running", 0) + counts.get("unknown", 0)
+        pending = counts.get("queued", 0) + counts.get("running", 0)
         print(f"\nstatus_summary={counts}")
         if not args.wait or pending == 0:
             break

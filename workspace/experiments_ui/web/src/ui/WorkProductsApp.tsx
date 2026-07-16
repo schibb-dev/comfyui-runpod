@@ -232,6 +232,7 @@ function badgeClass(kind?: string | null): string {
   if (k === "front" || k === "now") return "work-product-badge--front";
   if (k === "complete" || k === "deposited") return "work-product-badge--ok";
   if (k === "queued" || k === "pending" || k === "normal" || k === "later") return "work-product-badge--pending";
+  if (k === "interrupted" || k === "unknown" || k === "abandoned") return "work-product-badge--pending";
   if (k === "failed" || k === "error") return "work-product-badge--bad";
   return "";
 }
