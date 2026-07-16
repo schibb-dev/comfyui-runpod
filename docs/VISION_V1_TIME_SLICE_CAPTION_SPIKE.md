@@ -1,6 +1,6 @@
 # Vision V1 — time-slice caption spike (implementation plan)
 
-**Status:** Ready to build (locked 2026-07-14; **run-anywhere** clarified same day).  
+**Status:** V1 spike complete (2026-07-16) — **Keep** time slices; next is V2 job stubs. Tag pin: PromptGen-large now (`_status/vision_v3a_tag_pin.json`), informed union later.  
 **Program:** P1 look/reads-like — first slice in the V1–V5 sequence ([`DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md`](./DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md)).  
 **Hub:** [`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md).
 
@@ -265,12 +265,12 @@ API: `GET` / `POST` `/api/vision/tag-judgment`. Restart the Experiments API proc
 
 ## Success criteria
 
-- [ ] 12 videos processed with fixed 2 s windows + one whole-video caption each.
-- [ ] NDJSON + manifest under `_status/` with `model_pin` and `runner` recorded.
-- [ ] Spot-check answers: slices **clearly better** / **mixed** / **not worth it** vs whole-video.
-- [ ] No unpaid remote GPU left running (if a remote runner was used).
-- [ ] Scripts ran with the **same CLI** on the chosen runner (no RunPod-only code paths in job bodies).
-- [ ] Planning Overview **Suggested focus** updated after retrospective.
+- [x] 12 videos processed with fixed 2 s windows + one whole-video caption each.
+- [x] NDJSON + manifest under `_status/` with `model_pin` and `runner` recorded.
+- [x] Spot-check answers: slices **clearly better** / **mixed** / **not worth it** vs whole-video. → **Keep** (2026-07-16)
+- [x] No unpaid remote GPU left running (if a remote runner was used).
+- [x] Scripts ran with the **same CLI** on the chosen runner (no RunPod-only code paths in job bodies).
+- [x] Planning Overview **Suggested focus** updated after retrospective.
 
 ## Non-goals for “done”
 

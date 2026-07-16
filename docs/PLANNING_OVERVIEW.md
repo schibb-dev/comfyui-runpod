@@ -64,10 +64,10 @@ Each program has: **intent**, **today**, **next** (actionable), **later**, **key
 | | |
 |--|--|
 | **Today** | Discovery library (og/wip), path search, lineage UI, workflow facets, trim/health; `asset_tags` bootstrap + editorial `source_facets`; **no** CLIP/Florence index |
-| **Next (spike)** | **V1** — ~12 videos → **offline time-slice captions** (run-anywhere jobs: local idle / Docker / RunPod); judge vs whole-video — [`VISION_V1_TIME_SLICE_CAPTION_SPIKE.md`](./VISION_V1_TIME_SLICE_CAPTION_SPIKE.md) |
-| **Later (locked sequence)** | **V2** watcher + job-queue stubs → **V3a** Florence/WD14 into tags/facets → **V4** BM25/sidecar search → **V3b** CLIP/ANN and **V5** HITL as recall demands |
+| **Next (spike)** | **V2** — watcher + job-queue stubs that enqueue the same portable slice caption/tag scripts (V1 kept time slices) — [`DISCOVERY_INDEX_WATCHER_PLAN.md`](./DISCOVERY_INDEX_WATCHER_PLAN.md) |
+| **Later (locked sequence)** | **V3a** PromptGen-large tags into `asset_tags`/facets (pin: `_status/vision_v3a_tag_pin.json`; informed base∪large later) → **V4** BM25/sidecar search → **V3b** CLIP/ANN and **V5** HITL as recall demands |
 | **Docs** | [`DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md`](./DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md) (V1–V5 sequence), [`VISION_V1_TIME_SLICE_CAPTION_SPIKE.md`](./VISION_V1_TIME_SLICE_CAPTION_SPIKE.md), [`SOURCE_FACET_SIMILARITY_PLAN.md`](./SOURCE_FACET_SIMILARITY_PLAN.md), [`DISCOVERY_INDEX_WATCHER_PLAN.md`](./DISCOVERY_INDEX_WATCHER_PLAN.md) |
-| **Not now** | Temporal NL (“X then Y”); full LoRA; face-embedding identity provider; shortcut V2→V3a only if V1 is explicitly parked |
+| **Not now** | Temporal NL (“X then Y”); full LoRA; face-embedding identity provider |
 
 **GPU:** batch worker **off** interactive Comfy.
 
@@ -198,13 +198,12 @@ Avoid parallel spikes across programs. Locked sequence for P1 vision:
 
 | Slot | Program | Action |
 |------|---------|--------|
-| **Primary spike** | **P1 / V1** | Time-slice caption pass on ~12 videos (run-anywhere) — [`VISION_V1_TIME_SLICE_CAPTION_SPIKE.md`](./VISION_V1_TIME_SLICE_CAPTION_SPIKE.md) |
+| **Primary spike** | **P1 / V2** | Watcher + job-queue stubs for portable slice caption/tag jobs — [`DISCOVERY_INDEX_WATCHER_PLAN.md`](./DISCOVERY_INDEX_WATCHER_PLAN.md) |
 | **Background** | **P3** | Keep queue/ledger healthy; no new architecture |
-| **Parked (P1)** | V2–V5 | Until V1 retrospective: keep / pivot / kill time slices |
-| **Parked** | P4–P6 | Until V1 answers “are slice tags worth indexing?” |
-| **Note-only** | P2, P5, P7–P9 | Capture pain in *Notes*; no build (P9: optional RunPod as one V1 runner) |
-
-Revisit this table after the V1 spike (one paragraph: keep / pivot / kill).
+| **Pinned (P1)** | V3a prep | Day-one tagger = PromptGen-large (`vision_v3a_tag_pin.json`); informed base∪large later |
+| **Parked (P1)** | V3b–V5 | Until V2 stubs + first V3a tag writes exist |
+| **Parked** | P4–P6 | Until slice-aware jobs can feed Discovery |
+| **Note-only** | P2, P5, P7–P9 | Capture pain in *Notes*; no build |
 
 ---
 
@@ -212,11 +211,9 @@ Revisit this table after the V1 spike (one paragraph: keep / pivot / kill).
 
 _Use this section during mental exploration. Promote bullets into a program’s **Next** when they stabilize._
 
-- 
-- 
+- **V1 retrospective (2026-07-16): Keep time slices.** Offline 2s windows + whole-video A/B and the Vision slices review UI were enough to keep span-aware captions/tags on the path (index span rows later; V2 should enqueue the same portable scripts). Separately, blind tag judgment (48 samples) pinned **PromptGen-large** as the V3a day-one tagger; **base∪large** (or an informed union: large always, add base-only when ★/prior-good and not FP-blocked) stays deferred. Artifacts: `_status/vision_tag_judgments.ndjson`, `vision_v3a_tag_pin.json`.
 
 ---
-
 ## Doc index (quick links)
 
 | Topic | Document |
