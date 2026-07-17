@@ -146,22 +146,181 @@ def normalize_appetite_facet(value: Any) -> str:
 @dataclass
 class AggBucket:
     ratings: List[int] = field(default_factory=list)
+    weights: List[float] = field(default_factory=list)
 
-    def add(self, rating: int) -> None:
+    def add(self, rating: int, weight: float = 1.0) -> None:
         self.ratings.append(int(rating))
+        self.weights.append(float(weight))
+
+    def mean(self) -> float:
+        if not self.ratings:
+            return 0.0
+        wsum = sum(self.weights) if self.weights else float(len(self.ratings))
+        if wsum <= 0:
+            return float(statistics.mean(self.ratings))
+        return sum(r * w for r, w in zip(self.ratings, self.weights)) / wsum
 
     def to_inferred(self, *, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         if not self.ratings:
             return {}
         keepers = sum(1 for r in self.ratings if r >= 4)
         out: Dict[str, Any] = {
-            "inferred": round(statistics.mean(self.ratings), 2),
+            "inferred": round(self.mean(), 2),
             "n": len(self.ratings),
             "keepers_4plus": keepers,
         }
         if extra:
             out.update(extra)
         return out
+
+
+# Provenance weights for discovery_lineage_edges.json (Phase 3 / v1.1).
+LINEAGE_EDGE_WEIGHTS: Dict[str, float] = {
+    "shape_factory_deposit": 1.0,
+    "png_prompt_source_path": 0.9,
+    "png_embed": 0.9,
+    "discovery_lineage": 0.85,
+    "backfill_load_image": 0.85,
+    "basename": 0.5,
+    "basename_heuristic": 0.5,
+}
+LINEAGE_MAX_HOPS = 2
+LINEAGE_HOP_DECAY = 0.75
+
+
+def lineage_edge_weight(evidence: str) -> float:
+    e = str(evidence or "").strip().lower()
+    if e in LINEAGE_EDGE_WEIGHTS:
+        return LINEAGE_EDGE_WEIGHTS[e]
+    if "deposit" in e or "shape_factory" in e:
+        return 1.0
+    if "png" in e or "embed" in e or "prompt" in e:
+        return 0.9
+    if "basename" in e or "heuristic" in e:
+        return 0.5
+    return 0.85
+
+
+def default_lineage_edges_path(data_root: Path) -> Path:
+    data_root = data_root.expanduser().resolve()
+    primary = data_root / "output" / "_status" / "discovery_lineage_edges.json"
+    if primary.is_file():
+        return primary
+    nested = data_root / "output" / "output" / "_status" / "discovery_lineage_edges.json"
+    return nested if nested.is_file() else primary
+
+
+def _lineage_group_stem(group_id: str) -> str:
+    s = str(group_id or "").strip().lower()
+    if ":stem:" in s:
+        return s.split(":stem:", 1)[1]
+    return s
+
+
+def _lineage_stem_from_path(path_like: str) -> str:
+    return Path(str(path_like or "").replace("\\", "/")).stem.lower()
+
+
+def load_lineage_parent_index(edges_path: Path) -> Dict[str, List[Dict[str, Any]]]:
+    """Map child stem → parent candidates with edge weights."""
+    out: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    if not edges_path.is_file():
+        return out
+    try:
+        doc = json.loads(edges_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return out
+    edges = doc.get("edges") if isinstance(doc, dict) else doc
+    if not isinstance(edges, list):
+        return out
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        child = _lineage_group_stem(str(edge.get("child_group_id") or ""))
+        parent_rel = str(edge.get("resolved_parent_relpath") or edge.get("via_source_raw") or "")
+        parent_stem = _lineage_group_stem(str(edge.get("parent_group_id") or "")) or _lineage_stem_from_path(parent_rel)
+        if not child or not parent_stem:
+            continue
+        parent_bn = normalize_source_basename(parent_rel) if parent_rel else f"{parent_stem}.mp4"
+        if not parent_bn:
+            parent_bn = f"{parent_stem}.mp4"
+        evidence = str(edge.get("evidence") or "")
+        out[child].append(
+            {
+                "parent_stem": parent_stem,
+                "parent_basename": parent_bn,
+                "weight": lineage_edge_weight(evidence),
+                "evidence": evidence,
+            }
+        )
+    return out
+
+
+def apply_lineage_uplift(
+    *,
+    rated_outputs: List[Dict[str, Any]],
+    parent_index: Dict[str, List[Dict[str, Any]]],
+    by_source_basename: Dict[str, AggBucket],
+    source_contributors: Dict[str, List[Dict[str, Any]]],
+    max_hops: int = LINEAGE_MAX_HOPS,
+    max_contributors: int = 48,
+) -> Dict[str, Any]:
+    """Propagate usable explicit stars upstream along lineage edges (≤ max_hops)."""
+    stats = {"lineage_edges_children": len(parent_index), "lineage_credits": 0, "lineage_sources_touched": 0}
+    if not parent_index or not rated_outputs:
+        return stats
+    touched: set[str] = set()
+
+    for rec in rated_outputs:
+        rating = int(rec["rating"])
+        if not is_usable_quality_rating(rating):
+            continue
+        discovery_key = str(rec.get("output_discovery_key") or "")
+        short_key = str(rec.get("output_short_key") or "")
+        child_stem = _lineage_stem_from_path(short_key or discovery_key)
+        if not child_stem:
+            continue
+        already = {str(bn) for bn in (rec.get("source_basenames") or []) if bn}
+
+        # BFS: (stem, path_weight, hop)
+        queue: List[Tuple[str, float, int]] = [(child_stem, 1.0, 0)]
+        seen_stems: set[str] = {child_stem}
+        while queue:
+            stem, path_w, hop = queue.pop(0)
+            if hop >= max_hops:
+                continue
+            for edge in parent_index.get(stem) or []:
+                parent_stem = str(edge["parent_stem"])
+                parent_bn = str(edge["parent_basename"])
+                edge_w = float(edge["weight"])
+                credit_w = path_w * edge_w * (LINEAGE_HOP_DECAY ** hop)
+                if credit_w <= 0:
+                    continue
+                if parent_bn not in already:
+                    by_source_basename[parent_bn].add(rating, weight=credit_w)
+                    touched.add(parent_bn)
+                    stats["lineage_credits"] += 1
+                    arr = source_contributors[parent_bn]
+                    if len(arr) < max_contributors:
+                        arr.append(
+                            {
+                                "output_discovery_key": discovery_key,
+                                "rating": rating,
+                                "via_source": "lineage",
+                                "evidence": {
+                                    "source": "lineage",
+                                    "hop": hop + 1,
+                                    "weight": round(credit_w, 4),
+                                    "edge_evidence": edge.get("evidence"),
+                                },
+                            }
+                        )
+                if parent_stem not in seen_stems:
+                    seen_stems.add(parent_stem)
+                    queue.append((parent_stem, path_w * edge_w, hop + 1))
+
+    stats["lineage_sources_touched"] = len(touched)
+    return stats
 
 
 def utc_now() -> str:
@@ -195,10 +354,23 @@ def _norm_path_key(path_like: str, data_root: Path) -> List[str]:
         add(str((data_root / raw).resolve()))
 
     for k in list(keys):
-        add(k.replace("/output/output/", "/output/"))
-        add(re.sub(r"^.*?/output/output/", "output/", k))
+        collapsed = k
+        while "/output/output/" in collapsed:
+            collapsed = collapsed.replace("/output/output/", "/output/", 1)
+            add(collapsed)
+        add(re.sub(r"^.*?/(?=output/)", "", collapsed) if "output/" in collapsed else collapsed)
         if k.endswith(".mp4"):
             add(k[:-4])
+        # Post-flatten discovery short forms: og/YYYY-MM-DD/stem
+        m = re.search(
+            r"(?:^|/)(og/\d{4}-\d{2}-\d{2}/[^/]+?)(?:\.(?:mp4|png|jpe?g|webp))?$",
+            collapsed,
+            flags=re.IGNORECASE,
+        )
+        if m:
+            short = m.group(1)
+            add(short)
+            add(f"output/{short}")
         base = Path(k).name
         if base:
             add(base)
@@ -209,16 +381,25 @@ def _norm_path_key(path_like: str, data_root: Path) -> List[str]:
 
 def _prompt_profile_name(job: Dict[str, Any]) -> Optional[str]:
     bindings = job.get("bindings")
-    if not isinstance(bindings, dict):
-        return None
-    pp = bindings.get("prompt_profile")
-    if not isinstance(pp, dict):
-        return None
-    path = str(pp.get("path") or "")
-    if not path:
-        return None
-    stem = Path(path).stem
-    return stem or None
+    if isinstance(bindings, dict):
+        pp = bindings.get("prompt_profile")
+        if isinstance(pp, dict):
+            path = str(pp.get("path") or "")
+            if path:
+                stem = Path(path).stem
+                if stem:
+                    return stem
+    job_key = str(job.get("job_key") or "")
+    m = re.search(r"prompt_profile-(.+?)(?:__source_|__000(?:_|$)|$)", job_key)
+    if m:
+        name = m.group(1).strip("_")
+        if name and name != "backfill":
+            return name
+    submit = job.get("submit")
+    prompt_source = str(submit.get("prompt_source") or "") if isinstance(submit, dict) else ""
+    if "__backfill__" in job_key or prompt_source == "backfill":
+        return "backfill"
+    return None
 
 
 def _catalog_slug(job: Dict[str, Any]) -> Optional[str]:
@@ -331,6 +512,8 @@ def build_ratings_index(
     name_glob: str = "*.XMP",
     days: int = 0,
     ffprobe: Optional[str] = None,
+    join_lineage: bool = True,
+    lineage_edges_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     og_root = og_root.expanduser().resolve()
     jobs_root = jobs_root.expanduser().resolve()
@@ -338,11 +521,13 @@ def build_ratings_index(
     out_path = out_path.expanduser().resolve()
 
     job_index = build_job_output_index(jobs_root, data_root)
-    records = iter_rated_og_records(
-        og_root,
-        name_glob=name_glob,
-        days=days,
-        ffprobe=ffprobe,
+    records = list(
+        iter_rated_og_records(
+            og_root,
+            name_glob=name_glob,
+            days=days,
+            ffprobe=ffprobe,
+        )
     )
 
     by_graph_hash: Dict[str, AggBucket] = defaultdict(AggBucket)
@@ -353,6 +538,7 @@ def build_ratings_index(
     source_contributors: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     graph_contributors: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     _MAX_CONTRIBUTORS = 48
+    lineage_basenames: set[str] = set()
 
     # Preserve operator-stamped fields across XMP rebuilds (rated_at, axes).
     prior_rows: Dict[str, Dict[str, Any]] = {}
@@ -446,6 +632,30 @@ def build_ratings_index(
         by_output_relpath[discovery_key] = output_row
         by_output_relpath[short_key] = output_row
 
+    lineage_stats: Dict[str, Any] = {
+        "lineage_edges_children": 0,
+        "lineage_credits": 0,
+        "lineage_sources_touched": 0,
+    }
+    if join_lineage:
+        edges_path = Path(lineage_edges_path).expanduser().resolve() if lineage_edges_path else default_lineage_edges_path(data_root)
+        parent_index = load_lineage_parent_index(edges_path)
+        before_keys = set(by_source_basename.keys())
+        lineage_stats = apply_lineage_uplift(
+            rated_outputs=records,
+            parent_index=parent_index,
+            by_source_basename=by_source_basename,
+            source_contributors=source_contributors,
+            max_hops=LINEAGE_MAX_HOPS,
+            max_contributors=_MAX_CONTRIBUTORS,
+        )
+        lineage_stats["lineage_edges_path"] = str(edges_path) if edges_path.is_file() else None
+        lineage_basenames = set(by_source_basename.keys()) - before_keys
+        # Also mark basenames that already existed but received lineage contributor rows.
+        for bn, arr in source_contributors.items():
+            if any(isinstance(c, dict) and (c.get("via_source") == "lineage" or (c.get("evidence") or {}).get("source") == "lineage") for c in arr):
+                lineage_basenames.add(bn)
+
     doc: Dict[str, Any] = {
         "version": RATINGS_SCHEMA_VERSION,
         "updated_at": utc_now(),
@@ -456,6 +666,8 @@ def build_ratings_index(
             "joined_shape_factory_jobs": joined_jobs,
             "joined_png_workflow_graph": joined_workflow,
             "job_output_keys": len(job_index),
+            **{k: v for k, v in lineage_stats.items() if k != "lineage_edges_path"},
+            "lineage_joined": bool(join_lineage and lineage_stats.get("lineage_credits")),
         },
         "by_graph_hash": {},
         "by_shape_recipe": {},
@@ -463,19 +675,21 @@ def build_ratings_index(
         "by_output_relpath": {},
     }
 
-    for gh, bucket in sorted(by_graph_hash.items(), key=lambda kv: (-statistics.mean(kv[1].ratings), -len(kv[1].ratings))):
+    for gh, bucket in sorted(by_graph_hash.items(), key=lambda kv: (-kv[1].mean(), -len(kv[1].ratings))):
         extra = graph_meta.get(gh) or {}
         row = bucket.to_inferred(extra=extra)
         row["contributors"] = graph_contributors.get(gh, [])
         doc["by_graph_hash"][gh] = row
 
-    for key, bucket in sorted(by_shape_recipe.items(), key=lambda kv: (-statistics.mean(kv[1].ratings), -len(kv[1].ratings))):
+    for key, bucket in sorted(by_shape_recipe.items(), key=lambda kv: (-kv[1].mean(), -len(kv[1].ratings))):
         doc["by_shape_recipe"][key] = bucket.to_inferred()
 
-    for bn, bucket in sorted(by_source_basename.items(), key=lambda kv: (-statistics.mean(kv[1].ratings), -len(kv[1].ratings))):
+    for bn, bucket in sorted(by_source_basename.items(), key=lambda kv: (-kv[1].mean(), -len(kv[1].ratings))):
         row = bucket.to_inferred()
         row["favorite_fanout"] = row.get("keepers_4plus", 0)
         row["contributors"] = source_contributors.get(bn, [])
+        if bn in lineage_basenames:
+            row["evidence"] = {"source": "lineage"}
         doc["by_source_basename"][bn] = row
 
     doc["by_output_relpath"] = by_output_relpath
@@ -1152,6 +1366,7 @@ def cmd_ratings_build(args: argparse.Namespace) -> int:
     data_root = Path(args.data_root).expanduser().resolve()
     out_path = Path(args.out or default_ratings_index_path(og_root)).expanduser().resolve()
     ffprobe = args.ffprobe or shutil.which("ffprobe")
+    lineage_edges = Path(args.lineage_edges).expanduser().resolve() if getattr(args, "lineage_edges", None) else None
 
     doc = build_ratings_index(
         og_root=og_root,
@@ -1161,6 +1376,8 @@ def cmd_ratings_build(args: argparse.Namespace) -> int:
         name_glob=str(args.name_glob or "*.XMP"),
         days=int(args.days or 0),
         ffprobe=ffprobe,
+        join_lineage=bool(getattr(args, "join_lineage", True)),
+        lineage_edges_path=lineage_edges,
     )
     stats = doc.get("stats") or {}
     print(f"Wrote {out_path}")
@@ -1179,6 +1396,11 @@ def cmd_ratings_build(args: argparse.Namespace) -> int:
     print(f"by_graph_hash={len(doc.get('by_graph_hash') or {})} "
           f"by_shape_recipe={len(doc.get('by_shape_recipe') or {})} "
           f"by_source_basename={len(doc.get('by_source_basename') or {})}")
+    if stats.get("lineage_credits") is not None:
+        print(
+            f"lineage_credits={stats.get('lineage_credits', 0)} "
+            f"lineage_sources_touched={stats.get('lineage_sources_touched', 0)}"
+        )
     return 0
 
 
@@ -1212,6 +1434,24 @@ def add_ratings_subparser(sub: argparse._SubParsersAction) -> None:
     build.add_argument("--name-glob", default="*.XMP")
     build.add_argument("--days", type=int, default=0)
     build.add_argument("--ffprobe", default=None)
+    build.add_argument(
+        "--join-lineage",
+        dest="join_lineage",
+        action="store_true",
+        default=True,
+        help="Propagate explicit stars upstream via discovery_lineage_edges.json (default)",
+    )
+    build.add_argument(
+        "--no-join-lineage",
+        dest="join_lineage",
+        action="store_false",
+        help="Skip lineage-edge uplift during build",
+    )
+    build.add_argument(
+        "--lineage-edges",
+        default=None,
+        help="Override path to discovery_lineage_edges.json",
+    )
     build.set_defaults(func=cmd_ratings_build)
 
     show = ratings_sub.add_parser("show", help="Look up ratings by graph hash, source, output, or recipe")
