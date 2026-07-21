@@ -1529,6 +1529,10 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
                 queue_running=queue_obj.get("queue_running"),
                 queue_pending=queue_obj.get("queue_pending"),
                 persist=True,
+                repo_root=_repo_root(),
+                workspace_root=cfg.workspace_root,
+                output_root=cfg.output_root,
+                auto_retry_oom=True,
             )
         except Exception as e:
             reconcile = {"ok": False, "error": "reconcile_failed", "detail": str(e)}

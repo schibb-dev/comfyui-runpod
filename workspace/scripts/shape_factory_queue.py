@@ -57,9 +57,18 @@ def _video_source_slot(shape: Dict[str, Any], bindings: Dict[str, str]) -> Optio
 
 
 def _parent_frame_count(job: Optional[Dict[str, Any]]) -> Optional[int]:
-    """Best-effort generation length from a prior job's captured workload / probes."""
+    """Best-effort generation length from a prior job's captured workload / probes.
+
+    For extend retries, prefer ``construction.frames_before`` (the parent clip length)
+    over ``timings.workload.frames`` (often the *target* length of a failed extend).
+    """
     if not isinstance(job, dict):
         return None
+    construction = job.get("construction") if isinstance(job.get("construction"), dict) else {}
+    if str(construction.get("derive_action") or construction.get("step") or "").strip().lower() == "extend":
+        before = construction.get("frames_before")
+        if isinstance(before, (int, float)) and int(before) > 0:
+            return int(before)
     timings = job.get("timings") if isinstance(job.get("timings"), dict) else {}
     workload = timings.get("workload") if isinstance(timings.get("workload"), dict) else {}
     for key in ("frames", "output_frame_count"):
@@ -75,7 +84,40 @@ def _parent_frame_count(job: Optional[Dict[str, Any]]) -> Optional[int]:
         fc = probe.get("frame_count")
         if isinstance(fc, (int, float)) and int(fc) > 0:
             return int(fc)
+    # Last resort: construction frames_before even when step isn't stamped extend.
+    before = construction.get("frames_before")
+    if isinstance(before, (int, float)) and int(before) > 0:
+        return int(before)
     return None
+
+
+def _extend_source_path(
+    job: Optional[Dict[str, Any]],
+    *,
+    output_abs: str,
+    body: Dict[str, Any],
+    bindings: Dict[str, str],
+) -> str:
+    """Resolve the clip to chain from when extending (including failed-extend retries)."""
+    cand = str(output_abs or "").strip()
+    if cand:
+        return cand
+    cand = str(body.get("output_path") or "").strip()
+    if cand:
+        return cand
+    if isinstance(job, dict):
+        cand = str(job.get("parent_output") or "").strip()
+        if cand:
+            return cand
+        construction = job.get("construction") if isinstance(job.get("construction"), dict) else {}
+        cand = str(construction.get("parent_output") or "").strip()
+        if cand:
+            return cand
+    for slot in ("source_video", "source_video_ref", "video"):
+        cand = str(bindings.get(slot) or "").strip()
+        if cand:
+            return cand
+    return ""
 
 
 def _extend_length_parameters(
@@ -614,6 +656,9 @@ def replay_from_request_body(
             (sub_outs[0] if sub_outs else (job_outs[0] if job_outs else (dep_vids[-1] if dep_vids else "")))
             or ""
         )
+        # Failed/interrupted extends have no outputs — fall back to parent clip / body.
+        if not output_abs and bool(body.get("extend")):
+            output_abs = _extend_source_path(job, output_abs="", body=body, bindings=bindings)
     else:
         job = None
         raw = body.get("bindings")
@@ -659,6 +704,8 @@ def replay_from_request_body(
 
     if extend:
         if not output_abs:
+            output_abs = _extend_source_path(job, output_abs="", body=body, bindings=bindings)
+        if not output_abs:
             raise ValueError("extend requires a resolvable output path")
         video_slot = _video_source_slot(shape, bindings)
         if video_slot is None:
@@ -692,6 +739,11 @@ def replay_from_request_body(
             "frames_before": base_frames,
             "frames_after": new_frames,
             "replay_of_job_key": job_key or None,
+            "retry_of_failed_extend": bool(
+                isinstance(job, dict)
+                and str((job.get("submit") or {}).get("status") or "").lower()
+                in {"error", "interrupted", "abandoned"}
+            ),
         }
 
     result = queue_shape_factory_combo(
@@ -719,6 +771,176 @@ def replay_from_request_body(
         if recovered_prompt:
             result["prompt_profile_recovered"] = recovered_prompt
     return result
+
+
+def is_oom_error_message(text: Any) -> bool:
+    msg = str(text or "").lower()
+    return any(
+        n in msg
+        for n in (
+            "out of memory",
+            "exceed allowed memory",
+            "cuda out of memory",
+            "cudaerror_out_of_memory",
+        )
+    )
+
+
+def oom_extend_auto_retry_enabled() -> bool:
+    raw = os.environ.get("SHAPE_FACTORY_OOM_EXTEND_AUTO_RETRY", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def oom_extend_max_retries() -> int:
+    raw = os.environ.get("SHAPE_FACTORY_OOM_EXTEND_MAX_RETRIES", "1").strip()
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 1
+
+
+def _job_is_extend(job: Dict[str, Any]) -> bool:
+    if str(job.get("pick_mode") or "").strip().lower() == "extend":
+        return True
+    construction = job.get("construction") if isinstance(job.get("construction"), dict) else {}
+    step = str(construction.get("derive_action") or construction.get("step") or "").strip().lower()
+    return step == "extend"
+
+
+def compute_oom_retry_frame_target(job: Dict[str, Any]) -> Optional[Tuple[int, int, int]]:
+    """
+    Pick a shorter extend length after OOM.
+
+    Returns ``(frames_before, frames_after, extra)`` or None when we cannot shrink further.
+    """
+    before = _parent_frame_count(job)
+    if before is None or before <= 0:
+        before = int(os.environ.get("SHAPE_FACTORY_EXTEND_DEFAULT_FRAMES", "80"))
+    construction = job.get("construction") if isinstance(job.get("construction"), dict) else {}
+    after_raw = construction.get("frames_after")
+    if isinstance(after_raw, (int, float)) and int(after_raw) > int(before):
+        prev_extra = int(after_raw) - int(before)
+    else:
+        env_extra = os.environ.get("SHAPE_FACTORY_EXTEND_EXTRA_FRAMES", "").strip()
+        if env_extra:
+            try:
+                prev_extra = max(1, int(env_extra))
+            except ValueError:
+                prev_extra = int(before)
+        else:
+            prev_extra = int(before)
+    new_extra = max(8, prev_extra // 2)
+    if new_extra >= prev_extra and prev_extra <= 8:
+        return None
+    new_after = int(before) + int(new_extra)
+    if new_after <= int(before):
+        return None
+    return int(before), int(new_after), int(new_extra)
+
+
+def maybe_auto_retry_oom_extend(
+    job: Dict[str, Any],
+    job_path: Path,
+    *,
+    repo_root: Path,
+    workspace_root: Path,
+    output_root: Path,
+    comfy_server: str,
+    persist: bool = True,
+) -> Optional[Dict[str, Any]]:
+    """
+    If ``job`` just failed with a Comfy OOM on an extend, spawn one shorter extend replay.
+
+    Idempotent: stamps ``submit.oom_auto_retry`` on the failed job so reconcile polls
+    do not spawn duplicates. Disabled with ``SHAPE_FACTORY_OOM_EXTEND_AUTO_RETRY=0``.
+    """
+    if not oom_extend_auto_retry_enabled():
+        return None
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    if str(submit.get("status") or "").strip().lower() != "error":
+        return None
+    if not is_oom_error_message(submit.get("error")):
+        return None
+    if not _job_is_extend(job):
+        return None
+    if isinstance(submit.get("oom_auto_retry"), dict) and submit["oom_auto_retry"].get("spawned_job_key"):
+        return None
+
+    construction = job.get("construction") if isinstance(job.get("construction"), dict) else {}
+    prior_tries = 0
+    for raw in (submit.get("oom_retries"), construction.get("oom_retries")):
+        if isinstance(raw, int) and raw >= 0:
+            prior_tries = max(prior_tries, raw)
+        elif isinstance(raw, str) and raw.strip().isdigit():
+            prior_tries = max(prior_tries, int(raw.strip()))
+    if prior_tries >= oom_extend_max_retries():
+        return None
+
+    target = compute_oom_retry_frame_target(job)
+    if target is None:
+        return None
+    frames_before, frames_after, extra = target
+
+    job_key = str(job.get("job_key") or job_path.stem.replace(".job", "")).strip()
+    if not job_key:
+        return None
+
+    body: Dict[str, Any] = {
+        "job_key": job_key,
+        "extend": True,
+        "overrides": {
+            "parameters": {
+                "frames": frames_after,
+                "frame_load_cap": frames_after,
+            }
+        },
+    }
+    family = str(job.get("family_slug") or "").strip()
+    if family:
+        body["family_slug"] = family
+
+    result = replay_from_request_body(
+        body,
+        repo_root=repo_root,
+        workspace_root=workspace_root,
+        output_root=output_root,
+        comfy_server=comfy_server,
+    )
+    if not isinstance(result, dict) or not result.get("ok"):
+        return result if isinstance(result, dict) else {"ok": False, "error": "oom_retry_failed"}
+
+    spawned_key = str(result.get("job_key") or "").strip()
+    attempt = prior_tries + 1
+    submit["oom_retries"] = attempt
+    submit["oom_auto_retry"] = {
+        "attempt": attempt,
+        "spawned_job_key": spawned_key or None,
+        "spawned_prompt_id": result.get("prompt_id"),
+        "frames_before": frames_before,
+        "frames_after": frames_after,
+        "extra_frames": extra,
+        "spawned_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+        .isoformat(timespec="seconds"),
+        "reason": "comfy_oom",
+    }
+    construction = dict(construction)
+    construction["oom_retries"] = attempt
+    job["construction"] = construction
+    job["submit"] = submit
+    if persist:
+        try:
+            from shape_factory import atomic_write_json  # type: ignore
+
+            atomic_write_json(job_path, job)
+        except Exception:
+            pass
+
+    out = dict(result)
+    out["oom_auto_retry"] = True
+    out["oom_retry_of_job_key"] = job_key
+    out["frames_before"] = frames_before
+    out["frames_after"] = frames_after
+    return out
 
 
 def prompt_profile_from_request(

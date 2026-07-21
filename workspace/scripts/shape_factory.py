@@ -4057,6 +4057,51 @@ def history_status_str(history: dict[str, Any]) -> str:
     return "unknown"
 
 
+def extract_history_execution_error(history: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Pull Comfy ``execution_error`` fields from a history entry (if present)."""
+    status = history.get("status") if isinstance(history.get("status"), dict) else {}
+    messages = status.get("messages") if isinstance(status.get("messages"), list) else []
+    for msg in messages:
+        if not isinstance(msg, (list, tuple)) or not msg:
+            continue
+        if str(msg[0]) != "execution_error":
+            continue
+        info = msg[1] if len(msg) > 1 and isinstance(msg[1], dict) else {}
+        text = str(info.get("exception_message") or "").strip()
+        # Comfy often appends a second line with allocation details; keep first line primary.
+        first_line = text.splitlines()[0].strip() if text else ""
+        out: dict[str, Any] = {
+            "exception_type": str(info.get("exception_type") or "").strip() or None,
+            "exception_message": text or None,
+            "exception_summary": first_line or None,
+            "node_id": str(info.get("node_id") or "").strip() or None,
+            "node_type": str(info.get("node_type") or "").strip() or None,
+        }
+        if not any(out.get(k) for k in ("exception_message", "node_type", "exception_type")):
+            return None
+        return out
+    return None
+
+
+def apply_history_error_to_submit(submit: dict[str, Any], history: dict[str, Any]) -> None:
+    """Persist a short, UI-friendly Comfy error onto the job submit block."""
+    err = extract_history_execution_error(history)
+    if not err:
+        return
+    summary = str(err.get("exception_summary") or err.get("exception_message") or "").strip()
+    node_type = str(err.get("node_type") or "").strip()
+    if summary and node_type:
+        submit["error"] = f"{node_type}: {summary}"[:400]
+    elif summary:
+        submit["error"] = summary[:400]
+    elif node_type:
+        submit["error"] = f"{node_type} failed"[:400]
+    submit["error_node"] = node_type or None
+    submit["error_node_id"] = err.get("node_id")
+    submit["error_type"] = err.get("exception_type")
+    submit["comfy_error"] = err
+
+
 def host_dir_for_output_prefix(output_prefix: str, data_root: Path) -> Path:
     prefix = str(output_prefix or "").strip().strip("/")
     return (data_root / prefix).resolve()
@@ -4269,6 +4314,23 @@ def update_job_status_from_comfy(
     status = history_status_str(history)
     submit["status"] = status
     submit["history_checked_at"] = utc_now()
+    if status == "error":
+        apply_history_error_to_submit(submit, history)
+        if not str(submit.get("error") or "").strip():
+            # Interrupted/cancelled runs sometimes land as error without execution_error payload.
+            status_block = history.get("status") if isinstance(history.get("status"), dict) else {}
+            msgs = [
+                str(m[0])
+                for m in (status_block.get("messages") or [])
+                if isinstance(m, (list, tuple)) and m
+            ]
+            if "execution_interrupted" in msgs:
+                submit["status"] = "interrupted"
+                submit["interrupted_reason"] = submit.get("interrupted_reason") or "execution_interrupted"
+                submit["error"] = "interrupted during Comfy execution"
+                status = "interrupted"
+            else:
+                submit["error"] = "Comfy execution error (no exception details in history)"
     hist_outputs = extract_history_output_paths(history, data_root)
     if hist_outputs:
         submit["outputs"] = [str(p) for p in hist_outputs]

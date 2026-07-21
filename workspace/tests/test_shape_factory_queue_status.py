@@ -59,6 +59,47 @@ class QueueStatusTests(unittest.TestCase):
         self.assertEqual(st, "interrupted")
         self.assertEqual(job["submit"]["status"], "interrupted")
 
+    def test_history_error_persists_exception_message(self) -> None:
+        history = {
+            "status": {
+                "status_str": "error",
+                "completed": False,
+                "messages": [
+                    [
+                        "execution_error",
+                        {
+                            "node_id": "12",
+                            "node_type": "SamplerCustomAdvanced",
+                            "exception_type": "RuntimeError",
+                            "exception_message": (
+                                "Allocation on device 0 would exceed allowed memory. (out of memory)\n"
+                                "Currently allocated: 13.66 GiB"
+                            ),
+                        },
+                    ]
+                ],
+            },
+            "outputs": {},
+        }
+        job = {"submit": {"prompt_id": "err-1", "status": "running"}, "output_prefix": "og/x"}
+        with mock.patch.object(sf, "fetch_comfy_history", return_value=history), mock.patch.object(
+            sf, "extract_history_output_paths", return_value=[]
+        ), mock.patch.object(sf, "discover_job_outputs", return_value=[]), mock.patch.object(
+            sf, "update_job_timings_on_status", return_value=None
+        ):
+            st = sf.update_job_status_from_comfy(
+                job,
+                server="http://x",
+                data_root=Path("."),
+                running_ids=set(),
+                pending_ids=set(),
+            )
+        self.assertEqual(st, "error")
+        self.assertEqual(job["submit"]["status"], "error")
+        self.assertIn("out of memory", job["submit"]["error"])
+        self.assertEqual(job["submit"]["error_node"], "SamplerCustomAdvanced")
+        self.assertEqual(job["submit"]["comfy_error"]["node_id"], "12")
+
 
 if __name__ == "__main__":
     unittest.main()

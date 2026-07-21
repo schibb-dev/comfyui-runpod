@@ -146,13 +146,140 @@ class ShapeFactoryQueueTests(unittest.TestCase):
 
         job = {"timings": {"workload": {"frames": 80, "overlap": 8, "output_frame_count": 97}}}
         self.assertEqual(_parent_frame_count(job), 80)
-        params = _extend_length_parameters(job)
+        with mock.patch.dict("os.environ", {"SHAPE_FACTORY_EXTEND_EXTRA_FRAMES": ""}, clear=False):
+            # Empty string → treat as unset and double.
+            import os
+
+            os.environ.pop("SHAPE_FACTORY_EXTEND_EXTRA_FRAMES", None)
+            params = _extend_length_parameters(job)
         self.assertEqual(params["frames"], 160)
         self.assertEqual(params["overlap"], 8)
         self.assertEqual(params["frame_load_cap"], 160)
         # Explicit frames win.
         pinned = _extend_length_parameters(job, existing={"frames": 200})
         self.assertEqual(pinned["frames"], 200)
+
+    def test_failed_extend_retry_uses_frames_before_and_parent_output(self) -> None:
+        from shape_factory_queue import _parent_frame_count, replay_from_request_body
+
+        job = {
+            "job_key": "failed_extend",
+            "family_slug": "FB9_GEX2",
+            "parent_output": "/data/output/og/parent.mp4",
+            "construction": {
+                "step": "extend",
+                "derive_action": "extend",
+                "frames_before": 80,
+                "frames_after": 160,
+                "parent_output": "/data/output/og/parent.mp4",
+            },
+            "bindings": {
+                "prompt_profile": {"path": "/data/prompts/x.json"},
+                "source_video": {"path": "/data/output/og/parent.mp4"},
+            },
+            "submit": {"status": "error", "prompt_id": "abc"},
+            "timings": {"workload": {"frames": 160}},  # target length — must NOT be base
+        }
+        self.assertEqual(_parent_frame_count(job), 80)
+
+        captured: dict = {}
+
+        def fake_queue(**kwargs):
+            captured.update(kwargs)
+            return {"ok": True, "job_key": "retry", "pick_mode": kwargs.get("pick_mode")}
+
+        with mock.patch("shape_factory_queue._find_job_doc", return_value=(job, Path("x.job.json"))), mock.patch(
+            "shape_factory_queue.load_yaml",
+            return_value={"requires": [{"slot": "source_video", "media": "video"}, {"slot": "prompt_profile", "binding": {"type": "prompt_bundle"}}]},
+        ), mock.patch(
+            "shape_factory_queue.resolve_or_recover_prompt_profile_binding",
+            side_effect=lambda bindings, **_k: (bindings, None),
+        ), mock.patch(
+            "shape_factory_queue._resolve_shape_path", return_value=Path("shape.yaml")
+        ), mock.patch(
+            "shape_factory_queue.queue_shape_factory_combo", side_effect=fake_queue
+        ), mock.patch.dict("os.environ", {"SHAPE_FACTORY_EXTEND_EXTRA_FRAMES": "32"}):
+            out = replay_from_request_body(
+                {"job_key": "failed_extend", "extend": True, "dry_run": True},
+                repo_root=REPO_ROOT,
+                workspace_root=REPO_ROOT / "workspace",
+                output_root=Path("/tmp"),
+                comfy_server="http://127.0.0.1:8188",
+            )
+        self.assertTrue(out.get("ok"), out)
+        self.assertEqual(captured.get("pick_mode"), "extend")
+        params = (captured.get("overrides") or {}).get("parameters") or {}
+        self.assertEqual(int(params.get("frames") or 0), 112)
+        self.assertEqual(captured.get("parent_output"), "/data/output/og/parent.mp4")
+        self.assertTrue((captured.get("construction") or {}).get("retry_of_failed_extend"))
+
+    def test_oom_retry_halves_extra_frames(self) -> None:
+        from shape_factory_queue import (
+            compute_oom_retry_frame_target,
+            is_oom_error_message,
+            maybe_auto_retry_oom_extend,
+        )
+
+        self.assertTrue(is_oom_error_message("SamplerCustomAdvanced: out of memory"))
+        self.assertFalse(is_oom_error_message("VHS_LoadVideoPath: No frames generated"))
+
+        job = {
+            "job_key": "oom_job",
+            "family_slug": "FB9_GEX2",
+            "pick_mode": "extend",
+            "parent_output": "/data/parent.mp4",
+            "construction": {
+                "step": "extend",
+                "derive_action": "extend",
+                "frames_before": 80,
+                "frames_after": 160,
+            },
+            "bindings": {"source_video": {"path": "/data/parent.mp4"}, "prompt_profile": {"path": "/p.json"}},
+            "submit": {
+                "status": "error",
+                "error": "SamplerCustomAdvanced: Allocation on device 0 would exceed allowed memory. (out of memory)",
+                "prompt_id": "x",
+            },
+        }
+        self.assertEqual(compute_oom_retry_frame_target(job), (80, 120, 40))
+
+        captured: dict = {}
+
+        def fake_replay(body, **kwargs):
+            captured["body"] = body
+            return {"ok": True, "job_key": "oom_job_retry", "prompt_id": "new-pid"}
+
+        with mock.patch("shape_factory_queue.replay_from_request_body", side_effect=fake_replay), mock.patch(
+            "shape_factory.atomic_write_json", lambda *_a, **_k: None
+        ), mock.patch.dict("os.environ", {"SHAPE_FACTORY_OOM_EXTEND_AUTO_RETRY": "1"}):
+            out = maybe_auto_retry_oom_extend(
+                job,
+                Path("oom.job.json"),
+                repo_root=REPO_ROOT,
+                workspace_root=REPO_ROOT / "workspace",
+                output_root=Path("/tmp"),
+                comfy_server="http://x",
+                persist=False,
+            )
+        self.assertTrue(out and out.get("ok") and out.get("oom_auto_retry"))
+        params = ((captured.get("body") or {}).get("overrides") or {}).get("parameters") or {}
+        self.assertEqual(params.get("frames"), 120)
+        self.assertEqual(job["submit"]["oom_auto_retry"]["spawned_job_key"], "oom_job_retry")
+
+        # Second call is idempotent.
+        with mock.patch("shape_factory_queue.replay_from_request_body") as again:
+            out2 = maybe_auto_retry_oom_extend(
+                job,
+                Path("oom.job.json"),
+                repo_root=REPO_ROOT,
+                workspace_root=REPO_ROOT / "workspace",
+                output_root=Path("/tmp"),
+                comfy_server="http://x",
+                persist=False,
+            )
+            again.assert_not_called()
+        self.assertIsNone(out2)
+
 
     def test_replay_extend_bumps_frames_and_stamps_pick_mode(self) -> None:
         from shape_factory_queue import replay_from_request_body

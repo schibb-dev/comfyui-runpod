@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import urllib.parse
 from pathlib import Path
@@ -654,6 +655,8 @@ def _detail_rows(item: Dict[str, Any]) -> List[Dict[str, Any]]:
     add("Created", item.get("created_at"))
     add("Family", item.get("family_slug"))
     add("Status", item.get("status"))
+    add("Error", item.get("error"))
+    add("Error node", item.get("error_node"))
     add("Pick mode", item.get("pick_mode"))
     add("Step", item.get("step"))
     add("Rating kind", item.get("rating_kind"))
@@ -918,6 +921,12 @@ def _work_product_item_from_job(
         "prompt_id": submit.get("prompt_id"),
         "submitted_at": submit.get("submitted_at"),
         "deposited_at": deposit.get("deposited_at"),
+        "error": (
+            submit.get("error")
+            or (submit.get("interrupted_reason") if str(status).lower() == "interrupted" else None)
+        ),
+        "error_node": submit.get("error_node"),
+        "error_type": submit.get("error_type"),
         "output_relpath": output_rel,
         "output_url": _file_url(output_rel),
         "output_thumb_url": _file_url(thumb_rel),
@@ -1178,12 +1187,19 @@ def reconcile_inflight_jobs_with_comfy(
     queue_running: Any = None,
     queue_pending: Any = None,
     persist: bool = True,
+    repo_root: Optional[Path] = None,
+    workspace_root: Optional[Path] = None,
+    output_root: Optional[Path] = None,
+    auto_retry_oom: bool = True,
 ) -> Dict[str, Any]:
     """
     Align factory ``job.json`` submit statuses with Comfy ``/queue`` (+ history).
 
     Comfy is canonical for queued/running. Jobs that claim in-flight but are gone
     from both queue and history are marked interrupted (or complete/error via history).
+
+    When ``auto_retry_oom`` is true, extend jobs that fail with Comfy OOM spawn one
+    shorter extend replay (see ``maybe_auto_retry_oom_extend``).
     """
     # Local import: shape_factory pulls heavier deps; keep work_products import light.
     from shape_factory import (  # type: ignore
@@ -1209,9 +1225,21 @@ def reconcile_inflight_jobs_with_comfy(
         "running_ids": len(running_ids),
         "pending_ids": len(pending_ids),
         "by_status": {},
+        "oom_retries": 0,
     }
     if not jobs_root.is_dir():
         return summary
+
+    # Paths for optional OOM auto-retry spawning.
+    rr = Path(repo_root).expanduser().resolve() if repo_root else data_root.parent
+    wr = Path(workspace_root).expanduser().resolve() if workspace_root else (
+        rr / "workspace" if (rr / "workspace").is_dir() else rr
+    )
+    if output_root is not None:
+        oroot = Path(output_root).expanduser().resolve()
+    else:
+        env_out = os.environ.get("COMFYUI_BIND_OUTPUT_DIR", "").strip()
+        oroot = Path(env_out).expanduser().resolve() if env_out else (wr / "output")
 
     by_status: Dict[str, int] = {}
     for path in jobs_root.glob("*/*.job.json"):
@@ -1227,7 +1255,13 @@ def reconcile_inflight_jobs_with_comfy(
         before = str(submit.get("status") or "").strip().lower()
         prompt_id = str(submit.get("prompt_id") or "").strip()
         in_comfy = bool(prompt_id) and (prompt_id in running_ids or prompt_id in pending_ids)
-        if not in_comfy and before not in IN_FLIGHT_STATUSES:
+        needs_error_backfill = (
+            before == "error"
+            and bool(prompt_id)
+            and not str(submit.get("error") or "").strip()
+            and not in_comfy
+        )
+        if not in_comfy and before not in IN_FLIGHT_STATUSES and not needs_error_backfill:
             continue
         if not prompt_id:
             continue
@@ -1242,14 +1276,47 @@ def reconcile_inflight_jobs_with_comfy(
         )
         after = str((job.get("submit") or {}).get("status") or new_status).strip().lower()
         by_status[after] = by_status.get(after, 0) + 1
-        if after != before:
+        after_submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+        error_filled = needs_error_backfill and bool(str(after_submit.get("error") or "").strip())
+        if after != before or error_filled:
             summary["updated"] = int(summary["updated"]) + 1
+            if error_filled:
+                summary["errors_backfilled"] = int(summary.get("errors_backfilled") or 0) + 1
             if persist:
                 try:
                     atomic_write_json(path, job)
                 except OSError:
                     summary["ok"] = False
                     summary["write_error"] = str(path)
+
+        if auto_retry_oom and after == "error" and server:
+            try:
+                from shape_factory_queue import maybe_auto_retry_oom_extend  # type: ignore
+
+                retry_out = maybe_auto_retry_oom_extend(
+                    job,
+                    path,
+                    repo_root=rr,
+                    workspace_root=wr,
+                    output_root=oroot,
+                    comfy_server=server,
+                    persist=persist,
+                )
+                if isinstance(retry_out, dict) and retry_out.get("ok") and retry_out.get("oom_auto_retry"):
+                    summary["oom_retries"] = int(summary.get("oom_retries") or 0) + 1
+                    spawned = summary.setdefault("oom_retry_jobs", [])
+                    if isinstance(spawned, list):
+                        spawned.append(
+                            {
+                                "from": job.get("job_key"),
+                                "to": retry_out.get("job_key"),
+                                "frames_after": retry_out.get("frames_after"),
+                            }
+                        )
+            except Exception as e:
+                summary.setdefault("oom_retry_errors", []).append(
+                    {"job_key": job.get("job_key"), "detail": str(e)[:240]}
+                )
     summary["by_status"] = by_status
     return summary
 

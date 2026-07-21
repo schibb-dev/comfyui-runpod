@@ -102,6 +102,10 @@ services:
       - EXPERIMENTS_UI=${EXPERIMENTS_UI:-false}
       - EXPERIMENTS_UI_PORT=${EXPERIMENTS_UI_PORT:-8790}
       - EXPERIMENTS_UI_BUILD=${EXPERIMENTS_UI_BUILD:-true}
+      # Extend length bump (frames). Unset = double parent length (often 80→160). Prefer 16–32 on 16GB GPUs.
+      - SHAPE_FACTORY_EXTEND_EXTRA_FRAMES=${SHAPE_FACTORY_EXTEND_EXTRA_FRAMES:-32}
+      - SHAPE_FACTORY_OOM_EXTEND_AUTO_RETRY=${SHAPE_FACTORY_OOM_EXTEND_AUTO_RETRY:-1}
+      - SHAPE_FACTORY_OOM_EXTEND_MAX_RETRIES=${SHAPE_FACTORY_OOM_EXTEND_MAX_RETRIES:-1}
       # Create-from-WIP browse root (relative to workspace unless absolute). Default: output/output/wip
       - EXPERIMENTS_UI_WIP_ROOT=${EXPERIMENTS_UI_WIP_ROOT:-}
       # Load ComfyUI-MultiGPU from custom_nodes (default on). Set false on single-GPU / if you symlink it away.
