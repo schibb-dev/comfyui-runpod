@@ -715,7 +715,7 @@ export function VisionSliceReviewApp() {
         </div>
       ) : null}
 
-      {data && (data.asset_count > 0 || (data.variants || []).length > 0) ? (
+      {data && ((data.asset_count ?? 0) > 0 || (data.variants || []).length > 0) ? (
         <>
           <div className="vision-slice-stats" aria-label="Run statistics">
             <div className="vision-slice-stats__roll">

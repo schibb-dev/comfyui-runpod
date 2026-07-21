@@ -1,6 +1,6 @@
 import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { cancelWorkItem, comfyLivePreviewUrl, createWorkItems, fetchComfyLiveStatus, fetchShapeFactoryJsonPeek, fetchShapeFactoryWorkProducts, runDispositionStep } from "./api";
+import { cancelWorkItem, comfyLivePreviewUrl, createWorkItems, fetchComfyLiveStatus, fetchShapeFactoryJsonPeek, fetchShapeFactoryWorkProducts, replayShapeFactory, runDispositionStep } from "./api";
 import { PageHeader } from "./PageHeader";
 import type {
   ComfyLiveStatusItem,
@@ -20,9 +20,38 @@ const LAYOUT_KEY = "work-products-row-layout";
 const SORT_KEY = "work-products-sort";
 const SECTION_OPEN_KEY = "work-products-section-open";
 const HOURLY_ONLY_KEY = "work-products-hourly-only";
+const STATUS_FILTER_OFF_KEY = "work-products-status-filter-off";
+const MARKER_FILTER_OFF_KEY = "work-products-marker-filter-off";
 const JSON_CACHE = new Map<string, { text: string; basename?: string; truncated?: boolean; error?: string }>();
 
 type WorkProductSort = "created_desc" | "created_asc" | "family_asc" | "family_desc" | "status" | "pick_mode";
+
+/** Display order for status filter toggles (unknown statuses sort after these). */
+const STATUS_FILTER_ORDER = [
+  "running",
+  "queued",
+  "pending",
+  "submitted",
+  "complete",
+  "deposited",
+  "error",
+  "failed",
+  "interrupted",
+  "abandoned",
+  "unknown",
+] as const;
+
+/** Display order for pick-mode / step marker toggles. */
+const MARKER_FILTER_ORDER = [
+  "extend",
+  "replay",
+  "derive",
+  "predicted_derive",
+  "predicted",
+  "product",
+  "zip",
+  "other",
+] as const;
 
 const SORT_OPTIONS: Array<{ id: WorkProductSort; label: string }> = [
   { id: "created_desc", label: "Newest" },
@@ -108,6 +137,92 @@ function persistHourlyOnly(hourlyOnly: boolean) {
   }
 }
 
+function loadStatusFilterOff(): Set<string> {
+  return loadStringSet(STATUS_FILTER_OFF_KEY);
+}
+
+function persistStatusFilterOff(off: Set<string>) {
+  persistStringSet(STATUS_FILTER_OFF_KEY, off);
+}
+
+function loadMarkerFilterOff(): Set<string> {
+  return loadStringSet(MARKER_FILTER_OFF_KEY);
+}
+
+function persistMarkerFilterOff(off: Set<string>) {
+  persistStringSet(MARKER_FILTER_OFF_KEY, off);
+}
+
+function loadStringSet(key: string): Set<string> {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.map((x) => String(x || "").toLowerCase().trim()).filter(Boolean));
+  } catch {
+    return new Set();
+  }
+}
+
+function persistStringSet(key: string, values: Set<string>) {
+  try {
+    localStorage.setItem(key, JSON.stringify([...values].sort()));
+  } catch {
+    /* ignore */
+  }
+}
+
+function workProductStatusKey(item: WorkProductItem): string {
+  return String(item.status || "pending").toLowerCase().trim() || "pending";
+}
+
+/** Coarse action marker: pick_mode, else step, else other. */
+function workProductMarkerKey(item: WorkProductItem): string {
+  const pick = String(item.pick_mode || "").toLowerCase().trim();
+  if (pick) return pick;
+  const step = String(item.step || "").toLowerCase().trim();
+  if (step) return step;
+  return "other";
+}
+
+function markerFilterLabel(marker: string): string {
+  return marker === "other" ? "other" : marker;
+}
+
+function sortFilterKeys(keys: Iterable<string>, order: readonly string[]): string[] {
+  const rank = new Map(order.map((s, i) => [s, i]));
+  return [...new Set(keys)].sort((a, b) => {
+    const ar = rank.has(a) ? (rank.get(a) as number) : 1000;
+    const br = rank.has(b) ? (rank.get(b) as number) : 1000;
+    return ar - br || a.localeCompare(b);
+  });
+}
+
+function collectAvailableStatuses(items: WorkProductItem[]): string[] {
+  return sortFilterKeys(
+    items.map(workProductStatusKey),
+    STATUS_FILTER_ORDER,
+  );
+}
+
+function collectAvailableMarkers(items: WorkProductItem[]): string[] {
+  return sortFilterKeys(
+    items.map(workProductMarkerKey),
+    MARKER_FILTER_ORDER,
+  );
+}
+
+function filterWorkProductsByStatus(items: WorkProductItem[], statusOff: Set<string>): WorkProductItem[] {
+  if (!statusOff.size) return items;
+  return items.filter((it) => !statusOff.has(workProductStatusKey(it)));
+}
+
+function filterWorkProductsByMarker(items: WorkProductItem[], markerOff: Set<string>): WorkProductItem[] {
+  if (!markerOff.size) return items;
+  return items.filter((it) => !markerOff.has(workProductMarkerKey(it)));
+}
+
 function loadSectionOpen(): Record<string, boolean> {
   try {
     const raw = localStorage.getItem(SECTION_OPEN_KEY);
@@ -137,19 +252,42 @@ function isInFlightStatus(status?: string | null): boolean {
   return !s || s === "queued" || s === "pending" || s === "running" || s === "submitted";
 }
 
-function isLivePreviewItem(item: WorkProductItem): boolean {
-  if (item.live_from_comfy && item.prompt_id) return true;
-  return !item.output_url && Boolean(item.prompt_id) && isInFlightStatus(item.status);
-}
-
 function isRunningLiveItem(item: WorkProductItem): boolean {
-  return isLivePreviewItem(item) && String(item.status || "").toLowerCase() === "running";
+  if (item.output_url) return false;
+  if (String(item.status || "").toLowerCase() !== "running") return false;
+  return Boolean(item.prompt_id) || Boolean(item.live_from_comfy);
 }
 
-function isQueuedPreviewItem(item: WorkProductItem): boolean {
-  if (!isLivePreviewItem(item)) return false;
-  const s = String(item.status || "").toLowerCase();
-  return s !== "running";
+/** Queued/pending/submitted — pin + quiet refresh (still expected to finish). */
+function isWaitingPreviewItem(item: WorkProductItem): boolean {
+  if (item.output_url || isRunningLiveItem(item)) return false;
+  return isInFlightStatus(item.status);
+}
+
+/**
+ * Any job with no output yet (or no recoverable output): source thumb + status badge.
+ * Covers pending/queued/submitted, error/failed, interrupted, abandoned, unknown, …
+ */
+function isSourceThumbPreviewItem(item: WorkProductItem): boolean {
+  return !item.output_url && !isRunningLiveItem(item);
+}
+
+function isLivePreviewItem(item: WorkProductItem): boolean {
+  if (item.live_from_comfy && item.prompt_id && !item.output_url) return true;
+  return isRunningLiveItem(item) || isWaitingPreviewItem(item);
+}
+
+type SourceThumbVisual = "queued" | "pending" | "error" | "interrupted" | "muted";
+
+function sourceThumbPreviewMeta(item: WorkProductItem): { label: string; visual: SourceThumbVisual } {
+  const s = String(item.status || "").toLowerCase().trim() || "pending";
+  if (s === "queued") return { label: "queued", visual: "queued" };
+  if (s === "error" || s === "failed") return { label: s, visual: "error" };
+  if (s === "interrupted") return { label: "interrupted", visual: "interrupted" };
+  if (s === "abandoned" || s === "unknown") return { label: s, visual: "muted" };
+  if (s === "submitted") return { label: "pending", visual: "pending" };
+  if (s === "complete" || s === "deposited") return { label: s, visual: "muted" };
+  return { label: s, visual: "pending" };
 }
 
 function createdMs(item: WorkProductItem): number {
@@ -207,6 +345,39 @@ function filterWorkProductsByName(items: WorkProductItem[], query: string): Work
   return items.filter((it) => isLivePreviewItem(it) || workProductNameHaystack(it).includes(q));
 }
 
+function statusFilterVisual(status: string): string {
+  const s = status.toLowerCase();
+  if (s === "running") return "running";
+  if (s === "queued") return "queued";
+  if (s === "error" || s === "failed") return "error";
+  if (s === "interrupted") return "interrupted";
+  if (s === "complete" || s === "deposited") return "ok";
+  if (s === "abandoned" || s === "unknown") return "muted";
+  return "pending";
+}
+
+function statusFilterButtonClass(status: string, on: boolean): string {
+  return `work-products-status-toggle work-products-status-toggle--${statusFilterVisual(status)}${
+    on ? " is-on" : " is-off"
+  }`;
+}
+
+function markerFilterVisual(marker: string): string {
+  const s = marker.toLowerCase();
+  if (s === "extend") return "extend";
+  if (s === "replay") return "replay";
+  if (s === "derive" || s === "predicted_derive" || s === "predicted") return "derive";
+  if (s === "product") return "ok";
+  if (s === "other" || s === "unset") return "muted";
+  return "pending";
+}
+
+function markerFilterButtonClass(marker: string, on: boolean): string {
+  return `work-products-status-toggle work-products-status-toggle--${markerFilterVisual(marker)}${
+    on ? " is-on" : " is-off"
+  }`;
+}
+
 function formatWhen(iso?: string | null): string {
   if (!iso) return "—";
   try {
@@ -262,31 +433,65 @@ function sourcePreviewUrls(item: WorkProductItem): { thumb: string | null; video
   };
 }
 
-function WorkProductQueuedPreview({ item }: { item: WorkProductItem }) {
+function WorkProductSourceThumbPreview({ item }: { item: WorkProductItem }) {
   const { thumb, video, label } = sourcePreviewUrls(item);
+  const { label: kind, visual } = sourceThumbPreviewMeta(item);
+  const badgeMod = `work-product-live__badge--${visual}`;
+  const frameMod =
+    visual === "error"
+      ? " work-product-live__frame--error"
+      : visual === "interrupted"
+        ? " work-product-live__frame--interrupted"
+        : visual === "muted"
+          ? " work-product-live__frame--muted"
+          : "";
+  const imgMod =
+    visual === "error"
+      ? " work-product-live__img--error"
+      : visual === "interrupted" || visual === "muted"
+        ? " work-product-live__img--dim"
+        : "";
+  const emptyMod =
+    visual === "error"
+      ? " work-product-live__waiting--error"
+      : visual === "interrupted"
+        ? " work-product-live__waiting--interrupted"
+        : visual === "muted"
+          ? " work-product-live__waiting--muted"
+          : "";
+  const emptyTitle = kind.charAt(0).toUpperCase() + kind.slice(1);
   return (
     <div className="work-product-live">
-      <div className="work-product-live__frame work-product-live__frame--queued">
+      <div className={`work-product-live__frame work-product-live__frame--queued${frameMod}`}>
         {thumb ? (
-          <img className="work-product-live__img work-product-live__img--queued" src={thumb} alt={label} />
+          <img
+            className={`work-product-live__img work-product-live__img--queued${imgMod}`}
+            src={thumb}
+            alt={label}
+          />
         ) : video ? (
           <video
-            className="work-product-live__img work-product-live__img--queued"
+            className={`work-product-live__img work-product-live__img--queued${imgMod}`}
             src={video}
             muted
             playsInline
             preload="metadata"
           />
         ) : (
-          <div className="work-product-viewer__empty work-product-live__waiting work-product-live__waiting--queued">
+          <div
+            className={`work-product-viewer__empty work-product-live__waiting work-product-live__waiting--queued${emptyMod}`}
+          >
             <span className="work-product-live__queue-icon" aria-hidden>
-              ▣
+              {visual === "error" ? "✕" : visual === "interrupted" ? "⊘" : "▣"}
             </span>
-            <span>Queued — source preview unavailable</span>
+            <span>{emptyTitle} — source preview unavailable</span>
           </div>
         )}
-        <span className="work-product-live__badge work-product-live__badge--queued" title={item.prompt_id || item.job_key}>
-          queued
+        <span
+          className={`work-product-live__badge ${badgeMod}`}
+          title={item.error || item.prompt_id || item.job_key}
+        >
+          {kind}
         </span>
       </div>
     </div>
@@ -522,7 +727,7 @@ function WorkProductViewer({ item }: { item: WorkProductItem }) {
   const sourceThumb = source?.thumb_url || null;
   const promptId = String(item.prompt_id || "").trim();
   const showRunningLive = isRunningLiveItem(item);
-  const showQueued = isQueuedPreviewItem(item);
+  const showSourceThumb = isSourceThumbPreviewItem(item);
 
   return (
     <div className="work-product-viewer">
@@ -538,15 +743,15 @@ function WorkProductViewer({ item }: { item: WorkProductItem }) {
           />
         ) : showRunningLive ? (
           <WorkProductLivePreview promptId={promptId} submittedAt={item.submitted_at || item.created_at} />
-        ) : showQueued ? (
-          <WorkProductQueuedPreview item={item} />
+        ) : showSourceThumb ? (
+          <WorkProductSourceThumbPreview item={item} />
         ) : thumbUrl ? (
           <img className="work-product-viewer__img" src={thumbUrl} alt={item.job_key} />
         ) : (
           <div className="work-product-viewer__empty">No output yet ({item.status || "pending"})</div>
         )}
       </div>
-      {(sourceUrl || sourceThumb) && !showQueued && (
+      {(sourceUrl || sourceThumb) && !showSourceThumb && (
         <div className="work-product-viewer__source" title={source?.basename || "source"}>
           <div className="work-product-viewer__source-label">Source input</div>
           {sourceUrl ? (
@@ -1595,6 +1800,7 @@ function WorkProductQuickQueue({
     setVaryTouched(false);
     setExtendFamily(smartExtendFamily(item, successors));
     setVaryFamily(smartVaryFamily(item));
+    setMsg(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: job switch only
   }, [item.job_key]);
 
@@ -1612,7 +1818,37 @@ function WorkProductQuickQueue({
   }, [item.family_slug, item.work_items_open, item.work_items_open_count, successors, extendTouched, varyTouched, item]);
 
   const relpath = String(item.output_relpath || "").trim();
+  const jobKey = String(item.job_key || "").trim();
   const canAct = Boolean(relpath) && (extendOn || varyOn) && !busy;
+  const canRerun = Boolean(jobKey) && !busy;
+
+  const rerun = async (when: "now" | "later") => {
+    if (!jobKey || busy) return;
+    setBusy(true);
+    setMsg("");
+    try {
+      const res = await replayShapeFactory({
+        job_key: jobKey,
+        family_slug: sourceFamily || undefined,
+        extend: false,
+        front: when === "now",
+      });
+      const nextKey = String(res.job_key || "").trim();
+      const pid = String(res.prompt_id || "").trim();
+      setMsg(
+        nextKey
+          ? `Re-run ${when}→${nextKey}${pid ? ` · ${pid}` : ""}`
+          : pid
+            ? `Re-run ${when} queued · ${pid}`
+            : `Re-run ${when} queued`,
+      );
+      onCommitted?.();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const commit = async (when: "now" | "later") => {
     if (!relpath || busy) return;
@@ -1735,8 +1971,12 @@ function WorkProductQuickQueue({
           Queue
         </span>
         <label
-          className="work-product-quick-queue__check"
-          title="Extend — chain this output as the next source_video"
+          className={`work-product-quick-queue__check${!relpath ? " work-product-quick-queue__check--na" : ""}`}
+          title={
+            !relpath
+              ? "Extend needs an output — not available for this job"
+              : "Extend — chain this output as the next source_video"
+          }
         >
           <input
             type="checkbox"
@@ -1753,8 +1993,12 @@ function WorkProductQuickQueue({
           ) : null}
         </label>
         <label
-          className="work-product-quick-queue__check"
-          title="Vary — front-queue / replay with the same bindings"
+          className={`work-product-quick-queue__check${!relpath ? " work-product-quick-queue__check--na" : ""}`}
+          title={
+            !relpath
+              ? "Vary needs an output — not available for this job"
+              : "Vary — front-queue / replay with the same bindings"
+          }
         >
           <input
             type="checkbox"
@@ -1773,19 +2017,47 @@ function WorkProductQuickQueue({
         <span className="work-product-quick-queue__sep" aria-hidden="true" />
         <button
           type="button"
-          className="drt-btn work-product-quick-queue__now"
+          className={`drt-btn work-product-quick-queue__now${!relpath ? " work-product-quick-queue__route--na" : ""}`}
           disabled={!canAct}
-          title="Commit checked routes at front of queue and enqueue now"
+          title={
+            !relpath
+              ? "Needs an output to queue Extend/Vary"
+              : "Commit checked routes at front of queue and enqueue now"
+          }
           onClick={() => void commit("now")}
         >
           Now
         </button>
         <button
           type="button"
-          className="drt-btn work-product-quick-queue__later"
+          className={`drt-btn work-product-quick-queue__later${!relpath ? " work-product-quick-queue__route--na" : ""}`}
           disabled={!canAct}
-          title="Commit checked routes at normal priority (behind front)"
+          title={
+            !relpath
+              ? "Needs an output to queue Extend/Vary"
+              : "Commit checked routes at normal priority (behind front)"
+          }
           onClick={() => void commit("later")}
+        >
+          Later
+        </button>
+        <span className="work-product-quick-queue__sep" aria-hidden="true" />
+        <span className="work-product-quick-queue__label">Re-run</span>
+        <button
+          type="button"
+          className="drt-btn work-product-quick-queue__rerun"
+          disabled={!canRerun}
+          title="Submit a new identical job at the front of the queue"
+          onClick={() => void rerun("now")}
+        >
+          Now
+        </button>
+        <button
+          type="button"
+          className="drt-btn work-product-quick-queue__rerun"
+          disabled={!canRerun}
+          title="Submit a new identical job at normal queue priority"
+          onClick={() => void rerun("later")}
         >
           Later
         </button>
@@ -1863,9 +2135,19 @@ function WorkProductDetails({
         ) : null}
         {item.disposition_entry ? <span className="work-product-badge">{item.disposition_entry}</span> : null}
         {item.status ? (
-          <span className={`work-product-badge ${badgeClass(item.status)}`}>{item.status}</span>
+          <span
+            className={`work-product-badge ${badgeClass(item.status)}`}
+            title={item.error || item.status}
+          >
+            {item.status}
+          </span>
         ) : null}
       </div>
+      {item.error ? (
+        <div className="work-product-details__error" title={item.error}>
+          {item.error}
+        </div>
+      ) : null}
       <WorkProductQuickQueue
         item={item}
         families={families}
@@ -1958,6 +2240,8 @@ function WorkProductRow({
   extendFamilyDefaults?: Record<string, string>;
   onCommitted?: () => void;
 }) {
+  const thumbMeta = isSourceThumbPreviewItem(item) ? sourceThumbPreviewMeta(item) : null;
+  const thumbBadgeClass = thumbMeta ? `work-product-badge--live-${thumbMeta.visual}` : "";
   return (
     <article
       className={`work-product-row work-product-row--${layout}${
@@ -1969,8 +2253,8 @@ function WorkProductRow({
           <strong>{item.family_slug || "job"}</strong>
           {isRunningLiveItem(item) ? (
             <span className="work-product-badge work-product-badge--live-run">live</span>
-          ) : isQueuedPreviewItem(item) ? (
-            <span className="work-product-badge work-product-badge--live-queued">queued</span>
+          ) : thumbMeta ? (
+            <span className={`work-product-badge ${thumbBadgeClass}`}>{thumbMeta.label}</span>
           ) : null}
           <span className="work-product-row__when">{formatWhen(item.created_at)}</span>
         </div>
@@ -2002,11 +2286,70 @@ export function WorkProductsApp() {
   const [loading, setLoading] = useState(true);
   const [limit, setLimit] = useState(50);
   const [hourlyOnly, setHourlyOnly] = useState(loadHourlyOnly);
+  const [statusOff, setStatusOff] = useState<Set<string>>(() => loadStatusFilterOff());
+  const [markerOff, setMarkerOff] = useState<Set<string>>(() => loadMarkerFilterOff());
+
+  const statusCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const it of items) {
+      const key = workProductStatusKey(it);
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    return counts;
+  }, [items]);
+
+  const markerCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const it of items) {
+      const key = workProductMarkerKey(it);
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    return counts;
+  }, [items]);
+
+  const availableStatuses = useMemo(() => {
+    const keys = new Set(statusCounts.keys());
+    for (const s of statusOff) keys.add(s);
+    return collectAvailableStatuses([...keys].map((status) => ({ status }) as WorkProductItem));
+  }, [statusCounts, statusOff]);
+
+  const availableMarkers = useMemo(() => {
+    const keys = new Set(markerCounts.keys());
+    for (const s of markerOff) keys.add(s);
+    return collectAvailableMarkers([...keys].map((pick_mode) => ({ pick_mode }) as WorkProductItem));
+  }, [markerCounts, markerOff]);
 
   const visibleItems = useMemo(
-    () => sortWorkProducts(filterWorkProductsByName(items, nameQuery), sort),
-    [items, nameQuery, sort],
+    () =>
+      sortWorkProducts(
+        filterWorkProductsByMarker(
+          filterWorkProductsByStatus(filterWorkProductsByName(items, nameQuery), statusOff),
+          markerOff,
+        ),
+        sort,
+      ),
+    [items, nameQuery, sort, statusOff, markerOff],
   );
+
+  const toggleStatusFilter = (status: string) => {
+    setStatusOff((prev) => {
+      const next = new Set(prev);
+      if (next.has(status)) next.delete(status);
+      else next.add(status);
+      persistStatusFilterOff(next);
+      return next;
+    });
+  };
+
+  const toggleMarkerFilter = (marker: string) => {
+    setMarkerOff((prev) => {
+      const next = new Set(prev);
+      if (next.has(marker)) next.delete(marker);
+      else next.add(marker);
+      persistMarkerFilterOff(next);
+      return next;
+    });
+  };
 
   const refresh = (opts?: { quiet?: boolean }) => {
     if (!opts?.quiet) setLoading(true);
@@ -2099,21 +2442,6 @@ export function WorkProductsApp() {
                 ))}
               </select>
             </label>
-            <label
-              className="work-products-limit"
-              title="When checked, only hourly__* jobs are listed"
-            >
-              <input
-                type="checkbox"
-                checked={hourlyOnly}
-                onChange={(e) => {
-                  const next = e.target.checked;
-                  setHourlyOnly(next);
-                  persistHourlyOnly(next);
-                }}
-              />{" "}
-              Hourly only
-            </label>
             <label className="work-products-limit">
               Sort
               <select
@@ -2164,6 +2492,84 @@ export function WorkProductsApp() {
           </>
         }
       />
+      <div className="work-products-status-filters" role="group" aria-label="Work product filters">
+        <button
+          type="button"
+          className={`work-products-status-toggle work-products-status-toggle--hourly${
+            hourlyOnly ? " is-on" : " is-off"
+          }`}
+          aria-pressed={hourlyOnly}
+          title={
+            hourlyOnly
+              ? "Hourly only — click to show all jobs"
+              : "Showing all jobs — click for hourly only"
+          }
+          onClick={() => {
+            const next = !hourlyOnly;
+            setHourlyOnly(next);
+            persistHourlyOnly(next);
+          }}
+        >
+          <span className="work-products-status-toggle__label">hourly only</span>
+        </button>
+        {availableMarkers.length ? (
+          <>
+            <span className="work-products-status-filters__sep" aria-hidden="true" />
+            <div className="work-products-status-filters__group" role="group" aria-label="Filter by pick mode">
+              {availableMarkers.map((marker) => {
+                const on = !markerOff.has(marker);
+                const count = markerCounts.get(marker) || 0;
+                const label = markerFilterLabel(marker);
+                return (
+                  <button
+                    key={`marker-${marker}`}
+                    type="button"
+                    className={markerFilterButtonClass(marker, on)}
+                    aria-pressed={on}
+                    title={
+                      on
+                        ? `Showing ${label} (${count}) — click to hide`
+                        : `Hidden ${label} (${count}) — click to show`
+                    }
+                    onClick={() => toggleMarkerFilter(marker)}
+                  >
+                    <span className="work-products-status-toggle__label">{label}</span>
+                    <span className="work-products-status-toggle__count">{count}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        ) : null}
+        {availableStatuses.length ? (
+          <>
+            <span className="work-products-status-filters__sep" aria-hidden="true" />
+            <div className="work-products-status-filters__group" role="group" aria-label="Filter by job status">
+              {availableStatuses.map((status) => {
+                const on = !statusOff.has(status);
+                const count = statusCounts.get(status) || 0;
+                return (
+                  <button
+                    key={`status-${status}`}
+                    type="button"
+                    className={statusFilterButtonClass(status, on)}
+                    aria-pressed={on}
+                    title={
+                      on
+                        ? `Showing ${status} (${count}) — click to hide`
+                        : `Hidden ${status} (${count}) — click to show`
+                    }
+                    onClick={() => toggleStatusFilter(status)}
+                  >
+                    <span className="work-products-status-toggle__label">{status}</span>
+                    <span className="work-products-status-toggle__count">{count}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        ) : null}
+      </div>
 
       <div className="work-products-scroll">
         {error ? <div className="work-products-error">{error}</div> : null}
@@ -2174,7 +2580,11 @@ export function WorkProductsApp() {
           </div>
         ) : null}
         {!loading && !error && items.length && !visibleItems.length ? (
-          <div className="work-products-empty">No work products match “{nameQuery.trim()}”.</div>
+          <div className="work-products-empty">
+            {nameQuery.trim()
+              ? `No work products match “${nameQuery.trim()}”.`
+              : "No work products match the selected filters."}
+          </div>
         ) : null}
 
         <div className="work-products-list">

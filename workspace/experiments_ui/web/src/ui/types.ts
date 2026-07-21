@@ -1503,6 +1503,10 @@ export type WorkProductItem = {
   graph_hash?: string | null;
   output_prefix?: string | null;
   status?: string;
+  /** Short Comfy/UI error (OOM, VHS load failure, interrupt reason, …). */
+  error?: string | null;
+  error_node?: string | null;
+  error_type?: string | null;
   prompt_id?: string | null;
   submitted_at?: string | null;
   deposited_at?: string | null;

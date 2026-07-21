@@ -225,11 +225,11 @@ export async function fetchVisionSliceCaptions(): Promise<VisionSliceCaptionsRes
 export async function fetchVisionTagJudgment(): Promise<VisionTagJudgmentResponse> {
   const r = await fetch("/api/vision/tag-judgment");
   const raw = await r.text();
-  let j: VisionTagJudgmentResponse = {};
+  let j: VisionTagJudgmentResponse = { ok: false };
   try {
     j = JSON.parse(raw) as VisionTagJudgmentResponse;
   } catch {
-    j = {};
+    j = { ok: false };
   }
   if (!r.ok || j.ok === false) {
     const detail = [j.error, j.detail].filter(Boolean).join(": ") || raw.slice(0, 240).trim();
