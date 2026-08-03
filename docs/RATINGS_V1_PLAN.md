@@ -323,7 +323,9 @@ python3 shape_factory.py status --family FB9_GEX2
 python3 scripts/backfill_discovery_lineage.py --limit 100   # after new og outputs
 ```
 
-Hourly defaults: `DEV_CHAIN=0` (full prod frames); manifest `.data/chains/best-examples.chain.yaml`.
+Hourly defaults: timer at **`:30` each hour** (not every 30 minutes); `DEV_CHAIN=0` (full prod frames); manifest `.data/chains/best-examples.chain.yaml`. Archive OG sampling (`HOURLY_ARCHIVE_OG_SHARE`, default `0.20`) occasionally replays older pre-factory / deep `og/YYYY-MM-DD` pool members (≥ `HOURLY_ARCHIVE_MIN_AGE_DAYS`, default 45).
+
+After changing the timer unit, re-run `bash scripts/install-shape-factory-hourly.sh`.
 
 ---
 

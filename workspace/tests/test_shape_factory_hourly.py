@@ -841,6 +841,84 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
         self.assertGreater(len(paths), 0)
         self.assertTrue(all("/og/2025-" in str(p).replace("\\", "/") for p in paths))
 
+    def test_archive_og_detection_age_and_hourly_gate(self) -> None:
+        from datetime import datetime, timezone
+
+        from shape_factory_hourly import _archive_age_spread_mult, _is_archive_og_path, _is_archive_og_recipe
+
+        now = datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc).timestamp()
+        old = "/data/output/og/2025-10-06/135612_OG_00001.mp4"
+        recent = "/data/output/og/2026-07-01/FB9_GEX2_2026-07-01_00001.mp4"
+        hourly = "/data/output/og/2025-10-06/hourly/hourly__demo.mp4"
+
+        self.assertTrue(_is_archive_og_path(old, now_ts=now, min_age_days=45))
+        self.assertFalse(_is_archive_og_path(recent, now_ts=now, min_age_days=45))
+        self.assertFalse(_is_archive_og_path(hourly, now_ts=now, min_age_days=45))
+
+        archive_recipe = {
+            "source": f"og:{old}",
+            "output_path": old,
+            "picks": {"source_video": "/tmp/seed.mp4"},
+        }
+        hourly_recipe = {
+            "source": "hourly__prompt_profile-x__source_video-y",
+            "output_path": hourly,
+            "picks": {"source_video": "/tmp/seed.mp4"},
+        }
+        self.assertTrue(_is_archive_og_recipe(archive_recipe, now_ts=now, min_age_days=45))
+        self.assertFalse(_is_archive_og_recipe(hourly_recipe, now_ts=now, min_age_days=45))
+        self.assertGreater(_archive_age_spread_mult(archive_recipe, now_ts=now), 1.0)
+        self.assertEqual(_archive_age_spread_mult(hourly_recipe, now_ts=now), 1.0)
+
+    def test_plan_replay_archive_og_share_forces_pool(self) -> None:
+        import os
+        from unittest import mock
+
+        from shape_factory_hourly import plan_hourly_replay
+
+        archive = {
+            "combo_key": "prompt_profile-a__source_video-old",
+            "source": "og:/data/output/og/2025-06-19/old_OG_00001.mp4",
+            "output_path": "/data/output/og/2025-06-19/old_OG_00001.mp4",
+            "picks": {
+                "prompt_profile": "/tmp/prompt.json",
+                "source_video": "/tmp/seed.mp4",
+            },
+            "bindings_preview": {},
+        }
+        recent = {
+            "combo_key": "prompt_profile-b__source_video-new",
+            "source": "hourly__recent",
+            "output_path": "/data/output/og/2026-07-20/hourly/hourly__new.mp4",
+            "picks": {
+                "prompt_profile": "/tmp/prompt.json",
+                "source_video": "/tmp/seed2.mp4",
+            },
+            "bindings_preview": {},
+        }
+
+        with mock.patch.dict(
+            os.environ,
+            {"HOURLY_ARCHIVE_OG_SHARE": "1", "HOURLY_ARCHIVE_MIN_AGE_DAYS": "45", "HOURLY_RATING_BLEND": "0"},
+            clear=False,
+        ):
+            with mock.patch("shape_factory_hourly.collect_replay_recipes", return_value=[archive, recent]):
+                with mock.patch("shape_factory_hourly._load_ratings_index", return_value=None):
+                    with mock.patch("shape_factory_hourly._load_heuristics_index", return_value=None):
+                        with mock.patch("shape_factory_hourly._load_appetite_index", return_value=None):
+                            with mock.patch("shape_factory_hourly._recent_combo_keys", return_value=set()):
+                                with mock.patch("shape_factory_hourly.load_yaml", return_value={}):
+                                    with mock.patch.object(Path, "is_file", return_value=True):
+                                        plan = plan_hourly_replay(
+                                            cursor=0, family="FB9_GEX2", data_root=REPO_ROOT / ".data"
+                                        )
+
+        self.assertTrue(plan.get("ok"), plan)
+        self.assertTrue(plan.get("archive_og_forced"))
+        self.assertEqual(plan.get("archive_og_candidate_count"), 1)
+        self.assertEqual(plan.get("combo_key"), archive["combo_key"])
+        self.assertTrue(plan.get("archive_og"))
+
 
 if __name__ == "__main__":
     unittest.main()

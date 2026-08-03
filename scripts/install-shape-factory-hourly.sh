@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Install user systemd timer: shape-factory hourly maintenance + chain advance.
+# Fires once per hour at :30 (outside the top-of-hour 5★ window).
+# Re-run this script after edits to refresh ~/.config/systemd/user/shape-factory-hourly.timer.
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 USER_SYSTEMD="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
@@ -23,11 +25,12 @@ EOF
 
 cat > "$USER_SYSTEMD/shape-factory-hourly.timer" <<EOF
 [Unit]
-Description=Run shape-factory hourly tick
+Description=Run shape-factory hourly tick (once per hour at :30)
 
 [Timer]
 OnBootSec=5min
-OnUnitActiveSec=30min
+# Mid-hour so ticks stay outside the top-of-hour 5★ window (:00–:12).
+OnCalendar=*-*-* *:30:00
 Persistent=true
 
 [Install]

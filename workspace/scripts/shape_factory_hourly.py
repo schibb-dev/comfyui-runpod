@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import random
 import re
@@ -593,7 +594,12 @@ def _is_top_of_hour(
     *,
     window_minutes: Optional[int] = None,
 ) -> bool:
-    """True near :00 so the half-hour timer's top-of-hour tick can prefer keepers."""
+    """True near :00 so a top-of-hour tick can prefer recent 5★ keepers.
+
+    The systemd timer fires at :30 (outside this window) so the normal
+    predicted/derive/replay mix keeps exploring; keepers only win if a tick
+    lands in the first ``HOURLY_TOP_OF_HOUR_MINUTES`` of the hour.
+    """
     wall = now or datetime.now()
     raw = window_minutes
     if raw is None:
@@ -626,6 +632,131 @@ def _og_path_date_ts(path_like: str) -> Optional[float]:
         return datetime.fromisoformat(f"{m.group(1)}T12:00:00+00:00").timestamp()
     except Exception:
         return None
+
+
+def archive_min_age_days() -> float:
+    raw = os.environ.get("HOURLY_ARCHIVE_MIN_AGE_DAYS", "45").strip()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 45.0
+
+
+def archive_og_share() -> float:
+    raw = os.environ.get("HOURLY_ARCHIVE_OG_SHARE", "0.20").strip()
+    try:
+        return max(0.0, min(1.0, float(raw)))
+    except ValueError:
+        return 0.20
+
+
+def _path_looks_hourly(path_like: str) -> bool:
+    text = str(path_like or "").replace("\\", "/")
+    return "/hourly/" in text or text.startswith("hourly/") or "/hourly__" in text
+
+
+def _og_paths_for_age(recipe_or_path: Any) -> List[str]:
+    """Collect path-like strings that may carry an og/YYYY-MM-DD date."""
+    if isinstance(recipe_or_path, dict):
+        out: List[str] = []
+        src = str(recipe_or_path.get("source") or "")
+        if src.startswith("og:"):
+            out.append(src[3:])
+        out.append(str(recipe_or_path.get("output_path") or ""))
+        out.append(_recipe_source_path(recipe_or_path))
+        return [p for p in out if p]
+    return [str(recipe_or_path or "")]
+
+
+def _archive_age_days(path_like: str, *, now_ts: Optional[float] = None) -> Optional[float]:
+    ts = _og_path_date_ts(path_like)
+    if ts is None:
+        return None
+    now = float(now_ts if now_ts is not None else datetime.now(timezone.utc).timestamp())
+    return max(0.0, (now - ts) / 86400.0)
+
+
+def _is_archive_og_path(path_like: str, *, now_ts: Optional[float] = None, min_age_days: Optional[float] = None) -> bool:
+    """True for deep-archive / pre-factory OG media (old og/ date, not under /hourly/)."""
+    text = str(path_like or "").replace("\\", "/")
+    if not text or _path_looks_hourly(text):
+        return False
+    if "og/" not in text and not text.startswith("og:"):
+        # Absolute paths may still contain /og/YYYY-MM-DD/
+        if _og_path_date_ts(text) is None:
+            return False
+    age = _archive_age_days(text, now_ts=now_ts)
+    if age is None:
+        return False
+    floor = archive_min_age_days() if min_age_days is None else max(0.0, float(min_age_days))
+    return age >= floor
+
+
+def _is_archive_og_recipe(
+    recipe: dict[str, Any],
+    *,
+    now_ts: Optional[float] = None,
+    min_age_days: Optional[float] = None,
+) -> bool:
+    """
+    Older pre-factory / deep-archive OG generations.
+
+    Matches deposit-pool recipes (``source`` starts with ``og:``) or any recipe whose
+    output/source path sits under ``og/`` outside ``/hourly/`` and is old enough.
+    """
+    if not isinstance(recipe, dict):
+        return False
+    src = str(recipe.get("source") or "")
+    paths = _og_paths_for_age(recipe)
+    # Prefer deposit-ingest tag, but still require age + non-hourly.
+    if src.startswith("og:") or any("og/" in p.replace("\\", "/") for p in paths):
+        return any(_is_archive_og_path(p, now_ts=now_ts, min_age_days=min_age_days) for p in paths)
+    return False
+
+
+def _archive_age_spread_mult(recipe_or_path: Any, *, now_ts: Optional[float] = None) -> float:
+    """Mild always-on boost for older archive OG (capped ~2×)."""
+    paths = _og_paths_for_age(recipe_or_path)
+    ages = [a for a in (_archive_age_days(p, now_ts=now_ts) for p in paths) if a is not None]
+    if not ages:
+        return 1.0
+    if not any(_is_archive_og_path(p, now_ts=now_ts) for p in paths):
+        return 1.0
+    age = max(ages)
+    # log2(1 + age/45) → ~1.0 at min age, ~2.0 around ~135 days, capped at 2×.
+    return min(2.0, 1.0 + math.log2(1.0 + age / max(1.0, archive_min_age_days())))
+
+
+def _apply_archive_age_spread(
+    recipes: List[dict[str, Any]],
+    weights: List[float],
+    weight_meta: Optional[List[dict[str, Any]]] = None,
+    *,
+    now_ts: Optional[float] = None,
+) -> List[float]:
+    out: List[float] = []
+    for i, (recipe, weight) in enumerate(zip(recipes, weights)):
+        mult = _archive_age_spread_mult(recipe, now_ts=now_ts)
+        out.append(float(weight) * mult)
+        if (
+            weight_meta is not None
+            and i < len(weight_meta)
+            and isinstance(weight_meta[i], dict)
+            and mult != 1.0
+        ):
+            weight_meta[i] = dict(weight_meta[i])
+            weight_meta[i]["archive_age_mult"] = round(mult, 3)
+            weight_meta[i]["archive_og"] = True
+    return out
+
+
+def _want_archive_og_sample(cursor: int, *, salt: int = 0xA0C6) -> bool:
+    share = archive_og_share()
+    if share <= 0:
+        return False
+    if share >= 1:
+        return True
+    return random.Random(int(cursor) ^ int(salt)).random() < share
 
 
 def _rating_event_ts(row: Optional[dict[str, Any]], *, output_path: str = "") -> Optional[float]:
@@ -924,6 +1055,7 @@ def plan_hourly_replay(
     weights = _apply_recent_combo_penalty(recipes, weights, recent)
     weights = _apply_recent_source_penalty(recipes, weights, recent_sources)
     weights = _apply_source_promotion(recipes, weights, weight_meta)
+    weights = _apply_archive_age_spread(recipes, weights, weight_meta)
 
     eligible_recipes: List[dict[str, Any]] = []
     eligible_weights: List[float] = []
@@ -945,6 +1077,16 @@ def plan_hourly_replay(
             "recipe_count": len(recipes),
             "omit_excluded": omit_count,
         }
+
+    archive_idxs = [
+        i for i, r in enumerate(eligible_recipes) if _is_archive_og_recipe(r)
+    ]
+    archive_forced = False
+    if archive_idxs and _want_archive_og_sample(int(cursor)):
+        eligible_recipes = [eligible_recipes[i] for i in archive_idxs]
+        eligible_weights = [eligible_weights[i] for i in archive_idxs]
+        eligible_meta = [eligible_meta[i] for i in archive_idxs]
+        archive_forced = True
 
     rng = random.Random(int(cursor))
     recipe, recipe_index = _weighted_choice(eligible_recipes, eligible_weights, rng)
@@ -982,6 +1124,10 @@ def plan_hourly_replay(
         "recent_five_star_boosted": int(five_star_stats.get("recent_five_star_boosted") or 0),
         "recent_five_star_max_mult": round(float(five_star_stats.get("recent_five_star_max_mult") or 1.0), 3),
         "recent_five_star_mult": sel_meta.get("recent_five_star_mult"),
+        "archive_og_forced": archive_forced,
+        "archive_og_candidate_count": len(archive_idxs),
+        "archive_og": bool(sel_meta.get("archive_og") or _is_archive_og_recipe(recipe)),
+        "archive_age_mult": sel_meta.get("archive_age_mult"),
         "next_cursor": int(cursor) + 1,
     }
 
@@ -1228,6 +1374,15 @@ def _derive_rewire(
         else:
             alt_sources = family_alts or all_alts
             hold_meta["source_novelty"] = False
+
+        archive_alts = [s for s in alt_sources if _is_archive_og_path(s)]
+        hold_meta["archive_og_candidate_count"] = len(archive_alts)
+        if archive_alts and _want_archive_og_sample(int(cursor), salt=0xD3A1):
+            alt_sources = archive_alts
+            hold_meta["archive_og_forced"] = True
+        else:
+            hold_meta["archive_og_forced"] = False
+
         hold_meta["candidate_count"] = len(alt_sources)
         meta.update(hold_meta)
 
@@ -1243,12 +1398,15 @@ def _derive_rewire(
                 or ""
             )
 
+        def _source_weight(path: str) -> float:
+            return float(_source_promotion_mult(path)) * float(_archive_age_spread_mult(path))
+
         chosen_source = _pick_preferring_non_recent(
             alt_sources,
             combo_for=_combo_for_source,
             recent=recent,
             rng=rng,
-            weight_for=_source_promotion_mult,
+            weight_for=_source_weight,
         )
         if chosen_source:
             picks_map = {str(k): str(v) for k, v in seed_picks.items()}
@@ -1462,6 +1620,7 @@ def plan_hourly_derive(
         if ck in recent:
             weight *= 0.08
         weight *= _recipe_promotion_mult(recipe)
+        weight *= _archive_age_spread_mult(recipe)
         seeds.append({"recipe": recipe, "info": info})
         weights.append(weight)
         if info.get("fast_track"):
@@ -1568,6 +1727,10 @@ def plan_hourly_derive(
             out["hold_facet_constrained"] = hold_meta.get("facet_constrained")
             if hold_meta.get("fallback"):
                 out["hold_fallback"] = hold_meta.get("fallback")
+            if "archive_og_forced" in hold_meta:
+                out["archive_og_forced"] = bool(hold_meta.get("archive_og_forced"))
+            if hold_meta.get("archive_og_candidate_count") is not None:
+                out["archive_og_candidate_count"] = hold_meta.get("archive_og_candidate_count")
         return out
 
     # Prefer failing over to replay rather than re-queueing a combo we just ran.
@@ -1867,6 +2030,7 @@ def plan_hourly_predicted_derive(
         if ck in recent:
             weight *= 0.08
         weight *= _recipe_promotion_mult(recipe)
+        weight *= _archive_age_spread_mult(recipe)
         seeds.append({"recipe": recipe, "meta": meta})
         weights.append(weight)
 
@@ -1976,6 +2140,10 @@ def plan_hourly_predicted_derive(
             out["hold_facet_constrained"] = hold_meta.get("facet_constrained")
             if hold_meta.get("fallback"):
                 out["hold_fallback"] = hold_meta.get("fallback")
+            if "archive_og_forced" in hold_meta:
+                out["archive_og_forced"] = bool(hold_meta.get("archive_og_forced"))
+            if hold_meta.get("archive_og_candidate_count") is not None:
+                out["archive_og_candidate_count"] = hold_meta.get("archive_og_candidate_count")
         return out
 
     if fallback is not None:
