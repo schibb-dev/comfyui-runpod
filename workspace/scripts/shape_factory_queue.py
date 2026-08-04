@@ -27,7 +27,8 @@ from shape_factory import (
 from shape_factory_map import _combo_key_from_slot_paths, resolve_existing_path, resolve_shape_factory_data_root
 from shape_factory_prompt_recover import resolve_or_recover_prompt_profile_binding
 
-# mxSlider node ids shared by FB9 GEX2 / GEX_FACIAL graphs (see .data/shapes/dev-fast.yaml).
+# mxSlider node ids shared by FB9 GEX2 / GEX_FACIAL graphs
+# (same ids documented in .data/shapes/dev-fast.yaml — do not load that profile here).
 _ADHOC_PARAM_NODES = {
     "frames": "84",
     "steps": "82",
@@ -303,28 +304,23 @@ def slugify_stem(value: str) -> str:
 
 def build_adhoc_dev_tuning(parameters: Dict[str, Any], *, data_root: Path) -> Optional[Dict[str, Any]]:
     """
-    Map UI parameter knobs onto dev-tuning structure.
+    Map UI parameter knobs onto a sparse dev-tuning patch.
 
-    Uses dev-fast.yaml as a template when present; patches frames/steps/overlap
-    and VHS loader skip_first_frames / frame_load_cap.
+    Only keys present in ``parameters`` are patched (frames/steps/overlap and/or
+    VHS skip_first_frames / frame_load_cap). Unmentioned knobs are left alone so
+    the shape template / production graph keeps its defaults — do **not** inherit
+    ``dev-fast.yaml`` (that profile is opt-in via ``--dev`` only).
+
+    ``data_root`` is accepted for call-site compatibility; the patch is built from
+    ``parameters`` alone.
     """
     if not isinstance(parameters, dict) or not parameters:
         return None
 
-    dev_fast = data_root / "shapes" / "dev-fast.yaml"
-    if dev_fast.is_file():
-        tuning = copy.deepcopy(load_yaml(dev_fast))
-    else:
-        tuning = {"ui_nodes": {}, "api_nodes": {}}
-
-    ui_nodes = tuning.setdefault("ui_nodes", {})
-    api_nodes = tuning.setdefault("api_nodes", {})
-    if not isinstance(ui_nodes, dict):
-        ui_nodes = {}
-        tuning["ui_nodes"] = ui_nodes
-    if not isinstance(api_nodes, dict):
-        api_nodes = {}
-        tuning["api_nodes"] = api_nodes
+    _ = data_root  # reserved; patch is parameter-sparse by design
+    tuning: Dict[str, Any] = {"ui_nodes": {}, "api_nodes": {}}
+    ui_nodes = tuning["ui_nodes"]
+    api_nodes = tuning["api_nodes"]
 
     touched = False
     for param_key, node_id in _ADHOC_PARAM_NODES.items():
@@ -347,13 +343,7 @@ def build_adhoc_dev_tuning(parameters: Dict[str, Any], *, data_root: Path) -> Op
     if skip_first is not None and skip_first != "":
         vhs_patch["skip_first_frames"] = int(skip_first)
     if vhs_patch:
-        existing = tuning.get("vhs_load_video_path")
-        if isinstance(existing, dict):
-            merged = dict(existing)
-            merged.update(vhs_patch)
-            tuning["vhs_load_video_path"] = merged
-        else:
-            tuning["vhs_load_video_path"] = vhs_patch
+        tuning["vhs_load_video_path"] = vhs_patch
         touched = True
 
     if not touched:

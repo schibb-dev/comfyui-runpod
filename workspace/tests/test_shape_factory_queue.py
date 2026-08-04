@@ -124,7 +124,12 @@ class ShapeFactoryQueueTests(unittest.TestCase):
         self.assertIsNotNone(tuning)
         assert tuning is not None
         self.assertEqual(tuning.get("profile_id"), "adhoc-ui")
-        self.assertIn(84, tuning.get("ui_nodes") or tuning["ui_nodes"])
+        ui = tuning.get("ui_nodes") or {}
+        self.assertIn(84, ui)
+        self.assertEqual(ui[84]["widgets_values"], [24, 24, 0])
+        self.assertIn(82, ui)
+        # Unmentioned knobs must not inherit dev-fast defaults (e.g. overlap=4).
+        self.assertNotIn(387, ui)
 
         vhs = build_adhoc_dev_tuning(
             {"skip_first_frames": 12, "frame_load_cap": 40},
@@ -136,6 +141,9 @@ class ShapeFactoryQueueTests(unittest.TestCase):
             vhs.get("vhs_load_video_path"),
             {"skip_first_frames": 12, "frame_load_cap": 40},
         )
+        # Trim-only: leave Frames/Steps/Overlap on the template (no ui/api patches).
+        self.assertEqual(vhs.get("ui_nodes") or {}, {})
+        self.assertEqual(vhs.get("api_nodes") or {}, {})
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
