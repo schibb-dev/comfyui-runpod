@@ -38,6 +38,10 @@ import type {
   ShapeFactoryMapQueueResponse,
   ShapeFactoryReplayRequest,
   ShapeFactoryReplayResponse,
+  ShapeFactoryUnqueueRequest,
+  ShapeFactoryUnqueueResponse,
+  ShapeFactoryDiscardRequest,
+  ShapeFactoryDiscardResponse,
   ShapeFactoryQuarantineListResponse,
   ShapeFactoryQuarantineReleaseResponse,
   ShapeFactoryPromptProfile,
@@ -609,6 +613,35 @@ export async function replayShapeFactory(req: ShapeFactoryReplayRequest): Promis
   }
   return j;
 }
+
+export async function unqueueShapeFactory(req: ShapeFactoryUnqueueRequest): Promise<ShapeFactoryUnqueueResponse> {
+  const r = await fetch("/api/shape-factory/unqueue", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryUnqueueResponse;
+  if (!r.ok || !j.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`POST /api/shape-factory/unqueue failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
+}
+
+export async function discardShapeFactoryJob(req: ShapeFactoryDiscardRequest): Promise<ShapeFactoryDiscardResponse> {
+  const r = await fetch("/api/shape-factory/discard", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryDiscardResponse;
+  if (!r.ok || !j.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`POST /api/shape-factory/discard failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
+}
+
 
 async function postWorkflowExplorerFactoryUpdate(
   path: "/api/workflow-explorer/factory/assets" | "/api/workflow-explorer/factory/workflows",

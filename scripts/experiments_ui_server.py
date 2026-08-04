@@ -1472,6 +1472,56 @@ def _shape_factory_replay_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Di
     )
 
 
+
+def _shape_factory_unqueue_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /api/shape-factory/unqueue — remove waiting Comfy prompt; demote factory job to pending."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory import unqueue_to_pending  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    prompt_id = str(body.get("prompt_id") or "").strip()
+    if not prompt_id:
+        raise ValueError("missing_prompt_id")
+    job_key = str(body.get("job_key") or "").strip() or None
+    job_path_raw = str(body.get("job_path") or "").strip() or None
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    return unqueue_to_pending(
+        prompt_id=prompt_id,
+        server=str(cfg.comfy_server),
+        data_root=data_root,
+        job_key=job_key,
+        job_path=Path(job_path_raw) if job_path_raw else None,
+    )
+
+
+def _shape_factory_discard_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /api/shape-factory/discard — remove a pending factory job from the active set."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory import discard_pending_job  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    job_key = str(body.get("job_key") or "").strip() or None
+    job_path_raw = str(body.get("job_path") or "").strip() or None
+    if not job_key and not job_path_raw:
+        raise ValueError("missing_job_key")
+    reason = str(body.get("reason") or "user_removed").strip() or "user_removed"
+    expunge_raw = body.get("expunge")
+    expunge = True if expunge_raw is None else bool(expunge_raw) and str(expunge_raw).lower() not in {"0", "false", "no"}
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    return discard_pending_job(
+        data_root=data_root,
+        job_key=job_key,
+        job_path=Path(job_path_raw) if job_path_raw else None,
+        server=str(cfg.comfy_server),
+        reason=reason,
+        expunge=expunge,
+    )
+
+
 def _shape_factory_prompt_profile_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
     d = _workspace_scripts_dir()
     if d.is_dir() and str(d) not in sys.path:
@@ -6213,6 +6263,43 @@ class Handler(BaseHTTPRequestHandler):
         status = 200 if payload.get("ok", True) else 400
         return _json_response(self, status, payload)
 
+
+    def _handle_shape_factory_unqueue_post(self) -> None:
+        """POST /api/shape-factory/unqueue — waiting-queue delete + demote factory job to pending."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _shape_factory_unqueue_payload(cfg, body)
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "shape_factory_unqueue_failed", "detail": str(e)})
+        if payload.get("error") == "still_running":
+            return _json_response(self, 409, payload)
+        code = 200 if payload.get("ok", True) else 502
+        return _json_response(self, code, payload)
+
+    def _handle_shape_factory_discard_post(self) -> None:
+        """POST /api/shape-factory/discard — remove a pending factory job from the active set."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _shape_factory_discard_payload(cfg, body)
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "shape_factory_discard_failed", "detail": str(e)})
+        if payload.get("error") in {"not_pending", "still_on_comfy"}:
+            return _json_response(self, 409, payload)
+        if payload.get("error") == "job_not_found":
+            return _json_response(self, 404, payload)
+        code = 200 if payload.get("ok", True) else 400
+        return _json_response(self, code, payload)
+
     def _handle_shape_factory_queue_post(self) -> None:
         """POST /api/shape-factory/queue — generate + submit one projected combo."""
         cfg = self.server.cfg
@@ -8431,7 +8518,7 @@ def main() -> int:
     print(
         "[experiments-ui] comfy_live_routes=GET /api/comfy/live-preview, GET /api/comfy/live-status"
     )
-    print("[experiments-ui] shape_factory_routes=GET /api/shape-factory/map, GET /api/shape-factory/prompt-profile, GET /api/shape-factory/work-products, GET /api/shape-factory/json-peek, GET /api/shape-factory/quarantine, POST /api/shape-factory/queue, POST /api/shape-factory/replay, POST /api/shape-factory/quarantine/release")
+    print("[experiments-ui] shape_factory_routes=GET /api/shape-factory/map, GET /api/shape-factory/prompt-profile, GET /api/shape-factory/work-products, GET /api/shape-factory/json-peek, GET /api/shape-factory/quarantine, POST /api/shape-factory/queue, POST /api/shape-factory/replay, POST /api/shape-factory/unqueue, POST /api/shape-factory/discard, POST /api/shape-factory/quarantine/release")
     server.serve_forever()
     return 0
 

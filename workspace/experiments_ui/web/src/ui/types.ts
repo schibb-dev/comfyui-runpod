@@ -1898,3 +1898,47 @@ export type VisionTagJudgmentSaveResponse = {
   detail?: string;
 };
 
+export type ShapeFactoryUnqueueRequest = {
+  prompt_id: string;
+  job_key?: string;
+  job_path?: string;
+}
+
+export type ShapeFactoryUnqueueResponse = {
+  ok: boolean;
+  prompt_id?: string;
+  previous_prompt_id?: string;
+  factory_job?: boolean;
+  job_key?: string;
+  job_path?: string;
+  status?: string | null;
+  comfy_deleted?: boolean;
+  error?: string;
+  detail?: string;
+  comfy_delete_error?: string;
+}
+
+export type ShapeFactoryDiscardRequest = {
+  job_key?: string;
+  job_path?: string;
+  reason?: string;
+  /** When true (UI default), permanently delete job + sidecars. When false, rename to `.discarded`. */
+  expunge?: boolean;
+}
+
+export type ShapeFactoryDiscardResponse = {
+  ok: boolean;
+  job_key?: string;
+  job_path?: string | null;
+  status?: string | null;
+  discarded?: boolean;
+  expunged?: boolean;
+  renamed?: string[];
+  deleted?: string[];
+  previous_status?: string;
+  error?: string;
+  detail?: string;
+  prompt_id?: string;
+  reason?: string;
+}
+

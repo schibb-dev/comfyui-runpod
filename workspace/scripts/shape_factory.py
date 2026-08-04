@@ -1533,7 +1533,7 @@ def atomic_write_json(path: Path, value: Any) -> None:
     tmp.replace(path)
 
 
-def iter_job_paths(args: argparse.Namespace) -> list[Path]:
+def iter_job_paths(args: argparse.Namespace, *, apply_limit: bool = True) -> list[Path]:
     paths: list[Path] = []
     if args.job:
         paths.append(Path(args.job).expanduser().resolve())
@@ -1553,9 +1553,50 @@ def iter_job_paths(args: argparse.Namespace) -> list[Path]:
         seen.add(key)
         if p.is_file():
             out.append(p)
-    if args.limit and len(out) > args.limit:
+    if apply_limit and args.limit and len(out) > args.limit:
         out = out[: args.limit]
     return out
+
+
+def iter_pending_submit_job_paths(args: argparse.Namespace) -> list[Path]:
+    """
+    Jobs eligible for ``--pending-only`` submit, newest first.
+
+    ``--limit`` applies *after* filtering so already-submitted files do not
+    consume the budget (hourly used to truncate alphabetically and never reach
+    true pending jobs).
+    """
+    candidates: list[tuple[float, Path]] = []
+    for path in iter_job_paths(args, apply_limit=False):
+        try:
+            job = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(job, dict):
+            continue
+        if not job_pending_submit(job):
+            continue
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        created = 0.0
+        raw = job.get("created_at")
+        if isinstance(raw, str) and raw.strip():
+            try:
+                text = raw.strip()
+                if text.endswith("Z"):
+                    text = text[:-1] + "+00:00"
+                created = _dt.datetime.fromisoformat(text).timestamp()
+            except Exception:
+                created = 0.0
+        candidates.append((max(created, mtime), path))
+    candidates.sort(key=lambda row: row[0], reverse=True)
+    paths = [p for _, p in candidates]
+    limit = getattr(args, "limit", None)
+    if isinstance(limit, int) and limit > 0 and len(paths) > limit:
+        paths = paths[:limit]
+    return paths
 
 
 def job_already_submitted(job: dict[str, Any]) -> bool:
@@ -3781,6 +3822,20 @@ def submit_job_file(
             "prompt_id": pid,
         }
 
+    # Pending drain: only feed Comfy when its waiting queue is empty (running OK).
+    if pending_only and not force and not dry_run:
+        empty, run_n, pend_n = comfy_waiting_queue_empty(server, timeout_s=min(15, int(timeout) or 15))
+        if not empty:
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "comfy_pending_busy",
+                "job_key": job_key,
+                "job_path": str(job_path),
+                "comfy_running": run_n,
+                "comfy_pending": pend_n,
+            }
+
     workflow_path = ensure_job_workflow_path(
         job,
         data_root=data_root,
@@ -3917,7 +3972,12 @@ def submit_job_file(
 
 
 def cmd_submit(args: argparse.Namespace) -> int:
-    job_paths = iter_job_paths(args)
+    pending_only = bool(getattr(args, "pending_only", False))
+    job_paths = (
+        iter_pending_submit_job_paths(args)
+        if pending_only
+        else iter_job_paths(args)
+    )
     if not job_paths:
         print("error: no job files found (use --job, --jobs-dir, or --family)", file=sys.stderr)
         return 1
@@ -3932,6 +3992,8 @@ def cmd_submit(args: argparse.Namespace) -> int:
     print(f"# Shape factory queue submit\n")
     print(f"- Comfy server: `{server}`")
     print(f"- Jobs: {len(job_paths)}")
+    if pending_only:
+        print(f"- pending_only: True (limit after pending filter)")
     print(f"- dry_run: {args.dry_run}\n")
 
     quiet = bool(getattr(args, "quiet", False))
@@ -3957,17 +4019,24 @@ def cmd_submit(args: argparse.Namespace) -> int:
                 quarantine_path=quarantine_path,
             )
             if result.get("skipped"):
-                reason = str(result.get("reason") or "skipped")
-                if quiet and reason in {"already_submitted", "submit_error", "abandoned"}:
-                    skipped += 1
-                    continue
-                print(f"## {job_key}")
-                pid = result.get("prompt_id")
-                if pid:
-                    print(f"skip (already submitted prompt_id={pid})")
-                else:
-                    print(f"skip ({reason})")
                 skipped += 1
+                reason = str(result.get("reason") or "skipped")
+                if not (quiet and reason in {"already_submitted", "submit_error", "abandoned", "comfy_pending_busy"}):
+                    print(f"## {job_key}")
+                    pid = result.get("prompt_id")
+                    if pid:
+                        print(f"skip (already submitted prompt_id={pid})")
+                    else:
+                        print(f"skip ({reason})")
+                # One busy signal means the whole pending drain should wait.
+                if reason == "comfy_pending_busy" and bool(getattr(args, "pending_only", False)):
+                    if not quiet:
+                        print(
+                            f"# comfy waiting queue busy "
+                            f"(running={result.get('comfy_running')} pending={result.get('comfy_pending')}); "
+                            f"stop pending drain"
+                        )
+                    break
             elif result.get("dry_run"):
                 print(f"## {job_key}")
                 print(f"dry_run workflow={result.get('workflow_path')}")
@@ -4045,6 +4114,392 @@ def queue_prompt_id_buckets(server: str, *, timeout_s: int = 15) -> tuple[set[st
     _add(running, "queue_running")
     _add(pending, "queue_pending")
     return running, pending
+
+
+def comfy_waiting_queue_empty(server: str, *, timeout_s: int = 15) -> tuple[bool, int, int]:
+    """
+    True when Comfy has nothing *waiting* (``queue_pending`` empty).
+
+    An active/running job is **not** on the waiting queue — it does not block
+    pending-job drain. Returns ``(empty, running_count, pending_count)``.
+    """
+    running, pending = queue_prompt_id_buckets(server, timeout_s=timeout_s)
+    return (len(pending) == 0), len(running), len(pending)
+
+
+def find_job_by_prompt_id(jobs_root: Path, prompt_id: str) -> tuple[Optional[Path], Optional[dict[str, Any]]]:
+    """Locate a shape-factory ``.job.json`` whose submit.prompt_id matches."""
+    pid = str(prompt_id or "").strip()
+    if not pid or not jobs_root.is_dir():
+        return None, None
+    for path in jobs_root.rglob("*.job.json"):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        if pid not in text:
+            continue
+        try:
+            job = json.loads(text)
+        except Exception:
+            continue
+        if not isinstance(job, dict):
+            continue
+        submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+        if str(submit.get("prompt_id") or "").strip() == pid:
+            return path, job
+    return None, None
+
+
+def find_job_by_key(data_root: Path, job_key: str) -> tuple[Optional[Path], Optional[dict[str, Any]]]:
+    key = str(job_key or "").strip()
+    if not key:
+        return None, None
+    jobs_root = Path(data_root) / "shape_factory" / "jobs"
+    if not jobs_root.is_dir():
+        return None, None
+    for path in jobs_root.glob(f"**/{key}.job.json"):
+        try:
+            job = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(job, dict):
+            return path, job
+    return None, None
+
+
+def _neutralize_submit_sidecar(job: dict[str, Any], *, previous_prompt_id: str) -> Optional[str]:
+    """
+    Strip prompt_id from ``.submit.json`` (or rename) so jobs-repair restore
+    cannot resurrect a queued prompt_id after unqueue.
+    """
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    raw = str(submit.get("submit_path") or "").strip()
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    if not path.is_file():
+        return "missing"
+    try:
+        rec = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return "unreadable"
+    if not isinstance(rec, dict):
+        return "invalid"
+    rec["prompt_id"] = None
+    rec["unqueued_at"] = utc_now()
+    rec["previous_prompt_id"] = previous_prompt_id
+    rec["status"] = "unqueued"
+    atomic_write_json(path, rec)
+    return "cleared"
+
+
+def unqueue_to_pending(
+    *,
+    prompt_id: str,
+    server: str,
+    data_root: Path,
+    job_key: Optional[str] = None,
+    job_path: Optional[Path] = None,
+    timeout_s: int = 15,
+) -> dict[str, Any]:
+    """
+    Remove ``prompt_id`` from Comfy's waiting queue and demote any matching
+    factory job to editable ``pending`` (clear prompt_id).
+
+    Waiting-queue only — refuses if the id is currently running.
+    When no factory job exists, still deletes from Comfy and returns
+    ``factory_job=False``.
+    """
+    pid = str(prompt_id or "").strip()
+    if not pid:
+        raise ValueError("missing_prompt_id")
+
+    data_root = Path(data_root).expanduser().resolve()
+    server = str(server).rstrip("/")
+    running_ids, pending_ids = queue_prompt_id_buckets(server, timeout_s=timeout_s)
+    if pid in running_ids:
+        return {
+            "ok": False,
+            "error": "still_running",
+            "prompt_id": pid,
+            "factory_job": False,
+        }
+
+    comfy_deleted = False
+    comfy_delete_error: Optional[str] = None
+    if pid in pending_ids:
+        try:
+            _http_json("POST", f"{server}/queue", {"delete": [pid]}, timeout_s=min(15, int(timeout_s) or 15))
+            comfy_deleted = True
+        except Exception as exc:
+            comfy_delete_error = str(exc)
+            # Still try to demote local job so UI is not stuck queued.
+    else:
+        # Already absent from waiting queue — treat as cleared.
+        comfy_deleted = True
+
+    job_file: Optional[Path] = None
+    job: Optional[dict[str, Any]] = None
+    if job_path is not None:
+        jp = Path(job_path).expanduser()
+        if jp.is_file():
+            try:
+                loaded = json.loads(jp.read_text(encoding="utf-8"))
+            except Exception:
+                loaded = None
+            if isinstance(loaded, dict):
+                job_file, job = jp, loaded
+    if job is None and job_key:
+        job_file, job = find_job_by_key(data_root, str(job_key))
+    if job is None:
+        jobs_root = data_root / "shape_factory" / "jobs"
+        job_file, job = find_job_by_prompt_id(jobs_root, pid)
+
+    if job is None or job_file is None:
+        out: dict[str, Any] = {
+            "ok": True,
+            "prompt_id": pid,
+            "previous_prompt_id": pid,
+            "factory_job": False,
+            "comfy_deleted": comfy_deleted,
+            "status": None,
+        }
+        if comfy_delete_error:
+            out["comfy_delete_error"] = comfy_delete_error
+            if not comfy_deleted and pid in pending_ids:
+                out["ok"] = False
+                out["error"] = "comfy_delete_failed"
+        return out
+
+    submit = job.setdefault("submit", {})
+    if not isinstance(submit, dict):
+        submit = {}
+        job["submit"] = submit
+    previous = str(submit.get("prompt_id") or pid).strip() or pid
+    submit["previous_prompt_id"] = previous
+    submit["unqueued_at"] = utc_now()
+    submit["status"] = "pending"
+    submit.pop("prompt_id", None)
+    # Drop stale error markers from a prior failed attempt if any.
+    for k in ("error", "error_node", "error_type", "comfy_error", "node_errors", "interrupted_reason", "interrupted_at"):
+        submit.pop(k, None)
+
+    sidecar_action = _neutralize_submit_sidecar(job, previous_prompt_id=previous)
+    atomic_write_json(job_file, job)
+
+    out = {
+        "ok": True,
+        "prompt_id": pid,
+        "previous_prompt_id": previous,
+        "factory_job": True,
+        "job_key": str(job.get("job_key") or job_file.stem.replace(".job", "")),
+        "job_path": str(job_file),
+        "status": "pending",
+        "comfy_deleted": comfy_deleted,
+        "submit_sidecar": sidecar_action,
+    }
+    if comfy_delete_error:
+        out["comfy_delete_error"] = comfy_delete_error
+    return out
+
+
+_DISCARDABLE_STATUSES = frozenset({"", "pending", "draft", "deposited", "abandoned"})
+
+
+def _job_sidecar_candidates(job_path: Path, job: dict[str, Any]) -> list[Path]:
+    """Related files that should leave the active job set with a discard."""
+    stem_base = job_path.name
+    if stem_base.endswith(".job.json"):
+        base = stem_base[: -len(".job.json")]
+    else:
+        base = job_path.stem.replace(".job", "")
+    parent = job_path.parent
+    out: list[Path] = []
+    for name in (
+        f"{base}.prompt.json",
+        f"{base}.submit.json",
+        f"{base}.timings.json",
+        f"{base}.workflow.json",
+    ):
+        p = parent / name
+        if p.is_file():
+            out.append(p)
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    for key in ("submit_path", "prompt_path"):
+        raw = str(submit.get(key) or "").strip()
+        if not raw:
+            continue
+        p = Path(raw).expanduser()
+        if p.is_file() and p not in out and p != job_path:
+            out.append(p)
+    for key in ("generated_workflow_path",):
+        raw = str(job.get(key) or "").strip()
+        if not raw:
+            continue
+        p = Path(raw).expanduser()
+        if p.is_file() and p not in out and p != job_path:
+            out.append(p)
+    return out
+
+
+def _rename_discarded(path: Path) -> Path:
+    dest = Path(str(path) + ".discarded")
+    n = 1
+    while dest.exists():
+        dest = Path(f"{path}.discarded.{n}")
+        n += 1
+    path.rename(dest)
+    return dest
+
+
+def discard_pending_job(
+    *,
+    data_root: Path,
+    job_key: Optional[str] = None,
+    job_path: Optional[Path] = None,
+    server: str = "",
+    reason: str = "user_removed",
+    expunge: bool = False,
+) -> dict[str, Any]:
+    """
+    Remove a pre-Comfy pending job from the active set.
+
+    By default renames ``.job.json`` (+ sidecars) with a ``.discarded`` suffix.
+    With ``expunge=True``, permanently deletes those files (no recovery).
+    Refuses queued/running jobs (unqueue first). Does not touch Comfy outputs.
+    """
+    data_root = Path(data_root).expanduser().resolve()
+    job_file: Optional[Path] = None
+    job: Optional[dict[str, Any]] = None
+
+    if job_path is not None:
+        jp = Path(job_path).expanduser()
+        if jp.is_file():
+            try:
+                loaded = json.loads(jp.read_text(encoding="utf-8"))
+            except Exception:
+                loaded = None
+            if isinstance(loaded, dict):
+                job_file, job = jp, loaded
+    if job is None and job_key:
+        job_file, job = find_job_by_key(data_root, str(job_key))
+    if job is None or job_file is None:
+        return {"ok": False, "error": "job_not_found", "job_key": job_key}
+
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    status = str(submit.get("status") or "").strip().lower()
+    pid = str(submit.get("prompt_id") or "").strip()
+    key = str(job.get("job_key") or job_file.stem.replace(".job", ""))
+
+    if status in {"queued", "running", "submitted"} or (pid and status not in _DISCARDABLE_STATUSES):
+        return {
+            "ok": False,
+            "error": "not_pending",
+            "job_key": key,
+            "status": status or "unknown",
+            "prompt_id": pid or None,
+            "detail": "Unqueue first, or only discard jobs that are still pending (not on Comfy).",
+        }
+
+    if pid and server:
+        try:
+            running_ids, pending_ids = queue_prompt_id_buckets(str(server).rstrip("/"), timeout_s=10)
+        except Exception:
+            running_ids, pending_ids = set(), set()
+        if pid in running_ids or pid in pending_ids:
+            return {
+                "ok": False,
+                "error": "still_on_comfy",
+                "job_key": key,
+                "prompt_id": pid,
+                "detail": "Prompt is still on Comfy; Unqueue first.",
+            }
+
+    prev_status = status or "pending"
+    targets = [job_file] + _job_sidecar_candidates(job_file, job)
+
+    if expunge:
+        deleted: list[str] = []
+        for path in targets:
+            try:
+                path.unlink()
+                deleted.append(str(path))
+            except FileNotFoundError:
+                continue
+            except Exception:
+                continue
+        # Also wipe any prior soft-discard siblings for the same basename.
+        parent = job_file.parent
+        stem = job_file.name
+        for leftover in parent.glob(stem + ".discarded*"):
+            try:
+                leftover.unlink()
+                deleted.append(str(leftover))
+            except Exception:
+                continue
+        if stem.endswith(".job.json"):
+            base = stem[: -len(".job.json")]
+            for pattern in (
+                f"{base}.prompt.json.discarded*",
+                f"{base}.submit.json.discarded*",
+                f"{base}.timings.json.discarded*",
+                f"{base}.workflow.json.discarded*",
+            ):
+                for leftover in parent.glob(pattern):
+                    try:
+                        leftover.unlink()
+                        deleted.append(str(leftover))
+                    except Exception:
+                        continue
+        return {
+            "ok": True,
+            "job_key": key,
+            "status": None,
+            "discarded": True,
+            "expunged": True,
+            "job_path": None,
+            "deleted": deleted,
+            "previous_status": prev_status,
+            "reason": str(reason or "user_removed"),
+        }
+
+    abandon_submit_failure(
+        job,
+        error=str(reason or "user_removed"),
+        server=str(server or ""),
+        previous_status=prev_status,
+        attempts=submit_attempt_count(job),
+    )
+    submit2 = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    submit2["discarded"] = True
+    submit2["discarded_at"] = utc_now()
+    submit2["discard_reason"] = str(reason or "user_removed")
+    if pid:
+        submit2["previous_prompt_id"] = pid
+        submit2.pop("prompt_id", None)
+
+    atomic_write_json(job_file, job)
+
+    renamed: list[str] = []
+    for side in _job_sidecar_candidates(job_file, job):
+        try:
+            renamed.append(str(_rename_discarded(side)))
+        except Exception:
+            continue
+    discarded_job = _rename_discarded(job_file)
+    renamed.append(str(discarded_job))
+
+    return {
+        "ok": True,
+        "job_key": key,
+        "status": "abandoned",
+        "discarded": True,
+        "expunged": False,
+        "job_path": str(discarded_job),
+        "renamed": renamed,
+        "previous_status": prev_status,
+    }
 
 
 def history_status_str(history: dict[str, Any]) -> str:

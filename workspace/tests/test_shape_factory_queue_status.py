@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -99,6 +102,264 @@ class QueueStatusTests(unittest.TestCase):
         self.assertIn("out of memory", job["submit"]["error"])
         self.assertEqual(job["submit"]["error_node"], "SamplerCustomAdvanced")
         self.assertEqual(job["submit"]["comfy_error"]["node_id"], "12")
+
+    def test_waiting_queue_empty_allows_running(self) -> None:
+        with mock.patch.object(
+            sf,
+            "queue_prompt_id_buckets",
+            return_value=({"run-1"}, set()),
+        ):
+            empty, run_n, pend_n = sf.comfy_waiting_queue_empty("http://x")
+        self.assertTrue(empty)
+        self.assertEqual(run_n, 1)
+        self.assertEqual(pend_n, 0)
+
+    def test_waiting_queue_busy_when_pending(self) -> None:
+        with mock.patch.object(
+            sf,
+            "queue_prompt_id_buckets",
+            return_value=(set(), {"pend-1"}),
+        ):
+            empty, run_n, pend_n = sf.comfy_waiting_queue_empty("http://x")
+        self.assertFalse(empty)
+        self.assertEqual(run_n, 0)
+        self.assertEqual(pend_n, 1)
+
+    def test_pending_only_skips_when_comfy_waiting_busy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            job_path = Path(tmp) / "job.job.json"
+            job_path.write_text(
+                json.dumps({"job_key": "t1", "submit": {"status": "pending"}}),
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                sf,
+                "comfy_waiting_queue_empty",
+                return_value=(False, 1, 2),
+            ):
+                result = sf.submit_job_file(
+                    job_path,
+                    server="http://x",
+                    data_root=Path(tmp),
+                    dry_run=False,
+                    force=False,
+                    pending_only=True,
+                )
+        self.assertTrue(result.get("skipped"))
+        self.assertEqual(result.get("reason"), "comfy_pending_busy")
+        self.assertEqual(result.get("comfy_running"), 1)
+        self.assertEqual(result.get("comfy_pending"), 2)
+
+    def test_unqueue_demotes_factory_job_by_prompt_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_root = Path(tmp)
+            jobs_dir = data_root / "shape_factory" / "jobs" / "SomeFamily"
+            jobs_dir.mkdir(parents=True)
+            job_path = jobs_dir / "hourly__abc.job.json"
+            sidecar = jobs_dir / "hourly__abc.submit.json"
+            sidecar.write_text(
+                json.dumps({"prompt_id": "pid-q1", "submitted_at": "t0"}),
+                encoding="utf-8",
+            )
+            job_path.write_text(
+                json.dumps(
+                    {
+                        "job_key": "hourly__abc",
+                        "family_slug": "SomeFamily",
+                        "submit": {
+                            "status": "queued",
+                            "prompt_id": "pid-q1",
+                            "submit_path": str(sidecar),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                sf,
+                "queue_prompt_id_buckets",
+                return_value=(set(), {"pid-q1"}),
+            ), mock.patch.object(sf, "_http_json", return_value={}) as http:
+                result = sf.unqueue_to_pending(
+                    prompt_id="pid-q1",
+                    server="http://x",
+                    data_root=data_root,
+                )
+            http.assert_called()
+            self.assertTrue(result.get("ok"))
+            self.assertTrue(result.get("factory_job"))
+            self.assertEqual(result.get("status"), "pending")
+            self.assertEqual(result.get("previous_prompt_id"), "pid-q1")
+            job = json.loads(job_path.read_text(encoding="utf-8"))
+            self.assertEqual(job["submit"]["status"], "pending")
+            self.assertNotIn("prompt_id", job["submit"])
+            self.assertEqual(job["submit"]["previous_prompt_id"], "pid-q1")
+            sid = json.loads(sidecar.read_text(encoding="utf-8"))
+            self.assertIsNone(sid.get("prompt_id"))
+
+    def test_unqueue_refuses_running(self) -> None:
+        with mock.patch.object(
+            sf,
+            "queue_prompt_id_buckets",
+            return_value=({"pid-run"}, set()),
+        ):
+            result = sf.unqueue_to_pending(
+                prompt_id="pid-run",
+                server="http://x",
+                data_root=Path("/tmp"),
+            )
+        self.assertFalse(result.get("ok"))
+        self.assertEqual(result.get("error"), "still_running")
+
+    def test_unqueue_already_gone_still_demotes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_root = Path(tmp)
+            jobs_dir = data_root / "shape_factory" / "jobs" / "F"
+            jobs_dir.mkdir(parents=True)
+            job_path = jobs_dir / "j1.job.json"
+            job_path.write_text(
+                json.dumps(
+                    {
+                        "job_key": "j1",
+                        "submit": {"status": "queued", "prompt_id": "pid-gone"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                sf,
+                "queue_prompt_id_buckets",
+                return_value=(set(), set()),
+            ), mock.patch.object(sf, "_http_json") as http:
+                result = sf.unqueue_to_pending(
+                    prompt_id="pid-gone",
+                    server="http://x",
+                    data_root=data_root,
+                )
+            http.assert_not_called()
+            self.assertTrue(result.get("ok"))
+            self.assertTrue(result.get("factory_job"))
+            job = json.loads(job_path.read_text(encoding="utf-8"))
+            self.assertEqual(job["submit"]["status"], "pending")
+            self.assertNotIn("prompt_id", job["submit"])
+
+    def test_unqueue_no_factory_job_comfy_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_root = Path(tmp)
+            (data_root / "shape_factory" / "jobs").mkdir(parents=True)
+            with mock.patch.object(
+                sf,
+                "queue_prompt_id_buckets",
+                return_value=(set(), {"pid-ext"}),
+            ), mock.patch.object(sf, "_http_json", return_value={}) as http:
+                result = sf.unqueue_to_pending(
+                    prompt_id="pid-ext",
+                    server="http://x",
+                    data_root=data_root,
+                )
+            http.assert_called()
+            self.assertTrue(result.get("ok"))
+            self.assertFalse(result.get("factory_job"))
+            self.assertTrue(result.get("comfy_deleted"))
+
+    def test_discard_pending_renames_job(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_root = Path(tmp)
+            jobs_dir = data_root / "shape_factory" / "jobs" / "F"
+            jobs_dir.mkdir(parents=True)
+            job_path = jobs_dir / "pend1.job.json"
+            prompt_path = jobs_dir / "pend1.prompt.json"
+            prompt_path.write_text("{}", encoding="utf-8")
+            job_path.write_text(
+                json.dumps(
+                    {
+                        "job_key": "pend1",
+                        "submit": {"status": "pending"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = sf.discard_pending_job(data_root=data_root, job_key="pend1", expunge=False)
+            self.assertTrue(result.get("ok"))
+            self.assertTrue(result.get("discarded"))
+            self.assertFalse(result.get("expunged"))
+            self.assertFalse(job_path.is_file())
+            self.assertTrue(Path(str(job_path) + ".discarded").is_file())
+            self.assertTrue(Path(str(prompt_path) + ".discarded").is_file())
+            discarded = json.loads(Path(str(job_path) + ".discarded").read_text(encoding="utf-8"))
+            self.assertEqual(discarded["submit"]["status"], "abandoned")
+
+    def test_expunge_pending_deletes_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_root = Path(tmp)
+            jobs_dir = data_root / "shape_factory" / "jobs" / "F"
+            jobs_dir.mkdir(parents=True)
+            job_path = jobs_dir / "pend2.job.json"
+            prompt_path = jobs_dir / "pend2.prompt.json"
+            prompt_path.write_text("{}", encoding="utf-8")
+            job_path.write_text(
+                json.dumps({"job_key": "pend2", "submit": {"status": "pending"}}),
+                encoding="utf-8",
+            )
+            result = sf.discard_pending_job(data_root=data_root, job_key="pend2", expunge=True)
+            self.assertTrue(result.get("ok"))
+            self.assertTrue(result.get("expunged"))
+            self.assertFalse(job_path.is_file())
+            self.assertFalse(prompt_path.is_file())
+            self.assertFalse(Path(str(job_path) + ".discarded").is_file())
+            self.assertIn(str(job_path), result.get("deleted") or [])
+
+    def test_discard_refuses_queued(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_root = Path(tmp)
+            jobs_dir = data_root / "shape_factory" / "jobs" / "F"
+            jobs_dir.mkdir(parents=True)
+            job_path = jobs_dir / "q1.job.json"
+            job_path.write_text(
+                json.dumps(
+                    {
+                        "job_key": "q1",
+                        "submit": {"status": "queued", "prompt_id": "pid-1"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = sf.discard_pending_job(data_root=data_root, job_key="q1")
+            self.assertFalse(result.get("ok"))
+            self.assertEqual(result.get("error"), "not_pending")
+            self.assertTrue(job_path.is_file())
+
+
+    def test_pending_only_limit_skips_already_submitted(self) -> None:
+        """--limit must apply after pending filter, not to alphabetical all-jobs."""
+        with tempfile.TemporaryDirectory() as tmp:
+            jobs = Path(tmp) / "jobs" / "Fam"
+            jobs.mkdir(parents=True)
+            old = jobs / "aaa_old.job.json"
+            old.write_text(
+                json.dumps(
+                    {
+                        "job_key": "aaa_old",
+                        "submit": {"status": "complete", "prompt_id": "pid-old"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            pend = jobs / "zzz_pending.job.json"
+            pend.write_text(
+                json.dumps({"job_key": "zzz_pending", "submit": {"status": "pending"}}),
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                job=None,
+                jobs_dir=None,
+                family="Fam",
+                job_dir=str(Path(tmp) / "jobs"),
+                limit=1,
+            )
+            # Broken behavior would return only aaa_old (alphabetically first).
+            paths = sf.iter_pending_submit_job_paths(args)
+            self.assertEqual([p.name for p in paths], ["zzz_pending.job.json"])
 
 
 if __name__ == "__main__":
