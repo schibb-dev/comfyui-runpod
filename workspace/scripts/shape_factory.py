@@ -175,20 +175,28 @@ def apply_dev_tuning_ui(workflow: dict[str, Any], tuning: dict[str, Any]) -> dic
 
     vhs_spec = tuning.get("vhs_load_video_path") if isinstance(tuning.get("vhs_load_video_path"), dict) else {}
     frame_cap = vhs_spec.get("frame_load_cap")
-    if frame_cap is not None:
+    skip_first = vhs_spec.get("skip_first_frames")
+    if frame_cap is not None or skip_first is not None:
         for node in workflow.get("nodes") or []:
             if not isinstance(node, dict) or node.get("type") != "VHS_LoadVideoPath":
                 continue
             widgets = node.setdefault("widgets_values", {})
             if not isinstance(widgets, dict):
                 continue
-            widgets["frame_load_cap"] = int(frame_cap)
+            entry: dict[str, Any] = {"node_id": node.get("id")}
             preview = widgets.get("videopreview")
-            if isinstance(preview, dict):
-                params = preview.get("params")
-                if isinstance(params, dict):
-                    params["frame_load_cap"] = int(frame_cap)
-            changes["vhs"].append({"node_id": node.get("id"), "frame_load_cap": int(frame_cap)})
+            preview_params = preview.get("params") if isinstance(preview, dict) else None
+            if skip_first is not None:
+                widgets["skip_first_frames"] = int(skip_first)
+                if isinstance(preview_params, dict):
+                    preview_params["skip_first_frames"] = int(skip_first)
+                entry["skip_first_frames"] = int(skip_first)
+            if frame_cap is not None:
+                widgets["frame_load_cap"] = int(frame_cap)
+                if isinstance(preview_params, dict):
+                    preview_params["frame_load_cap"] = int(frame_cap)
+                entry["frame_load_cap"] = int(frame_cap)
+            changes["vhs"].append(entry)
     return changes
 
 
@@ -209,12 +217,20 @@ def apply_dev_tuning_api(prompt: dict[str, Any], tuning: dict[str, Any]) -> dict
 
     vhs_spec = tuning.get("vhs_load_video_path") if isinstance(tuning.get("vhs_load_video_path"), dict) else {}
     frame_cap = vhs_spec.get("frame_load_cap")
-    if frame_cap is not None:
+    skip_first = vhs_spec.get("skip_first_frames")
+    if frame_cap is not None or skip_first is not None:
         for key, node in prompt.items():
             if not isinstance(node, dict) or node.get("class_type") != "VHS_LoadVideoPath":
                 continue
-            node.setdefault("inputs", {})["frame_load_cap"] = int(frame_cap)
-            changes["vhs"].append({"node_id": str(key), "frame_load_cap": int(frame_cap)})
+            inputs = node.setdefault("inputs", {})
+            entry: dict[str, Any] = {"node_id": str(key)}
+            if skip_first is not None:
+                inputs["skip_first_frames"] = int(skip_first)
+                entry["skip_first_frames"] = int(skip_first)
+            if frame_cap is not None:
+                inputs["frame_load_cap"] = int(frame_cap)
+                entry["frame_load_cap"] = int(frame_cap)
+            changes["vhs"].append(entry)
     return changes
 
 

@@ -1242,6 +1242,16 @@ body {
   background: var(--good);
 }
 
+.video-trim-controls__handle--readonly,
+.video-trim-controls--readonly .video-trim-controls__handle {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.video-trim-controls__timeline--readonly .video-trim-controls__handle--readonly {
+  pointer-events: none;
+}
+
 .video-trim-controls__handle span {
   position: absolute;
   inset: 4px 5px;
@@ -11534,10 +11544,39 @@ tr.disabled:hover td {
 .work-product-viewer__source-video,
 .work-product-viewer__source-img {
   width: 100%;
-  max-height: 140px;
-  background: #000;
-  border-radius: 6px;
+  max-height: 160px;
   object-fit: contain;
+  border-radius: 6px;
+  background: #000;
+}
+
+.work-product-viewer__trim {
+  margin-top: 0.35rem;
+}
+
+.work-product-viewer__trim-warn {
+  margin: 0.25rem 0 0;
+  font-size: 0.75rem;
+  color: var(--warn, #b45309);
+  line-height: 1.3;
+}
+
+.work-product-viewer__queued-source {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.work-product-viewer__queued-source-frame {
+  position: relative;
+  min-width: 0;
+}
+
+.work-product-viewer__queued-source-frame .work-product-live__badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
 }
 
 .work-product-details {
@@ -11726,7 +11765,9 @@ tr.disabled:hover td {
 
 .work-product-quick-queue__now,
 .work-product-quick-queue__later,
-.work-product-quick-queue__rerun {
+.work-product-quick-queue__rerun,
+.work-product-quick-queue__unqueue,
+.work-product-quick-queue__discard {
   padding: 2px 8px;
   font-size: 12px;
   line-height: 1.3;

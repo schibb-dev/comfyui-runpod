@@ -86,6 +86,7 @@ type VideoTrimTimelineProps = {
   markIn: number | null;
   markOut: number | null;
   disabled: boolean;
+  readOnly?: boolean;
   onSeek: (t: number) => void;
   onMarkInChange: (t: number) => void;
   onMarkOutChange: (t: number) => void;
@@ -97,6 +98,7 @@ function VideoTrimTimeline({
   markIn,
   markOut,
   disabled,
+  readOnly = false,
   onSeek,
   onMarkInChange,
   onMarkOutChange,
@@ -161,6 +163,7 @@ function VideoTrimTimeline({
 
   const startDrag = (kind: TrimDragKind) => (e: React.PointerEvent) => {
     if (disabled) return;
+    if (readOnly && kind !== "play") return;
     e.stopPropagation();
     e.preventDefault();
     setDrag(kind);
@@ -176,14 +179,21 @@ function VideoTrimTimeline({
   return (
     <div
       ref={trackRef}
-      className={"video-trim-controls__timeline" + (disabled ? " video-trim-controls__timeline--disabled" : "")}
+      className={
+        "video-trim-controls__timeline" +
+        (disabled ? " video-trim-controls__timeline--disabled" : "") +
+        (readOnly ? " video-trim-controls__timeline--readonly" : "")
+      }
       onPointerDown={onTrackPointerDown}
       role="presentation"
     >
       <div className="video-trim-controls__timeline-track" />
       <div className="video-trim-controls__timeline-selection" style={{ left: `${inPct}%`, width: `${outPct - inPct}%` }} />
       <div
-        className="video-trim-controls__handle video-trim-controls__handle--in"
+        className={
+          "video-trim-controls__handle video-trim-controls__handle--in" +
+          (readOnly ? " video-trim-controls__handle--readonly" : "")
+        }
         style={{ left: `${inPct}%` }}
         onPointerDown={startDrag("in")}
         role="slider"
@@ -191,12 +201,15 @@ function VideoTrimTimeline({
         aria-valuemin={0}
         aria-valuemax={duration}
         aria-valuenow={safeIn}
-        aria-disabled={disabled}
+        aria-disabled={disabled || readOnly}
       >
         <span />
       </div>
       <div
-        className="video-trim-controls__handle video-trim-controls__handle--out"
+        className={
+          "video-trim-controls__handle video-trim-controls__handle--out" +
+          (readOnly ? " video-trim-controls__handle--readonly" : "")
+        }
         style={{ left: `${outPct}%` }}
         onPointerDown={startDrag("out")}
         role="slider"
@@ -204,7 +217,7 @@ function VideoTrimTimeline({
         aria-valuemin={0}
         aria-valuemax={duration}
         aria-valuenow={safeOut}
-        aria-disabled={disabled}
+        aria-disabled={disabled || readOnly}
       >
         <span />
       </div>
@@ -242,6 +255,7 @@ export function VideoTrimControls({
   onSyncTime,
   className,
   size = "default",
+  readOnly = false,
 }: {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   duration: number;
@@ -258,6 +272,8 @@ export function VideoTrimControls({
   onSyncTime?: (t: number) => void;
   className?: string;
   size?: "default" | "large";
+  /** When true, in/out marks cannot be changed (queued/running jobs). Playback still works. */
+  readOnly?: boolean;
 }) {
   const [, forceMediaUi] = useReducer((x: number) => x + 1, 0);
 
@@ -268,20 +284,28 @@ export function VideoTrimControls({
     v.addEventListener("play", onMediaState);
     v.addEventListener("pause", onMediaState);
     v.addEventListener("ended", onMediaState);
+    v.addEventListener("loadedmetadata", onMediaState);
+    v.addEventListener("durationchange", onMediaState);
     return () => {
       v.removeEventListener("play", onMediaState);
       v.removeEventListener("pause", onMediaState);
       v.removeEventListener("ended", onMediaState);
+      v.removeEventListener("loadedmetadata", onMediaState);
+      v.removeEventListener("durationchange", onMediaState);
     };
   }, [mediaSyncKey, videoRef]);
 
   const paused = videoRef.current?.paused ?? true;
-  const disabled = !Number.isFinite(duration) || duration <= 0;
-  const bounds = phoneTrimBounds(markIn, markOut, duration);
-  const trimActive = phoneTrimPlaybackActive(bounds, duration);
+  const liveDuration =
+    videoRef.current && Number.isFinite(videoRef.current.duration) && videoRef.current.duration > 0
+      ? videoRef.current.duration
+      : duration;
+  const disabled = !Number.isFinite(liveDuration) || liveDuration <= 0;
+  const bounds = phoneTrimBounds(markIn, markOut, liveDuration);
+  const trimActive = phoneTrimPlaybackActive(bounds, liveDuration);
 
   const syncSeek = (t: number) => {
-    const next = Math.max(0, Math.min(duration || 0, t));
+    const next = Math.max(0, Math.min(liveDuration || 0, t));
     const v = videoRef.current;
     if (v) v.currentTime = next;
     onSyncTime?.(next);
@@ -291,20 +315,25 @@ export function VideoTrimControls({
   const togglePlay = () => {
     const v = videoRef.current;
     if (!v) return;
-    if (v.paused) void v.play().catch(() => {});
-    else v.pause();
+    if (v.paused) {
+      // Start inside the trim window when play is pressed from outside it.
+      if (bounds && (v.currentTime < bounds.in - 1e-3 || v.currentTime >= bounds.out - 1e-3)) {
+        v.currentTime = bounds.in;
+      }
+      void v.play().catch(() => {});
+    } else v.pause();
   };
 
   const setInAtPlayhead = () => {
-    if (disabled) return;
-    const out = Math.min(duration, markOut ?? duration);
+    if (disabled || readOnly) return;
+    const out = Math.min(liveDuration, markOut ?? liveDuration);
     onMarkInChange(Math.max(0, Math.min(currentTime, out - TRIM_HANDLE_MIN_GAP_SEC)));
   };
 
   const setOutAtPlayhead = () => {
-    if (disabled) return;
+    if (disabled || readOnly) return;
     const inn = Math.max(0, markIn ?? 0);
-    onMarkOutChange(Math.min(duration, Math.max(currentTime, inn + TRIM_HANDLE_MIN_GAP_SEC)));
+    onMarkOutChange(Math.min(liveDuration, Math.max(currentTime, inn + TRIM_HANDLE_MIN_GAP_SEC)));
   };
 
   return (
@@ -312,12 +341,13 @@ export function VideoTrimControls({
       className={
         "video-trim-controls" +
         (size === "large" ? " video-trim-controls--large" : "") +
+        (readOnly ? " video-trim-controls--readonly" : "") +
         (className ? ` ${className}` : "")
       }
     >
       <div className="video-trim-controls__primary">
         <div className="video-trim-controls__time mono">
-          {formatVideoSeconds(currentTime)} <span>/</span> {formatVideoSeconds(duration)}
+          {formatVideoSeconds(currentTime)} <span>/</span> {formatVideoSeconds(liveDuration)}
         </div>
         <div className="video-trim-controls__transport" role="group" aria-label="Video playback">
           <button type="button" aria-label="Go to trim start" title="Go to trim start" disabled={disabled} onClick={() => syncSeek(bounds?.in ?? 0)}>
@@ -326,32 +356,39 @@ export function VideoTrimControls({
           <button type="button" aria-label={paused ? "Play" : "Pause"} title={paused ? "Play" : "Pause"} onClick={togglePlay}>
             {paused ? <IconPlay /> : <IconPause />}
           </button>
-          <button type="button" aria-label="Go to trim end" title="Go to trim end" disabled={disabled} onClick={() => syncSeek(bounds ? bounds.out : duration)}>
+          <button type="button" aria-label="Go to trim end" title="Go to trim end" disabled={disabled} onClick={() => syncSeek(bounds ? bounds.out : liveDuration)}>
             <IconToEnd />
           </button>
         </div>
         <div className="video-trim-controls__io" role="group" aria-label="Set trim in and out">
-          <button type="button" disabled={disabled} onClick={setInAtPlayhead} title="Set in at playhead">
+          <button type="button" disabled={disabled || readOnly} onClick={setInAtPlayhead} title="Set in at playhead">
             I
           </button>
-          <button type="button" disabled={disabled} onClick={setOutAtPlayhead} title="Set out at playhead">
+          <button type="button" disabled={disabled || readOnly} onClick={setOutAtPlayhead} title="Set out at playhead">
             O
           </button>
         </div>
       </div>
       <div className="video-trim-controls__timeline-row">
         <VideoTrimTimeline
-          duration={duration}
+          duration={liveDuration}
           currentTime={currentTime}
           markIn={markIn}
           markOut={markOut}
           disabled={disabled}
+          readOnly={readOnly}
           onSeek={syncSeek}
           onMarkInChange={onMarkInChange}
           onMarkOutChange={onMarkOutChange}
         />
         <div className="video-trim-controls__actions" role="group" aria-label="Trim range options">
-          <button type="button" aria-label="Clear trim in and out" title="Clear in/out" disabled={!trimActive} onClick={onClear}>
+          <button
+            type="button"
+            aria-label="Clear trim in and out"
+            title="Clear in/out"
+            disabled={!trimActive || readOnly}
+            onClick={onClear}
+          >
             <IconClear />
           </button>
           <button

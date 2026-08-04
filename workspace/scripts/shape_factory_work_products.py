@@ -75,7 +75,12 @@ def prefer_target_family(explicit: Any, inferred: Any = "") -> str:
     return str(inferred or "").strip()
 
 
-def list_shape_families(data_root: Path) -> List[Dict[str, Any]]:
+def list_shape_families(
+    data_root: Path,
+    *,
+    workspace_root: Optional[Path] = None,
+    output_root: Optional[Path] = None,
+) -> List[Dict[str, Any]]:
     """Scan ``data_root/shapes/*.shape.yaml`` for family picker options."""
     shapes_dir = Path(data_root) / "shapes"
     out: List[Dict[str, Any]] = []
@@ -89,18 +94,39 @@ def list_shape_families(data_root: Path) -> List[Dict[str, Any]]:
         def load_yaml(path: Path) -> dict:  # type: ignore
             return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
+    vhs_defaults_fn = None
+    if workspace_root is not None and output_root is not None:
+        try:
+            from shape_factory_queue import vhs_loader_defaults_for_shape
+        except ImportError:
+            vhs_loader_defaults_for_shape = None  # type: ignore
+        vhs_defaults_fn = vhs_loader_defaults_for_shape
+
     for path in sorted(shapes_dir.glob("*.shape.yaml")):
         slug = path.name[: -len(".shape.yaml")] if path.name.endswith(".shape.yaml") else path.stem
         shape_id = None
         family_slug = slug
+        doc: Dict[str, Any] = {}
         try:
-            doc = load_yaml(path)
-            if isinstance(doc, dict):
+            loaded = load_yaml(path)
+            if isinstance(loaded, dict):
+                doc = loaded
                 shape_id = doc.get("shape_id")
                 family_slug = str(doc.get("family_slug") or slug).strip() or slug
         except Exception:
             pass
-        out.append({"slug": family_slug or slug, "shape_id": shape_id, "shape_path": str(path)})
+        row: Dict[str, Any] = {"slug": family_slug or slug, "shape_id": shape_id, "shape_path": str(path)}
+        if vhs_defaults_fn is not None and doc:
+            try:
+                row["vhs_defaults"] = vhs_defaults_fn(
+                    doc,
+                    data_root=Path(data_root),
+                    workspace_root=Path(workspace_root),
+                    output_root=Path(output_root),
+                )
+            except Exception:
+                row["vhs_defaults"] = {"skip_first_frames": 0, "frame_load_cap": 0}
+        out.append(row)
     # Dedupe by slug (prefer first).
     seen: set[str] = set()
     uniq: List[Dict[str, Any]] = []
@@ -281,6 +307,67 @@ def _bindings_from_job(
         if isinstance(meta, dict):
             out[str(slot)] = _binding_entry_from_meta(str(slot), meta, data_root=data_root, output_root=output_root)
     return out
+
+
+def _prompt_doc_for_job(job: Dict[str, Any], job_path: Path) -> Optional[Dict[str, Any]]:
+    """Load the Comfy API prompt used for this job (sibling .prompt.json or submit path)."""
+    candidates: List[Path] = []
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    for raw in (
+        submit.get("prompt_path"),
+        job.get("prompt_path"),
+        job_path.with_name(job_path.name.replace(".job.json", ".prompt.json")),
+    ):
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        p = Path(text).expanduser()
+        if p.is_file():
+            candidates.append(p)
+    # Prefer sibling next to job when present.
+    sibling = job_path.with_name(job_path.name.replace(".job.json", ".prompt.json"))
+    if sibling.is_file():
+        candidates.insert(0, sibling)
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(doc, dict):
+            return doc
+    return None
+
+
+def _applied_vhs_window_from_prompt(prompt: Optional[Dict[str, Any]]) -> Optional[Dict[str, int]]:
+    """First VHS_LoadVideoPath skip/cap from a Comfy API prompt."""
+    if not isinstance(prompt, dict):
+        return None
+    for node in prompt.values():
+        if not isinstance(node, dict) or node.get("class_type") != "VHS_LoadVideoPath":
+            continue
+        inputs = node.get("inputs") if isinstance(node.get("inputs"), dict) else {}
+        out: Dict[str, int] = {"skip_first_frames": 0, "frame_load_cap": 0}
+        try:
+            if inputs.get("skip_first_frames") is not None:
+                out["skip_first_frames"] = max(0, int(inputs["skip_first_frames"]))
+        except (TypeError, ValueError):
+            pass
+        try:
+            if inputs.get("frame_load_cap") is not None:
+                out["frame_load_cap"] = max(0, int(inputs["frame_load_cap"]))
+        except (TypeError, ValueError):
+            pass
+        return out
+    return None
+
+
+def _applied_vhs_window_from_job(job: Dict[str, Any], job_path: Path) -> Optional[Dict[str, int]]:
+    return _applied_vhs_window_from_prompt(_prompt_doc_for_job(job, job_path))
 
 
 def _ensure_item_media_urls(
@@ -708,6 +795,10 @@ def _detail_rows(item: Dict[str, Any]) -> List[Dict[str, Any]]:
         _basename(item.get("generated_workflow_path")) or item.get("generated_workflow_path"),
         json_path=item.get("generated_workflow_path"),
     )
+    applied = item.get("applied_vhs") if isinstance(item.get("applied_vhs"), dict) else {}
+    if applied:
+        add("VHS skip_first_frames", applied.get("skip_first_frames"))
+        add("VHS frame_load_cap", applied.get("frame_load_cap"))
     add("Graph hash", item.get("graph_hash"))
     add("Job key", item.get("job_key"))
     add("Job file", _basename(item.get("job_path")) or item.get("job_path"), json_path=item.get("job_path"))
@@ -891,6 +982,52 @@ def _work_product_item_from_job(
         workspace_root=output_root.parent,
     )
 
+    # Media meta for trim UI (fps / frame_count / duration). Prefer job probes; fall back later in UI.
+    media_meta: Dict[str, Any] = {}
+    timings = job.get("timings") if isinstance(job.get("timings"), dict) else {}
+    probes = []
+    outs = timings.get("outputs") if isinstance(timings.get("outputs"), dict) else {}
+    if isinstance(outs.get("probes"), list):
+        probes = outs["probes"]
+    fps = None
+    frame_count = None
+    duration = None
+    for probe_row in probes:
+        if not isinstance(probe_row, dict):
+            continue
+        probe = probe_row.get("probe") if isinstance(probe_row.get("probe"), dict) else {}
+        if probe.get("avg_frame_rate") and fps is None:
+            try:
+                from shape_factory_queue import parse_avg_frame_rate
+
+                fps = parse_avg_frame_rate(probe.get("avg_frame_rate"))
+            except Exception:
+                fps = None
+        if probe.get("frame_count") is not None and frame_count is None:
+            try:
+                frame_count = int(probe["frame_count"])
+            except (TypeError, ValueError):
+                pass
+        if probe.get("duration") is not None and duration is None:
+            try:
+                duration = float(probe["duration"])
+            except (TypeError, ValueError):
+                pass
+    workload = timings.get("workload") if isinstance(timings.get("workload"), dict) else {}
+    if frame_count is None and workload.get("output_frame_count") is not None:
+        try:
+            frame_count = int(workload["output_frame_count"])
+        except (TypeError, ValueError):
+            pass
+    if fps or frame_count or duration:
+        media_meta = {
+            "fps": fps or 18.0,
+            "frame_count": frame_count,
+            "duration": duration,
+        }
+
+    applied_vhs = _applied_vhs_window_from_job(job, path)
+
     item: Dict[str, Any] = {
         "job_key": job.get("job_key") or path.stem.replace(".job", ""),
         "job_path": str(path),
@@ -933,6 +1070,8 @@ def _work_product_item_from_job(
         "bindings": bindings_out,
         "prompt_profile": prompt_profile,
         "shape_profile": shape_profile,
+        "media_meta": media_meta or None,
+        "applied_vhs": applied_vhs,
         "construction": construction,
         "warnings": job.get("warnings") or [],
     }
@@ -1017,7 +1156,11 @@ def list_recent_work_products(
             )
         )
 
-    families = list_shape_families(data_root)
+    families = list_shape_families(
+        data_root,
+        workspace_root=output_root.parent,
+        output_root=output_root,
+    )
     extend_family_defaults = list_extend_family_defaults(data_root)
 
     return {

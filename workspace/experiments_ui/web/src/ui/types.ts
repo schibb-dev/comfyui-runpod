@@ -1177,6 +1177,7 @@ export type ShapeFactoryMapQueueOverrides = {
     steps?: number;
     overlap?: number;
     frame_load_cap?: number;
+    skip_first_frames?: number;
   };
 };
 
@@ -1220,6 +1221,61 @@ export type ShapeFactoryReplayRequest = {
 export type ShapeFactoryReplayResponse = ShapeFactoryMapQueueResponse & {
   extend?: boolean;
   replay_of_job_key?: string | null;
+  trim_clamped?: {
+    source?: string;
+    message?: string;
+    requested_skip_first_frames?: number;
+    requested_frame_load_cap?: number;
+    skip_first_frames?: number;
+    frame_load_cap?: number;
+    frame_count?: number;
+  };
+};
+
+/** POST /api/shape-factory/unqueue — remove waiting Comfy prompt; demote factory job to pending. */
+export type ShapeFactoryUnqueueRequest = {
+  prompt_id: string;
+  job_key?: string;
+  job_path?: string;
+};
+
+export type ShapeFactoryUnqueueResponse = {
+  ok: boolean;
+  prompt_id?: string;
+  previous_prompt_id?: string;
+  factory_job?: boolean;
+  job_key?: string;
+  job_path?: string;
+  status?: string | null;
+  comfy_deleted?: boolean;
+  error?: string;
+  detail?: string;
+  comfy_delete_error?: string;
+};
+
+/** POST /api/shape-factory/discard — remove a pending factory job from the active set. */
+export type ShapeFactoryDiscardRequest = {
+  job_key?: string;
+  job_path?: string;
+  reason?: string;
+  /** When true (UI default), permanently delete job + sidecars. When false, rename to `.discarded`. */
+  expunge?: boolean;
+};
+
+export type ShapeFactoryDiscardResponse = {
+  ok: boolean;
+  job_key?: string;
+  job_path?: string | null;
+  status?: string | null;
+  discarded?: boolean;
+  expunged?: boolean;
+  renamed?: string[];
+  deleted?: string[];
+  previous_status?: string;
+  error?: string;
+  detail?: string;
+  prompt_id?: string;
+  reason?: string;
 };
 
 /** GET /api/shape-factory/quarantine */
@@ -1516,6 +1572,12 @@ export type WorkProductItem = {
   bindings?: Record<string, WorkProductBinding>;
   prompt_profile?: WorkProductPromptProfile | null;
   shape_profile?: WorkProductShapeProfile | null;
+  media_meta?: WorkProductMediaMeta | null;
+  /** VHS loader window actually used on this job (from .prompt.json). */
+  applied_vhs?: {
+    skip_first_frames?: number;
+    frame_load_cap?: number;
+  } | null;
   work_items_open?: WorkItem[];
   work_items?: WorkItem[];
   work_items_open_count?: number;
@@ -1531,6 +1593,16 @@ export type WorkProductFamilyOption = {
   slug: string;
   shape_id?: string | null;
   shape_path?: string;
+  vhs_defaults?: {
+    skip_first_frames?: number;
+    frame_load_cap?: number;
+  };
+};
+
+export type WorkProductMediaMeta = {
+  fps?: number | null;
+  frame_count?: number | null;
+  duration?: number | null;
 };
 
 export type WorkProductsResponse = {
@@ -1897,48 +1969,4 @@ export type VisionTagJudgmentSaveResponse = {
   error?: string;
   detail?: string;
 };
-
-export type ShapeFactoryUnqueueRequest = {
-  prompt_id: string;
-  job_key?: string;
-  job_path?: string;
-}
-
-export type ShapeFactoryUnqueueResponse = {
-  ok: boolean;
-  prompt_id?: string;
-  previous_prompt_id?: string;
-  factory_job?: boolean;
-  job_key?: string;
-  job_path?: string;
-  status?: string | null;
-  comfy_deleted?: boolean;
-  error?: string;
-  detail?: string;
-  comfy_delete_error?: string;
-}
-
-export type ShapeFactoryDiscardRequest = {
-  job_key?: string;
-  job_path?: string;
-  reason?: string;
-  /** When true (UI default), permanently delete job + sidecars. When false, rename to `.discarded`. */
-  expunge?: boolean;
-}
-
-export type ShapeFactoryDiscardResponse = {
-  ok: boolean;
-  job_key?: string;
-  job_path?: string | null;
-  status?: string | null;
-  discarded?: boolean;
-  expunged?: boolean;
-  renamed?: string[];
-  deleted?: string[];
-  previous_status?: string;
-  error?: string;
-  detail?: string;
-  prompt_id?: string;
-  reason?: string;
-}
 

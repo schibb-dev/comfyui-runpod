@@ -1,9 +1,23 @@
 import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { cancelWorkItem, comfyLivePreviewUrl, createWorkItems, fetchComfyLiveStatus, fetchShapeFactoryJsonPeek, fetchShapeFactoryWorkProducts, replayShapeFactory, runDispositionStep } from "./api";
+import { cancelWorkItem, comfyLivePreviewUrl, createWorkItems, discardShapeFactoryJob, fetchComfyLiveStatus, fetchShapeFactoryJsonPeek, fetchShapeFactoryWorkProducts, replayShapeFactory, runDispositionStep, unqueueShapeFactory } from "./api";
 import { PageHeader } from "./PageHeader";
+import { VideoTrimControls } from "./VideoTrimControls";
+import {
+  loadDiscoveryTrimAsync,
+  persistDiscoveryTrimAsync,
+  TRIM_CONTEXT_WORK_PRODUCTS,
+} from "./discoveryTrimStorage";
+import {
+  familyVhsDefaults,
+  marksToVhsWindow,
+  parseFps,
+  vhsDefaultsToMarks,
+} from "./workProductTrim";
+import { useTrimPlaybackEnforcement, type TrimPlaybackMode } from "./useTrimPlayback";
 import type {
   ComfyLiveStatusItem,
+  ShapeFactoryMapQueueOverrides,
   WorkItem,
   WorkProductDetailRow,
   WorkProductFamilyOption,
@@ -252,6 +266,51 @@ function isInFlightStatus(status?: string | null): boolean {
   return !s || s === "queued" || s === "pending" || s === "running" || s === "submitted";
 }
 
+/**
+ * Trim in/out is editable while the job is still ours (pending / not on Comfy).
+ * Locked once Comfy has accepted it (queued or running). Completed cards keep
+ * next-action trim editable for Extend / Vary / Re-run planning.
+ */
+function isJobTrimEditable(item: WorkProductItem): boolean {
+  if (item.output_url) return true;
+  const s = workProductStatusKey(item);
+  // Explicitly on Comfy's waiting or running list — baked prompt, no edits.
+  if (s === "queued" || s === "running") return false;
+  // Still pre-Comfy: pending/draft/deposited, or any status without a prompt_id.
+  if (s === "pending" || s === "draft" || s === "deposited") return true;
+  if (!String(item.prompt_id || "").trim()) return true;
+  // Has a prompt_id under another in-flight label (e.g. submitted) — treat as locked.
+  return false;
+}
+
+/** Synthetic Comfy live stub — no factory .job.json to demote to pending. */
+function isNonFactoryWorkProduct(item: WorkProductItem): boolean {
+  if (!String(item.job_path || "").trim()) return true;
+  const key = String(item.job_key || "");
+  if (key.startsWith("live__")) return true;
+  const construction = item.construction || {};
+  if (String(construction.source || "") === "comfy_queue") return true;
+  return false;
+}
+
+function canUnqueueWorkProduct(item: WorkProductItem): boolean {
+  if (workProductStatusKey(item) !== "queued") return false;
+  return Boolean(String(item.prompt_id || "").trim());
+}
+
+/** Pending (pre-Comfy) factory jobs can be discarded from the active set. */
+function canDiscardPendingWorkProduct(item: WorkProductItem): boolean {
+  if (isNonFactoryWorkProduct(item)) return false;
+  if (!String(item.job_key || "").trim() && !String(item.job_path || "").trim()) return false;
+  if (item.output_url) return false;
+  const s = workProductStatusKey(item);
+  if (s === "queued" || s === "running" || s === "submitted") return false;
+  if (s === "complete" || s === "completed" || s === "error" || s === "failed" || s === "interrupted") return false;
+  // pending / draft / deposited / empty — and no live prompt_id preferred
+  if (String(item.prompt_id || "").trim() && (s === "queued" || s === "running")) return false;
+  return s === "pending" || s === "draft" || s === "deposited" || !s;
+}
+
 function isRunningLiveItem(item: WorkProductItem): boolean {
   if (item.output_url) return false;
   if (String(item.status || "").toLowerCase() !== "running") return false;
@@ -285,7 +344,8 @@ function sourceThumbPreviewMeta(item: WorkProductItem): { label: string; visual:
   if (s === "error" || s === "failed") return { label: s, visual: "error" };
   if (s === "interrupted") return { label: "interrupted", visual: "interrupted" };
   if (s === "abandoned" || s === "unknown") return { label: s, visual: "muted" };
-  if (s === "submitted") return { label: "pending", visual: "pending" };
+  // Do not relabel submitted as pending — pending means pre-Comfy / editable.
+  if (s === "submitted") return { label: "submitted", visual: "queued" };
   if (s === "complete" || s === "deposited") return { label: s, visual: "muted" };
   return { label: s, visual: "pending" };
 }
@@ -719,30 +779,389 @@ function WorkProductLivePreview({
   );
 }
 
-function WorkProductViewer({ item }: { item: WorkProductItem }) {
+type InputTrimState = {
+  markIn: number | null;
+  markOut: number | null;
+  dirty: boolean;
+  duration: number;
+  fps: number;
+  warning: string | null;
+  clampedDefault: boolean;
+};
+
+function emptyTrimState(fps = 18): InputTrimState {
+  return {
+    markIn: null,
+    markOut: null,
+    dirty: false,
+    duration: 0,
+    fps,
+    warning: null,
+    clampedDefault: false,
+  };
+}
+
+function trimOverridesFromState(state: InputTrimState, frameCountHint?: number | null): {
+  overrides?: ShapeFactoryMapQueueOverrides;
+  warning: string | null;
+} {
+  if (!state.dirty && !state.clampedDefault) {
+    return { warning: state.warning };
+  }
+  const win = marksToVhsWindow(state.markIn, state.markOut, state.duration, state.fps, frameCountHint);
+  return {
+    overrides: {
+      parameters: {
+        skip_first_frames: win.skip_first_frames,
+        frame_load_cap: win.frame_load_cap,
+      },
+    },
+    warning: win.warning || state.warning,
+  };
+}
+
+function WorkProductViewer({
+  item,
+  outputTrim,
+  sourceTrim,
+  onOutputTrimChange,
+  onSourceTrimChange,
+  outputDefaults,
+  sourceDefaults,
+}: {
+  item: WorkProductItem;
+  outputTrim: InputTrimState;
+  sourceTrim: InputTrimState;
+  onOutputTrimChange: (next: InputTrimState) => void;
+  onSourceTrimChange: (next: InputTrimState) => void;
+  outputDefaults: { skip_first_frames: number; frame_load_cap: number };
+  sourceDefaults: { skip_first_frames: number; frame_load_cap: number };
+}) {
   const videoUrl = item.output_url || null;
   const thumbUrl = item.output_thumb_url || null;
   const source = item.bindings?.source_video;
   const sourceUrl = source?.url || null;
   const sourceThumb = source?.thumb_url || null;
+  const sourceRel = String(source?.relpath || "").trim() || null;
+  const outputRel = String(item.output_relpath || "").trim() || null;
   const promptId = String(item.prompt_id || "").trim();
   const showRunningLive = isRunningLiveItem(item);
   const showSourceThumb = isSourceThumbPreviewItem(item);
+  const previewUrls = sourcePreviewUrls(item);
+  const queuedSourcePlayUrl =
+    !videoUrl && !showRunningLive && previewUrls.video && /\.(mp4|webm)(\?|$)/i.test(previewUrls.video)
+      ? previewUrls.video
+      : null;
+  const queuedSourceThumb = queuedSourcePlayUrl ? previewUrls.thumb : null;
+  const queuedSourceRel =
+    queuedSourcePlayUrl
+      ? String(source?.relpath || item.parent_output_relpath || "").trim() || null
+      : sourceRel;
+  const queuedStatusMeta = queuedSourcePlayUrl ? sourceThumbPreviewMeta(item) : null;
+  const outputVideoRef = useRef<HTMLVideoElement | null>(null);
+  const sourceVideoRef = useRef<HTMLVideoElement | null>(null);
+  const [outputTime, setOutputTime] = useState(0);
+  const [sourceTime, setSourceTime] = useState(0);
+  const [outputMode, setOutputMode] = useState<TrimPlaybackMode>("repeat");
+  const [sourceMode, setSourceMode] = useState<TrimPlaybackMode>("repeat");
+  const fps = parseFps(item.media_meta?.fps, 18);
+  const trimEditable = isJobTrimEditable(item);
+
+  useTrimPlaybackEnforcement(outputVideoRef, {
+    mediaKey: outputRel || item.job_key,
+    markIn: outputTrim.markIn,
+    markOut: outputTrim.markOut,
+    mode: outputMode,
+    enabled: Boolean(videoUrl),
+  });
+  useTrimPlaybackEnforcement(sourceVideoRef, {
+    mediaKey: queuedSourceRel || `src:${item.job_key}`,
+    markIn: sourceTrim.markIn,
+    markOut: sourceTrim.markOut,
+    mode: sourceMode,
+    enabled: Boolean(sourceUrl || queuedSourcePlayUrl) && (!showSourceThumb || Boolean(queuedSourcePlayUrl)),
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    const boot = async (
+      rel: string | null,
+      defaults: { skip_first_frames: number; frame_load_cap: number },
+      apply: (s: InputTrimState) => void,
+      key: string,
+      durationHint: number,
+    ) => {
+      let markIn: number | null = null;
+      let markOut: number | null = null;
+      let dirty = false;
+      if (rel) {
+        const saved = await loadDiscoveryTrimAsync(TRIM_CONTEXT_WORK_PRODUCTS, rel, key);
+        if (saved) {
+          markIn = saved.in;
+          markOut = saved.out;
+          dirty = true;
+        }
+      }
+      if (cancelled) return;
+      if (!dirty) {
+        const seeded = vhsDefaultsToMarks(defaults, durationHint || 1, fps);
+        markIn = durationHint > 0 ? seeded.markIn : null;
+        markOut = durationHint > 0 ? seeded.markOut : null;
+        apply({
+          markIn,
+          markOut,
+          dirty: false,
+          duration: durationHint,
+          fps,
+          warning: durationHint > 0 ? seeded.warning : null,
+          clampedDefault: durationHint > 0 ? seeded.clamped : false,
+        });
+      } else {
+        apply({
+          markIn,
+          markOut,
+          dirty: true,
+          duration: durationHint,
+          fps,
+          warning: null,
+          clampedDefault: false,
+        });
+      }
+    };
+    // Output trim seeds from target-family defaults (next Extend input).
+    void boot(outputRel, outputDefaults, onOutputTrimChange, `wp-out:${item.job_key}`, Number(item.media_meta?.duration) || 0);
+    // Source trim seeds from what THIS job actually applied (else family defaults).
+    void boot(
+      queuedSourceRel || sourceRel,
+      sourceDefaults,
+      onSourceTrimChange,
+      `wp-src:${item.job_key}`,
+      0,
+    );
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    item.job_key,
+    outputRel,
+    sourceRel,
+    queuedSourceRel,
+    outputDefaults.skip_first_frames,
+    outputDefaults.frame_load_cap,
+    sourceDefaults.skip_first_frames,
+    sourceDefaults.frame_load_cap,
+    fps,
+  ]);
+
+  const onMeta = (
+    el: HTMLVideoElement,
+    defaults: { skip_first_frames: number; frame_load_cap: number },
+    current: InputTrimState,
+    apply: (s: InputTrimState) => void,
+    rel: string | null,
+    legacyKey: string,
+  ) => {
+    const duration = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : current.duration;
+    if (!(duration > 0)) return;
+    if (current.dirty) {
+      if (Math.abs(current.duration - duration) > 0.05) apply({ ...current, duration });
+      return;
+    }
+    const seeded = vhsDefaultsToMarks(defaults, duration, fps);
+    apply({
+      markIn: seeded.markIn,
+      markOut: seeded.markOut,
+      dirty: false,
+      duration,
+      fps,
+      warning: seeded.warning,
+      clampedDefault: seeded.clamped,
+    });
+    void rel;
+    void legacyKey;
+  };
+
+  const persistTrim = (
+    next: InputTrimState,
+    rel: string | null,
+    legacyKey: string,
+  ) => {
+    if (!next.dirty || !(next.duration > 0)) return;
+    void persistDiscoveryTrimAsync({
+      context: TRIM_CONTEXT_WORK_PRODUCTS,
+      mediaRelpath: rel,
+      legacyAssetKey: legacyKey,
+      markIn: next.markIn,
+      markOut: next.markOut,
+      duration: next.duration,
+    });
+  };
 
   return (
     <div className="work-product-viewer">
       <div className="work-product-viewer__main">
         {videoUrl ? (
-          <video
-            className="work-product-viewer__video"
-            src={videoUrl}
-            poster={thumbUrl || undefined}
-            controls
-            playsInline
-            preload="metadata"
-          />
+          <>
+            <video
+              ref={outputVideoRef}
+              className="work-product-viewer__video"
+              src={videoUrl}
+              poster={thumbUrl || undefined}
+              controls
+              playsInline
+              preload="metadata"
+              onTimeUpdate={(e) => setOutputTime(e.currentTarget.currentTime || 0)}
+              onLoadedMetadata={(e) =>
+                onMeta(e.currentTarget, outputDefaults, outputTrim, onOutputTrimChange, outputRel, `wp-out:${item.job_key}`)
+              }
+            />
+            <VideoTrimControls
+              className="work-product-viewer__trim"
+              videoRef={outputVideoRef}
+              duration={outputTrim.duration}
+              currentTime={outputTime}
+              markIn={outputTrim.markIn}
+              markOut={outputTrim.markOut}
+              mode={outputMode}
+              mediaSyncKey={outputRel || item.job_key}
+              size="default"
+              onSeek={setOutputTime}
+              onSyncTime={setOutputTime}
+              onMarkInChange={(v) => {
+                const next = { ...outputTrim, markIn: v, dirty: true, warning: null, clampedDefault: false };
+                onOutputTrimChange(next);
+                persistTrim(next, outputRel, `wp-out:${item.job_key}`);
+              }}
+              onMarkOutChange={(v) => {
+                const next = { ...outputTrim, markOut: v, dirty: true, warning: null, clampedDefault: false };
+                onOutputTrimChange(next);
+                persistTrim(next, outputRel, `wp-out:${item.job_key}`);
+              }}
+              onModeChange={setOutputMode}
+              onClear={() => {
+                const seeded = vhsDefaultsToMarks(outputDefaults, outputTrim.duration || 1, fps);
+                const next: InputTrimState = {
+                  markIn: outputTrim.duration > 0 ? seeded.markIn : null,
+                  markOut: outputTrim.duration > 0 ? seeded.markOut : null,
+                  dirty: false,
+                  duration: outputTrim.duration,
+                  fps,
+                  warning: outputTrim.duration > 0 ? seeded.warning : null,
+                  clampedDefault: outputTrim.duration > 0 ? seeded.clamped : false,
+                };
+                onOutputTrimChange(next);
+                void persistDiscoveryTrimAsync({
+                  context: TRIM_CONTEXT_WORK_PRODUCTS,
+                  mediaRelpath: outputRel,
+                  legacyAssetKey: `wp-out:${item.job_key}`,
+                  markIn: null,
+                  markOut: null,
+                  duration: outputTrim.duration || 1,
+                });
+              }}
+            />
+            {outputTrim.warning ? (
+              <p className="work-product-viewer__trim-warn" title={outputTrim.warning}>
+                {outputTrim.warning}
+              </p>
+            ) : null}
+          </>
         ) : showRunningLive ? (
           <WorkProductLivePreview promptId={promptId} submittedAt={item.submitted_at || item.created_at} />
+        ) : queuedSourcePlayUrl ? (
+          <div className="work-product-viewer__queued-source">
+            <div className="work-product-viewer__queued-source-frame">
+              <video
+                ref={sourceVideoRef}
+                className="work-product-viewer__video"
+                src={queuedSourcePlayUrl}
+                poster={queuedSourceThumb || undefined}
+                controls
+                playsInline
+                muted
+                preload="metadata"
+                onTimeUpdate={(e) => setSourceTime(e.currentTarget.currentTime || 0)}
+                onLoadedMetadata={(e) =>
+                  onMeta(
+                    e.currentTarget,
+                    sourceDefaults,
+                    sourceTrim,
+                    onSourceTrimChange,
+                    queuedSourceRel,
+                    `wp-src:${item.job_key}`,
+                  )
+                }
+              />
+              {queuedStatusMeta ? (
+                <span
+                  className={`work-product-live__badge work-product-live__badge--${queuedStatusMeta.visual}`}
+                  title={item.error || item.prompt_id || item.job_key}
+                >
+                  {queuedStatusMeta.label}
+                </span>
+              ) : null}
+            </div>
+            <div className="work-product-viewer__source-label">
+              {trimEditable
+                ? "Source input — set skip/cap window (editable while pending)"
+                : "Source input — applied skip/cap window (read-only while queued/running)"}
+            </div>
+            <VideoTrimControls
+              className="work-product-viewer__trim"
+              videoRef={sourceVideoRef}
+              duration={sourceTrim.duration}
+              currentTime={sourceTime}
+              markIn={sourceTrim.markIn}
+              markOut={sourceTrim.markOut}
+              mode={sourceMode}
+              mediaSyncKey={queuedSourceRel || `src:${item.job_key}`}
+              size="default"
+              readOnly={!trimEditable}
+              onSeek={setSourceTime}
+              onSyncTime={setSourceTime}
+              onMarkInChange={(v) => {
+                if (!trimEditable) return;
+                const next = { ...sourceTrim, markIn: v, dirty: true, warning: null, clampedDefault: false };
+                onSourceTrimChange(next);
+                persistTrim(next, queuedSourceRel, `wp-src:${item.job_key}`);
+              }}
+              onMarkOutChange={(v) => {
+                if (!trimEditable) return;
+                const next = { ...sourceTrim, markOut: v, dirty: true, warning: null, clampedDefault: false };
+                onSourceTrimChange(next);
+                persistTrim(next, queuedSourceRel, `wp-src:${item.job_key}`);
+              }}
+              onModeChange={setSourceMode}
+              onClear={() => {
+                if (!trimEditable) return;
+                const seeded = vhsDefaultsToMarks(sourceDefaults, sourceTrim.duration || 1, fps);
+                const next: InputTrimState = {
+                  markIn: sourceTrim.duration > 0 ? seeded.markIn : null,
+                  markOut: sourceTrim.duration > 0 ? seeded.markOut : null,
+                  dirty: false,
+                  duration: sourceTrim.duration,
+                  fps,
+                  warning: sourceTrim.duration > 0 ? seeded.warning : null,
+                  clampedDefault: sourceTrim.duration > 0 ? seeded.clamped : false,
+                };
+                onSourceTrimChange(next);
+                void persistDiscoveryTrimAsync({
+                  context: TRIM_CONTEXT_WORK_PRODUCTS,
+                  mediaRelpath: queuedSourceRel,
+                  legacyAssetKey: `wp-src:${item.job_key}`,
+                  markIn: null,
+                  markOut: null,
+                  duration: sourceTrim.duration || 1,
+                });
+              }}
+            />
+            {sourceTrim.warning ? (
+              <p className="work-product-viewer__trim-warn" title={sourceTrim.warning}>
+                {sourceTrim.warning}
+              </p>
+            ) : null}
+          </div>
         ) : showSourceThumb ? (
           <WorkProductSourceThumbPreview item={item} />
         ) : thumbUrl ? (
@@ -751,19 +1170,76 @@ function WorkProductViewer({ item }: { item: WorkProductItem }) {
           <div className="work-product-viewer__empty">No output yet ({item.status || "pending"})</div>
         )}
       </div>
-      {(sourceUrl || sourceThumb) && !showSourceThumb && (
+      {(sourceUrl || sourceThumb) && !showSourceThumb && !queuedSourcePlayUrl && (
         <div className="work-product-viewer__source" title={source?.basename || "source"}>
           <div className="work-product-viewer__source-label">Source input</div>
           {sourceUrl ? (
-            <video
-              className="work-product-viewer__source-video"
-              src={sourceUrl}
-              poster={sourceThumb || undefined}
-              controls
-              playsInline
-              muted
-              preload="metadata"
-            />
+            <>
+              <video
+                ref={sourceVideoRef}
+                className="work-product-viewer__source-video"
+                src={sourceUrl}
+                poster={sourceThumb || undefined}
+                controls
+                playsInline
+                muted
+                preload="metadata"
+                onTimeUpdate={(e) => setSourceTime(e.currentTarget.currentTime || 0)}
+                onLoadedMetadata={(e) =>
+                  onMeta(e.currentTarget, sourceDefaults, sourceTrim, onSourceTrimChange, sourceRel, `wp-src:${item.job_key}`)
+                }
+              />
+              <VideoTrimControls
+                className="work-product-viewer__trim"
+                videoRef={sourceVideoRef}
+                duration={sourceTrim.duration}
+                currentTime={sourceTime}
+                markIn={sourceTrim.markIn}
+                markOut={sourceTrim.markOut}
+                mode={sourceMode}
+                mediaSyncKey={sourceRel || `src:${item.job_key}`}
+                size="default"
+                onSeek={setSourceTime}
+                onSyncTime={setSourceTime}
+                onMarkInChange={(v) => {
+                  const next = { ...sourceTrim, markIn: v, dirty: true, warning: null, clampedDefault: false };
+                  onSourceTrimChange(next);
+                  persistTrim(next, sourceRel, `wp-src:${item.job_key}`);
+                }}
+                onMarkOutChange={(v) => {
+                  const next = { ...sourceTrim, markOut: v, dirty: true, warning: null, clampedDefault: false };
+                  onSourceTrimChange(next);
+                  persistTrim(next, sourceRel, `wp-src:${item.job_key}`);
+                }}
+                onModeChange={setSourceMode}
+                onClear={() => {
+                  const seeded = vhsDefaultsToMarks(sourceDefaults, sourceTrim.duration || 1, fps);
+                  const next: InputTrimState = {
+                    markIn: sourceTrim.duration > 0 ? seeded.markIn : null,
+                    markOut: sourceTrim.duration > 0 ? seeded.markOut : null,
+                    dirty: false,
+                    duration: sourceTrim.duration,
+                    fps,
+                    warning: sourceTrim.duration > 0 ? seeded.warning : null,
+                    clampedDefault: sourceTrim.duration > 0 ? seeded.clamped : false,
+                  };
+                  onSourceTrimChange(next);
+                  void persistDiscoveryTrimAsync({
+                    context: TRIM_CONTEXT_WORK_PRODUCTS,
+                    mediaRelpath: sourceRel,
+                    legacyAssetKey: `wp-src:${item.job_key}`,
+                    markIn: null,
+                    markOut: null,
+                    duration: sourceTrim.duration || 1,
+                  });
+                }}
+              />
+              {sourceTrim.warning ? (
+                <p className="work-product-viewer__trim-warn" title={sourceTrim.warning}>
+                  {sourceTrim.warning}
+                </p>
+              ) : null}
+            </>
           ) : sourceThumb ? (
             <img className="work-product-viewer__source-img" src={sourceThumb} alt={source?.basename || "source"} />
           ) : null}
@@ -1630,6 +2106,17 @@ const DETAIL_GROUPS: DetailGroupDef[] = [
     match: (label) => label.startsWith("Binding · "),
     wide: true,
   },
+  {
+    id: "trim",
+    title: "Trim",
+    kv: true,
+    labels: ["VHS skip_first_frames", "VHS frame_load_cap"],
+    match: (label) =>
+      label.startsWith("VHS ") ||
+      label.toLowerCase().startsWith("trim ") ||
+      label === "skip_first_frames" ||
+      label === "frame_load_cap",
+  },
 ];
 
 function groupDetailRows(rows: WorkProductDetailRow[]): Array<{
@@ -1690,7 +2177,20 @@ function groupDetailRows(rows: WorkProductDetailRow[]): Array<{
 
   const leftover = remaining.filter((r) => !used.has(r));
   if (leftover.length) {
-    groups.push({ id: "other", title: "Other", rows: leftover });
+    // Prefer Trim over a catch-all Other when leftovers are only VHS/trim rows
+    // (defensive if match rules drift). Otherwise keep Other for true unknowns.
+    const allTrim = leftover.every(
+      (r) =>
+        r.label.startsWith("VHS ") ||
+        r.label.toLowerCase().startsWith("trim ") ||
+        r.label === "skip_first_frames" ||
+        r.label === "frame_load_cap",
+    );
+    groups.push({
+      id: allTrim ? "trim" : "other",
+      title: allTrim ? "Trim" : "Other",
+      rows: leftover,
+    });
   }
   return groups;
 }
@@ -1728,6 +2228,8 @@ const DETAIL_LABELS: Record<string, string> = {
   "Prompt profile": "Profile",
   "Prompt label": "Name",
   "Prompt file": "Profile",
+  "VHS skip_first_frames": "skip_first_frames",
+  "VHS frame_load_cap": "frame_load_cap",
 };
 
 function displayDetailLabel(_groupId: string, label: string): string {
@@ -1759,11 +2261,15 @@ function WorkProductQuickQueue({
   item,
   families,
   extendFamilyDefaults,
+  outputTrim,
+  sourceTrim,
   onCommitted,
 }: {
   item: WorkProductItem;
   families?: WorkProductFamilyOption[];
   extendFamilyDefaults?: Record<string, string>;
+  outputTrim: InputTrimState;
+  sourceTrim: InputTrimState;
   onCommitted?: () => void;
 }) {
   const open = item.work_items_open || [];
@@ -1821,26 +2327,95 @@ function WorkProductQuickQueue({
   const jobKey = String(item.job_key || "").trim();
   const canAct = Boolean(relpath) && (extendOn || varyOn) && !busy;
   const canRerun = Boolean(jobKey) && !busy;
+  const canUnqueue = canUnqueueWorkProduct(item) && !busy;
+  const canDiscard = canDiscardPendingWorkProduct(item) && !busy;
+  const nonFactory = isNonFactoryWorkProduct(item);
+
+  const unqueue = async () => {
+    const pid = String(item.prompt_id || "").trim();
+    if (!pid || busy) return;
+    if (nonFactory) {
+      const ok = window.confirm(
+        "Remove from Comfy queue?\n\n" +
+          "This prompt is not a shape-factory job. Removing it will not create an editable pending job — " +
+          "it only deletes it from Comfy’s waiting queue.",
+      );
+      if (!ok) return;
+    }
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await unqueueShapeFactory({
+        prompt_id: pid,
+        job_key: nonFactory ? undefined : jobKey || undefined,
+        job_path: nonFactory ? undefined : String(item.job_path || "").trim() || undefined,
+      });
+      if (res.factory_job) {
+        setMsg(`Unqueued → pending${res.job_key ? ` · ${res.job_key}` : ""}`);
+      } else {
+        setMsg("Removed from Comfy queue (no factory job)");
+      }
+      onCommitted?.();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const discard = async () => {
+    if (!canDiscard || busy) return;
+    const ok = window.confirm(
+      "Permanently delete this pending job?\n\n" +
+        "This expunges the .job.json and related sidecars (prompt/submit/timings/workflow) from disk. " +
+        "It cannot be undone. Completed media outputs are not deleted.",
+    );
+    if (!ok) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await discardShapeFactoryJob({
+        job_key: jobKey || undefined,
+        job_path: String(item.job_path || "").trim() || undefined,
+        reason: "user_expunged",
+        expunge: true,
+      });
+      setMsg(`Expunged pending job${res.job_key ? ` · ${res.job_key}` : ""}`);
+      onCommitted?.();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const rerun = async (when: "now" | "later") => {
     if (!jobKey || busy) return;
     setBusy(true);
     setMsg("");
     try {
+      const { overrides, warning } = trimOverridesFromState(sourceTrim, null);
       const res = await replayShapeFactory({
         job_key: jobKey,
         family_slug: sourceFamily || undefined,
         extend: false,
         front: when === "now",
+        overrides,
       });
       const nextKey = String(res.job_key || "").trim();
       const pid = String(res.prompt_id || "").trim();
+      const clampMsg = res.trim_clamped?.message || warning;
       setMsg(
-        nextKey
-          ? `Re-run ${when}→${nextKey}${pid ? ` · ${pid}` : ""}`
-          : pid
-            ? `Re-run ${when} queued · ${pid}`
-            : `Re-run ${when} queued`,
+        [
+          nextKey
+            ? `Re-run ${when}→${nextKey}${pid ? ` · ${pid}` : ""}`
+            : pid
+              ? `Re-run ${when} queued · ${pid}`
+              : `Re-run ${when} queued`,
+          clampMsg,
+        ]
+          .filter(Boolean)
+          .join(" · "),
       );
       onCommitted?.();
     } catch (e) {
@@ -1903,18 +2478,37 @@ function WorkProductQuickQueue({
 
         for (const route of routes) {
           try {
+            const trimState = route.step_id === "advance.extend" ? outputTrim : sourceTrim;
+            const frameHint = route.step_id === "advance.extend" ? item.media_meta?.frame_count : null;
+            const { overrides, warning } = trimOverridesFromState(trimState, frameHint);
             const res = await runDispositionStep({
               relpath,
               step_id: route.step_id,
               family_slug: route.factory_family,
               job_key: item.job_key || undefined,
               front: when === "now",
+              overrides,
             });
             const label = route.step_id === "advance.extend" ? "Extend" : "Vary";
             const fam = route.factory_family ? `@${route.factory_family}` : "";
             const nested = (res.result as Record<string, unknown> | undefined) || {};
-            const jobKey = String(nested.job_key || (nested.result as Record<string, unknown> | undefined)?.job_key || "").trim();
-            parts.push(jobKey ? `${label}${fam}→${jobKey}` : `${label}${fam}: ${res.hook || "ok"}`);
+            const nestedResult = (nested.result as Record<string, unknown> | undefined) || {};
+            const jobKey = String(nested.job_key || nestedResult.job_key || "").trim();
+            const clampMsg =
+              String(
+                (nested.trim_clamped as { message?: string } | undefined)?.message ||
+                  (nestedResult.trim_clamped as { message?: string } | undefined)?.message ||
+                  warning ||
+                  "",
+              ).trim() || "";
+            parts.push(
+              [
+                jobKey ? `${label}${fam}→${jobKey}` : `${label}${fam}: ${res.hook || "ok"}`,
+                clampMsg,
+              ]
+                .filter(Boolean)
+                .join(" · "),
+            );
           } catch (e) {
             const label = route.step_id === "advance.extend" ? "Extend" : "Vary";
             parts.push(`${label}: ${e instanceof Error ? e.message : String(e)}`);
@@ -2061,6 +2655,38 @@ function WorkProductQuickQueue({
         >
           Later
         </button>
+        {canUnqueue ? (
+          <>
+            <span className="work-product-quick-queue__sep" aria-hidden="true" />
+            <button
+              type="button"
+              className="drt-btn work-product-quick-queue__unqueue"
+              disabled={!canUnqueue}
+              title={
+                nonFactory
+                  ? "Remove this non-factory prompt from Comfy’s waiting queue"
+                  : "Remove from Comfy waiting queue and return this job to editable pending"
+              }
+              onClick={() => void unqueue()}
+            >
+              Unqueue
+            </button>
+          </>
+        ) : null}
+        {canDiscard ? (
+          <>
+            <span className="work-product-quick-queue__sep" aria-hidden="true" />
+            <button
+              type="button"
+              className="drt-btn work-product-quick-queue__discard"
+              disabled={!canDiscard}
+              title="Permanently delete this pending job and its sidecars from disk"
+              onClick={() => void discard()}
+            >
+              Delete
+            </button>
+          </>
+        ) : null}
         {!relpath ? <span className="work-product-quick-queue__hint">No output</span> : null}
       </div>
       {extendOn || varyOn ? (
@@ -2098,11 +2724,15 @@ function WorkProductDetails({
   item,
   families,
   extendFamilyDefaults,
+  outputTrim,
+  sourceTrim,
   onCommitted,
 }: {
   item: WorkProductItem;
   families?: WorkProductFamilyOption[];
   extendFamilyDefaults?: Record<string, string>;
+  outputTrim: InputTrimState;
+  sourceTrim: InputTrimState;
   onCommitted?: () => void;
 }) {
   const groups = useMemo(() => {
@@ -2134,6 +2764,18 @@ function WorkProductDetails({
           <span className={`work-product-badge ${badgeClass(item.rating_kind)}`}>{item.rating_kind}</span>
         ) : null}
         {item.disposition_entry ? <span className="work-product-badge">{item.disposition_entry}</span> : null}
+        {item.applied_vhs &&
+        (item.applied_vhs.skip_first_frames != null || item.applied_vhs.frame_load_cap != null) ? (
+          <span
+            className="work-product-badge"
+            title="VHS loader window applied on this job (source input)"
+          >
+            skip {Number(item.applied_vhs.skip_first_frames ?? 0)}
+            {Number(item.applied_vhs.frame_load_cap ?? 0) > 0
+              ? ` · cap ${Number(item.applied_vhs.frame_load_cap)}`
+              : ""}
+          </span>
+        ) : null}
         {item.status ? (
           <span
             className={`work-product-badge ${badgeClass(item.status)}`}
@@ -2152,6 +2794,8 @@ function WorkProductDetails({
         item={item}
         families={families}
         extendFamilyDefaults={extendFamilyDefaults}
+        outputTrim={outputTrim}
+        sourceTrim={sourceTrim}
         onCommitted={onCommitted}
       />
       <div className="work-product-details__groups">
@@ -2242,6 +2886,21 @@ function WorkProductRow({
 }) {
   const thumbMeta = isSourceThumbPreviewItem(item) ? sourceThumbPreviewMeta(item) : null;
   const thumbBadgeClass = thumbMeta ? `work-product-badge--live-${thumbMeta.visual}` : "";
+  const successors = extendFamilyDefaults || {};
+  const extendFamily = smartExtendFamily(item, successors);
+  const varyFamily = smartVaryFamily(item);
+  const outputDefaults = familyVhsDefaults(families, extendFamily || String(item.family_slug || ""));
+  const applied = item.applied_vhs;
+  const sourceDefaults =
+    applied && (applied.skip_first_frames != null || applied.frame_load_cap != null)
+      ? {
+          skip_first_frames: Math.max(0, Math.floor(Number(applied.skip_first_frames ?? 0) || 0)),
+          frame_load_cap: Math.max(0, Math.floor(Number(applied.frame_load_cap ?? 0) || 0)),
+        }
+      : familyVhsDefaults(families, varyFamily || String(item.family_slug || ""));
+  const [outputTrim, setOutputTrim] = useState<InputTrimState>(() => emptyTrimState(parseFps(item.media_meta?.fps)));
+  const [sourceTrim, setSourceTrim] = useState<InputTrimState>(() => emptyTrimState(parseFps(item.media_meta?.fps)));
+
   return (
     <article
       className={`work-product-row work-product-row--${layout}${
@@ -2263,11 +2922,21 @@ function WorkProductRow({
         </code>
       </header>
       <div className="work-product-row__body">
-        <WorkProductViewer item={item} />
+        <WorkProductViewer
+          item={item}
+          outputTrim={outputTrim}
+          sourceTrim={sourceTrim}
+          onOutputTrimChange={setOutputTrim}
+          onSourceTrimChange={setSourceTrim}
+          outputDefaults={outputDefaults}
+          sourceDefaults={sourceDefaults}
+        />
         <WorkProductDetails
           item={item}
           families={families}
           extendFamilyDefaults={extendFamilyDefaults}
+          outputTrim={outputTrim}
+          sourceTrim={sourceTrim}
           onCommitted={onCommitted}
         />
       </div>

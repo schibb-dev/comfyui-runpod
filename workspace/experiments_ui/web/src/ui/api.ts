@@ -471,6 +471,7 @@ export async function runDispositionStep(body: {
   family_slug?: string;
   facet?: AppetiteFacet;
   front?: boolean;
+  overrides?: ShapeFactoryMapQueueOverrides;
 }): Promise<RunDispositionStepResponse> {
   const r = await fetch("/api/discovery/asset-disposition/run-step", {
     method: "POST",
@@ -641,7 +642,6 @@ export async function discardShapeFactoryJob(req: ShapeFactoryDiscardRequest): P
   }
   return j;
 }
-
 
 async function postWorkflowExplorerFactoryUpdate(
   path: "/api/workflow-explorer/factory/assets" | "/api/workflow-explorer/factory/workflows",

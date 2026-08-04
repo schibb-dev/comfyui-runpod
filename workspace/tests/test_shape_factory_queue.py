@@ -126,6 +126,17 @@ class ShapeFactoryQueueTests(unittest.TestCase):
         self.assertEqual(tuning.get("profile_id"), "adhoc-ui")
         self.assertIn(84, tuning.get("ui_nodes") or tuning["ui_nodes"])
 
+        vhs = build_adhoc_dev_tuning(
+            {"skip_first_frames": 12, "frame_load_cap": 40},
+            data_root=data_root,
+        )
+        self.assertIsNotNone(vhs)
+        assert vhs is not None
+        self.assertEqual(
+            vhs.get("vhs_load_video_path"),
+            {"skip_first_frames": 12, "frame_load_cap": 40},
+        )
+
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
             src = tmp_root / "catalog-default.json"
@@ -158,6 +169,81 @@ class ShapeFactoryQueueTests(unittest.TestCase):
         # Explicit frames win.
         pinned = _extend_length_parameters(job, existing={"frames": 200})
         self.assertEqual(pinned["frames"], 200)
+        # Caller-provided frame_load_cap is preserved (trim window).
+        trimmed = _extend_length_parameters(job, existing={"skip_first_frames": 10, "frame_load_cap": 32})
+        self.assertEqual(trimmed["frames"], 160)
+        self.assertEqual(trimmed["frame_load_cap"], 32)
+        self.assertEqual(trimmed["skip_first_frames"], 10)
+
+    def test_clamp_vhs_load_window_and_resolve_overrides(self) -> None:
+        from shape_factory_queue import clamp_vhs_load_window, resolve_vhs_window_overrides
+        from shape_factory import apply_dev_tuning_api, apply_dev_tuning_ui
+
+        skip, cap, clamped = clamp_vhs_load_window(
+            skip_first_frames=47,
+            frame_load_cap=0,
+            frame_count=20,
+        )
+        self.assertEqual(skip, 19)
+        self.assertEqual(cap, 0)
+        self.assertTrue(clamped)
+
+        params, meta = resolve_vhs_window_overrides(
+            parameters={},
+            media_abs=None,
+            template_defaults={"skip_first_frames": 47, "frame_load_cap": 0},
+            read_sidecar=False,
+        )
+        # No media → cannot clamp template; leave params alone.
+        self.assertNotIn("skip_first_frames", params)
+
+        params2, meta2 = resolve_vhs_window_overrides(
+            parameters={"skip_first_frames": 80, "frame_load_cap": 10},
+            media_abs=None,
+            template_defaults=None,
+            read_sidecar=False,
+        )
+        # Without frame_count, explicit params pass through unchanged.
+        self.assertEqual(params2["skip_first_frames"], 80)
+        self.assertEqual(params2["frame_load_cap"], 10)
+        self.assertIsNone(meta2)
+
+        with mock.patch(
+            "shape_factory_queue._probe_media_frame_meta",
+            return_value={"fps": 18.0, "frame_count": 20, "duration": 20 / 18},
+        ):
+            params3, meta3 = resolve_vhs_window_overrides(
+                parameters={},
+                media_abs=Path("/tmp/fake.mp4"),
+                template_defaults={"skip_first_frames": 47, "frame_load_cap": 0},
+                read_sidecar=False,
+            )
+        self.assertEqual(params3["skip_first_frames"], 19)
+        self.assertTrue(meta3 and meta3.get("source") == "template_clamped")
+
+        # Lengthen-only cap must not invent skip=0.
+        with mock.patch(
+            "shape_factory_queue._probe_media_frame_meta",
+            return_value={"fps": 18.0, "frame_count": 100, "duration": 5.0},
+        ):
+            params4, _meta4 = resolve_vhs_window_overrides(
+                parameters={"frame_load_cap": 160},
+                media_abs=Path("/tmp/fake.mp4"),
+                template_defaults={"skip_first_frames": 47, "frame_load_cap": 0},
+                read_sidecar=False,
+            )
+        self.assertNotIn("skip_first_frames", params4)
+        self.assertEqual(params4["frame_load_cap"], 100)
+
+        tuning = {"vhs_load_video_path": {"skip_first_frames": 5, "frame_load_cap": 12}}
+        ui = {"nodes": [{"id": 1, "type": "VHS_LoadVideoPath", "widgets_values": {}}]}
+        api = {"1": {"class_type": "VHS_LoadVideoPath", "inputs": {}}}
+        apply_dev_tuning_ui(ui, tuning)
+        apply_dev_tuning_api(api, tuning)
+        self.assertEqual(ui["nodes"][0]["widgets_values"]["skip_first_frames"], 5)
+        self.assertEqual(ui["nodes"][0]["widgets_values"]["frame_load_cap"], 12)
+        self.assertEqual(api["1"]["inputs"]["skip_first_frames"], 5)
+        self.assertEqual(api["1"]["inputs"]["frame_load_cap"], 12)
 
     def test_failed_extend_retry_uses_frames_before_and_parent_output(self) -> None:
         from shape_factory_queue import _parent_frame_count, replay_from_request_body

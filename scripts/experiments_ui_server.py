@@ -1396,6 +1396,9 @@ def _fast_track_extend(cfg: "ServerConfig", rel: str, body: Dict[str, Any]) -> D
             replay_body["family_slug"] = target
         if body.get("front"):
             replay_body["front"] = True
+        overrides = body.get("overrides")
+        if isinstance(overrides, dict) and overrides:
+            replay_body["overrides"] = overrides
         try:
             return _shape_factory_replay_payload(cfg, replay_body)
         except ValueError as e:
@@ -1470,7 +1473,6 @@ def _shape_factory_replay_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Di
         output_root=cfg.output_root,
         comfy_server=str(cfg.comfy_server),
     )
-
 
 
 def _shape_factory_unqueue_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -2253,6 +2255,9 @@ def _disposition_hook_runner(cfg: "ServerConfig", rel: str, body: Dict[str, Any]
             replay_body["family_slug"] = target
         if merged.get("front"):
             replay_body["front"] = True
+        overrides = merged.get("overrides")
+        if isinstance(overrides, dict) and overrides:
+            replay_body["overrides"] = overrides
         if not replay_body.get("job_key"):
             return {"ok": False, "reason": "no_replay_context"}
         try:
@@ -6207,6 +6212,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_shape_factory_queue_post()
         if path == "/api/shape-factory/replay":
             return self._handle_shape_factory_replay_post()
+        if path == "/api/shape-factory/unqueue":
+            return self._handle_shape_factory_unqueue_post()
+        if path == "/api/shape-factory/discard":
+            return self._handle_shape_factory_discard_post()
         if path == "/api/shape-factory/quarantine/release":
             return self._handle_shape_factory_quarantine_release_post()
         if path == "/api/vision/tag-judgment":
@@ -6262,7 +6271,6 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, 500, {"ok": False, "error": "shape_factory_replay_failed", "detail": str(e)})
         status = 200 if payload.get("ok", True) else 400
         return _json_response(self, status, payload)
-
 
     def _handle_shape_factory_unqueue_post(self) -> None:
         """POST /api/shape-factory/unqueue — waiting-queue delete + demote factory job to pending."""

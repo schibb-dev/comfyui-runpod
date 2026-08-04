@@ -14,6 +14,7 @@ const STORAGE_KEY = "discovery_library_trim_v2";
 
 /** Default UI context; additional contexts can share the same sidecar file on the server. */
 export const TRIM_CONTEXT_DISCOVERY_PLAYER = "discovery-player" as const;
+export const TRIM_CONTEXT_WORK_PRODUCTS = "work-products" as const;
 export type TrimContextDiscoveryPlayer = typeof TRIM_CONTEXT_DISCOVERY_PLAYER;
 
 export function discoveryTrimMediaRelpath(it: DiscoveryLibraryItem): string | null {

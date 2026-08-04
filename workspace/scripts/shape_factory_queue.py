@@ -17,6 +17,7 @@ from typing import Any, Dict, Optional, Tuple
 from shape_factory import (
     DEFAULT_DATA_ROOT,
     assert_workflows_not_quarantined,
+    ffprobe_video_info,
     generate_job_for_picks,
     load_effective_quarantine_registry,
     load_yaml,
@@ -304,7 +305,8 @@ def build_adhoc_dev_tuning(parameters: Dict[str, Any], *, data_root: Path) -> Op
     """
     Map UI parameter knobs onto dev-tuning structure.
 
-    Uses dev-fast.yaml as a template when present; patches frames/steps/overlap/frame_load_cap.
+    Uses dev-fast.yaml as a template when present; patches frames/steps/overlap
+    and VHS loader skip_first_frames / frame_load_cap.
     """
     if not isinstance(parameters, dict) or not parameters:
         return None
@@ -337,9 +339,21 @@ def build_adhoc_dev_tuning(parameters: Dict[str, Any], *, data_root: Path) -> Op
         api_nodes[str(node_id)] = {"inputs": {"Xi": val, "Xf": val}}
         touched = True
 
+    vhs_patch: Dict[str, Any] = {}
     frame_cap = parameters.get("frame_load_cap")
     if frame_cap is not None and frame_cap != "":
-        tuning["vhs_load_video_path"] = {"frame_load_cap": int(frame_cap)}
+        vhs_patch["frame_load_cap"] = int(frame_cap)
+    skip_first = parameters.get("skip_first_frames")
+    if skip_first is not None and skip_first != "":
+        vhs_patch["skip_first_frames"] = int(skip_first)
+    if vhs_patch:
+        existing = tuning.get("vhs_load_video_path")
+        if isinstance(existing, dict):
+            merged = dict(existing)
+            merged.update(vhs_patch)
+            tuning["vhs_load_video_path"] = merged
+        else:
+            tuning["vhs_load_video_path"] = vhs_patch
         touched = True
 
     if not touched:
@@ -348,6 +362,388 @@ def build_adhoc_dev_tuning(parameters: Dict[str, Any], *, data_root: Path) -> Op
     tuning["profile_id"] = "adhoc-ui"
     tuning["output_prefix_suffix"] = str(parameters.get("output_prefix_suffix") or "_adhoc")
     return tuning
+
+
+def clamp_vhs_load_window(
+    *,
+    skip_first_frames: int,
+    frame_load_cap: int,
+    frame_count: int,
+) -> tuple[int, int, bool]:
+    """
+    Clamp VHS skip/cap into ``[0, frame_count)`` so the loader never gets an empty window.
+
+    Returns ``(skip, cap, clamped)`` where ``cap==0`` means uncapped (load remainder).
+    """
+    fc = max(0, int(frame_count))
+    req_skip = max(0, int(skip_first_frames))
+    req_cap = max(0, int(frame_load_cap))
+    if fc <= 0:
+        return 0, 0, (req_skip != 0 or req_cap != 0)
+    skip = min(req_skip, max(0, fc - 1))
+    remaining = fc - skip
+    if req_cap <= 0:
+        cap = 0
+    else:
+        cap = min(req_cap, remaining)
+        if cap <= 0:
+            # Collapse to uncapped remainder rather than an empty load.
+            cap = 0
+            skip = min(skip, max(0, fc - 1))
+    clamped = skip != req_skip or cap != req_cap
+    return skip, cap, clamped
+
+
+def parse_avg_frame_rate(raw: Any, *, default: float = 18.0) -> float:
+    """Parse ffprobe-style ``avg_frame_rate`` (``18/1``) or a plain number into fps."""
+    if isinstance(raw, (int, float)) and float(raw) > 0:
+        return float(raw)
+    text = str(raw or "").strip()
+    if not text:
+        return float(default)
+    if "/" in text:
+        num_s, den_s = text.split("/", 1)
+        try:
+            num = float(num_s)
+            den = float(den_s)
+            if den != 0 and num / den > 0:
+                return num / den
+        except ValueError:
+            return float(default)
+        return float(default)
+    try:
+        val = float(text)
+        return val if val > 0 else float(default)
+    except ValueError:
+        return float(default)
+
+
+def trim_seconds_to_vhs_window(
+    *,
+    mark_in: Optional[float],
+    mark_out: Optional[float],
+    duration_s: float,
+    fps: float,
+    frame_count: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    Convert playback trim marks (seconds) into VHS skip/cap, clamping to the clip.
+
+    ``frame_load_cap==0`` means load through end of file after skip.
+    """
+    fps_f = float(fps) if float(fps) > 0 else 18.0
+    dur = float(duration_s) if float(duration_s) > 0 else 0.0
+    if frame_count is None or int(frame_count) <= 0:
+        fc = max(1, int(round(dur * fps_f))) if dur > 0 else 0
+    else:
+        fc = int(frame_count)
+    raw_in = max(0.0, float(mark_in if mark_in is not None else 0.0))
+    raw_out = float(mark_out) if mark_out is not None else (dur if dur > 0 else raw_in)
+    if dur > 0:
+        raw_out = min(dur, raw_out)
+    if raw_out < raw_in:
+        raw_out = raw_in
+    req_skip = max(0, int(round(raw_in * fps_f)))
+    if mark_out is None or (dur > 0 and raw_out >= dur - 1e-3):
+        req_cap = 0
+    else:
+        req_cap = max(0, int(round((raw_out - raw_in) * fps_f)))
+    skip, cap, clamped = clamp_vhs_load_window(
+        skip_first_frames=req_skip,
+        frame_load_cap=req_cap,
+        frame_count=fc,
+    )
+    return {
+        "skip_first_frames": skip,
+        "frame_load_cap": cap,
+        "frame_count": fc,
+        "fps": fps_f,
+        "requested_skip_first_frames": req_skip,
+        "requested_frame_load_cap": req_cap,
+        "clamped": clamped,
+    }
+
+
+WORK_PRODUCTS_TRIM_CONTEXT = "work-products"
+
+
+def read_vhs_loader_defaults_from_template(
+    template_path: Path,
+    *,
+    node_id: Optional[int] = None,
+) -> Dict[str, int]:
+    """Read ``skip_first_frames`` / ``frame_load_cap`` from a LiteGraph VHS_LoadVideoPath node."""
+    out = {"skip_first_frames": 0, "frame_load_cap": 0}
+    try:
+        doc = json.loads(Path(template_path).read_text(encoding="utf-8"))
+    except Exception:
+        return out
+    nodes = doc.get("nodes") if isinstance(doc, dict) else None
+    if not isinstance(nodes, list):
+        return out
+    chosen: Optional[dict[str, Any]] = None
+    for node in nodes:
+        if not isinstance(node, dict) or node.get("type") != "VHS_LoadVideoPath":
+            continue
+        if node_id is not None and int(node.get("id") or -1) != int(node_id):
+            continue
+        chosen = node
+        break
+    if chosen is None:
+        for node in nodes:
+            if isinstance(node, dict) and node.get("type") == "VHS_LoadVideoPath":
+                chosen = node
+                break
+    if not isinstance(chosen, dict):
+        return out
+    widgets = chosen.get("widgets_values")
+    if not isinstance(widgets, dict):
+        return out
+    try:
+        if widgets.get("skip_first_frames") is not None:
+            out["skip_first_frames"] = max(0, int(widgets["skip_first_frames"]))
+    except (TypeError, ValueError):
+        pass
+    try:
+        if widgets.get("frame_load_cap") is not None:
+            out["frame_load_cap"] = max(0, int(widgets["frame_load_cap"]))
+    except (TypeError, ValueError):
+        pass
+    return out
+
+
+def vhs_loader_defaults_for_shape(
+    shape: Dict[str, Any],
+    *,
+    data_root: Path,
+    workspace_root: Path,
+    output_root: Path,
+) -> Dict[str, int]:
+    """Resolve shape template + video-slot binding node → VHS skip/cap defaults."""
+    node_id: Optional[int] = None
+    for req in shape.get("requires") or []:
+        if not isinstance(req, dict):
+            continue
+        binding = req.get("binding") if isinstance(req.get("binding"), dict) else {}
+        if str(binding.get("type") or "") != "vhs_load_video_path":
+            continue
+        try:
+            node_id = int(binding.get("node_id"))
+        except (TypeError, ValueError):
+            node_id = None
+        break
+    template_raw = str(shape.get("template") or "").strip()
+    if not template_raw:
+        return {"skip_first_frames": 0, "frame_load_cap": 0}
+    try:
+        template_path = resolve_existing_path(
+            template_raw,
+            output_root=output_root,
+            data_root=data_root,
+            workspace_root=workspace_root,
+        )
+    except Exception:
+        return {"skip_first_frames": 0, "frame_load_cap": 0}
+    return read_vhs_loader_defaults_from_template(template_path, node_id=node_id)
+
+
+def _load_work_products_trim_seconds(media_abs: Path) -> Optional[Tuple[float, float]]:
+    sidecar = media_abs.with_suffix(".trims.json")
+    if not sidecar.is_file():
+        return None
+    try:
+        doc = json.loads(sidecar.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    contexts = doc.get("contexts") if isinstance(doc, dict) else None
+    if not isinstance(contexts, dict):
+        return None
+    ctx = contexts.get(WORK_PRODUCTS_TRIM_CONTEXT)
+    if not isinstance(ctx, dict):
+        return None
+    presets = ctx.get("presets") if isinstance(ctx.get("presets"), list) else []
+    active_id = str(ctx.get("active_preset_id") or "").strip()
+    chosen: Optional[dict[str, Any]] = None
+    for row in presets:
+        if not isinstance(row, dict):
+            continue
+        if active_id and str(row.get("id") or "") == active_id:
+            chosen = row
+            break
+        if chosen is None:
+            chosen = row
+    if not isinstance(chosen, dict):
+        return None
+    try:
+        tin = float(chosen["in"])
+        tout = float(chosen["out"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not (tin >= 0 and tout > tin):
+        return None
+    return tin, tout
+
+
+def _probe_media_frame_meta(media_abs: Path) -> Dict[str, Any]:
+    info = ffprobe_video_info(media_abs) if media_abs.is_file() else {}
+    fps = parse_avg_frame_rate(info.get("avg_frame_rate"), default=18.0)
+    fc = info.get("frame_count")
+    try:
+        frame_count = int(fc) if fc is not None else 0
+    except (TypeError, ValueError):
+        frame_count = 0
+    duration = 0.0
+    try:
+        if info.get("duration") is not None:
+            duration = float(info["duration"])
+    except (TypeError, ValueError):
+        duration = 0.0
+    if duration <= 0 and frame_count > 0 and fps > 0:
+        duration = frame_count / fps
+    if frame_count <= 0 and duration > 0 and fps > 0:
+        frame_count = max(1, int(round(duration * fps)))
+    return {"fps": fps, "frame_count": frame_count, "duration": duration, "probe": info}
+
+
+def resolve_vhs_window_overrides(
+    *,
+    parameters: Optional[Dict[str, Any]],
+    media_abs: Optional[Path],
+    template_defaults: Optional[Dict[str, int]] = None,
+    read_sidecar: bool = True,
+) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    """
+    Build skip/cap parameter patch + optional ``trim_clamped`` metadata.
+
+    Prefer explicit skip/cap parameters, else work-products trim sidecar, else
+    template defaults when those are out of range for the media (policy 2).
+
+    Only writes ``skip_first_frames`` / ``frame_load_cap`` when those keys were
+    explicitly provided or introduced by sidecar / template clamp — so an
+    extend-only ``frame_load_cap`` lengthen value does not zero out template skip.
+    """
+    params_in = dict(parameters) if isinstance(parameters, dict) else {}
+    out_params = dict(params_in)
+    meta: Optional[Dict[str, Any]] = None
+    media_meta = (
+        _probe_media_frame_meta(media_abs)
+        if media_abs is not None
+        else {"fps": 18.0, "frame_count": 0, "duration": 0.0}
+    )
+    fps = float(media_meta["fps"])
+    frame_count = int(media_meta["frame_count"] or 0)
+    duration = float(media_meta["duration"] or 0.0)
+
+    explicit_skip = params_in.get("skip_first_frames") not in (None, "")
+    explicit_cap = params_in.get("frame_load_cap") not in (None, "")
+    # Trim intent: both skip and cap from UI/sidecar, or skip alone.
+    # Extend lengthen often sets frame_load_cap alone — that is not a trim window.
+    trim_intent = explicit_skip or (explicit_skip and explicit_cap)
+    source: Optional[str] = "overrides" if explicit_skip else None
+
+    if source is None and read_sidecar and media_abs is not None:
+        marks = _load_work_products_trim_seconds(media_abs)
+        if marks is not None:
+            win = trim_seconds_to_vhs_window(
+                mark_in=marks[0],
+                mark_out=marks[1],
+                duration_s=duration,
+                fps=fps,
+                frame_count=frame_count or None,
+            )
+            out_params["skip_first_frames"] = int(win["skip_first_frames"])
+            out_params["frame_load_cap"] = int(win["frame_load_cap"])
+            explicit_skip = True
+            explicit_cap = True
+            trim_intent = True
+            source = "sidecar"
+            if win.get("clamped"):
+                meta = {
+                    "source": source,
+                    "requested_skip_first_frames": win["requested_skip_first_frames"],
+                    "requested_frame_load_cap": win["requested_frame_load_cap"],
+                    "skip_first_frames": win["skip_first_frames"],
+                    "frame_load_cap": win["frame_load_cap"],
+                    "frame_count": win["frame_count"],
+                    "message": (
+                        f"trim skip {win['requested_skip_first_frames']} → {win['skip_first_frames']}"
+                        f" for this clip ({win['frame_count']} frames)"
+                    ),
+                }
+
+    if source is None and template_defaults and frame_count > 0:
+        req_skip = int(template_defaults.get("skip_first_frames") or 0)
+        req_cap = int(template_defaults.get("frame_load_cap") or 0)
+        skip, cap, clamped = clamp_vhs_load_window(
+            skip_first_frames=req_skip,
+            frame_load_cap=req_cap,
+            frame_count=frame_count,
+        )
+        if clamped:
+            out_params["skip_first_frames"] = skip
+            out_params["frame_load_cap"] = cap
+            explicit_skip = True
+            explicit_cap = True
+            trim_intent = True
+            source = "template_clamped"
+            meta = {
+                "source": source,
+                "requested_skip_first_frames": req_skip,
+                "requested_frame_load_cap": req_cap,
+                "skip_first_frames": skip,
+                "frame_load_cap": cap,
+                "frame_count": frame_count,
+                "message": f"template skip {req_skip} → {skip} for this clip ({frame_count} frames)",
+            }
+
+    if trim_intent and frame_count > 0:
+        try:
+            req_skip = int(out_params.get("skip_first_frames") or 0)
+        except (TypeError, ValueError):
+            req_skip = 0
+        try:
+            req_cap = (
+                int(out_params["frame_load_cap"])
+                if out_params.get("frame_load_cap") not in (None, "")
+                else 0
+            )
+        except (TypeError, ValueError):
+            req_cap = 0
+        skip, cap, clamped = clamp_vhs_load_window(
+            skip_first_frames=req_skip,
+            frame_load_cap=req_cap,
+            frame_count=frame_count,
+        )
+        out_params["skip_first_frames"] = skip
+        if explicit_cap:
+            out_params["frame_load_cap"] = cap
+        if clamped and meta is None:
+            meta = {
+                "source": source or "overrides",
+                "requested_skip_first_frames": req_skip,
+                "requested_frame_load_cap": req_cap,
+                "skip_first_frames": skip,
+                "frame_load_cap": cap if explicit_cap else req_cap,
+                "frame_count": frame_count,
+                "message": f"skip {req_skip} → {skip} for this clip ({frame_count} frames)",
+            }
+    elif explicit_cap and frame_count > 0 and not explicit_skip:
+        # Lengthen-only cap: clamp to media length without inventing skip=0.
+        try:
+            req_cap = int(out_params["frame_load_cap"])
+        except (TypeError, ValueError):
+            req_cap = 0
+        if req_cap > frame_count:
+            out_params["frame_load_cap"] = frame_count
+            meta = {
+                "source": "overrides",
+                "requested_frame_load_cap": req_cap,
+                "frame_load_cap": frame_count,
+                "frame_count": frame_count,
+                "message": f"frame_load_cap {req_cap} → {frame_count} for this clip",
+            }
+
+    return out_params, meta
 
 
 def _parse_overrides(body: Dict[str, Any]) -> Dict[str, Any]:
@@ -746,6 +1142,30 @@ def replay_from_request_body(
             ),
         }
 
+    # Resolve VHS input window (explicit overrides → sidecar → OOR template clamp).
+    video_slot_for_trim = _video_source_slot(shape, bindings)
+    media_for_trim: Optional[Path] = None
+    if video_slot_for_trim:
+        raw_media = str(bindings.get(video_slot_for_trim) or "").strip()
+        if raw_media:
+            media_for_trim = Path(raw_media).expanduser()
+    template_defaults = vhs_loader_defaults_for_shape(
+        shape,
+        data_root=data_root,
+        workspace_root=workspace_root,
+        output_root=output_root,
+    )
+    params_for_trim = overrides.get("parameters") if isinstance(overrides.get("parameters"), dict) else {}
+    resolved_params, trim_clamped = resolve_vhs_window_overrides(
+        parameters=params_for_trim,
+        media_abs=media_for_trim if media_for_trim and media_for_trim.is_file() else None,
+        template_defaults=template_defaults,
+        read_sidecar=True,
+    )
+    if resolved_params != params_for_trim:
+        overrides = dict(overrides)
+        overrides["parameters"] = resolved_params
+
     result = queue_shape_factory_combo(
         family_slug=family_slug,
         bindings=bindings,
@@ -770,6 +1190,8 @@ def replay_from_request_body(
             result["construction"] = construction
         if recovered_prompt:
             result["prompt_profile_recovered"] = recovered_prompt
+        if trim_clamped:
+            result["trim_clamped"] = trim_clamped
     return result
 
 
