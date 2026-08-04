@@ -11534,13 +11534,6 @@ tr.disabled:hover td {
   gap: 4px;
 }
 
-.work-product-viewer__source-label {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--muted);
-}
-
 .work-product-viewer__source-video,
 .work-product-viewer__source-img {
   width: 100%;

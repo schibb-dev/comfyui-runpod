@@ -1102,11 +1102,6 @@ function WorkProductViewer({
                 </span>
               ) : null}
             </div>
-            <div className="work-product-viewer__source-label">
-              {trimEditable
-                ? "Source input — set skip/cap window (editable while pending)"
-                : "Source input — applied skip/cap window (read-only while queued/running)"}
-            </div>
             <VideoTrimControls
               className="work-product-viewer__trim"
               videoRef={sourceVideoRef}
@@ -1172,7 +1167,6 @@ function WorkProductViewer({
       </div>
       {(sourceUrl || sourceThumb) && !showSourceThumb && !queuedSourcePlayUrl && (
         <div className="work-product-viewer__source" title={source?.basename || "source"}>
-          <div className="work-product-viewer__source-label">Source input</div>
           {sourceUrl ? (
             <>
               <video

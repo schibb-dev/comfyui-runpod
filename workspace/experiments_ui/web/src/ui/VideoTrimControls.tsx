@@ -345,30 +345,6 @@ export function VideoTrimControls({
         (className ? ` ${className}` : "")
       }
     >
-      <div className="video-trim-controls__primary">
-        <div className="video-trim-controls__time mono">
-          {formatVideoSeconds(currentTime)} <span>/</span> {formatVideoSeconds(liveDuration)}
-        </div>
-        <div className="video-trim-controls__transport" role="group" aria-label="Video playback">
-          <button type="button" aria-label="Go to trim start" title="Go to trim start" disabled={disabled} onClick={() => syncSeek(bounds?.in ?? 0)}>
-            <IconToStart />
-          </button>
-          <button type="button" aria-label={paused ? "Play" : "Pause"} title={paused ? "Play" : "Pause"} onClick={togglePlay}>
-            {paused ? <IconPlay /> : <IconPause />}
-          </button>
-          <button type="button" aria-label="Go to trim end" title="Go to trim end" disabled={disabled} onClick={() => syncSeek(bounds ? bounds.out : liveDuration)}>
-            <IconToEnd />
-          </button>
-        </div>
-        <div className="video-trim-controls__io" role="group" aria-label="Set trim in and out">
-          <button type="button" disabled={disabled || readOnly} onClick={setInAtPlayhead} title="Set in at playhead">
-            I
-          </button>
-          <button type="button" disabled={disabled || readOnly} onClick={setOutAtPlayhead} title="Set out at playhead">
-            O
-          </button>
-        </div>
-      </div>
       <div className="video-trim-controls__timeline-row">
         <VideoTrimTimeline
           duration={liveDuration}
@@ -401,6 +377,30 @@ export function VideoTrimControls({
             onClick={() => onModeChange(nextMode(mode))}
           >
             {mode === "repeat" ? <IconRepeat /> : <IconStopAtEnd />}
+          </button>
+        </div>
+      </div>
+      <div className="video-trim-controls__primary">
+        <div className="video-trim-controls__time mono">
+          {formatVideoSeconds(currentTime)} <span>/</span> {formatVideoSeconds(liveDuration)}
+        </div>
+        <div className="video-trim-controls__transport" role="group" aria-label="Video playback">
+          <button type="button" aria-label="Go to trim start" title="Go to trim start" disabled={disabled} onClick={() => syncSeek(bounds?.in ?? 0)}>
+            <IconToStart />
+          </button>
+          <button type="button" aria-label={paused ? "Play" : "Pause"} title={paused ? "Play" : "Pause"} onClick={togglePlay}>
+            {paused ? <IconPlay /> : <IconPause />}
+          </button>
+          <button type="button" aria-label="Go to trim end" title="Go to trim end" disabled={disabled} onClick={() => syncSeek(bounds ? bounds.out : liveDuration)}>
+            <IconToEnd />
+          </button>
+        </div>
+        <div className="video-trim-controls__io" role="group" aria-label="Set trim in and out">
+          <button type="button" disabled={disabled || readOnly} onClick={setInAtPlayhead} title="Set in at playhead">
+            I
+          </button>
+          <button type="button" disabled={disabled || readOnly} onClick={setOutAtPlayhead} title="Set out at playhead">
+            O
           </button>
         </div>
       </div>
