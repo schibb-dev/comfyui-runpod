@@ -1,5 +1,9 @@
-import React, { useMemo, useState } from "react";
-import type { DispositionCatalogMarker, DispositionPromotions } from "./types";
+import React, { useEffect, useMemo, useState } from "react";
+import type {
+  DispositionCatalogMarker,
+  DispositionPromotions,
+  DispositionReasonDetail,
+} from "./types";
 
 export function DispositionBar({
   entries,
@@ -54,6 +58,176 @@ export function DispositionBar({
           Edit markers…
         </button>
       ) : null}
+    </div>
+  );
+}
+
+/** Catalog-driven refine (or other process) reason axes + optional modifiers / Other note. */
+export function DispositionReasonsPanel({
+  reasons,
+  activeEntries,
+  markers,
+  reasonDetail,
+  busy,
+  onToggleReason,
+}: {
+  reasons: DispositionCatalogMarker[];
+  activeEntries: string[];
+  markers: string[];
+  reasonDetail: Record<string, DispositionReasonDetail>;
+  busy?: boolean;
+  onToggleReason: (opts: {
+    markerId: string;
+    on: boolean;
+    modifiers?: string[];
+    note?: string;
+  }) => void;
+}) {
+  const entryIdsKey = activeEntries.join("|");
+  const entrySet = useMemo(() => new Set(activeEntries), [entryIdsKey]);
+  const markerSet = new Set(markers);
+  const visible = useMemo(() => {
+    return reasons.filter((r) => {
+      const proc = String(r.process || "").trim();
+      return Boolean(proc && entrySet.has(proc));
+    });
+  }, [reasons, entrySet]);
+
+  const noteReasons = useMemo(() => visible.filter((r) => r.requires_note), [visible]);
+  const axisReasons = useMemo(() => visible.filter((r) => !r.requires_note), [visible]);
+
+  const [draftNotes, setDraftNotes] = useState<Record<string, string>>({});
+  const noteIdsKey = noteReasons.map((r) => r.id).join("|");
+  const detailKey = JSON.stringify(reasonDetail);
+  useEffect(() => {
+    const next: Record<string, string> = {};
+    for (const r of noteReasons) {
+      next[r.id] = reasonDetail[r.id]?.note || "";
+    }
+    setDraftNotes(next);
+    // Intentionally keyed by serialized detail + note reason ids.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [markers.join("|"), detailKey, noteIdsKey]);
+
+  if (!visible.length) return null;
+
+  const toggleModifier = (reason: DispositionCatalogMarker, modId: string) => {
+    const mode = String(reason.modifier_mode || "none").toLowerCase();
+    const current = new Set(reasonDetail[reason.id]?.modifiers || []);
+    if (mode === "exclusive") {
+      const next = current.has(modId) ? [] : [modId];
+      onToggleReason({ markerId: reason.id, on: true, modifiers: next });
+      return;
+    }
+    if (mode === "multi") {
+      if (current.has(modId)) current.delete(modId);
+      else current.add(modId);
+      onToggleReason({ markerId: reason.id, on: true, modifiers: [...current] });
+    }
+  };
+
+  return (
+    <div className="disposition-reasons" role="region" aria-label="Refine reasons">
+      <p className="disposition-router__lead">Reasons</p>
+      <div className="disposition-reasons__axes" role="group" aria-label="Reason axes">
+        {axisReasons.map((r) => {
+          const isOn = markerSet.has(r.id);
+          const mods = r.modifiers || [];
+          const mode = String(r.modifier_mode || "none").toLowerCase();
+          const activeMods = new Set(reasonDetail[r.id]?.modifiers || []);
+          return (
+            <div key={r.id} className={"disposition-reason" + (isOn ? " disposition-reason--on" : "")}>
+              <button
+                type="button"
+                className={"drt-btn disposition-reason__axis" + (isOn ? " disposition-reason__axis--on" : "")}
+                disabled={busy}
+                title={r.hint || r.label}
+                aria-pressed={isOn}
+                onClick={() => onToggleReason({ markerId: r.id, on: !isOn })}
+              >
+                {r.label}
+              </button>
+              {isOn && mods.length > 0 && mode !== "none" ? (
+                <div className="disposition-reason__mods" role="group" aria-label={`${r.label} modifiers`}>
+                  {mods.map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      className={
+                        "drt-btn disposition-reason__mod" +
+                        (activeMods.has(m.id) ? " disposition-reason__mod--on" : "")
+                      }
+                      disabled={busy}
+                      title={m.hint || m.label}
+                      aria-pressed={activeMods.has(m.id)}
+                      onClick={() => toggleModifier(r, m.id)}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+      {noteReasons.map((r) => {
+        const isOn = markerSet.has(r.id);
+        const draft = draftNotes[r.id] ?? "";
+        return (
+          <div key={r.id} className="disposition-reason disposition-reason--other">
+            <label className="disposition-reason__other-check">
+              <input
+                type="checkbox"
+                checked={isOn}
+                disabled={busy}
+                onChange={(e) => {
+                  const nextOn = e.target.checked;
+                  if (nextOn && !draft.trim()) {
+                    return;
+                  }
+                  onToggleReason({
+                    markerId: r.id,
+                    on: nextOn,
+                    note: draft.trim() || undefined,
+                  });
+                }}
+              />
+              <span>
+                <strong>{r.label}</strong>
+                <em className="disposition-advance__hint">{r.hint || "Short note required"}</em>
+              </span>
+            </label>
+            <div className="disposition-reason__note-row">
+              <input
+                type="text"
+                className="disposition-reason__note"
+                value={draft}
+                disabled={busy}
+                placeholder="What else?"
+                aria-label={`${r.label} note`}
+                onChange={(e) => setDraftNotes((prev) => ({ ...prev, [r.id]: e.target.value }))}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    const text = draft.trim();
+                    if (!text) return;
+                    onToggleReason({ markerId: r.id, on: true, note: text });
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className="drt-btn disposition-reason__note-save"
+                disabled={busy || !draft.trim()}
+                onClick={() => onToggleReason({ markerId: r.id, on: true, note: draft.trim() })}
+              >
+                {isOn ? "Update" : "Save"}
+              </button>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -197,7 +371,7 @@ export function DispositionRouter({
       ) : null}
 
       {entrySet.has("investigate") ? (
-        <p className="disposition-router__hint factory-muted">Investigate routes to refine, extract, advance, or retire.</p>
+        <p className="disposition-router__hint factory-muted">Investigate — look closer before routing.</p>
       ) : null}
     </div>
   );

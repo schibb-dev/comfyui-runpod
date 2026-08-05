@@ -14,7 +14,7 @@ import {
 } from "./api";
 import { cachedEnsureThumbUrl, enqueueEnsureThumb } from "./ensureThumbQueue";
 import { AppetiteBar, APPETITE_FACET_CYCLE, APPETITE_KEYMAP } from "./AppetiteBar";
-import { DispositionBar, DispositionRouter } from "./DispositionBar";
+import { DispositionBar, DispositionReasonsPanel, DispositionRouter } from "./DispositionBar";
 import { DispositionCatalogEditor } from "./DispositionCatalogEditor";
 import { DispositionStatusPanel } from "./DispositionStatusPanel";
 import { discoveryLibraryHref } from "./discoveryDeepLink";
@@ -26,8 +26,10 @@ import type {
   DiscoveryRatingSamplerCandidate,
   DiscoveryRatingSamplerResponse,
   DispositionCatalogMarker,
+  DispositionCatalogResponse,
   DispositionOutcome,
   DispositionPromotions,
+  DispositionReasonDetail,
   QualityAxis,
   QualityAxesMap,
 } from "./types";
@@ -233,10 +235,12 @@ function applyDispositionFromRatings(
   setMarkers: (m: string[]) => void,
   setUpdatedAt: (t: string | null) => void,
   setLastOutcome: (o: DispositionOutcome | null) => void,
+  setReasonDetail?: (d: Record<string, DispositionReasonDetail>) => void,
 ) {
   setMarkers(r.disposition_markers ?? []);
   setUpdatedAt(r.disposition_updated_at ?? null);
   setLastOutcome(r.disposition_last_outcome ?? null);
+  setReasonDetail?.(r.disposition_reason_detail ?? {});
 }
 
 function entryLabelForMarker(markers: string[], catalog: DispositionCatalogMarker[]): string | null {
@@ -514,8 +518,10 @@ export function DiscoveryRatingQueueApp() {
   const [triagePassCount, setTriagePassCount] = useState(0);
   const [catalogEntries, setCatalogEntries] = useState<DispositionCatalogMarker[]>([]);
   const [catalogSteps, setCatalogSteps] = useState<DispositionCatalogMarker[]>([]);
+  const [catalogReasons, setCatalogReasons] = useState<DispositionCatalogMarker[]>([]);
   const [catalogMarkers, setCatalogMarkers] = useState<DispositionCatalogMarker[]>([]);
   const [promotions, setPromotions] = useState<DispositionPromotions | null>(null);
+  const [reasonDetail, setReasonDetail] = useState<Record<string, DispositionReasonDetail>>({});
   const [catalogEditorOpen, setCatalogEditorOpen] = useState(false);
   const [loopPlayback, setLoopPlayback] = useState(loadLoopPlayback);
   const [selectionMode, setSelectionMode] = useState<SelectionMode>(loadSelectionMode);
@@ -571,7 +577,12 @@ export function DiscoveryRatingQueueApp() {
       .then((c) => {
         setCatalogEntries(c.entries ?? []);
         setCatalogSteps(c.steps ?? []);
-        setCatalogMarkers(c.catalog?.markers ?? [...(c.entries ?? []), ...(c.steps ?? [])]);
+        const fromPayload = c.reasons ?? [];
+        const fromMarkers = (c.catalog?.markers ?? []).filter((m) => m.kind === "reason");
+        setCatalogReasons(fromPayload.length ? fromPayload : fromMarkers);
+        setCatalogMarkers(
+          c.catalog?.markers ?? [...(c.entries ?? []), ...(c.steps ?? []), ...(fromPayload.length ? fromPayload : fromMarkers)],
+        );
       })
       .catch(() => {});
   }, []);
@@ -805,7 +816,11 @@ export function DiscoveryRatingQueueApp() {
   };
 
   const toggleDispositionMarker = useCallback(
-    async (markerId: string, on: boolean) => {
+    async (
+      markerId: string,
+      on: boolean,
+      extra?: { note?: string; modifiers?: string[] },
+    ) => {
       if (!current || dispositionBusy) return;
       setDispositionBusy(true);
       setCheckMsg("");
@@ -820,18 +835,30 @@ export function DiscoveryRatingQueueApp() {
           relpath: current.relpath,
           marker: markerId,
           on,
+          note: extra?.note,
+          modifiers: extra?.modifiers,
           quality: q,
           appetite,
           facet: appetiteFacet,
         });
         setDispositionMarkers(res.saved?.markers ?? []);
+        setReasonDetail(res.saved?.reason_detail ?? {});
         if (res.promotions) setPromotions(res.promotions);
-        const label = catalogEntries.find((e) => e.id === markerId)?.label ?? markerId;
+        const label =
+          catalogEntries.find((e) => e.id === markerId)?.label ??
+          catalogReasons.find((e) => e.id === markerId)?.label ??
+          markerId;
         const msg = on ? `Saved disposition: ${label}` : `Cleared: ${label}`;
         setDispositionLastAction(msg);
         setCheckMsg(msg);
         const ratings = await fetchDiscoveryAssetRatings(current.relpath);
-        applyDispositionFromRatings(ratings, setDispositionMarkers, setDispositionUpdatedAt, setDispositionLastOutcome);
+        applyDispositionFromRatings(
+          ratings,
+          setDispositionMarkers,
+          setDispositionUpdatedAt,
+          setDispositionLastOutcome,
+          setReasonDetail,
+        );
         applyTriageFromRatings(ratings, setLastTriagedAt, setTriagePassCount);
         if (res.saved?.updated_at) setDispositionUpdatedAt(String(res.saved.updated_at));
       } catch (e) {
@@ -840,7 +867,16 @@ export function DiscoveryRatingQueueApp() {
         setDispositionBusy(false);
       }
     },
-    [current, dispositionBusy, appetite, appetiteFacet, explicitRating, derivedRating, catalogEntries],
+    [
+      current,
+      dispositionBusy,
+      appetite,
+      appetiteFacet,
+      explicitRating,
+      derivedRating,
+      catalogEntries,
+      catalogReasons,
+    ],
   );
 
   const commitAdvanceRoutes = useCallback(
@@ -891,7 +927,13 @@ export function DiscoveryRatingQueueApp() {
           }
         }
         const ratings = await fetchDiscoveryAssetRatings(current.relpath);
-        applyDispositionFromRatings(ratings, setDispositionMarkers, setDispositionUpdatedAt, setDispositionLastOutcome);
+        applyDispositionFromRatings(
+          ratings,
+          setDispositionMarkers,
+          setDispositionUpdatedAt,
+          setDispositionLastOutcome,
+          setReasonDetail,
+        );
         applyTriageFromRatings(ratings, setLastTriagedAt, setTriagePassCount);
         const msg = parts.join(" · ");
         setDispositionLastAction(msg);
@@ -932,7 +974,13 @@ export function DiscoveryRatingQueueApp() {
           if (m) setDispositionMarkers(m);
         }
         const ratings = await fetchDiscoveryAssetRatings(current.relpath);
-        applyDispositionFromRatings(ratings, setDispositionMarkers, setDispositionUpdatedAt, setDispositionLastOutcome);
+        applyDispositionFromRatings(
+          ratings,
+          setDispositionMarkers,
+          setDispositionUpdatedAt,
+          setDispositionLastOutcome,
+          setReasonDetail,
+        );
         applyTriageFromRatings(ratings, setLastTriagedAt, setTriagePassCount);
       } catch (e) {
         setLastStepId(null);
@@ -948,9 +996,14 @@ export function DiscoveryRatingQueueApp() {
     setDispositionBusy(true);
     try {
       const res = await saveDispositionCatalog({ markers });
-      setCatalogEntries(res.entries ?? []);
-      setCatalogSteps(res.steps ?? []);
-      setCatalogMarkers(res.catalog?.markers ?? markers);
+      const nested = res.catalog as DispositionCatalogResponse | undefined;
+      const entries = res.entries ?? nested?.entries ?? [];
+      const steps = res.steps ?? nested?.steps ?? [];
+      const reasons = res.reasons ?? nested?.reasons ?? [];
+      setCatalogEntries(entries);
+      setCatalogSteps(steps);
+      setCatalogReasons(reasons);
+      setCatalogMarkers(nested?.catalog?.markers ?? res.catalog?.markers ?? markers);
       setCatalogEditorOpen(false);
       setCheckMsg("Disposition catalog saved");
     } catch (e) {
@@ -1010,6 +1063,7 @@ export function DiscoveryRatingQueueApp() {
     setDerivedSourceLabel(null);
     setCheckMsg("");
     setDispositionMarkers(current.disposition_markers ?? []);
+    setReasonDetail({});
     setDispositionUpdatedAt(null);
     setDispositionLastOutcome(null);
     setDispositionLastAction("");
@@ -1023,7 +1077,13 @@ export function DiscoveryRatingQueueApp() {
         applyQualityFromRatings(r, setExplicitRating, setDerivedRating, setDerivedSourceLabel, setQualityAxes);
         if (r.appetite) setAppetite(r.appetite);
         if (r.appetite_facet) setAppetiteFacet(r.appetite_facet);
-        applyDispositionFromRatings(r, setDispositionMarkers, setDispositionUpdatedAt, setDispositionLastOutcome);
+        applyDispositionFromRatings(
+          r,
+          setDispositionMarkers,
+          setDispositionUpdatedAt,
+          setDispositionLastOutcome,
+          setReasonDetail,
+        );
         applyTriageFromRatings(r, setLastTriagedAt, setTriagePassCount);
         const axes = axesFromRatings(r);
         markBatchRated(current.relpath, axes, (r.appetite as Appetite | null) ?? null);
@@ -1088,8 +1148,8 @@ export function DiscoveryRatingQueueApp() {
     [dispositionMarkers, catalogEntries],
   );
   const dispositionCatalogAll = useMemo(
-    () => [...catalogEntries, ...catalogSteps],
-    [catalogEntries, catalogSteps],
+    () => [...catalogEntries, ...catalogSteps, ...catalogReasons],
+    [catalogEntries, catalogSteps, catalogReasons],
   );
 
   return (
@@ -1161,13 +1221,9 @@ export function DiscoveryRatingQueueApp() {
                   ))}
                 </select>
               </label>
-              <button type="button" className="drt-btn" disabled={refreshing || triageBusy} onClick={() => void dismissBatchAndLoad()}>
-                {refreshing || triageBusy ? "Dismissing…" : "Dismiss batch"}
-              </button>
             </div>
           }
         >
-          {candidates.length > 0 ? <SessionProgress done={ratedCount} total={candidates.length} label="Rated" /> : null}
           {stats ? (
             <p className="drq-session-hint factory-muted">
               {selectionMode === "mixed"
@@ -1292,9 +1348,6 @@ export function DiscoveryRatingQueueApp() {
                     <div className="drq-judgment-card">
                       <div className="drq-judgment-card__head">
                         <h3 className="drq-judgment-card__title">Quality</h3>
-                        <p className="drq-judgment-card__hint">
-                          Subject · Render · Action — aggregate saves to XMP; drives replay
-                        </p>
                       </div>
                       {showingDerived && derivedSourceLabel ? (
                         <p className="drq-judgment-card__derived">{derivedSourceLabel}</p>
@@ -1362,9 +1415,6 @@ export function DiscoveryRatingQueueApp() {
                           );
                         })}
                       </div>
-                      {explicitRating != null ? (
-                        <p className="drq-rate-hint factory-muted">Aggregate ★ {explicitRating}</p>
-                      ) : null}
                     </div>
 
                     <div className="drq-judgment-card">
@@ -1372,9 +1422,6 @@ export function DiscoveryRatingQueueApp() {
                         <h3 className="drq-judgment-card__title" title="Appetite axis — separate from quality ★">
                           Appetite
                         </h3>
-                        <p className="drq-judgment-card__hint">
-                          Do more <em>with</em> this — steers derive / extend
-                        </p>
                       </div>
                       <AppetiteBar
                         embedded
@@ -1386,16 +1433,40 @@ export function DiscoveryRatingQueueApp() {
                       />
                     </div>
 
+                    <nav className="drq-nav" aria-label="Queue navigation">
+                      <button type="button" className="drt-btn drq-nav__btn" onClick={goPrev} disabled={candidates.length <= 1}>
+                        ← Prev
+                      </button>
+                      <button type="button" className="drt-btn drq-nav__btn" onClick={skipCurrent}>
+                        Skip
+                      </button>
+                      <button type="button" className="drt-btn drq-nav__btn" onClick={goNext} disabled={candidates.length <= 1}>
+                        Next →
+                      </button>
+                    </nav>
+
+                    <div className="drq-batch-actions">
+                      {candidates.length > 0 ? (
+                        <SessionProgress done={ratedCount} total={candidates.length} label="Rated" />
+                      ) : null}
+                      <button
+                        type="button"
+                        className="drt-btn drq-batch-actions__dismiss"
+                        disabled={refreshing || triageBusy}
+                        onClick={() => void dismissBatchAndLoad()}
+                      >
+                        {refreshing || triageBusy ? "Dismissing…" : "Dismiss batch"}
+                      </button>
+                    </div>
+
                     <div className="drq-judgment-card">
                       <div className="drq-judgment-card__head">
                         <h3 className="drq-judgment-card__title">Disposition</h3>
-                        <p className="drq-judgment-card__hint">
-                          What to do next — routes into refine, extract, advance, or retire
-                        </p>
                       </div>
                       <DispositionStatusPanel
                         markers={dispositionMarkers}
                         catalog={dispositionCatalogAll}
+                        reasonDetail={reasonDetail}
                         updatedAt={dispositionUpdatedAt}
                         lastOutcome={dispositionLastOutcome}
                         lastActionMessage={dispositionLastAction}
@@ -1412,6 +1483,16 @@ export function DiscoveryRatingQueueApp() {
                         onToggle={(id, on) => void toggleDispositionMarker(id, on)}
                         onEditCatalog={() => setCatalogEditorOpen(true)}
                       />
+                      <DispositionReasonsPanel
+                        reasons={catalogReasons}
+                        activeEntries={dispositionMarkers.filter((m) => catalogEntries.some((e) => e.id === m))}
+                        markers={dispositionMarkers}
+                        reasonDetail={reasonDetail}
+                        busy={dispositionBusy || appetiteBusy || rateBusy || triageBusy}
+                        onToggleReason={({ markerId, on, modifiers, note }) =>
+                          void toggleDispositionMarker(markerId, on, { modifiers, note })
+                        }
+                      />
                       <DispositionRouter
                         steps={catalogSteps}
                         activeEntries={dispositionMarkers.filter((m) => catalogEntries.some((e) => e.id === m))}
@@ -1422,18 +1503,6 @@ export function DiscoveryRatingQueueApp() {
                       />
                     </div>
                   </div>
-
-                  <nav className="drq-nav" aria-label="Queue navigation">
-                    <button type="button" className="drt-btn" onClick={goPrev} disabled={candidates.length <= 1}>
-                      ← Prev
-                    </button>
-                    <button type="button" className="drt-btn" onClick={skipCurrent}>
-                      Skip
-                    </button>
-                    <button type="button" className="drt-btn" onClick={goNext} disabled={candidates.length <= 1}>
-                      Next →
-                    </button>
-                  </nav>
                 </div>
               </section>
 

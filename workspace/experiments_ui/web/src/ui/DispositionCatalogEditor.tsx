@@ -18,6 +18,41 @@ export function DispositionCatalogEditor({
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   };
 
+  const renderRows = (kind: "entry" | "reason", title: string) => {
+    const kindRows = rows.filter((r) => r.kind === kind);
+    if (!kindRows.length) return null;
+    return (
+      <div className="disposition-catalog-editor__section">
+        <h4 className="disposition-catalog-editor__section-title">{title}</h4>
+        {kindRows.map((r) => (
+          <div key={r.id} className="disposition-catalog-editor__row">
+            <label className="disposition-catalog-editor__check">
+              <input
+                type="checkbox"
+                checked={r.enabled !== false}
+                onChange={(e) => updateRow(r.id, { enabled: e.target.checked })}
+              />
+              <span className="mono">{r.id}</span>
+            </label>
+            <input
+              className="disposition-catalog-editor__input"
+              value={r.label}
+              onChange={(e) => updateRow(r.id, { label: e.target.value })}
+              aria-label={`Label for ${r.id}`}
+            />
+            <input
+              className="disposition-catalog-editor__input disposition-catalog-editor__hint"
+              value={r.hint || ""}
+              onChange={(e) => updateRow(r.id, { hint: e.target.value })}
+              placeholder="Hint"
+              aria-label={`Hint for ${r.id}`}
+            />
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   return (
     <div className="disposition-catalog-modal" role="dialog" aria-modal="true" aria-label="Edit disposition markers">
       <div className="disposition-catalog-modal__backdrop" onClick={onClose} />
@@ -30,36 +65,11 @@ export function DispositionCatalogEditor({
         </header>
         <p className="factory-muted disposition-catalog-modal__note">
           Changes save to the runtime catalog overlay (<code>_status/disposition_catalog.json</code>). Repo seed:{" "}
-          <code>disposition_catalog.yaml</code>.
+          <code>disposition_catalog.yaml</code>. Modifier lists stay in YAML for now.
         </p>
         <div className="disposition-catalog-editor__list">
-          {rows
-            .filter((r) => r.kind === "entry")
-            .map((r) => (
-              <div key={r.id} className="disposition-catalog-editor__row">
-                <label className="disposition-catalog-editor__check">
-                  <input
-                    type="checkbox"
-                    checked={r.enabled !== false}
-                    onChange={(e) => updateRow(r.id, { enabled: e.target.checked })}
-                  />
-                  <span className="mono">{r.id}</span>
-                </label>
-                <input
-                  className="disposition-catalog-editor__input"
-                  value={r.label}
-                  onChange={(e) => updateRow(r.id, { label: e.target.value })}
-                  aria-label={`Label for ${r.id}`}
-                />
-                <input
-                  className="disposition-catalog-editor__input disposition-catalog-editor__hint"
-                  value={r.hint || ""}
-                  onChange={(e) => updateRow(r.id, { hint: e.target.value })}
-                  placeholder="Hint"
-                  aria-label={`Hint for ${r.id}`}
-                />
-              </div>
-            ))}
+          {renderRows("entry", "Entries")}
+          {renderRows("reason", "Refine reasons")}
         </div>
         <footer className="disposition-catalog-modal__foot">
           <button type="button" className="drt-btn" disabled={busy} onClick={() => void onSave(rows)}>

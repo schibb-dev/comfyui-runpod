@@ -464,6 +464,7 @@ export async function toggleAssetDisposition(body: {
   marker: string;
   on?: boolean;
   note?: string;
+  modifiers?: string[];
   quality?: number;
   appetite?: Appetite | null;
   facet?: AppetiteFacet;

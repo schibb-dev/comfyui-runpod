@@ -2475,6 +2475,7 @@ def _set_asset_disposition_toggle_payload(cfg: ServerConfig, body: Dict[str, Any
         marker_id=marker,
         on=on,
         note=str(body.get("note") or "").strip() or None,
+        modifiers=body.get("modifiers") if isinstance(body.get("modifiers"), list) else None,
         og_root=og_root,
         disposition_index_path=_discovery_disposition_index_path(cfg),
         catalog=catalog,
@@ -2694,11 +2695,13 @@ def _discovery_disposition_catalog_payload(cfg: ServerConfig) -> Dict[str, Any]:
 
     entries = catalog_entries(catalog, kind="entry")
     steps = catalog_entries(catalog, kind="step")
+    reasons = catalog_entries(catalog, kind="reason")
     return {
         "ok": True,
         "catalog": catalog,
         "entries": entries,
         "steps": steps,
+        "reasons": reasons,
         "catalog_path": str(_discovery_disposition_catalog_path(cfg)),
         "seed_path": str(_repo_root() / "disposition_catalog.yaml"),
     }
@@ -3125,6 +3128,7 @@ def _discovery_compute_asset_ratings(
     disp = _discovery_disposition_for_item(disposition_doc, item if isinstance(item, dict) else {"relpath": rel})
     payload["disposition_markers"] = disp.get("disposition_markers") or []
     payload["disposition_notes"] = disp.get("disposition_notes") or {}
+    payload["disposition_reason_detail"] = disp.get("disposition_reason_detail") or {}
     payload["disposition_updated_at"] = disp.get("disposition_updated_at")
     payload["disposition_outcomes"] = disp.get("disposition_outcomes") or []
     payload["disposition_last_outcome"] = disp.get("disposition_last_outcome")
@@ -7702,7 +7706,7 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_discovery_asset_disposition_toggle_post(self) -> None:
         """
         POST /api/discovery/asset-disposition/toggle
-          { relpath, marker, on?: bool, note?: string }
+          { relpath, marker, on?: bool, note?: string, modifiers?: string[] }
         """
         cfg = self.server.cfg
         obj = self._read_request_json()

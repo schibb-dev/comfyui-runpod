@@ -141,7 +141,11 @@ def merge_catalog(seed: Dict[str, Any], overlay: Optional[Dict[str, Any]]) -> Di
             seed_by_id[mid] = copy.deepcopy(row)
     merged["markers"] = sorted(
         seed_by_id.values(),
-        key=lambda m: (0 if m.get("kind") == "entry" else 1, int(m.get("order") or 999), str(m.get("id"))),
+        key=lambda m: (
+            {"entry": 0, "reason": 1, "step": 2}.get(str(m.get("kind") or ""), 3),
+            int(m.get("order") or 999),
+            str(m.get("id")),
+        ),
     )
     return merged
 
@@ -252,7 +256,7 @@ def stamp_output_disposition(
     """
     Set a disposition entry on a media file (creates index row as needed).
 
-    Used by hourly predicted jobs so deposited outputs land with ``derived``.
+    Used by factory/hourly when a job requests a disposition stamp on deposit.
     """
     media_abs = Path(media_abs).expanduser().resolve()
     if not media_abs.is_file():
@@ -295,6 +299,47 @@ def stamp_output_disposition(
     )
 
 
+def _normalize_modifiers(
+    spec: Dict[str, Any],
+    modifiers: Optional[List[str]],
+) -> List[str]:
+    """Validate/clamp modifiers against catalog reason spec."""
+    allowed = {
+        str(m.get("id")).strip()
+        for m in (spec.get("modifiers") or [])
+        if isinstance(m, dict) and m.get("id")
+    }
+    raw = [str(x).strip() for x in (modifiers or []) if str(x).strip()]
+    if not raw:
+        return []
+    unknown = [x for x in raw if x not in allowed]
+    if unknown:
+        raise ValueError(f"unknown modifier(s): {', '.join(unknown)}")
+    mode = str(spec.get("modifier_mode") or "none").strip().lower()
+    if mode == "exclusive":
+        return [raw[-1]]
+    if mode == "multi":
+        # Preserve order, unique.
+        seen: Set[str] = set()
+        out: List[str] = []
+        for x in raw:
+            if x not in seen:
+                seen.add(x)
+                out.append(x)
+        return out
+    # mode none — ignore modifiers
+    return []
+
+
+def _reason_ids_for_process(catalog: Dict[str, Any], process: str) -> Set[str]:
+    proc = str(process or "").strip()
+    out: Set[str] = set()
+    for m in catalog_entries(catalog, kind="reason"):
+        if str(m.get("process") or "").strip() == proc and m.get("id"):
+            out.add(str(m["id"]))
+    return out
+
+
 def toggle_output_disposition(
     *,
     media_abs: Path,
@@ -302,6 +347,7 @@ def toggle_output_disposition(
     marker_id: str,
     on: bool,
     note: Optional[str] = None,
+    modifiers: Optional[List[str]] = None,
     og_root: Path,
     disposition_index_path: Path,
     catalog: Dict[str, Any],
@@ -317,6 +363,9 @@ def toggle_output_disposition(
     if not spec or spec.get("enabled") is False:
         raise ValueError(f"unknown marker: {marker_id}")
 
+    kind = str(spec.get("kind") or "").strip()
+    note_text = str(note or "").strip()
+
     og_root = Path(og_root).resolve()
     short_key, discovery_key = _discovery_keys_for_relpath(media_relpath, og_root, media_abs)
     doc = _load_or_init_disposition_doc(disposition_index_path)
@@ -330,28 +379,94 @@ def toggle_output_disposition(
 
     markers: Set[str] = set(row.get("markers") or [])
     notes: Dict[str, str] = dict(row.get("notes") or {})
+    reason_detail: Dict[str, Any] = {}
+    raw_detail = row.get("reason_detail")
+    if isinstance(raw_detail, dict):
+        reason_detail = copy.deepcopy(raw_detail)
+
+    if on and kind == "reason" and bool(spec.get("requires_note")):
+        existing_note = ""
+        prev = reason_detail.get(marker_id)
+        if isinstance(prev, dict):
+            existing_note = str(prev.get("note") or "").strip()
+        if not note_text and not existing_note:
+            raise ValueError(f"{marker_id} requires a note")
 
     if on:
-        if str(spec.get("kind")) == "entry":
+        if kind == "entry":
             # One primary entry at a time: clear other entry markers.
             entry_ids = {m["id"] for m in catalog_entries(catalog, kind="entry")}
             markers -= entry_ids
+            # Switching away from refine clears refine reasons.
+            if marker_id != "refine":
+                refine_reasons = _reason_ids_for_process(catalog, "refine")
+                markers -= refine_reasons
+                for rid in refine_reasons:
+                    reason_detail.pop(rid, None)
+                    notes.pop(rid, None)
+        elif kind == "reason":
+            # Selecting a reason ensures its process entry is active.
+            process = str(spec.get("process") or "").strip()
+            if process and process in {m["id"] for m in catalog_entries(catalog, kind="entry")}:
+                entry_ids = {m["id"] for m in catalog_entries(catalog, kind="entry")}
+                markers -= entry_ids
+                markers.add(process)
+            mods = _normalize_modifiers(spec, modifiers) if modifiers is not None else None
+            detail: Dict[str, Any] = {}
+            if modifiers is not None:
+                if mods:
+                    detail["modifiers"] = mods
+            elif isinstance(reason_detail.get(marker_id), dict):
+                prev_mods = reason_detail[marker_id].get("modifiers")
+                if isinstance(prev_mods, list) and prev_mods:
+                    detail["modifiers"] = [str(x) for x in prev_mods if str(x).strip()]
+            effective_note = note_text
+            if not effective_note and isinstance(reason_detail.get(marker_id), dict):
+                effective_note = str(reason_detail[marker_id].get("note") or "").strip()
+            if effective_note:
+                detail["note"] = effective_note
+                notes[marker_id] = effective_note
+            reason_detail[marker_id] = detail
         markers.add(marker_id)
-        if note:
-            notes[marker_id] = str(note).strip()
+        if note_text and kind != "reason":
+            notes[marker_id] = note_text
     else:
         markers.discard(marker_id)
         notes.pop(marker_id, None)
+        if kind == "reason":
+            reason_detail.pop(marker_id, None)
+        elif kind == "entry":
+            # Clearing an entry clears reasons for that process.
+            process = str(spec.get("process") or marker_id).strip()
+            reason_ids = _reason_ids_for_process(catalog, process)
+            markers -= reason_ids
+            for rid in reason_ids:
+                reason_detail.pop(rid, None)
+                notes.pop(rid, None)
+
+    # Drop reason_detail keys that are no longer marked.
+    for rid in list(reason_detail.keys()):
+        if rid not in markers:
+            reason_detail.pop(rid, None)
 
     if markers:
         row = {
             "markers": sorted(markers),
             "notes": notes,
+            "reason_detail": reason_detail,
             "short_key": short_key,
             "updated_at": utc_now(),
             "outcomes": row.get("outcomes") or [],
         }
-        _append_outcome(row, action="toggle", detail={"marker": marker_id, "on": on})
+        outcome_detail: Dict[str, Any] = {"marker": marker_id, "on": on}
+        if kind == "reason":
+            det = reason_detail.get(marker_id) if on else None
+            if isinstance(det, dict):
+                if det.get("modifiers"):
+                    outcome_detail["modifiers"] = det["modifiers"]
+                if det.get("note"):
+                    outcome_detail["note"] = det["note"]
+        _append_outcome(row, action="toggle", detail=outcome_detail)
         for k in (discovery_key, short_key):
             if k:
                 table[k] = row
@@ -361,6 +476,8 @@ def toggle_output_disposition(
             if k:
                 table.pop(k, None)
         cleared = True
+        reason_detail = {}
+        notes = {}
 
     doc["updated_at"] = utc_now()
     _atomic_write_json_doc(disposition_index_path, doc)
@@ -372,6 +489,7 @@ def toggle_output_disposition(
         "on": on,
         "markers": sorted(markers),
         "notes": notes,
+        "reason_detail": reason_detail,
         "cleared": cleared,
         "discovery_key": discovery_key,
         "short_key": short_key,
@@ -501,6 +619,7 @@ def disposition_for_item(
     return {
         "disposition_markers": markers if isinstance(markers, list) else [],
         "disposition_notes": row.get("notes") if isinstance(row.get("notes"), dict) else {},
+        "disposition_reason_detail": row.get("reason_detail") if isinstance(row.get("reason_detail"), dict) else {},
         "disposition_updated_at": row.get("updated_at"),
         "disposition_outcomes": outcomes[-8:],
         "disposition_last_outcome": last if isinstance(last, dict) else None,

@@ -1,9 +1,15 @@
 import React, { useMemo } from "react";
 import { formatIsoDateTime } from "./locale";
-import type { DispositionCatalogMarker, DispositionOutcome } from "./types";
+import type { DispositionCatalogMarker, DispositionOutcome, DispositionReasonDetail } from "./types";
 
 function labelForId(id: string, catalog: DispositionCatalogMarker[]): string {
   return catalog.find((m) => m.id === id)?.label || id;
+}
+
+function modifierLabel(reasonId: string, modId: string, catalog: DispositionCatalogMarker[]): string {
+  const reason = catalog.find((m) => m.id === reasonId);
+  const mod = reason?.modifiers?.find((m) => m.id === modId);
+  return mod?.label || modId;
 }
 
 function formatOutcome(outcome: DispositionOutcome | null | undefined): string | null {
@@ -11,8 +17,14 @@ function formatOutcome(outcome: DispositionOutcome | null | undefined): string |
   const action = outcome.action;
   const detail = outcome.detail;
   if (action === "toggle" && detail && typeof detail === "object") {
-    const d = detail as { marker?: string; on?: boolean };
-    return d.on ? `Set marker: ${d.marker}` : `Cleared: ${d.marker}`;
+    const d = detail as { marker?: string; on?: boolean; modifiers?: string[]; note?: string };
+    if (d.on) {
+      const bits = [`Set marker: ${d.marker}`];
+      if (d.modifiers?.length) bits.push(d.modifiers.join(", "));
+      if (d.note) bits.push(`“${d.note}”`);
+      return bits.join(" · ");
+    }
+    return `Cleared: ${d.marker}`;
   }
   if (action.startsWith("step:")) {
     const step = action.slice("step:".length);
@@ -37,8 +49,8 @@ function formatOutcome(outcome: DispositionOutcome | null | undefined): string |
 }
 
 const ENTRY_NEXT: Record<string, string> = {
-  refine: "Pick Aspect, Quality, or Edit above — or clear Refine when this clip is handled.",
-  investigate: "Route to salvage, pipeline, fix, or retire — then run that entry’s steps.",
+  refine: "Mark why (Identity, Lighting, …) — modifiers optional. Clear Refine when handled.",
+  investigate: "Look closer before routing to refine, advance, or retire.",
   extract: "Run a salvage step (frame / clip / reference).",
   advance: "Run Extend, Vary, or Queue now — then watch for a new factory output.",
   retire: "Run Trash or Archive to remove this from active work.",
@@ -52,6 +64,7 @@ function formatTime(iso: string): string {
 export function DispositionStatusPanel({
   markers,
   catalog,
+  reasonDetail = {},
   updatedAt,
   lastOutcome,
   lastActionMessage,
@@ -60,6 +73,7 @@ export function DispositionStatusPanel({
 }: {
   markers: string[];
   catalog: DispositionCatalogMarker[];
+  reasonDetail?: Record<string, DispositionReasonDetail>;
   updatedAt?: string | null;
   lastOutcome?: DispositionOutcome | null;
   lastActionMessage?: string;
@@ -69,6 +83,7 @@ export function DispositionStatusPanel({
 }) {
   const entryIds = markers.filter((m) => catalog.some((c) => c.id === m && c.kind === "entry"));
   const stepIds = markers.filter((m) => catalog.some((c) => m === c.id && c.kind === "step"));
+  const reasonIds = markers.filter((m) => catalog.some((c) => m === c.id && c.kind === "reason"));
   const primaryEntry = entryIds[0] ?? null;
 
   const outcomeLine = useMemo(() => {
@@ -117,6 +132,18 @@ export function DispositionStatusPanel({
                 {labelForId(id, catalog)}
               </span>
             ))}
+            {reasonIds.map((id) => {
+              const mods = reasonDetail[id]?.modifiers || [];
+              const note = reasonDetail[id]?.note;
+              const modText = mods.map((m) => modifierLabel(id, m, catalog)).join(", ");
+              const suffix = [modText, note ? `“${note}”` : ""].filter(Boolean).join(" · ");
+              return (
+                <span key={id} className="disposition-status__pill disposition-status__pill--reason">
+                  {labelForId(id, catalog)}
+                  {suffix ? `: ${suffix}` : ""}
+                </span>
+              );
+            })}
             {stepIds.map((id) => (
               <span key={id} className="disposition-status__pill disposition-status__pill--step">
                 {labelForId(id, catalog)}

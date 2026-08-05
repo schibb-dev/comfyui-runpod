@@ -9770,7 +9770,7 @@ tr.disabled:hover td {
   max-width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
   overflow: visible;
 }
 .drq-control-stack > * {
@@ -9901,38 +9901,35 @@ tr.disabled:hover td {
 }
 .drq-judgment {
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 .drq-judgment-card {
-  padding: 10px 12px;
-  border-radius: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
   background: rgba(15, 23, 48, 0.45);
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
 .drq-judgment-card__head {
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 .drq-judgment-card__title {
   margin: 0;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
 .drq-judgment-card__hint {
-  margin: 4px 0 0;
-  font-size: 11px;
-  color: var(--muted);
-  line-height: 1.35;
+  display: none;
 }
 .drq-judgment-card__hint em {
   font-style: normal;
   color: #c8d4e8;
 }
 .drq-judgment-card__derived {
-  margin: 0 0 8px;
+  margin: 0 0 6px;
   font-size: 11px;
-  line-height: 1.35;
+  line-height: 1.3;
   color: #8a96aa;
   font-style: italic;
 }
@@ -10148,6 +10145,85 @@ tr.disabled:hover td {
   background: rgba(255, 255, 255, 0.06);
   border: 1px dashed rgba(255, 255, 255, 0.2);
 }
+.disposition-status__pill--reason {
+  color: #e8f5e8;
+  background: rgba(70, 140, 90, 0.35);
+  border: 1px solid rgba(140, 200, 150, 0.4);
+}
+.disposition-reasons {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.disposition-reasons__axes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-start;
+}
+.disposition-reason {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 100%;
+}
+.disposition-reason__axis {
+  font-size: 12px;
+  padding: 4px 10px;
+}
+.disposition-reason__axis--on {
+  background: rgba(70, 140, 90, 0.45);
+  border-color: rgba(140, 200, 150, 0.55);
+}
+.disposition-reason__mods {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-left: 2px;
+}
+.disposition-reason__mod {
+  font-size: 11px;
+  padding: 2px 8px;
+  opacity: 0.85;
+}
+.disposition-reason__mod--on {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(180, 220, 190, 0.5);
+}
+.disposition-reason--other {
+  margin-top: 10px;
+  width: 100%;
+}
+.disposition-reason__other-check {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.disposition-reason__other-check input {
+  margin-top: 3px;
+}
+.disposition-reason__note-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.disposition-reason__note {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(0, 0, 0, 0.25);
+  color: inherit;
+}
+.disposition-reason__note-save {
+  font-size: 11px;
+  white-space: nowrap;
+}
 .disposition-status__outcome,
 .disposition-status__next {
   margin: 6px 0 0;
@@ -10314,14 +10390,14 @@ tr.disabled:hover td {
 .drq-quality-axes {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
 }
 .drq-quality-axis {
   display: grid;
   grid-template-columns: 4.5rem minmax(0, 1fr);
-  gap: 8px;
+  gap: 6px;
   align-items: center;
-  padding: 4px 6px;
+  padding: 2px 4px;
   border-radius: 8px;
   border: 1px solid transparent;
 }
@@ -10401,10 +10477,38 @@ tr.disabled:hover td {
 .drq-nav {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
+  align-items: stretch;
   gap: 8px;
-  padding-top: 4px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 2px 0 0;
+  border-top: none;
+}
+.drq-nav__btn {
+  flex: 1 1 0;
+  min-height: 44px;
+  padding: 10px 14px;
+  font-size: 15px;
+  font-weight: 650;
+  border-radius: 10px;
+}
+.drq-batch-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 0 4px;
+}
+.drq-batch-actions .drq-progress {
+  flex: 1 1 140px;
+  min-width: 120px;
+  margin: 0;
+}
+.drq-batch-actions__dismiss {
+  flex: 0 0 auto;
+  min-height: 40px;
+  padding: 8px 14px;
+  font-size: 14px;
+  font-weight: 650;
+  border-radius: 10px;
 }
 .drq-filmstrip {
   display: flex;
@@ -11750,7 +11854,7 @@ tr.disabled:hover td {
   text-transform: uppercase;
   padding: 2px 6px;
   border-radius: 4px;
-  background: rgba(220, 60, 60, 0.85);
+  background: rgba(70, 130, 220, 0.88);
   color: #fff;
 }
 

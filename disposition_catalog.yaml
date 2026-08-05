@@ -1,9 +1,11 @@
-# Disposition catalog — entry markers route into process steps with hooks.
+# Disposition catalog — entry markers route into process steps / reasons.
 # Runtime edits merge into output/.../_status/disposition_catalog.json (UI/API).
 #
-# kind: entry | step
+# kind: entry | step | reason
+# reason: diagnosis under an entry (e.g. refine) — optional modifiers, no hooks
 # hook: none | replay | replay_front | extend | open_trim | trash | archive |
 #       extract_frame | sampler_pin | appetite_more | set_marker
+# modifier_mode: none | exclusive | multi
 #
 version: 1
 schema: comfyui-runpod.disposition-catalog.v0
@@ -13,11 +15,11 @@ promotion_rules:
     quality_min: 4
     appetite_in: [more, fast_track]
     promote: [advance]
-    secondary: [extract]
+    secondary: []
   low_quality_high_appetite:
     quality_max: 3
     appetite_in: [more, fast_track]
-    promote: [refine, investigate, extract]
+    promote: [refine, investigate]
     secondary: []
   low_quality_low_appetite:
     quality_max: 2
@@ -38,64 +40,57 @@ promotion_rules:
     quality_max: 3
     predicted_max: 2.5
     promote: [investigate]
-    secondary: [refine, extract]
-  derived_only:
-    explicit_quality_missing: true
-    promote: [derived, investigate]
-    secondary: []
+    secondary: [refine]
 
 markers:
   - id: refine
     kind: entry
     process: refine
     label: Refine
-    hint: Known fix — tweak recipe or edit in place
+    hint: Known fix — mark why, then act later
     enabled: true
     order: 1
     hook: none
-    narrows_to: [refine.aspect, refine.quality, refine.edit]
+    narrows_to:
+      - refine.identity
+      - refine.lighting
+      - refine.pacing
+      - refine.activity
+      - refine.artifacts
+      - refine.malformations
+      - refine.intruders
+      - refine.other
     promote_when: [low_quality_high_appetite]
 
   - id: investigate
     kind: entry
     process: investigate
     label: Investigate
-    hint: Name what's worth keeping or fixing
+    hint: Needs a closer look before routing
     enabled: true
     order: 2
     hook: none
-    narrows_to: [investigate.to_extract, investigate.to_advance, investigate.to_refine, investigate.to_retire]
-    promote_when: [conflicting_signals, derived_only, low_quality_high_appetite]
-
-  - id: extract
-    kind: entry
-    process: extract
-    label: Extract
-    hint: Salvage a frame, clip, or reference
-    enabled: true
-    order: 3
-    hook: none
-    narrows_to: [extract.frame, extract.clip, extract.reference]
-    promote_when: [low_quality_high_appetite]
+    narrows_to: []
+    promote_when: [conflicting_signals, low_quality_high_appetite]
 
   - id: advance
     kind: entry
     process: advance
     label: Advance
-    hint: Feed the next pipeline stage from this file
+    hint: Feed the next pipeline stage
     enabled: true
-    order: 4
+    order: 3
     hook: none
-    narrows_to: [advance.extend, advance.vary, advance.queue_now]
+    narrows_to: [advance.extend, advance.vary]
     promote_when: [high_quality_high_appetite, fast_track]
 
   - id: retire
     kind: entry
     process: retire
     label: Retire
-    hint: Remove from active work
+    hint: Soft-archive out of active work
     enabled: true
-    order: 5
+    order: 4
     hook: none
     narrows_to: [retire.trash, retire.archive]
     promote_when: [low_quality_low_appetite, high_quality_low_appetite]
@@ -104,115 +99,90 @@ markers:
     kind: entry
     process: park
     label: Re-evaluate later
-    hint: Park for a future pass — no action now (use Park / dismiss batch to commit)
+    hint: Park for a future pass
     enabled: true
-    order: 6
+    order: 5
     hook: sampler_pin
     promote_when: []
 
-  - id: derived
-    kind: entry
-    process: investigate
-    label: Derived (predicted)
-    hint: Queued from predicted/inferred rating — rate the new output to validate the prediction
-    enabled: true
-    order: 7
-    hook: none
-    promote_when: [derived_only]
-
-  - id: refine.aspect
-    kind: step
+  - id: refine.identity
+    kind: reason
     process: refine
-    label: Aspect
-    hint: Tweak prompt / lora / facet — regen
+    label: Identity
+    hint: Wrong subject / who-what / character drift
     enabled: true
     order: 10
-    hook: replay
+    modifier_mode: none
 
-  - id: refine.quality
-    kind: step
+  - id: refine.lighting
+    kind: reason
     process: refine
-    label: Quality
-    hint: Iterate steps, model, upscale — regen
+    label: Lighting
+    hint: Light, exposure, shadows, color of light
     enabled: true
     order: 11
-    hook: replay
+    modifier_mode: multi
+    modifiers:
+      - { id: dark, label: Dark }
+      - { id: bright, label: Bright }
+      - { id: flat, label: Flat }
+      - { id: harsh, label: Harsh }
+      - { id: warm, label: Warm }
+      - { id: cool, label: Cool }
+      - { id: bad_shadows, label: Bad shadows }
 
-  - id: refine.edit
-    kind: step
+  - id: refine.pacing
+    kind: reason
     process: refine
-    label: Edit
-    hint: Trim or loop in place
+    label: Pacing
+    hint: Length, loop, cut points, tempo
     enabled: true
     order: 12
-    hook: open_trim
+    modifier_mode: exclusive
+    modifiers:
+      - { id: too_fast, label: Too fast }
+      - { id: too_slow, label: Too slow }
+      - { id: too_variable, label: Too variable }
 
-  - id: investigate.to_extract
-    kind: step
-    process: investigate
-    label: Salvage part
-    hint: Route to extract
+  - id: refine.activity
+    kind: reason
+    process: refine
+    label: Activity
+    hint: Motion energy is wrong
     enabled: true
-    order: 20
-    hook: set_marker
-    hook_args: { marker: extract }
+    order: 13
+    modifier_mode: exclusive
+    modifiers:
+      - { id: too_busy, label: Too busy }
+      - { id: too_still, label: Too still }
 
-  - id: investigate.to_advance
-    kind: step
-    process: investigate
-    label: Push pipeline
-    hint: Route to advance
+  - id: refine.artifacts
+    kind: reason
+    process: refine
+    label: Artifacts
+    hint: Glitches, mush, warping
     enabled: true
-    order: 21
-    hook: set_marker
-    hook_args: { marker: advance }
+    order: 14
+    modifier_mode: none
 
-  - id: investigate.to_refine
-    kind: step
-    process: investigate
-    label: Known fix
-    hint: Route to refine
+  - id: refine.intruders
+    kind: reason
+    process: refine
+    label: Intruders
+    hint: Unwanted people, objects, or junk in frame
     enabled: true
-    order: 22
-    hook: set_marker
-    hook_args: { marker: refine }
+    order: 15
+    modifier_mode: none
 
-  - id: investigate.to_retire
-    kind: step
-    process: investigate
-    label: No signal
-    hint: Route to retire
+  - id: refine.other
+    kind: reason
+    process: refine
+    label: Other
+    hint: Something else — leave a short note
     enabled: true
-    order: 23
-    hook: set_marker
-    hook_args: { marker: retire }
-
-  - id: extract.frame
-    kind: step
-    process: extract
-    label: Hero frame
-    hint: Extract still to input pool (placeholder)
-    enabled: true
-    order: 30
-    hook: extract_frame
-
-  - id: extract.clip
-    kind: step
-    process: extract
-    label: Clip segment
-    hint: Spin off sub-segment (placeholder)
-    enabled: true
-    order: 31
-    hook: none
-
-  - id: extract.reference
-    kind: step
-    process: extract
-    label: Reference
-    hint: Register as reference still (placeholder)
-    enabled: true
-    order: 32
-    hook: extract_frame
+    order: 16
+    modifier_mode: none
+    requires_note: true
 
   - id: advance.extend
     kind: step
@@ -227,19 +197,10 @@ markers:
     kind: step
     process: advance
     label: Vary
-    hint: Front-queue replay with the same bindings (not a prompt variation yet)
+    hint: Front-queue replay with the same bindings
     enabled: true
     order: 41
     hook: replay_front
-
-  - id: advance.queue_now
-    kind: step
-    process: advance
-    label: Queue now
-    hint: Plain replay immediately
-    enabled: true
-    order: 42
-    hook: replay
 
   - id: retire.trash
     kind: step
@@ -254,16 +215,7 @@ markers:
     kind: step
     process: retire
     label: Archive
-    hint: Mark archived (soft retire)
+    hint: Soft retire
     enabled: true
     order: 51
     hook: archive
-
-  - id: repair.workflow
-    kind: step
-    process: investigate
-    label: Repair workflow
-    hint: Workflow / binding issue
-    enabled: true
-    order: 60
-    hook: none

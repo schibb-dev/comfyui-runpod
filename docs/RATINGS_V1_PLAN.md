@@ -106,7 +106,7 @@ python3 shape_factory.py heuristics build           # reads ratings + appetite +
 1. Watch clip → set Subject / Render / Action + Appetite (judgments).
 2. **Suggestion engine** promotes entry markers from Q×A×facet (promote only — no silent auto-tick).
 3. User toggles an **entry marker** (`refine`, `investigate`, `extract`, `advance`, `retire`, `park`).
-4. **Router** narrows to **steps** (e.g. `refine.aspect` → replay hook, `refine.edit` → trim UI).
+4. **Router** narrows under an entry: Refine → **reasons** (Identity / Lighting / … + optional modifiers); Advance/Retire → **steps** with hooks (extend, trash, …).
 5. Step hooks fire; outcomes recorded in disposition row; markers clear or chain.
 
 ### Entry markers (v0)

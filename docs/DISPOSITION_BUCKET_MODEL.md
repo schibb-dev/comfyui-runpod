@@ -147,11 +147,11 @@ stateDiagram-v2
 
 ## 7. Disposition entries (editing buckets)
 
-One **primary entry** at a time per asset (mutually exclusive). Steps (e.g. refine.quality) are actions under an entry.
+One **primary entry** at a time per asset (mutually exclusive). **Reasons** under Refine diagnose *why*; **steps** under Advance/Retire run hooks.
 
 | Entry | Meaning | Typical steps |
 |-------|---------|---------------|
-| **Refine** | Known delta — fix artifact | Aspect, Quality, Edit |
+| **Refine** | Known delta — mark *why* (reasons + optional modifiers) | Identity, Lighting, Pacing, Activity, Artifacts, Intruders, Other |
 | **Investigate** | Unknown delta — route elsewhere | Salvage, pipeline, fix, retire |
 | **Advance** | Feed next pipeline stage | Extend, Vary (+ priority) |
 | **Extract** | Salvage part of clip | Frame, clip, reference |

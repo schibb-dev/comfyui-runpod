@@ -533,6 +533,7 @@ export type DiscoveryAssetRatingsResponse = {
   appetite_facet?: AppetiteFacet | null;
   disposition_markers?: string[];
   disposition_notes?: Record<string, string>;
+  disposition_reason_detail?: Record<string, { modifiers?: string[]; note?: string }>;
   disposition_updated_at?: string | null;
   disposition_outcomes?: DispositionOutcome[];
   disposition_last_outcome?: DispositionOutcome | null;
@@ -601,7 +602,15 @@ export type DiscoveryRatingSamplerCandidate = {
   mtime?: number;
 };
 
-export type DispositionMarkerKind = "entry" | "step";
+export type DispositionMarkerKind = "entry" | "step" | "reason";
+
+export type DispositionModifierMode = "none" | "exclusive" | "multi";
+
+export type DispositionReasonModifier = {
+  id: string;
+  label: string;
+  hint?: string;
+};
 
 export type DispositionHook =
   | "none"
@@ -628,6 +637,14 @@ export type DispositionCatalogMarker = {
   narrows_to?: string[];
   promote_when?: string[];
   hook_args?: Record<string, unknown>;
+  modifier_mode?: DispositionModifierMode | string;
+  modifiers?: DispositionReasonModifier[];
+  requires_note?: boolean;
+};
+
+export type DispositionReasonDetail = {
+  modifiers?: string[];
+  note?: string;
 };
 
 export type DispositionPromotions = {
@@ -646,6 +663,7 @@ export type DispositionCatalogResponse = {
   };
   entries?: DispositionCatalogMarker[];
   steps?: DispositionCatalogMarker[];
+  reasons?: DispositionCatalogMarker[];
   catalog_path?: string;
   seed_path?: string;
   error?: string;
@@ -667,6 +685,7 @@ export type ToggleDispositionResponse = {
     on?: boolean;
     markers?: string[];
     notes?: Record<string, string>;
+    reason_detail?: Record<string, DispositionReasonDetail>;
     cleared?: boolean;
     updated_at?: string | null;
   };
@@ -1589,6 +1608,8 @@ export type WorkProductItem = {
   created_at?: string;
   pick_mode?: string;
   pick_index?: number;
+  /** True when produced by the hourly planner (`hourly__` job key), not merely derived from an hourly video. */
+  is_hourly?: boolean;
   rating_kind?: string | null;
   disposition_entry?: string | null;
   disposition_note?: string | null;
