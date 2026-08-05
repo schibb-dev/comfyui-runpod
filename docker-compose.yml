@@ -83,6 +83,8 @@ services:
       - COMFYUI_VERBOSE=INFO
       # Enable sampler/VHS latent live previews (Work products + Comfy UI). Set none to disable.
       - COMFYUI_PREVIEW_METHOD=${COMFYUI_PREVIEW_METHOD:-auto}
+      # Image entrypoint (Jul 2 bake) may ignore COMFYUI_PREVIEW_METHOD; pass CLI flag via EXTRA_ARGS.
+      - COMFYUI_EXTRA_ARGS=${COMFYUI_EXTRA_ARGS:---preview-method auto}
       # Enable automatic WAN model downloads
       - download_480p_native_models=true
       - download_720p_native_models=true

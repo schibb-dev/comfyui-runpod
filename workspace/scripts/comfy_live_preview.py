@@ -9,11 +9,17 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-# Comfy BinaryEventTypes.PREVIEW_IMAGE
+# Comfy BinaryEventTypes (protocol.py)
 BINARY_EVENT_PREVIEW_IMAGE = 1
-# Image formats in the 8-byte header (second u32)
+BINARY_EVENT_PREVIEW_IMAGE_WITH_METADATA = 4
+# Image formats in the 8-byte header (second u32) for PREVIEW_IMAGE
 FORMAT_JPEG = 1
 FORMAT_PNG = 2
+
+# Advertise so Comfy 0.7+ sends PREVIEW_IMAGE_WITH_METADATA (and still gets frames).
+CLIENT_FEATURE_FLAGS: Dict[str, bool] = {
+    "supports_preview_metadata": True,
+}
 
 # Submitters historically used both hyphen and underscore forms; listen for both.
 DEFAULT_CLIENT_IDS: Tuple[str, ...] = (
@@ -43,35 +49,28 @@ def ws_url_from_server(server: str, *, client_id: str) -> str:
     return f"{ws_base}/ws?clientId={client_id}"
 
 
-def parse_preview_binary(payload: bytes) -> Optional[Tuple[bytes, str, Optional[int]]]:
+def parse_preview_binary(
+    payload: bytes,
+) -> Optional[Tuple[bytes, str, Optional[int], Optional[str]]]:
     """
     Parse a Comfy binary preview frame.
 
     Wire layout (after Comfy ``encode_bytes``):
       u32 event_type | image_payload…
 
-    Standard Comfy image_payload: u32 image_format | image_bytes
+    PREVIEW_IMAGE (1): u32 image_format | image_bytes
+    PREVIEW_IMAGE_WITH_METADATA (4): u32 meta_len | meta_json | image_bytes
     VHS animated preview embeds: u32 1 | u32 1 | u32 frame_index | 16p node | jpeg
 
-    Returns (image_bytes, mime, frame_index_or_None) or None when not usable.
+    Returns (image_bytes, mime, frame_index_or_None, prompt_id_or_None) or None.
     """
     if not isinstance(payload, (bytes, bytearray)) or len(payload) < 9:
         return None
     buf = bytes(payload)
     try:
-        event_type, image_format = struct.unpack_from(">II", buf, 0)
+        event_type = struct.unpack_from(">I", buf, 0)[0]
     except struct.error:
         return None
-    # Some builds send little-endian; accept either when event looks wrong.
-    if event_type != BINARY_EVENT_PREVIEW_IMAGE:
-        try:
-            event_type_le, image_format_le = struct.unpack_from("<II", buf, 0)
-        except struct.error:
-            return None
-        if event_type_le == BINARY_EVENT_PREVIEW_IMAGE:
-            event_type, image_format = event_type_le, image_format_le
-        else:
-            image_format = 0
 
     def _sniff(data: bytes) -> Optional[Tuple[int, str, bytes]]:
         jpeg_at = data.find(b"\xff\xd8")
@@ -86,7 +85,67 @@ def parse_preview_binary(payload: bytes) -> Optional[Tuple[bytes, str, Optional[
         candidates.sort(key=lambda t: t[0])
         return candidates[0]
 
-    frame_idx: Optional[int] = None
+    # Comfy 0.7+ metadata-bearing previews.
+    if event_type == BINARY_EVENT_PREVIEW_IMAGE_WITH_METADATA:
+        if len(buf) < 8:
+            return None
+        try:
+            meta_len = struct.unpack_from(">I", buf, 4)[0]
+        except struct.error:
+            return None
+        meta_start = 8
+        meta_end = meta_start + int(meta_len)
+        if meta_len < 0 or meta_end > len(buf):
+            return None
+        prompt_id: Optional[str] = None
+        frame_idx: Optional[int] = None
+        try:
+            meta_obj = json.loads(buf[meta_start:meta_end].decode("utf-8"))
+            if isinstance(meta_obj, dict):
+                pid = meta_obj.get("prompt_id")
+                if isinstance(pid, str) and pid.strip():
+                    prompt_id = pid.strip()
+                for key in ("frame_index", "index", "frame"):
+                    if key in meta_obj:
+                        try:
+                            frame_idx = int(meta_obj[key])
+                        except (TypeError, ValueError):
+                            pass
+                        break
+                mime_hint = str(meta_obj.get("image_type") or "").strip().lower()
+            else:
+                mime_hint = ""
+        except Exception:
+            mime_hint = ""
+        image = buf[meta_end:]
+        if not image:
+            return None
+        if image[:2] == b"\xff\xd8" or mime_hint == "image/jpeg":
+            return image, "image/jpeg", frame_idx, prompt_id
+        if image[:8] == b"\x89PNG\r\n\x1a\n" or mime_hint == "image/png":
+            return image, "image/png", frame_idx, prompt_id
+        sniffed = _sniff(image)
+        if sniffed is None:
+            return None
+        return sniffed[2], sniffed[1], frame_idx, prompt_id
+
+    try:
+        _event_type, image_format = struct.unpack_from(">II", buf, 0)
+    except struct.error:
+        return None
+    event_type = _event_type
+    # Some builds send little-endian; accept either when event looks wrong.
+    if event_type != BINARY_EVENT_PREVIEW_IMAGE:
+        try:
+            event_type_le, image_format_le = struct.unpack_from("<II", buf, 0)
+        except struct.error:
+            return None
+        if event_type_le == BINARY_EVENT_PREVIEW_IMAGE:
+            event_type, image_format = event_type_le, image_format_le
+        else:
+            image_format = 0
+
+    frame_idx = None
     sniffed = _sniff(buf[4:])
     if sniffed is not None:
         off_in_tail, mime, blob = sniffed
@@ -99,16 +158,16 @@ def parse_preview_binary(payload: bytes) -> Optional[Tuple[bytes, str, Optional[
                     frame_idx = int(ind)
             except struct.error:
                 pass
-        return blob, mime, frame_idx
+        return blob, mime, frame_idx, None
     data = buf[8:]
     if not data:
         return None
     if image_format == FORMAT_JPEG or data[:2] == b"\xff\xd8":
-        return data, "image/jpeg", None
+        return data, "image/jpeg", None, None
     if image_format == FORMAT_PNG or data[:8] == b"\x89PNG\r\n\x1a\n":
-        return data, "image/png", None
+        return data, "image/png", None, None
     if image_format in (FORMAT_JPEG, FORMAT_PNG, 0):
-        return data, "image/jpeg" if image_format != FORMAT_PNG else "image/png", None
+        return data, "image/jpeg" if image_format != FORMAT_PNG else "image/png", None, None
     return None
 
 
@@ -503,13 +562,14 @@ class LivePreviewBridge:
         return pid or current_pid
 
     def _handle_binary(self, payload: bytes, current_pid: Optional[str]) -> None:
-        if not current_pid:
-            return
         parsed = parse_preview_binary(payload)
         if not parsed:
             return
-        image, mime, frame_idx = parsed
-        self.cache.on_preview_bytes(current_pid, image, mime, frame_index=frame_idx)
+        image, mime, frame_idx, meta_pid = parsed
+        pid = (meta_pid or current_pid or "").strip()
+        if not pid:
+            return
+        self.cache.on_preview_bytes(pid, image, mime, frame_index=frame_idx)
 
     def _run_aiohttp(self, ws_url: str, client_id: str) -> None:
         import asyncio
@@ -520,6 +580,11 @@ class LivePreviewBridge:
             timeout = aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=None)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.ws_connect(ws_url, heartbeat=20, max_msg_size=16 * 1024 * 1024) as ws:
+                    # Comfy 0.7+ feature negotiation (first message) enables metadata previews.
+                    try:
+                        await ws.send_json({"type": "feature_flags", "data": CLIENT_FEATURE_FLAGS})
+                    except Exception:
+                        pass
                     print(f"[comfy-live-preview] connected client={client_id} url={ws_url}")
                     current_pid: Optional[str] = None
                     async for msg in ws:
@@ -546,6 +611,12 @@ class LivePreviewBridge:
 
         current_pid: Dict[str, Optional[str]] = {"pid": None}
 
+        def on_open(ws: Any) -> None:
+            try:
+                ws.send(json.dumps({"type": "feature_flags", "data": CLIENT_FEATURE_FLAGS}))
+            except Exception:
+                pass
+
         def on_message(_ws: Any, message: Any) -> None:
             if isinstance(message, bytes):
                 self._handle_binary(message, current_pid["pid"])
@@ -559,7 +630,13 @@ class LivePreviewBridge:
             raise RuntimeError("ws closed")
 
         print(f"[comfy-live-preview] connecting client={client_id} url={ws_url}")
-        app = websocket.WebSocketApp(ws_url, on_message=on_message, on_error=on_error, on_close=on_close)
+        app = websocket.WebSocketApp(
+            ws_url,
+            on_open=on_open,
+            on_message=on_message,
+            on_error=on_error,
+            on_close=on_close,
+        )
         app.run_forever(ping_interval=20, ping_timeout=10)
 
 

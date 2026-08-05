@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import struct
 import time
 import unittest
@@ -10,6 +11,7 @@ import unittest
 import support  # noqa: F401
 from comfy_live_preview import (
     BINARY_EVENT_PREVIEW_IMAGE,
+    BINARY_EVENT_PREVIEW_IMAGE_WITH_METADATA,
     FORMAT_JPEG,
     FORMAT_PNG,
     LivePreviewCache,
@@ -25,7 +27,7 @@ class ParseBinaryTests(unittest.TestCase):
         out = parse_preview_binary(payload)
         self.assertIsNotNone(out)
         assert out is not None
-        data, mime, frame = out
+        data, mime, frame, _pid = out
         self.assertEqual(mime, "image/jpeg")
         self.assertEqual(data[:2], b"\xff\xd8")
         self.assertIsNone(frame)
@@ -36,7 +38,7 @@ class ParseBinaryTests(unittest.TestCase):
         out = parse_preview_binary(payload)
         self.assertIsNotNone(out)
         assert out is not None
-        data, mime, frame = out
+        data, mime, frame, _pid = out
         self.assertEqual(mime, "image/png")
         self.assertTrue(data.startswith(b"\x89PNG"))
         self.assertIsNone(frame)
@@ -54,11 +56,29 @@ class ParseBinaryTests(unittest.TestCase):
         out = parse_preview_binary(payload)
         self.assertIsNotNone(out)
         assert out is not None
-        data, mime, frame = out
+        data, mime, frame, _pid = out
         self.assertEqual(mime, "image/jpeg")
         self.assertEqual(data[:2], b"\xff\xd8")
         self.assertEqual(data, jpeg)
         self.assertEqual(frame, 3)
+
+    def test_parse_preview_with_metadata(self) -> None:
+        jpeg = b"\xff\xd8\xff" + b"\x00" * 24
+        meta = json.dumps({"prompt_id": "pid-meta", "node_id": "136", "image_type": "image/jpeg"}).encode()
+        payload = (
+            struct.pack(">I", BINARY_EVENT_PREVIEW_IMAGE_WITH_METADATA)
+            + struct.pack(">I", len(meta))
+            + meta
+            + jpeg
+        )
+        out = parse_preview_binary(payload)
+        self.assertIsNotNone(out)
+        assert out is not None
+        data, mime, frame, pid = out
+        self.assertEqual(mime, "image/jpeg")
+        self.assertEqual(data, jpeg)
+        self.assertIsNone(frame)
+        self.assertEqual(pid, "pid-meta")
 
     def test_parse_rejects_short(self) -> None:
         self.assertIsNone(parse_preview_binary(b"short"))
