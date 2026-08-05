@@ -42,6 +42,8 @@ import type {
   ShapeFactoryUnqueueResponse,
   ShapeFactoryDiscardRequest,
   ShapeFactoryDiscardResponse,
+  ShapeFactoryUpdatePendingTrimRequest,
+  ShapeFactoryUpdatePendingTrimResponse,
   ShapeFactoryQuarantineListResponse,
   ShapeFactoryQuarantineReleaseResponse,
   ShapeFactoryPromptProfile,
@@ -72,6 +74,7 @@ import type {
   VisionTagJudgmentSaveResponse,
   JsonPeekResponse,
   ComfyLiveStatusResponse,
+  ComfyLogsResponse,
 } from "./types";
 
 function experimentsUiStaleApiHint(): string {
@@ -303,6 +306,20 @@ export async function fetchComfyLiveStatus(promptIds: string[]): Promise<ComfyLi
       `GET /api/comfy/live-status failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
     );
   }
+  return j;
+}
+
+export async function fetchComfyLogs(opts?: { tail?: number }): Promise<ComfyLogsResponse> {
+  const sp = new URLSearchParams();
+  if (opts?.tail != null) sp.set("tail", String(opts.tail));
+  const qs = sp.toString();
+  const r = await fetch(`/api/comfy/logs${qs ? `?${qs}` : ""}`);
+  const j = (await r.json().catch(() => ({}))) as ComfyLogsResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`GET /api/comfy/logs failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  if (!Array.isArray(j.entries)) j.entries = [];
   return j;
 }
 
@@ -643,6 +660,24 @@ export async function discardShapeFactoryJob(req: ShapeFactoryDiscardRequest): P
   return j;
 }
 
+export async function updatePendingShapeFactoryTrim(
+  req: ShapeFactoryUpdatePendingTrimRequest,
+): Promise<ShapeFactoryUpdatePendingTrimResponse> {
+  const r = await fetch("/api/shape-factory/update-pending-trim", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryUpdatePendingTrimResponse;
+  if (!r.ok || !j.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST /api/shape-factory/update-pending-trim failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
 async function postWorkflowExplorerFactoryUpdate(
   path: "/api/workflow-explorer/factory/assets" | "/api/workflow-explorer/factory/workflows",
   body: Record<string, unknown>,
@@ -838,11 +873,17 @@ export async function fetchDiscoveryRatingSampler(opts?: {
   refresh?: boolean;
   limit?: number;
   minPredicted?: number;
+  mode?: "mixed" | "random" | "search" | "latest" | string;
+  query?: string;
+  includeDone?: boolean;
 }): Promise<DiscoveryRatingSamplerResponse> {
   const sp = new URLSearchParams();
   if (opts?.refresh) sp.set("refresh", "1");
   if (opts?.limit != null) sp.set("limit", String(opts.limit));
   if (opts?.minPredicted != null) sp.set("min_predicted", String(opts.minPredicted));
+  if (opts?.mode) sp.set("mode", String(opts.mode));
+  if (opts?.query != null && String(opts.query).trim()) sp.set("q", String(opts.query).trim());
+  if (opts?.includeDone) sp.set("include_done", "1");
   const r = await fetch(`/api/discovery/rating-sampler?${sp.toString()}`);
   const j = (await r.json()) as DiscoveryRatingSamplerResponse & { error?: string; path?: string };
   if (!r.ok) {
@@ -859,6 +900,46 @@ export async function fetchDiscoveryRatingSampler(opts?: {
       );
     }
     throw new Error(`GET /api/discovery/rating-sampler failed: ${r.status}: ${JSON.stringify(j)}`);
+  }
+  return j;
+}
+
+export type DiscoveryEnsureThumbResponse = {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  relpath?: string;
+  thumb_relpath?: string | null;
+  thumb_url?: string | null;
+  created?: boolean;
+  skipped?: boolean;
+  reason?: string;
+};
+
+export async function ensureDiscoveryThumb(opts: {
+  relpath: string;
+  force?: boolean;
+}): Promise<DiscoveryEnsureThumbResponse> {
+  const r = await fetch("/api/discovery/ensure-thumb", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ relpath: opts.relpath, force: Boolean(opts.force) }),
+  });
+  const j = (await r.json()) as DiscoveryEnsureThumbResponse & { path?: string };
+  if (!r.ok) {
+    const isStale =
+      r.status === 404 &&
+      j &&
+      typeof j === "object" &&
+      (j as { error?: string }).error === "unknown_api_route" &&
+      String((j as { path?: string }).path || "").includes("ensure-thumb");
+    if (isStale) {
+      throw new Error(
+        "Experiments API is outdated (missing POST /api/discovery/ensure-thumb). Restart the process that serves /api." +
+          experimentsUiStaleApiHint(),
+      );
+    }
+    throw new Error(`POST /api/discovery/ensure-thumb failed: ${r.status}: ${JSON.stringify(j)}`);
   }
   return j;
 }

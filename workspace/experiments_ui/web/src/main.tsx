@@ -2,7 +2,6 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./ui/App";
 import { AppShell } from "./ui/AppShell";
-import { AssetWorkbench } from "./ui/AssetWorkbench";
 import { ComfyQueueMonitorApp } from "./ui/ComfyQueueMonitorApp";
 import { DiscoveryLibraryApp } from "./ui/DiscoveryLibraryApp";
 import { DiscoveryFactoryMapApp } from "./ui/DiscoveryFactoryMapApp";
@@ -13,7 +12,7 @@ import { WorkflowExplorerApp } from "./ui/WorkflowExplorerApp";
 import { WorkProductsApp } from "./ui/WorkProductsApp";
 import { VisionSliceReviewApp } from "./ui/VisionSliceReviewApp";
 import { VisionTagJudgeApp } from "./ui/VisionTagJudgeApp";
-import { isWorkbenchLens, resolveRouteId, type AppRouteId } from "./ui/routes";
+import { resolveRouteId, type AppRouteId } from "./ui/routes";
 import "./ui/styles.css";
 
 const SCREENS: Record<AppRouteId, React.ComponentType> = {
@@ -23,7 +22,7 @@ const SCREENS: Record<AppRouteId, React.ComponentType> = {
   workflows: WorkflowExplorerApp,
   factory: DiscoveryFactoryMapApp,
   rate: DiscoveryRatingQueueApp,
-  "work-products": WorkProductsApp,
+  workbench: WorkProductsApp,
   "vision-slices": VisionSliceReviewApp,
   library: DiscoveryLibraryApp,
   experiments: App,
@@ -55,21 +54,12 @@ class ScreenErrorBoundary extends React.Component<{ children: React.ReactNode },
   }
 }
 
-// Library / Factory / Rate render inside the shared Workbench frame (lens bar);
-// every other route renders bare inside the app shell.
-const screen = isWorkbenchLens(active) ? (
-  <AssetWorkbench active={active}>
-    <RootView />
-  </AssetWorkbench>
-) : (
-  <RootView />
-);
-
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <AppShell active={active}>
-      <ScreenErrorBoundary>{screen}</ScreenErrorBoundary>
+      <ScreenErrorBoundary>
+        <RootView />
+      </ScreenErrorBoundary>
     </AppShell>
   </React.StrictMode>,
 );
-

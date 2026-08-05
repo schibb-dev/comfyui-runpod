@@ -972,6 +972,7 @@ def _discovery_rating_sampler_payload(cfg: "ServerConfig", q: Dict[str, List[str
         SAMPLER_SCHEMA_VERSION,
         analyze_vision_gaps,
         default_sampler_sessions_dir,
+        normalize_selection_mode,
         persist_rating_session,
         sample_rating_queue,
     )
@@ -989,12 +990,14 @@ def _discovery_rating_sampler_payload(cfg: "ServerConfig", q: Dict[str, List[str
             return True
         return False
 
+    def _truthy(vals: List[str]) -> bool:
+        for v in vals:
+            if str(v).strip().lower() in ("1", "true", "yes", "on"):
+                return True
+        return False
+
     og_root, _wip = _og_wip_library_roots(cfg)
-    refresh = False
-    for v in q.get("refresh", []):
-        if str(v).strip().lower() in ("1", "true", "yes", "on"):
-            refresh = True
-            break
+    refresh = _truthy(q.get("refresh", []))
 
     limit = 100
     for v in q.get("limit", []):
@@ -1011,12 +1014,57 @@ def _discovery_rating_sampler_payload(cfg: "ServerConfig", q: Dict[str, List[str
             pass
         break
 
-    if refresh:
+    mode = "mixed"
+    for key in ("mode", "selection_mode", "selection"):
+        found = False
+        for v in q.get(key, []):
+            if isinstance(v, str) and v.strip():
+                mode = normalize_selection_mode(v)
+                found = True
+                break
+        if found:
+            break
+
+    query_s = ""
+    for key in ("q", "query", "search"):
+        for v in q.get(key, []):
+            if isinstance(v, str) and v.strip():
+                query_s = v.strip()
+                break
+        if query_s:
+            break
+
+    include_done = _truthy(q.get("include_done", [])) or _truthy(q.get("include_rated", []))
+
+    def _request_matches(doc: Dict[str, Any]) -> bool:
+        req = doc.get("request") if isinstance(doc.get("request"), dict) else {}
+        doc_mode = normalize_selection_mode(req.get("mode") or doc.get("selection_mode") or "mixed")
+        doc_q = str(req.get("query") if "query" in req else doc.get("query") or "").strip()
+        doc_done = bool(req.get("include_done") if "include_done" in req else doc.get("include_done"))
+        try:
+            doc_limit = int(req.get("limit") if req.get("limit") is not None else limit)
+        except (TypeError, ValueError):
+            doc_limit = limit
+        return (
+            doc_mode == mode
+            and doc_q == query_s
+            and doc_done == include_done
+            and doc_limit == limit
+        )
+
+    def _sample(*, seed: int = 0) -> Dict[str, Any]:
+        sample_seed = seed
+        if mode == "random" and seed == 0:
+            sample_seed = int(_dt.datetime.now(_dt.timezone.utc).timestamp())
         session = sample_rating_queue(
             og_root=og_root,
             limit=limit,
             discovery_index=cfg.discovery_index_path,
             min_predicted=min_predicted,
+            mode=mode,
+            query=query_s,
+            include_done=include_done,
+            seed=sample_seed,
         )
         if session.get("ok"):
             out_path = persist_rating_session(session, og_root=og_root, update_state=True)
@@ -1024,19 +1072,13 @@ def _discovery_rating_sampler_payload(cfg: "ServerConfig", q: Dict[str, List[str
         session["vision_gaps"] = analyze_vision_gaps(session)
         return session
 
+    if refresh:
+        return _sample()
+
     sessions_dir = default_sampler_sessions_dir(og_root)
     paths = sorted(sessions_dir.glob("session_*.json")) if sessions_dir.is_dir() else []
     if not paths:
-        session = sample_rating_queue(
-            og_root=og_root,
-            limit=limit,
-            discovery_index=cfg.discovery_index_path,
-            min_predicted=min_predicted,
-        )
-        if session.get("ok"):
-            out_path = persist_rating_session(session, og_root=og_root, update_state=True)
-            session["session_path"] = str(out_path)
-        session["vision_gaps"] = analyze_vision_gaps(session)
+        session = _sample()
         session["bootstrapped"] = True
         return session
 
@@ -1047,17 +1089,8 @@ def _discovery_rating_sampler_payload(cfg: "ServerConfig", q: Dict[str, List[str
     if not isinstance(session, dict):
         return {"ok": False, "error": "session_invalid"}
 
-    if _session_is_stale(session):
-        session = sample_rating_queue(
-            og_root=og_root,
-            limit=limit,
-            discovery_index=cfg.discovery_index_path,
-            min_predicted=min_predicted,
-        )
-        if session.get("ok"):
-            out_path = persist_rating_session(session, og_root=og_root, update_state=True)
-            session["session_path"] = str(out_path)
-        session["vision_gaps"] = analyze_vision_gaps(session)
+    if _session_is_stale(session) or not _request_matches(session):
+        session = _sample()
         session["regenerated_stale"] = True
         return session
 
@@ -1403,7 +1436,7 @@ def _fast_track_extend(cfg: "ServerConfig", rel: str, body: Dict[str, Any]) -> D
             return _shape_factory_replay_payload(cfg, replay_body)
         except ValueError as e:
             # Only still-source families (no video slot) fall back to plain replay.
-            # Do not swallow extend_zero_length / missing-output errors as silent replays.
+            # Do not swallow missing-output / unsupported-extend errors as silent replays.
             if "extend_not_supported" in str(e).lower():
                 replay_body["extend"] = False
                 out = _shape_factory_replay_payload(cfg, replay_body)
@@ -1521,6 +1554,51 @@ def _shape_factory_discard_payload(cfg: ServerConfig, body: Dict[str, Any]) -> D
         server=str(cfg.comfy_server),
         reason=reason,
         expunge=expunge,
+    )
+
+
+def _shape_factory_update_pending_trim_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /api/shape-factory/update-pending-trim — patch VHS window on a pending job."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory import update_pending_job_vhs_window  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    job_key = str(body.get("job_key") or "").strip() or None
+    job_path_raw = str(body.get("job_path") or "").strip() or None
+    if not job_key and not job_path_raw:
+        raise ValueError("missing_job_key")
+    if "skip_first_frames" not in body and "frame_load_cap" not in body:
+        raise ValueError("missing_vhs_window")
+    try:
+        skip = int(body.get("skip_first_frames") or 0)
+    except (TypeError, ValueError) as e:
+        raise ValueError("bad_skip_first_frames") from e
+    try:
+        cap = int(body.get("frame_load_cap") or 0)
+    except (TypeError, ValueError) as e:
+        raise ValueError("bad_frame_load_cap") from e
+    mark_in = body.get("mark_in")
+    mark_out = body.get("mark_out")
+    try:
+        mark_in_f = float(mark_in) if mark_in is not None and mark_in != "" else None
+    except (TypeError, ValueError) as e:
+        raise ValueError("bad_mark_in") from e
+    try:
+        mark_out_f = float(mark_out) if mark_out is not None and mark_out != "" else None
+    except (TypeError, ValueError) as e:
+        raise ValueError("bad_mark_out") from e
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    return update_pending_job_vhs_window(
+        data_root=data_root,
+        job_key=job_key,
+        job_path=Path(job_path_raw) if job_path_raw else None,
+        skip_first_frames=skip,
+        frame_load_cap=cap,
+        mark_in=mark_in_f,
+        mark_out=mark_out_f,
+        server=str(cfg.comfy_server),
     )
 
 
@@ -3185,6 +3263,64 @@ def _discovery_abs_path_to_output_relpath(cfg: "ServerConfig", abs_p: Path) -> O
         return _normalize_rel_posix(str(rel).replace("\\", "/"))
     except Exception:
         return None
+
+
+def _discovery_ensure_thumb_payload(cfg: "ServerConfig", body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    POST /api/discovery/ensure-thumb — write same-stem .png next to a video when missing.
+    """
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from video_companion_thumbs import ensure_companion_thumb  # type: ignore
+
+    rel = str(body.get("relpath") or "").strip()
+    if not rel:
+        raise ValueError("relpath required")
+    force = bool(body.get("force"))
+    media_abs = _discovery_resolve_media_file(cfg, rel)
+    if media_abs is None or not media_abs.is_file():
+        raise FileNotFoundError(rel)
+
+    # Prefer the video member when the caller passed a non-video primary relpath.
+    video_abs = media_abs
+    if video_abs.suffix.lower() not in {".mp4", ".mov", ".mkv", ".webm"}:
+        # Try swapping extension to .mp4 next to the resolved file.
+        cand = video_abs.with_suffix(".mp4")
+        if cand.is_file():
+            video_abs = cand
+        else:
+            raise ValueError(f"not_a_video: {rel}")
+
+    row = ensure_companion_thumb(video_abs, force=force)
+    if not row.get("ok"):
+        return {
+            "ok": False,
+            "error": row.get("error") or "ensure_thumb_failed",
+            "relpath": rel,
+            "detail": row,
+        }
+
+    thumb_abs = Path(str(row.get("path") or ""))
+    thumb_rel = _discovery_abs_path_to_output_relpath(cfg, thumb_abs) if thumb_abs.is_file() else None
+    if not thumb_rel:
+        # Fall back to same-stem guess under the video's output-relative path.
+        video_rel = _discovery_abs_path_to_output_relpath(cfg, video_abs) or _normalize_rel_posix(rel)
+        if video_rel.lower().endswith((".mp4", ".mov", ".mkv", ".webm")):
+            thumb_rel = str(Path(video_rel).with_suffix(".png")).replace("\\", "/")
+        else:
+            thumb_rel = video_rel
+
+    thumb_url = "/files/" + urllib.parse.quote(_normalize_rel_posix(thumb_rel), safe="") if thumb_rel else None
+    return {
+        "ok": True,
+        "relpath": rel,
+        "thumb_relpath": thumb_rel,
+        "thumb_url": thumb_url,
+        "created": bool(row.get("created")),
+        "skipped": bool(row.get("skipped")),
+        "reason": row.get("reason"),
+    }
 
 
 def _discovery_basename_matches_item(it: Dict[str, Any], base_lc: str) -> bool:
@@ -5215,6 +5351,13 @@ def _extract_key_params_from_prompt(prompt_obj: Any) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     if not isinstance(prompt_obj, dict):
         return out
+    vhs_load_types = {
+        "VHS_LoadVideoPath",
+        "VHS_LoadVideo",
+        "VHS_LoadVideoFFmpegPath",
+        "VHS_LoadVideoFFmpeg",
+        "LoadVideo",
+    }
     for _nid, node in prompt_obj.items():
         if not isinstance(node, dict):
             continue
@@ -5227,6 +5370,19 @@ def _extract_key_params_from_prompt(prompt_obj: Any) -> Dict[str, Any]:
             val = inputs.get(key)
             if isinstance(val, (str, int, float, bool)) and str(val).strip():
                 out[key] = val
+        # VHS trim window — show when present on a video loader (first wins).
+        ctype = str(node.get("class_type") or "")
+        if ctype in vhs_load_types:
+            if "skip_first_frames" not in out and inputs.get("skip_first_frames") is not None:
+                try:
+                    out["skip_first_frames"] = max(0, int(inputs["skip_first_frames"]))
+                except (TypeError, ValueError):
+                    pass
+            if "frame_load_cap" not in out and inputs.get("frame_load_cap") is not None:
+                try:
+                    out["frame_load_cap"] = max(0, int(inputs["frame_load_cap"]))
+                except (TypeError, ValueError):
+                    pass
     return out
 
 
@@ -5251,6 +5407,18 @@ def _guess_workflow_name(prompt_obj: Any, raw_item: Any) -> Optional[str]:
         n = sum(1 for v in prompt_obj.values() if isinstance(v, dict) and v.get("class_type"))
         if n:
             return f"graph ({n} nodes)"
+    return None
+
+
+def _queue_item_job_key(workflow_name: Optional[str]) -> Optional[str]:
+    """Heuristic: factory submits set workflow_name to the job_key."""
+    name = str(workflow_name or "").strip()
+    if not name:
+        return None
+    if name.startswith("client:") or name.startswith("graph ("):
+        return None
+    if "__" in name or name.startswith("hourly"):
+        return name
     return None
 
 
@@ -5794,6 +5962,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_comfy_live_preview_get(q)
         if path == "/api/comfy/live-status":
             return self._handle_comfy_live_status_get(q)
+        if path == "/api/comfy/logs":
+            return self._handle_comfy_logs_get(q)
 
         if path == "/api/queue":
             # Optional: limit how many experiments we scan (newest first).
@@ -5872,6 +6042,7 @@ class Handler(BaseHTTPRequestHandler):
                                 "exp_id": mapped.get("exp_id") if isinstance(mapped, dict) else None,
                                 "run_id": mapped.get("run_id") if isinstance(mapped, dict) else None,
                                 "workflow_name": workflow_name,
+                                "job_key": _queue_item_job_key(workflow_name),
                                 "input_media_relpath": media.get("input_media_relpath"),
                                 "input_media_url": media.get("input_media_url"),
                                 "input_media_kind": media.get("input_media_kind"),
@@ -6184,6 +6355,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_discovery_asset_ratings_verify_post()
         if path == "/api/discovery/asset-recover":
             return self._handle_discovery_asset_recover_post()
+        if path == "/api/discovery/ensure-thumb":
+            return self._handle_discovery_ensure_thumb_post()
         if path == "/api/discovery/asset-ratings/set":
             return self._handle_discovery_asset_ratings_set_post()
         if path == "/api/discovery/asset-appetite/set":
@@ -6216,6 +6389,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_shape_factory_unqueue_post()
         if path == "/api/shape-factory/discard":
             return self._handle_shape_factory_discard_post()
+        if path == "/api/shape-factory/update-pending-trim":
+            return self._handle_shape_factory_update_pending_trim_post()
         if path == "/api/shape-factory/quarantine/release":
             return self._handle_shape_factory_quarantine_release_post()
         if path == "/api/vision/tag-judgment":
@@ -6301,6 +6476,27 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
         except Exception as e:
             return _json_response(self, 500, {"ok": False, "error": "shape_factory_discard_failed", "detail": str(e)})
+        if payload.get("error") in {"not_pending", "still_on_comfy"}:
+            return _json_response(self, 409, payload)
+        if payload.get("error") == "job_not_found":
+            return _json_response(self, 404, payload)
+        code = 200 if payload.get("ok", True) else 400
+        return _json_response(self, code, payload)
+
+    def _handle_shape_factory_update_pending_trim_post(self) -> None:
+        """POST /api/shape-factory/update-pending-trim — patch VHS window on a pending job."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _shape_factory_update_pending_trim_payload(cfg, body)
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except Exception as e:
+            return _json_response(
+                self, 500, {"ok": False, "error": "shape_factory_update_pending_trim_failed", "detail": str(e)}
+            )
         if payload.get("error") in {"not_pending", "still_on_comfy"}:
             return _json_response(self, 409, payload)
         if payload.get("error") == "job_not_found":
@@ -7300,6 +7496,71 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, 500, {"ok": False, "error": "live_status_failed", "detail": str(e)})
         return _json_response(self, 200, payload)
 
+    def _handle_comfy_logs_get(self, q: Dict[str, List[str]]) -> None:
+        """
+        GET /api/comfy/logs — proxy ComfyUI's in-memory log ring buffer.
+
+        Comfy exposes this as ``GET /internal/logs/raw`` (frontend Logs panel):
+        ``{ "entries": [{"t": iso, "m": text}, ...], "size": N }``.
+        Optional ``?tail=N`` keeps the last N entries (default 300, max 2000).
+        """
+        cfg = self.server.cfg
+        comfy = str(cfg.comfy_server).rstrip("/")
+        tail = 300
+        for v in q.get("tail", []):
+            p = _safe_int(v)
+            if p is not None:
+                tail = max(1, min(2000, int(p)))
+                break
+        try:
+            raw = _http_json("GET", f"{comfy}/internal/logs/raw", timeout_s=8)
+        except Exception as e:
+            # Fallback: plain text blob from /internal/logs
+            try:
+                req = urllib.request.Request(f"{comfy}/internal/logs", headers={"Accept": "text/plain, */*"})
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    text = resp.read().decode("utf-8", "replace")
+                lines = text.splitlines()
+                if len(lines) > tail:
+                    lines = lines[-tail:]
+                return _json_response(
+                    self,
+                    200,
+                    {
+                        "ok": True,
+                        "source": "internal/logs",
+                        "size": len(lines),
+                        "entries": [{"t": None, "m": line} for line in lines],
+                    },
+                )
+            except Exception as e2:
+                return _json_response(
+                    self,
+                    502,
+                    {"ok": False, "error": "comfy_logs_fetch_failed", "detail": f"{e}; fallback={e2}"},
+                )
+        entries: List[Dict[str, Any]] = []
+        size = 0
+        if isinstance(raw, dict):
+            size = int(raw.get("size") or 0) if isinstance(raw.get("size"), (int, float)) else 0
+            rows = raw.get("entries") if isinstance(raw.get("entries"), list) else []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                m = row.get("m")
+                if m is None:
+                    continue
+                entries.append({"t": row.get("t"), "m": str(m)})
+            if not size:
+                size = len(entries)
+        if len(entries) > tail:
+            entries = entries[-tail:]
+        return _json_response(
+            self,
+            200,
+            {"ok": True, "source": "internal/logs/raw", "size": size, "entries": entries, "tail": tail},
+        )
+
     def _handle_discovery_asset_recover_post(self) -> None:
         """
         POST /api/discovery/asset-recover  { family? , names?: [...], allow_remote? }
@@ -7315,6 +7576,27 @@ class Handler(BaseHTTPRequestHandler):
             payload = _asset_recover_payload(cfg, obj)
         except Exception as e:
             return _json_response(self, 500, {"ok": False, "error": "asset_recover_failed", "detail": str(e)})
+        status = 200 if payload.get("ok") else 400
+        return _json_response(self, status, payload)
+
+    def _handle_discovery_ensure_thumb_post(self) -> None:
+        """
+        POST /api/discovery/ensure-thumb  { relpath, force? }
+
+        Write a same-stem .png companion next to a video when missing (mid-frame via ffmpeg).
+        """
+        cfg = self.server.cfg
+        obj = self._read_request_json()
+        if obj is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _discovery_ensure_thumb_payload(cfg, obj if isinstance(obj, dict) else {})
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except FileNotFoundError as e:
+            return _json_response(self, 404, {"ok": False, "error": "media_missing", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "ensure_thumb_failed", "detail": str(e)})
         status = 200 if payload.get("ok") else 400
         return _json_response(self, status, payload)
 
@@ -8514,6 +8796,7 @@ def main() -> int:
         "/api/discovery/trim, /api/discovery/embed-api-prompt, /api/discovery/workflow-facets, "
         "/api/discovery/asset-lineage, /api/discovery/asset-ratings, /api/discovery/asset-ratings/verify, "
         "/api/discovery/rating-sampler, GET /api/discovery/asset-audit, POST /api/discovery/asset-recover, "
+        "POST /api/discovery/ensure-thumb, "
         "POST /api/discovery/asset-ratings/set, POST /api/discovery/asset-appetite/set, "
         "GET/POST /api/discovery/disposition-catalog, GET /api/discovery/disposition-suggest, "
         "POST /api/discovery/asset-disposition/toggle, POST /api/discovery/asset-disposition/run-step, "
@@ -8524,9 +8807,9 @@ def main() -> int:
     )
     print("[experiments-ui] home_routes=GET /api/home/summary")
     print(
-        "[experiments-ui] comfy_live_routes=GET /api/comfy/live-preview, GET /api/comfy/live-status"
+        "[experiments-ui] comfy_live_routes=GET /api/comfy/live-preview, GET /api/comfy/live-status, GET /api/comfy/logs"
     )
-    print("[experiments-ui] shape_factory_routes=GET /api/shape-factory/map, GET /api/shape-factory/prompt-profile, GET /api/shape-factory/work-products, GET /api/shape-factory/json-peek, GET /api/shape-factory/quarantine, POST /api/shape-factory/queue, POST /api/shape-factory/replay, POST /api/shape-factory/unqueue, POST /api/shape-factory/discard, POST /api/shape-factory/quarantine/release")
+    print("[experiments-ui] shape_factory_routes=GET /api/shape-factory/map, GET /api/shape-factory/prompt-profile, GET /api/shape-factory/work-products, GET /api/shape-factory/json-peek, GET /api/shape-factory/quarantine, POST /api/shape-factory/queue, POST /api/shape-factory/replay, POST /api/shape-factory/unqueue, POST /api/shape-factory/discard, POST /api/shape-factory/update-pending-trim, POST /api/shape-factory/quarantine/release")
     server.serve_forever()
     return 0
 

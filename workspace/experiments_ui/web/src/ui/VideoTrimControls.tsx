@@ -295,6 +295,55 @@ export function VideoTrimControls({
     };
   }, [mediaSyncKey, videoRef]);
 
+  // When the trim controller appears for a media item (or marks first resolve),
+  // park the scrubber at trim-in so the preview matches the window start.
+  const autoSeekMediaKeyRef = useRef<string | number | null>(null);
+  const onSeekRef = useRef(onSeek);
+  const onSyncTimeRef = useRef(onSyncTime);
+  onSeekRef.current = onSeek;
+  onSyncTimeRef.current = onSyncTime;
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (markIn == null && markOut == null) return;
+    const dur =
+      Number.isFinite(v.duration) && v.duration > 0
+        ? v.duration
+        : Number.isFinite(duration) && duration > 0
+          ? duration
+          : 0;
+    if (!(dur > 0)) return;
+    const b = phoneTrimBounds(markIn, markOut, dur);
+    if (!b) return;
+    if (autoSeekMediaKeyRef.current === mediaSyncKey) return;
+    autoSeekMediaKeyRef.current = mediaSyncKey;
+
+    const seekToStart = () => {
+      const live = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : dur;
+      const bounds = phoneTrimBounds(markIn, markOut, live);
+      if (!bounds) return;
+      const t = bounds.in;
+      try {
+        v.currentTime = t;
+      } catch {
+        /* ignore seek errors before ready */
+      }
+      onSyncTimeRef.current?.(t);
+      onSeekRef.current(t);
+    };
+
+    if (v.readyState >= 1) {
+      seekToStart();
+      return;
+    }
+    const onMeta = () => {
+      seekToStart();
+      v.removeEventListener("loadedmetadata", onMeta);
+    };
+    v.addEventListener("loadedmetadata", onMeta);
+    return () => v.removeEventListener("loadedmetadata", onMeta);
+  }, [mediaSyncKey, markIn, markOut, duration, videoRef]);
+
   const paused = videoRef.current?.paused ?? true;
   const liveDuration =
     videoRef.current && Number.isFinite(videoRef.current.duration) && videoRef.current.duration > 0

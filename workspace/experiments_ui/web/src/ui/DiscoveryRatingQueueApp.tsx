@@ -12,6 +12,7 @@ import {
   setAssetRating,
   toggleAssetDisposition,
 } from "./api";
+import { cachedEnsureThumbUrl, enqueueEnsureThumb } from "./ensureThumbQueue";
 import { AppetiteBar, APPETITE_FACET_CYCLE, APPETITE_KEYMAP } from "./AppetiteBar";
 import { DispositionBar, DispositionRouter } from "./DispositionBar";
 import { DispositionCatalogEditor } from "./DispositionCatalogEditor";
@@ -37,6 +38,17 @@ const DEFAULT_QUEUE_LIMIT = 15;
 const QUEUE_LIMIT_OPTIONS = [5, 10, 15, 20, 25] as const;
 const APPETITE_FACET_KEY = "appetite_facet";
 const LOOP_PLAYBACK_KEY = "rating_queue_loop_playback";
+const SELECTION_MODE_KEY = "rating_selection_mode";
+const INCLUDE_DONE_KEY = "rating_include_done";
+const SEARCH_QUERY_KEY = "rating_search_query";
+
+type SelectionMode = "mixed" | "random" | "search" | "latest";
+const SELECTION_MODES: { id: SelectionMode; label: string }[] = [
+  { id: "mixed", label: "Mixed" },
+  { id: "random", label: "Random" },
+  { id: "search", label: "Search" },
+  { id: "latest", label: "Latest" },
+];
 
 function loadStickyFacet(): AppetiteFacet {
   try {
@@ -67,6 +79,33 @@ function loadLoopPlayback(): boolean {
     /* ignore */
   }
   return true;
+}
+
+function loadSelectionMode(): SelectionMode {
+  try {
+    const raw = localStorage.getItem(SELECTION_MODE_KEY);
+    if (raw === "mixed" || raw === "random" || raw === "search" || raw === "latest") return raw;
+    if (raw === "heuristic" || raw === "stratified") return "mixed";
+  } catch {
+    /* ignore */
+  }
+  return "mixed";
+}
+
+function loadIncludeDone(): boolean {
+  try {
+    return localStorage.getItem(INCLUDE_DONE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function loadSearchQuery(): string {
+  try {
+    return localStorage.getItem(SEARCH_QUERY_KEY) || "";
+  } catch {
+    return "";
+  }
 }
 
 function emptyQualityAxes(): QualityAxesMap {
@@ -214,6 +253,12 @@ function thumbRelFromVideo(relpath: string): string {
   return relpath.replace(/\.mp4$/i, ".png");
 }
 
+function stripThumbSrc(c: DiscoveryRatingSamplerCandidate): string {
+  const thumb = (c.thumb_relpath || "").trim();
+  if (thumb) return fileUrlFromRel(thumb);
+  return fileUrlFromRel(thumbRelFromVideo(c.relpath));
+}
+
 function basename(rel: string): string {
   const p = rel.replace(/\\/g, "/");
   return p.split("/").pop() || p;
@@ -298,6 +343,9 @@ function CandidateStrip({
   onSelect: (i: number) => void;
 }) {
   const stripRef = useRef<HTMLDivElement>(null);
+  /** Override src after lazy ensure (or null when permanently missing). */
+  const [thumbOverrides, setThumbOverrides] = useState<Record<string, string | null>>({});
+  const [generating, setGenerating] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     const strip = stripRef.current;
@@ -317,6 +365,62 @@ function CandidateStrip({
     }
   }, [index]);
 
+  // Seed overrides from the shared ensure cache (survives strip remounts within the session).
+  useEffect(() => {
+    setThumbOverrides((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const c of candidates) {
+        if (next[c.relpath] !== undefined) continue;
+        const cached = cachedEnsureThumbUrl(c.relpath);
+        if (cached !== undefined) {
+          next[c.relpath] = cached;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [candidates]);
+
+  const requestEnsure = useCallback((relpath: string) => {
+    const cached = cachedEnsureThumbUrl(relpath);
+    if (cached !== undefined) {
+      setThumbOverrides((prev) => (prev[relpath] === cached ? prev : { ...prev, [relpath]: cached }));
+      return;
+    }
+    setGenerating((g) => (g[relpath] ? g : { ...g, [relpath]: true }));
+    void enqueueEnsureThumb(relpath)
+      .then((res) => {
+        let url: string | null =
+          res.ok && res.thumb_url
+            ? res.thumb_url
+            : res.ok && res.thumb_relpath
+              ? fileUrlFromRel(res.thumb_relpath)
+              : null;
+        if (url && res.created) {
+          url += (url.includes("?") ? "&" : "?") + "t=" + Date.now();
+        }
+        setThumbOverrides((prev) => ({ ...prev, [relpath]: url }));
+      })
+      .catch(() => {
+        setThumbOverrides((prev) => ({ ...prev, [relpath]: null }));
+      })
+      .finally(() => {
+        setGenerating((g) => {
+          if (!g[relpath]) return g;
+          const next = { ...g };
+          delete next[relpath];
+          return next;
+        });
+      });
+  }, []);
+
+  const onThumbError = (c: DiscoveryRatingSamplerCandidate) => {
+    const key = c.relpath;
+    if (thumbOverrides[key] !== undefined || generating[key]) return;
+    requestEnsure(key);
+  };
+
   return (
     <div className="drq-filmstrip">
       <div className="drq-filmstrip__label">Queue</div>
@@ -325,6 +429,15 @@ function CandidateStrip({
           const active = i === index;
           const isDone = Boolean(batchRated[c.relpath]);
           const b = bucketLabel(c.session_bucket);
+          const override = thumbOverrides[c.relpath];
+          const isGenerating = Boolean(generating[c.relpath]);
+          const isMissing = override === null && !isGenerating;
+          // While generating, drop the broken guess so the spinner has a clean tile.
+          const src = isGenerating
+            ? override ?? null
+            : override === undefined
+              ? stripThumbSrc(c)
+              : override;
           return (
             <button
               key={c.group_id || c.relpath}
@@ -335,6 +448,7 @@ function CandidateStrip({
                 "drq-strip-item" +
                 (active ? " drq-strip-item--active" : "") +
                 (isDone ? " drq-strip-item--done" : "") +
+                (isGenerating ? " drq-strip-item--generating" : "") +
                 (c.session_bucket === "easy_down"
                   ? " drq-strip-item--down"
                   : c.session_bucket === "easy_up"
@@ -342,21 +456,25 @@ function CandidateStrip({
                     : "")
               }
               onClick={() => onSelect(i)}
-              title={`${basename(c.relpath)} — ${b.text}`}
+              title={`${basename(c.relpath)} — ${b.text}${isGenerating ? " (generating thumb…)" : ""}`}
             >
-              <img
-                className="drq-strip-thumb"
-                src={fileUrlFromRel(thumbRelFromVideo(c.relpath))}
-                alt=""
-                loading="lazy"
-                onError={(e) => {
-                  const img = e.currentTarget;
-                  if (img.dataset.fallback !== "1") {
-                    img.dataset.fallback = "1";
-                    img.src = fileUrlFromRel(c.relpath);
-                  }
-                }}
-              />
+              {src ? (
+                <img
+                  className="drq-strip-thumb"
+                  src={src}
+                  alt=""
+                  loading="lazy"
+                  onError={() => onThumbError(c)}
+                />
+              ) : (
+                <span className="drq-strip-thumb drq-strip-thumb--empty" aria-hidden="true" />
+              )}
+              {isGenerating ? (
+                <span className="drq-strip-spinner" aria-label="Generating thumbnail">
+                  <span className="drq-strip-spinner__ring" />
+                </span>
+              ) : null}
+              {isMissing ? <span className="drq-strip-thumb-miss" aria-hidden="true" /> : null}
               {isDone ? <span className="drq-strip-done" aria-hidden="true">✓</span> : null}
               <span className="drq-strip-score mono">{c.predicted_score?.toFixed(1) ?? "—"}</span>
             </button>
@@ -400,6 +518,10 @@ export function DiscoveryRatingQueueApp() {
   const [promotions, setPromotions] = useState<DispositionPromotions | null>(null);
   const [catalogEditorOpen, setCatalogEditorOpen] = useState(false);
   const [loopPlayback, setLoopPlayback] = useState(loadLoopPlayback);
+  const [selectionMode, setSelectionMode] = useState<SelectionMode>(loadSelectionMode);
+  const [includeDone, setIncludeDone] = useState(loadIncludeDone);
+  const [searchQuery, setSearchQuery] = useState(loadSearchQuery);
+  const [searchDraft, setSearchDraft] = useState(loadSearchQuery);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [videoAspect, setVideoAspect] = useState<"portrait" | "landscape" | "square" | null>(null);
 
@@ -417,7 +539,13 @@ export function DiscoveryRatingQueueApp() {
     else setLoading(true);
     setError("");
     try {
-      const data = await fetchDiscoveryRatingSampler({ refresh, limit: queueLimit });
+      const data = await fetchDiscoveryRatingSampler({
+        refresh,
+        limit: queueLimit,
+        mode: selectionMode,
+        query: selectionMode === "search" ? searchQuery : undefined,
+        includeDone,
+      });
       if (!data.ok) {
         setError(data.error || "Failed to load rating queue");
         setSession(data);
@@ -432,7 +560,7 @@ export function DiscoveryRatingQueueApp() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [queueLimit]);
+  }, [queueLimit, selectionMode, searchQuery, includeDone]);
 
   useEffect(() => {
     void load(false);
@@ -466,6 +594,35 @@ export function DiscoveryRatingQueueApp() {
     setQueueLimit(n);
     try {
       localStorage.setItem(QUEUE_LIMIT_KEY, String(n));
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const onSelectionModeChange = (mode: SelectionMode) => {
+    setSelectionMode(mode);
+    try {
+      localStorage.setItem(SELECTION_MODE_KEY, mode);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const onIncludeDoneChange = (on: boolean) => {
+    setIncludeDone(on);
+    try {
+      localStorage.setItem(INCLUDE_DONE_KEY, on ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const commitSearchQuery = (raw: string) => {
+    const q = raw.trim();
+    setSearchDraft(q);
+    setSearchQuery(q);
+    try {
+      localStorage.setItem(SEARCH_QUERY_KEY, q);
     } catch {
       /* ignore */
     }
@@ -939,10 +1096,56 @@ export function DiscoveryRatingQueueApp() {
     <div className="discovery-screen drq-screen">
       <div className="panel discovery-panel drq-root">
         <PageHeader
-          title="Rate queue"
+          title="Rating"
           subtitle="Work through a fixed batch — set Subject / Render / Action and appetite. Disposition is optional. Dismiss commits rated clips; the rest return to the pool."
           actions={
             <div className="drq-header-actions">
+              <div className="segmented drq-mode-segmented" role="radiogroup" aria-label="Selection mode">
+                {SELECTION_MODES.map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={selectionMode === m.id}
+                    className={"seg-btn" + (selectionMode === m.id ? " active" : "")}
+                    disabled={loading || refreshing || triageBusy}
+                    onClick={() => onSelectionModeChange(m.id)}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+              <label className="drq-include-done">
+                <input
+                  type="checkbox"
+                  checked={includeDone}
+                  disabled={loading || refreshing || triageBusy}
+                  onChange={(e) => onIncludeDoneChange(e.target.checked)}
+                />
+                Show rated / disposed
+              </label>
+              {selectionMode === "search" ? (
+                <form
+                  className="drq-search-form"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    commitSearchQuery(searchDraft);
+                  }}
+                >
+                  <input
+                    type="search"
+                    className="drq-search-input"
+                    placeholder="Search path / group…"
+                    value={searchDraft}
+                    disabled={loading || refreshing || triageBusy}
+                    onChange={(e) => setSearchDraft(e.target.value)}
+                    aria-label="Search rating pool"
+                  />
+                  <button type="submit" className="drt-btn" disabled={loading || refreshing || triageBusy}>
+                    Go
+                  </button>
+                </form>
+              ) : null}
               <label className="drq-limit-label">
                 Batch size
                 <select
@@ -967,8 +1170,16 @@ export function DiscoveryRatingQueueApp() {
           {candidates.length > 0 ? <SessionProgress done={ratedCount} total={candidates.length} label="Rated" /> : null}
           {stats ? (
             <p className="drq-session-hint factory-muted">
-              Mix: ↓{stats.bucket_easy_down ?? "—"} quick rejects · ↑{stats.bucket_easy_up ?? "—"} likely keepers · ~
-              {stats.bucket_middle ?? "—"} ambiguous
+              {selectionMode === "mixed"
+                ? `Mixed: ↓${stats.bucket_easy_down ?? "—"} quick rejects · ↑${stats.bucket_easy_up ?? "—"} likely keepers · ~${stats.bucket_middle ?? "—"} ambiguous`
+                : selectionMode === "random"
+                  ? `Random batch · pool ${stats.unrated_videos ?? "—"} · selected ${stats.selected ?? "—"}`
+                  : selectionMode === "latest"
+                    ? `Latest by mtime · pool ${stats.unrated_videos ?? "—"} · selected ${stats.selected ?? "—"}`
+                    : searchQuery
+                      ? `Search “${searchQuery}” · matches ${stats.unrated_videos ?? "—"} · selected ${stats.selected ?? "—"}`
+                      : "Enter a search query to populate the queue"}
+              {includeDone ? " · including rated/disposed" : ""}
             </p>
           ) : null}
         </PageHeader>

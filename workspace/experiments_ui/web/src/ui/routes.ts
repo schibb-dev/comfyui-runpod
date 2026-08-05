@@ -11,7 +11,7 @@ export type AppRouteId =
   | "factory"
   | "library"
   | "rate"
-  | "work-products"
+  | "workbench"
   | "vision-slices"
   | "experiments"
   | "workflows"
@@ -29,14 +29,21 @@ export type AppRoute = {
   group: AppNavGroup;
 };
 
-// Order matters for nav rendering (left → right follows the production pipeline).
+// Order matters for nav rendering (left → right).
+// Pipeline peers: Library (find) · Factory (manage) · Rating · Workbench (job setup).
 export const APP_ROUTES: AppRoute[] = [
   { id: "home", path: "/", label: "Home", hint: "Resume the loop — rate, triage, generate", group: "pipeline" },
+  { id: "library", path: "/discovery", label: "Library", hint: "Search and find indexed media", group: "pipeline" },
+  { id: "factory", path: "/discovery/factory-map", label: "Factory", hint: "Manage shape families · recover / replay", group: "pipeline" },
+  { id: "rate", path: "/discovery/rate", label: "Rating", hint: "Rating bootstrap queue", group: "pipeline" },
+  {
+    id: "workbench",
+    path: "/workbench",
+    label: "Workbench",
+    hint: "Set up jobs that seed factories · buckets · workflows",
+    group: "pipeline",
+  },
   { id: "queue", path: "/comfy-queue", label: "Queue", hint: "What's generating right now", group: "pipeline" },
-  { id: "factory", path: "/discovery/factory-map", label: "Factory", hint: "Shape families · source → output · recover / replay", group: "pipeline" },
-  { id: "library", path: "/discovery", label: "Library", hint: "Discover indexed outputs", group: "pipeline" },
-  { id: "rate", path: "/discovery/rate", label: "Rate", hint: "Rating bootstrap queue", group: "pipeline" },
-  { id: "work-products", path: "/work-products", label: "Work products", hint: "Recent outputs · how they were constructed", group: "pipeline" },
   { id: "vision-slices", path: "/vision/slices", label: "Vision slices", hint: "V1 time-slice captions vs video", group: "tools" },
   { id: "experiments", path: "/experiments", label: "Experiments", hint: "Tune experiments & runs", group: "tools" },
   { id: "workflows", path: "/workflow-explorer", label: "Workflows", hint: "Workflow & factory-asset explorer", group: "tools" },
@@ -58,7 +65,8 @@ const MATCHERS: { id: AppRouteId; test: (p: string) => boolean }[] = [
   { id: "orchestrator", test: (p) => p.startsWith("/orchestrator") },
   { id: "workflows", test: (p) => p.startsWith("/workflow-explorer") },
   { id: "experiments", test: (p) => p.startsWith("/experiments") },
-  { id: "work-products", test: (p) => p.startsWith("/work-products") },
+  // Canonical /workbench; keep /work-products as a deep-link alias.
+  { id: "workbench", test: (p) => p.startsWith("/workbench") || p.startsWith("/work-products") },
   { id: "vision-slices", test: (p) => p.startsWith("/vision") },
   { id: "factory", test: (p) => p.startsWith("/discovery/factory-map") },
   { id: "rate", test: (p) => p.startsWith("/discovery/rate") },
@@ -80,15 +88,6 @@ export function routeHref(id: AppRouteId): string {
 
 export function routesForGroup(group: AppNavGroup): AppRoute[] {
   return APP_ROUTES.filter((r) => r.group === group);
-}
-
-// The three pipeline screens that live inside the one Workbench surface as lenses.
-// They keep their own routes/paths (deep-links stay valid) but the global nav shows
-// a single "Workbench" entry; the lens bar switches between them.
-export const WORKBENCH_LENSES: AppRouteId[] = ["library", "factory", "rate"];
-
-export function isWorkbenchLens(id: AppRouteId): boolean {
-  return WORKBENCH_LENSES.includes(id);
 }
 
 export function routeLabel(id: AppRouteId): string {
