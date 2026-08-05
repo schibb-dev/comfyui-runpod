@@ -1269,12 +1269,12 @@ export type ShapeFactoryUnqueueResponse = {
   comfy_delete_error?: string;
 };
 
-/** POST /api/shape-factory/discard — remove a pending factory job from the active set. */
+/** POST /api/shape-factory/discard — archive or expunge a pending/terminal factory job. */
 export type ShapeFactoryDiscardRequest = {
   job_key?: string;
   job_path?: string;
   reason?: string;
-  /** When true (UI default), permanently delete job + sidecars. When false, rename to `.discarded`. */
+  /** When true, permanently delete job + sidecars. When false, rename to `.discarded` (archive). */
   expunge?: boolean;
 };
 

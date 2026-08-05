@@ -4408,7 +4408,9 @@ def unqueue_to_pending(
     return out
 
 
-_DISCARDABLE_STATUSES = frozenset({"", "pending", "draft", "deposited", "abandoned"})
+# Soft-archive / discard from the active job set (not queued/running on Comfy).
+_ARCHIVEABLE_TERMINAL_STATUSES = frozenset({"error", "failed", "interrupted"})
+_DISCARDABLE_STATUSES = frozenset({"", "pending", "draft", "deposited", "abandoned"}) | _ARCHIVEABLE_TERMINAL_STATUSES
 _PENDING_EDITABLE_STATUSES = frozenset({"", "pending", "draft", "deposited", "error", "abandoned"})
 
 
@@ -4664,11 +4666,12 @@ def discard_pending_job(
     expunge: bool = False,
 ) -> dict[str, Any]:
     """
-    Remove a pre-Comfy pending job from the active set.
+    Remove a factory job from the active set (pending drafts or terminal failures).
 
-    By default renames ``.job.json`` (+ sidecars) with a ``.discarded`` suffix.
-    With ``expunge=True``, permanently deletes those files (no recovery).
-    Refuses queued/running jobs (unqueue first). Does not touch Comfy outputs.
+    By default renames ``.job.json`` (+ sidecars) with a ``.discarded`` suffix
+    (archive; no recovery UI). With ``expunge=True``, permanently deletes those
+    files. Refuses queued/running jobs (unqueue first). Does not touch Comfy
+    media outputs.
     """
     data_root = Path(data_root).expanduser().resolve()
     job_file: Optional[Path] = None
@@ -4700,7 +4703,7 @@ def discard_pending_job(
             "job_key": key,
             "status": status or "unknown",
             "prompt_id": pid or None,
-            "detail": "Unqueue first, or only discard jobs that are still pending (not on Comfy).",
+            "detail": "Unqueue first, or only archive jobs that are pending or terminal (not on Comfy).",
         }
 
     if pid and server:
@@ -4765,14 +4768,21 @@ def discard_pending_job(
             "reason": str(reason or "user_removed"),
         }
 
-    abandon_submit_failure(
-        job,
-        error=str(reason or "user_removed"),
-        server=str(server or ""),
-        previous_status=prev_status,
-        attempts=submit_attempt_count(job),
-    )
+    # Terminal failures / abandoned: preserve submit forensics; only stamp discard.
+    # Pending drafts: mark abandoned so hourly will not retry.
+    preserve_submit = status in _ARCHIVEABLE_TERMINAL_STATUSES or status == "abandoned"
+    if not preserve_submit:
+        abandon_submit_failure(
+            job,
+            error=str(reason or "user_removed"),
+            server=str(server or ""),
+            previous_status=prev_status,
+            attempts=submit_attempt_count(job),
+        )
     submit2 = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    if not isinstance(submit2, dict):
+        submit2 = {}
+        job["submit"] = submit2
     submit2["discarded"] = True
     submit2["discarded_at"] = utc_now()
     submit2["discard_reason"] = str(reason or "user_removed")
@@ -4791,10 +4801,11 @@ def discard_pending_job(
     discarded_job = _rename_discarded(job_file)
     renamed.append(str(discarded_job))
 
+    out_status = prev_status if preserve_submit else "abandoned"
     return {
         "ok": True,
         "job_key": key,
-        "status": "abandoned",
+        "status": out_status,
         "discarded": True,
         "expunged": False,
         "job_path": str(discarded_job),

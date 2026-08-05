@@ -1532,7 +1532,7 @@ def _shape_factory_unqueue_payload(cfg: ServerConfig, body: Dict[str, Any]) -> D
 
 
 def _shape_factory_discard_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
-    """POST /api/shape-factory/discard — remove a pending factory job from the active set."""
+    """POST /api/shape-factory/discard — archive/expunge a pending or terminal factory job."""
     d = _workspace_scripts_dir()
     if d.is_dir() and str(d) not in sys.path:
         sys.path.insert(0, str(d))

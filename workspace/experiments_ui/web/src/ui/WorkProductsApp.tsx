@@ -310,7 +310,7 @@ function canUnqueueWorkProduct(item: WorkProductItem): boolean {
   return Boolean(String(item.prompt_id || "").trim());
 }
 
-/** Pending (pre-Comfy) factory jobs can be discarded from the active set. */
+/** Pending (pre-Comfy) factory jobs can be hard-deleted from the active set. */
 function canDiscardPendingWorkProduct(item: WorkProductItem): boolean {
   if (isNonFactoryWorkProduct(item)) return false;
   if (!String(item.job_key || "").trim() && !String(item.job_path || "").trim()) return false;
@@ -321,6 +321,17 @@ function canDiscardPendingWorkProduct(item: WorkProductItem): boolean {
   // pending / draft / deposited / empty — and no live prompt_id preferred
   if (String(item.prompt_id || "").trim() && (s === "queued" || s === "running")) return false;
   return s === "pending" || s === "draft" || s === "deposited" || !s;
+}
+
+/**
+ * Terminal failures remain in Work Products as the failure record until archived.
+ * Archive soft-renames to `.discarded` (forensics on disk; no restore UI).
+ */
+function canArchiveTerminalWorkProduct(item: WorkProductItem): boolean {
+  if (isNonFactoryWorkProduct(item)) return false;
+  if (!String(item.job_key || "").trim() && !String(item.job_path || "").trim()) return false;
+  const s = workProductStatusKey(item);
+  return s === "error" || s === "failed" || s === "interrupted" || s === "abandoned";
 }
 
 function isRunningLiveItem(item: WorkProductItem): boolean {
@@ -2259,6 +2270,7 @@ function WorkProductQuickQueue({
   const canRerun = Boolean(jobKey) && !busy;
   const canUnqueue = canUnqueueWorkProduct(item) && !busy;
   const canDiscard = canDiscardPendingWorkProduct(item) && !busy;
+  const canArchive = canArchiveTerminalWorkProduct(item) && !busy;
   const nonFactory = isNonFactoryWorkProduct(item);
 
   const unqueue = async () => {
@@ -2311,6 +2323,32 @@ function WorkProductQuickQueue({
         expunge: true,
       });
       setMsg(`Expunged pending job${res.job_key ? ` · ${res.job_key}` : ""}`);
+      onCommitted?.();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const archive = async () => {
+    if (!canArchive || busy) return;
+    const ok = window.confirm(
+      "Archive this failed job?\n\n" +
+        "Removes it from Work Products. The job + sidecars are renamed to .discarded on disk " +
+        "(kept for forensics; no restore UI). Media outputs are not deleted.",
+    );
+    if (!ok) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await discardShapeFactoryJob({
+        job_key: jobKey || undefined,
+        job_path: String(item.job_path || "").trim() || undefined,
+        reason: "user_archived_failure",
+        expunge: false,
+      });
+      setMsg(`Archived failure${res.job_key ? ` · ${res.job_key}` : ""}`);
       onCommitted?.();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));
@@ -2600,6 +2638,20 @@ function WorkProductQuickQueue({
               onClick={() => void unqueue()}
             >
               Unqueue
+            </button>
+          </>
+        ) : null}
+        {canArchive ? (
+          <>
+            <span className="work-product-quick-queue__sep" aria-hidden="true" />
+            <button
+              type="button"
+              className="drt-btn work-product-quick-queue__discard"
+              disabled={!canArchive}
+              title="Remove from Work Products; soft-archive job + sidecars as .discarded (no restore UI)"
+              onClick={() => void archive()}
+            >
+              Archive
             </button>
           </>
         ) : null}

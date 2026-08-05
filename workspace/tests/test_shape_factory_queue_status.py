@@ -329,6 +329,44 @@ class QueueStatusTests(unittest.TestCase):
             self.assertEqual(result.get("error"), "not_pending")
             self.assertTrue(job_path.is_file())
 
+    def test_archive_error_preserves_submit_forensics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_root = Path(tmp)
+            jobs_dir = data_root / "shape_factory" / "jobs" / "F"
+            jobs_dir.mkdir(parents=True)
+            job_path = jobs_dir / "err1.job.json"
+            job_path.write_text(
+                json.dumps(
+                    {
+                        "job_key": "err1",
+                        "submit": {
+                            "status": "error",
+                            "prompt_id": "pid-err",
+                            "error": "CUDA out of memory",
+                            "exception_type": "torch.cuda.OutOfMemoryError",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = sf.discard_pending_job(
+                data_root=data_root, job_key="err1", expunge=False, reason="user_archived_failure"
+            )
+            self.assertTrue(result.get("ok"))
+            self.assertTrue(result.get("discarded"))
+            self.assertFalse(result.get("expunged"))
+            self.assertEqual(result.get("status"), "error")
+            self.assertFalse(job_path.is_file())
+            archived = Path(str(job_path) + ".discarded")
+            self.assertTrue(archived.is_file())
+            body = json.loads(archived.read_text(encoding="utf-8"))
+            submit = body["submit"]
+            self.assertEqual(submit["status"], "error")
+            self.assertEqual(submit["error"], "CUDA out of memory")
+            self.assertTrue(submit.get("discarded"))
+            self.assertEqual(submit.get("discard_reason"), "user_archived_failure")
+            self.assertEqual(submit.get("previous_prompt_id"), "pid-err")
+            self.assertNotIn("prompt_id", submit)
 
     def test_pending_only_limit_skips_already_submitted(self) -> None:
         """--limit must apply after pending filter, not to alphabetical all-jobs."""
