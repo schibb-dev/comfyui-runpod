@@ -294,6 +294,14 @@ def recompute_efficiency_metrics(job: dict[str, Any]) -> None:
     ):
         efficiency.pop(key, None)
 
+    # Failed/interrupted runs did not finish the frame budget — skip derived rates
+    # (otherwise OOM jobs look absurdly "fast" at ms-scale exec windows).
+    if execution.get("error") or str(execution.get("terminal") or "").lower() in {
+        "error",
+        "interrupted",
+    }:
+        return
+
     if isinstance(exec_sec, (int, float)) and isinstance(frames, (int, float)) and float(frames) > 0:
         efficiency["exec_sec_per_frame"] = round(float(exec_sec) / float(frames), 4)
         if exec_sec > 0:
@@ -314,10 +322,26 @@ def normalize_comfy_timestamp(ts: float) -> float:
     return ts_f
 
 
+_HISTORY_EXEC_TERMINAL = {
+    "execution_success": "success",
+    "execution_error": "error",
+    "execution_interrupted": "interrupted",
+}
+
+
 def parse_history_execution_timings(history: dict[str, Any]) -> dict[str, Any]:
+    """
+    Wall-clock execution window from Comfy history ``status.messages``.
+
+    Important: ``execution_cached`` is *not* the end of a run — it often fires
+    milliseconds after ``execution_start`` for already-cached nodes. Ending there
+    made OOM/error jobs look like they failed in <1s when they had actually run
+    for many minutes before ``execution_error``.
+    """
     status = history.get("status") if isinstance(history.get("status"), dict) else {}
     exec_start: Optional[float] = None
     exec_end: Optional[float] = None
+    terminal: Optional[str] = None
     for msg in status.get("messages") or []:
         if not isinstance(msg, (list, tuple)) or not msg:
             continue
@@ -331,13 +355,18 @@ def parse_history_execution_timings(history: dict[str, Any]) -> dict[str, Any]:
             continue
         if kind == "execution_start" and exec_start is None:
             exec_start = ts_f
-        if kind in {"execution_success", "execution_cached"}:
+        if kind in _HISTORY_EXEC_TERMINAL:
             exec_end = ts_f
+            terminal = _HISTORY_EXEC_TERMINAL[kind]
     out: dict[str, Any] = {}
     if exec_start is not None:
         out["started_ts"] = exec_start
     if exec_end is not None:
         out["finished_ts"] = exec_end
+    if terminal:
+        out["terminal"] = terminal
+        if terminal in {"error", "interrupted"}:
+            out["error"] = True
     if exec_start is not None and exec_end is not None:
         out["sec"] = round(max(0.0, exec_end - exec_start), 3)
         out["source"] = "history.messages"
@@ -360,7 +389,7 @@ def should_append_timings_ledger(job: dict[str, Any]) -> bool:
     if timings.get("ledger_written_at"):
         return False
     status = str((job.get("submit") or {}).get("status") or "")
-    return status in {"complete", "error"}
+    return status in {"complete", "error", "interrupted"}
 
 
 def append_timings_ledger(job_path: Path, job: dict[str, Any]) -> None:
@@ -412,6 +441,12 @@ def format_timing_hint(job: dict[str, Any]) -> str:
     efficiency = timings.get("efficiency") if isinstance(timings.get("efficiency"), dict) else {}
     if isinstance(efficiency.get("exec_sec_per_frame"), (int, float)):
         parts.append(f"{efficiency['exec_sec_per_frame']:.2f}s/frame")
+    models = timings.get("models") if isinstance(timings.get("models"), dict) else {}
+    model_totals = models.get("totals") if isinstance(models.get("totals"), dict) else {}
+    if isinstance(model_totals.get("load_sec"), (int, float)) and model_totals["load_sec"] > 0:
+        parts.append(f"load={model_totals['load_sec']:.0f}s")
+    if isinstance(model_totals.get("unload_to_reload_sec"), (int, float)):
+        parts.append(f"unload→reload={model_totals['unload_to_reload_sec']:.0f}s")
     return f" ({', '.join(parts)})" if parts else ""
 
 
@@ -441,7 +476,18 @@ def update_job_timings_on_status(
     if isinstance(history, dict):
         hist_times = parse_history_execution_timings(history)
         if hist_times:
+            # Always prefer history terminal window (success/error/interrupted).
             execution.update({k: v for k, v in hist_times.items() if v is not None})
+            # If an older poll stamped a tiny cached window, force sec from terminal.
+            if (
+                isinstance(hist_times.get("started_ts"), (int, float))
+                and isinstance(hist_times.get("finished_ts"), (int, float))
+            ):
+                execution["sec"] = round(
+                    max(0.0, float(hist_times["finished_ts"]) - float(hist_times["started_ts"])),
+                    3,
+                )
+                execution["source"] = "history.messages"
         node_times = parse_history_node_timings(history)
         if node_times:
             execution["nodes"] = node_times.get("nodes")
@@ -452,7 +498,7 @@ def update_job_timings_on_status(
             submit["outputs"] = [str(p) for p in hist_outputs]
             submit["output_discovery"] = "comfy_history"
 
-    if status in {"complete", "error"}:
+    if status in {"complete", "error", "interrupted"}:
         outputs = discover_job_outputs(job, data_root)
         if outputs and not submit.get("outputs"):
             submit["outputs"] = [str(p) for p in outputs]
@@ -2111,6 +2157,43 @@ def parse_history_node_timings(history: dict[str, Any]) -> dict[str, Any]:
         return {}
     total = round(sum(node_total.values()), 3)
     return {"nodes": nodes, "tracked_sec": total, "source": "history.messages"}
+
+
+from comfy_model_io_logs import (  # noqa: E402
+    fetch_comfy_log_entries,
+    parse_comfy_log_timestamp,
+    parse_model_io_from_comfy_logs,
+)
+
+
+def attach_model_io_timings(
+    job: dict[str, Any],
+    *,
+    server: str,
+    log_entries: Optional[list[dict[str, Any]]] = None,
+) -> Optional[dict[str, Any]]:
+    """Stamp ``timings.models`` from Comfy logs when execution window is known."""
+    timings = ensure_timings(job)
+    execution = timings.get("execution") if isinstance(timings.get("execution"), dict) else {}
+    started = execution.get("started_ts")
+    finished = execution.get("finished_ts")
+    if not isinstance(started, (int, float)):
+        queue = timings.get("queue") if isinstance(timings.get("queue"), dict) else {}
+        started = queue.get("running_first_seen_ts") or queue.get("submitted_ts")
+    if not isinstance(started, (int, float)):
+        return None
+    entries = log_entries if log_entries is not None else fetch_comfy_log_entries(server)
+    if not entries:
+        return None
+    models = parse_model_io_from_comfy_logs(
+        entries,
+        window_start_ts=float(started),
+        window_end_ts=float(finished) if isinstance(finished, (int, float)) else None,
+    )
+    if not models:
+        return None
+    timings["models"] = models
+    return models
 
 
 def backfill_timings_from_submit_record(timings: dict[str, Any], submit_record: dict[str, Any]) -> None:
@@ -3865,6 +3948,11 @@ def submit_job_file(
     if not is_litegraph_workflow(workflow):
         raise RuntimeError("not a LiteGraph workflow")
 
+    # Workbench trim edits land on job["vhs_window"]; re-apply before convert.
+    vhs_apply = apply_job_vhs_window_to_workflow(job, workflow)
+    if vhs_apply and vhs_apply.get("vhs"):
+        atomic_write_json(workflow_path, workflow)
+
     shape_path = resolve_job_asset_path(
         str(job.get("shape_path") or ""),
         data_root=data_root,
@@ -4321,6 +4409,203 @@ def unqueue_to_pending(
 
 
 _DISCARDABLE_STATUSES = frozenset({"", "pending", "draft", "deposited", "abandoned"})
+_PENDING_EDITABLE_STATUSES = frozenset({"", "pending", "draft", "deposited", "error", "abandoned"})
+
+
+def update_pending_job_vhs_window(
+    *,
+    data_root: Path,
+    skip_first_frames: int,
+    frame_load_cap: int,
+    job_key: Optional[str] = None,
+    job_path: Optional[Path] = None,
+    mark_in: Optional[float] = None,
+    mark_out: Optional[float] = None,
+    server: str = "",
+) -> dict[str, Any]:
+    """
+    Patch VHS skip/cap on a pre-Comfy factory job so the next submit uses that window.
+
+    Updates the generated LiteGraph workflow, records ``job["vhs_window"]``, and
+    drops a stale ``.prompt.json`` so convert rebuilds from the edited graph.
+    Refuses jobs that are queued/running on Comfy.
+    """
+    data_root = Path(data_root).expanduser().resolve()
+    job_file: Optional[Path] = None
+    job: Optional[dict[str, Any]] = None
+
+    if job_path is not None:
+        jp = Path(job_path).expanduser()
+        if jp.is_file():
+            try:
+                loaded = json.loads(jp.read_text(encoding="utf-8"))
+            except Exception:
+                loaded = None
+            if isinstance(loaded, dict):
+                job_file, job = jp, loaded
+    if job is None and job_key:
+        job_file, job = find_job_by_key(data_root, str(job_key))
+    if job is None or job_file is None:
+        return {"ok": False, "error": "job_not_found", "job_key": job_key}
+
+    if hostify_job_paths(job):
+        atomic_write_json(job_file, job)
+
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    status = str(submit.get("status") or "").strip().lower()
+    pid = str(submit.get("prompt_id") or "").strip()
+    key = str(job.get("job_key") or job_file.stem.replace(".job", ""))
+
+    if status in {"queued", "running", "submitted"} or (pid and status not in _PENDING_EDITABLE_STATUSES):
+        return {
+            "ok": False,
+            "error": "not_pending",
+            "job_key": key,
+            "status": status or "unknown",
+            "prompt_id": pid or None,
+            "detail": "Unqueue first — only pending (pre-Comfy) jobs can be trim-edited.",
+        }
+
+    if pid and server:
+        try:
+            running_ids, pending_ids = queue_prompt_id_buckets(str(server).rstrip("/"), timeout_s=10)
+        except Exception:
+            running_ids, pending_ids = set(), set()
+        if pid in running_ids or pid in pending_ids:
+            return {
+                "ok": False,
+                "error": "still_on_comfy",
+                "job_key": key,
+                "prompt_id": pid,
+                "detail": "Prompt is still on Comfy; Unqueue first.",
+            }
+
+    try:
+        skip_i = max(0, int(skip_first_frames))
+    except (TypeError, ValueError):
+        skip_i = 0
+    try:
+        cap_i = max(0, int(frame_load_cap))
+    except (TypeError, ValueError):
+        cap_i = 0
+
+    workflow_path = ensure_job_workflow_path(job, data_root=data_root)
+    if not workflow_path.is_file():
+        return {
+            "ok": False,
+            "error": "workflow_missing",
+            "job_key": key,
+            "workflow_path": str(workflow_path),
+        }
+    workflow = read_json(workflow_path)
+    if not is_litegraph_workflow(workflow):
+        return {"ok": False, "error": "not_litegraph", "job_key": key}
+
+    tuning = {
+        "vhs_load_video_path": {
+            "skip_first_frames": skip_i,
+            "frame_load_cap": cap_i,
+        }
+    }
+    changes = apply_dev_tuning_ui(workflow, tuning)
+    if not changes.get("vhs"):
+        return {
+            "ok": False,
+            "error": "no_vhs_loader",
+            "job_key": key,
+            "detail": "No VHS_LoadVideoPath node found in the generated workflow.",
+        }
+    atomic_write_json(workflow_path, workflow)
+
+    # Stale API prompt would ignore the workflow edit on a naive re-submit path.
+    prompt_candidates = [
+        job_file.with_name(job_file.stem.replace(".job", "") + ".prompt.json"),
+    ]
+    submit_prompt = str(submit.get("prompt_path") or "").strip()
+    if submit_prompt:
+        prompt_candidates.append(Path(submit_prompt).expanduser())
+    cleared_prompt = False
+    for p in prompt_candidates:
+        try:
+            if p.is_file():
+                p.unlink()
+                cleared_prompt = True
+        except Exception:
+            continue
+
+    vhs_window = {
+        "skip_first_frames": skip_i,
+        "frame_load_cap": cap_i,
+        "updated_at": utc_now(),
+        "source": "workbench_trim",
+    }
+    if mark_in is not None:
+        try:
+            vhs_window["mark_in"] = float(mark_in)
+        except (TypeError, ValueError):
+            pass
+    if mark_out is not None:
+        try:
+            vhs_window["mark_out"] = float(mark_out)
+        except (TypeError, ValueError):
+            pass
+    job["vhs_window"] = vhs_window
+    job["generated_workflow_path"] = str(workflow_path)
+
+    # Keep companion_png / adhoc fallback paths consistent with the UI edit.
+    dev = job.get("dev_tuning") if isinstance(job.get("dev_tuning"), dict) else {}
+    if not isinstance(dev, dict):
+        dev = {}
+    spec = dev.get("spec") if isinstance(dev.get("spec"), dict) else {}
+    if not isinstance(spec, dict):
+        spec = {}
+    spec = dict(spec)
+    vhs_spec = dict(spec.get("vhs_load_video_path") or {}) if isinstance(spec.get("vhs_load_video_path"), dict) else {}
+    vhs_spec["skip_first_frames"] = skip_i
+    vhs_spec["frame_load_cap"] = cap_i
+    spec["vhs_load_video_path"] = vhs_spec
+    if not spec.get("profile_id"):
+        spec["profile_id"] = "workbench-trim"
+    dev = dict(dev)
+    dev["spec"] = spec
+    job["dev_tuning"] = dev
+
+    atomic_write_json(job_file, job)
+    return {
+        "ok": True,
+        "job_key": key,
+        "job_path": str(job_file),
+        "workflow_path": str(workflow_path),
+        "vhs_window": vhs_window,
+        "vhs_nodes": changes.get("vhs") or [],
+        "prompt_cleared": cleared_prompt,
+        "status": status or "pending",
+    }
+
+
+def apply_job_vhs_window_to_workflow(job: dict[str, Any], workflow: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Re-apply ``job['vhs_window']`` onto a LiteGraph workflow (submit-time safety net)."""
+    win = job.get("vhs_window") if isinstance(job.get("vhs_window"), dict) else None
+    if not win:
+        return None
+    skip = win.get("skip_first_frames")
+    cap = win.get("frame_load_cap")
+    if skip is None and cap is None:
+        return None
+    tuning: dict[str, Any] = {"vhs_load_video_path": {}}
+    if skip is not None:
+        try:
+            tuning["vhs_load_video_path"]["skip_first_frames"] = max(0, int(skip))
+        except (TypeError, ValueError):
+            pass
+    if cap is not None:
+        try:
+            tuning["vhs_load_video_path"]["frame_load_cap"] = max(0, int(cap))
+        except (TypeError, ValueError):
+            pass
+    if not tuning["vhs_load_video_path"]:
+        return None
+    return apply_dev_tuning_ui(workflow, tuning)
 
 
 def _job_sidecar_candidates(job_path: Path, job: dict[str, Any]) -> list[Path]:
@@ -4758,6 +5043,11 @@ def update_job_status_from_comfy(
     if prompt_id in running_ids:
         submit["status"] = "running"
         update_job_timings_on_status(job, status="running", history=None, now=now_ts, data_root=data_root)
+        # Snapshot load events early — Comfy's log ring is small (~300 lines).
+        try:
+            attach_model_io_timings(job, server=server)
+        except Exception:
+            pass
         return "running"
     if prompt_id in pending_ids:
         submit["status"] = "queued"
@@ -4774,6 +5064,10 @@ def update_job_status_from_comfy(
             update_job_timings_on_status(
                 job, status="complete", history=None, now=now_ts, data_root=data_root
             )
+            try:
+                attach_model_io_timings(job, server=server)
+            except Exception:
+                pass
             return "complete"
         if submit.get("status") in {"queued", "running", "unknown"}:
             # Cleared/interrupted: gone from queue and history (e.g. Comfy restart).
@@ -4814,6 +5108,11 @@ def update_job_status_from_comfy(
     update_job_timings_on_status(
         job, status=status, history=history, now=now_ts, data_root=data_root
     )
+    if status in {"complete", "error", "interrupted"}:
+        try:
+            attach_model_io_timings(job, server=server)
+        except Exception:
+            pass
     return status
 
 

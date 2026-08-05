@@ -5,8 +5,10 @@ Best-effort ComfyUI queue ledger + startup restorer.
 Design goals:
 - Passive: read /queue and keep a shadow ledger on disk.
 - Non-ACID: best effort over exact correctness.
-- Safe-ish: avoid loops with cooldown/attempt caps.
-- Gentle: do not force queue shape every tick.
+- Never silently drop a mirrored job on reboot: re-submit or park in backlog
+  (only unrecoverable if the prompt payload was never mirrored).
+- Safe-ish: avoid loops with attempt caps / breaker.
+- Gentle: spillover mode keeps live pending near target; otherwise full restore.
 """
 
 from __future__ import annotations
@@ -19,6 +21,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+from comfy_model_io_logs import ModelIoFollower, fetch_comfy_log_entries
 
 
 def _utc_iso(ts: Optional[float] = None) -> str:
@@ -304,6 +308,21 @@ def main() -> int:
     ap.add_argument("--client-id", default="comfy-queue-ledger", help="client_id for restored prompt submissions")
     ap.add_argument("--state-path", default="", help="Path to ledger state JSON")
     ap.add_argument("--events-path", default="", help="Path to ledger events JSONL")
+    ap.add_argument(
+        "--model-io-path",
+        default="",
+        help="Path to model load/unload JSONL (default: sibling of --events-path)",
+    )
+    ap.add_argument(
+        "--model-io-summary-path",
+        default="",
+        help="Path to rolling model-io summary JSON (default: sibling of --model-io-path)",
+    )
+    ap.add_argument(
+        "--no-model-io",
+        action="store_true",
+        help="Disable Comfy log follower for model load/unload timings",
+    )
     ap.add_argument("--once", action="store_true", help="Run one cycle and exit")
     ap.add_argument("--no-startup-restore", action="store_true", help="Disable startup restore")
     args = ap.parse_args()
@@ -314,6 +333,14 @@ def main() -> int:
     default_events = repo / "workspace" / "output" / "output" / "experiments" / "_status" / "comfy_queue_ledger.jsonl"
     state_path = Path(args.state_path) if args.state_path else default_state
     events_path = Path(args.events_path) if args.events_path else default_events
+    if args.model_io_path:
+        model_io_path = Path(args.model_io_path)
+    else:
+        model_io_path = events_path.with_name("comfy_model_io.jsonl")
+    if args.model_io_summary_path:
+        model_io_summary_path = Path(args.model_io_summary_path)
+    else:
+        model_io_summary_path = model_io_path.with_name("comfy_model_io_summary.json")
 
     state = _read_state(state_path)
     now = _now_ts()
@@ -324,6 +351,45 @@ def main() -> int:
     def log_event(kind: str, **data: Any) -> None:
         _append_jsonl(events_path, {"ts": _utc_iso(), "type": kind, **data})
 
+    def log_model_io(ev: Dict[str, Any]) -> None:
+        payload = {"ts": _utc_iso(), **ev}
+        _append_jsonl(model_io_path, payload)
+
+    model_io_enabled = not bool(args.no_model_io)
+    model_follower = ModelIoFollower(state.get("model_io") if isinstance(state.get("model_io"), dict) else {})
+
+    def poll_model_io(running_ids: List[str]) -> None:
+        if not model_io_enabled:
+            return
+        running_pid = running_ids[0] if running_ids else None
+        try:
+            for ev in model_follower.note_running_prompt(running_pid, now_ts=_now_ts()):
+                log_model_io(ev)
+            entries = fetch_comfy_log_entries(args.server, http_json=_http_json)
+            for ev in model_follower.feed_entries(entries):
+                log_model_io(ev)
+            # Enrich latest open switch with cold-start cost from current rollup.
+            dump = model_follower.dump_state()
+            state["model_io"] = dump
+            rollup = model_follower.current_rollup()
+            summary = {
+                "updated_at": _utc_iso(),
+                "running_prompt_id": dump.get("running_prompt_id"),
+                "current": rollup,
+                "previous": (dump.get("previous") or {}).get("rollup")
+                if isinstance(dump.get("previous"), dict)
+                else None,
+                "stats": dump.get("stats") or {},
+                "events_path": str(model_io_path),
+            }
+            # Switch cost proxy: load_sec accumulated on the new prompt so far.
+            if isinstance(rollup, dict) and rollup.get("prompt_id"):
+                summary["switch_load_sec"] = rollup.get("load_sec")
+                summary["switch_models"] = rollup.get("models")
+            _write_json(model_io_summary_path, summary)
+        except Exception as exc:
+            log_event("model_io_poll_failed", error=str(exc))
+
     q = _fetch_queue(args.server)
     if q is None:
         log_event("queue_fetch_failed", server=args.server)
@@ -333,8 +399,12 @@ def main() -> int:
     running, pending, _raw = q
     current_ids: Set[str] = {x.prompt_id for x in running + pending}
 
-    # Startup restore: best effort from previous snapshot (or backlog).
+    # Startup restore: never drop a mirrored job.
+    # - spillover off: re-submit the full last snapshot (+ drain backlog) into Comfy.
+    # - spillover on: fill pending_target live; park the rest in backlog for refill.
+    # Jobs without a stored prompt payload cannot be recovered (logged as unrecoverable).
     if not args.no_startup_restore:
+        spillover = bool(args.spillover_enabled)
         prev = state.get("last_snapshot") if isinstance(state.get("last_snapshot"), dict) else {}
         prev_pending = prev.get("pending") if isinstance(prev, dict) else []
         prev_running = prev.get("running") if isinstance(prev, dict) else []
@@ -342,47 +412,104 @@ def main() -> int:
         for pid in list(prev_pending) + list(prev_running):
             if isinstance(pid, str) and pid.strip() and pid not in candidates:
                 candidates.append(pid.strip())
-        slots = max(0, pending_target - len(pending))
+        # Live slots to fill now. None = no cap (full rebuild).
+        live_slots: Optional[int] = max(0, pending_target - len(pending)) if spillover else None
         restored = 0
-        for pid in candidates:
-            if restored >= slots:
-                break
-            if pid in current_ids:
-                continue
-            known = state.get("known", {}).get(pid) if isinstance(state.get("known"), dict) else None
-            if not isinstance(known, dict) or not isinstance(known.get("prompt"), dict):
-                log_event("startup_restore_skipped_no_payload", prompt_id=pid)
-                continue
+        parked = 0
+        unrecoverable = 0
+
+        def _live_full() -> bool:
+            return live_slots is not None and restored >= int(live_slots)
+
+        def _note_new_prompt(res: Dict[str, Any]) -> None:
+            np = res.get("prompt_id") if isinstance(res, dict) else None
+            if isinstance(np, str) and np.strip():
+                current_ids.add(np.strip())
+
+        def _try_submit(pid: str, prompt_obj: Dict[str, Any], *, extra_data: Any, outputs: Any, source: str) -> bool:
+            nonlocal restored
             attempts = int(state.get("restore_attempts", {}).get(pid, 0))
-            last_ts = float(state.get("restore_last_ts", {}).get(pid, 0.0))
+            # On process start, ignore prior cooldowns so a reboot can drain the account.
+            # Still honor attempt caps to avoid infinite poison loops across restarts.
             if attempts >= int(args.max_restore_attempts):
-                log_event("startup_restore_suppressed_attempt_cap", prompt_id=pid, attempts=attempts)
-                continue
-            if now - last_ts < float(args.restore_cooldown_s):
-                log_event("startup_restore_suppressed_cooldown", prompt_id=pid, since_s=(now - last_ts))
-                continue
+                log_event("startup_restore_suppressed_attempt_cap", prompt_id=pid, attempts=attempts, source=source)
+                return False
             ok, res = _submit_prompt(
                 args.server,
-                prompt=known["prompt"],
+                prompt=prompt_obj,
                 client_id=args.client_id,
-                extra_data=known.get("extra_data") if isinstance(known.get("extra_data"), dict) else None,
-                outputs_to_execute=known.get("outputs_to_execute") if isinstance(known.get("outputs_to_execute"), list) else None,
+                extra_data=extra_data if isinstance(extra_data, dict) else None,
+                outputs_to_execute=outputs if isinstance(outputs, list) else None,
             )
             state.setdefault("restore_attempts", {})[pid] = attempts + 1
             state.setdefault("restore_last_ts", {})[pid] = now
             if ok:
                 restored += 1
+                _note_new_prompt(res if isinstance(res, dict) else {})
                 state.setdefault("expected_add_until_ts", {})[pid] = now + float(args.expected_add_ttl_s)
-                log_event("startup_restored", prompt_id=pid, response=res)
-                state.setdefault("stats", {})["restored_startup"] = int(state.setdefault("stats", {}).get("restored_startup", 0)) + 1
+                log_event(
+                    "startup_restored" if source == "snapshot" else "startup_restored_backlog",
+                    prompt_id=pid,
+                    response=res,
+                    source=source,
+                )
+                state.setdefault("stats", {})["restored_startup"] = int(
+                    state.setdefault("stats", {}).get("restored_startup", 0)
+                ) + 1
+                return True
+            log_event(
+                "startup_restore_failed" if source == "snapshot" else "startup_restore_failed_backlog",
+                prompt_id=pid,
+                error=res,
+                source=source,
+            )
+            state.setdefault("restore_failures_ts", []).append(now)
+            return False
+
+        log_event(
+            "startup_restore_begin",
+            spillover=spillover,
+            live_slots=live_slots,
+            pending_target=pending_target,
+            candidates=len(candidates),
+            live_pending=len(pending),
+            live_running=len(running),
+            backlog=len(state.get("backlog") or []) if isinstance(state.get("backlog"), list) else 0,
+        )
+
+        for pid in candidates:
+            if pid in current_ids:
+                continue
+            known = state.get("known", {}).get(pid) if isinstance(state.get("known"), dict) else None
+            if not isinstance(known, dict) or not isinstance(known.get("prompt"), dict):
+                unrecoverable += 1
+                log_event("startup_restore_unrecoverable_no_payload", prompt_id=pid)
+                continue
+            if not _live_full():
+                if _try_submit(
+                    pid,
+                    known["prompt"],
+                    extra_data=known.get("extra_data"),
+                    outputs=known.get("outputs_to_execute"),
+                    source="snapshot",
+                ):
+                    continue
+                # Submit failed / attempt-capped: keep accounted for on disk.
+            if _push_backlog_item(state, pid):
+                parked += 1
+                log_event("startup_parked_backlog", prompt_id=pid, reason="spillover_or_submit_failed")
             else:
-                log_event("startup_restore_failed", prompt_id=pid, error=res)
-                state.setdefault("restore_failures_ts", []).append(now)
-        # Backlog restore if slots remain.
+                # Already in backlog or push failed — still accounted if backlog has it.
+                log_event("startup_already_accounted", prompt_id=pid)
+
+        # With spillover off, also drain any pre-existing backlog into Comfy now.
+        # With spillover on, only fill remaining live slots from backlog.
         backlog = state.get("backlog", [])
-        if isinstance(backlog, list) and restored < slots:
+        if isinstance(backlog, list) and backlog:
             i = 0
-            while i < len(backlog) and restored < slots:
+            while i < len(backlog):
+                if spillover and _live_full():
+                    break
                 item = backlog[i]
                 if not isinstance(item, dict):
                     i += 1
@@ -394,36 +521,43 @@ def main() -> int:
                 if pid in current_ids:
                     backlog.pop(i)
                     continue
-                attempts = int(state.get("restore_attempts", {}).get(pid, 0))
-                last_ts = float(state.get("restore_last_ts", {}).get(pid, 0.0))
-                if attempts >= int(args.max_restore_attempts) or now - last_ts < float(args.restore_cooldown_s):
-                    i += 1
-                    continue
                 prompt_obj = item.get("prompt")
                 if not isinstance(prompt_obj, dict):
+                    unrecoverable += 1
+                    log_event("startup_restore_unrecoverable_backlog_no_payload", prompt_id=pid)
                     backlog.pop(i)
                     continue
-                ok, res = _submit_prompt(
-                    args.server,
-                    prompt=prompt_obj,
-                    client_id=args.client_id,
-                    extra_data=item.get("extra_data") if isinstance(item.get("extra_data"), dict) else None,
-                    outputs_to_execute=item.get("outputs_to_execute") if isinstance(item.get("outputs_to_execute"), list) else None,
-                )
-                state.setdefault("restore_attempts", {})[pid] = attempts + 1
-                state.setdefault("restore_last_ts", {})[pid] = now
-                if ok:
-                    restored += 1
-                    state.setdefault("expected_add_until_ts", {})[pid] = now + float(args.expected_add_ttl_s)
-                    log_event("startup_restored_backlog", prompt_id=pid, response=res)
-                    state.setdefault("stats", {})["restored_startup"] = int(state.setdefault("stats", {}).get("restored_startup", 0)) + 1
+                if _try_submit(
+                    pid,
+                    prompt_obj,
+                    extra_data=item.get("extra_data"),
+                    outputs=item.get("outputs_to_execute"),
+                    source="backlog",
+                ):
                     backlog.pop(i)
-                else:
-                    state.setdefault("restore_failures_ts", []).append(now)
-                    log_event("startup_restore_failed_backlog", prompt_id=pid, error=res)
-                    i += 1
-        if restored:
-            print(f"startup_restored={restored}")
+                    continue
+                # Leave in backlog for a later refill / next restart.
+                i += 1
+
+        print(
+            f"startup_restored={restored} parked_backlog={parked} "
+            f"unrecoverable={unrecoverable} spillover={spillover} live_slots={live_slots}"
+        )
+        log_event(
+            "startup_restore_done",
+            restored=restored,
+            parked_backlog=parked,
+            unrecoverable=unrecoverable,
+            spillover=spillover,
+            live_slots=live_slots,
+        )
+        state["updated_at"] = _utc_iso(now)
+        _write_json(state_path, state)
+
+    # Seed model-io follower against whatever is currently running.
+    poll_model_io([x.prompt_id for x in running])
+    state["model_io"] = model_follower.dump_state()
+    _write_json(state_path, state)
 
     last_quiet_ts = _now_ts()
     while True:
@@ -483,8 +617,9 @@ def main() -> int:
         if unexpected > 0:
             state.setdefault("recent_unexpected_ts", []).extend([now] * unexpected)
             log_event("unexpected_queue_delta", added=sorted(list(added)), removed=sorted(list(removed)), unexpected=unexpected)
-        else:
+            # Reset the quiet clock when the queue membership/order churns.
             last_quiet_ts = now
+        # When unexpected==0, leave last_quiet_ts alone so quiet time can accumulate.
 
         # Mode switch with hysteresis.
         ru = [float(x) for x in state.get("recent_unexpected_ts", []) if isinstance(x, (int, float))]
@@ -495,6 +630,7 @@ def main() -> int:
             mode = "churn"
             state["mode"] = mode
             state["mode_since_ts"] = now
+            last_quiet_ts = now
             log_event("mode_switched", mode="churn", reason="unexpected_delta_threshold")
         elif mode == "churn" and now - last_quiet_ts >= float(args.quiet_window_s):
             mode = "normal"
@@ -611,6 +747,8 @@ def main() -> int:
 
         state["last_snapshot"] = {"running": running_ids, "pending": pending_ids}
         state["updated_at"] = _utc_iso(now)
+        poll_model_io(running_ids)
+        state["model_io"] = model_follower.dump_state()
         _prune_state(state)
         _write_json(state_path, state)
 
