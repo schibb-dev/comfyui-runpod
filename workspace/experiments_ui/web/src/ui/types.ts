@@ -80,6 +80,8 @@ export type QueueComfyItem = {
   exp_id?: string | null;
   run_id?: string | null;
   workflow_name?: string | null;
+  /** Shape-factory job_key when this prompt maps to a factory job. */
+  job_key?: string | null;
   input_media_relpath?: string | null;
   input_media_url?: string | null;
   input_media_kind?: "image" | "video" | null;
@@ -594,6 +596,9 @@ export type DiscoveryRatingSamplerCandidate = {
   needs_triage?: boolean;
   last_triaged_at?: string | null;
   triage_pass_count?: number;
+  /** Discovery companion still when known (png/jpg/webp). */
+  thumb_relpath?: string | null;
+  mtime?: number;
 };
 
 export type DispositionMarkerKind = "entry" | "step";
@@ -710,7 +715,18 @@ export type DiscoveryRatingSamplerResponse = {
   session_path?: string;
   created_at?: string;
   bootstrapped?: boolean;
+  selection_mode?: "mixed" | "random" | "search" | "latest" | string;
+  include_done?: boolean;
+  query?: string;
   session_mix?: { easy_down?: number; easy_up?: number; middle?: number };
+  request?: {
+    limit?: number;
+    mode?: string;
+    query?: string;
+    include_done?: boolean;
+    min_predicted?: number;
+    seed?: number;
+  };
   stats?: {
     unrated_videos?: number;
     scored_pool?: number;
@@ -1278,6 +1294,36 @@ export type ShapeFactoryDiscardResponse = {
   reason?: string;
 };
 
+/** POST /api/shape-factory/update-pending-trim — patch VHS window on a pending job. */
+export type ShapeFactoryUpdatePendingTrimRequest = {
+  job_key?: string;
+  job_path?: string;
+  skip_first_frames: number;
+  frame_load_cap: number;
+  mark_in?: number | null;
+  mark_out?: number | null;
+};
+
+export type ShapeFactoryUpdatePendingTrimResponse = {
+  ok: boolean;
+  job_key?: string;
+  job_path?: string;
+  workflow_path?: string;
+  vhs_window?: {
+    skip_first_frames?: number;
+    frame_load_cap?: number;
+    mark_in?: number;
+    mark_out?: number;
+    updated_at?: string;
+    source?: string;
+  };
+  prompt_cleared?: boolean;
+  status?: string | null;
+  error?: string;
+  detail?: string;
+  prompt_id?: string;
+};
+
 /** GET /api/shape-factory/quarantine */
 export type ShapeFactoryQuarantineEntry = {
   workflow_path?: string;
@@ -1573,6 +1619,8 @@ export type WorkProductItem = {
   prompt_profile?: WorkProductPromptProfile | null;
   shape_profile?: WorkProductShapeProfile | null;
   media_meta?: WorkProductMediaMeta | null;
+  /** Compact run timing from job/sidecar (exec, queue wait, …). */
+  timing?: WorkProductTiming | null;
   /** VHS loader window actually used on this job (from .prompt.json). */
   applied_vhs?: {
     skip_first_frames?: number;
@@ -1603,6 +1651,24 @@ export type WorkProductMediaMeta = {
   fps?: number | null;
   frame_count?: number | null;
   duration?: number | null;
+};
+
+export type WorkProductTiming = {
+  exec_sec?: number | null;
+  wait_sec?: number | null;
+  wall_sec?: number | null;
+  load_sec?: number | null;
+  unload_to_reload_sec?: number | null;
+  load_count?: number | null;
+  unload_event_count?: number | null;
+  load_models?: string[] | null;
+  frames?: number | null;
+  sec_per_frame?: number | null;
+  terminal?: string | null;
+  error?: boolean | null;
+  source?: string | null;
+  /** Preformatted chip text, e.g. "15.7m exec · 12m queue". */
+  label?: string | null;
 };
 
 export type WorkProductsResponse = {
@@ -1819,6 +1885,22 @@ export type ComfyLiveStatusResponse = {
   bridge?: boolean;
   items?: ComfyLiveStatusItem[];
   count?: number;
+  error?: string;
+  detail?: string;
+};
+
+/** GET /api/comfy/logs — ComfyUI in-memory log ring (proxied from /internal/logs/raw). */
+export type ComfyLogEntry = {
+  t?: string | null;
+  m: string;
+};
+
+export type ComfyLogsResponse = {
+  ok: boolean;
+  source?: string;
+  size?: number;
+  tail?: number;
+  entries: ComfyLogEntry[];
   error?: string;
   detail?: string;
 };

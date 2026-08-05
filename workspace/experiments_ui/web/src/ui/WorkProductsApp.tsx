@@ -1,7 +1,9 @@
 import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { cancelWorkItem, comfyLivePreviewUrl, createWorkItems, discardShapeFactoryJob, fetchComfyLiveStatus, fetchShapeFactoryJsonPeek, fetchShapeFactoryWorkProducts, replayShapeFactory, runDispositionStep, unqueueShapeFactory } from "./api";
+import { cancelWorkItem, createWorkItems, discardShapeFactoryJob, fetchShapeFactoryJsonPeek, fetchShapeFactoryWorkProducts, replayShapeFactory, runDispositionStep, unqueueShapeFactory, updatePendingShapeFactoryTrim } from "./api";
+import { ComfyLivePreview } from "./ComfyLivePreview";
 import { PageHeader } from "./PageHeader";
+import { PipelineScreen } from "./PipelineScreen";
 import { VideoTrimControls } from "./VideoTrimControls";
 import {
   loadDiscoveryTrimAsync,
@@ -15,8 +17,8 @@ import {
   vhsDefaultsToMarks,
 } from "./workProductTrim";
 import { useTrimPlaybackEnforcement, type TrimPlaybackMode } from "./useTrimPlayback";
+import { parseWorkbenchDeepLink } from "./discoveryDeepLink";
 import type {
-  ComfyLiveStatusItem,
   ShapeFactoryMapQueueOverrides,
   WorkItem,
   WorkProductDetailRow,
@@ -80,6 +82,7 @@ const SORT_OPTIONS: Array<{ id: WorkProductSort; label: string }> = [
 const DEFAULT_SECTION_OPEN: Record<string, boolean> = {
   prompt: true,
   run: true,
+  timing: true,
   plan: true,
   appetite: false,
   shape: true,
@@ -268,8 +271,9 @@ function isInFlightStatus(status?: string | null): boolean {
 
 /**
  * Trim in/out is editable while the job is still ours (pending / not on Comfy).
- * Locked once Comfy has accepted it (queued or running). Completed cards keep
- * next-action trim editable for Extend / Vary / Re-run planning.
+ * Edits patch that job's VHS window before submit. Locked once Comfy has
+ * accepted it (queued or running). Completed cards keep next-action trim
+ * editable for Extend / Vary / Re-run planning (sidecar only).
  */
 function isJobTrimEditable(item: WorkProductItem): boolean {
   if (item.output_url) return true;
@@ -281,6 +285,14 @@ function isJobTrimEditable(item: WorkProductItem): boolean {
   if (!String(item.prompt_id || "").trim()) return true;
   // Has a prompt_id under another in-flight label (e.g. submitted) — treat as locked.
   return false;
+}
+
+/** Pending factory jobs: trim edits rewrite the job workflow (not just the sidecar). */
+function canUpdatePendingJobTrim(item: WorkProductItem): boolean {
+  if (isNonFactoryWorkProduct(item)) return false;
+  if (item.output_url) return false;
+  if (!String(item.job_key || "").trim() && !String(item.job_path || "").trim()) return false;
+  return isJobTrimEditable(item);
 }
 
 /** Synthetic Comfy live stub — no factory .job.json to demote to pending. */
@@ -455,6 +467,51 @@ function formatWhen(iso?: string | null): string {
   }
 }
 
+function formatDurationSec(sec?: number | null): string {
+  if (sec == null || !Number.isFinite(sec) || sec < 0) return "";
+  if (sec < 90) return `${Math.round(sec)}s`;
+  if (sec < 3600) {
+    const m = sec / 60;
+    return `${m < 10 ? m.toFixed(1) : Math.round(m)}m`;
+  }
+  return `${(sec / 3600).toFixed(1)}h`;
+}
+
+function timingHeadline(item: WorkProductItem): { text: string; title: string; bad: boolean } | null {
+  const t = item.timing;
+  if (!t) return null;
+  const bad = Boolean(t.error) || String(item.status || "").toLowerCase() === "error";
+  const parts: string[] = [];
+  const exec = formatDurationSec(t.exec_sec);
+  if (exec) parts.push(`${exec} exec`);
+  const wait = formatDurationSec(t.wait_sec);
+  if (wait && (t.wait_sec || 0) >= 1) parts.push(`${wait} queue`);
+  const load = formatDurationSec(t.load_sec);
+  if (load && (t.load_sec || 0) >= 0.5) parts.push(`${load} load`);
+  const unload = formatDurationSec(t.unload_to_reload_sec);
+  if (unload && (t.unload_to_reload_sec || 0) >= 0.5) parts.push(`${unload} unload→reload`);
+  const spf = t.sec_per_frame;
+  if (spf != null && Number.isFinite(spf) && spf > 0.05 && !bad) {
+    parts.push(`${spf < 10 ? spf.toFixed(1) : Math.round(spf)}s/f`);
+  }
+  if (t.frames != null && Number.isFinite(t.frames)) parts.push(`${t.frames}f`);
+  const text = parts.length ? parts.join(" · ") : String(t.label || "").trim();
+  if (!text) return null;
+  const titleBits = [
+    t.exec_sec != null ? `exec ${formatDurationSec(t.exec_sec)}` : null,
+    t.wait_sec != null ? `queue wait ${formatDurationSec(t.wait_sec)}` : null,
+    t.load_sec != null ? `model load ${formatDurationSec(t.load_sec)}` : null,
+    t.unload_to_reload_sec != null
+      ? `unload→reload ${formatDurationSec(t.unload_to_reload_sec)}`
+      : null,
+    t.load_models?.length ? `models ${t.load_models.join(", ")}` : null,
+    t.wall_sec != null ? `submit→done ${formatDurationSec(t.wall_sec)}` : null,
+    t.terminal ? `terminal=${t.terminal}` : null,
+    t.source ? `source=${t.source}` : null,
+  ].filter(Boolean);
+  return { text, title: titleBits.join(" · ") || text, bad };
+}
+
 function badgeClass(kind?: string | null): string {
   const k = (kind || "").toLowerCase();
   if (k === "derive" || k === "predicted_derive" || k === "predicted") return "work-product-badge--derive";
@@ -466,16 +523,6 @@ function badgeClass(kind?: string | null): string {
   if (k === "interrupted" || k === "unknown" || k === "abandoned") return "work-product-badge--pending";
   if (k === "failed" || k === "error") return "work-product-badge--bad";
   return "";
-}
-
-function formatDuration(seconds: number | null | undefined): string {
-  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return "—";
-  const s = Math.round(seconds);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const r = s % 60;
-  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`;
-  return `${m}:${String(r).padStart(2, "0")}`;
 }
 
 function sourcePreviewUrls(item: WorkProductItem): { thumb: string | null; video: string | null; label: string } {
@@ -558,226 +605,6 @@ function WorkProductSourceThumbPreview({ item }: { item: WorkProductItem }) {
   );
 }
 
-function WorkProductLivePreview({
-  promptId,
-  submittedAt,
-}: {
-  promptId: string;
-  submittedAt?: string | null;
-}) {
-  const [bust, setBust] = useState(() => Date.now());
-  const [hasFrame, setHasFrame] = useState(false);
-  const [status, setStatus] = useState<ComfyLiveStatusItem | null>(null);
-  const [nowTick, setNowTick] = useState(() => Date.now());
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const frameUrlsRef = useRef<Map<number, string>>(new Map());
-  const frameImgsRef = useRef<Map<number, HTMLImageElement>>(new Map());
-  const animRef = useRef<number | null>(null);
-  const lastFetchRef = useRef(0);
-
-  useEffect(() => {
-    let cancelled = false;
-    const tick = () => {
-      if (cancelled) return;
-      void fetchComfyLiveStatus([promptId])
-        .then((res) => {
-          if (cancelled) return;
-          const item = (res.items || []).find((x) => x.prompt_id === promptId) || null;
-          setStatus(item);
-          if (item?.has_preview) {
-            setHasFrame(true);
-            setBust(Date.now());
-          }
-        })
-        .catch(() => {
-          /* ignore transient bridge errors while polling */
-        });
-    };
-    tick();
-    const id = window.setInterval(tick, 750);
-    const clock = window.setInterval(() => setNowTick(Date.now()), 1000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-      window.clearInterval(clock);
-    };
-  }, [promptId]);
-
-  // Fetch / refresh VHS frames into object URLs for canvas playback.
-  useEffect(() => {
-    let cancelled = false;
-    const ready = status?.frames_ready || [];
-    const updatedAt = status?.updated_at || 0;
-    if (!ready.length) return;
-
-    const fetchFrame = async (idx: number) => {
-      try {
-        const r = await fetch(comfyLivePreviewUrl(promptId, `${updatedAt}-${idx}`, idx));
-        if (!r.ok || cancelled) return;
-        const blob = await r.blob();
-        if (cancelled || blob.size < 1) return;
-        const prev = frameUrlsRef.current.get(idx);
-        if (prev) URL.revokeObjectURL(prev);
-        const url = URL.createObjectURL(blob);
-        frameUrlsRef.current.set(idx, url);
-        const img = new Image();
-        img.src = url;
-        frameImgsRef.current.set(idx, img);
-        setHasFrame(true);
-      } catch {
-        /* ignore */
-      }
-    };
-
-    // Throttle refetch storm when many frames update at once.
-    if (updatedAt && updatedAt === lastFetchRef.current) {
-      for (const idx of ready) {
-        if (!frameUrlsRef.current.has(idx)) void fetchFrame(idx);
-      }
-    } else {
-      lastFetchRef.current = updatedAt || Date.now() / 1000;
-      for (const idx of ready) void fetchFrame(idx);
-    }
-
-    return () => {
-      cancelled = true;
-    };
-  }, [promptId, status?.updated_at, status?.frames_count, (status?.frames_ready || []).join(",")]);
-
-  // Cleanup object URLs on unmount / prompt change.
-  useEffect(() => {
-    return () => {
-      for (const url of frameUrlsRef.current.values()) URL.revokeObjectURL(url);
-      frameUrlsRef.current.clear();
-      frameImgsRef.current.clear();
-      if (animRef.current != null) cancelAnimationFrame(animRef.current);
-    };
-  }, [promptId]);
-
-  // Canvas animation loop (VHS-style cycling through latent frames).
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const rate = status?.vhs_rate && status.vhs_rate > 0 ? status.vhs_rate : 8;
-    const length = Math.max(status?.vhs_length || 0, status?.frames_count || 0);
-    if (length < 2 && (status?.frames_count || 0) < 2) {
-      if (animRef.current != null) {
-        cancelAnimationFrame(animRef.current);
-        animRef.current = null;
-      }
-      return;
-    }
-
-    let cancelled = false;
-    const start = performance.now();
-    const draw = (t: number) => {
-      if (cancelled) return;
-      const imgs = frameImgsRef.current;
-      const keys = [...imgs.keys()].sort((a, b) => a - b);
-      if (keys.length) {
-        const span = Math.max(length, keys[keys.length - 1] + 1);
-        const idx = Math.floor(((t - start) / 1000) * rate) % span;
-        // Prefer exact frame; fall back to nearest available below.
-        let img = imgs.get(idx);
-        if (!img) {
-          for (let i = keys.length - 1; i >= 0; i--) {
-            if (keys[i] <= idx) {
-              img = imgs.get(keys[i]);
-              break;
-            }
-          }
-          img = img || imgs.get(keys[0]);
-        }
-        if (img && img.complete && img.naturalWidth > 0) {
-          if (canvas.width !== img.naturalWidth || canvas.height !== img.naturalHeight) {
-            canvas.width = img.naturalWidth;
-            canvas.height = img.naturalHeight;
-          }
-          const ctx = canvas.getContext("2d");
-          if (ctx) {
-            ctx.drawImage(img, 0, 0);
-          }
-        }
-      }
-      animRef.current = requestAnimationFrame(draw);
-    };
-    animRef.current = requestAnimationFrame(draw);
-    return () => {
-      cancelled = true;
-      if (animRef.current != null) cancelAnimationFrame(animRef.current);
-      animRef.current = null;
-    };
-  }, [status?.vhs_rate, status?.vhs_length, status?.frames_count]);
-
-  const value = status?.value;
-  const max = status?.max;
-  const pct =
-    typeof value === "number" && typeof max === "number" && max > 0
-      ? Math.max(0, Math.min(100, Math.round((value / max) * 100)))
-      : null;
-
-  const elapsedClient =
-    status?.started_at != null
-      ? Math.max(0, nowTick / 1000 - status.started_at)
-      : submittedAt
-        ? Math.max(0, (nowTick - Date.parse(submittedAt)) / 1000)
-        : status?.elapsed_s ?? null;
-  const eta =
-    status?.eta_s != null
-      ? status.eta_s
-      : typeof value === "number" && typeof max === "number" && value > 0 && max > value && elapsedClient != null
-        ? (elapsedClient * (max - value)) / value
-        : null;
-
-  const animate = (status?.frames_count || 0) >= 2;
-
-  return (
-    <div className="work-product-live">
-      <div className="work-product-live__frame">
-        {animate ? (
-          <canvas className="work-product-live__img work-product-live__canvas" ref={canvasRef} />
-        ) : hasFrame || status?.has_preview ? (
-          <img
-            className="work-product-live__img"
-            src={comfyLivePreviewUrl(promptId, bust)}
-            alt={`Live preview ${promptId}`}
-            onLoad={() => setHasFrame(true)}
-            onError={() => {
-              /* 204 / missing — keep waiting state */
-            }}
-          />
-        ) : (
-          <div className="work-product-viewer__empty work-product-live__waiting">
-            Waiting for latent preview…
-          </div>
-        )}
-        <span className="work-product-live__badge" title={promptId}>
-          live
-        </span>
-      </div>
-      <div className="work-product-live__timing" title={status?.node ? `node ${status.node}` : undefined}>
-        <span>Elapsed {formatDuration(elapsedClient)}</span>
-        <span>ETA {eta != null ? `~${formatDuration(eta)}` : "—"}</span>
-        {pct != null ? (
-          <span>
-            {value}/{max}
-          </span>
-        ) : status?.status ? (
-          <span>{status.status}</span>
-        ) : null}
-      </div>
-      {pct != null ? (
-        <div className="work-product-live__progress" title={`${value}/${max}${status?.node ? ` · node ${status.node}` : ""}`}>
-          <div className="work-product-live__bar" style={{ width: `${pct}%` }} />
-          <span className="work-product-live__prog-label">
-            {value}/{max}
-            {status?.node ? ` · ${status.node}` : ""}
-          </span>
-        </div>
-      ) : null}
-    </div>
-  );
-}
 
 type InputTrimState = {
   markIn: number | null;
@@ -866,6 +693,40 @@ function WorkProductViewer({
   const [sourceMode, setSourceMode] = useState<TrimPlaybackMode>("repeat");
   const fps = parseFps(item.media_meta?.fps, 18);
   const trimEditable = isJobTrimEditable(item);
+  const pendingJobTrim = canUpdatePendingJobTrim(item);
+  const pendingTrimTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (pendingTrimTimerRef.current != null) {
+        window.clearTimeout(pendingTrimTimerRef.current);
+        pendingTrimTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  const schedulePendingJobTrimUpdate = (state: InputTrimState, defaults: { skip_first_frames: number; frame_load_cap: number }) => {
+    if (!pendingJobTrim) return;
+    if (!(state.duration > 0)) return;
+    const win =
+      state.markIn == null && state.markOut == null && !state.dirty
+        ? { skip_first_frames: defaults.skip_first_frames, frame_load_cap: defaults.frame_load_cap, warning: null as string | null }
+        : marksToVhsWindow(state.markIn, state.markOut, state.duration, state.fps || fps, null);
+    if (pendingTrimTimerRef.current != null) window.clearTimeout(pendingTrimTimerRef.current);
+    pendingTrimTimerRef.current = window.setTimeout(() => {
+      pendingTrimTimerRef.current = null;
+      void updatePendingShapeFactoryTrim({
+        job_key: String(item.job_key || "").trim() || undefined,
+        job_path: String(item.job_path || "").trim() || undefined,
+        skip_first_frames: win.skip_first_frames,
+        frame_load_cap: win.frame_load_cap,
+        mark_in: state.markIn,
+        mark_out: state.markOut,
+      }).catch((err) => {
+        console.warn("update-pending-trim failed", err);
+      });
+    }, 450);
+  };
 
   useTrimPlaybackEnforcement(outputVideoRef, {
     mediaKey: outputRel || item.job_key,
@@ -986,16 +847,23 @@ function WorkProductViewer({
     next: InputTrimState,
     rel: string | null,
     legacyKey: string,
+    opts?: {
+      updatePendingJob?: boolean;
+      defaults?: { skip_first_frames: number; frame_load_cap: number };
+    },
   ) => {
-    if (!next.dirty || !(next.duration > 0)) return;
-    void persistDiscoveryTrimAsync({
-      context: TRIM_CONTEXT_WORK_PRODUCTS,
-      mediaRelpath: rel,
-      legacyAssetKey: legacyKey,
-      markIn: next.markIn,
-      markOut: next.markOut,
-      duration: next.duration,
-    });
+    if (!(next.duration > 0)) return;
+    if (next.dirty) {
+      void persistDiscoveryTrimAsync({
+        context: TRIM_CONTEXT_WORK_PRODUCTS,
+        mediaRelpath: rel,
+        legacyAssetKey: legacyKey,
+        markIn: next.markIn,
+        markOut: next.markOut,
+        duration: next.duration,
+      });
+    }
+    if (opts?.updatePendingJob && opts.defaults) schedulePendingJobTrimUpdate(next, opts.defaults);
   };
 
   return (
@@ -1068,7 +936,7 @@ function WorkProductViewer({
             ) : null}
           </>
         ) : showRunningLive ? (
-          <WorkProductLivePreview promptId={promptId} submittedAt={item.submitted_at || item.created_at} />
+          <ComfyLivePreview promptId={promptId} submittedAt={item.submitted_at || item.created_at} />
         ) : queuedSourcePlayUrl ? (
           <div className="work-product-viewer__queued-source">
             <div className="work-product-viewer__queued-source-frame">
@@ -1119,13 +987,19 @@ function WorkProductViewer({
                 if (!trimEditable) return;
                 const next = { ...sourceTrim, markIn: v, dirty: true, warning: null, clampedDefault: false };
                 onSourceTrimChange(next);
-                persistTrim(next, queuedSourceRel, `wp-src:${item.job_key}`);
+                persistTrim(next, queuedSourceRel, `wp-src:${item.job_key}`, {
+                  updatePendingJob: true,
+                  defaults: sourceDefaults,
+                });
               }}
               onMarkOutChange={(v) => {
                 if (!trimEditable) return;
                 const next = { ...sourceTrim, markOut: v, dirty: true, warning: null, clampedDefault: false };
                 onSourceTrimChange(next);
-                persistTrim(next, queuedSourceRel, `wp-src:${item.job_key}`);
+                persistTrim(next, queuedSourceRel, `wp-src:${item.job_key}`, {
+                  updatePendingJob: true,
+                  defaults: sourceDefaults,
+                });
               }}
               onModeChange={setSourceMode}
               onClear={() => {
@@ -1149,6 +1023,7 @@ function WorkProductViewer({
                   markOut: null,
                   duration: sourceTrim.duration || 1,
                 });
+                schedulePendingJobTrimUpdate(next, sourceDefaults);
               }}
             />
             {sourceTrim.warning ? (
@@ -1193,20 +1068,30 @@ function WorkProductViewer({
                 mode={sourceMode}
                 mediaSyncKey={sourceRel || `src:${item.job_key}`}
                 size="default"
+                readOnly={!trimEditable}
                 onSeek={setSourceTime}
                 onSyncTime={setSourceTime}
                 onMarkInChange={(v) => {
+                  if (!trimEditable) return;
                   const next = { ...sourceTrim, markIn: v, dirty: true, warning: null, clampedDefault: false };
                   onSourceTrimChange(next);
-                  persistTrim(next, sourceRel, `wp-src:${item.job_key}`);
+                  persistTrim(next, sourceRel, `wp-src:${item.job_key}`, {
+                    updatePendingJob: true,
+                    defaults: sourceDefaults,
+                  });
                 }}
                 onMarkOutChange={(v) => {
+                  if (!trimEditable) return;
                   const next = { ...sourceTrim, markOut: v, dirty: true, warning: null, clampedDefault: false };
                   onSourceTrimChange(next);
-                  persistTrim(next, sourceRel, `wp-src:${item.job_key}`);
+                  persistTrim(next, sourceRel, `wp-src:${item.job_key}`, {
+                    updatePendingJob: true,
+                    defaults: sourceDefaults,
+                  });
                 }}
                 onModeChange={setSourceMode}
                 onClear={() => {
+                  if (!trimEditable) return;
                   const seeded = vhsDefaultsToMarks(sourceDefaults, sourceTrim.duration || 1, fps);
                   const next: InputTrimState = {
                     markIn: sourceTrim.duration > 0 ? seeded.markIn : null,
@@ -1226,6 +1111,7 @@ function WorkProductViewer({
                     markOut: null,
                     duration: sourceTrim.duration || 1,
                   });
+                  schedulePendingJobTrimUpdate(next, sourceDefaults);
                 }}
               />
               {sourceTrim.warning ? (
@@ -2044,6 +1930,26 @@ const DETAIL_GROUPS: DetailGroupDef[] = [
     ],
   },
   {
+    id: "timing",
+    title: "Timing",
+    kv: true,
+    labels: [
+      "Exec",
+      "Exec sec",
+      "Queue wait sec",
+      "Wall sec",
+      "Model load sec",
+      "Unload→reload sec",
+      "Models loaded",
+      "Model load count",
+      "Unload events",
+      "Sec per frame",
+      "Workload frames",
+      "Exec terminal",
+      "Frames before→after",
+    ],
+  },
+  {
     id: "plan",
     title: "Selection",
     kv: true,
@@ -2224,6 +2130,19 @@ const DETAIL_LABELS: Record<string, string> = {
   "Prompt file": "Profile",
   "VHS skip_first_frames": "skip_first_frames",
   "VHS frame_load_cap": "frame_load_cap",
+  Exec: "Exec",
+  "Exec sec": "Exec (s)",
+  "Queue wait sec": "Queue wait (s)",
+  "Wall sec": "Submit→done (s)",
+  "Model load sec": "Model load (s)",
+  "Unload→reload sec": "Unload→reload (s)",
+  "Models loaded": "Models",
+  "Model load count": "Load count",
+  "Unload events": "Unload events",
+  "Sec per frame": "Sec / frame",
+  "Workload frames": "Frames",
+  "Exec terminal": "Terminal",
+  "Frames before→after": "Frames before→after",
 };
 
 function displayDetailLabel(_groupId: string, label: string): string {
@@ -2232,6 +2151,23 @@ function displayDetailLabel(_groupId: string, label: string): string {
 
 function displayDetailValue(row: WorkProductDetailRow): string {
   if (row.label === "Created") return formatWhen(row.value);
+  if (
+    row.label === "Exec sec" ||
+    row.label === "Queue wait sec" ||
+    row.label === "Wall sec" ||
+    row.label === "Model load sec" ||
+    row.label === "Unload→reload sec"
+  ) {
+    const n = Number(row.value);
+    if (Number.isFinite(n)) {
+      const pretty = formatDurationSec(n);
+      return pretty ? `${pretty} (${n.toFixed(n < 10 ? 2 : 0)}s)` : String(row.value);
+    }
+  }
+  if (row.label === "Sec per frame") {
+    const n = Number(row.value);
+    if (Number.isFinite(n)) return n < 10 ? n.toFixed(2) : String(Math.round(n));
+  }
   return row.value;
 }
 
@@ -2758,8 +2694,23 @@ function WorkProductDetails({
           <span className={`work-product-badge ${badgeClass(item.rating_kind)}`}>{item.rating_kind}</span>
         ) : null}
         {item.disposition_entry ? <span className="work-product-badge">{item.disposition_entry}</span> : null}
+        {(() => {
+          const timing = timingHeadline(item);
+          if (!timing) return null;
+          return (
+            <span
+              className={`work-product-badge work-product-badge--timing${
+                timing.bad ? " work-product-badge--timing-bad" : ""
+              }`}
+              title={timing.title}
+            >
+              {timing.text}
+            </span>
+          );
+        })()}
         {item.applied_vhs &&
-        (item.applied_vhs.skip_first_frames != null || item.applied_vhs.frame_load_cap != null) ? (
+        (Number(item.applied_vhs.skip_first_frames ?? 0) > 0 ||
+          Number(item.applied_vhs.frame_load_cap ?? 0) > 0) ? (
           <span
             className="work-product-badge"
             title="VHS loader window applied on this job (source input)"
@@ -2897,6 +2848,9 @@ function WorkProductRow({
 
   return (
     <article
+      id={`workbench-job-${String(item.job_key || "").replace(/[^\w.-]+/g, "_")}`}
+      data-job-key={item.job_key || undefined}
+      data-prompt-id={item.prompt_id || undefined}
       className={`work-product-row work-product-row--${layout}${
         isLivePreviewItem(item) ? " work-product-row--live" : ""
       }`}
@@ -2910,6 +2864,18 @@ function WorkProductRow({
             <span className={`work-product-badge ${thumbBadgeClass}`}>{thumbMeta.label}</span>
           ) : null}
           <span className="work-product-row__when">{formatWhen(item.created_at)}</span>
+          {(() => {
+            const timing = timingHeadline(item);
+            if (!timing) return null;
+            return (
+              <span
+                className={`work-product-row__timing${timing.bad ? " work-product-row__timing--bad" : ""}`}
+                title={timing.title}
+              >
+                {timing.text}
+              </span>
+            );
+          })()}
         </div>
         <code className="work-product-row__key" title={item.job_key}>
           {item.job_key}
@@ -2939,18 +2905,20 @@ function WorkProductRow({
 }
 
 export function WorkProductsApp() {
+  const deepLink = useMemo(() => parseWorkbenchDeepLink(), []);
   const [layout, setLayout] = useState<RowLayout>(() => loadLayout());
   const [sort, setSort] = useState<WorkProductSort>(() => loadSort());
-  const [nameQuery, setNameQuery] = useState("");
+  const [nameQuery, setNameQuery] = useState(() => deepLink.filter || "");
   const [items, setItems] = useState<WorkProductItem[]>([]);
   const [families, setFamilies] = useState<WorkProductFamilyOption[]>([]);
   const [extendFamilyDefaults, setExtendFamilyDefaults] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [limit, setLimit] = useState(50);
-  const [hourlyOnly, setHourlyOnly] = useState(loadHourlyOnly);
+  const [limit, setLimit] = useState(() => (deepLink.filter ? 80 : 50));
+  const [hourlyOnly, setHourlyOnly] = useState(() => (deepLink.filter ? false : loadHourlyOnly()));
   const [statusOff, setStatusOff] = useState<Set<string>>(() => loadStatusFilterOff());
   const [markerOff, setMarkerOff] = useState<Set<string>>(() => loadMarkerFilterOff());
+  const deepLinkScrolled = useRef(false);
 
   const statusCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -2993,6 +2961,26 @@ export function WorkProductsApp() {
       ),
     [items, nameQuery, sort, statusOff, markerOff],
   );
+
+  useEffect(() => {
+    if (deepLinkScrolled.current || loading || !deepLink.filter || !visibleItems.length) return;
+    const needleJob = (deepLink.job || "").toLowerCase();
+    const needlePid = (deepLink.promptId || "").toLowerCase();
+    const match =
+      visibleItems.find((it) => needleJob && String(it.job_key || "").toLowerCase() === needleJob) ||
+      visibleItems.find((it) => needlePid && String(it.prompt_id || "").toLowerCase() === needlePid) ||
+      visibleItems[0];
+    if (!match) return;
+    const id = `workbench-job-${String(match.job_key || "").replace(/[^\w.-]+/g, "_")}`;
+    const el = document.getElementById(id);
+    if (!el) return;
+    deepLinkScrolled.current = true;
+    window.requestAnimationFrame(() => {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+      el.classList.add("work-product-row--deep-link");
+      window.setTimeout(() => el.classList.remove("work-product-row--deep-link"), 2400);
+    });
+  }, [deepLink.filter, deepLink.job, deepLink.promptId, loading, visibleItems]);
 
   const toggleStatusFilter = (status: string) => {
     setStatusOff((prev) => {
@@ -3075,12 +3063,18 @@ export function WorkProductsApp() {
   }, [items, limit, hourlyOnly]);
 
   return (
-    <div className="work-products layout">
+    <PipelineScreen className="work-products">
       <PageHeader
-        title="Work products"
-        subtitle="Recent factory outputs with how they were selected and bound"
+        title="Workbench"
+        subtitle="Set up jobs that seed factories — recent outputs, construction, trim, and queue"
         actions={
           <>
+            <label className="pipeline-tray-switch" title="Worktrays coming soon — Recent is the default working set">
+              <span>Working set</span>
+              <select value="recent" aria-label="Workbench working set" disabled>
+                <option value="recent">Recent</option>
+              </select>
+            </label>
             <label className="work-products-search">
               <span className="work-products-search__label">Search</span>
               <input
@@ -3155,7 +3149,7 @@ export function WorkProductsApp() {
           </>
         }
       />
-      <div className="work-products-status-filters" role="group" aria-label="Work product filters">
+      <div className="work-products-status-filters pipeline-filter-row" role="group" aria-label="Work product filters">
         <button
           type="button"
           className={`work-products-status-toggle work-products-status-toggle--hourly${
@@ -3263,6 +3257,6 @@ export function WorkProductsApp() {
           ))}
         </div>
       </div>
-    </div>
+    </PipelineScreen>
   );
 }

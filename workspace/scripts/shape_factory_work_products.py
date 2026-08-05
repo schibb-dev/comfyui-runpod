@@ -343,31 +343,125 @@ def _prompt_doc_for_job(job: Dict[str, Any], job_path: Path) -> Optional[Dict[st
     return None
 
 
+_VHS_LOAD_CLASS_TYPES: frozenset[str] = frozenset(
+    {
+        "VHS_LoadVideoPath",
+        "VHS_LoadVideo",
+        "VHS_LoadVideoFFmpegPath",
+        "VHS_LoadVideoFFmpeg",
+        "LoadVideo",
+    }
+)
+
+
+def _vhs_window_from_inputs(inputs: Any) -> Optional[Dict[str, int]]:
+    """Parse skip/cap from a node inputs or widgets_values dict."""
+    if not isinstance(inputs, dict):
+        return None
+    if inputs.get("skip_first_frames") is None and inputs.get("frame_load_cap") is None:
+        return None
+    out: Dict[str, int] = {"skip_first_frames": 0, "frame_load_cap": 0}
+    try:
+        if inputs.get("skip_first_frames") is not None:
+            out["skip_first_frames"] = max(0, int(inputs["skip_first_frames"]))
+    except (TypeError, ValueError):
+        pass
+    try:
+        if inputs.get("frame_load_cap") is not None:
+            out["frame_load_cap"] = max(0, int(inputs["frame_load_cap"]))
+    except (TypeError, ValueError):
+        pass
+    return out
+
+
 def _applied_vhs_window_from_prompt(prompt: Optional[Dict[str, Any]]) -> Optional[Dict[str, int]]:
-    """First VHS_LoadVideoPath skip/cap from a Comfy API prompt."""
+    """First VHS video-loader skip/cap from a Comfy API prompt."""
     if not isinstance(prompt, dict):
         return None
     for node in prompt.values():
-        if not isinstance(node, dict) or node.get("class_type") != "VHS_LoadVideoPath":
+        if not isinstance(node, dict):
             continue
-        inputs = node.get("inputs") if isinstance(node.get("inputs"), dict) else {}
-        out: Dict[str, int] = {"skip_first_frames": 0, "frame_load_cap": 0}
+        if str(node.get("class_type") or "") not in _VHS_LOAD_CLASS_TYPES:
+            continue
+        win = _vhs_window_from_inputs(node.get("inputs"))
+        if win is not None:
+            return win
+        # Node present but no skip/cap keys — still report zeros so callers know a loader exists.
+        return {"skip_first_frames": 0, "frame_load_cap": 0}
+    return None
+
+
+def _applied_vhs_window_from_workflow(workflow: Optional[Dict[str, Any]]) -> Optional[Dict[str, int]]:
+    """First VHS video-loader skip/cap from a LiteGraph workflow (widgets_values)."""
+    if not isinstance(workflow, dict):
+        return None
+    nodes = workflow.get("nodes")
+    if not isinstance(nodes, list):
+        return None
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("type") or "") not in _VHS_LOAD_CLASS_TYPES:
+            continue
+        widgets = node.get("widgets_values")
+        win = _vhs_window_from_inputs(widgets)
+        if win is not None:
+            return win
+        # Some exports stash skip/cap under videopreview.params only.
+        if isinstance(widgets, dict):
+            preview = widgets.get("videopreview")
+            params = preview.get("params") if isinstance(preview, dict) else None
+            win = _vhs_window_from_inputs(params)
+            if win is not None:
+                return win
+        return {"skip_first_frames": 0, "frame_load_cap": 0}
+    return None
+
+
+def _workflow_doc_for_job(job: Dict[str, Any], job_path: Path) -> Optional[Dict[str, Any]]:
+    """Load the generated LiteGraph workflow for this job when present on disk."""
+    candidates: List[Path] = []
+    for raw in (
+        job.get("generated_workflow_path"),
+        job.get("workflow_path"),
+        job_path.with_name(job_path.name.replace(".job.json", ".workflow.json")),
+    ):
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        p = Path(text).expanduser()
+        if p.is_file():
+            candidates.append(p)
+    sibling = job_path.with_name(job_path.name.replace(".job.json", ".workflow.json"))
+    if sibling.is_file():
+        candidates.insert(0, sibling)
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
         try:
-            if inputs.get("skip_first_frames") is not None:
-                out["skip_first_frames"] = max(0, int(inputs["skip_first_frames"]))
-        except (TypeError, ValueError):
-            pass
-        try:
-            if inputs.get("frame_load_cap") is not None:
-                out["frame_load_cap"] = max(0, int(inputs["frame_load_cap"]))
-        except (TypeError, ValueError):
-            pass
-        return out
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(doc, dict) and isinstance(doc.get("nodes"), list):
+            return doc
     return None
 
 
 def _applied_vhs_window_from_job(job: Dict[str, Any], job_path: Path) -> Optional[Dict[str, int]]:
-    return _applied_vhs_window_from_prompt(_prompt_doc_for_job(job, job_path))
+    win = job.get("vhs_window") if isinstance(job.get("vhs_window"), dict) else None
+    if isinstance(win, dict) and (
+        win.get("skip_first_frames") is not None or win.get("frame_load_cap") is not None
+    ):
+        parsed = _vhs_window_from_inputs(win)
+        if parsed is not None:
+            return parsed
+    from_prompt = _applied_vhs_window_from_prompt(_prompt_doc_for_job(job, job_path))
+    if from_prompt is not None:
+        return from_prompt
+    return _applied_vhs_window_from_workflow(_workflow_doc_for_job(job, job_path))
 
 
 def _ensure_item_media_urls(
@@ -744,12 +838,39 @@ def _detail_rows(item: Dict[str, Any]) -> List[Dict[str, Any]]:
     add("Status", item.get("status"))
     add("Error", item.get("error"))
     add("Error node", item.get("error_node"))
+    timing = item.get("timing") if isinstance(item.get("timing"), dict) else {}
+    if timing:
+        add("Exec", timing.get("label") or timing.get("exec_sec"))
+        if timing.get("exec_sec") is not None:
+            add("Exec sec", timing.get("exec_sec"))
+        if timing.get("wait_sec") is not None:
+            add("Queue wait sec", timing.get("wait_sec"))
+        if timing.get("wall_sec") is not None:
+            add("Wall sec", timing.get("wall_sec"))
+        if timing.get("load_sec") is not None:
+            add("Model load sec", timing.get("load_sec"))
+        if timing.get("unload_to_reload_sec") is not None:
+            add("Unload→reload sec", timing.get("unload_to_reload_sec"))
+        if timing.get("load_models"):
+            add("Models loaded", timing.get("load_models"))
+        if timing.get("load_count") is not None:
+            add("Model load count", timing.get("load_count"))
+        if timing.get("unload_event_count") is not None:
+            add("Unload events", timing.get("unload_event_count"))
+        if timing.get("sec_per_frame") is not None:
+            add("Sec per frame", timing.get("sec_per_frame"))
+        if timing.get("frames") is not None:
+            add("Workload frames", timing.get("frames"))
+        if timing.get("terminal"):
+            add("Exec terminal", timing.get("terminal"))
     add("Pick mode", item.get("pick_mode"))
     add("Step", item.get("step"))
     add("Rating kind", item.get("rating_kind"))
     add("Disposition", item.get("disposition_entry"))
     add("Disposition note", item.get("disposition_note"))
     c = item.get("construction") if isinstance(item.get("construction"), dict) else {}
+    if c.get("frames_before") is not None or c.get("frames_after") is not None:
+        add("Frames before→after", f"{c.get('frames_before')}→{c.get('frames_after')}")
     add("Derive action", c.get("derive_action"))
     add("Plan source tag", c.get("source"))
     add("Combo key", item.get("combo_key") or c.get("combo_key"))
@@ -869,6 +990,128 @@ def _parse_created_at_ts(raw: Any) -> Optional[float]:
         return None
 
 
+def _timings_sidecar_path(job_path: Path) -> Path:
+    name = job_path.name
+    if name.endswith(".job.json"):
+        return job_path.with_name(name[: -len(".job.json")] + ".timings.json")
+    return job_path.with_suffix(".timings.json")
+
+
+def _merge_job_timings(job: Dict[str, Any], job_path: Path) -> Dict[str, Any]:
+    """Prefer the timings sidecar when present (often richer than inline job.timings)."""
+    inline = job.get("timings") if isinstance(job.get("timings"), dict) else {}
+    side_path = _timings_sidecar_path(job_path)
+    if not side_path.is_file():
+        return dict(inline)
+    try:
+        side = json.loads(side_path.read_text(encoding="utf-8"))
+    except Exception:
+        return dict(inline)
+    if not isinstance(side, dict):
+        return dict(inline)
+    # Sidecar wins for overlapping keys; fill gaps from inline.
+    out = dict(side)
+    for key, value in inline.items():
+        if key not in out or out.get(key) in (None, {}, []):
+            out[key] = value
+        elif isinstance(value, dict) and isinstance(out.get(key), dict):
+            merged = dict(value)
+            merged.update(out[key])
+            out[key] = merged
+    return out
+
+
+def _timing_summary(timings: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Compact timing payload for the work-products UI."""
+    if not isinstance(timings, dict) or not timings:
+        return None
+    execution = timings.get("execution") if isinstance(timings.get("execution"), dict) else {}
+    queue = timings.get("queue") if isinstance(timings.get("queue"), dict) else {}
+    totals = timings.get("totals") if isinstance(timings.get("totals"), dict) else {}
+    efficiency = timings.get("efficiency") if isinstance(timings.get("efficiency"), dict) else {}
+    workload = timings.get("workload") if isinstance(timings.get("workload"), dict) else {}
+    models = timings.get("models") if isinstance(timings.get("models"), dict) else {}
+    model_totals = models.get("totals") if isinstance(models.get("totals"), dict) else {}
+
+    def _f(v: Any) -> Optional[float]:
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return float(v)
+        return None
+
+    exec_sec = _f(execution.get("sec"))
+    wait_sec = _f(queue.get("wait_sec"))
+    wall_sec = _f(totals.get("submit_to_complete_sec"))
+    load_sec = _f(model_totals.get("load_sec"))
+    unload_to_reload_sec = _f(model_totals.get("unload_to_reload_sec"))
+    frames = workload.get("frames")
+    try:
+        frames_i = int(frames) if frames is not None else None
+    except (TypeError, ValueError):
+        frames_i = None
+    terminal = execution.get("terminal")
+    if terminal is not None:
+        terminal = str(terminal)
+    err = bool(execution.get("error")) or (
+        str(terminal or "").lower() in {"error", "interrupted"}
+    )
+    sec_per_frame = _f(efficiency.get("exec_sec_per_frame")) if not err else None
+
+    if (
+        exec_sec is None
+        and wait_sec is None
+        and wall_sec is None
+        and frames_i is None
+        and load_sec is None
+        and unload_to_reload_sec is None
+    ):
+        return None
+
+    def _fmt_dur(sec: float, suffix: str) -> str:
+        if sec < 90:
+            return f"{sec:.0f}s {suffix}"
+        if sec < 3600:
+            return f"{sec / 60:.1f}m {suffix}"
+        return f"{sec / 3600:.2f}h {suffix}"
+
+    # Human label for chips / headers.
+    parts: List[str] = []
+    if exec_sec is not None:
+        parts.append(_fmt_dur(exec_sec, "exec"))
+    if wait_sec is not None and wait_sec >= 1:
+        parts.append(_fmt_dur(wait_sec, "queue"))
+    if load_sec is not None and load_sec >= 0.5:
+        parts.append(_fmt_dur(load_sec, "load"))
+    if unload_to_reload_sec is not None and unload_to_reload_sec >= 0.5:
+        parts.append(_fmt_dur(unload_to_reload_sec, "unload→reload"))
+    if sec_per_frame is not None and sec_per_frame > 0.05:
+        parts.append(f"{sec_per_frame:.1f}s/frame")
+
+    load_names: List[str] = []
+    for row in models.get("loads") or []:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "").strip()
+        if name and name not in load_names:
+            load_names.append(name)
+
+    return {
+        "exec_sec": exec_sec,
+        "wait_sec": wait_sec,
+        "wall_sec": wall_sec,
+        "load_sec": load_sec,
+        "unload_to_reload_sec": unload_to_reload_sec,
+        "load_count": model_totals.get("load_count"),
+        "unload_event_count": model_totals.get("unload_event_count"),
+        "load_models": load_names or None,
+        "frames": frames_i,
+        "sec_per_frame": sec_per_frame,
+        "terminal": terminal,
+        "error": err or None,
+        "source": execution.get("source"),
+        "label": " · ".join(parts) if parts else None,
+    }
+
+
 def _job_recency_ts(path: Path) -> float:
     """Prefer job created_at over file mtime (backfills/rewrites inflate mtime)."""
     try:
@@ -984,7 +1227,7 @@ def _work_product_item_from_job(
 
     # Media meta for trim UI (fps / frame_count / duration). Prefer job probes; fall back later in UI.
     media_meta: Dict[str, Any] = {}
-    timings = job.get("timings") if isinstance(job.get("timings"), dict) else {}
+    timings = _merge_job_timings(job, path)
     probes = []
     outs = timings.get("outputs") if isinstance(timings.get("outputs"), dict) else {}
     if isinstance(outs.get("probes"), list):
@@ -1025,6 +1268,8 @@ def _work_product_item_from_job(
             "frame_count": frame_count,
             "duration": duration,
         }
+
+    timing = _timing_summary(timings)
 
     applied_vhs = _applied_vhs_window_from_job(job, path)
 
@@ -1071,6 +1316,7 @@ def _work_product_item_from_job(
         "prompt_profile": prompt_profile,
         "shape_profile": shape_profile,
         "media_meta": media_meta or None,
+        "timing": timing,
         "applied_vhs": applied_vhs,
         "construction": construction,
         "warnings": job.get("warnings") or [],
@@ -1189,8 +1435,114 @@ def _comfy_queue_entries(queue_rows: Any, *, status: str) -> List[Dict[str, Any]
         if not isinstance(pid, str) or not pid.strip():
             continue
         prompt = row[2] if len(row) >= 3 and isinstance(row[2], dict) else None
-        out.append({"prompt_id": pid.strip(), "status": status, "prompt": prompt})
+        extra = row[3] if len(row) >= 4 and isinstance(row[3], dict) else None
+        job_key = _job_key_from_comfy_extra(extra) or _job_key_from_filename_prefix(prompt)
+        entry: Dict[str, Any] = {"prompt_id": pid.strip(), "status": status, "prompt": prompt}
+        if isinstance(extra, dict):
+            entry["extra_data"] = extra
+        if job_key:
+            entry["job_key"] = job_key
+        out.append(entry)
     return out
+
+
+def _job_key_from_comfy_extra(extra: Any) -> Optional[str]:
+    """Factory submits set workflow_name / name to the job_key (survives ledger restore)."""
+    if not isinstance(extra, dict):
+        return None
+    for k in ("workflow_name", "name", "filename"):
+        raw = str(extra.get(k) or "").strip()
+        if raw.endswith(".json"):
+            raw = raw[: -len(".json")]
+        key = _factory_job_key_heuristic(raw)
+        if key:
+            return key
+    png = extra.get("extra_pnginfo") if isinstance(extra.get("extra_pnginfo"), dict) else {}
+    wf = png.get("workflow") if isinstance(png.get("workflow"), dict) else {}
+    return _factory_job_key_heuristic(str(wf.get("name") or "").strip())
+
+
+def _factory_job_key_heuristic(name: str) -> Optional[str]:
+    text = str(name or "").strip()
+    if not text:
+        return None
+    if text.startswith("client:") or text.startswith("graph ("):
+        return None
+    if "__" in text or text.startswith("hourly"):
+        return text
+    return None
+
+
+def _job_key_from_filename_prefix(prompt: Any) -> Optional[str]:
+    """Best-effort: output filename_prefix often ends with the job_key basename."""
+    prefix = _filename_prefix_from_prompt(prompt)
+    if not prefix:
+        return None
+    base = Path(str(prefix).replace("\\", "/")).name.strip()
+    return _factory_job_key_heuristic(base)
+
+
+def _live_queue_by_job_key(
+    queue_running: Any = None,
+    queue_pending: Any = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Map factory job_key → live Comfy queue entry (running preferred over pending)."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for ent in _comfy_queue_entries(queue_pending, status="queued") + _comfy_queue_entries(
+        queue_running, status="running"
+    ):
+        key = str(ent.get("job_key") or "").strip()
+        if key:
+            out[key] = ent
+    return out
+
+
+def _rebind_job_prompt_id_to_live(
+    job: Dict[str, Any],
+    *,
+    live_prompt_id: str,
+    live_status: str,
+) -> bool:
+    """
+    Point ``job['submit']`` at a recovered Comfy prompt_id (ledger restore assigns a new id).
+
+    Returns True when the job document changed.
+    """
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else None
+    if submit is None:
+        return False
+    new_pid = str(live_prompt_id or "").strip()
+    if not new_pid:
+        return False
+    old_pid = str(submit.get("prompt_id") or "").strip()
+    before = str(submit.get("status") or "").strip().lower()
+    target = str(live_status or "").strip().lower() or "queued"
+    if target not in {"queued", "running"}:
+        target = "queued"
+    changed = False
+    if old_pid != new_pid:
+        if old_pid:
+            submit["previous_prompt_id"] = old_pid
+        submit["prompt_id"] = new_pid
+        submit["prompt_id_rebound_at"] = _utc_now_iso()
+        submit["prompt_id_rebound_reason"] = "matched_live_queue_by_job_key"
+        changed = True
+    if before != target or before == "interrupted":
+        submit["status"] = target
+        changed = True
+    # Clear stale interrupt markers once we know Comfy still has the work.
+    for k in ("interrupted_at", "interrupted_reason"):
+        if k in submit:
+            submit.pop(k, None)
+            changed = True
+    job["submit"] = submit
+    return changed
+
+
+def _utc_now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
 def _filename_prefix_from_prompt(prompt: Any) -> str:
@@ -1295,6 +1647,9 @@ def _synthetic_live_work_product(
         "construction": {"step": "live", "source": "comfy_queue"},
         "bindings": {},
     }
+    applied_vhs = _applied_vhs_window_from_prompt(prompt if isinstance(prompt, dict) else None)
+    if applied_vhs is not None:
+        item["applied_vhs"] = applied_vhs
     if output_root is not None:
         src = _source_media_from_prompt(prompt, output_root=output_root)
         if src:
@@ -1353,6 +1708,7 @@ def reconcile_inflight_jobs_with_comfy(
 
     data_root = Path(data_root).expanduser().resolve()
     server = str(comfy_server or "").rstrip("/")
+    live_by_key = _live_queue_by_job_key(queue_running, queue_pending)
     if queue_running is None and queue_pending is None:
         if not server:
             return {"ok": False, "error": "missing_comfy_server", "checked": 0, "updated": 0}
@@ -1365,6 +1721,7 @@ def reconcile_inflight_jobs_with_comfy(
         "ok": True,
         "checked": 0,
         "updated": 0,
+        "rebound": 0,
         "running_ids": len(running_ids),
         "pending_ids": len(pending_ids),
         "by_status": {},
@@ -1397,6 +1754,25 @@ def reconcile_inflight_jobs_with_comfy(
             continue
         before = str(submit.get("status") or "").strip().lower()
         prompt_id = str(submit.get("prompt_id") or "").strip()
+        job_key = str(job.get("job_key") or path.stem.replace(".job", "")).strip()
+        live_ent = live_by_key.get(job_key) if job_key else None
+        rebound = False
+        if isinstance(live_ent, dict):
+            live_pid = str(live_ent.get("prompt_id") or "").strip()
+            live_st = str(live_ent.get("status") or "").strip().lower()
+            # Ledger restore after Comfy restart assigns a new prompt_id; rebind by job_key.
+            if live_pid and (live_pid != prompt_id or before == "interrupted"):
+                rebound = _rebind_job_prompt_id_to_live(
+                    job,
+                    live_prompt_id=live_pid,
+                    live_status=live_st or "queued",
+                )
+                if rebound:
+                    submit = job.get("submit") if isinstance(job.get("submit"), dict) else submit
+                    prompt_id = str(submit.get("prompt_id") or "").strip()
+                    before = str(submit.get("status") or "").strip().lower()
+                    summary["rebound"] = int(summary.get("rebound") or 0) + 1
+
         in_comfy = bool(prompt_id) and (prompt_id in running_ids or prompt_id in pending_ids)
         needs_error_backfill = (
             before == "error"
@@ -1404,7 +1780,7 @@ def reconcile_inflight_jobs_with_comfy(
             and not str(submit.get("error") or "").strip()
             and not in_comfy
         )
-        if not in_comfy and before not in IN_FLIGHT_STATUSES and not needs_error_backfill:
+        if not rebound and not in_comfy and before not in IN_FLIGHT_STATUSES and not needs_error_backfill:
             continue
         if not prompt_id:
             continue
@@ -1421,7 +1797,7 @@ def reconcile_inflight_jobs_with_comfy(
         by_status[after] = by_status.get(after, 0) + 1
         after_submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
         error_filled = needs_error_backfill and bool(str(after_submit.get("error") or "").strip())
-        if after != before or error_filled:
+        if after != before or error_filled or rebound:
             summary["updated"] = int(summary["updated"]) + 1
             if error_filled:
                 summary["errors_backfilled"] = int(summary.get("errors_backfilled") or 0) + 1
@@ -1511,9 +1887,10 @@ def attach_live_comfy_queue(
     """
     Ensure Comfy running/pending prompts appear at the top of work-products.
 
-    Matches existing items by ``prompt_id`` (promoting/updating status). When no
-    factory job is in the current page, tries to locate the job file globally or
-    synthesizes a live stub so the UI can show the latent preview.
+    Matches existing items by ``prompt_id``, then by factory ``job_key`` (from
+    Comfy ``workflow_name`` — needed after ledger restore assigns a new prompt id).
+    When no factory job is in the current page, tries to locate the job file
+    globally or synthesizes a live stub so the UI can show the latent preview.
     """
     if not isinstance(payload, dict) or not payload.get("ok"):
         return payload
@@ -1526,12 +1903,16 @@ def attach_live_comfy_queue(
 
     items = list(payload.get("items") or [])
     by_pid: Dict[str, int] = {}
+    by_job_key: Dict[str, int] = {}
     for i, it in enumerate(items):
         if not isinstance(it, dict):
             continue
         pid = str(it.get("prompt_id") or "").strip()
         if pid and pid not in by_pid:
             by_pid[pid] = i
+        jk = str(it.get("job_key") or "").strip()
+        if jk and jk not in by_job_key:
+            by_job_key[jk] = i
 
     family_slugs = [str(f.get("slug") or "") for f in (payload.get("families") or []) if isinstance(f, dict)]
     jobs_root = Path(data_root) / "shape_factory" / "jobs" if data_root else None
@@ -1540,44 +1921,83 @@ def attach_live_comfy_queue(
     live_items: List[Dict[str, Any]] = []
     used_indices: set[int] = set()
 
+    def _promote_on_page_row(idx: int, *, status: str, prompt_id: str, ent: Dict[str, Any]) -> Dict[str, Any]:
+        used_indices.add(idx)
+        row = dict(items[idx])
+        row["status"] = status
+        row["prompt_id"] = prompt_id
+        row["live_from_comfy"] = True
+        # Rebuild when the on-page row looks stripped (common for non-hourly live jobs).
+        job_path_raw = str(row.get("job_path") or "").strip()
+        needs_full = not row.get("graph_hash") or not row.get("shape_profile")
+        if needs_full and job_path_raw and out_root is not None and data_r is not None:
+            jp = Path(job_path_raw)
+            if jp.is_file():
+                try:
+                    found_job = json.loads(jp.read_text(encoding="utf-8"))
+                except Exception:
+                    found_job = None
+                if isinstance(found_job, dict):
+                    # Keep UI in sync with the live (possibly rebound) prompt id.
+                    submit = found_job.get("submit") if isinstance(found_job.get("submit"), dict) else {}
+                    if str(submit.get("prompt_id") or "").strip() != prompt_id:
+                        _rebind_job_prompt_id_to_live(
+                            found_job, live_prompt_id=prompt_id, live_status=status
+                        )
+                    row = _work_product_item_from_job(
+                        jp,
+                        found_job,
+                        data_root=data_r,
+                        output_root=out_root,
+                        status_override=status,
+                        live_from_comfy=True,
+                    )
+                    row["prompt_id"] = prompt_id
+        elif out_root is not None and data_r is not None:
+            row = _ensure_item_media_urls(row, data_root=data_r, output_root=out_root)
+        if not isinstance(row.get("applied_vhs"), dict):
+            live_vhs = _applied_vhs_window_from_prompt(
+                ent.get("prompt") if isinstance(ent.get("prompt"), dict) else None
+            )
+            if live_vhs is not None:
+                row["applied_vhs"] = live_vhs
+                row["details"] = _detail_rows(row)
+        return row
+
     for ent in entries:
         pid = ent["prompt_id"]
         status = ent["status"]
-        if pid in by_pid:
-            idx = by_pid[pid]
-            used_indices.add(idx)
-            row = dict(items[idx])
-            row["status"] = status
-            row["live_from_comfy"] = True
-            # Rebuild when the on-page row looks stripped (common for non-hourly live jobs).
-            job_path_raw = str(row.get("job_path") or "").strip()
-            needs_full = not row.get("graph_hash") or not row.get("shape_profile")
-            if needs_full and job_path_raw and out_root is not None and data_r is not None:
-                jp = Path(job_path_raw)
-                if jp.is_file():
-                    try:
-                        found_job = json.loads(jp.read_text(encoding="utf-8"))
-                    except Exception:
-                        found_job = None
-                    if isinstance(found_job, dict):
-                        row = _work_product_item_from_job(
-                            jp,
-                            found_job,
-                            data_root=data_r,
-                            output_root=out_root,
-                            status_override=status,
-                            live_from_comfy=True,
-                        )
-            elif out_root is not None and data_r is not None:
-                row = _ensure_item_media_urls(row, data_root=data_r, output_root=out_root)
-            live_items.append(row)
+        ent_job_key = str(ent.get("job_key") or "").strip()
+
+        if pid in by_pid and by_pid[pid] not in used_indices:
+            live_items.append(_promote_on_page_row(by_pid[pid], status=status, prompt_id=pid, ent=ent))
+            continue
+
+        if ent_job_key and ent_job_key in by_job_key and by_job_key[ent_job_key] not in used_indices:
+            live_items.append(
+                _promote_on_page_row(by_job_key[ent_job_key], status=status, prompt_id=pid, ent=ent)
+            )
             continue
 
         found_path, found_job = (None, None)
         if jobs_root is not None:
             found_path, found_job = _find_job_by_prompt_id(jobs_root, pid)
+            if found_path is None and ent_job_key:
+                # Recovered prompt: old prompt_id on disk, new id on Comfy — match by job_key.
+                for path in jobs_root.glob(f"*/{ent_job_key}.job.json"):
+                    try:
+                        loaded = json.loads(path.read_text(encoding="utf-8"))
+                    except Exception:
+                        continue
+                    if isinstance(loaded, dict):
+                        found_path, found_job = path, loaded
+                        break
         if found_path is not None and isinstance(found_job, dict):
             if out_root is not None and data_r is not None:
+                if str((found_job.get("submit") or {}).get("prompt_id") or "").strip() != pid:
+                    _rebind_job_prompt_id_to_live(
+                        found_job, live_prompt_id=pid, live_status=status
+                    )
                 row = _work_product_item_from_job(
                     found_path,
                     found_job,
@@ -1586,6 +2006,7 @@ def attach_live_comfy_queue(
                     status_override=status,
                     live_from_comfy=True,
                 )
+                row["prompt_id"] = pid
             else:
                 row = {
                     "job_key": found_job.get("job_key") or found_path.stem.replace(".job", ""),

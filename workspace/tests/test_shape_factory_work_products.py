@@ -384,6 +384,76 @@ class TestWorkProducts(unittest.TestCase):
         self.assertEqual(out["items"][2]["status"], "complete")
         self.assertEqual(out.get("comfy_demoted_stale"), 1)
 
+    def test_reconcile_rebinds_interrupted_job_by_workflow_name(self):
+        from shape_factory_work_products import reconcile_inflight_jobs_with_comfy
+
+        with tempfile.TemporaryDirectory() as td:
+            data = Path(td)
+            jobs = data / "shape_factory" / "jobs" / "FB9_GEX2"
+            jobs.mkdir(parents=True)
+            key = "FB9_GEX2__prompt_profile-abc__source_video-x__000_e_ui1"
+            path = jobs / f"{key}.job.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "job_key": key,
+                        "family_slug": "FB9_GEX2",
+                        "submit": {
+                            "prompt_id": "old-pid",
+                            "status": "interrupted",
+                            "interrupted_reason": "missing_from_comfy_queue_and_history",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            extra = {"workflow_name": key, "name": key, "filename": f"{key}.json"}
+            summary = reconcile_inflight_jobs_with_comfy(
+                data_root=data,
+                comfy_server="http://example.invalid",
+                queue_running=[],
+                queue_pending=[[1, "new-pid", {}, extra]],
+                persist=True,
+                auto_retry_oom=False,
+            )
+            self.assertGreaterEqual(int(summary.get("rebound") or 0), 1)
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            submit = saved["submit"]
+            self.assertEqual(submit["prompt_id"], "new-pid")
+            self.assertEqual(submit["previous_prompt_id"], "old-pid")
+            self.assertEqual(submit["status"], "queued")
+            self.assertNotIn("interrupted_reason", submit)
+
+    def test_attach_live_matches_interrupted_row_by_job_key(self):
+        key = "FB9_GEX2__prompt_profile-abc__source_video-x__000_e_ui1"
+        payload = {
+            "ok": True,
+            "limit": 5,
+            "families": [{"slug": "FB9_GEX2"}],
+            "items": [
+                {
+                    "job_key": key,
+                    "prompt_id": "old-pid",
+                    "status": "interrupted",
+                    "family_slug": "FB9_GEX2",
+                }
+            ],
+        }
+        extra = {"workflow_name": key, "name": key}
+        out = attach_live_comfy_queue(
+            payload,
+            queue_running=[],
+            queue_pending=[[1, "new-pid", {}, extra]],
+        )
+        self.assertEqual(out.get("live_comfy_count"), 1)
+        self.assertEqual(out["items"][0]["job_key"], key)
+        self.assertEqual(out["items"][0]["prompt_id"], "new-pid")
+        self.assertEqual(out["items"][0]["status"], "queued")
+        self.assertTrue(out["items"][0].get("live_from_comfy"))
+        # Interrupted row was promoted — not duplicated underneath.
+        keys = [it.get("job_key") for it in out["items"]]
+        self.assertEqual(keys.count(key), 1)
+
     def test_reconcile_inflight_persists_queued_vs_running(self):
         from shape_factory_work_products import reconcile_inflight_jobs_with_comfy
 
@@ -407,6 +477,7 @@ class TestWorkProducts(unittest.TestCase):
                 queue_running=[[0, "run-1", {}]],
                 queue_pending=[[1, "pend-1", {}]],
                 persist=True,
+                auto_retry_oom=False,
             )
             self.assertTrue(summary.get("ok"))
             self.assertEqual(summary.get("updated"), 1)
@@ -508,6 +579,121 @@ class TestWorkProducts(unittest.TestCase):
         prefix = _filename_prefix_from_prompt(prompt)
         self.assertIn("FACIAL", prefix)
         self.assertEqual(_family_from_output_prefix(prefix, ["FB9_GEX2", "FB9_GEX_FACIAL"]), "FB9_GEX_FACIAL")
+
+    def test_applied_vhs_gleaned_from_generated_workflow(self):
+        from shape_factory_work_products import _work_product_item_from_job
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            data = root / "data"
+            out = root / "output"
+            jobs = data / "shape_factory" / "jobs" / "FB9_GEX2"
+            jobs.mkdir(parents=True)
+            key = "hourly__trim_from_wf"
+            wf = {
+                "nodes": [
+                    {
+                        "id": 10,
+                        "type": "VHS_LoadVideoPath",
+                        "widgets_values": {
+                            "video": "input/demo.mp4",
+                            "skip_first_frames": 18,
+                            "frame_load_cap": 45,
+                        },
+                    }
+                ],
+                "links": [],
+            }
+            wf_path = jobs / f"{key}.workflow.json"
+            wf_path.write_text(json.dumps(wf), encoding="utf-8")
+            job = {
+                "job_key": key,
+                "family_slug": "FB9_GEX2",
+                "created_at": "2026-07-13T12:00:00+00:00",
+                "generated_workflow_path": str(wf_path),
+                "submit": {"status": "pending"},
+            }
+            job_path = jobs / f"{key}.job.json"
+            job_path.write_text(json.dumps(job), encoding="utf-8")
+            item = _work_product_item_from_job(job_path, job, data_root=data, output_root=out)
+            self.assertEqual(item.get("applied_vhs"), {"skip_first_frames": 18, "frame_load_cap": 45})
+            labels = {r["label"]: r["value"] for r in (item.get("details") or [])}
+            self.assertEqual(labels.get("VHS skip_first_frames"), "18")
+            self.assertEqual(labels.get("VHS frame_load_cap"), "45")
+
+    def test_work_product_includes_timing_summary(self):
+        from shape_factory_work_products import _work_product_item_from_job
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            data = root / "data"
+            out = root / "output"
+            jobs = data / "shape_factory" / "jobs" / "FB9_GEX2"
+            jobs.mkdir(parents=True)
+            key = "hourly__timing_probe"
+            job = {
+                "job_key": key,
+                "family_slug": "FB9_GEX2",
+                "created_at": "2026-07-13T12:00:00+00:00",
+                "submit": {"status": "ok", "prompt_id": "abc"},
+                "construction": {"frames_before": 80, "frames_after": 80},
+                "timings": {
+                    "execution": {"sec": 942.5, "terminal": "success", "source": "history"},
+                    "queue": {"wait_sec": 120.0},
+                    "totals": {"submit_to_complete_sec": 1065.0},
+                    "workload": {"frames": 80},
+                    "efficiency": {"exec_sec_per_frame": 11.78},
+                },
+            }
+            job_path = jobs / f"{key}.job.json"
+            job_path.write_text(json.dumps(job), encoding="utf-8")
+            # Sidecar overrides inline with richer wait + confirms merge preference.
+            (jobs / f"{key}.timings.json").write_text(
+                json.dumps(
+                    {
+                        "execution": {"sec": 942.5, "terminal": "success"},
+                        "queue": {"wait_sec": 180.0},
+                        "totals": {"submit_to_complete_sec": 1125.0},
+                        "workload": {"frames": 80},
+                        "efficiency": {"exec_sec_per_frame": 11.78},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            item = _work_product_item_from_job(job_path, job, data_root=data, output_root=out)
+            timing = item.get("timing") or {}
+            self.assertEqual(timing.get("exec_sec"), 942.5)
+            self.assertEqual(timing.get("wait_sec"), 180.0)
+            self.assertEqual(timing.get("frames"), 80)
+            self.assertEqual(timing.get("terminal"), "success")
+            self.assertIn("exec", str(timing.get("label") or "").lower())
+            labels = {r["label"]: r["value"] for r in (item.get("details") or [])}
+            self.assertIn("Exec", labels)
+            self.assertEqual(labels.get("Queue wait sec"), "180.0")
+            self.assertEqual(labels.get("Frames before→after"), "80→80")
+
+    def test_synthetic_live_work_product_includes_applied_vhs(self):
+        from shape_factory_work_products import _synthetic_live_work_product
+
+        prompt = {
+            "12": {
+                "class_type": "VHS_LoadVideoPath",
+                "inputs": {"video": "output/demo.mp4", "skip_first_frames": 9, "frame_load_cap": 30},
+            },
+            "80": {
+                "class_type": "VHS_VideoCombine",
+                "inputs": {"filename_prefix": "output/og/2026-07-13/FB9_GEX2/x", "save_output": True},
+            },
+        }
+        item = _synthetic_live_work_product(
+            prompt_id="abcdef0123456789",
+            status="running",
+            prompt=prompt,
+            family_slugs=["FB9_GEX2"],
+        )
+        self.assertEqual(item.get("applied_vhs"), {"skip_first_frames": 9, "frame_load_cap": 30})
+        labels = {r["label"]: r["value"] for r in (item.get("details") or [])}
+        self.assertEqual(labels.get("VHS skip_first_frames"), "9")
 
 
 if __name__ == "__main__":
