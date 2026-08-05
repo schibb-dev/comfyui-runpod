@@ -123,7 +123,8 @@ After each phase, run a quick sanity check (e.g. `docker compose config`, or `np
 
 ## 7. Ongoing habits
 
-- **Cadence**: Check in **per logical slice** (often same day), not in multi-week dumps. A good trigger: “this spike is usable / tests pass / I’m about to context-switch.” Prefer several small commits over one giant catch-up.
+- **Cadence**: Check in **per logical slice** (often same day, often mid-session), not in multi-week dumps. Good triggers: “this spike is usable / tests pass / I’m about to start the next slice or context-switch.” Prefer several small commits over one giant catch-up.
+- **Between slices**: Pause and commit (or explicitly park) before starting unrelated work so themes don’t tangle in one working tree.
 - **Session end**: If `git status` still shows project code/docs you intend to keep, commit or park intentionally (stash/branch) before stopping.
 - **Before committing**: Run `git status` and scan for credentials, `.env*` backups, `.data/`, `tmp/`, `docs/.build/`, `custom_nodes/` content (if you’re ignoring it), and large files.
 - **Branches**: Use short-lived branches for features (e.g. `feat/ops-scripts`), then merge to `main` so history stays clear.
@@ -131,7 +132,7 @@ After each phase, run a quick sanity check (e.g. `docker compose config`, or `np
 - **Custom node changes**: If you must keep local patches (e.g. in ComfyUI-Custom-Scripts), either:
   - Track only the patched repo and document it in README or this file, or
   - Prefer contributing upstream and then relying on bootstrap; ignore `custom_nodes/` in the repo.
-- **Agent reminder**: Cursor rule `.cursor/rules/regular-checkin.mdc` nudges for regular, themed commits (still only commit when you ask).
+- **Agent reminder**: Cursor rule `.cursor/rules/regular-checkin.mdc` nudges for mid-session, themed commits (still only commit when you ask).
 
 ---
 

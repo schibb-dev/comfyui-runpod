@@ -5,9 +5,12 @@ alwaysApply: true
 
 # Regular check-ins
 
-- Prefer **small, themed commits** while work is fresh (one logical change). See `docs/CHECKIN_STRATEGY.md`.
-- When a spike or feature slice is usable (code + tests + docs that belong with it), **offer to commit** before starting the next slice — don't wait for end-of-week dumps.
-- After a working session with substantive edits, remind once if there are still uncommitted project files.
+Cadence goal: **commit early, commit often** — small themed commits while context is fresh, not end-of-session dumps. See `docs/CHECKIN_STRATEGY.md`.
+
+- Prefer **one logical change per commit** (`feat:` / `fix:` / `docs:` / `chore:`).
+- After each usable slice (code + the tests/docs that belong with it), **pause and offer to commit** before starting the next slice. Do this mid-session, not only at the end.
+- If two or more unrelated edits are already mixed in the working tree, **propose splitting** into themed commits rather than one catch-all.
+- After a working session with substantive edits, remind once if project files are still uncommitted.
 - **Never** stage secrets or runtime data: `.env*`, tokens, `.data/`, `tmp/`, `docs/.build/`, `workspace/output/`, `workspace/input/`, `node_modules/`, `custom_nodes/` trees.
-- Only create commits when the user asks (or explicitly agrees to a proposed commit batch). Group with clear `feat:` / `fix:` / `docs:` / `chore:` messages.
+- Only create commits when the user asks (or explicitly agrees to a proposed commit batch).
 - Do not push unless asked.
