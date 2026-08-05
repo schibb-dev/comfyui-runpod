@@ -247,7 +247,7 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
         self.assertEqual(plan.get("pick_mode"), "derive")
         self.assertEqual(plan.get("rating_kind"), "predicted")
         self.assertEqual(plan.get("step"), "predicted_derive")
-        self.assertEqual(plan.get("disposition_entry"), "derived")
+        self.assertNotIn("disposition_entry", plan)
         self.assertNotEqual(plan.get("combo_key"), seed["combo_key"])
 
     def test_plan_replay_includes_rating_metadata_when_index_present(self) -> None:

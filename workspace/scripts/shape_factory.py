@@ -1516,9 +1516,8 @@ def cmd_generate(args: argparse.Namespace) -> int:
         disposition_note = str(raw.get("disposition_note") or "").strip() or None
         parent_output = str(raw.get("parent_output") or "").strip() or None
         rating_kind = str(raw.get("rating_kind") or "").strip() or None
-        # Predicted hourly seeds always land as derived disposition.
+        # Predicted hourly seeds use derive pick_mode (no auto disposition stamp).
         if rating_kind == "predicted" or str(raw.get("step") or "") == "predicted_derive":
-            disposition_entry = disposition_entry or "derived"
             pick_mode = "derive"
         try:
             from shape_factory_work_products import construction_from_plan

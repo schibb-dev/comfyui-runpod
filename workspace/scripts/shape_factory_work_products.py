@@ -971,6 +971,26 @@ def iter_job_paths(jobs_root: Path, *, hourly_only: bool = True) -> Iterable[Pat
     return jobs_root.rglob(pattern)
 
 
+def job_is_hourly_product(job: Dict[str, Any], job_path: Optional[Path] = None) -> bool:
+    """
+    True when this job was produced by the hourly planner.
+
+    Uses the ``hourly__`` job_key / filename prefix — not a substring match on
+    source paths (UI derivatives of hourly videos often embed ``hourly`` in the
+    binding name without being hourly runs themselves).
+    """
+    key = str(job.get("job_key") or "").strip()
+    if key.startswith("hourly__"):
+        return True
+    if job_path is not None:
+        name = Path(job_path).name
+        if name.startswith("hourly__") and (
+            name.endswith(".job.json") or name.endswith(".job.json.discarded")
+        ):
+            return True
+    return False
+
+
 def _parse_created_at_ts(raw: Any) -> Optional[float]:
     """Parse job created_at / submitted_at ISO strings to a unix timestamp."""
     if raw is None or raw == "":
@@ -1280,6 +1300,7 @@ def _work_product_item_from_job(
         "created_at": job.get("created_at"),
         "pick_mode": job.get("pick_mode"),
         "pick_index": job.get("pick_index"),
+        "is_hourly": job_is_hourly_product(job, path),
         "rating_kind": job.get("rating_kind") or construction.get("rating_kind"),
         "disposition_entry": job.get("disposition_entry")
         or (deposit.get("disposition") or {}).get("entry")

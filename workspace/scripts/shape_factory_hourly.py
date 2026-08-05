@@ -2105,7 +2105,6 @@ def plan_hourly_predicted_derive(
             "derive_action": action,
             "step": "predicted_derive",
             "rating_kind": "predicted",
-            "disposition_entry": "derived",
             "combo_key": rewired.get("combo_key"),
             "picks": rewired.get("picks"),
             "bindings_preview": rewired.get("bindings_preview"),

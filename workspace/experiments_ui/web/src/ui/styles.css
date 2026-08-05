@@ -11498,9 +11498,9 @@ tr.disabled:hover td {
 }
 
 .work-products-status-toggle.is-on.work-products-status-toggle--running {
-  border-color: rgba(255, 90, 90, 0.55);
-  background: rgba(220, 60, 60, 0.22);
-  color: #ff8a80;
+  border-color: rgba(90, 162, 255, 0.55);
+  background: rgba(70, 130, 220, 0.22);
+  color: #9ec5ff;
 }
 
 .work-products-status-toggle.is-on.work-products-status-toggle--queued {
@@ -11852,8 +11852,8 @@ tr.disabled:hover td {
 }
 
 .work-product-badge--live-run {
-  background: rgba(220, 60, 60, 0.25);
-  color: #ff8a80;
+  background: rgba(70, 130, 220, 0.25);
+  color: #9ec5ff;
 }
 
 .work-product-badge--live-pending {
@@ -11985,6 +11985,12 @@ tr.disabled:hover td {
 .work-product-badge--derive {
   border-color: rgba(90, 162, 255, 0.45);
   color: var(--accent);
+}
+
+.work-product-badge--hourly {
+  border-color: rgba(167, 139, 250, 0.5);
+  background: rgba(167, 139, 250, 0.14);
+  color: #c4b5fd;
 }
 
 .work-product-badge--extend {

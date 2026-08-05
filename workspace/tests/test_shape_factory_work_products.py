@@ -12,6 +12,7 @@ from shape_factory_work_products import (
     attach_live_comfy_queue,
     construction_from_plan,
     decode_prompt_markup,
+    job_is_hourly_product,
     list_extend_family_defaults,
     list_recent_work_products,
     list_shape_families,
@@ -25,6 +26,28 @@ class TestWorkProducts(unittest.TestCase):
         self.assertEqual(prefer_target_family("", "FB9_GEX"), "FB9_GEX")
         self.assertEqual(prefer_target_family(None, "FB9_GEX"), "FB9_GEX")
         self.assertEqual(prefer_target_family("  ", ""), "")
+
+    def test_job_is_hourly_product_uses_prefix_not_source_name(self):
+        self.assertTrue(job_is_hourly_product({"job_key": "hourly__prompt_profile-abc__source_video-x"}))
+        self.assertTrue(
+            job_is_hourly_product(
+                {"job_key": "other"},
+                Path("/tmp/hourly__prompt_profile-abc.job.json"),
+            )
+        )
+        # UI derivative of an hourly video — name embeds hourly but is not an hourly run.
+        self.assertFalse(
+            job_is_hourly_product(
+                {
+                    "job_key": "FB9_GEX__prompt_profile-abc__source_video-hourly__prompt_profile-abc__x",
+                    "bindings": {
+                        "source_video": {
+                            "path": "/out/og/2026-07-20/hourly/hourly__prompt_profile-abc.mp4",
+                        }
+                    },
+                }
+            )
+        )
 
     def test_construction_from_plan_keeps_selection_fields(self):
         plan = {
@@ -118,6 +141,7 @@ class TestWorkProducts(unittest.TestCase):
             self.assertEqual(item["job_key"], "hourly__demo")
             self.assertEqual(item["pick_mode"], "derive")
             self.assertEqual(item["step"], "derive")
+            self.assertTrue(item.get("is_hourly"))
             self.assertTrue(str(item.get("output_url") or "").startswith("/files/"))
             labels = [r["label"] for r in item["details"]]
             self.assertIn("Pick mode", labels)

@@ -2737,6 +2737,11 @@ function WorkProductDetails({
   return (
     <div className="work-product-details">
       <div className="work-product-details__chips">
+        {item.is_hourly ? (
+          <span className="work-product-badge work-product-badge--hourly" title="Produced by the hourly planner">
+            Hourly
+          </span>
+        ) : null}
         {item.family_slug ? <span className="work-product-badge">{item.family_slug}</span> : null}
         {item.pick_mode ? (
           <span className={`work-product-badge ${badgeClass(item.pick_mode)}`}>{item.pick_mode}</span>
@@ -2910,6 +2915,11 @@ function WorkProductRow({
       <header className="work-product-row__head">
         <div className="work-product-row__title">
           <strong>{item.family_slug || "job"}</strong>
+          {item.is_hourly ? (
+            <span className="work-product-badge work-product-badge--hourly" title="Produced by the hourly planner">
+              Hourly
+            </span>
+          ) : null}
           {isRunningLiveItem(item) ? (
             <span className="work-product-badge work-product-badge--live-run">live</span>
           ) : thumbMeta ? (
