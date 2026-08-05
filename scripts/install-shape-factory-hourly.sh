@@ -9,7 +9,7 @@ mkdir -p "$USER_SYSTEMD"
 
 cat > "$USER_SYSTEMD/shape-factory-hourly.service" <<EOF
 [Unit]
-Description=ComfyUI shape factory hourly tick (deposit, submit pending, chain advance)
+Description=ComfyUI shape factory hourly tick (maintain + fill when no pending)
 After=network-online.target
 
 [Service]

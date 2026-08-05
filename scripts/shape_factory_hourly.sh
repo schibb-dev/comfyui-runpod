@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Hourly shape-factory maintenance + optional chain advance when Comfy queue is idle.
-# Priority when idle: GEX2→FACIAL chain, Kneel→GEX2 chain, then weighted seed family.
+# Hourly shape-factory maintenance + optional fill when Comfy is idle *and*
+# there are no factory jobs still awaiting submit.
+# Pending drain (shape_factory_pending_drain) owns pushing pending onto Comfy;
+# this tick only generates new hourly work as a fill when that set is empty.
+# Priority when filling: GEX2→FACIAL chain, Kneel→GEX2 chain, then weighted seed.
 # Install timer: bash scripts/install-shape-factory-hourly.sh
 set -euo pipefail
 
@@ -8,6 +11,7 @@ REPO="${REPO:-/home/yuji/src/comfyui-runpod}"
 SCRIPTS="$REPO/workspace/scripts"
 LOG="${LOG:-$REPO/.data/shape_factory/hourly.log}"
 STATE="${STATE:-$REPO/.data/shape_factory/hourly-state.json}"
+JOBS_DIR="${JOBS_DIR:-$REPO/.data/shape_factory/jobs}"
 CHAIN_MANIFEST="${CHAIN_MANIFEST:-$REPO/.data/chains/best-examples.chain.yaml}"
 BINDS_FACIAL="$REPO/.data/pipelines/binds/facial-from-latest-gex2.yaml"
 BINDS_KNEEL_GEX2="$REPO/.data/pipelines/binds/gex2-from-latest-kneel.yaml"
@@ -39,6 +43,10 @@ PY
   rm -f "$qf"
 }
 
+factory_pending_count() {
+  cd "$SCRIPTS" && python3 shape_factory_hourly.py pending-count --jobs-dir "$JOBS_DIR"
+}
+
 read_state() {
   if [ -f "$STATE" ]; then
     cat "$STATE"
@@ -55,9 +63,15 @@ pools_for_family() {
   echo "$REPO/.data/pools/$1/pools.yaml"
 }
 
+# Args: comfy_waiting [factory_pending]
 queue_policy() {
+  local fp="${2:-}"
+  if [ -z "$fp" ]; then
+    fp=$(factory_pending_count)
+  fi
   cd "$SCRIPTS" && python3 shape_factory_hourly.py queue-policy \
-    --pending "$1" --queue-min "$HOURLY_QUEUE_MIN" --queue-max "$HOURLY_QUEUE_MAX"
+    --pending "$1" --factory-pending "$fp" \
+    --queue-min "$HOURLY_QUEUE_MIN" --queue-max "$HOURLY_QUEUE_MAX"
 }
 
 policy_field() {
@@ -71,7 +85,9 @@ PHASE=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('phase','
 CURSOR=$(python3 -c "import json,sys; print(int(json.loads(sys.argv[1]).get('sample_cursor',0)))" "$STATE_JSON")
 
 read -r RUN PEND < <(queue_counts)
-SUBMIT_SLOTS=$(policy_field "$(queue_policy "$PEND")" submit_slots)
+# Maintenance may still push existing pending; factory_pending=0 here so
+# submit_slots only reflect Comfy waiting room (drain owns priority).
+SUBMIT_SLOTS=$(policy_field "$(queue_policy "$PEND" 0)" submit_slots)
 SUBMIT_SLOTS=${SUBMIT_SLOTS:-0}
 
 (
@@ -81,7 +97,7 @@ SUBMIT_SLOTS=${SUBMIT_SLOTS:-0}
     if [ "$SUBMIT_SLOTS" -gt 0 ]; then
       python3 shape_factory.py submit --pending-only --quiet --family "$fam" --limit "$SUBMIT_SLOTS" >> "$LOG" 2>&1 || true
       read -r RUN PEND < <(queue_counts)
-      SUBMIT_SLOTS=$(policy_field "$(queue_policy "$PEND")" submit_slots)
+      SUBMIT_SLOTS=$(policy_field "$(queue_policy "$PEND" 0)" submit_slots)
       SUBMIT_SLOTS=${SUBMIT_SLOTS:-0}
     fi
     python3 shape_factory.py status --quiet --family "$fam" >> "$LOG" 2>&1 || true
@@ -89,13 +105,14 @@ SUBMIT_SLOTS=${SUBMIT_SLOTS:-0}
 )
 
 read -r RUN PEND < <(queue_counts)
-POLICY_JSON=$(queue_policy "$PEND")
+FACTORY_PENDING=$(factory_pending_count)
+POLICY_JSON=$(queue_policy "$PEND" "$FACTORY_PENDING")
 ADVANCE=$(policy_field "$POLICY_JSON" advance)
 REASON=$(policy_field "$POLICY_JSON" reason)
-log "comfy queue running=$RUN pending=$PEND min=$HOURLY_QUEUE_MIN max=$HOURLY_QUEUE_MAX advance=$ADVANCE ($REASON)"
+log "comfy queue running=$RUN waiting=$PEND factory_pending=$FACTORY_PENDING min=$HOURLY_QUEUE_MIN max=$HOURLY_QUEUE_MAX advance=$ADVANCE ($REASON)"
 
 if [ "$ADVANCE" != "True" ]; then
-  log "skip hourly advance (phase=$PHASE)"
+  log "skip hourly fill (phase=$PHASE reason=$REASON)"
   exit 0
 fi
 

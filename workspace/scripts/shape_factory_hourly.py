@@ -2442,43 +2442,65 @@ def queue_advance_decision(
     pending: int,
     queue_min: int = 1,
     queue_max: int = 2,
+    factory_pending: int = 0,
 ) -> Dict[str, Any]:
     """
-    Whether the hourly tick should queue another Comfy job.
+    Whether the hourly tick should *generate* another fill job.
 
-    Keep ``queue_min <= pending < queue_max`` as the steady state: top up when
-    pending drops below ``queue_min``; stop when at ``queue_max``.
+    Hourlies fill Comfy only when there are no factory jobs still awaiting
+    submit. Pending drain owns those; hourly tops up when the factory pending
+    set is empty and Comfy waiting depth is below ``queue_min``.
+
+    ``submit_slots`` still reflects room under ``queue_max`` so maintenance can
+    push existing pending onto Comfy even when advance is blocked.
     """
     pending_i = max(0, int(pending))
+    factory_pending_i = max(0, int(factory_pending))
     queue_min_i = max(0, int(queue_min))
     queue_max_i = max(queue_min_i, int(queue_max))
     submit_slots = max(0, queue_max_i - pending_i)
-    if pending_i >= queue_max_i:
-        return {
-            "advance": False,
-            "reason": "at_max",
-            "pending": pending_i,
-            "queue_min": queue_min_i,
-            "queue_max": queue_max_i,
-            "submit_slots": 0,
-        }
-    if pending_i >= queue_min_i:
-        return {
-            "advance": False,
-            "reason": "satisfied_min",
-            "pending": pending_i,
-            "queue_min": queue_min_i,
-            "queue_max": queue_max_i,
-            "submit_slots": submit_slots,
-        }
-    return {
-        "advance": True,
-        "reason": "below_min",
+    base = {
         "pending": pending_i,
+        "factory_pending": factory_pending_i,
         "queue_min": queue_min_i,
         "queue_max": queue_max_i,
         "submit_slots": submit_slots,
     }
+    if factory_pending_i > 0:
+        return {
+            **base,
+            "advance": False,
+            "reason": "factory_pending",
+        }
+    if pending_i >= queue_max_i:
+        return {
+            **base,
+            "advance": False,
+            "reason": "at_max",
+            "submit_slots": 0,
+        }
+    if pending_i >= queue_min_i:
+        return {
+            **base,
+            "advance": False,
+            "reason": "satisfied_min",
+        }
+    return {
+        **base,
+        "advance": True,
+        "reason": "below_min",
+    }
+
+
+def count_factory_pending_submit(*, jobs_dir: Path) -> int:
+    """Count factory job files eligible for ``submit --pending-only``."""
+    from argparse import Namespace
+
+    from shape_factory import iter_pending_submit_job_paths
+
+    root = jobs_dir.expanduser().resolve()
+    args = Namespace(job=None, jobs_dir=str(root), family=None, job_dir=str(root), limit=None)
+    return len(iter_pending_submit_job_paths(args))
 
 
 def main() -> int:
@@ -2534,10 +2556,28 @@ def main() -> int:
     nk = sub.add_parser("need-gex2-from-kneel", help="Print Kneel job_key needing GEX2 child (or empty)")
     nk.add_argument("--data-root", type=Path, default=None)
 
-    qp = sub.add_parser("queue-policy", help="JSON: should hourly advance given Comfy pending depth?")
-    qp.add_argument("--pending", type=int, required=True)
+    qp = sub.add_parser(
+        "queue-policy",
+        help="JSON: should hourly generate fill work? (Comfy waiting + factory pending)",
+    )
+    qp.add_argument("--pending", type=int, required=True, help="Comfy waiting-queue depth")
+    qp.add_argument(
+        "--factory-pending",
+        type=int,
+        default=None,
+        help="Factory jobs awaiting submit (omit to count from --jobs-dir)",
+    )
+    qp.add_argument(
+        "--jobs-dir",
+        type=Path,
+        default=None,
+        help="Job root used when --factory-pending is omitted",
+    )
     qp.add_argument("--queue-min", type=int, default=1)
     qp.add_argument("--queue-max", type=int, default=2)
+
+    pc = sub.add_parser("pending-count", help="Count factory jobs awaiting submit")
+    pc.add_argument("--jobs-dir", type=Path, required=True)
 
     args = p.parse_args()
     data_root = args.data_root.expanduser().resolve() if getattr(args, "data_root", None) else None
@@ -2570,11 +2610,25 @@ def main() -> int:
             print(key)
         return 0
 
+    if args.cmd == "pending-count":
+        n = count_factory_pending_submit(jobs_dir=Path(args.jobs_dir))
+        print(n)
+        return 0
+
     if args.cmd == "queue-policy":
+        factory_pending = args.factory_pending
+        if factory_pending is None:
+            jobs_dir = args.jobs_dir
+            if jobs_dir is None:
+                from shape_factory import DEFAULT_JOB_DIR
+
+                jobs_dir = DEFAULT_JOB_DIR
+            factory_pending = count_factory_pending_submit(jobs_dir=Path(jobs_dir))
         out = queue_advance_decision(
             pending=int(args.pending),
             queue_min=int(args.queue_min),
             queue_max=int(args.queue_max),
+            factory_pending=int(factory_pending),
         )
         print(json.dumps(out, ensure_ascii=False, indent=2))
         return 0

@@ -151,6 +151,7 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
         self.assertTrue(below["advance"])
         self.assertEqual(below["reason"], "below_min")
         self.assertEqual(below["submit_slots"], 2)
+        self.assertEqual(below["factory_pending"], 0)
 
         satisfied = queue_advance_decision(pending=1, queue_min=1, queue_max=2)
         self.assertFalse(satisfied["advance"])
@@ -165,6 +166,15 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
         over = queue_advance_decision(pending=5, queue_min=1, queue_max=2)
         self.assertFalse(over["advance"])
         self.assertEqual(over["reason"], "at_max")
+
+        # Hourlies fill only when there are no factory jobs awaiting submit.
+        blocked = queue_advance_decision(
+            pending=0, queue_min=1, queue_max=2, factory_pending=3
+        )
+        self.assertFalse(blocked["advance"])
+        self.assertEqual(blocked["reason"], "factory_pending")
+        self.assertEqual(blocked["factory_pending"], 3)
+        self.assertEqual(blocked["submit_slots"], 2)
 
     def test_score_recipe_marks_predicted_rating_kind(self) -> None:
         from shape_factory_heuristics import score_recipe
