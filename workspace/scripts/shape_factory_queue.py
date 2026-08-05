@@ -128,29 +128,20 @@ def _extend_length_parameters(
     existing: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
-    Build parameter overrides so extend is a *longer* run, not a same-length re-render.
+    Parameter overrides for an Extend pass.
 
-    Default: add another full parent-length chunk (≈ double). Override with
-    ``SHAPE_FACTORY_EXTEND_EXTRA_FRAMES``.
+    Extend chains the prior clip into the video source slot. The Frames slider is
+    this pass's generation budget — FB9 templates are tuned for ~80 (sometimes 88),
+    already near the VRAM ceiling. Reusing that same budget is a normal extend
+    chunk, not a "zero-length" no-op. Do **not** inflate Frames to parent+extra
+    (the old ``SHAPE_FACTORY_EXTEND_EXTRA_FRAMES`` bump); leave Frames unset so the
+    shape template applies unless the caller set an explicit ``frames`` (UI / OOM
+    soft-retry).
     """
     params: Dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
-    if params.get("frames") not in (None, ""):
-        # Caller already chose an explicit length.
-        return params
-
-    base = _parent_frame_count(job)
-    if base is None or base <= 0:
-        base = int(os.environ.get("SHAPE_FACTORY_EXTEND_DEFAULT_FRAMES", "80"))
-    extra_raw = os.environ.get("SHAPE_FACTORY_EXTEND_EXTRA_FRAMES", "").strip()
-    if extra_raw:
-        extra = max(1, int(extra_raw))
-    else:
-        extra = max(1, base)
-    new_frames = int(base) + int(extra)
-    params["frames"] = new_frames
-    # Keep VHS load cap from clipping the chained source when lengthening.
-    if params.get("frame_load_cap") in (None, ""):
-        params["frame_load_cap"] = new_frames
+    # Explicit frames from the caller win; otherwise do not patch Frames.
+    # Never invent frame_load_cap from a frames budget — VHS load window is
+    # independent (trim UI / template uncapped load).
     overlap = None
     if isinstance(job, dict):
         timings = job.get("timings") if isinstance(job.get("timings"), dict) else {}
@@ -1011,9 +1002,9 @@ def replay_from_request_body(
     """
     Re-run a prior job (by ``job_key``) or an explicit binding set.
 
-    ``extend=true`` chains the job's output into a video source slot (v2v/i2v-from-video)
-    *and* lengthens the run (more frames). A same-length re-render with the prior output
-    as source is a zero-length extend and is rejected unless frames are explicitly set.
+    ``extend=true`` chains the job's output into a video source slot (v2v/i2v-from-video).
+    Frames stays on the shape template (~80/88) unless ``overrides.parameters.frames``
+    is set — that budget is one extend chunk, not parent-length + extra.
     """
     data_root = resolve_shape_factory_data_root(repo_root=repo_root)
     job_key = str(body.get("job_key") or "").strip()
@@ -1100,17 +1091,17 @@ def replay_from_request_body(
         next_source = _norm_media_path(output_abs)
         bindings[video_slot] = output_abs
 
-        # Lengthen: disposition "extend" = chain + longer run (avoid zero-length re-render).
+        # Chain prior output as source; keep template Frames budget (~80/88).
         params_in = overrides.get("parameters") if isinstance(overrides.get("parameters"), dict) else {}
         length_params = _extend_length_parameters(job, existing=params_in)
         base_frames = _parent_frame_count(job)
-        new_frames = int(length_params.get("frames") or 0)
+        raw_budget = length_params.get("frames")
+        if isinstance(raw_budget, (int, float)) and int(raw_budget) > 0:
+            budget_frames: Optional[int] = int(raw_budget)
+        else:
+            # Unset → template Frames applies; stamp parent chunk for observability.
+            budget_frames = int(base_frames) if isinstance(base_frames, int) and base_frames > 0 else None
         source_unchanged = bool(prev_source) and prev_source == next_source
-        if new_frames <= 0 or (base_frames is not None and new_frames <= int(base_frames)):
-            raise ValueError(
-                "extend_zero_length: refused same-length re-render; "
-                "set overrides.parameters.frames higher than the parent run"
-            )
         overrides = dict(overrides)
         overrides["parameters"] = length_params
         pick_mode = "extend"
@@ -1122,8 +1113,9 @@ def replay_from_request_body(
             "parent_output": output_abs,
             "source_slot": video_slot,
             "source_unchanged": source_unchanged,
+            # Generation budget for this pass (same as parent chunk is normal).
             "frames_before": base_frames,
-            "frames_after": new_frames,
+            "frames_after": budget_frames,
             "replay_of_job_key": job_key or None,
             "retry_of_failed_extend": bool(
                 isinstance(job, dict)
@@ -1221,33 +1213,24 @@ def _job_is_extend(job: Dict[str, Any]) -> bool:
 
 def compute_oom_retry_frame_target(job: Dict[str, Any]) -> Optional[Tuple[int, int, int]]:
     """
-    Pick a shorter extend length after OOM.
+    Pick a shorter generation budget after an extend OOM.
 
-    Returns ``(frames_before, frames_after, extra)`` or None when we cannot shrink further.
+    Returns ``(frames_before, new_budget, reduced_by)`` or None when we cannot shrink.
+    Halves the failed pass's Frames budget (not parent+extra).
     """
     before = _parent_frame_count(job)
     if before is None or before <= 0:
         before = int(os.environ.get("SHAPE_FACTORY_EXTEND_DEFAULT_FRAMES", "80"))
     construction = job.get("construction") if isinstance(job.get("construction"), dict) else {}
     after_raw = construction.get("frames_after")
-    if isinstance(after_raw, (int, float)) and int(after_raw) > int(before):
-        prev_extra = int(after_raw) - int(before)
+    if isinstance(after_raw, (int, float)) and int(after_raw) > 0:
+        current = int(after_raw)
     else:
-        env_extra = os.environ.get("SHAPE_FACTORY_EXTEND_EXTRA_FRAMES", "").strip()
-        if env_extra:
-            try:
-                prev_extra = max(1, int(env_extra))
-            except ValueError:
-                prev_extra = int(before)
-        else:
-            prev_extra = int(before)
-    new_extra = max(8, prev_extra // 2)
-    if new_extra >= prev_extra and prev_extra <= 8:
+        current = int(before)
+    new_budget = max(8, current // 2)
+    if new_budget >= current:
         return None
-    new_after = int(before) + int(new_extra)
-    if new_after <= int(before):
-        return None
-    return int(before), int(new_after), int(new_extra)
+    return int(before), int(new_budget), int(current) - int(new_budget)
 
 
 def maybe_auto_retry_oom_extend(
@@ -1302,8 +1285,8 @@ def maybe_auto_retry_oom_extend(
         "extend": True,
         "overrides": {
             "parameters": {
+                # Soft budget only — do not couple VHS frame_load_cap to sampler Frames.
                 "frames": frames_after,
-                "frame_load_cap": frames_after,
             }
         },
     }
@@ -1330,7 +1313,7 @@ def maybe_auto_retry_oom_extend(
         "spawned_prompt_id": result.get("prompt_id"),
         "frames_before": frames_before,
         "frames_after": frames_after,
-        "extra_frames": extra,
+        "extra_frames": extra,  # amount trimmed from the failed budget
         "spawned_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
         .isoformat(timespec="seconds"),
         "reason": "comfy_oom",

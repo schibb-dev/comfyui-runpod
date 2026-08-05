@@ -160,26 +160,23 @@ class ShapeFactoryQueueTests(unittest.TestCase):
             body = json.loads(out.read_text())
             self.assertEqual(body["positive"], "edited")
 
-    def test_extend_length_parameters_doubles_parent_frames(self) -> None:
+    def test_extend_length_parameters_keeps_template_budget(self) -> None:
         from shape_factory_queue import _extend_length_parameters, _parent_frame_count
 
         job = {"timings": {"workload": {"frames": 80, "overlap": 8, "output_frame_count": 97}}}
         self.assertEqual(_parent_frame_count(job), 80)
-        with mock.patch.dict("os.environ", {"SHAPE_FACTORY_EXTEND_EXTRA_FRAMES": ""}, clear=False):
-            # Empty string → treat as unset and double.
-            import os
-
-            os.environ.pop("SHAPE_FACTORY_EXTEND_EXTRA_FRAMES", None)
-            params = _extend_length_parameters(job)
-        self.assertEqual(params["frames"], 160)
+        params = _extend_length_parameters(job)
+        # Same generation budget as the parent pass is a normal extend — do not inflate.
+        self.assertNotIn("frames", params)
+        self.assertNotIn("frame_load_cap", params)
         self.assertEqual(params["overlap"], 8)
-        self.assertEqual(params["frame_load_cap"], 160)
-        # Explicit frames win.
-        pinned = _extend_length_parameters(job, existing={"frames": 200})
-        self.assertEqual(pinned["frames"], 200)
-        # Caller-provided frame_load_cap is preserved (trim window).
+        self.assertEqual(params["output_prefix_suffix"], "_extend")
+        # Explicit frames win (UI / OOM soft-retry).
+        pinned = _extend_length_parameters(job, existing={"frames": 40})
+        self.assertEqual(pinned["frames"], 40)
+        # Caller-provided frame_load_cap is preserved (trim window); still no auto frames.
         trimmed = _extend_length_parameters(job, existing={"skip_first_frames": 10, "frame_load_cap": 32})
-        self.assertEqual(trimmed["frames"], 160)
+        self.assertNotIn("frames", trimmed)
         self.assertEqual(trimmed["frame_load_cap"], 32)
         self.assertEqual(trimmed["skip_first_frames"], 10)
 
@@ -292,7 +289,7 @@ class ShapeFactoryQueueTests(unittest.TestCase):
             "shape_factory_queue._resolve_shape_path", return_value=Path("shape.yaml")
         ), mock.patch(
             "shape_factory_queue.queue_shape_factory_combo", side_effect=fake_queue
-        ), mock.patch.dict("os.environ", {"SHAPE_FACTORY_EXTEND_EXTRA_FRAMES": "32"}):
+        ), mock.patch.dict("os.environ", {}, clear=False):
             out = replay_from_request_body(
                 {"job_key": "failed_extend", "extend": True, "dry_run": True},
                 repo_root=REPO_ROOT,
@@ -303,11 +300,15 @@ class ShapeFactoryQueueTests(unittest.TestCase):
         self.assertTrue(out.get("ok"), out)
         self.assertEqual(captured.get("pick_mode"), "extend")
         params = (captured.get("overrides") or {}).get("parameters") or {}
-        self.assertEqual(int(params.get("frames") or 0), 112)
+        # Template Frames (~80) applies — no parent+extra inflation.
+        self.assertNotIn("frames", params)
         self.assertEqual(captured.get("parent_output"), "/data/output/og/parent.mp4")
-        self.assertTrue((captured.get("construction") or {}).get("retry_of_failed_extend"))
+        cons = captured.get("construction") or {}
+        self.assertTrue(cons.get("retry_of_failed_extend"))
+        self.assertEqual(cons.get("frames_before"), 80)
+        self.assertEqual(cons.get("frames_after"), 80)
 
-    def test_oom_retry_halves_extra_frames(self) -> None:
+    def test_oom_retry_halves_generation_budget(self) -> None:
         from shape_factory_queue import (
             compute_oom_retry_frame_target,
             is_oom_error_message,
@@ -335,7 +336,8 @@ class ShapeFactoryQueueTests(unittest.TestCase):
                 "prompt_id": "x",
             },
         }
-        self.assertEqual(compute_oom_retry_frame_target(job), (80, 120, 40))
+        # Halve the failed budget (160 → 80), not "extra frames" math.
+        self.assertEqual(compute_oom_retry_frame_target(job), (80, 80, 80))
 
         captured: dict = {}
 
@@ -357,7 +359,8 @@ class ShapeFactoryQueueTests(unittest.TestCase):
             )
         self.assertTrue(out and out.get("ok") and out.get("oom_auto_retry"))
         params = ((captured.get("body") or {}).get("overrides") or {}).get("parameters") or {}
-        self.assertEqual(params.get("frames"), 120)
+        self.assertEqual(params.get("frames"), 80)
+        self.assertNotIn("frame_load_cap", params)
         self.assertEqual(job["submit"]["oom_auto_retry"]["spawned_job_key"], "oom_job_retry")
 
         # Second call is idempotent.
@@ -375,7 +378,7 @@ class ShapeFactoryQueueTests(unittest.TestCase):
         self.assertIsNone(out2)
 
 
-    def test_replay_extend_bumps_frames_and_stamps_pick_mode(self) -> None:
+    def test_replay_extend_chains_source_without_inflating_frames(self) -> None:
         from shape_factory_queue import replay_from_request_body
 
         data_root = REPO_ROOT / ".data"
@@ -416,7 +419,7 @@ class ShapeFactoryQueueTests(unittest.TestCase):
         self.assertEqual(captured.get("pick_mode"), "extend")
         self.assertTrue(captured.get("parent_output"))
         params = (captured.get("overrides") or {}).get("parameters") or {}
-        self.assertGreater(int(params.get("frames") or 0), 80)
+        self.assertNotIn("frames", params)
         src = (captured.get("bindings") or {}).get("source_video") or ""
         self.assertIn("hourly__prompt_profile-1ff2227780fb", src)
         self.assertNotIn("X-FB9-POSE-2026-04-16-171828_OG_00001.mp4", src)
