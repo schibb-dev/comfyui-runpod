@@ -49,7 +49,10 @@ from shape_factory_triage import (
     triage_for_item,
 )
 
-SAMPLER_SCHEMA_VERSION = 7
+SAMPLER_SCHEMA_VERSION = 8
+
+# Selection behavior for rating sessions (UI + API ``mode``).
+SELECTION_MODES = frozenset({"mixed", "random", "search", "latest"})
 
 # Marathon session mix: many easy rejects, few easy keepers, moderate middle (not hard-tail).
 DEFAULT_SESSION_MIX: Dict[str, float] = {
@@ -183,6 +186,8 @@ class RatingCandidate:
     needs_triage: bool = True
     last_triaged_at: Optional[str] = None
     triage_pass_count: int = 0
+    mtime: float = 0.0
+    thumb_relpath: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -203,7 +208,36 @@ class RatingCandidate:
             "needs_triage": self.needs_triage,
             "last_triaged_at": self.last_triaged_at,
             "triage_pass_count": self.triage_pass_count,
+            "mtime": self.mtime,
+            "thumb_relpath": self.thumb_relpath,
         }
+
+
+def normalize_selection_mode(raw: Optional[str]) -> str:
+    """Map API/CLI aliases onto a canonical selection mode."""
+    m = str(raw or "mixed").strip().lower()
+    if m in ("heuristic", "stratified", "balanced", ""):
+        return "mixed"
+    if m in SELECTION_MODES:
+        return m
+    return "mixed"
+
+
+def _item_matches_query(item: dict[str, Any], query: str) -> bool:
+    q = str(query or "").strip().lower()
+    if not q:
+        return True
+    rel = str(item.get("relpath") or "").replace("\\", "/")
+    hay = " ".join(
+        [
+            rel,
+            Path(rel).name,
+            str(item.get("group_id") or ""),
+            str(item.get("name") or ""),
+            " ".join(str(t) for t in (item.get("tags") or []) if str(t).strip()),
+        ]
+    ).lower()
+    return all(tok in hay for tok in q.split())
 
 
 def _discovery_href(relpath: str) -> str:
@@ -444,6 +478,14 @@ def score_unrated_candidate(
     triage_info = triage_for_item(item, triage_doc, disposition_doc=disposition_doc)
     needs = needs_triage_item(item, triage_doc=triage_doc, disposition_doc=disposition_doc)
 
+    try:
+        mtime = float(item.get("mtime") or 0)
+    except (TypeError, ValueError):
+        mtime = 0.0
+
+    thumb_raw = item.get("thumb_relpath")
+    thumb_relpath = str(thumb_raw).strip().replace("\\", "/") if isinstance(thumb_raw, str) and thumb_raw.strip() else None
+
     return RatingCandidate(
         relpath=rel,
         group_id=group_id,
@@ -461,6 +503,8 @@ def score_unrated_candidate(
         needs_triage=needs,
         last_triaged_at=triage_info.get("last_triaged_at"),
         triage_pass_count=int(triage_info.get("triage_pass_count") or 0),
+        mtime=mtime,
+        thumb_relpath=thumb_relpath,
     )
 
 
@@ -639,6 +683,46 @@ def _stratified_session_pick(
     return interleaved[:limit]
 
 
+def _pick_by_mode(
+    candidates: List[RatingCandidate],
+    *,
+    mode: str,
+    limit: int,
+    seed: int = 0,
+    mix: Optional[Dict[str, float]] = None,
+    query: str = "",
+) -> List[RatingCandidate]:
+    """Select a batch according to selection mode."""
+    mode = normalize_selection_mode(mode)
+    if not candidates or limit <= 0:
+        return []
+    if mode == "search" and not str(query or "").strip():
+        return []
+    if mode == "random":
+        rng = random.Random(int(seed))
+        pool = list(candidates)
+        rng.shuffle(pool)
+        out = pool[:limit]
+        for c in out:
+            c.session_bucket = "middle"
+        return out
+    if mode == "latest":
+        out = sorted(candidates, key=lambda c: (-float(c.mtime or 0), c.group_id))[:limit]
+        for c in out:
+            c.session_bucket = "middle"
+        return out
+    if mode == "search":
+        # Query already filtered the pool; prefer recent matches, then score.
+        out = sorted(
+            candidates,
+            key=lambda c: (-float(c.mtime or 0), -float(c.predicted_score), c.group_id),
+        )[:limit]
+        for c in out:
+            c.session_bucket = "middle"
+        return out
+    return _stratified_session_pick(candidates, limit=limit, seed=seed, mix=mix)
+
+
 def _is_retired_item(item: dict[str, Any], disposition_doc: Optional[dict[str, Any]]) -> bool:
     if not disposition_doc:
         return False
@@ -751,11 +835,14 @@ def collect_needs_rating_video_items(
     disposition_doc: Optional[dict[str, Any]] = None,
     rated_keys: Optional[Set[str]] = None,
     og_root: Optional[Path] = None,
+    include_done: bool = False,
+    query: Optional[str] = None,
 ) -> List[dict[str, Any]]:
-    """Videos missing explicit quality and/or appetite (rate-queue pool)."""
+    """Videos for the rate-queue pool (incomplete by default; optionally all + search)."""
     keys = rated_keys if rated_keys is not None else _rated_output_keys(ratings_doc)
     items = discovery_doc.get("items") or []
     out: List[dict[str, Any]] = []
+    q = str(query or "").strip()
     for item in items:
         if not isinstance(item, dict):
             continue
@@ -764,14 +851,17 @@ def collect_needs_rating_video_items(
         rel = str(item.get("relpath") or "")
         if not rel.lower().endswith(".mp4"):
             continue
-        if not needs_rating_item(
-            item,
-            ratings_doc=ratings_doc,
-            appetite_doc=appetite_doc,
-            disposition_doc=disposition_doc,
-            rated_keys=keys,
-            og_root=og_root,
-        ):
+        if not include_done:
+            if not needs_rating_item(
+                item,
+                ratings_doc=ratings_doc,
+                appetite_doc=appetite_doc,
+                disposition_doc=disposition_doc,
+                rated_keys=keys,
+                og_root=og_root,
+            ):
+                continue
+        if q and not _item_matches_query(item, q):
             continue
         out.append(item)
     return out
@@ -787,6 +877,8 @@ def collect_unrated_video_items(
     disposition_doc: Optional[dict[str, Any]] = None,
     triage_doc: Optional[dict[str, Any]] = None,
     appetite_doc: Optional[dict[str, Any]] = None,
+    include_done: bool = False,
+    query: Optional[str] = None,
 ) -> List[dict[str, Any]]:
     """Rate-queue pool: missing quality and/or appetite (not disposition/triage-gated)."""
     _ = triage_doc
@@ -798,6 +890,8 @@ def collect_unrated_video_items(
         disposition_doc=disposition_doc,
         rated_keys=rated_keys,
         og_root=og_root,
+        include_done=include_done,
+        query=query,
     )
 
 
@@ -814,6 +908,9 @@ def sample_rating_queue(
     sampler_state: Optional[Path] = None,
     seed: int = 0,
     min_predicted: float = 0.0,
+    mode: str = "mixed",
+    query: Optional[str] = None,
+    include_done: bool = False,
 ) -> dict[str, Any]:
     og_root = og_root.expanduser().resolve()
     discovery_path = (discovery_index or default_discovery_index_path(og_root)).resolve()
@@ -822,6 +919,11 @@ def sample_rating_queue(
     lineage_path = (lineage_edges or default_lineage_edges_path(og_root)).resolve()
     vision_path = (vision_scores or default_vision_scores_path(og_root)).resolve()
     state_path = (sampler_state or default_sampler_state_path(og_root)).resolve()
+
+    selection_mode = normalize_selection_mode(mode)
+    query_s = str(query or "").strip()
+    # Score floor only applies to the stratified mix; other modes want the full pool.
+    effective_min = float(min_predicted) if selection_mode == "mixed" else 0.0
 
     discovery_doc = _load_json(discovery_path)
     if not discovery_doc:
@@ -849,6 +951,7 @@ def sample_rating_queue(
             if isinstance(gid, str):
                 presented.add(gid)
 
+    pool_query = query_s if selection_mode == "search" else None
     needs_rating = collect_unrated_video_items(
         discovery_doc,
         rated_keys=rated_keys,
@@ -857,6 +960,8 @@ def sample_rating_queue(
         disposition_doc=disposition_doc,
         triage_doc=triage_doc,
         appetite_doc=appetite_doc,
+        include_done=include_done,
+        query=pool_query,
     )
     candidates: List[RatingCandidate] = []
     for item in needs_rating:
@@ -875,11 +980,18 @@ def sample_rating_queue(
             triage_doc=triage_doc,
             tags_doc=tags_doc,
         )
-        if cand.predicted_score >= min_predicted:
+        if cand.predicted_score >= effective_min:
             candidates.append(cand)
 
     session_mix = _session_mix_from_env()
-    picked = _stratified_session_pick(candidates, limit=limit, seed=seed, mix=session_mix)
+    picked = _pick_by_mode(
+        candidates,
+        mode=selection_mode,
+        limit=limit,
+        seed=seed,
+        mix=session_mix,
+        query=query_s,
+    )
 
     bucket_counts = defaultdict(int)
     for c in picked:
@@ -887,12 +999,33 @@ def sample_rating_queue(
 
     vision_queue = [c for c in picked if c.vision_recommended][: max(3, limit // 15)]
 
+    next_steps = [
+        "Work the interleaved queue: set Subject / Render / Action stars and appetite on each clip.",
+        "Disposition is optional here — it routes later work, it does not finish rating.",
+        "Dismiss batch commits clips that have all three quality axes and appetite; the rest return to the pool.",
+        "python3 shape_factory.py ratings build",
+        "python3 shape_factory.py heuristics build",
+    ]
+    if selection_mode == "search" and not query_s:
+        next_steps.insert(0, "Enter a search query to populate the Search queue.")
+
     session = {
         "version": SAMPLER_SCHEMA_VERSION,
         "created_at": utc_now(),
         "ok": True,
         "og_root": str(og_root),
-        "session_mix": session_mix,
+        "selection_mode": selection_mode,
+        "include_done": bool(include_done),
+        "query": query_s,
+        "session_mix": session_mix if selection_mode == "mixed" else None,
+        "request": {
+            "limit": int(limit),
+            "mode": selection_mode,
+            "query": query_s,
+            "include_done": bool(include_done),
+            "min_predicted": effective_min,
+            "seed": int(seed),
+        },
         "stats": {
             "needs_rating_videos": len(needs_rating),
             "needs_triage_videos": len(needs_rating),
@@ -918,13 +1051,7 @@ def sample_rating_queue(
         },
         "candidates": [c.to_dict() for c in picked],
         "vision_priority": [c.to_dict() for c in vision_queue],
-        "next_steps": [
-            "Work the interleaved queue: set Subject / Render / Action stars and appetite on each clip.",
-            "Disposition is optional here — it routes later work, it does not finish rating.",
-            "Dismiss batch commits clips that have all three quality axes and appetite; the rest return to the pool.",
-            "python3 shape_factory.py ratings build",
-            "python3 shape_factory.py heuristics build",
-        ],
+        "next_steps": next_steps,
     }
     return session
 
@@ -994,6 +1121,9 @@ def cmd_rating_sampler_sample(args: argparse.Namespace) -> int:
         exclude_presented=not args.include_presented,
         seed=int(args.seed),
         min_predicted=float(args.min_predicted),
+        mode=str(getattr(args, "mode", "mixed") or "mixed"),
+        query=str(getattr(args, "query", "") or ""),
+        include_done=bool(getattr(args, "include_done", False)),
     )
     if not session.get("ok"):
         print(json.dumps(session, indent=2))
@@ -1056,6 +1186,18 @@ def add_rating_sampler_subparser(sub: argparse._SubParsersAction) -> None:
     sample.add_argument("--limit", type=int, default=100)
     sample.add_argument("--min-predicted", type=float, default=0.0, help="Min score to enter pool (0 = all unrated)")
     sample.add_argument("--seed", type=int, default=0)
+    sample.add_argument(
+        "--mode",
+        default="mixed",
+        choices=sorted(SELECTION_MODES),
+        help="Selection behavior: mixed (stratified), random, search, latest",
+    )
+    sample.add_argument("--query", default="", help="Search query (used when --mode search)")
+    sample.add_argument(
+        "--include-done",
+        action="store_true",
+        help="Include previously rated or disposed/retired items in the pool",
+    )
     sample.add_argument("--out", default=None, help="Write session here instead of _status/rating_sampler_sessions/")
     sample.add_argument("--include-presented", action="store_true", help="Allow repeats from prior sessions")
     sample.add_argument("--no-state", action="store_true", help="Do not update rating_sampler_state.json")

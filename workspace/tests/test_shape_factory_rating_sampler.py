@@ -118,6 +118,42 @@ class RatingSamplerTests(unittest.TestCase):
         }
         self.assertFalse(needs_rating_item(item, ratings_doc={}, appetite_doc={}, disposition_doc=disposition))
 
+    def test_pick_modes_random_latest_search(self) -> None:
+        from shape_factory_rating_sampler import RatingCandidate, _pick_by_mode
+
+        pool = [
+            RatingCandidate(
+                relpath=f"o/{i}.mp4",
+                group_id=f"g{i}",
+                predicted_score=float(i),
+                heuristic_confidence=0.5,
+                mtime=float(i),
+            )
+            for i in range(10)
+        ]
+        rnd = _pick_by_mode(pool, mode="random", limit=4, seed=7)
+        self.assertEqual(len(rnd), 4)
+        latest = _pick_by_mode(pool, mode="latest", limit=3, seed=0)
+        self.assertEqual([c.group_id for c in latest], ["g9", "g8", "g7"])
+        empty_search = _pick_by_mode(pool, mode="search", limit=3, query="")
+        self.assertEqual(empty_search, [])
+        search = _pick_by_mode(pool, mode="search", limit=2, query="x")
+        self.assertEqual([c.group_id for c in search], ["g9", "g8"])
+
+    def test_item_matches_query_tokens(self) -> None:
+        from shape_factory_rating_sampler import _item_matches_query
+
+        item = {"relpath": "output/og/2026-04-03/FB8VA5L_clip.mp4", "group_id": "og:stem:FB8VA5L"}
+        self.assertTrue(_item_matches_query(item, "FB8VA5L clip"))
+        self.assertFalse(_item_matches_query(item, "missingtoken"))
+
+    def test_normalize_selection_mode_aliases(self) -> None:
+        from shape_factory_rating_sampler import normalize_selection_mode
+
+        self.assertEqual(normalize_selection_mode("heuristic"), "mixed")
+        self.assertEqual(normalize_selection_mode("RANDOM"), "random")
+        self.assertEqual(normalize_selection_mode("nope"), "mixed")
+
 
 if __name__ == "__main__":
     unittest.main()
