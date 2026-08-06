@@ -805,7 +805,7 @@ export type AssetRecoverResponse = {
   results?: AssetRecoverResult[];
 };
 
-/** POST /api/discovery/asset-ratings/set — set one quality axis (or all three) + refresh index. */
+/** POST /api/discovery/asset-ratings/set — set one quality axis (or all three); apply from ``saved``. */
 export type SetAssetRatingResponse = {
   ok: boolean;
   error?: string;
@@ -823,6 +823,7 @@ export type SetAssetRatingResponse = {
     short_key?: string;
     sources?: string[];
   };
+  /** @deprecated No longer returned; UI should use ``saved.axes`` / ``saved.explicit``. */
   ratings?: DiscoveryAssetRatingsResponse | null;
 };
 

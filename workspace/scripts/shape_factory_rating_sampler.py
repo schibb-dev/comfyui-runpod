@@ -32,9 +32,12 @@ from shape_factory_ratings import (
     axes_complete,
     default_appetite_index_path,
     default_ratings_index_path,
+    load_appetite_doc,
+    load_ratings_doc,
     lookup_output_appetite,
     lookup_output_rating,
     normalize_axes_map,
+    ratings_db_path_for_index,
     utc_now,
 )
 from shape_factory_disposition import (
@@ -929,10 +932,14 @@ def sample_rating_queue(
     if not discovery_doc:
         return {"ok": False, "error": "discovery_index_missing", "path": str(discovery_path)}
 
-    ratings_doc = _load_json(ratings_path)
+    ratings_db = ratings_db_path_for_index(ratings_path)
+    ratings_doc = load_ratings_doc(ratings_path) if (ratings_path.is_file() or ratings_db.is_file()) else None
     heuristics_doc = _load_json(heuristics_path)
     appetite_path = default_appetite_index_path(og_root)
-    appetite_doc = _load_json(appetite_path)
+    appetite_db = ratings_db_path_for_index(appetite_path)
+    appetite_doc = (
+        load_appetite_doc(appetite_path) if (appetite_path.is_file() or appetite_db.is_file()) else None
+    )
     disposition_path = default_disposition_index_path(og_root)
     disposition_doc = _load_json(disposition_path)
     triage_path = default_triage_index_path(og_root)

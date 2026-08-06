@@ -729,13 +729,20 @@ def cmd_heuristics_build(args: argparse.Namespace) -> int:
     data_root = Path(args.data_root).expanduser().resolve() if getattr(args, "data_root", None) else None
     out_path = Path(args.out or default_heuristics_index_path(og_root)).expanduser().resolve()
 
-    if not ratings_path.is_file():
+    from shape_factory_ratings import load_appetite_doc, load_ratings_doc, ratings_db_path_for_index
+
+    ratings_db = ratings_db_path_for_index(ratings_path)
+    if not ratings_path.is_file() and not ratings_db.is_file():
         print(f"error: ratings index not found: {ratings_path}", file=__import__("sys").stderr)
         return 1
 
-    ratings_doc = json.loads(ratings_path.read_text(encoding="utf-8"))
+    ratings_doc = load_ratings_doc(ratings_path)
     graph = LineageGraph.load(lineage_path)
-    appetite_doc = _load_json_doc(appetite_path)
+    appetite_doc = (
+        load_appetite_doc(appetite_path)
+        if (appetite_path.is_file() or ratings_db_path_for_index(appetite_path).is_file())
+        else _load_json_doc(appetite_path)
+    )
     tags_doc = _load_json_doc(tags_path)
     doc = build_heuristics_index(
         ratings_doc=ratings_doc,

@@ -2247,13 +2247,33 @@ def _discovery_appetite_index_path(cfg: "ServerConfig") -> Path:
 
 def _discovery_load_appetite_index(cfg: "ServerConfig") -> Optional[Dict[str, Any]]:
     path = _discovery_appetite_index_path(cfg)
-    if not path.is_file():
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    try:
+        from shape_factory_ratings import load_appetite_doc, ratings_db_path_for_index  # type: ignore
+    except Exception:
+        return None
+    db_path = ratings_db_path_for_index(path)
+    if not path.is_file() and not db_path.is_file():
         return None
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
-        return doc if isinstance(doc, dict) else None
-    except (OSError, json.JSONDecodeError):
+        mtime_src = db_path if db_path.is_file() else path
+        mtime = mtime_src.stat().st_mtime
+    except OSError:
         return None
+    key = str(db_path if db_path.is_file() else path)
+    cached = _APPETITE_INDEX_CACHE.get(key)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    try:
+        doc = load_appetite_doc(path)
+    except Exception:
+        return None
+    if not isinstance(doc, dict):
+        return None
+    _APPETITE_INDEX_CACHE[key] = (mtime, doc)
+    return doc
 
 
 def _discovery_disposition_index_path(cfg: "ServerConfig") -> Path:
@@ -2781,9 +2801,20 @@ def _discovery_disposition_suggest_payload(cfg: ServerConfig, q: Dict[str, List[
 
 
 _RATINGS_INDEX_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_APPETITE_INDEX_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 
 _RATINGS_VERIFICATIONS_LOCK = threading.Lock()
 _RATINGS_VALID_LENSES = frozenset({"as_source", "workflow", "recipe"})
+
+
+def _invalidate_ratings_caches(cfg: "ServerConfig") -> None:
+    """Drop cached ratings/appetite docs after interactive writes (WAL mtime can lag)."""
+    for path in (_discovery_ratings_index_path(cfg), _discovery_appetite_index_path(cfg)):
+        _RATINGS_INDEX_CACHE.pop(str(path), None)
+        _APPETITE_INDEX_CACHE.pop(str(path), None)
+        db = path.with_name("ratings.sqlite")
+        _RATINGS_INDEX_CACHE.pop(str(db), None)
+        _APPETITE_INDEX_CACHE.pop(str(db), None)
 
 
 def _discovery_ratings_verifications_path(cfg: "ServerConfig") -> Path:
@@ -2918,18 +2949,27 @@ def _discovery_apply_human_verifications(payload: Dict[str, Any], ver_doc: Dict[
 
 def _discovery_load_ratings_index(cfg: "ServerConfig") -> Optional[Dict[str, Any]]:
     path = _discovery_ratings_index_path(cfg)
-    if not path.is_file():
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    try:
+        from shape_factory_ratings import load_ratings_doc, ratings_db_path_for_index  # type: ignore
+    except Exception:
+        return None
+    db_path = ratings_db_path_for_index(path)
+    if not path.is_file() and not db_path.is_file():
         return None
     try:
-        mtime = path.stat().st_mtime
+        mtime_src = db_path if db_path.is_file() else path
+        mtime = mtime_src.stat().st_mtime
     except OSError:
         return None
-    key = str(path)
+    key = str(db_path if db_path.is_file() else path)
     cached = _RATINGS_INDEX_CACHE.get(key)
     if cached and cached[0] == mtime:
         return cached[1]
     try:
-        doc = _read_json(path)
+        doc = load_ratings_doc(path)
     except Exception:
         return None
     if not isinstance(doc, dict):
@@ -7610,7 +7650,8 @@ class Handler(BaseHTTPRequestHandler):
 
         Set one quality axis (subject_beauty / render_quality / action_quality) or, when
         axis is omitted, set all three to the same star value. Updates derived explicit
-        aggregate + XMP, then returns the refreshed per-asset ratings payload.
+        aggregate + XMP in ratings.sqlite. Returns ``saved`` only (UI applies axes from it);
+        does not reload the discovery index.
         """
         cfg = self.server.cfg
         obj = self._read_request_json()
@@ -7624,16 +7665,8 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, 404, {"ok": False, "error": "media_missing", "detail": str(e)})
         except Exception as e:
             return _json_response(self, 500, {"ok": False, "error": "rating_set_failed", "detail": str(e)})
-        rel = str(obj.get("relpath") or "").strip()
-        ratings: Optional[Dict[str, Any]] = None
-        idx_path = cfg.discovery_index_path
-        idx = _load_discovery_index_disk(idx_path) if idx_path.exists() else None
-        if isinstance(idx, dict):
-            try:
-                ratings = _discovery_compute_asset_ratings(cfg, idx, rel)
-            except Exception:
-                ratings = None
-        return _json_response(self, 200, {"ok": True, "saved": saved, "ratings": ratings})
+        _invalidate_ratings_caches(cfg)
+        return _json_response(self, 200, {"ok": True, "saved": saved})
 
     def _handle_discovery_asset_appetite_set_post(self) -> None:
         """
@@ -7641,7 +7674,7 @@ class Handler(BaseHTTPRequestHandler):
           { relpath, appetite: ""|less|neutral|more|fast_track, facet?: both|source|processing,
             job_key?, family_slug? }
 
-        Record a 'do more WITH this' appetite + facet in appetite_index.json (survives
+        Record a 'do more WITH this' appetite + facet in ratings.sqlite (survives
         'ratings build'). fast_track also fires an immediate Extend (best-effort).
         """
         cfg = self.server.cfg
@@ -7656,6 +7689,7 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, 404, {"ok": False, "error": "media_missing", "detail": str(e)})
         except Exception as e:
             return _json_response(self, 500, {"ok": False, "error": "appetite_set_failed", "detail": str(e)})
+        _invalidate_ratings_caches(cfg)
         return _json_response(self, 200, {"ok": True, "saved": saved})
 
     def _handle_discovery_disposition_catalog_get(self, q: Dict[str, List[str]]) -> None:

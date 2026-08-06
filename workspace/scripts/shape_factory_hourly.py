@@ -444,14 +444,15 @@ def _default_og_root(data_root: Path) -> Path:
 
 def _load_ratings_index(data_root: Path) -> Optional[dict[str, Any]]:
     try:
-        from shape_factory_ratings import default_ratings_index_path
+        from shape_factory_ratings import default_ratings_index_path, load_ratings_doc, ratings_db_path_for_index
     except ImportError:
         return None
     path = default_ratings_index_path(_default_og_root(data_root))
-    if not path.is_file():
+    db_path = ratings_db_path_for_index(path)
+    if not path.is_file() and not db_path.is_file():
         return None
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc = load_ratings_doc(path)
         return doc if isinstance(doc, dict) else None
     except Exception:
         return None
@@ -473,11 +474,16 @@ def _load_heuristics_index(data_root: Path) -> Optional[dict[str, Any]]:
 
 
 def _load_appetite_index(data_root: Path) -> Optional[dict[str, Any]]:
+    try:
+        from shape_factory_ratings import load_appetite_doc, ratings_db_path_for_index
+    except ImportError:
+        return None
     path = default_appetite_index_path(_default_og_root(data_root))
-    if not path.is_file():
+    db_path = ratings_db_path_for_index(path)
+    if not path.is_file() and not db_path.is_file():
         return None
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc = load_appetite_doc(path)
         return doc if isinstance(doc, dict) else None
     except Exception:
         return None

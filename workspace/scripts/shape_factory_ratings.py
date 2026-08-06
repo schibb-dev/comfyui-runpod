@@ -8,6 +8,7 @@ import datetime as _dt
 import json
 import re
 import shutil
+import sqlite3
 import statistics
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -20,6 +21,8 @@ from snowflake_inventory import graph_fingerprint, is_litegraph_workflow
 
 RATINGS_SCHEMA_VERSION = 1
 APPETITE_SCHEMA_VERSION = 1
+RATINGS_DB_SCHEMA_VERSION = 1
+RATINGS_DB_FILENAME = "ratings.sqlite"
 
 # Appetite ("do more WITH this") is a second, direction axis distinct from the
 # quality star ("do more OF this"). Ordinal, strongest first.
@@ -541,17 +544,26 @@ def build_ratings_index(
     lineage_basenames: set[str] = set()
 
     # Preserve operator-stamped fields across XMP rebuilds (rated_at, axes).
+    # Prefer live SQLite; fall back to JSON export when DB is absent.
     prior_rows: Dict[str, Dict[str, Any]] = {}
-    if out_path.is_file():
-        try:
-            prior_doc = json.loads(out_path.read_text(encoding="utf-8"))
-        except Exception:
-            prior_doc = {}
+    try:
+        prior_doc = load_ratings_doc(out_path)
         prior_table = prior_doc.get("by_output_relpath") if isinstance(prior_doc, dict) else None
         if isinstance(prior_table, dict):
             for key, row in prior_table.items():
                 if isinstance(row, dict):
                     prior_rows[str(key)] = row
+    except Exception:
+        if out_path.is_file():
+            try:
+                prior_doc = json.loads(out_path.read_text(encoding="utf-8"))
+            except Exception:
+                prior_doc = {}
+            prior_table = prior_doc.get("by_output_relpath") if isinstance(prior_doc, dict) else None
+            if isinstance(prior_table, dict):
+                for key, row in prior_table.items():
+                    if isinstance(row, dict):
+                        prior_rows[str(key)] = row
 
     joined_jobs = 0
     joined_workflow = 0
@@ -696,6 +708,18 @@ def build_ratings_index(
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    # Keep SQLite live store in sync with the export (aggregates stay JSON-only).
+    try:
+        db_path = ratings_db_path_for_index(out_path)
+        con = open_ratings_db(db_path, ratings_json=out_path)
+        try:
+            replace_rating_rows_from_doc(con, doc)
+            _meta_set(con, "last_export_at", str(doc.get("updated_at") or utc_now()))
+            con.commit()
+        finally:
+            con.close()
+    except Exception:
+        pass
     return doc
 
 
@@ -786,6 +810,552 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 def _atomic_write_json_doc(path: Path, obj: Any) -> None:
     _atomic_write_text(path, json.dumps(obj, ensure_ascii=False, indent=2))
+
+
+def default_ratings_db_path(og_root: Path) -> Path:
+    return og_root.resolve().parent / "_status" / RATINGS_DB_FILENAME
+
+
+def ratings_db_path_for_index(index_path: Path) -> Path:
+    """SQLite live store beside ratings_index.json / appetite_index.json."""
+    return Path(index_path).expanduser().resolve().with_name(RATINGS_DB_FILENAME)
+
+
+def _ratings_json_path_for_db(db_path: Path) -> Path:
+    return Path(db_path).with_name("ratings_index.json")
+
+
+def _appetite_json_path_for_db(db_path: Path) -> Path:
+    return Path(db_path).with_name("appetite_index.json")
+
+
+def _is_discovery_style_key(key: str) -> bool:
+    k = str(key or "").replace("\\", "/").lstrip("/")
+    return k.startswith("output/") or k.startswith("og/")
+
+
+def _collapse_dual_key_table(table: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """
+    Collapse dual-key JSON maps (discovery_key + short_key → same logical row)
+    into asset_key → row, preferring discovery-style keys.
+    """
+    by_short: Dict[str, Tuple[str, Dict[str, Any]]] = {}
+    orphans: List[Tuple[str, Dict[str, Any]]] = []
+    for key, row in (table or {}).items():
+        if not isinstance(row, dict):
+            continue
+        key_s = str(key or "").strip().replace("\\", "/")
+        if not key_s:
+            continue
+        short = str(row.get("short_key") or "").strip().replace("\\", "/")
+        if short:
+            prev = by_short.get(short)
+            if prev is None:
+                by_short[short] = (key_s, row)
+                continue
+            prev_key, _prev_row = prev
+            prefer_new = False
+            if prev_key == short and key_s != short:
+                prefer_new = True
+            elif _is_discovery_style_key(key_s) and not _is_discovery_style_key(prev_key):
+                prefer_new = True
+            elif len(key_s) > len(prev_key) and key_s != short:
+                prefer_new = True
+            if prefer_new:
+                by_short[short] = (key_s, row)
+        else:
+            orphans.append((key_s, row))
+    out: Dict[str, Dict[str, Any]] = {}
+    for short, (key_s, row) in by_short.items():
+        merged = dict(row)
+        merged["short_key"] = short
+        out[key_s] = merged
+    for key_s, row in orphans:
+        if key_s not in out:
+            out[key_s] = dict(row)
+    return out
+
+
+def _row_get(row: Any, key: str, default: Any = None) -> Any:
+    if isinstance(row, dict):
+        return row.get(key, default)
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return default
+
+
+def _axes_from_rating_sql_row(row: Any) -> Dict[str, int]:
+    raw = {
+        "subject_beauty": _row_get(row, "subject_beauty"),
+        "render_quality": _row_get(row, "render_quality"),
+        "action_quality": _row_get(row, "action_quality"),
+    }
+    return normalize_axes_map(raw)
+
+
+def _rating_row_to_doc(row: Any) -> Dict[str, Any]:
+    axes = _axes_from_rating_sql_row(row)
+    out: Dict[str, Any] = {
+        "explicit": _row_get(row, "explicit"),
+        "short_key": str(_row_get(row, "short_key") or ""),
+        "xmp": _row_get(row, "xmp"),
+        "sources": [],
+        "source_paths": [],
+    }
+    if axes:
+        out["axes"] = {a: axes[a] for a in QUALITY_AXES if a in axes}
+    rated_at = _row_get(row, "rated_at")
+    if rated_at:
+        out["rated_at"] = rated_at
+    for field_name, col in (("sources", "sources_json"), ("source_paths", "source_paths_json")):
+        raw = _row_get(row, col)
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    out[field_name] = parsed
+            except json.JSONDecodeError:
+                pass
+        else:
+            alt = _row_get(row, field_name)
+            if isinstance(alt, list):
+                out[field_name] = list(alt)
+    for keep in ("graph_hash", "shape_recipe"):
+        val = _row_get(row, keep)
+        if val:
+            out[keep] = val
+    return out
+
+
+def _appetite_row_to_doc(row: Any) -> Dict[str, Any]:
+    appetite = str(_row_get(row, "appetite") or "")
+    facet = str(_row_get(row, "facet") or "both") or "both"
+    score = _row_get(row, "score")
+    if score is None:
+        score = APPETITE_SCORE.get(appetite, 0.0)
+    return {
+        "appetite": appetite,
+        "facet": facet,
+        "score": float(score),
+        "short_key": str(_row_get(row, "short_key") or ""),
+        "updated_at": _row_get(row, "updated_at"),
+    }
+
+
+def open_ratings_db(
+    db_path: Path,
+    *,
+    ratings_json: Optional[Path] = None,
+    appetite_json: Optional[Path] = None,
+) -> sqlite3.Connection:
+    """
+    Open/create ratings.sqlite (WAL). One-time migrate from JSON indexes when present.
+    """
+    db_path = Path(db_path).expanduser().resolve()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    created = not db_path.is_file()
+    con = sqlite3.connect(str(db_path), timeout=30)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA synchronous=NORMAL")
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS rating_row (
+            asset_key TEXT PRIMARY KEY,
+            short_key TEXT,
+            discovery_key TEXT,
+            explicit INTEGER,
+            subject_beauty INTEGER,
+            render_quality INTEGER,
+            action_quality INTEGER,
+            xmp TEXT,
+            rated_at TEXT,
+            sources_json TEXT,
+            source_paths_json TEXT,
+            graph_hash TEXT,
+            shape_recipe TEXT,
+            updated_at TEXT
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS appetite_row (
+            asset_key TEXT PRIMARY KEY,
+            short_key TEXT,
+            discovery_key TEXT,
+            appetite TEXT,
+            facet TEXT,
+            score REAL,
+            updated_at TEXT
+        )
+        """
+    )
+    con.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_rating_short ON rating_row(short_key)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_appetite_short ON appetite_row(short_key)")
+    con.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
+        (str(RATINGS_DB_SCHEMA_VERSION),),
+    )
+    con.commit()
+
+    migrated = _meta_get(con, "migrated_from_json") == "1"
+    if not migrated:
+        r_json = Path(ratings_json) if ratings_json else _ratings_json_path_for_db(db_path)
+        a_json = Path(appetite_json) if appetite_json else _appetite_json_path_for_db(db_path)
+        did = False
+        if r_json.is_file():
+            try:
+                doc = json.loads(r_json.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                doc = None
+            if isinstance(doc, dict):
+                _import_ratings_doc_into_db(con, doc)
+                did = True
+        if a_json.is_file():
+            try:
+                doc = json.loads(a_json.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                doc = None
+            if isinstance(doc, dict):
+                _import_appetite_doc_into_db(con, doc)
+                did = True
+        if did or created:
+            _meta_set(con, "migrated_from_json", "1")
+            con.commit()
+    return con
+
+
+def _meta_get(con: sqlite3.Connection, key: str) -> Optional[str]:
+    row = con.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    return None if row is None else str(row["value"])
+
+
+def _meta_set(con: sqlite3.Connection, key: str, value: str) -> None:
+    con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)", (key, value))
+
+
+def _import_ratings_doc_into_db(con: sqlite3.Connection, doc: Dict[str, Any]) -> int:
+    table = doc.get("by_output_relpath") if isinstance(doc, dict) else None
+    if not isinstance(table, dict):
+        return 0
+    collapsed = _collapse_dual_key_table(table)
+    n = 0
+    now = utc_now()
+    for asset_key, row in collapsed.items():
+        upsert_rating_row(con, asset_key=asset_key, row=row, updated_at=now, commit=False)
+        n += 1
+    con.commit()
+    return n
+
+
+def _import_appetite_doc_into_db(con: sqlite3.Connection, doc: Dict[str, Any]) -> int:
+    table = doc.get("by_output_relpath") if isinstance(doc, dict) else None
+    if not isinstance(table, dict):
+        return 0
+    collapsed = _collapse_dual_key_table(table)
+    n = 0
+    now = utc_now()
+    for asset_key, row in collapsed.items():
+        appetite = normalize_appetite(row.get("appetite"))
+        if not appetite:
+            continue
+        upsert_appetite_row(
+            con,
+            asset_key=asset_key,
+            short_key=str(row.get("short_key") or ""),
+            appetite=appetite,
+            facet=normalize_appetite_facet(row.get("facet")),
+            updated_at=str(row.get("updated_at") or now),
+            commit=False,
+        )
+        n += 1
+    con.commit()
+    return n
+
+
+def upsert_rating_row(
+    con: sqlite3.Connection,
+    *,
+    asset_key: str,
+    row: Dict[str, Any],
+    updated_at: Optional[str] = None,
+    commit: bool = True,
+) -> None:
+    asset_key = str(asset_key or "").strip().replace("\\", "/")
+    if not asset_key:
+        raise ValueError("missing asset_key")
+    short_key = str(row.get("short_key") or "").strip().replace("\\", "/")
+    axes = normalize_axes_map(row.get("axes"))
+    explicit = row.get("explicit")
+    try:
+        explicit_i = int(explicit) if explicit is not None else None
+    except (TypeError, ValueError):
+        explicit_i = None
+    sources = row.get("sources") if isinstance(row.get("sources"), list) else []
+    source_paths = row.get("source_paths") if isinstance(row.get("source_paths"), list) else []
+    now = updated_at or utc_now()
+    con.execute(
+        """
+        INSERT INTO rating_row (
+            asset_key, short_key, discovery_key, explicit,
+            subject_beauty, render_quality, action_quality,
+            xmp, rated_at, sources_json, source_paths_json,
+            graph_hash, shape_recipe, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(asset_key) DO UPDATE SET
+            short_key=excluded.short_key,
+            discovery_key=excluded.discovery_key,
+            explicit=excluded.explicit,
+            subject_beauty=excluded.subject_beauty,
+            render_quality=excluded.render_quality,
+            action_quality=excluded.action_quality,
+            xmp=excluded.xmp,
+            rated_at=excluded.rated_at,
+            sources_json=excluded.sources_json,
+            source_paths_json=excluded.source_paths_json,
+            graph_hash=excluded.graph_hash,
+            shape_recipe=excluded.shape_recipe,
+            updated_at=excluded.updated_at
+        """,
+        (
+            asset_key,
+            short_key,
+            asset_key,
+            explicit_i,
+            axes.get("subject_beauty"),
+            axes.get("render_quality"),
+            axes.get("action_quality"),
+            str(row.get("xmp") or "") or None,
+            row.get("rated_at"),
+            json.dumps(sources, ensure_ascii=False),
+            json.dumps(source_paths, ensure_ascii=False),
+            row.get("graph_hash"),
+            row.get("shape_recipe"),
+            now,
+        ),
+    )
+    if commit:
+        con.commit()
+
+
+def delete_rating_row(
+    con: sqlite3.Connection,
+    *,
+    asset_key: str,
+    short_key: str = "",
+    commit: bool = True,
+) -> None:
+    keys = [k for k in (asset_key, short_key) if k]
+    if not keys:
+        return
+    con.execute(
+        f"DELETE FROM rating_row WHERE asset_key IN ({','.join('?' for _ in keys)}) "
+        f"OR short_key IN ({','.join('?' for _ in keys)})",
+        (*keys, *keys),
+    )
+    if commit:
+        con.commit()
+
+
+def upsert_appetite_row(
+    con: sqlite3.Connection,
+    *,
+    asset_key: str,
+    short_key: str,
+    appetite: str,
+    facet: str,
+    updated_at: Optional[str] = None,
+    commit: bool = True,
+) -> None:
+    asset_key = str(asset_key or "").strip().replace("\\", "/")
+    if not asset_key:
+        raise ValueError("missing asset_key")
+    short_key = str(short_key or "").strip().replace("\\", "/")
+    appetite = normalize_appetite(appetite)
+    facet = normalize_appetite_facet(facet)
+    now = updated_at or utc_now()
+    con.execute(
+        """
+        INSERT INTO appetite_row (
+            asset_key, short_key, discovery_key, appetite, facet, score, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(asset_key) DO UPDATE SET
+            short_key=excluded.short_key,
+            discovery_key=excluded.discovery_key,
+            appetite=excluded.appetite,
+            facet=excluded.facet,
+            score=excluded.score,
+            updated_at=excluded.updated_at
+        """,
+        (
+            asset_key,
+            short_key,
+            asset_key,
+            appetite,
+            facet,
+            float(APPETITE_SCORE.get(appetite, 0.0)),
+            now,
+        ),
+    )
+    if commit:
+        con.commit()
+
+
+def delete_appetite_row(
+    con: sqlite3.Connection,
+    *,
+    asset_key: str,
+    short_key: str = "",
+    commit: bool = True,
+) -> None:
+    keys = [k for k in (asset_key, short_key) if k]
+    if not keys:
+        return
+    con.execute(
+        f"DELETE FROM appetite_row WHERE asset_key IN ({','.join('?' for _ in keys)}) "
+        f"OR short_key IN ({','.join('?' for _ in keys)})",
+        (*keys, *keys),
+    )
+    if commit:
+        con.commit()
+
+
+def fetch_rating_row(
+    con: sqlite3.Connection,
+    *,
+    discovery_key: str = "",
+    short_key: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Lookup order matches JSON dual-key: discovery then short."""
+    for key in (discovery_key, short_key):
+        if not key:
+            continue
+        row = con.execute(
+            "SELECT * FROM rating_row WHERE asset_key = ? OR discovery_key = ? OR short_key = ? LIMIT 1",
+            (key, key, key),
+        ).fetchone()
+        if row is not None:
+            return _rating_row_to_doc(row)
+    return None
+
+
+def ratings_output_table_from_db(con: sqlite3.Connection) -> Dict[str, Dict[str, Any]]:
+    table: Dict[str, Dict[str, Any]] = {}
+    for row in con.execute("SELECT * FROM rating_row"):
+        doc_row = _rating_row_to_doc(row)
+        asset_key = str(row["asset_key"] or "").strip()
+        short_key = str(row["short_key"] or "").strip()
+        if asset_key:
+            table[asset_key] = doc_row
+        if short_key and short_key != asset_key:
+            table[short_key] = doc_row
+    return table
+
+
+def appetite_output_table_from_db(con: sqlite3.Connection) -> Dict[str, Dict[str, Any]]:
+    table: Dict[str, Dict[str, Any]] = {}
+    for row in con.execute("SELECT * FROM appetite_row"):
+        doc_row = _appetite_row_to_doc(row)
+        asset_key = str(row["asset_key"] or "").strip()
+        short_key = str(row["short_key"] or "").strip()
+        if asset_key:
+            table[asset_key] = doc_row
+        if short_key and short_key != asset_key:
+            table[short_key] = doc_row
+    return table
+
+
+def replace_rating_rows_from_doc(con: sqlite3.Connection, doc: Dict[str, Any]) -> int:
+    """Replace rating_row contents from a full ratings doc (used after ratings build)."""
+    con.execute("DELETE FROM rating_row")
+    return _import_ratings_doc_into_db(con, doc)
+
+
+def load_ratings_doc(ratings_index_path: Path) -> Dict[str, Any]:
+    """
+    Facade: prefer SQLite live store; migrate from JSON on first open.
+    Overlay by_output_relpath from DB onto JSON aggregates when an export exists.
+    """
+    ratings_index_path = Path(ratings_index_path).expanduser().resolve()
+    db_path = ratings_db_path_for_index(ratings_index_path)
+    con = open_ratings_db(db_path, ratings_json=ratings_index_path)
+    try:
+        by_output = ratings_output_table_from_db(con)
+    finally:
+        con.close()
+
+    base = _init_ratings_doc()
+    if ratings_index_path.is_file():
+        try:
+            loaded = json.loads(ratings_index_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                for k in ("version", "updated_at", "stats", "by_graph_hash", "by_shape_recipe", "by_source_basename"):
+                    if k in loaded:
+                        base[k] = loaded[k]
+        except (OSError, json.JSONDecodeError):
+            pass
+    base["by_output_relpath"] = by_output
+    if by_output:
+        base["updated_at"] = utc_now()
+    return base
+
+
+def load_appetite_doc(appetite_index_path: Path) -> Dict[str, Any]:
+    """Facade: prefer SQLite; migrate from JSON on first open."""
+    appetite_index_path = Path(appetite_index_path).expanduser().resolve()
+    db_path = ratings_db_path_for_index(appetite_index_path)
+    ratings_json = _ratings_json_path_for_db(db_path)
+    con = open_ratings_db(db_path, ratings_json=ratings_json, appetite_json=appetite_index_path)
+    try:
+        by_output = appetite_output_table_from_db(con)
+    finally:
+        con.close()
+    doc = _init_appetite_doc()
+    doc["by_output_relpath"] = by_output
+    if by_output:
+        # Prefer newest updated_at from rows when available.
+        latest = None
+        for row in by_output.values():
+            ts = row.get("updated_at")
+            if isinstance(ts, str) and (latest is None or ts > latest):
+                latest = ts
+        doc["updated_at"] = latest or utc_now()
+    return doc
+
+
+def export_ratings_json(ratings_index_path: Path, *, db_path: Optional[Path] = None) -> Dict[str, Any]:
+    """Write ratings_index.json from SQLite (+ preserve aggregate sections if present)."""
+    ratings_index_path = Path(ratings_index_path).expanduser().resolve()
+    doc = load_ratings_doc(ratings_index_path)
+    doc["updated_at"] = utc_now()
+    _atomic_write_json_doc(ratings_index_path, doc)
+    resolved_db = Path(db_path) if db_path else ratings_db_path_for_index(ratings_index_path)
+    con = open_ratings_db(resolved_db, ratings_json=ratings_index_path)
+    try:
+        _meta_set(con, "last_export_at", doc["updated_at"])
+        con.commit()
+    finally:
+        con.close()
+    return doc
+
+
+def export_appetite_json(appetite_index_path: Path, *, db_path: Optional[Path] = None) -> Dict[str, Any]:
+    """Write appetite_index.json from SQLite."""
+    appetite_index_path = Path(appetite_index_path).expanduser().resolve()
+    doc = load_appetite_doc(appetite_index_path)
+    doc["updated_at"] = utc_now()
+    _atomic_write_json_doc(appetite_index_path, doc)
+    resolved_db = Path(db_path) if db_path else ratings_db_path_for_index(appetite_index_path)
+    con = open_ratings_db(resolved_db, appetite_json=appetite_index_path)
+    try:
+        _meta_set(con, "last_appetite_export_at", doc["updated_at"])
+        con.commit()
+    finally:
+        con.close()
+    return doc
 
 
 def _find_existing_xmp(media_abs: Path) -> Optional[Path]:
@@ -921,80 +1491,69 @@ def set_output_quality_axis(
     og_root = Path(og_root).resolve()
 
     short_key, discovery_key = _lookup_output_row_keys(media_abs, media_relpath, og_root)
-    doc = _load_or_init_ratings_doc(ratings_index_path)
-    table = doc.setdefault("by_output_relpath", {})
+    asset_key = discovery_key or short_key or str(media_relpath or "").replace("\\", "/")
+    db_path = ratings_db_path_for_index(ratings_index_path)
+    con = open_ratings_db(db_path, ratings_json=ratings_index_path)
+    try:
+        prev = fetch_rating_row(con, discovery_key=discovery_key, short_key=short_key) or {}
 
-    prev: Dict[str, Any] = {}
-    for k in (discovery_key, short_key):
-        if k and isinstance(table.get(k), dict):
-            prev = dict(table[k])
-            break
+        axes = normalize_axes_map(prev.get("axes"))
+        if stars <= 0:
+            axes.pop(axis_id, None)
+        else:
+            axes[axis_id] = stars
 
-    axes = normalize_axes_map(prev.get("axes"))
-    if stars <= 0:
-        axes.pop(axis_id, None)
-    else:
-        axes[axis_id] = stars
+        explicit = aggregate_explicit_from_axes(axes)
+        xmp_like = media_abs.with_suffix(".XMP")
+        if explicit is None:
+            xmp_target = _clear_xmp_rating(media_abs)
+            delete_rating_row(con, asset_key=asset_key, short_key=short_key)
+            return {
+                "ok": True,
+                "relpath": media_relpath,
+                "axis": axis_id,
+                "stars": 0,
+                "axes": {},
+                "explicit": None,
+                "cleared": True,
+                "xmp_path": str(xmp_target) if xmp_target else None,
+                "discovery_key": discovery_key,
+                "short_key": short_key,
+                "sources": prev.get("sources") or [],
+            }
 
-    explicit = aggregate_explicit_from_axes(axes)
-    xmp_like = media_abs.with_suffix(".XMP")
-    if explicit is None:
-        xmp_target = _clear_xmp_rating(media_abs)
-        # Drop the output row when nothing remains (no axes, no legacy explicit).
-        for k in (discovery_key, short_key):
-            if k:
-                table.pop(k, None)
-        doc["updated_at"] = utc_now()
-        _atomic_write_json_doc(ratings_index_path, doc)
+        xmp_target = _write_xmp_rating(media_abs, int(explicit))
+        now = utc_now()
+        row: Dict[str, Any] = {
+            "explicit": int(explicit),
+            "axes": {a: axes[a] for a in QUALITY_AXES if a in axes},
+            "short_key": short_key or prev.get("short_key") or "",
+            "xmp": str(xmp_target or xmp_like),
+            "sources": list(prev.get("sources") or []),
+            "source_paths": list(prev.get("source_paths") or []),
+            # Wall-clock when an operator last set quality — used by hourly top-of-hour bias.
+            "rated_at": now,
+        }
+        for keep in ("graph_hash", "shape_recipe"):
+            if prev.get(keep):
+                row[keep] = prev[keep]
+        _enrich_row_sources(media_abs, row, ffprobe=ffprobe)
+        upsert_rating_row(con, asset_key=asset_key, row=row, updated_at=now)
         return {
             "ok": True,
             "relpath": media_relpath,
             "axis": axis_id,
-            "stars": 0,
-            "axes": {},
-            "explicit": None,
-            "cleared": True,
+            "stars": stars,
+            "axes": row["axes"],
+            "explicit": int(explicit),
+            "cleared": False,
             "xmp_path": str(xmp_target) if xmp_target else None,
             "discovery_key": discovery_key,
             "short_key": short_key,
-            "sources": prev.get("sources") or [],
+            "sources": row.get("sources") or [],
         }
-
-    xmp_target = _write_xmp_rating(media_abs, int(explicit))
-    now = utc_now()
-    row: Dict[str, Any] = {
-        "explicit": int(explicit),
-        "axes": {a: axes[a] for a in QUALITY_AXES if a in axes},
-        "short_key": short_key or prev.get("short_key") or "",
-        "xmp": str(xmp_target or xmp_like),
-        "sources": list(prev.get("sources") or []),
-        "source_paths": list(prev.get("source_paths") or []),
-        # Wall-clock when an operator last set quality — used by hourly top-of-hour bias.
-        "rated_at": now,
-    }
-    for keep in ("graph_hash", "shape_recipe"):
-        if prev.get(keep):
-            row[keep] = prev[keep]
-    _enrich_row_sources(media_abs, row, ffprobe=ffprobe)
-    for k in (discovery_key, short_key):
-        if k:
-            table[k] = row
-
-    doc["updated_at"] = utc_now()
-    _atomic_write_json_doc(ratings_index_path, doc)
-    return {
-        "ok": True,
-        "relpath": media_relpath,
-        "axis": axis_id,
-        "stars": stars,
-        "axes": row["axes"],
-        "explicit": int(explicit),
-        "cleared": False,
-        "xmp_path": str(xmp_target) if xmp_target else None,
-        "discovery_key": discovery_key,
-        "short_key": short_key,
-        "sources": row.get("sources") or [],
-    }
+    finally:
+        con.close()
 
 
 def set_output_rating(
@@ -1303,11 +1862,11 @@ def set_output_appetite(
     appetite_index_path: Path,
 ) -> Dict[str, Any]:
     """
-    Record an appetite ("do more WITH this") + facet for one output in appetite_index.json.
+    Record an appetite ("do more WITH this") + facet for one output in ratings.sqlite.
 
     Appetite is a direction signal, stored separately from the XMP quality star so it
-    survives ``ratings build`` (which only rewrites ratings_index.json). ``appetite=""``
-    clears the row. Never touches XMP.
+    survives ``ratings build`` (which rewrites ratings rows / JSON export). ``appetite=""``
+    clears the row. Never touches XMP. Does not rewrite appetite_index.json on the click path.
     """
     from correlate_output_ratings import output_relpath_keys_from_xmp
 
@@ -1325,29 +1884,28 @@ def set_output_appetite(
         short_key = ""
         discovery_key = str(media_relpath or "").replace("\\", "/")
 
-    doc = _load_or_init_appetite_doc(appetite_index_path)
-    table = doc.setdefault("by_output_relpath", {})
-
-    if not appetite:
-        for k in (discovery_key, short_key):
-            if k:
-                table.pop(k, None)
-        cleared = True
-    else:
-        row: Dict[str, Any] = {
-            "appetite": appetite,
-            "facet": facet,
-            "score": APPETITE_SCORE.get(appetite, 0.0),
-            "short_key": short_key,
-            "updated_at": utc_now(),
-        }
-        for k in (discovery_key, short_key):
-            if k:
-                table[k] = row
-        cleared = False
-
-    doc["updated_at"] = utc_now()
-    _atomic_write_json_doc(appetite_index_path, doc)
+    asset_key = discovery_key or short_key or str(media_relpath or "").replace("\\", "/")
+    db_path = ratings_db_path_for_index(appetite_index_path)
+    con = open_ratings_db(
+        db_path,
+        ratings_json=_ratings_json_path_for_db(db_path),
+        appetite_json=appetite_index_path,
+    )
+    try:
+        if not appetite:
+            delete_appetite_row(con, asset_key=asset_key, short_key=short_key)
+            cleared = True
+        else:
+            upsert_appetite_row(
+                con,
+                asset_key=asset_key,
+                short_key=short_key,
+                appetite=appetite,
+                facet=facet,
+            )
+            cleared = False
+    finally:
+        con.close()
 
     return {
         "ok": True,
@@ -1407,10 +1965,11 @@ def cmd_ratings_build(args: argparse.Namespace) -> int:
 def cmd_ratings_show(args: argparse.Namespace) -> int:
     og_root = Path(args.root).expanduser().resolve()
     index_path = Path(args.index or default_ratings_index_path(og_root)).expanduser().resolve()
-    if not index_path.is_file():
+    db_path = ratings_db_path_for_index(index_path)
+    if not index_path.is_file() and not db_path.is_file():
         print(f"error: ratings index not found: {index_path}", file=__import__("sys").stderr)
         return 1
-    index = _load_index(index_path)
+    index = load_ratings_doc(index_path)
     payload = show_ratings(
         index,
         graph_hash=args.graph_hash,
@@ -1422,11 +1981,25 @@ def cmd_ratings_show(args: argparse.Namespace) -> int:
     return 0 if payload.get("ok") else 1
 
 
+def cmd_ratings_export_json(args: argparse.Namespace) -> int:
+    og_root = Path(args.root).expanduser().resolve()
+    ratings_path = Path(args.out or default_ratings_index_path(og_root)).expanduser().resolve()
+    appetite_path = Path(args.appetite_out or default_appetite_index_path(og_root)).expanduser().resolve()
+    rdoc = export_ratings_json(ratings_path)
+    adoc = export_appetite_json(appetite_path)
+    print(f"Wrote {ratings_path} (outputs={len(rdoc.get('by_output_relpath') or {})})")
+    print(f"Wrote {appetite_path} (outputs={len(adoc.get('by_output_relpath') or {})})")
+    return 0
+
+
 def add_ratings_subparser(sub: argparse._SubParsersAction) -> None:
     ratings = sub.add_parser("ratings", help="Build/query inferred ratings index from og/ XMP stars")
     ratings_sub = ratings.add_subparsers(dest="ratings_cmd", required=True)
 
-    build = ratings_sub.add_parser("build", help="Scan rated XMPs and write ratings_index.json")
+    build = ratings_sub.add_parser(
+        "build",
+        help="Scan rated XMPs, sync ratings.sqlite, and export ratings_index.json",
+    )
     build.add_argument("--root", default="/home/yuji/comfyui-runpod-data/output/og")
     build.add_argument("--jobs-root", default="/home/yuji/src/comfyui-runpod/.data/shape_factory/jobs")
     build.add_argument("--data-root", default="/home/yuji/comfyui-runpod-data")
@@ -1462,3 +2035,12 @@ def add_ratings_subparser(sub: argparse._SubParsersAction) -> None:
     show.add_argument("--output", default=None)
     show.add_argument("--shape-recipe", dest="shape_recipe", default=None)
     show.set_defaults(func=cmd_ratings_show)
+
+    export_json = ratings_sub.add_parser(
+        "export-json",
+        help="Export ratings.sqlite → ratings_index.json + appetite_index.json (compat)",
+    )
+    export_json.add_argument("--root", default="/home/yuji/comfyui-runpod-data/output/og")
+    export_json.add_argument("--out", default=None, help="ratings_index.json path")
+    export_json.add_argument("--appetite-out", default=None, help="appetite_index.json path")
+    export_json.set_defaults(func=cmd_ratings_export_json)
