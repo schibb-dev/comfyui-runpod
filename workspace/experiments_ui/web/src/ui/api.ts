@@ -38,6 +38,8 @@ import type {
   ShapeFactoryMapQueueResponse,
   ShapeFactoryReplayRequest,
   ShapeFactoryReplayResponse,
+  ShapeFactoryDeriveRequest,
+  ShapeFactoryDeriveResponse,
   ShapeFactoryUnqueueRequest,
   ShapeFactoryUnqueueResponse,
   ShapeFactoryDiscardRequest,
@@ -671,6 +673,20 @@ export async function replayShapeFactory(req: ShapeFactoryReplayRequest): Promis
   if (!r.ok || !j.ok) {
     const detail = [j.error, j.detail].filter(Boolean).join(": ");
     throw new Error(`POST /api/shape-factory/replay failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
+}
+
+export async function deriveShapeFactory(req: ShapeFactoryDeriveRequest): Promise<ShapeFactoryDeriveResponse> {
+  const r = await fetch("/api/shape-factory/derive", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryDeriveResponse & { error?: string; detail?: string };
+  if (!r.ok || !j.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`POST /api/shape-factory/derive failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
   }
   return j;
 }

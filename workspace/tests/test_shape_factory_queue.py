@@ -424,6 +424,127 @@ class ShapeFactoryQueueTests(unittest.TestCase):
         self.assertIn("hourly__prompt_profile-1ff2227780fb", src)
         self.assertNotIn("X-FB9-POSE-2026-04-16-171828_OG_00001.mp4", src)
 
+    def test_derive_from_request_body_rewires_and_sets_pick_mode(self) -> None:
+        from shape_factory_queue import derive_from_request_body
+
+        job = {
+            "job_key": "seed_job",
+            "family_slug": "FB9_GEX2",
+            "bindings": {
+                "prompt_profile": {"path": "/data/prompts/a.json"},
+                "source_video": {"path": "/data/sources/a.mp4"},
+            },
+            "submit": {"outputs": ["/data/output/og/seed.mp4"]},
+        }
+        rewired = {
+            "picks": {
+                "prompt_profile": "/data/prompts/b.json",
+                "source_video": "/data/sources/a.mp4",
+            },
+            "combo_key": "derive_combo",
+            "source": "derive",
+        }
+        captured: dict = {}
+
+        def fake_queue(**kwargs):
+            captured.update(kwargs)
+            return {"ok": True, "job_key": "derived", "pick_mode": kwargs.get("pick_mode")}
+
+        with mock.patch("shape_factory_queue._find_job_doc", return_value=(job, Path("seed.job.json"))), mock.patch(
+            "shape_factory_queue.load_yaml",
+            return_value={
+                "requires": [
+                    {"slot": "source_video", "media": "video"},
+                    {"slot": "prompt_profile", "binding": {"type": "prompt_bundle"}},
+                ]
+            },
+        ), mock.patch("shape_factory_queue._resolve_shape_path", return_value=Path("shape.yaml")), mock.patch(
+            "shape_factory_hourly._picks_from_job",
+            return_value={
+                "prompt_profile": Path("/data/prompts/a.json"),
+                "source_video": Path("/data/sources/a.mp4"),
+            },
+        ), mock.patch(
+            "shape_factory_hourly.collect_replay_recipes",
+            return_value=[],
+        ), mock.patch(
+            "shape_factory_hourly.collect_pool_source_videos",
+            return_value=[],
+        ), mock.patch(
+            "shape_factory_hourly._recent_combo_keys",
+            return_value=set(),
+        ), mock.patch(
+            "shape_factory_hourly._load_source_facets_doc",
+            return_value={},
+        ), mock.patch(
+            "shape_factory_hourly._derive_rewire",
+            return_value=(rewired, "derive", {"hold_reason": "test"}),
+        ), mock.patch(
+            "shape_factory_queue.queue_shape_factory_combo",
+            side_effect=fake_queue,
+        ):
+            out = derive_from_request_body(
+                {"job_key": "seed_job", "facet": "processing", "dry_run": True},
+                repo_root=REPO_ROOT,
+                workspace_root=REPO_ROOT / "workspace",
+                output_root=Path("/tmp"),
+                comfy_server="http://127.0.0.1:8188",
+            )
+        self.assertTrue(out.get("ok"), out)
+        self.assertEqual(captured.get("pick_mode"), "derive")
+        self.assertEqual(
+            (captured.get("bindings") or {}).get("prompt_profile"),
+            "/data/prompts/b.json",
+        )
+        self.assertEqual(out.get("derive_of_job_key"), "seed_job")
+        self.assertEqual(out.get("derive_action"), "derive")
+        cons = captured.get("construction") or {}
+        self.assertEqual(cons.get("replay_of_job_key"), "seed_job")
+        self.assertEqual(cons.get("pick_mode"), "derive")
+
+    def test_derive_from_request_body_noop_raises(self) -> None:
+        from shape_factory_queue import derive_from_request_body
+
+        job = {
+            "job_key": "seed_job",
+            "family_slug": "FB9_GEX2",
+            "bindings": {
+                "prompt_profile": {"path": "/data/prompts/a.json"},
+                "source_video": {"path": "/data/sources/a.mp4"},
+            },
+        }
+        with mock.patch("shape_factory_queue._find_job_doc", return_value=(job, Path("seed.job.json"))), mock.patch(
+            "shape_factory_queue.load_yaml",
+            return_value={
+                "requires": [
+                    {"slot": "source_video", "media": "video"},
+                    {"slot": "prompt_profile", "binding": {"type": "prompt_bundle"}},
+                ]
+            },
+        ), mock.patch("shape_factory_queue._resolve_shape_path", return_value=Path("shape.yaml")), mock.patch(
+            "shape_factory_hourly._picks_from_job",
+            return_value={
+                "prompt_profile": Path("/data/prompts/a.json"),
+                "source_video": Path("/data/sources/a.mp4"),
+            },
+        ), mock.patch("shape_factory_hourly.collect_replay_recipes", return_value=[]), mock.patch(
+            "shape_factory_hourly.collect_pool_source_videos", return_value=[]
+        ), mock.patch("shape_factory_hourly._recent_combo_keys", return_value=set()), mock.patch(
+            "shape_factory_hourly._load_source_facets_doc", return_value={}
+        ), mock.patch(
+            "shape_factory_hourly._derive_rewire",
+            return_value=(None, "noop", {}),
+        ):
+            with self.assertRaises(ValueError) as ctx:
+                derive_from_request_body(
+                    {"job_key": "seed_job", "facet": "both"},
+                    repo_root=REPO_ROOT,
+                    workspace_root=REPO_ROOT / "workspace",
+                    output_root=Path("/tmp"),
+                    comfy_server="http://127.0.0.1:8188",
+                )
+        self.assertIn("derive_no_distinct_combo", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

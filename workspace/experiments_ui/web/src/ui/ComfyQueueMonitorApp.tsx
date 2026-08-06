@@ -190,12 +190,15 @@ function StatusChip({
   count,
   on,
   onToggle,
+  onFocusSolo,
 }: {
   status: string;
   label: string;
   count: number;
   on: boolean;
   onToggle: () => void;
+  /** Double-click: radio-style — only this chip on within its filter set. */
+  onFocusSolo?: () => void;
 }) {
   return (
     <button
@@ -203,7 +206,19 @@ function StatusChip({
       className={`work-products-status-toggle work-products-status-toggle--${status}${on ? " is-on" : " is-off"}`}
       aria-pressed={on}
       onClick={onToggle}
-      title={on ? `Hide ${label}` : `Show ${label}`}
+      onDoubleClick={
+        onFocusSolo
+          ? (e) => {
+              e.preventDefault();
+              onFocusSolo();
+            }
+          : undefined
+      }
+      title={
+        on
+          ? `Hide ${label}${onFocusSolo ? " · double-click to show only this" : ""}`
+          : `Show ${label}${onFocusSolo ? " · double-click to show only this" : ""}`
+      }
     >
       <span className="work-products-status-toggle__label">{label}</span>
       <span className="work-products-status-toggle__count">{count}</span>
@@ -1027,6 +1042,10 @@ export function ComfyQueueMonitorApp() {
                   setStatusFilter("all");
                   toggle("running");
                 }}
+                onFocusSolo={() => {
+                  setStatusFilter("all");
+                  setShow({ running: true, pending: false, history: false });
+                }}
               />
               <StatusChip
                 status="pending"
@@ -1037,6 +1056,10 @@ export function ComfyQueueMonitorApp() {
                   setStatusFilter("all");
                   toggle("pending");
                 }}
+                onFocusSolo={() => {
+                  setStatusFilter("all");
+                  setShow({ running: false, pending: true, history: false });
+                }}
               />
               <StatusChip
                 status="ok"
@@ -1044,6 +1067,10 @@ export function ComfyQueueMonitorApp() {
                 count={filteredHistory.length}
                 on={show.history}
                 onToggle={() => toggle("history")}
+                onFocusSolo={() => {
+                  setStatusFilter("all");
+                  setShow({ running: false, pending: false, history: true });
+                }}
               />
               <button
                 type="button"
@@ -1059,7 +1086,11 @@ export function ComfyQueueMonitorApp() {
                     setErrorsFilter();
                   }
                 }}
-                title="Show only failed / interrupted history items"
+                onDoubleClick={(e) => {
+                  e.preventDefault();
+                  setErrorsFilter();
+                }}
+                title="Show only failed / interrupted history · double-click to focus errors"
               >
                 <span className="work-products-status-toggle__label">errors</span>
                 <span className="work-products-status-toggle__count">{historyErrorCount}</span>

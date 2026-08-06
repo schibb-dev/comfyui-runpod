@@ -9,6 +9,8 @@ from pathlib import Path
 
 import support  # noqa: F401  — injects workspace/scripts onto sys.path
 from shape_factory_work_items import (
+    FACTORY_ENQUEUE_HOOKS,
+    POOLS,
     WORK_ITEMS_SCHEMA,
     build_idempotency_key,
     cancel_work_item,
@@ -28,8 +30,13 @@ class WorkItemsSchemaTests(unittest.TestCase):
     def test_route_map(self) -> None:
         self.assertEqual(route_for_step("advance.extend"), ("extend", "advance", "normal"))
         self.assertEqual(route_for_step("advance.vary"), ("vary", "advance", "front"))
+        self.assertEqual(route_for_step("advance.derive"), ("derive", "advance", "front"))
         self.assertEqual(route_for_step("advance.queue_now"), ("vary", "advance", "front"))
         self.assertIsNone(route_for_step("retire.trash"))
+
+    def test_derive_pool_and_hook(self) -> None:
+        self.assertIn("derive", POOLS)
+        self.assertIn("derive", FACTORY_ENQUEUE_HOOKS)
 
     def test_idempotency_key(self) -> None:
         key = build_idempotency_key(

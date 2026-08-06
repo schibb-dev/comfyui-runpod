@@ -13,6 +13,7 @@ import {
 import {
   familyVhsDefaults,
   marksToVhsWindow,
+  originGenerationBands,
   parseFps,
   vhsDefaultsToMarks,
 } from "./workProductTrim";
@@ -273,7 +274,7 @@ function isInFlightStatus(status?: string | null): boolean {
  * Trim in/out is editable while the job is still ours (pending / not on Comfy).
  * Edits patch that job's VHS window before submit. Locked once Comfy has
  * accepted it (queued or running). Completed cards keep next-action trim
- * editable for Extend / Vary / Re-run planning (sidecar only).
+ * editable for Extend / Vary / Derive / Re-run planning (sidecar only).
  */
 function isJobTrimEditable(item: WorkProductItem): boolean {
   if (item.output_url) return true;
@@ -703,6 +704,15 @@ function WorkProductViewer({
   const [outputMode, setOutputMode] = useState<TrimPlaybackMode>("repeat");
   const [sourceMode, setSourceMode] = useState<TrimPlaybackMode>("repeat");
   const fps = parseFps(item.media_meta?.fps, 18);
+  const construction = item.construction && typeof item.construction === "object" ? item.construction : {};
+  const generationBands = originGenerationBands({
+    duration: outputTrim.duration,
+    fps,
+    framesBefore: Number(construction.frames_before),
+    generationFrames: Number(item.timing?.frames ?? construction.frames_after),
+    outputFrameCount: Number(item.media_meta?.frame_count),
+    overlapFrames: Number(item.timing?.overlap ?? construction.overlap),
+  });
   const trimEditable = isJobTrimEditable(item);
   const pendingJobTrim = canUpdatePendingJobTrim(item);
   const pendingTrimTimerRef = useRef<number | null>(null);
@@ -905,6 +915,8 @@ function WorkProductViewer({
               mode={outputMode}
               mediaSyncKey={outputRel || item.job_key}
               size="default"
+              seamMark={generationBands?.seamSec ?? null}
+              blendEndMark={generationBands?.blendEndSec ?? null}
               onSeek={setOutputTime}
               onSyncTime={setOutputTime}
               onMarkInChange={(v) => {
@@ -2194,12 +2206,33 @@ function smartVaryFamily(item: WorkProductItem): string {
   return String(item.family_slug || "").trim();
 }
 
+function smartDeriveFamily(item: WorkProductItem): string {
+  const fromWi = String(openPoolItem(item.work_items_open, "derive")?.factory_family || "").trim();
+  if (fromWi) return fromWi;
+  return String(item.family_slug || "").trim();
+}
+
 function smartExtendFamily(item: WorkProductItem, successors: Record<string, string>): string {
   const fromWi = String(openPoolItem(item.work_items_open, "extend")?.factory_family || "").trim();
   if (fromWi) return fromWi;
   const src = String(item.family_slug || "").trim();
   if (src && successors[src]) return successors[src];
   return src;
+}
+
+/** Seed must have job_key plus at least one recoverable source/prompt binding. */
+function canDeriveWorkProduct(item: WorkProductItem): boolean {
+  if (!String(item.job_key || "").trim()) return false;
+  const binds = item.bindings || {};
+  const slots = Object.values(binds);
+  if (!slots.length) return false;
+  return slots.some((b) => Boolean(String(b?.path || b?.relpath || "").trim()));
+}
+
+function advanceRouteLabel(stepId: string): string {
+  if (stepId === "advance.extend") return "Extend";
+  if (stepId === "advance.derive") return "Derive";
+  return "Vary";
 }
 
 function WorkProductQuickQueue({
@@ -2220,26 +2253,32 @@ function WorkProductQuickQueue({
   const open = item.work_items_open || [];
   const extendOpen = openPoolItem(open, "extend");
   const varyOpen = openPoolItem(open, "vary");
+  const deriveOpen = openPoolItem(open, "derive");
   const sourceFamily = String(item.family_slug || "").trim();
   const successors = extendFamilyDefaults || EMPTY_EXTEND_DEFAULTS;
   const defaultExtend = smartExtendFamily(item, successors);
   const defaultVary = smartVaryFamily(item);
+  const defaultDerive = smartDeriveFamily(item);
+  const canDerive = canDeriveWorkProduct(item);
   const familyOpts = useMemo(() => {
     const rows = [...(families || [])];
-    for (const slug of [sourceFamily, defaultExtend, defaultVary]) {
+    for (const slug of [sourceFamily, defaultExtend, defaultVary, defaultDerive]) {
       if (slug && !rows.some((f) => f.slug === slug)) {
         rows.unshift({ slug });
       }
     }
     return rows;
-  }, [families, sourceFamily, defaultExtend, defaultVary]);
+  }, [families, sourceFamily, defaultExtend, defaultVary, defaultDerive]);
 
   const [extendOn, setExtendOn] = useState(() => Boolean(extendOpen));
   const [varyOn, setVaryOn] = useState(() => Boolean(varyOpen));
+  const [deriveOn, setDeriveOn] = useState(() => Boolean(deriveOpen));
   const [extendFamily, setExtendFamily] = useState(defaultExtend);
   const [varyFamily, setVaryFamily] = useState(defaultVary);
+  const [deriveFamily, setDeriveFamily] = useState(defaultDerive);
   const [extendTouched, setExtendTouched] = useState(false);
   const [varyTouched, setVaryTouched] = useState(false);
+  const [deriveTouched, setDeriveTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -2247,10 +2286,13 @@ function WorkProductQuickQueue({
   useEffect(() => {
     setExtendOn(Boolean(openPoolItem(item.work_items_open, "extend")));
     setVaryOn(Boolean(openPoolItem(item.work_items_open, "vary")));
+    setDeriveOn(Boolean(openPoolItem(item.work_items_open, "derive")));
     setExtendTouched(false);
     setVaryTouched(false);
+    setDeriveTouched(false);
     setExtendFamily(smartExtendFamily(item, successors));
     setVaryFamily(smartVaryFamily(item));
+    setDeriveFamily(smartDeriveFamily(item));
     setMsg(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: job switch only
   }, [item.job_key]);
@@ -2260,17 +2302,19 @@ function WorkProductQuickQueue({
   useEffect(() => {
     if (openPoolItem(item.work_items_open, "extend")) setExtendOn(true);
     if (openPoolItem(item.work_items_open, "vary")) setVaryOn(true);
+    if (openPoolItem(item.work_items_open, "derive")) setDeriveOn(true);
   }, [item.work_items_open_count, item.work_items_open]);
 
   // Refresh smart family defaults until the operator picks an override.
   useEffect(() => {
     if (!extendTouched) setExtendFamily(smartExtendFamily(item, successors));
     if (!varyTouched) setVaryFamily(smartVaryFamily(item));
-  }, [item.family_slug, item.work_items_open, item.work_items_open_count, successors, extendTouched, varyTouched, item]);
+    if (!deriveTouched) setDeriveFamily(smartDeriveFamily(item));
+  }, [item.family_slug, item.work_items_open, item.work_items_open_count, successors, extendTouched, varyTouched, deriveTouched, item]);
 
   const relpath = String(item.output_relpath || "").trim();
   const jobKey = String(item.job_key || "").trim();
-  const canAct = Boolean(relpath) && (extendOn || varyOn) && !busy;
+  const canAct = Boolean(relpath) && (extendOn || varyOn || (deriveOn && canDerive)) && !busy;
   const canRerun = Boolean(jobKey) && !busy;
   const canUnqueue = canUnqueueWorkProduct(item) && !busy;
   const canDiscard = canDiscardPendingWorkProduct(item) && !busy;
@@ -2399,8 +2443,8 @@ function WorkProductQuickQueue({
 
   const commit = async (when: "now" | "later") => {
     if (!relpath || busy) return;
-    if (!extendOn && !varyOn) {
-      setMsg("Select Extend and/or Vary");
+    if (!extendOn && !varyOn && !(deriveOn && canDerive)) {
+      setMsg("Select Extend, Vary, and/or Derive");
       return;
     }
     setBusy(true);
@@ -2408,8 +2452,8 @@ function WorkProductQuickQueue({
     const parts: string[] = [];
     try {
       // Unchecked routes: cancel pending (skip running).
-      for (const pool of ["extend", "vary"] as const) {
-        const checked = pool === "extend" ? extendOn : varyOn;
+      for (const pool of ["extend", "vary", "derive"] as const) {
+        const checked = pool === "extend" ? extendOn : pool === "vary" ? varyOn : deriveOn && canDerive;
         if (checked) continue;
         const wi = openPoolItem(item.work_items_open, pool);
         if (!wi) continue;
@@ -2433,6 +2477,12 @@ function WorkProductQuickQueue({
         routes.push({
           step_id: "advance.vary",
           factory_family: varyFamily || defaultVary || undefined,
+        });
+      }
+      if (deriveOn && canDerive) {
+        routes.push({
+          step_id: "advance.derive",
+          factory_family: deriveFamily || defaultDerive || undefined,
         });
       }
 
@@ -2461,7 +2511,7 @@ function WorkProductQuickQueue({
               front: when === "now",
               overrides,
             });
-            const label = route.step_id === "advance.extend" ? "Extend" : "Vary";
+            const label = advanceRouteLabel(route.step_id);
             const fam = route.factory_family ? `@${route.factory_family}` : "";
             const nested = (res.result as Record<string, unknown> | undefined) || {};
             const nestedResult = (nested.result as Record<string, unknown> | undefined) || {};
@@ -2482,7 +2532,7 @@ function WorkProductQuickQueue({
                 .join(" · "),
             );
           } catch (e) {
-            const label = route.step_id === "advance.extend" ? "Extend" : "Vary";
+            const label = advanceRouteLabel(route.step_id);
             parts.push(`${label}: ${e instanceof Error ? e.message : String(e)}`);
           }
         }
@@ -2513,7 +2563,9 @@ function WorkProductQuickQueue({
         title={
           label === "Extend"
             ? "Family whose shape runs this Extend (defaults to next pipeline stage when known)"
-            : "Family whose shape runs this Vary (defaults to the source family)"
+            : label === "Derive"
+              ? "Family whose shape runs this Derive (defaults to the source family)"
+              : "Family whose shape runs this Vary (defaults to the source family)"
         }
         onChange={(e) => onChange(e.target.value)}
         onClick={(e) => e.stopPropagation()}
@@ -2563,7 +2615,7 @@ function WorkProductQuickQueue({
           title={
             !relpath
               ? "Vary needs an output — not available for this job"
-              : "Vary — front-queue / replay with the same bindings"
+              : "Vary — same bindings (exact replay)"
           }
         >
           <input
@@ -2580,6 +2632,30 @@ function WorkProductQuickQueue({
             </span>
           ) : null}
         </label>
+        <label
+          className={`work-product-quick-queue__check${!relpath || !canDerive ? " work-product-quick-queue__check--na" : ""}`}
+          title={
+            !relpath
+              ? "Derive needs an output — not available for this job"
+              : !canDerive
+                ? "Derive needs recoverable source/prompt bindings on this job"
+                : "Derive — new combo from this seed (rewire prompt and/or source)"
+          }
+        >
+          <input
+            type="checkbox"
+            checked={deriveOn && canDerive}
+            disabled={busy || !relpath || !canDerive || deriveOpen?.status === "running"}
+            onChange={(e) => setDeriveOn(e.target.checked)}
+          />
+          Derive
+          {deriveOpen ? (
+            <span className={`work-product-badge ${badgeClass(deriveOpen.priority)}`} title={`Derive · ${deriveOpen.status}`}>
+              {deriveOpen.priority === "front" ? "now" : "later"}
+              {deriveOpen.status === "running" ? "·run" : ""}
+            </span>
+          ) : null}
+        </label>
         <span className="work-product-quick-queue__sep" aria-hidden="true" />
         <button
           type="button"
@@ -2587,7 +2663,7 @@ function WorkProductQuickQueue({
           disabled={!canAct}
           title={
             !relpath
-              ? "Needs an output to queue Extend/Vary"
+              ? "Needs an output to queue Extend/Vary/Derive"
               : "Commit checked routes at front of queue and enqueue now"
           }
           onClick={() => void commit("now")}
@@ -2600,7 +2676,7 @@ function WorkProductQuickQueue({
           disabled={!canAct}
           title={
             !relpath
-              ? "Needs an output to queue Extend/Vary"
+              ? "Needs an output to queue Extend/Vary/Derive"
               : "Commit checked routes at normal priority (behind front)"
           }
           onClick={() => void commit("later")}
@@ -2675,7 +2751,7 @@ function WorkProductQuickQueue({
         ) : null}
         {!relpath ? <span className="work-product-quick-queue__hint">No output</span> : null}
       </div>
-      {extendOn || varyOn ? (
+      {extendOn || varyOn || (deriveOn && canDerive) ? (
         <div className="work-product-quick-queue__families">
           {extendOn
             ? familySelect(
@@ -2697,6 +2773,17 @@ function WorkProductQuickQueue({
                 },
                 busy || !relpath || varyOpen?.status === "running",
                 "Vary",
+              )
+            : null}
+          {deriveOn && canDerive
+            ? familySelect(
+                deriveFamily,
+                (slug) => {
+                  setDeriveTouched(true);
+                  setDeriveFamily(slug);
+                },
+                busy || !relpath || deriveOpen?.status === "running",
+                "Derive",
               )
             : null}
         </div>
@@ -3070,6 +3157,13 @@ export function WorkProductsApp() {
     });
   };
 
+  /** Double-click: radio-style focus — only this status on within the status set. */
+  const focusStatusFilter = (status: string) => {
+    const next = new Set(availableStatuses.filter((s) => s !== status));
+    persistStatusFilterOff(next);
+    setStatusOff(next);
+  };
+
   const toggleMarkerFilter = (marker: string) => {
     setMarkerOff((prev) => {
       const next = new Set(prev);
@@ -3078,6 +3172,13 @@ export function WorkProductsApp() {
       persistMarkerFilterOff(next);
       return next;
     });
+  };
+
+  /** Double-click: radio-style focus — only this pick-mode on within the marker set. */
+  const focusMarkerFilter = (marker: string) => {
+    const next = new Set(availableMarkers.filter((m) => m !== marker));
+    persistMarkerFilterOff(next);
+    setMarkerOff(next);
   };
 
   const refresh = (opts?: { quiet?: boolean }) => {
@@ -3263,10 +3364,14 @@ export function WorkProductsApp() {
                     aria-pressed={on}
                     title={
                       on
-                        ? `Showing ${label} (${count}) — click to hide`
-                        : `Hidden ${label} (${count}) — click to show`
+                        ? `Showing ${label} (${count}) — click to hide · double-click to show only this`
+                        : `Hidden ${label} (${count}) — click to show · double-click to show only this`
                     }
                     onClick={() => toggleMarkerFilter(marker)}
+                    onDoubleClick={(e) => {
+                      e.preventDefault();
+                      focusMarkerFilter(marker);
+                    }}
                   >
                     <span className="work-products-status-toggle__label">{label}</span>
                     <span className="work-products-status-toggle__count">{count}</span>
@@ -3291,10 +3396,14 @@ export function WorkProductsApp() {
                     aria-pressed={on}
                     title={
                       on
-                        ? `Showing ${status} (${count}) — click to hide`
-                        : `Hidden ${status} (${count}) — click to show`
+                        ? `Showing ${status} (${count}) — click to hide · double-click to show only this`
+                        : `Hidden ${status} (${count}) — click to show · double-click to show only this`
                     }
                     onClick={() => toggleStatusFilter(status)}
+                    onDoubleClick={(e) => {
+                      e.preventDefault();
+                      focusStatusFilter(status);
+                    }}
                   >
                     <span className="work-products-status-toggle__label">{status}</span>
                     <span className="work-products-status-toggle__count">{count}</span>

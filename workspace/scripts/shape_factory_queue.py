@@ -1186,6 +1186,196 @@ def replay_from_request_body(
     return result
 
 
+def derive_from_request_body(
+    body: Dict[str, Any],
+    *,
+    repo_root: Path,
+    workspace_root: Path,
+    output_root: Path,
+    comfy_server: str,
+) -> Dict[str, Any]:
+    """
+    Rewire a prior job into a new combo (Workbench Derive / ``pick_mode: derive``).
+
+    Uses the same ``_derive_rewire`` path as hourly appetite derive: same source + alt
+    prompt, same prompt + alt source, or extend (facet=both) when that is the best rewire.
+    """
+    import random
+
+    from shape_factory_hourly import (
+        _derive_rewire,
+        _load_appetite_index,
+        _load_heuristics_index,
+        _load_ratings_index,
+        _load_source_facets_doc,
+        _picks_from_job,
+        _recipe_appetite,
+        _recipe_from_picks,
+        _recent_combo_keys,
+        collect_pool_source_videos,
+        collect_replay_recipes,
+    )
+    from shape_factory_ratings import normalize_appetite_facet
+
+    data_root = resolve_shape_factory_data_root(repo_root=repo_root)
+    job_key = str(body.get("job_key") or "").strip()
+    if not job_key:
+        raise ValueError("job_key is required")
+
+    found = _find_job_doc(data_root, job_key)
+    if not found:
+        raise ValueError(f"job not found: {job_key}")
+    job, _job_path = found
+    family_slug = str(body.get("family_slug") or body.get("family") or job.get("family_slug") or "").strip()
+    if not family_slug:
+        raise ValueError("family_slug is required")
+
+    shape_path = _resolve_shape_path(
+        data_root / "shapes" / f"{family_slug}.shape.yaml",
+        data_root=data_root,
+        family_slug=family_slug,
+    )
+    shape = load_yaml(shape_path)
+    picks = _picks_from_job(job, shape=shape, data_root=data_root)
+    if not picks:
+        raise ValueError("cannot recover picks from job for derive")
+
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    sub_outs = submit.get("outputs") if isinstance(submit.get("outputs"), list) else []
+    job_outs = job.get("outputs") if isinstance(job.get("outputs"), list) else []
+    dep = job.get("deposit") if isinstance(job.get("deposit"), dict) else {}
+    dep_vids = dep.get("videos") if isinstance(dep.get("videos"), list) else []
+    output_abs = str(
+        body.get("output_path")
+        or (sub_outs[0] if sub_outs else (job_outs[0] if job_outs else (dep_vids[-1] if dep_vids else "")))
+        or ""
+    ).strip()
+
+    seed = _recipe_from_picks(
+        family=family_slug,
+        picks=picks,
+        source=job_key,
+        output_path=output_abs or None,
+    )
+
+    recipes = collect_replay_recipes(family_slug, data_root=data_root)
+    pool_sources = [str(p) for p in collect_pool_source_videos(family_slug, data_root=data_root)]
+    recent = _recent_combo_keys(data_root=data_root, family=family_slug, limit=12)
+    facets_doc = _load_source_facets_doc(data_root)
+
+    facet_raw = str(body.get("facet") or "").strip().lower()
+    if facet_raw not in {"source", "processing", "both"}:
+        ratings_doc = _load_ratings_index(data_root)
+        heuristics_doc = _load_heuristics_index(data_root)
+        appetite_doc = _load_appetite_index(data_root)
+        info = _recipe_appetite(
+            seed,
+            shape=shape,
+            ratings_doc=ratings_doc,
+            heuristics_doc=heuristics_doc,
+            appetite_doc=appetite_doc,
+        )
+        facet_raw = normalize_appetite_facet(info.get("facet") or "both")
+    facet = facet_raw if facet_raw in {"source", "processing", "both"} else "both"
+
+    rng = random.Random(hash(job_key) ^ 0xD3E17E)
+    rewired, action, hold_meta = _derive_rewire(
+        seed,
+        facet=facet,
+        family=family_slug,
+        pool=recipes,
+        rng=rng,
+        recent=recent,
+        cursor=int(time.time()) % 10_000,
+        facets_doc=facets_doc,
+        extra_sources=pool_sources,
+    )
+    if rewired is None or not isinstance(rewired.get("picks"), dict):
+        raise ValueError("derive_no_distinct_combo: no alternate prompt/source available")
+
+    bindings = {str(slot): str(path) for slot, path in rewired["picks"].items() if str(path).strip()}
+    if not bindings:
+        raise ValueError("derive produced empty bindings")
+
+    pick_mode = str(action or "derive").strip() or "derive"
+    if pick_mode not in {"derive", "extend"}:
+        pick_mode = "derive"
+
+    parent_output = output_abs or None
+    construction: Dict[str, Any] = {
+        "step": "derive" if pick_mode == "derive" else "extend",
+        "derive_action": pick_mode,
+        "pick_mode": pick_mode,
+        "parent_output": parent_output,
+        "replay_of_job_key": job_key,
+        "appetite_facet": facet,
+        "combo_key": rewired.get("combo_key"),
+        "source": rewired.get("source"),
+        **(hold_meta if isinstance(hold_meta, dict) else {}),
+    }
+
+    overrides = _parse_overrides(body)
+    video_slot_for_trim = _video_source_slot(shape, bindings)
+    media_for_trim: Optional[Path] = None
+    if video_slot_for_trim:
+        raw_media = str(bindings.get(video_slot_for_trim) or "").strip()
+        if raw_media:
+            media_for_trim = Path(raw_media).expanduser()
+    template_defaults = vhs_loader_defaults_for_shape(
+        shape,
+        data_root=data_root,
+        workspace_root=workspace_root,
+        output_root=output_root,
+    )
+    params_for_trim = overrides.get("parameters") if isinstance(overrides.get("parameters"), dict) else {}
+    resolved_params, trim_clamped = resolve_vhs_window_overrides(
+        parameters=params_for_trim,
+        media_abs=media_for_trim if media_for_trim and media_for_trim.is_file() else None,
+        template_defaults=template_defaults,
+        read_sidecar=True,
+    )
+    if resolved_params != params_for_trim:
+        overrides = dict(overrides)
+        overrides["parameters"] = resolved_params
+
+    if pick_mode == "extend":
+        params_in = overrides.get("parameters") if isinstance(overrides.get("parameters"), dict) else {}
+        length_params = _extend_length_parameters(job, existing=params_in)
+        overrides = dict(overrides)
+        overrides["parameters"] = length_params
+        construction["frames_before"] = _parent_frame_count(job)
+        raw_budget = length_params.get("frames")
+        if isinstance(raw_budget, (int, float)) and int(raw_budget) > 0:
+            construction["frames_after"] = int(raw_budget)
+
+    result = queue_shape_factory_combo(
+        family_slug=family_slug,
+        bindings=bindings,
+        combo_key=str(rewired.get("combo_key") or "") or None,
+        data_root=data_root,
+        workspace_root=workspace_root,
+        output_root=output_root,
+        comfy_server=comfy_server,
+        front=bool(body.get("front") or False),
+        dry_run=bool(body.get("dry_run") or False),
+        dev=bool(body.get("dev") or False),
+        force=bool(body.get("force") or False),
+        overrides=overrides,
+        pick_mode=pick_mode,
+        parent_output=parent_output,
+        construction=construction,
+    )
+    if isinstance(result, dict):
+        result.setdefault("ok", True)
+        result["derive_of_job_key"] = job_key
+        result["derive_action"] = pick_mode
+        result["appetite_facet"] = facet
+        result["construction"] = construction
+        if trim_clamped:
+            result["trim_clamped"] = trim_clamped
+    return result
+
+
 def is_oom_error_message(text: Any) -> bool:
     msg = str(text or "").lower()
     return any(

@@ -1068,6 +1068,13 @@ def _timing_summary(timings: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         frames_i = int(frames) if frames is not None else None
     except (TypeError, ValueError):
         frames_i = None
+    overlap = workload.get("overlap")
+    try:
+        overlap_i = int(overlap) if overlap is not None else None
+        if overlap_i is not None and overlap_i < 0:
+            overlap_i = None
+    except (TypeError, ValueError):
+        overlap_i = None
     terminal = execution.get("terminal")
     if terminal is not None:
         terminal = str(terminal)
@@ -1124,6 +1131,7 @@ def _timing_summary(timings: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "unload_event_count": model_totals.get("unload_event_count"),
         "load_models": load_names or None,
         "frames": frames_i,
+        "overlap": overlap_i,
         "sec_per_frame": sec_per_frame,
         "terminal": terminal,
         "error": err or None,

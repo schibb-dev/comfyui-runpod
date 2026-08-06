@@ -71,6 +71,8 @@ Key properties:
   - `source` / `both` → `by_group_lineage_appetite` (credit walks lineage ancestors).
 - **`fast_track` acts now.** Setting `fast_track` records the appetite **and** fires an immediate Extend (chain output → video slot) via the existing replay machinery; still-source families fall back to a plain replay.
 - **Hourly step is a dispatcher.** `plan-step` chooses **Replay** (quality-dominant) or **Derive** (appetite-dominant, facet-aware rewire) per cursor via `HOURLY_DERIVE_SHARE` (default `0.5`); `fast_track` seeds pin Derive.
+
+Operator map for Workbench **Vary** vs **Derive** vs **Extend** (and how Derived badges appear): [`DERIVE_VS_VARY.md`](./DERIVE_VS_VARY.md).
 - **Promoted sources.** Hourly biases toward **X-Kneel** and **2025-era OG** clips (`HOURLY_KNEEL_SOURCE_BOOST` / `HOURLY_2025_SOURCE_BOOST`, defaults `2.5` / `2.0`) in replay + derive weights and when varying `source_video`. `HOURLY_PROMOTED_SOURCE_SHARE` (default `0.35`) periodically forces a processing rewire so those pool members enter as first-hop sources instead of only chaining recent GEX2 keepers.
 - **Tag-coupled discovery.** `asset_tags.json` (bootstrap: embedded-prompt keywords; future: Florence/WD14) lets appetite generalize by content through `by_tag_appetite`, biasing the sampler and derive-source ranking.
 

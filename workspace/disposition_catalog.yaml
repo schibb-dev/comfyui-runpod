@@ -81,7 +81,7 @@ markers:
     enabled: true
     order: 3
     hook: none
-    narrows_to: [advance.extend, advance.vary]
+    narrows_to: [advance.extend, advance.vary, advance.derive]
     promote_when: [high_quality_high_appetite, fast_track]
 
   - id: retire
@@ -201,6 +201,15 @@ markers:
     enabled: true
     order: 41
     hook: replay_front
+
+  - id: advance.derive
+    kind: step
+    process: advance
+    label: Derive
+    hint: Rewire prompt and/or source from this seed
+    enabled: true
+    order: 42
+    hook: derive
 
   - id: retire.trash
     kind: step

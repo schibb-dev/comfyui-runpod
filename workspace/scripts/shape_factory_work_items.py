@@ -22,7 +22,7 @@ OPEN_STATUSES = frozenset({"draft", "queued", "running"})
 # Priority can be reshaped only before Comfy has picked the work up.
 PRIORITY_MUTABLE_STATUSES = frozenset({"draft", "queued"})
 PRIORITIES = frozenset({"normal", "front"})
-POOLS = frozenset({"extend", "vary", "refine_backlog", "extract", "investigate"})
+POOLS = frozenset({"extend", "vary", "derive", "refine_backlog", "extract", "investigate"})
 
 # Default cooldown for identical pool+recipe idempotency keys (seconds).
 DEFAULT_IDEMPOTENCY_COOLDOWN_S = 3600
@@ -34,6 +34,7 @@ _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 STEP_ROUTE_MAP: Dict[str, Tuple[str, str, str]] = {
     "advance.extend": ("extend", "advance", "normal"),
     "advance.vary": ("vary", "advance", "front"),
+    "advance.derive": ("derive", "advance", "front"),
     # Queue now is priority, not a pool — map to vary/replay with front priority.
     "advance.queue_now": ("vary", "advance", "front"),
     "refine.aspect": ("refine_backlog", "refine", "normal"),
@@ -49,7 +50,7 @@ STEP_ROUTE_MAP: Dict[str, Tuple[str, str, str]] = {
 }
 
 # Hooks that enqueue factory work (create/update work items on run-step).
-FACTORY_ENQUEUE_HOOKS = frozenset({"replay", "replay_front", "extend"})
+FACTORY_ENQUEUE_HOOKS = frozenset({"replay", "replay_front", "extend", "derive"})
 
 
 def default_work_items_index_path(og_root: Path) -> Path:
@@ -616,6 +617,7 @@ def create_routes_batch(
             entry = {
                 "extend": "advance",
                 "vary": "advance",
+                "derive": "advance",
                 "refine_backlog": "refine",
                 "extract": "extract",
                 "investigate": "investigate",

@@ -27,7 +27,7 @@ A typical review session on `/discovery/rate`:
 5. **Outcomes:**
    - Clips **with** an entry disposition → triage committed; they leave the review pool until disposition changes or a child output appears.
    - Clips **without** disposition → return to the undisposed pool for a future batch.
-6. **Later (planned):** clips marked **Advance** may fan out into multiple **work instances** (Extend pool, Vary pool) with optional **Queue now** priority.
+6. **Later (planned):** clips marked **Advance** may fan out into multiple **work instances** (Extend, Vary, Derive pools) with optional **Queue now** priority. See [`DERIVE_VS_VARY.md`](./DERIVE_VS_VARY.md).
 
 ---
 

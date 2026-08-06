@@ -763,7 +763,7 @@ def run_disposition_hook(
     if hook == "sampler_pin":
         return {"ok": True, "hook": hook, "pinned": True}
 
-    if hook in ("replay", "replay_front", "extend", "appetite_more"):
+    if hook in ("replay", "replay_front", "extend", "derive", "appetite_more"):
         if hook_runner is None:
             return {"ok": False, "hook": hook, "error": "hook_runner_unavailable"}
         body = dict(extra)
