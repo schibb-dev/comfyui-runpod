@@ -30,13 +30,16 @@ def _utc_iso(ts: Optional[float] = None) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
 
 
-def _read_json(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
 def _write_json(path: Path, obj: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    text = json.dumps(obj, ensure_ascii=False, indent=2) + "\n"
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def _read_json(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _append_jsonl(path: Path, obj: Dict[str, Any]) -> None:
@@ -120,6 +123,211 @@ def _fetch_queue(server: str, timeout_s: int = 10) -> Optional[Tuple[List[QueueI
     return running, pending, obj
 
 
+def _candidate_ids_from_snapshot(snapshot: Any) -> List[str]:
+    if not isinstance(snapshot, dict):
+        return []
+    out: List[str] = []
+    for key in ("pending", "running"):
+        for pid in snapshot.get(key) or []:
+            if isinstance(pid, str) and pid.strip() and pid.strip() not in out:
+                out.append(pid.strip())
+    return out
+
+
+def _known_client_id(rec: Any) -> Optional[str]:
+    if not isinstance(rec, dict):
+        return None
+    extra = rec.get("extra_data")
+    if isinstance(extra, dict):
+        cid = extra.get("client_id")
+        if isinstance(cid, str) and cid.strip():
+            return cid.strip()
+    return None
+
+
+def _restore_missing_prompts(
+    state: Dict[str, Any],
+    *,
+    server: str,
+    client_id: str,
+    candidates: List[str],
+    current_ids: Set[str],
+    spillover: bool,
+    pending_target: int,
+    live_pending: int,
+    max_restore_attempts: int,
+    expected_add_ttl_s: float,
+    source: str,
+    log_event,
+    now: Optional[float] = None,
+) -> Tuple[int, int, int, Set[str]]:
+    """
+    Re-submit mirrored prompts missing from the live Comfy queue.
+
+    Returns (restored, parked, unrecoverable, updated_current_ids).
+    ``source`` is used in event names: ``startup`` or ``outage``.
+    """
+    ts = float(now if now is not None else _now_ts())
+    live_slots: Optional[int] = max(0, int(pending_target) - int(live_pending)) if spillover else None
+    restored = 0
+    parked = 0
+    unrecoverable = 0
+    live_ids = set(current_ids)
+
+    def _live_full() -> bool:
+        return live_slots is not None and restored >= int(live_slots)
+
+    def _try_submit(pid: str, prompt_obj: Dict[str, Any], *, extra_data: Any, outputs: Any, via: str) -> bool:
+        nonlocal restored
+        attempts = int(state.get("restore_attempts", {}).get(pid, 0))
+        if attempts >= int(max_restore_attempts):
+            log_event(
+                f"{source}_restore_suppressed_attempt_cap",
+                prompt_id=pid,
+                attempts=attempts,
+                source=via,
+            )
+            return False
+        ok, res = _submit_prompt(
+            server,
+            prompt=prompt_obj,
+            client_id=client_id,
+            extra_data=extra_data if isinstance(extra_data, dict) else None,
+            outputs_to_execute=outputs if isinstance(outputs, list) else None,
+        )
+        state.setdefault("restore_attempts", {})[pid] = attempts + 1
+        state.setdefault("restore_last_ts", {})[pid] = ts
+        if ok:
+            restored += 1
+            np = res.get("prompt_id") if isinstance(res, dict) else None
+            if isinstance(np, str) and np.strip():
+                live_ids.add(np.strip())
+            state.setdefault("expected_add_until_ts", {})[pid] = ts + float(expected_add_ttl_s)
+            log_event(
+                f"{source}_restored" if via == "snapshot" else f"{source}_restored_backlog",
+                prompt_id=pid,
+                response=res,
+                source=via,
+            )
+            stats_key = "restored_startup" if source == "startup" else "restored_outage"
+            state.setdefault("stats", {})[stats_key] = int(state.setdefault("stats", {}).get(stats_key, 0)) + 1
+            return True
+        log_event(
+            f"{source}_restore_failed" if via == "snapshot" else f"{source}_restore_failed_backlog",
+            prompt_id=pid,
+            error=res,
+            source=via,
+        )
+        state.setdefault("restore_failures_ts", []).append(ts)
+        return False
+
+    log_event(
+        f"{source}_restore_begin",
+        spillover=spillover,
+        live_slots=live_slots,
+        pending_target=pending_target,
+        candidates=len(candidates),
+        live_pending=live_pending,
+        live_ids=len(live_ids),
+        backlog=len(state.get("backlog") or []) if isinstance(state.get("backlog"), list) else 0,
+    )
+
+    for pid in candidates:
+        if pid in live_ids:
+            continue
+        known = state.get("known", {}).get(pid) if isinstance(state.get("known"), dict) else None
+        if not isinstance(known, dict) or not isinstance(known.get("prompt"), dict):
+            unrecoverable += 1
+            log_event(f"{source}_restore_unrecoverable_no_payload", prompt_id=pid)
+            continue
+        if not _live_full():
+            if _try_submit(
+                pid,
+                known["prompt"],
+                extra_data=known.get("extra_data"),
+                outputs=known.get("outputs_to_execute"),
+                via="snapshot",
+            ):
+                continue
+        if _push_backlog_item(state, pid):
+            parked += 1
+            log_event(f"{source}_parked_backlog", prompt_id=pid, reason="spillover_or_submit_failed")
+        else:
+            log_event(f"{source}_already_accounted", prompt_id=pid)
+
+    backlog = state.get("backlog", [])
+    if isinstance(backlog, list) and backlog:
+        i = 0
+        while i < len(backlog):
+            if spillover and _live_full():
+                break
+            item = backlog[i]
+            if not isinstance(item, dict):
+                i += 1
+                continue
+            pid = item.get("prompt_id")
+            if not isinstance(pid, str) or not pid.strip():
+                backlog.pop(i)
+                continue
+            if pid in live_ids:
+                backlog.pop(i)
+                continue
+            prompt_obj = item.get("prompt")
+            if not isinstance(prompt_obj, dict):
+                unrecoverable += 1
+                log_event(f"{source}_restore_unrecoverable_backlog_no_payload", prompt_id=pid)
+                backlog.pop(i)
+                continue
+            if _try_submit(
+                pid,
+                prompt_obj,
+                extra_data=item.get("extra_data"),
+                outputs=item.get("outputs_to_execute"),
+                via="backlog",
+            ):
+                backlog.pop(i)
+                continue
+            i += 1
+
+    log_event(
+        f"{source}_restore_done",
+        restored=restored,
+        parked_backlog=parked,
+        unrecoverable=unrecoverable,
+        spillover=spillover,
+        live_slots=live_slots,
+    )
+    return restored, parked, unrecoverable, live_ids
+
+
+def _apply_ledger_clear(state: Dict[str, Any]) -> Dict[str, int]:
+    """
+    Drop mirrored restore state so a later Comfy restart will not re-queue old jobs.
+
+    Does not touch Comfy's live queue. Keeps operator flags (paused/breaker) and stats.
+    """
+    known = state.get("known") if isinstance(state.get("known"), dict) else {}
+    backlog = state.get("backlog") if isinstance(state.get("backlog"), list) else []
+    snap = state.get("last_snapshot") if isinstance(state.get("last_snapshot"), dict) else {}
+    prev_running = snap.get("running") if isinstance(snap.get("running"), list) else []
+    prev_pending = snap.get("pending") if isinstance(snap.get("pending"), list) else []
+    counts = {
+        "known": len(known),
+        "backlog": len(backlog),
+        "snapshot": len(prev_running) + len(prev_pending),
+    }
+    state["last_snapshot"] = {"running": [], "pending": []}
+    state["known"] = {}
+    state["backlog"] = []
+    state["restore_attempts"] = {}
+    state["restore_last_ts"] = {}
+    state["expected_add_until_ts"] = {}
+    state["recent_unexpected_ts"] = []
+    state["clear_requested_at"] = 0.0
+    state["updated_at"] = _utc_iso()
+    return counts
+
+
 def _default_state() -> Dict[str, Any]:
     return {
         "version": 1,
@@ -137,13 +345,16 @@ def _default_state() -> Dict[str, Any]:
         "breaker": {"open": False, "opened_ts": 0.0, "reason": "", "open_until_ts": 0.0},
         "paused": False,
         "drain_once_requested_at": 0.0,
+        "clear_requested_at": 0.0,
         "stats": {
             "restored_startup": 0,
+            "restored_outage": 0,
             "restored_refill": 0,
             "spillover_removed": 0,
             "suppressed_breaker": 0,
             "suppressed_cap": 0,
             "suppressed_cooldown": 0,
+            "cleared": 0,
         },
     }
 
@@ -152,7 +363,12 @@ def _read_state(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return _default_state()
     try:
-        obj = _read_json(path)
+        raw = path.read_text(encoding="utf-8")
+        if not raw.strip():
+            # Concurrent non-atomic writers used to leave an empty file; refuse to
+            # clobber a good in-memory/default merge from that transient state.
+            raise ValueError("empty ledger state file")
+        obj = json.loads(raw)
     except Exception:
         return _default_state()
     if not isinstance(obj, dict):
@@ -325,6 +541,17 @@ def main() -> int:
     )
     ap.add_argument("--once", action="store_true", help="Run one cycle and exit")
     ap.add_argument("--no-startup-restore", action="store_true", help="Disable startup restore")
+    ap.add_argument(
+        "--outage-restore-min-s",
+        type=float,
+        default=5.0,
+        help="After Comfy is unreachable for this long, restore last_snapshot on recovery",
+    )
+    ap.add_argument(
+        "--no-outage-restore",
+        action="store_true",
+        help="Disable restore when Comfy returns after an outage (ledger process stays up)",
+    )
     args = ap.parse_args()
 
     pending_target = max(2, int(args.pending_target))
@@ -346,6 +573,10 @@ def main() -> int:
     now = _now_ts()
     state["updated_at"] = _utc_iso(now)
     state["pending_target"] = pending_target
+    if float(state.get("clear_requested_at") or 0.0) > 0:
+        cleared = _apply_ledger_clear(state)
+        state.setdefault("stats", {})["cleared"] = int(state.setdefault("stats", {}).get("cleared", 0)) + 1
+        _append_jsonl(events_path, {"ts": _utc_iso(now), "type": "ledger_cleared", "source": "startup", **cleared})
     _write_json(state_path, state)
 
     def log_event(kind: str, **data: Any) -> None:
@@ -403,156 +634,35 @@ def main() -> int:
     # - spillover off: re-submit the full last snapshot (+ drain backlog) into Comfy.
     # - spillover on: fill pending_target live; park the rest in backlog for refill.
     # Jobs without a stored prompt payload cannot be recovered (logged as unrecoverable).
-    if not args.no_startup_restore:
+    # Paused: skip restore (operator holds the ledger; clear/forget stays in effect).
+    if not args.no_startup_restore and not bool(state.get("paused")):
         spillover = bool(args.spillover_enabled)
-        prev = state.get("last_snapshot") if isinstance(state.get("last_snapshot"), dict) else {}
-        prev_pending = prev.get("pending") if isinstance(prev, dict) else []
-        prev_running = prev.get("running") if isinstance(prev, dict) else []
-        candidates: List[str] = []
-        for pid in list(prev_pending) + list(prev_running):
-            if isinstance(pid, str) and pid.strip() and pid not in candidates:
-                candidates.append(pid.strip())
-        # Live slots to fill now. None = no cap (full rebuild).
-        live_slots: Optional[int] = max(0, pending_target - len(pending)) if spillover else None
-        restored = 0
-        parked = 0
-        unrecoverable = 0
-
-        def _live_full() -> bool:
-            return live_slots is not None and restored >= int(live_slots)
-
-        def _note_new_prompt(res: Dict[str, Any]) -> None:
-            np = res.get("prompt_id") if isinstance(res, dict) else None
-            if isinstance(np, str) and np.strip():
-                current_ids.add(np.strip())
-
-        def _try_submit(pid: str, prompt_obj: Dict[str, Any], *, extra_data: Any, outputs: Any, source: str) -> bool:
-            nonlocal restored
-            attempts = int(state.get("restore_attempts", {}).get(pid, 0))
-            # On process start, ignore prior cooldowns so a reboot can drain the account.
-            # Still honor attempt caps to avoid infinite poison loops across restarts.
-            if attempts >= int(args.max_restore_attempts):
-                log_event("startup_restore_suppressed_attempt_cap", prompt_id=pid, attempts=attempts, source=source)
-                return False
-            ok, res = _submit_prompt(
-                args.server,
-                prompt=prompt_obj,
-                client_id=args.client_id,
-                extra_data=extra_data if isinstance(extra_data, dict) else None,
-                outputs_to_execute=outputs if isinstance(outputs, list) else None,
-            )
-            state.setdefault("restore_attempts", {})[pid] = attempts + 1
-            state.setdefault("restore_last_ts", {})[pid] = now
-            if ok:
-                restored += 1
-                _note_new_prompt(res if isinstance(res, dict) else {})
-                state.setdefault("expected_add_until_ts", {})[pid] = now + float(args.expected_add_ttl_s)
-                log_event(
-                    "startup_restored" if source == "snapshot" else "startup_restored_backlog",
-                    prompt_id=pid,
-                    response=res,
-                    source=source,
-                )
-                state.setdefault("stats", {})["restored_startup"] = int(
-                    state.setdefault("stats", {}).get("restored_startup", 0)
-                ) + 1
-                return True
-            log_event(
-                "startup_restore_failed" if source == "snapshot" else "startup_restore_failed_backlog",
-                prompt_id=pid,
-                error=res,
-                source=source,
-            )
-            state.setdefault("restore_failures_ts", []).append(now)
-            return False
-
-        log_event(
-            "startup_restore_begin",
+        candidates = _candidate_ids_from_snapshot(state.get("last_snapshot"))
+        restored, parked, unrecoverable, current_ids = _restore_missing_prompts(
+            state,
+            server=args.server,
+            client_id=args.client_id,
+            candidates=candidates,
+            current_ids=current_ids,
             spillover=spillover,
-            live_slots=live_slots,
             pending_target=pending_target,
-            candidates=len(candidates),
             live_pending=len(pending),
-            live_running=len(running),
-            backlog=len(state.get("backlog") or []) if isinstance(state.get("backlog"), list) else 0,
+            max_restore_attempts=int(args.max_restore_attempts),
+            expected_add_ttl_s=float(args.expected_add_ttl_s),
+            source="startup",
+            log_event=log_event,
+            now=now,
         )
-
-        for pid in candidates:
-            if pid in current_ids:
-                continue
-            known = state.get("known", {}).get(pid) if isinstance(state.get("known"), dict) else None
-            if not isinstance(known, dict) or not isinstance(known.get("prompt"), dict):
-                unrecoverable += 1
-                log_event("startup_restore_unrecoverable_no_payload", prompt_id=pid)
-                continue
-            if not _live_full():
-                if _try_submit(
-                    pid,
-                    known["prompt"],
-                    extra_data=known.get("extra_data"),
-                    outputs=known.get("outputs_to_execute"),
-                    source="snapshot",
-                ):
-                    continue
-                # Submit failed / attempt-capped: keep accounted for on disk.
-            if _push_backlog_item(state, pid):
-                parked += 1
-                log_event("startup_parked_backlog", prompt_id=pid, reason="spillover_or_submit_failed")
-            else:
-                # Already in backlog or push failed — still accounted if backlog has it.
-                log_event("startup_already_accounted", prompt_id=pid)
-
-        # With spillover off, also drain any pre-existing backlog into Comfy now.
-        # With spillover on, only fill remaining live slots from backlog.
-        backlog = state.get("backlog", [])
-        if isinstance(backlog, list) and backlog:
-            i = 0
-            while i < len(backlog):
-                if spillover and _live_full():
-                    break
-                item = backlog[i]
-                if not isinstance(item, dict):
-                    i += 1
-                    continue
-                pid = item.get("prompt_id")
-                if not isinstance(pid, str) or not pid.strip():
-                    backlog.pop(i)
-                    continue
-                if pid in current_ids:
-                    backlog.pop(i)
-                    continue
-                prompt_obj = item.get("prompt")
-                if not isinstance(prompt_obj, dict):
-                    unrecoverable += 1
-                    log_event("startup_restore_unrecoverable_backlog_no_payload", prompt_id=pid)
-                    backlog.pop(i)
-                    continue
-                if _try_submit(
-                    pid,
-                    prompt_obj,
-                    extra_data=item.get("extra_data"),
-                    outputs=item.get("outputs_to_execute"),
-                    source="backlog",
-                ):
-                    backlog.pop(i)
-                    continue
-                # Leave in backlog for a later refill / next restart.
-                i += 1
-
         print(
             f"startup_restored={restored} parked_backlog={parked} "
-            f"unrecoverable={unrecoverable} spillover={spillover} live_slots={live_slots}"
-        )
-        log_event(
-            "startup_restore_done",
-            restored=restored,
-            parked_backlog=parked,
-            unrecoverable=unrecoverable,
-            spillover=spillover,
-            live_slots=live_slots,
+            f"unrecoverable={unrecoverable} spillover={spillover} "
+            f"live_slots={(max(0, pending_target - len(pending)) if spillover else None)}"
         )
         state["updated_at"] = _utc_iso(now)
         _write_json(state_path, state)
+    elif bool(state.get("paused")):
+        log_event("startup_restore_skipped_paused")
+        print("startup_restored=skipped paused=True")
 
     # Seed model-io follower against whatever is currently running.
     poll_model_io([x.prompt_id for x in running])
@@ -560,17 +670,33 @@ def main() -> int:
     _write_json(state_path, state)
 
     last_quiet_ts = _now_ts()
+    outage_since_ts: Optional[float] = None
+    last_logged_paused: Optional[bool] = None
+    last_logged_breaker: Optional[bool] = None
     while True:
         now = _now_ts()
         # Merge operator control keys from disk.
         disk_state = _read_state(state_path)
-        for k in ("paused", "drain_once_requested_at", "breaker", "restore_failures_ts"):
+        for k in ("paused", "drain_once_requested_at", "clear_requested_at", "breaker", "restore_failures_ts"):
             if k in disk_state:
                 state[k] = disk_state[k]
         if _breaker_maybe_close(state):
             log_event("breaker_closed_auto")
+
+        # Explicit clear: drop mirrored restore state (does not clear Comfy's live queue).
+        if float(state.get("clear_requested_at") or 0.0) > 0:
+            cleared = _apply_ledger_clear(state)
+            state.setdefault("stats", {})["cleared"] = int(state.setdefault("stats", {}).get("cleared", 0)) + 1
+            log_event("ledger_cleared", source="control", **cleared)
+            # Forget any in-flight outage so we don't restore a pre-clear snapshot.
+            outage_since_ts = None
+            _write_json(state_path, state)
+
         q2 = _fetch_queue(args.server)
         if q2 is None:
+            if outage_since_ts is None:
+                outage_since_ts = now
+                log_event("comfy_outage_begin", server=args.server)
             log_event("queue_fetch_failed", server=args.server)
             sleep_s = float(args.poll_interval_churn if state.get("mode") == "churn" else args.poll_interval_normal)
             time.sleep(max(0.1, sleep_s))
@@ -582,10 +708,53 @@ def main() -> int:
         pending_ids = [x.prompt_id for x in pending]
         observed_ids = set(running_ids + pending_ids)
 
+        # Comfy came back after an outage: restore mirrored jobs before accepting empty snapshot.
+        # Respect pause so "pause → restart Comfy" does not silently re-queue.
+        if outage_since_ts is not None:
+            outage_s = max(0.0, now - float(outage_since_ts))
+            log_event("comfy_outage_end", outage_s=outage_s, live_pending=len(pending_ids), live_running=len(running_ids))
+            paused_now = bool(state.get("paused"))
+            if paused_now:
+                log_event("outage_restore_skipped_paused", outage_s=outage_s)
+                print(f"outage_restored=skipped paused=True outage_s={outage_s:.1f}")
+            elif (not args.no_outage_restore) and outage_s >= float(args.outage_restore_min_s):
+                spillover = bool(args.spillover_enabled)
+                candidates = _candidate_ids_from_snapshot(state.get("last_snapshot"))
+                restored, parked, unrecoverable, observed_ids = _restore_missing_prompts(
+                    state,
+                    server=args.server,
+                    client_id=args.client_id,
+                    candidates=candidates,
+                    current_ids=observed_ids,
+                    spillover=spillover,
+                    pending_target=pending_target,
+                    live_pending=len(pending_ids),
+                    max_restore_attempts=int(args.max_restore_attempts),
+                    expected_add_ttl_s=float(args.expected_add_ttl_s),
+                    source="outage",
+                    log_event=log_event,
+                    now=now,
+                )
+                print(
+                    f"outage_restored={restored} parked_backlog={parked} "
+                    f"unrecoverable={unrecoverable} outage_s={outage_s:.1f}"
+                )
+                # Refresh live view after restores so snapshot/churn math matches reality.
+                q3 = _fetch_queue(args.server)
+                if q3 is not None:
+                    running, pending, _raw = q3
+                    running_ids = [x.prompt_id for x in running]
+                    pending_ids = [x.prompt_id for x in pending]
+                    observed_ids = set(running_ids + pending_ids)
+            outage_since_ts = None
+
         # Update known prompt payloads whenever available.
         known = state.setdefault("known", {})
         for item in running + pending:
             rec = known.get(item.prompt_id, {}) if isinstance(known.get(item.prompt_id), dict) else {}
+            if not isinstance(rec.get("first_seen_ts"), (int, float)):
+                rec["first_seen_ts"] = now
+                rec["first_seen_at"] = _utc_iso(now)
             rec["last_seen_ts"] = now
             rec["last_seen_at"] = _utc_iso(now)
             rec["last_phase"] = "running" if item.prompt_id in running_ids else "pending"
@@ -600,7 +769,9 @@ def main() -> int:
         prev_snapshot = state.get("last_snapshot") if isinstance(state.get("last_snapshot"), dict) else {}
         prev_running = prev_snapshot.get("running") if isinstance(prev_snapshot.get("running"), list) else []
         prev_pending = prev_snapshot.get("pending") if isinstance(prev_snapshot.get("pending"), list) else []
-        prev_ids = {str(x) for x in (prev_running + prev_pending) if isinstance(x, str)}
+        prev_running_set = {str(x) for x in prev_running if isinstance(x, str)}
+        prev_pending_set = {str(x) for x in prev_pending if isinstance(x, str)}
+        prev_ids = prev_running_set | prev_pending_set
         added = observed_ids - prev_ids
         removed = prev_ids - observed_ids
 
@@ -616,9 +787,32 @@ def main() -> int:
             unexpected += 1
         if unexpected > 0:
             state.setdefault("recent_unexpected_ts", []).extend([now] * unexpected)
-            log_event("unexpected_queue_delta", added=sorted(list(added)), removed=sorted(list(removed)), unexpected=unexpected)
             # Reset the quiet clock when the queue membership/order churns.
             last_quiet_ts = now
+        # Operator-facing activity: normal enqueue / leave (not the churn counter name).
+        running_id_set = set(running_ids)
+        for pid in sorted(added):
+            rec = known.get(pid) if isinstance(known.get(pid), dict) else {}
+            log_event(
+                "queue_enqueued",
+                prompt_id=pid,
+                phase="running" if pid in running_id_set else "pending",
+                client_id=_known_client_id(rec),
+            )
+        for pid in sorted(removed):
+            rec = known.get(pid) if isinstance(known.get(pid), dict) else {}
+            if pid in prev_running_set:
+                was_phase = "running"
+            elif pid in prev_pending_set:
+                was_phase = "pending"
+            else:
+                was_phase = "unknown"
+            log_event(
+                "queue_left",
+                prompt_id=pid,
+                was_phase=was_phase,
+                client_id=_known_client_id(rec),
+            )
         # When unexpected==0, leave last_quiet_ts alone so quiet time can accumulate.
 
         # Mode switch with hysteresis.
@@ -658,11 +852,19 @@ def main() -> int:
         paused = bool(state.get("paused"))
 
         if paused:
-            log_event("actions_paused")
+            if last_logged_paused is not True:
+                log_event("actions_paused")
+                last_logged_paused = True
+            last_logged_breaker = False
         elif breaker_open:
             state.setdefault("stats", {})["suppressed_breaker"] = int(state.setdefault("stats", {}).get("suppressed_breaker", 0)) + 1
-            log_event("actions_suppressed_breaker", breaker=state.get("breaker"))
+            if last_logged_breaker is not True:
+                log_event("actions_suppressed_breaker", breaker=state.get("breaker"))
+                last_logged_breaker = True
+            last_logged_paused = False
         else:
+            last_logged_paused = False
+            last_logged_breaker = False
             # Spillover: trim only tail, never touch on-deck/in-hole by default.
             if bool(args.spillover_enabled) and actions < max_actions:
                 protected = 0

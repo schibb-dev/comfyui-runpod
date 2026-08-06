@@ -66,6 +66,10 @@ import type {
   HomeSummaryResponse,
   HourlyScheduleStatus,
   HourlySubmitMode,
+  QueueLedgerControlAction,
+  QueueLedgerControlResponse,
+  QueueLedgerEventsResponse,
+  QueueLedgerStatus,
   WorkItemsListResponse,
   WorkItemsCreateResponse,
   WorkItemsCancelResponse,
@@ -1171,6 +1175,48 @@ export async function comfyClear(): Promise<ComfyClearResponse> {
     throw new Error(`POST /api/queue/comfy-clear failed: ${r.status}${t ? `\n${t}` : ""}`);
   }
   return (await r.json()) as ComfyClearResponse;
+}
+
+export async function fetchQueueLedgerStatus(): Promise<QueueLedgerStatus> {
+  const r = await fetch("/api/queue/ledger-status");
+  const j = (await r.json().catch(() => ({}))) as QueueLedgerStatus;
+  if (!r.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET /api/queue/ledger-status failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function fetchQueueLedgerEvents(limit = 30): Promise<QueueLedgerEventsResponse> {
+  const r = await fetch(`/api/queue/ledger-events?limit=${encodeURIComponent(String(limit))}`);
+  const j = (await r.json().catch(() => ({}))) as QueueLedgerEventsResponse;
+  if (!r.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET /api/queue/ledger-events failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function setQueueLedgerControl(
+  action: QueueLedgerControlAction,
+): Promise<QueueLedgerControlResponse> {
+  const r = await fetch("/api/queue/ledger-control", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action }),
+  });
+  const j = (await r.json().catch(() => ({}))) as QueueLedgerControlResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST /api/queue/ledger-control failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
 }
 
 export async function fetchComfyHistory(limit = 30): Promise<ComfyHistoryResponse> {

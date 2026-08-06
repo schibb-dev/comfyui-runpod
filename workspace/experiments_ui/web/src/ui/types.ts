@@ -82,6 +82,11 @@ export type QueueComfyItem = {
   workflow_name?: string | null;
   /** Shape-factory job_key when this prompt maps to a factory job. */
   job_key?: string | null;
+  queue_index?: number | null;
+  /** Best-effort enqueue/first-seen time (ISO). */
+  queued_at?: string | null;
+  /** Best-effort last change time (ISO). */
+  changed_at?: string | null;
   input_media_relpath?: string | null;
   input_media_url?: string | null;
   input_media_kind?: "image" | "video" | null;
@@ -101,7 +106,12 @@ export type QueueResponse = {
 export type ComfyHistoryItem = {
   prompt_id: string;
   status: string;
+  queued_at?: string | null;
+  changed_at?: string | null;
+  error_message?: string | null;
+  error_node?: string | null;
   workflow_name?: string | null;
+  queue_index?: number | null;
   key_params?: Record<string, unknown>;
   primary_video_relpath?: string | null;
   primary_image_relpath?: string | null;
@@ -1462,6 +1472,87 @@ export type HourlyScheduleStatus = {
   comfy_running?: number | null;
   factory_pending?: number | null;
   saved?: HourlySchedule;
+  error?: string;
+  detail?: string;
+};
+
+/** GET /api/queue/ledger-status — Comfy queue shadow + restore controls. */
+export type QueueLedgerBreaker = {
+  open?: boolean;
+  reason?: string;
+  opened_ts?: number;
+  open_until_ts?: number;
+};
+
+export type QueueLedgerStats = {
+  restored_startup?: number;
+  restored_outage?: number;
+  restored_refill?: number;
+  spillover_removed?: number;
+  suppressed_breaker?: number;
+  suppressed_cap?: number;
+  suppressed_cooldown?: number;
+  cleared?: number;
+};
+
+export type QueueLedgerEntryRole = "running" | "pending" | "backlog" | "remembered";
+
+/** Slim row from ledger state (known / snapshot / backlog) — no prompt payload. */
+export type QueueLedgerEntry = {
+  prompt_id?: string;
+  role?: QueueLedgerEntryRole | string;
+  client_id?: string | null;
+  last_seen_at?: string | null;
+  last_phase?: string | null;
+  has_prompt?: boolean;
+};
+
+export type QueueLedgerStatus = {
+  enabled?: boolean;
+  state_path?: string;
+  events_path?: string;
+  mode?: string;
+  updated_at?: string | null;
+  paused?: boolean;
+  pending_target?: number;
+  backlog_count?: number;
+  known_count?: number;
+  breaker?: QueueLedgerBreaker;
+  stats?: QueueLedgerStats;
+  snapshot?: { running?: string[]; pending?: string[] };
+  entries?: QueueLedgerEntry[];
+  error?: string;
+  detail?: string;
+};
+
+export type QueueLedgerControlAction = "pause" | "resume" | "drain-once" | "clear" | "reset-breaker";
+
+/** POST /api/queue/ledger-control */
+export type QueueLedgerControlResponse = {
+  ok?: boolean;
+  action?: QueueLedgerControlAction | string;
+  paused?: boolean;
+  cleared?: { known?: number; backlog?: number; snapshot?: number };
+  note?: string;
+  error?: string;
+  detail?: string;
+  expected?: string[];
+};
+
+/** One line from comfy_queue_ledger.jsonl (GET /api/queue/ledger-events). */
+export type QueueLedgerEvent = {
+  ts?: string;
+  type?: string;
+  [key: string]: unknown;
+};
+
+/** GET /api/queue/ledger-events */
+export type QueueLedgerEventsResponse = {
+  ok?: boolean;
+  events_path?: string;
+  limit?: number;
+  include_noise?: boolean;
+  events?: QueueLedgerEvent[];
   error?: string;
   detail?: string;
 };

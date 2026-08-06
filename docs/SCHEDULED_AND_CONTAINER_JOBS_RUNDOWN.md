@@ -98,11 +98,13 @@ When you bring up with the `ops` profile, these **additional** containers run:
   - `workspace/output/output/experiments/_status/comfy_queue_ledger_state.json`
   - `workspace/output/output/experiments/_status/comfy_queue_ledger.jsonl`
 - API visibility from Experiments UI backend:
-  - `GET /api/queue/ledger-status` (mode, paused, breaker, backlog count, stats)
+  - `GET /api/queue/ledger-status` (mode, paused, breaker, backlog/known counts, slim `entries` lines, stats)
+  - `GET /api/queue/ledger-events?limit=30` (recent JSONL activity for Queue → Ledger tab; omits noisy poll failures / legacy `unexpected_queue_delta`; shows `queue_enqueued` / `queue_left` for membership changes)
 - API control actions:
   - `POST /api/queue/ledger-control` with `{"action":"pause"}`
   - `POST /api/queue/ledger-control` with `{"action":"resume"}`
   - `POST /api/queue/ledger-control` with `{"action":"drain-once"}`
+  - `POST /api/queue/ledger-control` with `{"action":"clear"}` — drop mirrored restore state (`known` / `backlog` / `last_snapshot`); does **not** clear Comfy’s live queue
   - `POST /api/queue/ledger-control` with `{"action":"reset-breaker"}`
 - Key env knobs in `docker-compose.yml` (`queue_ledger` service):
   - `LEDGER_PENDING_TARGET`

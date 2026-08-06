@@ -5458,6 +5458,78 @@ def _history_queue_index(record: Any) -> int:
     return -1
 
 
+def _ms_to_utc_iso(ms: Any) -> Optional[str]:
+    try:
+        v = float(ms)
+    except (TypeError, ValueError):
+        return None
+    # Comfy execution messages use epoch milliseconds.
+    if v > 1e12:
+        v = v / 1000.0
+    if v <= 0:
+        return None
+    try:
+        return _dt.datetime.fromtimestamp(v, tz=_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _history_status_and_times(record: Any) -> Dict[str, Any]:
+    """Normalize Comfy history status + derive queue/start and last-change times."""
+    out: Dict[str, Any] = {
+        "status": "complete",
+        "queued_at": None,
+        "changed_at": None,
+        "error_message": None,
+        "error_node": None,
+    }
+    if not isinstance(record, dict):
+        return out
+    st = record.get("status") if isinstance(record.get("status"), dict) else {}
+    status_str = st.get("status_str")
+    if isinstance(status_str, str) and status_str.strip():
+        out["status"] = status_str.strip().lower()
+    elif st.get("completed") is False:
+        out["status"] = "error"
+    elif st.get("completed") is True:
+        out["status"] = "success"
+
+    messages = st.get("messages") if isinstance(st.get("messages"), list) else []
+    started_ms: Optional[float] = None
+    changed_ms: Optional[float] = None
+    for msg in messages:
+        if not isinstance(msg, list) or not msg:
+            continue
+        kind = msg[0] if isinstance(msg[0], str) else ""
+        meta = msg[1] if len(msg) > 1 and isinstance(msg[1], dict) else {}
+        ts = meta.get("timestamp")
+        if isinstance(ts, (int, float)):
+            changed_ms = float(ts)
+            if started_ms is None and kind in ("execution_start", "execution_cached"):
+                started_ms = float(ts)
+            if started_ms is None:
+                started_ms = float(ts)
+        if kind == "execution_error":
+            out["status"] = "error"
+            exc = meta.get("exception_message") or meta.get("exception_type") or "execution_error"
+            out["error_message"] = str(exc).strip() or "execution_error"
+            node = meta.get("node_type") or meta.get("node_id")
+            if node is not None:
+                out["error_node"] = str(node)
+        elif kind == "execution_interrupted":
+            out["status"] = "interrupted"
+            out["error_message"] = "Interrupted"
+            node = meta.get("node_type") or meta.get("node_id")
+            if node is not None:
+                out["error_node"] = str(node)
+        elif kind == "execution_success" and out["status"] not in ("error", "interrupted"):
+            out["status"] = "success"
+
+    out["queued_at"] = _ms_to_utc_iso(started_ms)
+    out["changed_at"] = _ms_to_utc_iso(changed_ms) or out["queued_at"]
+    return out
+
+
 def _extract_input_media_from_prompt(prompt_obj: Any) -> Tuple[Optional[str], Optional[str]]:
     if not isinstance(prompt_obj, dict):
         return (None, None)
@@ -6016,9 +6088,149 @@ def _read_queue_ledger_state(path: Path) -> Dict[str, Any]:
     return obj if isinstance(obj, dict) else {}
 
 
+def _queue_ledger_entry_client_id(rec: Any) -> Optional[str]:
+    if not isinstance(rec, dict):
+        return None
+    extra = rec.get("extra_data")
+    if isinstance(extra, dict):
+        cid = extra.get("client_id")
+        if isinstance(cid, str) and cid.strip():
+            return cid.strip()
+    return None
+
+
+def _queue_ledger_entries(st: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Slim one-line summaries of mirrored ledger rows (no prompt payloads)."""
+    snap = st.get("last_snapshot") if isinstance(st.get("last_snapshot"), dict) else {}
+    running_ids = [str(x) for x in (snap.get("running") or []) if isinstance(x, str) and x.strip()]
+    pending_ids = [str(x) for x in (snap.get("pending") or []) if isinstance(x, str) and x.strip()]
+    known = st.get("known") if isinstance(st.get("known"), dict) else {}
+    backlog = st.get("backlog") if isinstance(st.get("backlog"), list) else []
+
+    role_rank = {"running": 0, "pending": 1, "backlog": 2, "remembered": 3}
+    by_id: Dict[str, Dict[str, Any]] = {}
+
+    def upsert(pid: str, role: str, rec: Any) -> None:
+        pid = pid.strip()
+        if not pid:
+            return
+        rec_d = rec if isinstance(rec, dict) else {}
+        prev = by_id.get(pid)
+        if prev is not None and role_rank.get(str(prev.get("role")), 9) <= role_rank.get(role, 9):
+            return
+        by_id[pid] = {
+            "prompt_id": pid,
+            "role": role,
+            "client_id": _queue_ledger_entry_client_id(rec_d),
+            "last_seen_at": rec_d.get("last_seen_at") if isinstance(rec_d.get("last_seen_at"), str) else None,
+            "first_seen_at": rec_d.get("first_seen_at") if isinstance(rec_d.get("first_seen_at"), str) else None,
+            "last_phase": rec_d.get("last_phase") if isinstance(rec_d.get("last_phase"), str) else None,
+            "has_prompt": isinstance(rec_d.get("prompt"), dict),
+        }
+
+    for pid in running_ids:
+        upsert(pid, "running", known.get(pid))
+    for pid in pending_ids:
+        upsert(pid, "pending", known.get(pid))
+    for item in backlog:
+        if not isinstance(item, dict):
+            continue
+        pid = item.get("prompt_id")
+        if not isinstance(pid, str):
+            continue
+        # Backlog items often embed the known-shaped payload.
+        upsert(pid, "backlog", item if item.get("prompt") is not None else known.get(pid) or item)
+    for pid, rec in known.items():
+        if isinstance(pid, str):
+            upsert(pid, "remembered", rec)
+
+    entries = list(by_id.values())
+    entries.sort(
+        key=lambda e: (
+            role_rank.get(str(e.get("role")), 9),
+            str(e.get("last_seen_at") or ""),
+            str(e.get("prompt_id") or ""),
+        )
+    )
+    return entries
+
+
+# High-churn / legacy ledger lines; omit from UI "recent activity" by default.
+_LEDGER_ACTIVITY_NOISE_TYPES = frozenset(
+    {
+        "queue_fetch_failed",
+        # Legacy churn signal; replaced by queue_enqueued / queue_left.
+        "unexpected_queue_delta",
+        # Historical per-poll spam (now edge-triggered in ledger, still noisy in old logs).
+        "actions_paused",
+        "actions_suppressed_breaker",
+    }
+)
+
+
+def _tail_jsonl_dicts(path: Path, *, max_lines: int) -> List[Dict[str, Any]]:
+    """Return up to max_lines trailing JSON objects from a JSONL file (newest last)."""
+    if max_lines <= 0 or not path.is_file():
+        return []
+    # Read a trailing byte window so we don't scan multi-MB logs on every poll.
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return []
+    if size <= 0:
+        return []
+    window = min(size, max(64_000, max_lines * 2_000))
+    try:
+        with path.open("rb") as f:
+            if window < size:
+                f.seek(size - window)
+                chunk = f.read()
+                # Drop partial first line when we seek mid-file.
+                nl = chunk.find(b"\n")
+                if nl >= 0:
+                    chunk = chunk[nl + 1 :]
+            else:
+                chunk = f.read()
+    except OSError:
+        return []
+    out: collections.deque[Dict[str, Any]] = collections.deque(maxlen=max_lines)
+    for raw in chunk.splitlines():
+        line = raw.decode("utf-8", errors="replace").strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(obj, dict):
+            out.append(obj)
+    return list(out)
+
+
+def _read_queue_ledger_events(
+    path: Path,
+    *,
+    limit: int = 30,
+    include_noise: bool = False,
+) -> List[Dict[str, Any]]:
+    """Newest-first ledger activity for the Queue UI."""
+    limit = max(1, min(int(limit), 200))
+    # Over-read so filtering noise still fills the limit.
+    scan = limit if include_noise else min(200, max(limit * 4, limit))
+    rows = _tail_jsonl_dicts(path, max_lines=scan)
+    if not include_noise:
+        rows = [r for r in rows if str(r.get("type") or "") not in _LEDGER_ACTIVITY_NOISE_TYPES]
+    rows = rows[-limit:]
+    rows.reverse()
+    return rows
+
+
 def _write_queue_ledger_state(path: Path, obj: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    text = json.dumps(obj, ensure_ascii=False, indent=2) + "\n"
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -6154,6 +6366,8 @@ class Handler(BaseHTTPRequestHandler):
 
             comfy_running: List[Dict[str, Any]] = []
             comfy_pending: List[Dict[str, Any]] = []
+            ledger_known = _read_queue_ledger_state(cfg.queue_ledger_state_path).get("known")
+            ledger_known = ledger_known if isinstance(ledger_known, dict) else {}
             if isinstance(queue_obj, dict):
                 for key, out in (("queue_running", comfy_running), ("queue_pending", comfy_pending)):
                     items = queue_obj.get(key)
@@ -6162,14 +6376,21 @@ class Handler(BaseHTTPRequestHandler):
                     for it in items:
                         pid = None
                         prompt_obj: Optional[Dict[str, Any]] = None
+                        queue_index: Optional[int] = None
                         if isinstance(it, list) and len(it) >= 2 and isinstance(it[1], str):
                             pid = it[1]
+                            qn = _safe_int(it[0]) if it else None
+                            queue_index = int(qn) if qn is not None else None
                             if len(it) >= 3 and isinstance(it[2], dict):
                                 prompt_obj = it[2]
                         mapped = prompt_to_run.get(pid) if isinstance(pid, str) and pid else None
                         media = _queue_resolve_input_media(cfg, prompt_obj)
                         workflow_name = _guess_workflow_name(prompt_obj, it)
                         key_params = _extract_key_params_from_prompt(prompt_obj)
+                        known_rec = ledger_known.get(pid) if isinstance(pid, str) else None
+                        known_rec = known_rec if isinstance(known_rec, dict) else {}
+                        queued_at = known_rec.get("first_seen_at") if isinstance(known_rec.get("first_seen_at"), str) else None
+                        changed_at = known_rec.get("last_seen_at") if isinstance(known_rec.get("last_seen_at"), str) else None
                         out.append(
                             {
                                 "prompt_id": pid,
@@ -6179,6 +6400,9 @@ class Handler(BaseHTTPRequestHandler):
                                 "run_id": mapped.get("run_id") if isinstance(mapped, dict) else None,
                                 "workflow_name": workflow_name,
                                 "job_key": _queue_item_job_key(workflow_name),
+                                "queue_index": queue_index,
+                                "queued_at": queued_at,
+                                "changed_at": changed_at,
                                 "input_media_relpath": media.get("input_media_relpath"),
                                 "input_media_url": media.get("input_media_url"),
                                 "input_media_kind": media.get("input_media_kind"),
@@ -6225,13 +6449,7 @@ class Handler(BaseHTTPRequestHandler):
                     media = _queue_resolve_input_media(cfg, prompt_obj)
                     workflow_name = _guess_workflow_name(prompt_obj, raw_prompt)
                     key_params = _extract_key_params_from_prompt(prompt_obj)
-                    status = "complete"
-                    if isinstance(record, dict) and isinstance(record.get("status"), dict):
-                        st = record["status"].get("status_str") or record["status"].get("completed")
-                        if isinstance(st, str) and st.strip():
-                            status = st.strip()
-                        elif st is False:
-                            status = "error"
+                    status_info = _history_status_and_times(record)
 
                     def _mk_url(rel: Optional[str]) -> Optional[str]:
                         if not isinstance(rel, str) or not rel:
@@ -6273,7 +6491,11 @@ class Handler(BaseHTTPRequestHandler):
                     items_out.append(
                         {
                             "prompt_id": pid,
-                            "status": status,
+                            "status": status_info.get("status") or "complete",
+                            "queued_at": status_info.get("queued_at"),
+                            "changed_at": status_info.get("changed_at"),
+                            "error_message": status_info.get("error_message"),
+                            "error_node": status_info.get("error_node"),
                             "workflow_name": title,
                             "key_params": key_params,
                             "queue_index": _history_queue_index(record),
@@ -6375,6 +6597,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/queue/ledger-status":
             st = _read_queue_ledger_state(cfg.queue_ledger_state_path)
+            entries = _queue_ledger_entries(st)
+            snap = st.get("last_snapshot") if isinstance(st.get("last_snapshot"), dict) else {}
+            known = st.get("known") if isinstance(st.get("known"), dict) else {}
             out = {
                 "enabled": True,
                 "state_path": str(cfg.queue_ledger_state_path),
@@ -6384,10 +6609,44 @@ class Handler(BaseHTTPRequestHandler):
                 "paused": bool(st.get("paused")),
                 "pending_target": st.get("pending_target"),
                 "backlog_count": len(st.get("backlog", [])) if isinstance(st.get("backlog"), list) else 0,
+                "known_count": len(known),
                 "breaker": st.get("breaker") if isinstance(st.get("breaker"), dict) else {"open": False},
                 "stats": st.get("stats") if isinstance(st.get("stats"), dict) else {},
+                "snapshot": {
+                    "running": [x for x in (snap.get("running") or []) if isinstance(x, str)],
+                    "pending": [x for x in (snap.get("pending") or []) if isinstance(x, str)],
+                },
+                "entries": entries,
             }
             return _json_response(self, 200, out)
+
+        if path == "/api/queue/ledger-events":
+            limit_raw = (q.get("limit") or ["30"])[0]
+            try:
+                limit = int(limit_raw)
+            except Exception:
+                limit = 30
+            include_noise = str((q.get("include_noise") or ["0"])[0]).strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            events = _read_queue_ledger_events(
+                cfg.queue_ledger_events_path,
+                limit=limit,
+                include_noise=include_noise,
+            )
+            return _json_response(
+                self,
+                200,
+                {
+                    "ok": True,
+                    "events_path": str(cfg.queue_ledger_events_path),
+                    "limit": limit,
+                    "include_noise": include_noise,
+                    "events": events,
+                },
+            )
 
         if path == "/api/experiments":
             # Always scan experiments_root: experiments are often created via CLI
@@ -8553,6 +8812,30 @@ class Handler(BaseHTTPRequestHandler):
             st["paused"] = False
         elif action == "drain-once":
             st["drain_once_requested_at"] = time.time()
+        elif action == "clear":
+            # Request the ledger process to drop mirrored restore state. Also clear on
+            # disk immediately so status reflects intent even before the next poll.
+            known = st.get("known") if isinstance(st.get("known"), dict) else {}
+            backlog = st.get("backlog") if isinstance(st.get("backlog"), list) else []
+            snap = st.get("last_snapshot") if isinstance(st.get("last_snapshot"), dict) else {}
+            prev_running = snap.get("running") if isinstance(snap.get("running"), list) else []
+            prev_pending = snap.get("pending") if isinstance(snap.get("pending"), list) else []
+            cleared = {
+                "known": len(known),
+                "backlog": len(backlog),
+                "snapshot": len(prev_running) + len(prev_pending),
+            }
+            st["clear_requested_at"] = time.time()
+            st["last_snapshot"] = {"running": [], "pending": []}
+            st["known"] = {}
+            st["backlog"] = []
+            st["restore_attempts"] = {}
+            st["restore_last_ts"] = {}
+            st["expected_add_until_ts"] = {}
+            st["recent_unexpected_ts"] = []
+            stats = st.get("stats") if isinstance(st.get("stats"), dict) else {}
+            stats["cleared"] = int(stats.get("cleared") or 0) + 1
+            st["stats"] = stats
         elif action == "reset-breaker":
             br = st.get("breaker")
             if not isinstance(br, dict):
@@ -8568,7 +8851,7 @@ class Handler(BaseHTTPRequestHandler):
                 400,
                 {
                     "error": "bad_action",
-                    "expected": ["pause", "resume", "drain-once", "reset-breaker"],
+                    "expected": ["pause", "resume", "drain-once", "clear", "reset-breaker"],
                 },
             )
 
@@ -8577,7 +8860,14 @@ class Handler(BaseHTTPRequestHandler):
             _write_queue_ledger_state(cfg.queue_ledger_state_path, st)
         except Exception as e:
             return _json_response(self, 500, {"error": "write_failed", "detail": str(e)})
-        return _json_response(self, 200, {"ok": True, "action": action, "paused": bool(st.get("paused"))})
+        out: Dict[str, Any] = {"ok": True, "action": action, "paused": bool(st.get("paused"))}
+        if action == "clear":
+            out["cleared"] = cleared
+            out["note"] = (
+                "Cleared ledger restore state (known/backlog/snapshot). "
+                "Does not clear Comfy's live queue; ledger will re-mirror whatever is still queued."
+            )
+        return _json_response(self, 200, out)
 
     def _handle_next_experiment(self) -> None:
         """
