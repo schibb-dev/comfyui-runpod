@@ -13,4 +13,4 @@ Cadence goal: **commit early, commit often** — small themed commits while cont
 - After a working session with substantive edits, remind once if project files are still uncommitted.
 - **Never** stage secrets or runtime data: `.env*`, tokens, `.data/`, `tmp/`, `docs/.build/`, `workspace/output/`, `workspace/input/`, `node_modules/`, `custom_nodes/` trees.
 - Only create commits when the user asks (or explicitly agrees to a proposed commit batch).
-- Do not push unless asked.
+- **After a successful commit, push to the tracked remote** unless there is a clear issue (failed hooks, secrets risk, diverged/rebased history needing force-push, no upstream, or the user said not to). Prefer a normal `git push`; never force-push to main/master unless explicitly requested.
