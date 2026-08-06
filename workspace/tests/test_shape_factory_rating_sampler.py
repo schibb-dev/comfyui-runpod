@@ -9,13 +9,42 @@ from shape_factory_heuristics import LineageGraph
 from shape_factory_rating_sampler import (
     _sibling_keeper_boost,
     analyze_vision_gaps,
+    extension_range_from_job,
     is_rating_complete,
+    job_key_guess_from_output_relpath,
     needs_rating_item,
     score_unrated_candidate,
 )
 
 
 class RatingSamplerTests(unittest.TestCase):
+    def test_job_key_guess_strips_final_suffix(self) -> None:
+        self.assertEqual(
+            job_key_guess_from_output_relpath(
+                "og/2026-08-06/hourly/hourly__pp-abc__src-x__000_202608061901_FINAL_00001.mp4"
+            ),
+            "hourly__pp-abc__src-x__000_202608061901",
+        )
+        self.assertEqual(
+            job_key_guess_from_output_relpath("clip_PREVIEW_00001.mp4"),
+            "clip",
+        )
+
+    def test_extension_range_from_workload(self) -> None:
+        er = extension_range_from_job(
+            {
+                "job_key": "j1",
+                "pick_mode": "extend",
+                "construction": {},
+                "timings": {"workload": {"frames": 80, "output_frame_count": 190, "overlap": 16}},
+            }
+        )
+        assert er is not None
+        self.assertEqual(er["generation_frames"], 80)
+        self.assertEqual(er["output_frame_count"], 190)
+        self.assertEqual(er["overlap"], 16)
+        self.assertEqual(er["pick_mode"], "extend")
+
     def test_sibling_keeper_boost(self) -> None:
         edges = [
             {"child_group_id": "og:stem:rated_child", "parent_group_id": "og:stem:shared_parent"},

@@ -1274,10 +1274,16 @@ def replace_rating_rows_from_doc(con: sqlite3.Connection, doc: Dict[str, Any]) -
     return _import_ratings_doc_into_db(con, doc)
 
 
+_RATINGS_AGG_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+
+
 def load_ratings_doc(ratings_index_path: Path) -> Dict[str, Any]:
     """
     Facade: prefer SQLite live store; migrate from JSON on first open.
     Overlay by_output_relpath from DB onto JSON aggregates when an export exists.
+
+    Aggregate sections (by_graph_hash, …) are cached by the JSON file mtime so a
+    live star upsert (sqlite mtime bump) does not re-parse multi-MB exports.
     """
     ratings_index_path = Path(ratings_index_path).expanduser().resolve()
     db_path = ratings_db_path_for_index(ratings_index_path)
@@ -1290,13 +1296,27 @@ def load_ratings_doc(ratings_index_path: Path) -> Dict[str, Any]:
     base = _init_ratings_doc()
     if ratings_index_path.is_file():
         try:
-            loaded = json.loads(ratings_index_path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                for k in ("version", "updated_at", "stats", "by_graph_hash", "by_shape_recipe", "by_source_basename"):
-                    if k in loaded:
-                        base[k] = loaded[k]
-        except (OSError, json.JSONDecodeError):
-            pass
+            json_mtime = ratings_index_path.stat().st_mtime
+        except OSError:
+            json_mtime = None
+        key = str(ratings_index_path)
+        cached = _RATINGS_AGG_CACHE.get(key) if json_mtime is not None else None
+        if cached and cached[0] == json_mtime:
+            for k, v in cached[1].items():
+                base[k] = v
+        else:
+            try:
+                loaded = json.loads(ratings_index_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    aggs: Dict[str, Any] = {}
+                    for k in ("version", "updated_at", "stats", "by_graph_hash", "by_shape_recipe", "by_source_basename"):
+                        if k in loaded:
+                            base[k] = loaded[k]
+                            aggs[k] = loaded[k]
+                    if json_mtime is not None:
+                        _RATINGS_AGG_CACHE[key] = (json_mtime, aggs)
+            except (OSError, json.JSONDecodeError):
+                pass
     base["by_output_relpath"] = by_output
     if by_output:
         base["updated_at"] = utc_now()
@@ -1472,12 +1492,16 @@ def set_output_quality_axis(
     og_root: Path,
     ratings_index_path: Path,
     ffprobe: Optional[str] = None,
+    enrich_sources: bool = False,
 ) -> Dict[str, Any]:
     """
     Set or clear one quality axis and refresh the derived ``explicit`` aggregate + XMP.
 
     Stars 1–5 set the axis; 0 clears it. ``explicit`` is the rounded mean of set axes.
     XMP ``xmp:Rating`` mirrors ``explicit`` (cleared when no axes remain).
+
+    Interactive UI passes ``enrich_sources=False`` (default) so star clicks skip
+    prompt/ffprobe source extraction — that belongs on ``ratings build``.
     """
     axis_id = normalize_quality_axis(axis)
     if not axis_id:
@@ -1537,7 +1561,8 @@ def set_output_quality_axis(
         for keep in ("graph_hash", "shape_recipe"):
             if prev.get(keep):
                 row[keep] = prev[keep]
-        _enrich_row_sources(media_abs, row, ffprobe=ffprobe)
+        if enrich_sources:
+            _enrich_row_sources(media_abs, row, ffprobe=ffprobe)
         upsert_rating_row(con, asset_key=asset_key, row=row, updated_at=now)
         return {
             "ok": True,
@@ -1565,6 +1590,7 @@ def set_output_rating(
     ratings_index_path: Path,
     ffprobe: Optional[str] = None,
     axis: Optional[str] = None,
+    enrich_sources: bool = False,
 ) -> Dict[str, Any]:
     """
     Set quality rating(s) for one output.
@@ -1584,6 +1610,7 @@ def set_output_rating(
             og_root=og_root,
             ratings_index_path=ratings_index_path,
             ffprobe=ffprobe,
+            enrich_sources=enrich_sources,
         )
 
     last: Dict[str, Any] = {"ok": True, "relpath": media_relpath, "stars": stars, "cleared": stars <= 0}
@@ -1596,6 +1623,7 @@ def set_output_rating(
             og_root=og_root,
             ratings_index_path=ratings_index_path,
             ffprobe=ffprobe,
+            enrich_sources=enrich_sources,
         )
     last["axis"] = None
     last["stars"] = stars

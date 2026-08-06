@@ -56,6 +56,7 @@ from shape_factory_heuristics import add_heuristics_subparser
 from shape_factory_rating_sampler import add_rating_sampler_subparser
 from shape_factory_tags import add_tags_subparser
 from shape_factory_source_facets import add_source_facets_subparser
+from shape_factory_job_output_index import add_job_output_index_subparser
 from shape_factory_seed_sources import add_seed_sources_subparser
 from shape_factory_backfill import add_backfill_subparser
 
@@ -5328,6 +5329,42 @@ def cmd_deposit(args: argparse.Namespace) -> int:
         atomic_write_json(index_path, index_doc)
         persist_timings(job_path, job, ledger=should_append_timings_ledger(job))
 
+        # Persist output→job construction summary for UI joins (rate scrubber, replay).
+        try:
+            from shape_factory_job_output_index import (
+                default_job_output_index_path,
+                open_job_output_index,
+                upsert_from_job,
+            )
+
+            og_guess = None
+            for vp in video_paths:
+                try:
+                    parts = vp.resolve().parts
+                    if "og" in parts:
+                        og_guess = Path(*parts[: parts.index("og") + 1])
+                        break
+                except OSError:
+                    continue
+            if og_guess is None:
+                og_guess = data_root / "output" / "og"
+            jo_path = default_job_output_index_path(og_guess)
+            out_root = og_guess.parent if og_guess.name == "og" else data_root / "output"
+            jo_con = open_job_output_index(jo_path)
+            try:
+                upsert_from_job(
+                    jo_con,
+                    job,
+                    job_path=job_path,
+                    output_root=out_root if out_root.is_dir() else None,
+                    commit=True,
+                )
+            finally:
+                jo_con.close()
+        except Exception as exc:
+            if not quiet:
+                print(f"  job_output_index_warn: {exc}", file=sys.stderr)
+
     print(f"\ndeposit_added={deposited}")
     print(f"deposit_skipped={skipped}")
     return 0
@@ -5820,6 +5857,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_rating_sampler_subparser(sub)
     add_tags_subparser(sub)
     add_source_facets_subparser(sub)
+    add_job_output_index_subparser(sub)
     add_seed_sources_subparser(sub)
     add_backfill_subparser(sub)
 

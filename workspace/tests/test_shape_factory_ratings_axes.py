@@ -194,6 +194,91 @@ class QualityAxesWriteTests(unittest.TestCase):
             assert row is not None
             self.assertEqual(row["axes"]["subject_beauty"], 5)
 
+    def test_default_set_skips_source_enrich(self) -> None:
+        """Interactive star path must not call prompt/ffprobe source enrichment."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            og = root / "og"
+            og.mkdir()
+            media = og / "clip.mp4"
+            media.write_bytes(b"fake")
+            idx = root / "ratings_index.json"
+            calls: list[int] = []
+
+            def _track(*_a, **_k):
+                calls.append(1)
+
+            import shape_factory_ratings as sfr
+
+            orig = sfr._enrich_row_sources
+            sfr._enrich_row_sources = _track  # type: ignore[assignment]
+            try:
+                set_output_quality_axis(
+                    media_abs=media,
+                    media_relpath="og/clip.mp4",
+                    axis="subject_beauty",
+                    stars=4,
+                    og_root=og,
+                    ratings_index_path=idx,
+                )
+                self.assertEqual(calls, [])
+                set_output_quality_axis(
+                    media_abs=media,
+                    media_relpath="og/clip.mp4",
+                    axis="subject_beauty",
+                    stars=5,
+                    og_root=og,
+                    ratings_index_path=idx,
+                    enrich_sources=True,
+                )
+                self.assertEqual(calls, [1])
+            finally:
+                sfr._enrich_row_sources = orig  # type: ignore[assignment]
+
+    def test_load_ratings_doc_caches_json_aggregates(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            og = root / "og"
+            og.mkdir()
+            media = og / "clip.mp4"
+            media.write_bytes(b"fake")
+            idx = root / "ratings_index.json"
+            set_output_quality_axis(
+                media_abs=media,
+                media_relpath="og/clip.mp4",
+                axis="subject_beauty",
+                stars=3,
+                og_root=og,
+                ratings_index_path=idx,
+            )
+            # Seed a multi-section JSON export (aggregates only; by_output comes from SQLite).
+            idx.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "by_graph_hash": {"abc": {"n": 1}},
+                        "by_output_relpath": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            doc1 = load_ratings_doc(idx)
+            self.assertEqual(doc1.get("by_graph_hash"), {"abc": {"n": 1}})
+            # Bump SQLite via another set; JSON mtime unchanged → aggregates stay cached.
+            set_output_quality_axis(
+                media_abs=media,
+                media_relpath="og/clip.mp4",
+                axis="render_quality",
+                stars=4,
+                og_root=og,
+                ratings_index_path=idx,
+            )
+            doc2 = load_ratings_doc(idx)
+            self.assertEqual(doc2.get("by_graph_hash"), {"abc": {"n": 1}})
+            row = lookup_output_rating("og/clip.mp4", doc2)
+            assert row is not None
+            self.assertEqual(row["axes"]["render_quality"], 4)
+
     def test_second_set_is_upsert_not_duplicate(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

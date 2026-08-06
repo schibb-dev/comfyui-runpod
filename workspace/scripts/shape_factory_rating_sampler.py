@@ -191,6 +191,7 @@ class RatingCandidate:
     triage_pass_count: int = 0
     mtime: float = 0.0
     thumb_relpath: Optional[str] = None
+    extension_range: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -213,6 +214,7 @@ class RatingCandidate:
             "triage_pass_count": self.triage_pass_count,
             "mtime": self.mtime,
             "thumb_relpath": self.thumb_relpath,
+            "extension_range": self.extension_range,
         }
 
 
@@ -246,6 +248,178 @@ def _item_matches_query(item: dict[str, Any], query: str) -> bool:
 def _discovery_href(relpath: str) -> str:
     norm = relpath.strip().replace("\\", "/").lstrip("/")
     return f"/discovery?relpath={norm}" if norm else "/discovery"
+
+
+_OUTPUT_SUFFIX_RE = re.compile(r"(?i)_(?:FINAL|PREVIEW)_\d+$")
+
+
+def job_key_guess_from_output_relpath(relpath: str) -> str:
+    """Map og output basename → job_key (strip _FINAL_00001 / _PREVIEW_00001)."""
+    stem = Path(str(relpath or "").replace("\\", "/")).stem
+    if not stem:
+        return ""
+    return _OUTPUT_SUFFIX_RE.sub("", stem)
+
+
+def extension_range_from_job(job: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Compact origin/generated band inputs for the rate-queue scrubber."""
+    if not isinstance(job, dict):
+        return None
+    construction = job.get("construction") if isinstance(job.get("construction"), dict) else {}
+    timings = job.get("timings") if isinstance(job.get("timings"), dict) else {}
+    workload = timings.get("workload") if isinstance(timings.get("workload"), dict) else {}
+
+    def _int(v: Any) -> Optional[int]:
+        try:
+            if v is None or v == "":
+                return None
+            n = int(v)
+            return n if n >= 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    frames_before = _int(construction.get("frames_before"))
+    generation = _int(workload.get("frames"))
+    if generation is None:
+        generation = _int(construction.get("frames_after"))
+    output_fc = _int(workload.get("output_frame_count"))
+    overlap = _int(workload.get("overlap"))
+    if overlap is None:
+        overlap = _int(construction.get("overlap"))
+
+    fps: Optional[float] = None
+    for raw in (workload.get("fps"), workload.get("force_rate"), construction.get("fps")):
+        try:
+            f = float(raw)
+            if f > 0:
+                fps = f
+                break
+        except (TypeError, ValueError):
+            pass
+
+    if frames_before is None and generation is None and output_fc is None:
+        return None
+
+    out: Dict[str, Any] = {
+        "job_key": str(job.get("job_key") or "").strip() or None,
+        "pick_mode": str(job.get("pick_mode") or construction.get("pick_mode") or "").strip() or None,
+        "frames_before": frames_before,
+        "generation_frames": generation,
+        "output_frame_count": output_fc,
+        "overlap": overlap,
+        "fps": fps,
+    }
+    return out
+
+
+def enrich_candidates_extension_ranges(
+    candidates: List[Any],
+    *,
+    data_root: Path,
+    og_root: Optional[Path] = None,
+    output_root: Optional[Path] = None,
+    index_path: Optional[Path] = None,
+) -> int:
+    """
+    Attach ``extension_range`` onto candidate dicts (or RatingCandidate).
+
+    Prefers ``job_output_index.sqlite``; falls back to a single ``find_job_by_key``
+    per miss (never a full job-tree scan).
+    """
+    from shape_factory import find_job_by_key  # type: ignore
+    from shape_factory_job_output_index import (
+        default_job_output_index_path,
+        lookup_extension_range,
+        open_job_output_index,
+    )
+
+    data_root = Path(data_root).expanduser().resolve()
+    if not data_root.is_dir():
+        return 0
+
+    idx_path = Path(index_path).expanduser().resolve() if index_path else None
+    if idx_path is None and og_root is not None:
+        idx_path = default_job_output_index_path(Path(og_root))
+    if idx_path is None:
+        # Common layout: data_root/. or sibling output/_status
+        for cand_og in (
+            data_root / "output" / "og",
+            Path("/home/yuji/comfyui-runpod-data/output/og"),
+        ):
+            p = default_job_output_index_path(cand_og)
+            if p.is_file():
+                idx_path = p
+                if output_root is None and cand_og.parent.is_dir():
+                    output_root = cand_og.parent
+                break
+
+    con = None
+    if idx_path is not None and idx_path.is_file():
+        try:
+            con = open_job_output_index(idx_path)
+        except Exception:
+            con = None
+
+    enriched = 0
+    try:
+        for cand in candidates:
+            if isinstance(cand, dict):
+                rel = str(cand.get("relpath") or "")
+                if cand.get("extension_range"):
+                    continue
+            else:
+                rel = str(getattr(cand, "relpath", "") or "")
+                if getattr(cand, "extension_range", None):
+                    continue
+            if not rel:
+                continue
+
+            er: Optional[Dict[str, Any]] = None
+            if con is not None:
+                try:
+                    er = lookup_extension_range(con, rel, output_root=output_root)
+                except Exception:
+                    er = None
+            if er is None:
+                key = job_key_guess_from_output_relpath(rel)
+                if key:
+                    _path, job = find_job_by_key(data_root, key)
+                    if job:
+                        er = extension_range_from_job(job)
+            if not er:
+                continue
+            if isinstance(cand, dict):
+                cand["extension_range"] = er
+            else:
+                cand.extension_range = er
+            enriched += 1
+    finally:
+        if con is not None:
+            con.close()
+    return enriched
+
+
+def enrich_session_extension_ranges(
+    session: Dict[str, Any],
+    *,
+    data_root: Path,
+    og_root: Optional[Path] = None,
+    output_root: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """In-place enrich candidates + vision_priority on a sampler session payload."""
+    if not isinstance(session, dict) or not session.get("ok"):
+        return session
+    cands = session.get("candidates")
+    if isinstance(cands, list):
+        enrich_candidates_extension_ranges(
+            cands, data_root=data_root, og_root=og_root, output_root=output_root
+        )
+    vp = session.get("vision_priority")
+    if isinstance(vp, list):
+        enrich_candidates_extension_ranges(
+            vp, data_root=data_root, og_root=og_root, output_root=output_root
+        )
+    return session
 
 
 def _graph_pattern_score(
@@ -1060,6 +1234,28 @@ def sample_rating_queue(
         "vision_priority": [c.to_dict() for c in vision_queue],
         "next_steps": next_steps,
     }
+    # Best-effort: attach origin/generated band inputs for the rate scrubber.
+    try:
+        from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+        # og_root is typically <data>/output/og — walk up for a repo that owns .data
+        repo_guess = og_root
+        for _ in range(6):
+            if (repo_guess / ".data" / "shape_factory" / "jobs").is_dir() or (repo_guess / "shape_factory" / "jobs").is_dir():
+                break
+            if repo_guess.parent == repo_guess:
+                break
+            repo_guess = repo_guess.parent
+        data_root = resolve_shape_factory_data_root(repo_root=repo_guess)
+        out_root = og_root.parent if og_root.name == "og" else None
+        enrich_session_extension_ranges(
+            session,
+            data_root=data_root,
+            og_root=og_root,
+            output_root=out_root,
+        )
+    except Exception:
+        pass
     return session
 
 

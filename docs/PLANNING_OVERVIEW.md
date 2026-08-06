@@ -66,7 +66,7 @@ Each program has: **intent**, **today**, **next** (actionable), **later**, **key
 | **Today** | Discovery library (og/wip), path search, lineage UI, workflow facets, trim/health; `asset_tags` bootstrap + editorial `source_facets`; **no** CLIP/Florence index |
 | **Next (spike)** | **V2** — watcher + job-queue stubs that enqueue the same portable slice caption/tag scripts (V1 kept time slices) — [`DISCOVERY_INDEX_WATCHER_PLAN.md`](./DISCOVERY_INDEX_WATCHER_PLAN.md) |
 | **Later (locked sequence)** | **V3a** PromptGen-large tags into `asset_tags`/facets (pin: `_status/vision_v3a_tag_pin.json`; informed base∪large later) → **V4** BM25/sidecar search → **V3b** CLIP/ANN and **V5** HITL as recall demands |
-| **Docs** | [`DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md`](./DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md) (V1–V5 sequence), [`VISION_V1_TIME_SLICE_CAPTION_SPIKE.md`](./VISION_V1_TIME_SLICE_CAPTION_SPIKE.md), [`SOURCE_FACET_SIMILARITY_PLAN.md`](./SOURCE_FACET_SIMILARITY_PLAN.md), [`DISCOVERY_INDEX_WATCHER_PLAN.md`](./DISCOVERY_INDEX_WATCHER_PLAN.md) |
+| **Docs** | [`DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md`](./DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md) (V1–V5 sequence), [`VISION_V1_TIME_SLICE_CAPTION_SPIKE.md`](./VISION_V1_TIME_SLICE_CAPTION_SPIKE.md), [`SOURCE_FACET_SIMILARITY_PLAN.md`](./SOURCE_FACET_SIMILARITY_PLAN.md), [`DISCOVERY_INDEX_WATCHER_PLAN.md`](./DISCOVERY_INDEX_WATCHER_PLAN.md), [`SCALE_INDEX_ARCHITECTURE.md`](./SCALE_INDEX_ARCHITECTURE.md) (job_output + ratings hot path + vector join rules) |
 | **Not now** | Temporal NL (“X then Y”); full LoRA; face-embedding identity provider |
 
 **GPU:** batch worker **off** interactive Comfy.
@@ -79,10 +79,10 @@ Each program has: **intent**, **today**, **next** (actionable), **later**, **key
 
 | | |
 |--|--|
-| **Today** | Prompt-path inference, `discovery_lineage_edges.json`, API + UI, `backfill_discovery_lineage.py` |
+| **Today** | Prompt-path inference, `discovery_lineage_edges.json`, API + UI, `backfill_discovery_lineage.py`; **`job_output_index.sqlite`** for output→job joins ([`SCALE_INDEX_ARCHITECTURE.md`](./SCALE_INDEX_ARCHITECTURE.md)) |
 | **Next (spike)** | **Inferred ratings v1** — lineage-backed rollup to workflows/sources/recipes; see [`RATINGS_V1_PLAN.md`](./RATINGS_V1_PLAN.md) |
 | **Later** | Phase-1 `asset`/`run` store; **promotion** of referenced externals; T2I/T2V text roots; lineage-aware search; multi-hop inference |
-| **Docs** | [`LINEAGE_INDEX_SKETCH.md`](./LINEAGE_INDEX_SKETCH.md), [`RATINGS_V1_PLAN.md`](./RATINGS_V1_PLAN.md) |
+| **Docs** | [`LINEAGE_INDEX_SKETCH.md`](./LINEAGE_INDEX_SKETCH.md), [`RATINGS_V1_PLAN.md`](./RATINGS_V1_PLAN.md), [`SCALE_INDEX_ARCHITECTURE.md`](./SCALE_INDEX_ARCHITECTURE.md) |
 | **Not now** | Replacing similarity with graph traversal |
 
 ---
