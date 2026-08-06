@@ -11,27 +11,9 @@ function formatDuration(seconds: number | null | undefined): string {
   return `${m}m ${r.toString().padStart(2, "0")}s`;
 }
 
-/**
- * Live Comfy latent/VHS preview for a running prompt_id — shared by Workbench and Queue.
- */
-export function ComfyLivePreview({
-  promptId,
-  submittedAt,
-  className,
-}: {
-  promptId: string;
-  submittedAt?: string | null;
-  className?: string;
-}) {
-  const [bust, setBust] = useState(() => Date.now());
-  const [hasFrame, setHasFrame] = useState(false);
+function useComfyLiveStatus(promptId: string) {
   const [status, setStatus] = useState<ComfyLiveStatusItem | null>(null);
   const [nowTick, setNowTick] = useState(() => Date.now());
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const frameUrlsRef = useRef<Map<number, string>>(new Map());
-  const frameImgsRef = useRef<Map<number, HTMLImageElement>>(new Map());
-  const animRef = useRef<number | null>(null);
-  const lastFetchRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -42,10 +24,6 @@ export function ComfyLivePreview({
           if (cancelled) return;
           const item = (res.items || []).find((x) => x.prompt_id === promptId) || null;
           setStatus(item);
-          if (item?.has_preview) {
-            setHasFrame(true);
-            setBust(Date.now());
-          }
         })
         .catch(() => {
           /* ignore transient bridge errors while polling */
@@ -60,6 +38,110 @@ export function ComfyLivePreview({
       window.clearInterval(clock);
     };
   }, [promptId]);
+
+  return { status, nowTick };
+}
+
+function liveTimingParts(
+  status: ComfyLiveStatusItem | null,
+  nowTick: number,
+  submittedAt?: string | null,
+) {
+  const value = status?.value;
+  const max = status?.max;
+  const pct =
+    typeof value === "number" && typeof max === "number" && max > 0
+      ? Math.max(0, Math.min(100, Math.round((value / max) * 100)))
+      : null;
+
+  const elapsedClient =
+    status?.started_at != null
+      ? Math.max(0, nowTick / 1000 - status.started_at)
+      : submittedAt
+        ? Math.max(0, (nowTick - Date.parse(submittedAt)) / 1000)
+        : status?.elapsed_s ?? null;
+  const eta =
+    status?.eta_s != null
+      ? status.eta_s
+      : typeof value === "number" && typeof max === "number" && value > 0 && max > value && elapsedClient != null
+        ? (elapsedClient * (max - value)) / value
+        : null;
+
+  return { value, max, pct, elapsedClient, eta };
+}
+
+/** Elapsed / ETA / progress — for the bottom of a row header. */
+export function ComfyLiveMetricsBar({
+  promptId,
+  submittedAt,
+  className,
+}: {
+  promptId: string;
+  submittedAt?: string | null;
+  className?: string;
+}) {
+  const { status, nowTick } = useComfyLiveStatus(promptId);
+  const { value, max, pct, elapsedClient, eta } = liveTimingParts(status, nowTick, submittedAt);
+
+  return (
+    <div className={["work-product-live__metrics", className].filter(Boolean).join(" ")}>
+      <div className="work-product-live__timing" title={status?.node ? `node ${status.node}` : undefined}>
+        <span>Elapsed {formatDuration(elapsedClient)}</span>
+        <span>ETA {eta != null ? `~${formatDuration(eta)}` : "—"}</span>
+        {pct != null ? (
+          <span>
+            {value}/{max}
+          </span>
+        ) : status?.status ? (
+          <span>{status.status}</span>
+        ) : null}
+      </div>
+      {pct != null ? (
+        <div
+          className="work-product-live__progress"
+          title={`${value}/${max}${status?.node ? ` · node ${status.node}` : ""}`}
+        >
+          <div className="work-product-live__bar" style={{ width: `${pct}%` }} />
+          <span className="work-product-live__prog-label">
+            {value}/{max}
+            {status?.node ? ` · ${status.node}` : ""}
+          </span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Live Comfy latent/VHS preview for a running prompt_id — shared by Workbench and Queue.
+ * Pass showMetrics={false} when ComfyLiveMetricsBar is rendered in the row header.
+ */
+export function ComfyLivePreview({
+  promptId,
+  submittedAt,
+  className,
+  showMetrics = true,
+}: {
+  promptId: string;
+  submittedAt?: string | null;
+  className?: string;
+  showMetrics?: boolean;
+}) {
+  const [bust, setBust] = useState(() => Date.now());
+  const [hasFrame, setHasFrame] = useState(false);
+  const { status, nowTick } = useComfyLiveStatus(promptId);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const frameUrlsRef = useRef<Map<number, string>>(new Map());
+  const frameImgsRef = useRef<Map<number, HTMLImageElement>>(new Map());
+  const animRef = useRef<number | null>(null);
+  const lastFetchRef = useRef(0);
+
+  useEffect(() => {
+    if (status?.has_preview) {
+      setHasFrame(true);
+      setBust(Date.now());
+    }
+  }, [status?.has_preview, status?.updated_at]);
 
   useEffect(() => {
     let cancelled = false;
@@ -162,30 +244,38 @@ export function ComfyLivePreview({
     };
   }, [status?.vhs_rate, status?.vhs_length, status?.frames_count]);
 
-  const value = status?.value;
-  const max = status?.max;
-  const pct =
-    typeof value === "number" && typeof max === "number" && max > 0
-      ? Math.max(0, Math.min(100, Math.round((value / max) * 100)))
-      : null;
-
-  const elapsedClient =
-    status?.started_at != null
-      ? Math.max(0, nowTick / 1000 - status.started_at)
-      : submittedAt
-        ? Math.max(0, (nowTick - Date.parse(submittedAt)) / 1000)
-        : status?.elapsed_s ?? null;
-  const eta =
-    status?.eta_s != null
-      ? status.eta_s
-      : typeof value === "number" && typeof max === "number" && value > 0 && max > value && elapsedClient != null
-        ? (elapsedClient * (max - value)) / value
-        : null;
-
+  const { value, max, pct, elapsedClient, eta } = liveTimingParts(status, nowTick, submittedAt);
   const animate = (status?.frames_count || 0) >= 2;
 
   return (
     <div className={["work-product-live", className].filter(Boolean).join(" ")}>
+      {showMetrics ? (
+        <div className="work-product-live__metrics">
+          <div className="work-product-live__timing" title={status?.node ? `node ${status.node}` : undefined}>
+            <span>Elapsed {formatDuration(elapsedClient)}</span>
+            <span>ETA {eta != null ? `~${formatDuration(eta)}` : "—"}</span>
+            {pct != null ? (
+              <span>
+                {value}/{max}
+              </span>
+            ) : status?.status ? (
+              <span>{status.status}</span>
+            ) : null}
+          </div>
+          {pct != null ? (
+            <div
+              className="work-product-live__progress"
+              title={`${value}/${max}${status?.node ? ` · node ${status.node}` : ""}`}
+            >
+              <div className="work-product-live__bar" style={{ width: `${pct}%` }} />
+              <span className="work-product-live__prog-label">
+                {value}/{max}
+                {status?.node ? ` · ${status.node}` : ""}
+              </span>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       <div className="work-product-live__frame">
         {animate ? (
           <canvas className="work-product-live__img work-product-live__canvas" ref={canvasRef} />
@@ -206,29 +296,6 @@ export function ComfyLivePreview({
           live
         </span>
       </div>
-      <div className="work-product-live__timing" title={status?.node ? `node ${status.node}` : undefined}>
-        <span>Elapsed {formatDuration(elapsedClient)}</span>
-        <span>ETA {eta != null ? `~${formatDuration(eta)}` : "—"}</span>
-        {pct != null ? (
-          <span>
-            {value}/{max}
-          </span>
-        ) : status?.status ? (
-          <span>{status.status}</span>
-        ) : null}
-      </div>
-      {pct != null ? (
-        <div
-          className="work-product-live__progress"
-          title={`${value}/${max}${status?.node ? ` · node ${status.node}` : ""}`}
-        >
-          <div className="work-product-live__bar" style={{ width: `${pct}%` }} />
-          <span className="work-product-live__prog-label">
-            {value}/{max}
-            {status?.node ? ` · ${status.node}` : ""}
-          </span>
-        </div>
-      ) : null}
     </div>
   );
 }

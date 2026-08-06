@@ -290,11 +290,19 @@ body {
 }
 .pipeline-row__times {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  align-items: baseline;
   gap: 4px 14px;
   padding: 0 12px 6px;
   font-size: 0.72rem;
   color: var(--muted);
+  min-width: 0;
+}
+.pipeline-row__times .pipeline-row__key {
+  margin-left: auto;
+  flex: 0 1 auto;
+  max-width: min(45%, 280px);
+  text-align: right;
 }
 .pipeline-row__error-line {
   margin: 0 0 6px;
@@ -11581,17 +11589,41 @@ tr.disabled:hover td {
   background: rgba(0, 0, 0, 0.18);
 }
 
+.pipeline-row__head--live-metrics {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.pipeline-row__head-main {
+  display: flex;
+  align-items: baseline;
+  width: 100%;
+  min-width: 0;
+}
+
 .pipeline-row__title {
   display: flex;
   align-items: baseline;
   gap: 10px;
   flex-wrap: wrap;
   min-width: 0;
+  width: 100%;
+}
+
+.pipeline-row__badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
 }
 
 .pipeline-row__title-text {
   font-weight: 650;
   font-size: 14px;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .pipeline-row__when,
@@ -11604,7 +11636,6 @@ tr.disabled:hover td {
   font-family: var(--mono);
   font-size: 11px;
   color: var(--muted);
-  max-width: min(100%, 520px);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -11665,6 +11696,12 @@ tr.disabled:hover td {
   padding: 10px 12px;
   box-sizing: border-box;
   gap: 8px;
+  display: flex;
+  flex-direction: column;
+}
+
+.pipeline-media-player .work-product-viewer__trim {
+  margin-top: 2px;
 }
 
 .pipeline-media-player .work-product-viewer__video,
@@ -12024,6 +12061,20 @@ tr.disabled:hover td {
   background: rgba(0, 0, 0, 0.18);
 }
 
+.work-product-row__head--live-metrics {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.work-product-row__head-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
 .work-product-row__title {
   display: flex;
   align-items: baseline;
@@ -12249,11 +12300,17 @@ tr.disabled:hover td {
   object-fit: contain;
 }
 
+.work-product-live__metrics {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
 .work-product-live__timing {
   display: flex;
   flex-wrap: wrap;
   gap: 10px 14px;
-  padding: 2px 0 0;
+  padding: 0;
   font-size: 12px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;

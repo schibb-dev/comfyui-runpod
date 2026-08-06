@@ -10,10 +10,10 @@ import {
   saveQueueItemForLater,
   setQueueLedgerControl,
 } from "./api";
-import { ComfyLivePreview } from "./ComfyLivePreview";
+import { ComfyLiveMetricsBar, ComfyLivePreview } from "./ComfyLivePreview";
 import { discoveryLibraryHref, workbenchHref } from "./discoveryDeepLink";
 import { PageHeader } from "./PageHeader";
-import { PipelineMediaPlayer } from "./PipelineMediaPlayer";
+import { PipelineMediaPlayer, vhsWindowFromKeyParams } from "./PipelineMediaPlayer";
 import { PipelineFilterRow, PipelineList, PipelineScreen, PipelineScroll } from "./PipelineScreen";
 import type {
   ComfyHistoryItem,
@@ -231,6 +231,7 @@ function QueuePipelineRow({
   changedAt,
   errorMessage,
   live,
+  liveMetrics,
   actions,
 }: {
   title: string;
@@ -243,6 +244,7 @@ function QueuePipelineRow({
   changedAt?: string | null;
   errorMessage?: string | null;
   live?: boolean;
+  liveMetrics?: React.ReactNode;
   actions: React.ReactNode;
 }) {
   const isError = statusVisual === "error" || statusVisual === "interrupted";
@@ -250,21 +252,23 @@ function QueuePipelineRow({
     <article
       className={`pipeline-row${live ? " pipeline-row--live" : ""}${isError ? " pipeline-row--error" : ""}`}
     >
-      <header className="pipeline-row__head">
-        <div className="pipeline-row__title">
-          <span className="pipeline-row__title-text">{title}</span>
-          <span
-            className={`work-products-status-toggle work-products-status-toggle--${statusVisual} is-on${
-              isError ? " queue-status-badge--loud" : ""
-            }`}
-            style={{ pointerEvents: "none" }}
-          >
-            <span className="work-products-status-toggle__label">{statusLabel}</span>
-          </span>
+      <header className={`pipeline-row__head${liveMetrics ? " pipeline-row__head--live-metrics" : ""}`}>
+        <div className="pipeline-row__head-main">
+          <div className="pipeline-row__title">
+            <span className="pipeline-row__badges" aria-label="Status">
+              <span
+                className={`work-products-status-toggle work-products-status-toggle--${statusVisual} is-on${
+                  isError ? " queue-status-badge--loud" : ""
+                }`}
+                style={{ pointerEvents: "none" }}
+              >
+                <span className="work-products-status-toggle__label">{statusLabel}</span>
+              </span>
+            </span>
+            <span className="pipeline-row__title-text">{title}</span>
+          </div>
         </div>
-        <code className="pipeline-row__key" title={promptId || undefined}>
-          {shortId(promptId, 14)}
-        </code>
+        {liveMetrics}
       </header>
       <div className="pipeline-row__times mono" aria-label="Timestamps">
         <span title="When this job entered the queue / started">
@@ -273,6 +277,9 @@ function QueuePipelineRow({
         <span title="Last status change (finished, failed, or updated)">
           changed {formatQueueWhen(changedAt)}
         </span>
+        <code className="pipeline-row__key" title={promptId || undefined}>
+          {shortId(promptId, 14)}
+        </code>
       </div>
       <div className="pipeline-row__body pipeline-row__body--player">
         <div className="pipeline-row__media pipeline-row__media--player">{media}</div>
@@ -301,6 +308,7 @@ function QueueItemRow({
   const jobKey = String(item.job_key || "").trim() || null;
   const workbenchUrl = workbenchHref({ jobKey, promptId: pid || null });
   const title = item.workflow_name || basename(item.input_media_relpath) || shortId(pid, 16);
+  const trim = vhsWindowFromKeyParams(item.key_params);
   const detailParts = [
     item.input_media_relpath ? basename(item.input_media_relpath) : null,
     !item.external && item.exp_id ? `${item.exp_id}/${item.run_id ?? ""}` : null,
@@ -308,28 +316,26 @@ function QueueItemRow({
     formatKeyParams(item.key_params),
   ].filter(Boolean);
 
+  const sourcePlayer = (
+    <PipelineMediaPlayer
+      videoUrl={videoUrl}
+      thumbUrl={thumb}
+      mediaKey={`queue-${kind}:${pid || item.input_media_relpath || title}`}
+      alt={title}
+      readOnly
+      vhsWindow={trim.window}
+      fpsHint={trim.fpsHint}
+    />
+  );
+
   const media =
     kind === "running" && pid ? (
       <div className="pipeline-row__media-stack">
-        <ComfyLivePreview promptId={pid} className="pipeline-row__live" />
-        {videoUrl || thumb ? (
-          <PipelineMediaPlayer
-            videoUrl={videoUrl}
-            thumbUrl={thumb}
-            mediaKey={`queue-src:${pid || item.input_media_relpath || title}`}
-            alt={title}
-            readOnly
-          />
-        ) : null}
+        <ComfyLivePreview promptId={pid} className="pipeline-row__live" showMetrics={false} />
+        {sourcePlayer}
       </div>
     ) : (
-      <PipelineMediaPlayer
-        videoUrl={videoUrl}
-        thumbUrl={thumb}
-        mediaKey={`queue-${kind}:${pid || item.input_media_relpath || title}`}
-        alt={title}
-        readOnly
-      />
+      sourcePlayer
     );
 
   return (
@@ -343,6 +349,7 @@ function QueueItemRow({
       queuedAt={item.queued_at}
       changedAt={item.changed_at}
       live={kind === "running"}
+      liveMetrics={kind === "running" && pid ? <ComfyLiveMetricsBar promptId={pid} /> : null}
       actions={
         <>
           <button

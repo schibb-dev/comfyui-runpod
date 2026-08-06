@@ -1,7 +1,7 @@
 import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cancelWorkItem, createWorkItems, discardShapeFactoryJob, fetchShapeFactoryJsonPeek, fetchShapeFactoryWorkProducts, replayShapeFactory, runDispositionStep, unqueueShapeFactory, updatePendingShapeFactoryTrim } from "./api";
-import { ComfyLivePreview } from "./ComfyLivePreview";
+import { ComfyLiveMetricsBar, ComfyLivePreview } from "./ComfyLivePreview";
 import { PageHeader } from "./PageHeader";
 import { PipelineScreen } from "./PipelineScreen";
 import { VideoTrimControls } from "./VideoTrimControls";
@@ -947,7 +947,11 @@ function WorkProductViewer({
             ) : null}
           </>
         ) : showRunningLive ? (
-          <ComfyLivePreview promptId={promptId} submittedAt={item.submitted_at || item.created_at} />
+          <ComfyLivePreview
+            promptId={promptId}
+            submittedAt={item.submitted_at || item.created_at}
+            showMetrics={false}
+          />
         ) : queuedSourcePlayUrl ? (
           <div className="work-product-viewer__queued-source">
             <div className="work-product-viewer__queued-source-frame">
@@ -2912,36 +2916,48 @@ function WorkProductRow({
         isLivePreviewItem(item) ? " work-product-row--live" : ""
       }`}
     >
-      <header className="work-product-row__head">
-        <div className="work-product-row__title">
-          <strong>{item.family_slug || "job"}</strong>
-          {item.is_hourly ? (
-            <span className="work-product-badge work-product-badge--hourly" title="Produced by the hourly planner">
-              Hourly
-            </span>
-          ) : null}
-          {isRunningLiveItem(item) ? (
-            <span className="work-product-badge work-product-badge--live-run">live</span>
-          ) : thumbMeta ? (
-            <span className={`work-product-badge ${thumbBadgeClass}`}>{thumbMeta.label}</span>
-          ) : null}
-          <span className="work-product-row__when">{formatWhen(item.created_at)}</span>
-          {(() => {
-            const timing = timingHeadline(item);
-            if (!timing) return null;
-            return (
-              <span
-                className={`work-product-row__timing${timing.bad ? " work-product-row__timing--bad" : ""}`}
-                title={timing.title}
-              >
-                {timing.text}
+      <header
+        className={`work-product-row__head${
+          isRunningLiveItem(item) && item.prompt_id ? " work-product-row__head--live-metrics" : ""
+        }`}
+      >
+        <div className="work-product-row__head-main">
+          <div className="work-product-row__title">
+            <strong>{item.family_slug || "job"}</strong>
+            {item.is_hourly ? (
+              <span className="work-product-badge work-product-badge--hourly" title="Produced by the hourly planner">
+                Hourly
               </span>
-            );
-          })()}
+            ) : null}
+            {isRunningLiveItem(item) ? (
+              <span className="work-product-badge work-product-badge--live-run">live</span>
+            ) : thumbMeta ? (
+              <span className={`work-product-badge ${thumbBadgeClass}`}>{thumbMeta.label}</span>
+            ) : null}
+            <span className="work-product-row__when">{formatWhen(item.created_at)}</span>
+            {(() => {
+              const timing = timingHeadline(item);
+              if (!timing) return null;
+              return (
+                <span
+                  className={`work-product-row__timing${timing.bad ? " work-product-row__timing--bad" : ""}`}
+                  title={timing.title}
+                >
+                  {timing.text}
+                </span>
+              );
+            })()}
+          </div>
+          <code className="work-product-row__key" title={item.job_key}>
+            {item.job_key}
+          </code>
         </div>
-        <code className="work-product-row__key" title={item.job_key}>
-          {item.job_key}
-        </code>
+        {isRunningLiveItem(item) && item.prompt_id ? (
+          <ComfyLiveMetricsBar
+            promptId={String(item.prompt_id)}
+            submittedAt={item.submitted_at || item.created_at}
+          />
+        ) : null}
       </header>
       <div className="work-product-row__body">
         <WorkProductViewer

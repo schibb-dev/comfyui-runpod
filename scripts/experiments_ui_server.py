@@ -5591,6 +5591,13 @@ def _extract_key_params_from_prompt(prompt_obj: Any) -> Dict[str, Any]:
                     out["frame_load_cap"] = max(0, int(inputs["frame_load_cap"]))
                 except (TypeError, ValueError):
                     pass
+            if "force_rate" not in out and inputs.get("force_rate") is not None:
+                try:
+                    fr = float(inputs["force_rate"])
+                    if fr > 0:
+                        out["force_rate"] = fr
+                except (TypeError, ValueError):
+                    pass
     return out
 
 
