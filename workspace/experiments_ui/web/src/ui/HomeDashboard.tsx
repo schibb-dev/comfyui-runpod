@@ -1,10 +1,15 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { fetchHomeSummary } from "./api";
+import { fetchHomeSummary, setHourlySchedule } from "./api";
 import { PageHeader } from "./PageHeader";
 import { discoveryLibraryHref } from "./discoveryDeepLink";
 import { factoryMapFamilyHref, factoryMapIndexHref } from "./factoryMapRoute";
 import { routeHref } from "./routes";
-import type { HomeSummaryFreshOutput, HomeSummaryResponse } from "./types";
+import type {
+  HomeSummaryFreshOutput,
+  HomeSummaryResponse,
+  HourlyScheduleStatus,
+  HourlySubmitMode,
+} from "./types";
 
 function fileUrlFromRel(relpath?: string | null): string {
   if (!relpath) return "";
@@ -18,6 +23,141 @@ function basename(rel?: string | null): string {
 
 function num(n?: number | null): string {
   return typeof n === "number" && Number.isFinite(n) ? String(n) : "—";
+}
+
+function formatDue(iso?: string | null): string {
+  if (!iso) return "—";
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    return d.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
+}
+
+const INTERVAL_PRESETS = [15, 30, 45, 60, 90, 120];
+
+function HourlyScheduleControls({
+  initial,
+  onSaved,
+}: {
+  initial?: HourlyScheduleStatus | null;
+  onSaved: (s: HourlyScheduleStatus) => void;
+}) {
+  const sch = initial?.schedule;
+  const [interval, setIntervalMin] = useState(sch?.interval_minutes ?? 30);
+  const [enabled, setEnabled] = useState(sch?.enabled !== false);
+  const [mode, setMode] = useState<HourlySubmitMode>(
+    (sch?.submit_mode as HourlySubmitMode) || "auto",
+  );
+  const [comfyMax, setComfyMax] = useState(sch?.comfy_queue_max ?? 2);
+  const [pendingMax, setPendingMax] = useState(sch?.pending_queue_max ?? 4);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    if (!sch) return;
+    setIntervalMin(sch.interval_minutes ?? 30);
+    setEnabled(sch.enabled !== false);
+    setMode((sch.submit_mode as HourlySubmitMode) || "auto");
+    setComfyMax(sch.comfy_queue_max ?? 2);
+    setPendingMax(sch.pending_queue_max ?? 4);
+  }, [sch]);
+
+  const apply = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      const res = await setHourlySchedule({
+        interval_minutes: Number(interval),
+        enabled,
+        submit_mode: mode,
+        comfy_queue_max: Number(comfyMax),
+        pending_queue_max: Number(pendingMax),
+      });
+      onSaved(res);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const ruleHint =
+    mode === "comfy"
+      ? "Generate only when Comfy waiting is below max; otherwise skip."
+      : mode === "pending"
+        ? "Always leave new hourlies pending (up to pending max); drain feeds Comfy."
+        : "Comfy if waiting < max; else pending if under pending max; else skip.";
+
+  return (
+    <div className="home-hourly-controls">
+      <div className="home-hourly-controls__row">
+        <label className="home-hourly-controls__field">
+          <span>Interval</span>
+          <select value={interval} disabled={busy} onChange={(e) => setIntervalMin(Number(e.target.value))}>
+            {(initial?.interval_presets?.length ? initial.interval_presets : INTERVAL_PRESETS).map((m) => (
+              <option key={m} value={m}>
+                {m} min
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="home-hourly-controls__field">
+          <span>Mode</span>
+          <select value={mode} disabled={busy} onChange={(e) => setMode(e.target.value as HourlySubmitMode)}>
+            <option value="auto">Auto</option>
+            <option value="comfy">Comfy</option>
+            <option value="pending">Pending</option>
+          </select>
+        </label>
+        <label className="home-hourly-controls__field home-hourly-controls__field--num">
+          <span>Comfy max</span>
+          <input
+            type="number"
+            min={0}
+            max={20}
+            value={comfyMax}
+            disabled={busy}
+            onChange={(e) => setComfyMax(Number(e.target.value))}
+          />
+        </label>
+        <label className="home-hourly-controls__field home-hourly-controls__field--num">
+          <span>Pending max</span>
+          <input
+            type="number"
+            min={0}
+            max={50}
+            value={pendingMax}
+            disabled={busy}
+            onChange={(e) => setPendingMax(Number(e.target.value))}
+          />
+        </label>
+        <label className="home-hourly-controls__toggle">
+          <input type="checkbox" checked={enabled} disabled={busy} onChange={(e) => setEnabled(e.target.checked)} />
+          <span>Enabled</span>
+        </label>
+        <button type="button" className="drt-btn" disabled={busy} onClick={() => void apply()}>
+          {busy ? "Saving…" : "Apply"}
+        </button>
+      </div>
+      <p className="home-hourly-controls__meta factory-muted">
+        Next due {formatDue(initial?.next_due_at)}
+        {initial?.due ? " · due now" : ""}
+        {" · "}
+        waiting {num(initial?.comfy_waiting)} · running {num(initial?.comfy_running)} · pending{" "}
+        {num(initial?.factory_pending)}
+      </p>
+      <p className="home-hourly-controls__hint factory-muted">{ruleHint}</p>
+      {err ? <p className="home-hourly-controls__err">{err}</p> : null}
+    </div>
+  );
 }
 
 function FreshThumb({ item }: { item: HomeSummaryFreshOutput }) {
@@ -193,13 +333,28 @@ export function HomeDashboard() {
 
         <Card
           title="Next hourly run"
-          hint="What the scheduler will generate next"
+          hint="Cadence, queue routing, and what runs next"
           footer={
             <a className="home-cta" href={routeHref("queue")}>
               Open queue →
             </a>
           }
         >
+          <HourlyScheduleControls
+            initial={hourly?.schedule ?? null}
+            onSaved={(s) => {
+              setData((prev) => {
+                if (!prev) return prev;
+                return {
+                  ...prev,
+                  hourly: {
+                    ...(prev.hourly || {}),
+                    schedule: s,
+                  },
+                };
+              });
+            }}
+          />
           {hourly?.next_sample ? (
             <dl className="home-hourly">
               {hourly.next_sample.sample_id ? (

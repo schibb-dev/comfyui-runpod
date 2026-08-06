@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Hourly shape-factory maintenance + optional fill when Comfy is idle *and*
-# there are no factory jobs still awaiting submit.
-# Pending drain (shape_factory_pending_drain) owns pushing pending onto Comfy;
-# this tick only generates new hourly work as a fill when that set is empty.
+# Shape-factory maintenance + optional fill, gated by hourly-schedule.json.
+# Pending drain (shape_factory_pending_drain) owns pushing pending onto Comfy when
+# this tick leaves jobs pending (Comfy full / submit_mode=pending).
 # Priority when filling: GEX2→FACIAL chain, Kneel→GEX2 chain, then weighted seed.
 # Install timer: bash scripts/install-shape-factory-hourly.sh
 set -euo pipefail
@@ -11,6 +10,7 @@ REPO="${REPO:-/home/yuji/src/comfyui-runpod}"
 SCRIPTS="$REPO/workspace/scripts"
 LOG="${LOG:-$REPO/.data/shape_factory/hourly.log}"
 STATE="${STATE:-$REPO/.data/shape_factory/hourly-state.json}"
+SCHEDULE="${SCHEDULE:-$REPO/.data/shape_factory/hourly-schedule.json}"
 JOBS_DIR="${JOBS_DIR:-$REPO/.data/shape_factory/jobs}"
 CHAIN_MANIFEST="${CHAIN_MANIFEST:-$REPO/.data/chains/best-examples.chain.yaml}"
 BINDS_FACIAL="$REPO/.data/pipelines/binds/facial-from-latest-gex2.yaml"
@@ -18,10 +18,8 @@ BINDS_KNEEL_GEX2="$REPO/.data/pipelines/binds/gex2-from-latest-kneel.yaml"
 COMFY="${COMFY:-http://127.0.0.1:8188}"
 ADVANCE_CHAIN="${ADVANCE_CHAIN:-1}"
 DEV_CHAIN="${DEV_CHAIN:-0}"
-HOURLY_QUEUE_MIN="${HOURLY_QUEUE_MIN:-1}"
-HOURLY_QUEUE_MAX="${HOURLY_QUEUE_MAX:-2}"
 HOURLY_PREDICTED_SHARE="${HOURLY_PREDICTED_SHARE:-0.35}"
-export HOURLY_QUEUE_MIN HOURLY_QUEUE_MAX HOURLY_PREDICTED_SHARE
+export HOURLY_PREDICTED_SHARE
 
 # Families maintained every tick (deposit / submit / status).
 MAINT_FAMILIES=(FB9_GEX2 FB9_GEX_FACIAL FB9_GEX X-KNEEL-FB9 FB9-FaceBlast)
@@ -63,6 +61,10 @@ pools_for_family() {
   echo "$REPO/.data/pools/$1/pools.yaml"
 }
 
+load_schedule() {
+  cd "$SCRIPTS" && python3 shape_factory_hourly.py schedule-status --schedule "$SCHEDULE"
+}
+
 # Args: comfy_waiting [factory_pending]
 queue_policy() {
   local fp="${2:-}"
@@ -71,14 +73,51 @@ queue_policy() {
   fi
   cd "$SCRIPTS" && python3 shape_factory_hourly.py queue-policy \
     --pending "$1" --factory-pending "$fp" \
-    --queue-min "$HOURLY_QUEUE_MIN" --queue-max "$HOURLY_QUEUE_MAX"
+    --schedule "$SCHEDULE" \
+    --queue-min "$HOURLY_QUEUE_MIN" --queue-max "$HOURLY_QUEUE_MAX" \
+    --pending-queue-max "$HOURLY_PENDING_MAX" \
+    --submit-mode "$HOURLY_SUBMIT_MODE"
 }
 
 policy_field() {
   python3 -c "import json,sys; print(json.loads(sys.argv[1]).get(sys.argv[2], ''))" "$1" "$2"
 }
 
+mark_tick() {
+  cd "$SCRIPTS" && python3 shape_factory_hourly.py schedule-set --schedule "$SCHEDULE" --mark-tick >/dev/null
+}
+
+maybe_submit() {
+  # Args: family destination
+  local fam="$1" dest="$2"
+  if [ "$dest" = "comfy" ]; then
+    python3 shape_factory.py submit --pending-only --family "$fam" >> "$LOG" 2>&1 || true
+  else
+    log "left pending (destination=$dest) family=$fam"
+  fi
+}
+
 log "=== hourly tick ==="
+
+SCHEDULE_JSON=$(load_schedule)
+SCHEDULE_DUE=$(policy_field "$SCHEDULE_JSON" due)
+HOURLY_QUEUE_MIN=$(python3 -c "import json,sys; print(int(json.loads(sys.argv[1])['schedule']['comfy_queue_min']))" "$SCHEDULE_JSON")
+HOURLY_QUEUE_MAX=$(python3 -c "import json,sys; print(int(json.loads(sys.argv[1])['schedule']['comfy_queue_max']))" "$SCHEDULE_JSON")
+HOURLY_PENDING_MAX=$(python3 -c "import json,sys; print(int(json.loads(sys.argv[1])['schedule']['pending_queue_max']))" "$SCHEDULE_JSON")
+HOURLY_SUBMIT_MODE=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['schedule']['submit_mode'])" "$SCHEDULE_JSON")
+HOURLY_INTERVAL=$(python3 -c "import json,sys; print(int(json.loads(sys.argv[1])['schedule']['interval_minutes']))" "$SCHEDULE_JSON")
+HOURLY_ENABLED=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['schedule'].get('enabled', True))" "$SCHEDULE_JSON")
+NEXT_DUE=$(policy_field "$SCHEDULE_JSON" next_due_at)
+export HOURLY_QUEUE_MIN HOURLY_QUEUE_MAX
+
+if [ "$HOURLY_ENABLED" != "True" ]; then
+  log "skip — schedule disabled"
+  exit 0
+fi
+if [ "$SCHEDULE_DUE" != "True" ]; then
+  log "skip — not due (interval=${HOURLY_INTERVAL}m next=$NEXT_DUE mode=$HOURLY_SUBMIT_MODE comfy_max=$HOURLY_QUEUE_MAX pending_max=$HOURLY_PENDING_MAX)"
+  exit 0
+fi
 
 STATE_JSON=$(read_state)
 PHASE=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('phase','idle'))" "$STATE_JSON")
@@ -109,15 +148,18 @@ FACTORY_PENDING=$(factory_pending_count)
 POLICY_JSON=$(queue_policy "$PEND" "$FACTORY_PENDING")
 ADVANCE=$(policy_field "$POLICY_JSON" advance)
 REASON=$(policy_field "$POLICY_JSON" reason)
-log "comfy queue running=$RUN waiting=$PEND factory_pending=$FACTORY_PENDING min=$HOURLY_QUEUE_MIN max=$HOURLY_QUEUE_MAX advance=$ADVANCE ($REASON)"
+DEST=$(policy_field "$POLICY_JSON" destination)
+log "comfy queue running=$RUN waiting=$PEND factory_pending=$FACTORY_PENDING min=$HOURLY_QUEUE_MIN max=$HOURLY_QUEUE_MAX pending_max=$HOURLY_PENDING_MAX mode=$HOURLY_SUBMIT_MODE advance=$ADVANCE dest=$DEST ($REASON)"
 
 if [ "$ADVANCE" != "True" ]; then
   log "skip hourly fill (phase=$PHASE reason=$REASON)"
+  mark_tick
   exit 0
 fi
 
 if [ "$ADVANCE_CHAIN" != "1" ]; then
   log "ADVANCE_CHAIN=0 — maintenance only"
+  mark_tick
   exit 0
 fi
 
@@ -142,7 +184,7 @@ if [ -n "$NEED_FACIAL" ]; then
       --output-prefix-root "$HOURLY_PREFIX_ROOT" \
       --job-key-prefix "$HOURLY_JOB_KEY_PREFIX" \
       "${dev_args[@]}" >> "$LOG" 2>&1
-    python3 shape_factory.py submit --pending-only --family FB9_GEX_FACIAL >> "$LOG" 2>&1
+    maybe_submit FB9_GEX_FACIAL "$DEST"
   )
   python3 - "$STATE_JSON" "$NEED_FACIAL" "$STATE" <<'PY'
 import json, sys
@@ -154,7 +196,8 @@ data["last_pick_mode"] = "chain"
 data["last_gex2_job"] = sys.argv[2]
 Path(sys.argv[3]).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
-  log "facial step queued"
+  mark_tick
+  log "facial step queued dest=$DEST"
   exit 0
 fi
 
@@ -172,7 +215,7 @@ if [ -n "$NEED_KNEEL_GEX2" ]; then
       --output-prefix-root "$HOURLY_PREFIX_ROOT" \
       --job-key-prefix "$HOURLY_JOB_KEY_PREFIX" \
       "${dev_args[@]}" >> "$LOG" 2>&1
-    python3 shape_factory.py submit --pending-only --family FB9_GEX2 >> "$LOG" 2>&1
+    maybe_submit FB9_GEX2 "$DEST"
   )
   python3 - "$STATE_JSON" "$NEED_KNEEL_GEX2" "$STATE" <<'PY'
 import json, sys
@@ -184,7 +227,8 @@ data["last_pick_mode"] = "chain"
 data["last_kneel_job"] = sys.argv[2]
 Path(sys.argv[3]).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
-  log "gex2-from-kneel step queued"
+  mark_tick
+  log "gex2-from-kneel step queued dest=$DEST"
   exit 0
 fi
 
@@ -196,6 +240,7 @@ PLAN_OK=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('ok'))"
 if [ "$PLAN_OK" != "True" ]; then
   PLAN_ERR=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('error',''))" "$PLAN_JSON")
   log "seed skipped family=$FAMILY (${PLAN_ERR:-no plan})"
+  mark_tick
   exit 0
 fi
 
@@ -243,7 +288,7 @@ GEN_RC=0
 ) || GEN_RC=$?
 (
   cd "$SCRIPTS"
-  python3 shape_factory.py submit --pending-only --family "$FAMILY" >> "$LOG" 2>&1 || true
+  maybe_submit "$FAMILY" "$DEST"
 )
 rm -f "$PLAN_FILE"
 
@@ -264,8 +309,9 @@ data["last_step"] = sys.argv[10]
 data["last_disposition_entry"] = sys.argv[11] if len(sys.argv) > 11 else ""
 Path(sys.argv[2]).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
+mark_tick
 if [ "$GEN_RC" != "0" ]; then
   log "seed generate failed family=$FAMILY rc=$GEN_RC — advanced cursor to $NEXT_CURSOR anyway"
 else
-  log "seed queued family=$FAMILY pick_mode=$PICK_MODE rating_kind=${RATING_KIND:-?} (next cursor=$NEXT_CURSOR)"
+  log "seed queued family=$FAMILY pick_mode=$PICK_MODE rating_kind=${RATING_KIND:-?} dest=$DEST (next cursor=$NEXT_CURSOR)"
 fi

@@ -1432,7 +1432,38 @@ export type HomeSummaryResponse = {
       phase_if_idle?: string;
     } | null;
     state_path?: string;
+    schedule?: HourlyScheduleStatus;
   };
+};
+
+export type HourlySubmitMode = "auto" | "comfy" | "pending";
+
+export type HourlySchedule = {
+  interval_minutes?: number;
+  enabled?: boolean;
+  submit_mode?: HourlySubmitMode | string;
+  comfy_queue_min?: number;
+  comfy_queue_max?: number;
+  pending_queue_max?: number;
+  last_tick_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type HourlyScheduleStatus = {
+  ok?: boolean;
+  path?: string;
+  schedule?: HourlySchedule;
+  due?: boolean;
+  next_due_at?: string | null;
+  now?: string;
+  interval_presets?: number[];
+  submit_modes?: string[];
+  comfy_waiting?: number | null;
+  comfy_running?: number | null;
+  factory_pending?: number | null;
+  saved?: HourlySchedule;
+  error?: string;
+  detail?: string;
 };
 
 export type ShapeFactoryMapPipelineStep = {

@@ -64,6 +64,8 @@ import type {
   RecordBatchTriageCompleteResponse,
   DispositionCatalogMarker,
   HomeSummaryResponse,
+  HourlyScheduleStatus,
+  HourlySubmitMode,
   WorkItemsListResponse,
   WorkItemsCreateResponse,
   WorkItemsCancelResponse,
@@ -92,6 +94,42 @@ export async function fetchHomeSummary(): Promise<HomeSummaryResponse> {
   if (!r.ok) {
     const detail = [j.error, j.detail].filter(Boolean).join(": ");
     throw new Error(`GET /api/home/summary failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
+}
+
+export async function fetchHourlySchedule(): Promise<HourlyScheduleStatus> {
+  const r = await fetch("/api/shape-factory/hourly-schedule");
+  const j = (await r.json().catch(() => ({}))) as HourlyScheduleStatus;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET /api/shape-factory/hourly-schedule failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function setHourlySchedule(body: {
+  interval_minutes?: number;
+  enabled?: boolean;
+  submit_mode?: HourlySubmitMode | string;
+  comfy_queue_min?: number;
+  comfy_queue_max?: number;
+  pending_queue_max?: number;
+  mark_tick?: boolean;
+}): Promise<HourlyScheduleStatus> {
+  const r = await fetch("/api/shape-factory/hourly-schedule", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as HourlyScheduleStatus;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST /api/shape-factory/hourly-schedule failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
   }
   return j;
 }

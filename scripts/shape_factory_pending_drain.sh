@@ -7,9 +7,20 @@ set -euo pipefail
 REPO="${REPO:-/home/yuji/src/comfyui-runpod}"
 SCRIPTS="$REPO/workspace/scripts"
 LOG="${LOG:-$REPO/.data/shape_factory/pending-drain.log}"
+SCHEDULE="${SCHEDULE:-$REPO/.data/shape_factory/hourly-schedule.json}"
 COMFY="${COMFY:-http://127.0.0.1:8188}"
 # Cap how many we try per tick; submit --pending-only also refuses while Comfy waiting is non-empty.
 DRAIN_LIMIT="${DRAIN_LIMIT:-2}"
+if [ -z "${HOURLY_QUEUE_MAX:-}" ]; then
+  HOURLY_QUEUE_MAX=$(
+    cd "$SCRIPTS" && python3 - <<PY
+from shape_factory_hourly import load_hourly_schedule
+from pathlib import Path
+sch = load_hourly_schedule(path=Path("$SCHEDULE"))
+print(int(sch.get("comfy_queue_max", 2)))
+PY
+  ) || HOURLY_QUEUE_MAX=2
+fi
 HOURLY_QUEUE_MAX="${HOURLY_QUEUE_MAX:-2}"
 
 mkdir -p "$(dirname "$LOG")"

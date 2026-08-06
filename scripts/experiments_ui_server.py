@@ -1323,12 +1323,104 @@ def _home_summary_payload(cfg: ServerConfig) -> Dict[str, Any]:
         pass
 
     payload["attention"] = attention
+    hourly_out: Dict[str, Any] = {}
     if hourly is not None:
-        payload["hourly"] = {
+        hourly_out = {
             "next_sample": hourly.get("next_sample"),
             "state_path": hourly.get("state_path"),
         }
+    try:
+        sch = _hourly_schedule_payload(cfg)
+        if sch.get("ok"):
+            hourly_out["schedule"] = sch
+    except Exception as e:
+        payload.setdefault("errors", {})["hourly_schedule"] = str(e)
+    if hourly_out:
+        payload["hourly"] = hourly_out
     return payload
+
+
+def _hourly_schedule_payload(cfg: ServerConfig) -> Dict[str, Any]:
+    """GET /api/shape-factory/hourly-schedule — live cadence + queue routing controls."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_hourly import (  # type: ignore
+        count_factory_pending_submit,
+        default_hourly_schedule_path,
+        hourly_schedule_status,
+    )
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    path = default_hourly_schedule_path(data_root=data_root)
+    out = hourly_schedule_status(path=path, data_root=data_root)
+    # Live queue depths (best-effort).
+    waiting = None
+    running = None
+    try:
+        import urllib.request
+
+        with urllib.request.urlopen(f"{str(cfg.comfy_server).rstrip('/')}/queue", timeout=4) as resp:
+            q = json.loads(resp.read().decode("utf-8"))
+        waiting = len(q.get("queue_pending") or [])
+        running = len(q.get("queue_running") or [])
+    except Exception:
+        pass
+    factory_pending = None
+    try:
+        jobs_dir = data_root / "shape_factory" / "jobs"
+        if jobs_dir.is_dir():
+            factory_pending = count_factory_pending_submit(jobs_dir=jobs_dir)
+    except Exception:
+        pass
+    out["comfy_waiting"] = waiting
+    out["comfy_running"] = running
+    out["factory_pending"] = factory_pending
+    return out
+
+
+def _hourly_schedule_set_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /api/shape-factory/hourly-schedule — update cadence / routing controls."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_hourly import (  # type: ignore
+        default_hourly_schedule_path,
+        hourly_schedule_status,
+        load_hourly_schedule,
+        mark_hourly_tick,
+        save_hourly_schedule,
+    )
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    path = default_hourly_schedule_path(data_root=data_root)
+    sch = load_hourly_schedule(path=path, data_root=data_root)
+    if "interval_minutes" in body:
+        sch["interval_minutes"] = body.get("interval_minutes")
+    if "enabled" in body:
+        sch["enabled"] = bool(body.get("enabled"))
+    if "submit_mode" in body and body.get("submit_mode") is not None:
+        sch["submit_mode"] = str(body.get("submit_mode"))
+    if "comfy_queue_min" in body:
+        sch["comfy_queue_min"] = body.get("comfy_queue_min")
+    if "comfy_queue_max" in body:
+        sch["comfy_queue_max"] = body.get("comfy_queue_max")
+    if "pending_queue_max" in body:
+        sch["pending_queue_max"] = body.get("pending_queue_max")
+    if body.get("mark_tick"):
+        save = mark_hourly_tick(sch, path=path, data_root=data_root)
+    else:
+        save = save_hourly_schedule(sch, path=path, data_root=data_root)
+    status = hourly_schedule_status(path=path, data_root=data_root)
+    status["saved"] = save
+    # Attach live counts from GET helper.
+    live = _hourly_schedule_payload(cfg)
+    for k in ("comfy_waiting", "comfy_running", "factory_pending"):
+        if k in live:
+            status[k] = live[k]
+    return status
 
 
 def _asset_recover_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -6230,6 +6322,14 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return _json_response(self, 500, {"ok": False, "error": "work_products_failed", "detail": str(e)})
 
+        if path == "/api/shape-factory/hourly-schedule":
+            try:
+                payload = _hourly_schedule_payload(cfg)
+                code = 200 if payload.get("ok") else 500
+                return _json_response(self, code, payload)
+            except Exception as e:
+                return _json_response(self, 500, {"ok": False, "error": "hourly_schedule_failed", "detail": str(e)})
+
         if path == "/api/shape-factory/quarantine":
             try:
                 payload = _shape_factory_quarantine_list_payload(q)
@@ -6437,9 +6537,27 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_shape_factory_update_pending_trim_post()
         if path == "/api/shape-factory/quarantine/release":
             return self._handle_shape_factory_quarantine_release_post()
+        if path == "/api/shape-factory/hourly-schedule":
+            return self._handle_shape_factory_hourly_schedule_post()
         if path == "/api/vision/tag-judgment":
             return self._handle_vision_tag_judgment_post()
         return _json_response(self, 404, {"error": "unknown_api_route", "path": path})
+
+    def _handle_shape_factory_hourly_schedule_post(self) -> None:
+        """
+        POST /api/shape-factory/hourly-schedule
+          { interval_minutes?, enabled?, submit_mode?, comfy_queue_min?, comfy_queue_max?, pending_queue_max?, mark_tick? }
+        """
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _hourly_schedule_set_payload(cfg, body if isinstance(body, dict) else {})
+            code = 200 if payload.get("ok") else 500
+            return _json_response(self, code, payload)
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "hourly_schedule_set_failed", "detail": str(e)})
 
     def _handle_shape_factory_quarantine_release_post(self) -> None:
         """POST /api/shape-factory/quarantine/release — human review release."""

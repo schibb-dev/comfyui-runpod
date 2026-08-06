@@ -13,7 +13,7 @@ import math
 import os
 import random
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -2442,59 +2442,235 @@ def pending_product_combos(
     return pending
 
 
+HOURLY_INTERVAL_PRESETS = (15, 30, 45, 60, 90, 120)
+HOURLY_SUBMIT_MODES = ("auto", "comfy", "pending")
+DEFAULT_HOURLY_SCHEDULE: Dict[str, Any] = {
+    "interval_minutes": 30,
+    "enabled": True,
+    "submit_mode": "auto",
+    "comfy_queue_min": 1,
+    "comfy_queue_max": 2,
+    "pending_queue_max": 4,
+    "last_tick_at": None,
+    "updated_at": None,
+}
+
+
+def default_hourly_schedule_path(*, data_root: Optional[Path] = None) -> Path:
+    root = data_root
+    if root is None:
+        env = os.environ.get("SHAPE_FACTORY_DATA_ROOT", "").strip()
+        root = Path(env).expanduser() if env else Path(__file__).resolve().parents[2] / ".data"
+    return Path(root).expanduser().resolve() / "shape_factory" / "hourly-schedule.json"
+
+
+def _utc_now() -> datetime:
+    return datetime.now(tz=timezone.utc).replace(microsecond=0)
+
+
+def _parse_iso_ts(raw: Any) -> Optional[datetime]:
+    if raw is None or raw == "":
+        return None
+    try:
+        s = str(raw).strip().replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def normalize_hourly_schedule(raw: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Clamp/normalize schedule fields to safe defaults."""
+    src = raw if isinstance(raw, dict) else {}
+    out = dict(DEFAULT_HOURLY_SCHEDULE)
+    try:
+        interval = int(src.get("interval_minutes", out["interval_minutes"]))
+    except (TypeError, ValueError):
+        interval = int(out["interval_minutes"])
+    if interval not in HOURLY_INTERVAL_PRESETS:
+        # Snap to nearest preset.
+        interval = min(HOURLY_INTERVAL_PRESETS, key=lambda p: abs(p - interval))
+    out["interval_minutes"] = interval
+    out["enabled"] = bool(src["enabled"]) if "enabled" in src else True
+    mode = str(src.get("submit_mode") or out["submit_mode"]).strip().lower()
+    if mode not in HOURLY_SUBMIT_MODES:
+        mode = "auto"
+    out["submit_mode"] = mode
+    try:
+        cmin = int(src.get("comfy_queue_min", out["comfy_queue_min"]))
+    except (TypeError, ValueError):
+        cmin = int(out["comfy_queue_min"])
+    try:
+        cmax = int(src.get("comfy_queue_max", out["comfy_queue_max"]))
+    except (TypeError, ValueError):
+        cmax = int(out["comfy_queue_max"])
+    try:
+        pmax = int(src.get("pending_queue_max", out["pending_queue_max"]))
+    except (TypeError, ValueError):
+        pmax = int(out["pending_queue_max"])
+    out["comfy_queue_min"] = max(0, min(20, cmin))
+    out["comfy_queue_max"] = max(0, min(20, cmax))
+    if out["comfy_queue_max"] < out["comfy_queue_min"]:
+        out["comfy_queue_max"] = out["comfy_queue_min"]
+    out["pending_queue_max"] = max(0, min(50, pmax))
+    out["last_tick_at"] = src.get("last_tick_at")
+    out["updated_at"] = src.get("updated_at")
+    return out
+
+
+def load_hourly_schedule(*, path: Optional[Path] = None, data_root: Optional[Path] = None) -> Dict[str, Any]:
+    p = Path(path) if path is not None else default_hourly_schedule_path(data_root=data_root)
+    if not p.is_file():
+        return normalize_hourly_schedule()
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return normalize_hourly_schedule()
+    return normalize_hourly_schedule(raw if isinstance(raw, dict) else None)
+
+
+def save_hourly_schedule(
+    schedule: Dict[str, Any],
+    *,
+    path: Optional[Path] = None,
+    data_root: Optional[Path] = None,
+) -> Dict[str, Any]:
+    p = Path(path) if path is not None else default_hourly_schedule_path(data_root=data_root)
+    out = normalize_hourly_schedule(schedule)
+    out["updated_at"] = _utc_now().isoformat()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return out
+
+
+def schedule_next_due_at(schedule: Dict[str, Any], *, now: Optional[datetime] = None) -> Optional[datetime]:
+    sch = normalize_hourly_schedule(schedule)
+    if not sch.get("enabled"):
+        return None
+    last = _parse_iso_ts(sch.get("last_tick_at"))
+    if last is None:
+        return now or _utc_now()
+    return last + timedelta(minutes=int(sch["interval_minutes"]))
+
+
+def schedule_is_due(schedule: Dict[str, Any], *, now: Optional[datetime] = None) -> bool:
+    sch = normalize_hourly_schedule(schedule)
+    if not sch.get("enabled"):
+        return False
+    ts = now or _utc_now()
+    due = schedule_next_due_at(sch, now=ts)
+    if due is None:
+        return False
+    return ts >= due
+
+
+def mark_hourly_tick(
+    schedule: Dict[str, Any],
+    *,
+    path: Optional[Path] = None,
+    data_root: Optional[Path] = None,
+    at: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    sch = normalize_hourly_schedule(schedule)
+    sch["last_tick_at"] = (at or _utc_now()).isoformat()
+    return save_hourly_schedule(sch, path=path, data_root=data_root)
+
+
+def hourly_schedule_status(
+    *,
+    path: Optional[Path] = None,
+    data_root: Optional[Path] = None,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    p = Path(path) if path is not None else default_hourly_schedule_path(data_root=data_root)
+    sch = load_hourly_schedule(path=p, data_root=data_root)
+    ts = now or _utc_now()
+    due_at = schedule_next_due_at(sch, now=ts)
+    due = schedule_is_due(sch, now=ts)
+    return {
+        "ok": True,
+        "path": str(p),
+        "schedule": sch,
+        "due": due,
+        "next_due_at": due_at.isoformat() if due_at else None,
+        "now": ts.isoformat(),
+        "interval_presets": list(HOURLY_INTERVAL_PRESETS),
+        "submit_modes": list(HOURLY_SUBMIT_MODES),
+    }
+
+
 def queue_advance_decision(
     *,
     pending: int,
     queue_min: int = 1,
     queue_max: int = 2,
     factory_pending: int = 0,
+    pending_queue_max: int = 4,
+    submit_mode: str = "auto",
 ) -> Dict[str, Any]:
     """
-    Whether the hourly tick should *generate* another fill job.
+    Whether the hourly tick should generate a fill job, and where it should land.
 
-    Hourlies fill Comfy only when there are no factory jobs still awaiting
-    submit. Pending drain owns those; hourly tops up when the factory pending
-    set is empty and Comfy waiting depth is below ``queue_min``.
+    Modes:
+      - auto: Comfy if waiting < queue_max; else factory pending if under pending_queue_max
+      - comfy: only when Comfy has room under queue_max
+      - pending: only when factory pending is under pending_queue_max (never submit from tick)
 
-    ``submit_slots`` still reflects room under ``queue_max`` so maintenance can
-    push existing pending onto Comfy even when advance is blocked.
+    ``submit_slots`` is room under ``queue_max`` for maintenance/drain pushes.
+    ``queue_min`` is retained for status/display; advance no longer requires below-min.
     """
     pending_i = max(0, int(pending))
     factory_pending_i = max(0, int(factory_pending))
     queue_min_i = max(0, int(queue_min))
-    queue_max_i = max(queue_min_i, int(queue_max))
+    queue_max_i = max(0, int(queue_max))
+    pending_max_i = max(0, int(pending_queue_max))
+    mode = str(submit_mode or "auto").strip().lower()
+    if mode not in HOURLY_SUBMIT_MODES:
+        mode = "auto"
     submit_slots = max(0, queue_max_i - pending_i)
+    comfy_has_room = pending_i < queue_max_i
+    pending_has_room = factory_pending_i < pending_max_i
     base = {
         "pending": pending_i,
         "factory_pending": factory_pending_i,
         "queue_min": queue_min_i,
         "queue_max": queue_max_i,
+        "pending_queue_max": pending_max_i,
+        "submit_mode": mode,
         "submit_slots": submit_slots,
+        "destination": "skip",
     }
-    if factory_pending_i > 0:
+
+    def _skip(reason: str, **extra: Any) -> Dict[str, Any]:
+        return {**base, "advance": False, "destination": "skip", "reason": reason, **extra}
+
+    def _go(destination: str, reason: str) -> Dict[str, Any]:
         return {
             **base,
-            "advance": False,
-            "reason": "factory_pending",
+            "advance": True,
+            "destination": destination,
+            "reason": reason,
+            "submit_slots": 0 if destination == "pending" else submit_slots,
         }
-    if pending_i >= queue_max_i:
-        return {
-            **base,
-            "advance": False,
-            "reason": "at_max",
-            "submit_slots": 0,
-        }
-    if pending_i >= queue_min_i:
-        return {
-            **base,
-            "advance": False,
-            "reason": "satisfied_min",
-        }
-    return {
-        **base,
-        "advance": True,
-        "reason": "below_min",
-    }
+
+    if mode == "comfy":
+        if not comfy_has_room:
+            return _skip("at_max", submit_slots=0)
+        return _go("comfy", "comfy_room")
+
+    if mode == "pending":
+        if not pending_has_room:
+            return _skip("pending_max")
+        return _go("pending", "pending_room")
+
+    # auto
+    if comfy_has_room:
+        return _go("comfy", "comfy_room")
+    if pending_has_room:
+        return _go("pending", "comfy_full_pending")
+    return _skip("queues_full", submit_slots=0)
 
 
 def count_factory_pending_submit(*, jobs_dir: Path) -> int:
@@ -2578,11 +2754,35 @@ def main() -> int:
         default=None,
         help="Job root used when --factory-pending is omitted",
     )
-    qp.add_argument("--queue-min", type=int, default=1)
-    qp.add_argument("--queue-max", type=int, default=2)
+    qp.add_argument("--queue-min", type=int, default=None)
+    qp.add_argument("--queue-max", type=int, default=None)
+    qp.add_argument("--pending-queue-max", type=int, default=None)
+    qp.add_argument(
+        "--submit-mode",
+        default=None,
+        choices=list(HOURLY_SUBMIT_MODES),
+        help="auto|comfy|pending (default: from schedule file or auto)",
+    )
+    qp.add_argument("--schedule", type=Path, default=None, help="hourly-schedule.json path")
+    qp.add_argument("--data-root", type=Path, default=None)
 
     pc = sub.add_parser("pending-count", help="Count factory jobs awaiting submit")
     pc.add_argument("--jobs-dir", type=Path, required=True)
+
+    ss = sub.add_parser("schedule-status", help="JSON: hourly schedule due/next + fields")
+    ss.add_argument("--schedule", type=Path, default=None)
+    ss.add_argument("--data-root", type=Path, default=None)
+
+    sset = sub.add_parser("schedule-set", help="Update hourly-schedule.json fields")
+    sset.add_argument("--schedule", type=Path, default=None)
+    sset.add_argument("--data-root", type=Path, default=None)
+    sset.add_argument("--minutes", type=int, default=None, help="interval_minutes")
+    sset.add_argument("--enabled", type=str, default=None, help="1/0 true/false")
+    sset.add_argument("--submit-mode", default=None, choices=list(HOURLY_SUBMIT_MODES))
+    sset.add_argument("--comfy-queue-min", type=int, default=None)
+    sset.add_argument("--comfy-queue-max", type=int, default=None)
+    sset.add_argument("--pending-queue-max", type=int, default=None)
+    sset.add_argument("--mark-tick", action="store_true", help="Set last_tick_at=now")
 
     args = p.parse_args()
     data_root = args.data_root.expanduser().resolve() if getattr(args, "data_root", None) else None
@@ -2620,6 +2820,33 @@ def main() -> int:
         print(n)
         return 0
 
+    if args.cmd == "schedule-status":
+        out = hourly_schedule_status(path=args.schedule, data_root=data_root)
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.cmd == "schedule-set":
+        path = args.schedule or default_hourly_schedule_path(data_root=data_root)
+        sch = load_hourly_schedule(path=path, data_root=data_root)
+        if args.minutes is not None:
+            sch["interval_minutes"] = int(args.minutes)
+        if args.enabled is not None:
+            sch["enabled"] = str(args.enabled).strip().lower() in {"1", "true", "yes", "on"}
+        if args.submit_mode is not None:
+            sch["submit_mode"] = str(args.submit_mode)
+        if args.comfy_queue_min is not None:
+            sch["comfy_queue_min"] = int(args.comfy_queue_min)
+        if args.comfy_queue_max is not None:
+            sch["comfy_queue_max"] = int(args.comfy_queue_max)
+        if args.pending_queue_max is not None:
+            sch["pending_queue_max"] = int(args.pending_queue_max)
+        if args.mark_tick:
+            sch = mark_hourly_tick(sch, path=path, data_root=data_root)
+        else:
+            sch = save_hourly_schedule(sch, path=path, data_root=data_root)
+        print(json.dumps(hourly_schedule_status(path=path, data_root=data_root), ensure_ascii=False, indent=2))
+        return 0
+
     if args.cmd == "queue-policy":
         factory_pending = args.factory_pending
         if factory_pending is None:
@@ -2629,11 +2856,16 @@ def main() -> int:
 
                 jobs_dir = DEFAULT_JOB_DIR
             factory_pending = count_factory_pending_submit(jobs_dir=Path(jobs_dir))
+        sch = load_hourly_schedule(path=args.schedule, data_root=data_root)
         out = queue_advance_decision(
             pending=int(args.pending),
-            queue_min=int(args.queue_min),
-            queue_max=int(args.queue_max),
+            queue_min=int(args.queue_min if args.queue_min is not None else sch["comfy_queue_min"]),
+            queue_max=int(args.queue_max if args.queue_max is not None else sch["comfy_queue_max"]),
             factory_pending=int(factory_pending),
+            pending_queue_max=int(
+                args.pending_queue_max if args.pending_queue_max is not None else sch["pending_queue_max"]
+            ),
+            submit_mode=str(args.submit_mode or sch["submit_mode"]),
         )
         print(json.dumps(out, ensure_ascii=False, indent=2))
         return 0

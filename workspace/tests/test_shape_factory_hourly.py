@@ -147,34 +147,90 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
     def test_queue_advance_decision(self) -> None:
         from shape_factory_hourly import queue_advance_decision
 
-        below = queue_advance_decision(pending=0, queue_min=1, queue_max=2)
-        self.assertTrue(below["advance"])
-        self.assertEqual(below["reason"], "below_min")
-        self.assertEqual(below["submit_slots"], 2)
-        self.assertEqual(below["factory_pending"], 0)
-
-        satisfied = queue_advance_decision(pending=1, queue_min=1, queue_max=2)
-        self.assertFalse(satisfied["advance"])
-        self.assertEqual(satisfied["reason"], "satisfied_min")
-        self.assertEqual(satisfied["submit_slots"], 1)
-
-        at_max = queue_advance_decision(pending=2, queue_min=1, queue_max=2)
-        self.assertFalse(at_max["advance"])
-        self.assertEqual(at_max["reason"], "at_max")
-        self.assertEqual(at_max["submit_slots"], 0)
-
-        over = queue_advance_decision(pending=5, queue_min=1, queue_max=2)
-        self.assertFalse(over["advance"])
-        self.assertEqual(over["reason"], "at_max")
-
-        # Hourlies fill only when there are no factory jobs awaiting submit.
-        blocked = queue_advance_decision(
-            pending=0, queue_min=1, queue_max=2, factory_pending=3
+        # auto: Comfy room → submit to Comfy even when waiting already meets old min.
+        room = queue_advance_decision(
+            pending=1, queue_min=1, queue_max=2, factory_pending=0, submit_mode="auto"
         )
-        self.assertFalse(blocked["advance"])
-        self.assertEqual(blocked["reason"], "factory_pending")
-        self.assertEqual(blocked["factory_pending"], 3)
-        self.assertEqual(blocked["submit_slots"], 2)
+        self.assertTrue(room["advance"])
+        self.assertEqual(room["destination"], "comfy")
+        self.assertEqual(room["reason"], "comfy_room")
+        self.assertEqual(room["submit_slots"], 1)
+
+        # auto: Comfy full → spill to pending when under pending max.
+        spill = queue_advance_decision(
+            pending=2,
+            queue_min=1,
+            queue_max=2,
+            factory_pending=1,
+            pending_queue_max=4,
+            submit_mode="auto",
+        )
+        self.assertTrue(spill["advance"])
+        self.assertEqual(spill["destination"], "pending")
+        self.assertEqual(spill["reason"], "comfy_full_pending")
+
+        # auto: both full → skip.
+        full = queue_advance_decision(
+            pending=2,
+            queue_min=1,
+            queue_max=2,
+            factory_pending=4,
+            pending_queue_max=4,
+            submit_mode="auto",
+        )
+        self.assertFalse(full["advance"])
+        self.assertEqual(full["destination"], "skip")
+        self.assertEqual(full["reason"], "queues_full")
+
+        # comfy mode: no spill to pending.
+        comfy_only = queue_advance_decision(
+            pending=2, queue_max=2, factory_pending=0, pending_queue_max=4, submit_mode="comfy"
+        )
+        self.assertFalse(comfy_only["advance"])
+        self.assertEqual(comfy_only["reason"], "at_max")
+
+        # pending mode: ignore Comfy room; respect pending max.
+        pend = queue_advance_decision(
+            pending=0, queue_max=2, factory_pending=3, pending_queue_max=4, submit_mode="pending"
+        )
+        self.assertTrue(pend["advance"])
+        self.assertEqual(pend["destination"], "pending")
+        pend_full = queue_advance_decision(
+            pending=0, queue_max=2, factory_pending=4, pending_queue_max=4, submit_mode="pending"
+        )
+        self.assertFalse(pend_full["advance"])
+        self.assertEqual(pend_full["reason"], "pending_max")
+
+    def test_hourly_schedule_due_and_mark(self) -> None:
+        from datetime import datetime, timedelta, timezone
+        from tempfile import TemporaryDirectory
+
+        from shape_factory_hourly import (
+            load_hourly_schedule,
+            mark_hourly_tick,
+            save_hourly_schedule,
+            schedule_is_due,
+            schedule_next_due_at,
+        )
+
+        with TemporaryDirectory() as td:
+            path = Path(td) / "hourly-schedule.json"
+            sch = save_hourly_schedule(
+                {"interval_minutes": 30, "enabled": True, "last_tick_at": None},
+                path=path,
+            )
+            now = datetime(2026, 8, 5, 20, 0, tzinfo=timezone.utc)
+            self.assertTrue(schedule_is_due(sch, now=now))
+            sch = mark_hourly_tick(sch, path=path, at=now)
+            self.assertFalse(schedule_is_due(sch, now=now + timedelta(minutes=10)))
+            self.assertTrue(schedule_is_due(sch, now=now + timedelta(minutes=30)))
+            due = schedule_next_due_at(sch, now=now)
+            self.assertEqual(due, now + timedelta(minutes=30))
+            loaded = load_hourly_schedule(path=path)
+            self.assertEqual(loaded["interval_minutes"], 30)
+            # Non-preset snaps to nearest.
+            snapped = save_hourly_schedule({"interval_minutes": 33}, path=path)
+            self.assertEqual(snapped["interval_minutes"], 30)
 
     def test_score_recipe_marks_predicted_rating_kind(self) -> None:
         from shape_factory_heuristics import score_recipe
