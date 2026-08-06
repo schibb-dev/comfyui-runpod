@@ -610,6 +610,16 @@ export type DiscoveryRatingSamplerCandidate = {
   /** Discovery companion still when known (png/jpg/webp). */
   thumb_relpath?: string | null;
   mtime?: number;
+  /** Origin / generated band inputs for the rate scrubber (from factory job). */
+  extension_range?: {
+    job_key?: string | null;
+    pick_mode?: string | null;
+    frames_before?: number | null;
+    generation_frames?: number | null;
+    output_frame_count?: number | null;
+    overlap?: number | null;
+    fps?: number | null;
+  } | null;
 };
 
 export type DispositionMarkerKind = "entry" | "step" | "reason";
@@ -1278,6 +1288,22 @@ export type ShapeFactoryReplayResponse = ShapeFactoryMapQueueResponse & {
   };
 };
 
+/** POST /api/shape-factory/derive — rewire prompt and/or source from a seed job. */
+export type ShapeFactoryDeriveRequest = {
+  job_key: string;
+  family_slug?: string;
+  facet?: "source" | "processing" | "both";
+  front?: boolean;
+  overrides?: ShapeFactoryMapQueueOverrides;
+};
+
+export type ShapeFactoryDeriveResponse = ShapeFactoryMapQueueResponse & {
+  derive_of_job_key?: string | null;
+  derive_action?: string | null;
+  appetite_facet?: string | null;
+  trim_clamped?: ShapeFactoryReplayResponse["trim_clamped"];
+};
+
 /** POST /api/shape-factory/unqueue — remove waiting Comfy prompt; demote factory job to pending. */
 export type ShapeFactoryUnqueueRequest = {
   prompt_id: string;
@@ -1807,6 +1833,8 @@ export type WorkProductTiming = {
   unload_event_count?: number | null;
   load_models?: string[] | null;
   frames?: number | null;
+  /** Context/overlap frames from workload (Wan extend blend width), when known. */
+  overlap?: number | null;
   sec_per_frame?: number | null;
   terminal?: string | null;
   error?: boolean | null;

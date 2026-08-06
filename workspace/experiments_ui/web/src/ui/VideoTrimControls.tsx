@@ -85,11 +85,18 @@ type VideoTrimTimelineProps = {
   currentTime: number;
   markIn: number | null;
   markOut: number | null;
+  /** Optional origin→generated seam (seconds); decorative diamond on the track. */
+  seamMark?: number | null;
+  /** End of overlap blend region (seconds); when set with seamMark, paints a blend band. */
+  blendEndMark?: number | null;
+  videoRef?: React.RefObject<HTMLVideoElement | null>;
   disabled: boolean;
   readOnly?: boolean;
   onSeek: (t: number) => void;
   onMarkInChange: (t: number) => void;
   onMarkOutChange: (t: number) => void;
+  /** Freeze playhead UI at this time while scrubbing in/out (null = follow currentTime). */
+  onMarkScrubFreeze?: (t: number | null) => void;
 };
 
 function VideoTrimTimeline({
@@ -97,15 +104,23 @@ function VideoTrimTimeline({
   currentTime,
   markIn,
   markOut,
+  seamMark = null,
+  blendEndMark = null,
+  videoRef,
   disabled,
   readOnly = false,
   onSeek,
   onMarkInChange,
   onMarkOutChange,
+  onMarkScrubFreeze,
 }: VideoTrimTimelineProps) {
   const trackRef = useRef<HTMLDivElement>(null);
   const marksRef = useRef({ markIn, markOut, duration });
   marksRef.current = { markIn, markOut, duration };
+  const currentTimeRef = useRef(currentTime);
+  currentTimeRef.current = currentTime;
+  const resumeTimeRef = useRef<number | null>(null);
+  const resumePlayRef = useRef(false);
   const [drag, setDrag] = useState<TrimDragKind | null>(null);
 
   const bounds = phoneTrimBounds(markIn, markOut, duration);
@@ -113,7 +128,26 @@ function VideoTrimTimeline({
   const safeOut = bounds?.out ?? 0;
   const inPct = duration > 0 ? (safeIn / duration) * 100 : 0;
   const outPct = duration > 0 ? (safeOut / duration) * 100 : 0;
-  const playPct = duration > 0 ? (Math.min(Math.max(0, currentTime), duration) / duration) * 100 : 0;
+  // Keep playhead visually frozen while scrubbing in/out (video still previews the marker).
+  const playheadTime =
+    (drag === "in" || drag === "out") && resumeTimeRef.current != null
+      ? resumeTimeRef.current
+      : currentTime;
+  const playPct = duration > 0 ? (Math.min(Math.max(0, playheadTime), duration) / duration) * 100 : 0;
+  const seam =
+    seamMark != null && Number.isFinite(seamMark) && duration > 0
+      ? Math.min(Math.max(0, Number(seamMark)), duration)
+      : null;
+  const seamPct = seam != null ? (seam / duration) * 100 : null;
+  const showSeam = seamPct != null && seamPct > 0.2 && seamPct < 99.8;
+  const blendEnd =
+    showSeam && blendEndMark != null && Number.isFinite(blendEndMark)
+      ? Math.min(Math.max(seam!, Number(blendEndMark)), duration)
+      : null;
+  const blendEndPct = blendEnd != null && duration > 0 ? (blendEnd / duration) * 100 : null;
+  const showBands = showSeam;
+  const showBlend = blendEndPct != null && blendEndPct > (seamPct as number) + 0.15;
+  const generatedStartPct = showBlend ? (blendEndPct as number) : (seamPct as number);
 
   const timeFromClientX = useCallback(
     (clientX: number) => {
@@ -127,9 +161,47 @@ function VideoTrimTimeline({
     [duration],
   );
 
+  const previewVideoAt = useCallback(
+    (t: number) => {
+      const v = videoRef?.current;
+      if (!v) return;
+      const d = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : duration;
+      const next = Math.max(0, Math.min(d || 0, t));
+      try {
+        v.currentTime = next;
+      } catch {
+        /* ignore seek errors before ready */
+      }
+    },
+    [videoRef, duration],
+  );
+
   useEffect(() => {
     if (!drag) return;
-    const end = () => setDrag(null);
+    const scrubbingMark = drag === "in" || drag === "out";
+    const end = () => {
+      if (scrubbingMark && resumeTimeRef.current != null) {
+        const { duration: d, markIn: mi, markOut: mo } = marksRef.current;
+        const b = phoneTrimBounds(mi, mo, d);
+        let restore = resumeTimeRef.current;
+        if (b) {
+          if (restore < b.in - 1e-3) restore = b.in;
+          else if (restore > b.out - 1e-3) restore = Math.max(b.in, b.out - 1 / 120);
+        }
+        const resumePlay = resumePlayRef.current;
+        resumeTimeRef.current = null;
+        resumePlayRef.current = false;
+        onMarkScrubFreeze?.(null);
+        onSeek(restore);
+        const v = videoRef?.current;
+        if (v && resumePlay) void v.play().catch(() => {});
+      } else {
+        resumeTimeRef.current = null;
+        resumePlayRef.current = false;
+        onMarkScrubFreeze?.(null);
+      }
+      setDrag(null);
+    };
     const onMove = (e: PointerEvent) => {
       if ((e.buttons & 1) === 0) {
         end();
@@ -143,9 +215,13 @@ function VideoTrimTimeline({
       if (drag === "play") {
         onSeek(Math.max(0, Math.min(t, d)));
       } else if (drag === "in") {
-        onMarkInChange(Math.max(0, Math.min(t, outV - TRIM_HANDLE_MIN_GAP_SEC)));
+        const next = Math.max(0, Math.min(t, outV - TRIM_HANDLE_MIN_GAP_SEC));
+        onMarkInChange(next);
+        previewVideoAt(next);
       } else {
-        onMarkOutChange(Math.min(d, Math.max(t, inV + TRIM_HANDLE_MIN_GAP_SEC)));
+        const next = Math.min(d, Math.max(t, inV + TRIM_HANDLE_MIN_GAP_SEC));
+        onMarkOutChange(next);
+        previewVideoAt(next);
       }
     };
     const onBlur = () => end();
@@ -159,13 +235,35 @@ function VideoTrimTimeline({
       window.removeEventListener("pointercancel", end);
       window.removeEventListener("blur", onBlur);
     };
-  }, [drag, onSeek, onMarkInChange, onMarkOutChange, timeFromClientX]);
+  }, [
+    drag,
+    onSeek,
+    onMarkInChange,
+    onMarkOutChange,
+    onMarkScrubFreeze,
+    timeFromClientX,
+    videoRef,
+    previewVideoAt,
+  ]);
 
   const startDrag = (kind: TrimDragKind) => (e: React.PointerEvent) => {
     if (disabled) return;
     if (readOnly && kind !== "play") return;
     e.stopPropagation();
     e.preventDefault();
+    if (kind === "in" || kind === "out") {
+      const freezeAt = currentTimeRef.current;
+      resumeTimeRef.current = freezeAt;
+      onMarkScrubFreeze?.(freezeAt);
+      const v = videoRef?.current;
+      resumePlayRef.current = Boolean(v && !v.paused && !v.ended);
+      if (v && resumePlayRef.current) v.pause();
+      previewVideoAt(kind === "in" ? safeIn : safeOut);
+    } else {
+      resumeTimeRef.current = null;
+      resumePlayRef.current = false;
+      onMarkScrubFreeze?.(null);
+    }
     setDrag(kind);
   };
 
@@ -188,11 +286,47 @@ function VideoTrimTimeline({
       role="presentation"
     >
       <div className="video-trim-controls__timeline-track" />
-      <div className="video-trim-controls__timeline-selection" style={{ left: `${inPct}%`, width: `${outPct - inPct}%` }} />
+      {showBands ? (
+        <>
+          <div
+            className="video-trim-controls__band video-trim-controls__band--origin"
+            style={{ left: 0, width: `${seamPct}%` }}
+            title={`Origin · ${formatVideoSeconds(0)}–${formatVideoSeconds(seam!)}`}
+          />
+          {showBlend ? (
+            <div
+              className="video-trim-controls__band video-trim-controls__band--blend"
+              style={{ left: `${seamPct}%`, width: `${(blendEndPct as number) - (seamPct as number)}%` }}
+              title={`Overlap blend · ${formatVideoSeconds(seam!)}–${formatVideoSeconds(blendEnd!)}`}
+            />
+          ) : null}
+          <div
+            className="video-trim-controls__band video-trim-controls__band--generated"
+            style={{ left: `${generatedStartPct}%`, width: `${100 - generatedStartPct}%` }}
+            title={`Generated · ${formatVideoSeconds(showBlend ? blendEnd! : seam!)}–${formatVideoSeconds(duration)}`}
+          />
+        </>
+      ) : null}
+      <div className="video-trim-controls__timeline-selection" style={{ left: `${inPct}%`, width: `${Math.max(0, outPct - inPct)}%` }} />
+      {inPct > 0.15 ? (
+        <div
+          className="video-trim-controls__excluded video-trim-controls__excluded--left"
+          style={{ width: `${inPct}%` }}
+          aria-hidden
+        />
+      ) : null}
+      {outPct < 99.85 ? (
+        <div
+          className="video-trim-controls__excluded video-trim-controls__excluded--right"
+          style={{ left: `${outPct}%`, width: `${100 - outPct}%` }}
+          aria-hidden
+        />
+      ) : null}
       <div
         className={
           "video-trim-controls__handle video-trim-controls__handle--in" +
-          (readOnly ? " video-trim-controls__handle--readonly" : "")
+          (readOnly ? " video-trim-controls__handle--readonly" : "") +
+          (drag === "in" ? " video-trim-controls__handle--dragging" : "")
         }
         style={{ left: `${inPct}%` }}
         onPointerDown={startDrag("in")}
@@ -208,7 +342,8 @@ function VideoTrimTimeline({
       <div
         className={
           "video-trim-controls__handle video-trim-controls__handle--out" +
-          (readOnly ? " video-trim-controls__handle--readonly" : "")
+          (readOnly ? " video-trim-controls__handle--readonly" : "") +
+          (drag === "out" ? " video-trim-controls__handle--dragging" : "")
         }
         style={{ left: `${outPct}%` }}
         onPointerDown={startDrag("out")}
@@ -222,7 +357,10 @@ function VideoTrimTimeline({
         <span />
       </div>
       <div
-        className="video-trim-controls__playhead"
+        className={
+          "video-trim-controls__playhead" +
+          (drag === "play" ? " video-trim-controls__playhead--dragging" : "")
+        }
         style={{ left: `${playPct}%` }}
         onPointerDown={startDrag("play")}
         role="slider"
@@ -256,6 +394,8 @@ export function VideoTrimControls({
   className,
   size = "default",
   readOnly = false,
+  seamMark = null,
+  blendEndMark = null,
 }: {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   duration: number;
@@ -274,8 +414,14 @@ export function VideoTrimControls({
   size?: "default" | "large";
   /** When true, in/out marks cannot be changed (queued/running jobs). Playback still works. */
   readOnly?: boolean;
+  /** Seconds where origin material ends / this pass's generation begins. */
+  seamMark?: number | null;
+  /** Seconds where overlap blend ends / pure generated begins (optional). */
+  blendEndMark?: number | null;
 }) {
   const [, forceMediaUi] = useReducer((x: number) => x + 1, 0);
+  const [markScrubFreeze, setMarkScrubFreeze] = useState<number | null>(null);
+  const displayTime = markScrubFreeze != null ? markScrubFreeze : currentTime;
 
   useEffect(() => {
     const v = videoRef.current;
@@ -376,13 +522,13 @@ export function VideoTrimControls({
   const setInAtPlayhead = () => {
     if (disabled || readOnly) return;
     const out = Math.min(liveDuration, markOut ?? liveDuration);
-    onMarkInChange(Math.max(0, Math.min(currentTime, out - TRIM_HANDLE_MIN_GAP_SEC)));
+    onMarkInChange(Math.max(0, Math.min(displayTime, out - TRIM_HANDLE_MIN_GAP_SEC)));
   };
 
   const setOutAtPlayhead = () => {
     if (disabled || readOnly) return;
     const inn = Math.max(0, markIn ?? 0);
-    onMarkOutChange(Math.min(liveDuration, Math.max(currentTime, inn + TRIM_HANDLE_MIN_GAP_SEC)));
+    onMarkOutChange(Math.min(liveDuration, Math.max(displayTime, inn + TRIM_HANDLE_MIN_GAP_SEC)));
   };
 
   return (
@@ -397,14 +543,18 @@ export function VideoTrimControls({
       <div className="video-trim-controls__timeline-row">
         <VideoTrimTimeline
           duration={liveDuration}
-          currentTime={currentTime}
+          currentTime={displayTime}
           markIn={markIn}
           markOut={markOut}
+          seamMark={seamMark}
+          blendEndMark={blendEndMark}
+          videoRef={videoRef}
           disabled={disabled}
           readOnly={readOnly}
           onSeek={syncSeek}
           onMarkInChange={onMarkInChange}
           onMarkOutChange={onMarkOutChange}
+          onMarkScrubFreeze={setMarkScrubFreeze}
         />
         <div className="video-trim-controls__actions" role="group" aria-label="Trim range options">
           <button
@@ -431,7 +581,7 @@ export function VideoTrimControls({
       </div>
       <div className="video-trim-controls__primary">
         <div className="video-trim-controls__time mono">
-          {formatVideoSeconds(currentTime)} <span>/</span> {formatVideoSeconds(liveDuration)}
+          {formatVideoSeconds(displayTime)} <span>/</span> {formatVideoSeconds(liveDuration)}
         </div>
         <div className="video-trim-controls__transport" role="group" aria-label="Video playback">
           <button type="button" aria-label="Go to trim start" title="Go to trim start" disabled={disabled} onClick={() => syncSeek(bounds?.in ?? 0)}>

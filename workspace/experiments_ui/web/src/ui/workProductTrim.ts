@@ -123,3 +123,75 @@ export function familyVhsDefaults(
     frame_load_cap: Math.max(0, Math.floor(Number(row?.vhs_defaults?.frame_load_cap ?? 0) || 0)),
   };
 }
+
+/**
+ * Seconds into an output clip where prior/origin material ends and this pass's
+ * generated frames begin. Prefer construction.frames_before; else
+ * output_frame_count − workload.frames (or duration − gen/fps).
+ */
+export function originSeamSeconds(opts: {
+  duration: number;
+  fps: number;
+  framesBefore?: number | null;
+  generationFrames?: number | null;
+  outputFrameCount?: number | null;
+}): number | null {
+  const duration = Number(opts.duration) || 0;
+  const fps = Number(opts.fps) || 0;
+  if (!(duration > 0.1) || !(fps > 0)) return null;
+
+  const before = Math.floor(Number(opts.framesBefore));
+  if (Number.isFinite(before) && before > 0) {
+    const t = before / fps;
+    if (t > 0.04 && t < duration - 0.04) return t;
+  }
+
+  const gen = Math.floor(Number(opts.generationFrames));
+  if (!(Number.isFinite(gen) && gen > 0)) return null;
+
+  const fc = Math.floor(Number(opts.outputFrameCount));
+  let t: number | null = null;
+  if (Number.isFinite(fc) && fc > gen) {
+    t = (fc - gen) / fps;
+  } else {
+    t = duration - gen / fps;
+  }
+  if (t == null || !(t > 0.04) || !(t < duration - 0.04)) return null;
+  return t;
+}
+
+/** Origin / overlap-blend / generated bands for the output trim track. */
+export type OriginGenerationBands = {
+  /** Start of this pass's generation window (origin ends here). */
+  seamSec: number;
+  /** End of overlap blend (= seam + overlap/fps), or null when overlap unknown. */
+  blendEndSec: number | null;
+  overlapFrames: number | null;
+};
+
+export function originGenerationBands(opts: {
+  duration: number;
+  fps: number;
+  framesBefore?: number | null;
+  generationFrames?: number | null;
+  outputFrameCount?: number | null;
+  overlapFrames?: number | null;
+}): OriginGenerationBands | null {
+  const duration = Number(opts.duration) || 0;
+  const fps = Number(opts.fps) || 0;
+  const seamSec = originSeamSeconds(opts);
+  if (seamSec == null || !(duration > 0) || !(fps > 0)) return null;
+
+  const ov = Math.floor(Number(opts.overlapFrames));
+  let blendEndSec: number | null = null;
+  let overlapFrames: number | null = null;
+  if (Number.isFinite(ov) && ov > 0) {
+    const end = Math.min(duration, seamSec + ov / fps);
+    if (end > seamSec + 0.02) {
+      blendEndSec = end;
+      overlapFrames = ov;
+    }
+  }
+  return { seamSec, blendEndSec, overlapFrames };
+}
+

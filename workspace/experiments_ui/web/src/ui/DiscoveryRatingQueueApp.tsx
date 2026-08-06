@@ -18,7 +18,15 @@ import { DispositionBar, DispositionReasonsPanel, DispositionRouter } from "./Di
 import { DispositionCatalogEditor } from "./DispositionCatalogEditor";
 import { DispositionStatusPanel } from "./DispositionStatusPanel";
 import { discoveryLibraryHref } from "./discoveryDeepLink";
+import {
+  TRIM_CONTEXT_DISCOVERY_PLAYER,
+  loadDiscoveryTrimAsync,
+  persistDiscoveryTrimAsync,
+} from "./discoveryTrimStorage";
 import { PageHeader } from "./PageHeader";
+import { useTrimPlaybackEnforcement } from "./useTrimPlayback";
+import { VideoTrimControls, type VideoTrimPlaybackMode } from "./VideoTrimControls";
+import { originGenerationBands, parseFps } from "./workProductTrim";
 import type {
   Appetite,
   AppetiteFacet,
@@ -530,10 +538,18 @@ export function DiscoveryRatingQueueApp() {
   const [searchDraft, setSearchDraft] = useState(loadSearchQuery);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [videoAspect, setVideoAspect] = useState<"portrait" | "landscape" | "square" | null>(null);
+  const [videoDuration, setVideoDuration] = useState(0);
+  const [videoTime, setVideoTime] = useState(0);
+  const [markIn, setMarkIn] = useState<number | null>(null);
+  const [markOut, setMarkOut] = useState<number | null>(null);
 
   const onVideoMetadata = useCallback(() => {
     const v = videoRef.current;
-    if (!v?.videoWidth || !v.videoHeight) return;
+    if (!v) return;
+    const d = v.duration;
+    if (Number.isFinite(d) && d > 0) setVideoDuration(d);
+    setVideoTime(v.currentTime || 0);
+    if (!v.videoWidth || !v.videoHeight) return;
     const ratio = v.videoWidth / v.videoHeight;
     if (ratio >= 1.12) setVideoAspect("landscape");
     else if (ratio <= 0.88) setVideoAspect("portrait");
@@ -641,6 +657,72 @@ export function DiscoveryRatingQueueApp() {
 
   const candidates = session?.candidates ?? [];
   const current = candidates[index] ?? null;
+
+  const trimMode: VideoTrimPlaybackMode = loopPlayback ? "repeat" : "stop_at_end";
+  const extensionRange = current?.extension_range;
+  const trimFps = parseFps(extensionRange?.fps, 18);
+  const generationBands = useMemo(
+    () =>
+      originGenerationBands({
+        duration: videoDuration,
+        fps: trimFps,
+        framesBefore: extensionRange?.frames_before,
+        generationFrames: extensionRange?.generation_frames,
+        outputFrameCount: extensionRange?.output_frame_count,
+        overlapFrames: extensionRange?.overlap,
+      }),
+    [
+      videoDuration,
+      trimFps,
+      extensionRange?.frames_before,
+      extensionRange?.generation_frames,
+      extensionRange?.output_frame_count,
+      extensionRange?.overlap,
+    ],
+  );
+
+  useTrimPlaybackEnforcement(videoRef, {
+    mediaKey: current?.relpath || "",
+    markIn,
+    markOut,
+    mode: trimMode,
+    enabled: Boolean(current?.relpath),
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    setVideoDuration(0);
+    setVideoTime(0);
+    setMarkIn(null);
+    setMarkOut(null);
+    setVideoAspect(null);
+    const rel = current?.relpath;
+    if (!rel) return;
+    void loadDiscoveryTrimAsync(TRIM_CONTEXT_DISCOVERY_PLAYER, rel, rel).then((loaded) => {
+      if (cancelled || !loaded) return;
+      setMarkIn(loaded.in);
+      setMarkOut(loaded.out);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [current?.relpath]);
+
+  const persistRateTrim = useCallback(
+    (nextIn: number | null, nextOut: number | null, duration: number) => {
+      const rel = current?.relpath;
+      if (!rel) return;
+      void persistDiscoveryTrimAsync({
+        context: TRIM_CONTEXT_DISCOVERY_PLAYER,
+        mediaRelpath: rel,
+        legacyAssetKey: rel,
+        markIn: nextIn,
+        markOut: nextOut,
+        duration: duration > 0 ? duration : 1,
+      });
+    },
+    [current?.relpath],
+  );
 
   const dismissBatchAndLoad = useCallback(async () => {
     if (triageBusy) return;
@@ -1291,10 +1373,16 @@ export function DiscoveryRatingQueueApp() {
                       src={fileUrlFromRel(current.relpath)}
                       controls
                       autoPlay
-                      loop={loopPlayback}
+                      loop={loopPlayback && markIn == null && markOut == null}
                       playsInline
                       preload="metadata"
                       onLoadedMetadata={onVideoMetadata}
+                      onDurationChange={(e) => {
+                        const d = e.currentTarget.duration;
+                        if (Number.isFinite(d) && d > 0) setVideoDuration(d);
+                      }}
+                      onTimeUpdate={(e) => setVideoTime(e.currentTarget.currentTime || 0)}
+                      onSeeked={(e) => setVideoTime(e.currentTarget.currentTime || 0)}
                     />
                     {explicitRating != null ? (
                       <span className="drq-rated-badge dal-rating dal-rating--explicit">★ {explicitRating}</span>
@@ -1314,6 +1402,43 @@ export function DiscoveryRatingQueueApp() {
                       </span>
                     ) : null}
                   </div>
+                  <VideoTrimControls
+                    className="drq-player-trim"
+                    videoRef={videoRef}
+                    duration={videoDuration}
+                    currentTime={videoTime}
+                    markIn={markIn}
+                    markOut={markOut}
+                    mode={trimMode}
+                    mediaSyncKey={current.relpath}
+                    size="default"
+                    seamMark={generationBands?.seamSec ?? null}
+                    blendEndMark={generationBands?.blendEndSec ?? null}
+                    onSeek={setVideoTime}
+                    onSyncTime={setVideoTime}
+                    onMarkInChange={(v) => {
+                      setMarkIn(v);
+                      persistRateTrim(v, markOut, videoDuration);
+                    }}
+                    onMarkOutChange={(v) => {
+                      setMarkOut(v);
+                      persistRateTrim(markIn, v, videoDuration);
+                    }}
+                    onModeChange={(m) => {
+                      const next = m === "repeat";
+                      setLoopPlayback(next);
+                      try {
+                        localStorage.setItem(LOOP_PLAYBACK_KEY, next ? "1" : "0");
+                      } catch {
+                        /* ignore */
+                      }
+                    }}
+                    onClear={() => {
+                      setMarkIn(null);
+                      setMarkOut(null);
+                      persistRateTrim(null, null, videoDuration);
+                    }}
+                  />
                   <div className="drq-player-tools">
                     <button
                       type="button"
