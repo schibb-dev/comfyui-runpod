@@ -1072,15 +1072,31 @@ def _discovery_rating_sampler_payload(cfg: "ServerConfig", q: Dict[str, List[str
         session["vision_gaps"] = analyze_vision_gaps(session)
         return session
 
+    def _enrich(session: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+            from shape_factory_rating_sampler import enrich_session_extension_ranges  # type: ignore
+
+            data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+            enrich_session_extension_ranges(
+                session,
+                data_root=data_root,
+                og_root=og_root,
+                output_root=cfg.output_root,
+            )
+        except Exception:
+            pass
+        return session
+
     if refresh:
-        return _sample()
+        return _enrich(_sample())
 
     sessions_dir = default_sampler_sessions_dir(og_root)
     paths = sorted(sessions_dir.glob("session_*.json")) if sessions_dir.is_dir() else []
     if not paths:
         session = _sample()
         session["bootstrapped"] = True
-        return session
+        return _enrich(session)
 
     try:
         session = json.loads(paths[-1].read_text(encoding="utf-8"))
@@ -1092,11 +1108,11 @@ def _discovery_rating_sampler_payload(cfg: "ServerConfig", q: Dict[str, List[str
     if _session_is_stale(session) or not _request_matches(session):
         session = _sample()
         session["regenerated_stale"] = True
-        return session
+        return _enrich(session)
 
     session["session_path"] = str(paths[-1])
     session["vision_gaps"] = analyze_vision_gaps(session)
-    return session
+    return _enrich(session)
 
 
 def _shape_factory_map_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
@@ -1491,15 +1507,42 @@ def _resolve_replay_job_from_relpath(cfg: "ServerConfig", rel: str, body: Dict[s
     d = _workspace_scripts_dir()
     if d.is_dir() and str(d) not in sys.path:
         sys.path.insert(0, str(d))
-    from shape_factory_ratings import build_job_output_index, _lookup_job_meta, _norm_path_key  # type: ignore
+    from shape_factory_job_output_index import (  # type: ignore
+        default_job_output_index_path,
+        lookup_by_relpath,
+        open_job_output_index,
+    )
+    from shape_factory import find_job_by_key  # type: ignore
     from shape_factory_queue import resolve_shape_factory_data_root  # type: ignore
+    from shape_factory_rating_sampler import job_key_guess_from_output_relpath  # type: ignore
 
-    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
-    jobs_root = data_root / "shape_factory" / "jobs"
-    idx = build_job_output_index(jobs_root, cfg.output_root)
-    meta = _lookup_job_meta(_norm_path_key(rel, cfg.output_root), idx) or {}
+    og_root = _prefer_flat_library_dir(cfg.output_root, "og")
+    index_path = default_job_output_index_path(og_root)
+    meta: Dict[str, Any] = {}
+    if index_path.is_file():
+        try:
+            con = open_job_output_index(index_path)
+            try:
+                row = lookup_by_relpath(con, rel, output_root=cfg.output_root)
+            finally:
+                con.close()
+            if isinstance(row, dict):
+                meta = row
+        except Exception:
+            meta = {}
     job_key = str(meta.get("job_key") or "").strip()
     family = family or str(meta.get("family_slug") or "").strip()
+    if job_key:
+        return job_key, family
+
+    # Single-job fallback — never full-tree scan on the request path.
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    guess = job_key_guess_from_output_relpath(rel)
+    if guess:
+        _path, job = find_job_by_key(data_root, guess)
+        if isinstance(job, dict):
+            job_key = str(job.get("job_key") or guess).strip()
+            family = family or str(job.get("family_slug") or "").strip()
     return job_key, family
 
 
@@ -1592,6 +1635,21 @@ def _shape_factory_replay_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Di
     from shape_factory_queue import replay_from_request_body  # type: ignore
 
     return replay_from_request_body(
+        body,
+        repo_root=_repo_root(),
+        workspace_root=cfg.workspace_root,
+        output_root=cfg.output_root,
+        comfy_server=str(cfg.comfy_server),
+    )
+
+
+def _shape_factory_derive_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_queue import derive_from_request_body  # type: ignore
+
+    return derive_from_request_body(
         body,
         repo_root=_repo_root(),
         workspace_root=cfg.workspace_root,
@@ -2432,6 +2490,27 @@ def _disposition_hook_runner(cfg: "ServerConfig", rel: str, body: Dict[str, Any]
     def _run(hook: str, extra: Dict[str, Any]) -> Dict[str, Any]:
         merged = dict(body)
         merged.update(extra or {})
+        if hook == "derive":
+            explicit_family = str(merged.get("family_slug") or merged.get("family") or "").strip()
+            job_key, family = _resolve_replay_job_from_relpath(cfg, rel, merged)
+            if not job_key:
+                return {"ok": False, "reason": "no_derive_context"}
+            derive_body: Dict[str, Any] = {"job_key": job_key}
+            target = explicit_family or family
+            if target:
+                derive_body["family_slug"] = target
+            if merged.get("front"):
+                derive_body["front"] = True
+            facet = str(merged.get("facet") or "").strip()
+            if facet:
+                derive_body["facet"] = facet
+            overrides = merged.get("overrides")
+            if isinstance(overrides, dict) and overrides:
+                derive_body["overrides"] = overrides
+            try:
+                return _shape_factory_derive_payload(cfg, derive_body)
+            except ValueError as e:
+                return {"ok": False, "reason": str(e)}
         if hook == "extend":
             return _fast_track_extend(cfg, rel, merged)
         replay_body: Dict[str, Any] = {"extend": bool(merged.get("extend"))}
@@ -2892,8 +2971,9 @@ def _discovery_disposition_suggest_payload(cfg: ServerConfig, q: Dict[str, List[
     }}
 
 
-_RATINGS_INDEX_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
-_APPETITE_INDEX_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+# Stamp is (db_mtime, json_mtime) for ratings; appetite may use a single float.
+_RATINGS_INDEX_CACHE: Dict[str, Tuple[Any, Dict[str, Any]]] = {}
+_APPETITE_INDEX_CACHE: Dict[str, Tuple[Any, Dict[str, Any]]] = {}
 
 _RATINGS_VERIFICATIONS_LOCK = threading.Lock()
 _RATINGS_VALID_LENSES = frozenset({"as_source", "workflow", "recipe"})
@@ -3052,13 +3132,15 @@ def _discovery_load_ratings_index(cfg: "ServerConfig") -> Optional[Dict[str, Any
     if not path.is_file() and not db_path.is_file():
         return None
     try:
-        mtime_src = db_path if db_path.is_file() else path
-        mtime = mtime_src.stat().st_mtime
+        db_mtime = db_path.stat().st_mtime if db_path.is_file() else 0.0
+        json_mtime = path.stat().st_mtime if path.is_file() else 0.0
     except OSError:
         return None
     key = str(db_path if db_path.is_file() else path)
+    # Cache key includes JSON mtime so aggregate sections stay valid across sqlite writes.
+    stamp = (db_mtime, json_mtime)
     cached = _RATINGS_INDEX_CACHE.get(key)
-    if cached and cached[0] == mtime:
+    if cached and cached[0] == stamp:
         return cached[1]
     try:
         doc = load_ratings_doc(path)
@@ -3066,7 +3148,7 @@ def _discovery_load_ratings_index(cfg: "ServerConfig") -> Optional[Dict[str, Any
         return None
     if not isinstance(doc, dict):
         return None
-    _RATINGS_INDEX_CACHE[key] = (mtime, doc)
+    _RATINGS_INDEX_CACHE[key] = (stamp, doc)
     return doc
 
 
@@ -6795,6 +6877,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_shape_factory_queue_post()
         if path == "/api/shape-factory/replay":
             return self._handle_shape_factory_replay_post()
+        if path == "/api/shape-factory/derive":
+            return self._handle_shape_factory_derive_post()
         if path == "/api/shape-factory/unqueue":
             return self._handle_shape_factory_unqueue_post()
         if path == "/api/shape-factory/discard":
@@ -6872,6 +6956,28 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, 502, {"ok": False, "error": "shape_factory_replay_failed", "detail": str(e)})
         except Exception as e:
             return _json_response(self, 500, {"ok": False, "error": "shape_factory_replay_failed", "detail": str(e)})
+        status = 200 if payload.get("ok", True) else 400
+        return _json_response(self, status, payload)
+
+    def _handle_shape_factory_derive_post(self) -> None:
+        """POST /api/shape-factory/derive — rewire a prior job into a new combo."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _shape_factory_derive_payload(cfg, body)
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except FileNotFoundError as e:
+            return _json_response(self, 404, {"ok": False, "error": "not_found", "detail": str(e)})
+        except RuntimeError as e:
+            qerr = _quarantine_runtime_error_payload(e)
+            if qerr is not None:
+                return _json_response(self, 409, qerr)
+            return _json_response(self, 502, {"ok": False, "error": "shape_factory_derive_failed", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "shape_factory_derive_failed", "detail": str(e)})
         status = 200 if payload.get("ok", True) else 400
         return _json_response(self, status, payload)
 
@@ -9262,7 +9368,7 @@ def main() -> int:
     print(
         "[experiments-ui] comfy_live_routes=GET /api/comfy/live-preview, GET /api/comfy/live-status, GET /api/comfy/logs"
     )
-    print("[experiments-ui] shape_factory_routes=GET /api/shape-factory/map, GET /api/shape-factory/prompt-profile, GET /api/shape-factory/work-products, GET /api/shape-factory/json-peek, GET /api/shape-factory/quarantine, POST /api/shape-factory/queue, POST /api/shape-factory/replay, POST /api/shape-factory/unqueue, POST /api/shape-factory/discard, POST /api/shape-factory/update-pending-trim, POST /api/shape-factory/quarantine/release")
+    print("[experiments-ui] shape_factory_routes=GET /api/shape-factory/map, GET /api/shape-factory/prompt-profile, GET /api/shape-factory/work-products, GET /api/shape-factory/json-peek, GET /api/shape-factory/quarantine, POST /api/shape-factory/queue, POST /api/shape-factory/replay, POST /api/shape-factory/derive, POST /api/shape-factory/unqueue, POST /api/shape-factory/discard, POST /api/shape-factory/update-pending-trim, POST /api/shape-factory/quarantine/release")
     server.serve_forever()
     return 0
 
