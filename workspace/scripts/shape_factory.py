@@ -1325,7 +1325,12 @@ def generate_job_for_picks(
             "binding_type": (req.get("binding") or {}).get("type"),
         }
 
-    pick_slug = slug("__".join(f"{s}-{Path(picks[s]).stem}" for s in sorted(picks)), 90)
+    from shape_factory_map import job_key_slot_token
+
+    pick_slug = slug(
+        "__".join(f"{job_key_slot_token(s)}-{Path(picks[s]).stem}" for s in sorted(picks)),
+        90,
+    )
     # Optional leading stem (e.g. "hourly") so filenames don't all sort under family_slug.
     key_stem = str(job_key_prefix or "").strip() or family
     job_key = slug(f"{key_stem}__{pick_slug}__{pick_index:03d}", 120)

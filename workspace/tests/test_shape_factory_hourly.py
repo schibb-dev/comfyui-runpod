@@ -365,7 +365,7 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
         )
         self.assertEqual(
             _combo_key_from_job_key(raw),
-            "prompt_profile-ef85da9aa887__source_video-X-Kneel-FB9-2026-04-01-144236_OG_00001",
+            "pp-ef85da9aa887__src-X-Kneel-FB9-2026-04-01-144236_OG_00001",
         )
 
     def test_derive_rewire_processing_synthesizes_new_source(self) -> None:

@@ -53,7 +53,7 @@ export function poolMemberKey(poolKey: string, mem: ShapeFactoryMapMediaRef): st
 
 export function shortPairLabel(pair: SourceOutputPair): string {
   const jk = pair.jobKey || "";
-  const m = jk.match(/prompt_profile-(.+?)__source_video/);
+  const m = jk.match(/(?:pp|prompt_profile)-(.+?)__(?:src|source_video)/);
   if (m?.[1]) return m[1];
   const prompt = pair.bindings?.prompt_profile?.basename?.replace(/\.json$/i, "");
   if (prompt) {

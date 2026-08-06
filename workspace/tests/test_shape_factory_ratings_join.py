@@ -39,6 +39,15 @@ class RecipeJoinTests(unittest.TestCase):
         self.assertEqual(_prompt_profile_name(job), "catalog-default__draft_1")
         self.assertEqual(_shape_recipe_key(job), "FB9_GEX2+catalog-default__draft_1")
 
+    def test_prompt_profile_from_short_job_key(self) -> None:
+        job = {
+            "family_slug": "FB9_GEX2",
+            "job_key": "hourly__pp-catalog-default__draft_1__src-X__000",
+            "bindings": {},
+        }
+        self.assertEqual(_prompt_profile_name(job), "catalog-default__draft_1")
+        self.assertEqual(_shape_recipe_key(job), "FB9_GEX2+catalog-default__draft_1")
+
     def test_backfill_recipe_fallback(self) -> None:
         job = {
             "family_slug": "FB9_GEX2",

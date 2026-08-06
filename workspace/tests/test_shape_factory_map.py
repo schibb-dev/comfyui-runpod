@@ -24,6 +24,8 @@ from shape_factory_map import (  # noqa: E402
     _projected_pairs_for_family,
     _relpath_guess_from_abs,
     build_shape_factory_map,
+    job_key_slot_token,
+    normalize_combo_key,
     resolve_output_relpath,
     resolve_shape_factory_data_root,
 )
@@ -33,6 +35,17 @@ class ShapeFactoryMapTests(unittest.TestCase):
     def test_resolve_data_root_default(self) -> None:
         p = resolve_shape_factory_data_root(repo_root=ROOT)
         self.assertEqual(p, (ROOT / ".data").resolve())
+
+    def test_combo_key_uses_short_slot_labels(self) -> None:
+        key = _combo_key_from_slot_paths(
+            {"prompt_profile": "/tmp/prompts/aaa.json", "source_video": "/tmp/src/clip.mp4"}
+        )
+        self.assertEqual(key, "pp-aaa__src-clip")
+        self.assertEqual(job_key_slot_token("prompt_profile"), "pp")
+        self.assertEqual(
+            normalize_combo_key("prompt_profile-aaa__source_video-clip"),
+            "pp-aaa__src-clip",
+        )
 
     def test_build_edges_pipeline_link(self) -> None:
         families = [

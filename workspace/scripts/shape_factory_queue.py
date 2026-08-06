@@ -24,7 +24,12 @@ from shape_factory import (
     requires_by_slot,
     submit_job_file,
 )
-from shape_factory_map import _combo_key_from_slot_paths, resolve_existing_path, resolve_shape_factory_data_root
+from shape_factory_map import (
+    _combo_key_from_slot_paths,
+    normalize_combo_key,
+    resolve_existing_path,
+    resolve_shape_factory_data_root,
+)
 from shape_factory_prompt_recover import resolve_or_recover_prompt_profile_binding
 
 # mxSlider node ids shared by FB9 GEX2 / GEX_FACIAL graphs
@@ -837,7 +842,11 @@ def queue_shape_factory_combo(
         raise ValueError(f"missing required bindings: {missing}")
 
     computed_combo = _combo_key_from_slot_paths(slot_paths)
-    if combo_key and str(combo_key).strip() and str(combo_key).strip() != computed_combo:
+    if (
+        combo_key
+        and str(combo_key).strip()
+        and normalize_combo_key(combo_key) != normalize_combo_key(computed_combo)
+    ):
         raise ValueError(f"combo_key mismatch (expected {computed_combo!r}, got {combo_key!r})")
 
     picks, adhoc_meta = _apply_binding_overrides(

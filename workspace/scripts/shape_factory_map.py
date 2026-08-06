@@ -586,8 +586,37 @@ def _pool_slot_paths(
     return out
 
 
+# Short tokens in job_key / combo_key segments (future naming). Long forms still parse.
+JOB_KEY_SLOT_ABBREV: Dict[str, str] = {
+    "prompt_profile": "pp",
+    "source_video": "src",
+    "source_video_ref": "src_ref",
+    "source_still": "still",
+    "source_image": "srcimg",
+    "start_image": "start",
+}
+
+
+def job_key_slot_token(slot: str) -> str:
+    """Canonical short label for a binding slot in job/combo keys."""
+    s = str(slot or "").strip()
+    return JOB_KEY_SLOT_ABBREV.get(s, s)
+
+
+def normalize_combo_key(combo_key: str) -> str:
+    """Rewrite legacy long slot labels to abbrevs so old/new keys compare equal."""
+    raw = str(combo_key or "")
+    if not raw:
+        return ""
+    for long, short in sorted(JOB_KEY_SLOT_ABBREV.items(), key=lambda kv: len(kv[0]), reverse=True):
+        raw = re.sub(rf"(^|__){re.escape(long)}(?=-|__|$)", rf"\1{short}", raw)
+    return raw
+
+
 def _combo_key_from_slot_paths(slot_paths: Dict[str, str]) -> str:
-    return "__".join(f"{slot}-{Path(path).stem}" for slot, path in sorted(slot_paths.items()))
+    return "__".join(
+        f"{job_key_slot_token(slot)}-{Path(path).stem}" for slot, path in sorted(slot_paths.items())
+    )
 
 
 def _combo_key_from_job_bindings(bindings: Dict[str, Any]) -> Optional[str]:

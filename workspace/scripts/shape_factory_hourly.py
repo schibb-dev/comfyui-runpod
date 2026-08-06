@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from shape_factory import load_yaml, requires_by_slot
 from shape_factory_heuristics import _og_group_id_from_relpath
-from shape_factory_map import _combo_key_from_job_bindings, _combo_key_from_slot_paths
+from shape_factory_map import _combo_key_from_job_bindings, _combo_key_from_slot_paths, normalize_combo_key
 from shape_factory_prompt_recover import (
     extract_prompt_texts_from_ui_workflow,
     find_ui_node,
@@ -1198,7 +1198,8 @@ def _pick_preferring_non_recent(
     """Pick from candidates, strongly preferring ones whose combo_key is not recent."""
     if not candidates:
         return None
-    fresh = [c for c in candidates if str(combo_for(c) or "") not in recent]
+    recent_n = {normalize_combo_key(x) for x in (recent or set()) if str(x or "").strip()}
+    fresh = [c for c in candidates if normalize_combo_key(combo_for(c) or "") not in recent_n]
     pool = fresh or candidates
     if weight_for is None:
         return rng.choice(pool)
@@ -1261,8 +1262,8 @@ def _derive_rewire(
     """
     seed_picks = seed.get("picks") if isinstance(seed.get("picks"), dict) else {}
     seed_out = str(seed.get("output_path") or "")
-    seed_combo = str(seed.get("combo_key") or "")
-    recent = recent or set()
+    seed_combo = normalize_combo_key(seed.get("combo_key") or "")
+    recent = {normalize_combo_key(x) for x in (recent or set()) if str(x or "").strip()}
     meta: dict[str, Any] = {}
 
     def _rebuild(picks_map: Dict[str, str], *, output_path: Optional[str], source_tag: str) -> dict[str, Any]:
@@ -1281,7 +1282,7 @@ def _derive_rewire(
             picks_map = dict(seed_picks)
             picks_map[video_slot] = seed_out
             rec = _rebuild(picks_map, output_path=None, source_tag=f"derive:extend:{seed.get('source') or seed_out}")
-            if str(rec.get("combo_key") or "") != seed_combo:
+            if normalize_combo_key(rec.get("combo_key") or "") != seed_combo:
                 return rec, "extend", meta
         facet = "source"  # no useful extend -> fall back to vary-processing
 
@@ -1326,7 +1327,7 @@ def _derive_rewire(
                 output_path=None,
                 source_tag=f"derive:source:{seed.get('source') or seed_out}",
             )
-            if str(rec.get("combo_key") or "") != seed_combo:
+            if normalize_combo_key(rec.get("combo_key") or "") != seed_combo:
                 return rec, "derive", meta
 
     if facet == "processing" and prompt_slot and source_slots:
@@ -1422,7 +1423,7 @@ def _derive_rewire(
                 output_path=None,
                 source_tag=f"derive:processing:{seed.get('source') or seed_out}",
             )
-            if str(rec.get("combo_key") or "") != seed_combo:
+            if normalize_combo_key(rec.get("combo_key") or "") != seed_combo:
                 return rec, "derive", meta
 
     return None, "noop", meta
@@ -1437,7 +1438,7 @@ def _combo_key_from_job_key(job_key: str) -> str:
         raw = raw[len("hourly__") :]
     # Drop trailing __000_YYYYmmddHHMM / __000_h... style suffixes.
     raw = re.sub(r"__000_(?:h)?\d{8,}.*$", "", raw)
-    return raw
+    return normalize_combo_key(raw)
 
 
 def _recent_combo_keys(
@@ -1477,13 +1478,14 @@ def _recent_combo_keys(
             ck = str(job["combo_key"])
         else:
             ck = _combo_key_from_job_key(str(job.get("job_key") or path.stem))
+        ck = normalize_combo_key(ck)
         if ck:
             out.add(ck)
     state_path = data_root / "shape_factory" / "hourly-state.json"
     if state_path.is_file():
         try:
             state = json.loads(state_path.read_text(encoding="utf-8"))
-            last = str(state.get("last_combo_key") or "").strip()
+            last = normalize_combo_key(str(state.get("last_combo_key") or "").strip())
             if last:
                 out.add(last)
         except Exception:
@@ -1492,20 +1494,22 @@ def _recent_combo_keys(
 
 
 def _prompt_slug_from_combo(combo_key: str) -> str:
-    raw = str(combo_key or "")
-    if "prompt_profile-" not in raw:
-        return ""
-    rest = raw.split("prompt_profile-", 1)[1]
-    return rest.split("__", 1)[0]
+    raw = normalize_combo_key(combo_key)
+    for prefix in ("pp-", "prompt_profile-"):
+        if prefix in raw:
+            rest = raw.split(prefix, 1)[1]
+            return rest.split("__", 1)[0]
+    return ""
 
 
 def _source_basename_from_combo(combo_key: str) -> str:
-    raw = str(combo_key or "")
-    if "source_video-" not in raw:
-        return ""
-    rest = raw.split("source_video-", 1)[1]
-    # Combo keys omit extensions; recipe paths usually include .mp4 — compare basenames.
-    return rest.split("__", 1)[0]
+    raw = normalize_combo_key(combo_key)
+    for prefix in ("src-", "source_video-", "still-", "source_still-", "src_ref-", "source_video_ref-"):
+        if prefix in raw:
+            rest = raw.split(prefix, 1)[1]
+            # Combo keys omit extensions; recipe paths usually include .mp4 — compare basenames.
+            return rest.split("__", 1)[0]
+    return ""
 
 
 def _source_basename_from_path(path: str) -> str:
@@ -1530,10 +1534,11 @@ def _apply_recent_combo_penalty(
     if not recent:
         return weights
     pen = max(0.01, min(1.0, float(penalty)))
+    recent_n = {normalize_combo_key(x) for x in recent if str(x or "").strip()}
     out: List[float] = []
     for recipe, weight in zip(recipes, weights):
-        ck = str(recipe.get("combo_key") or "")
-        out.append(float(weight) * (pen if ck in recent else 1.0))
+        ck = normalize_combo_key(recipe.get("combo_key") or "")
+        out.append(float(weight) * (pen if ck in recent_n else 1.0))
     return out
 
 
@@ -1622,7 +1627,7 @@ def plan_hourly_derive(
         if tag_aff:
             info["tag_affinity"] = round(tag_aff, 3)
             weight *= max(0.5, min(1.5, 1.0 + 0.12 * (tag_aff - 2.5)))
-        ck = str(recipe.get("combo_key") or "")
+        ck = normalize_combo_key(recipe.get("combo_key") or "")
         if ck in recent:
             weight *= 0.08
         weight *= _recipe_promotion_mult(recipe)
@@ -1686,8 +1691,8 @@ def plan_hourly_derive(
         tried += 1
         if rewired is None:
             continue
-        ck = str(rewired.get("combo_key") or "")
-        if not ck or ck == str(seed_recipe.get("combo_key") or ""):
+        ck = normalize_combo_key(rewired.get("combo_key") or "")
+        if not ck or ck == normalize_combo_key(seed_recipe.get("combo_key") or ""):
             continue
         payload_bits = (rewired, seed_recipe, info, action, pick_i, hold_meta)
         if ck in recent:
@@ -2032,7 +2037,7 @@ def plan_hourly_predicted_derive(
         if float(rated_w) < min_weight:
             continue
         weight = float(rated_w)
-        ck = str(recipe.get("combo_key") or "")
+        ck = normalize_combo_key(recipe.get("combo_key") or "")
         if ck in recent:
             weight *= 0.08
         weight *= _recipe_promotion_mult(recipe)
@@ -2093,8 +2098,8 @@ def plan_hourly_predicted_derive(
         tried += 1
         if rewired is None:
             continue
-        ck = str(rewired.get("combo_key") or "")
-        if not ck or ck == str(seed_recipe.get("combo_key") or ""):
+        ck = normalize_combo_key(rewired.get("combo_key") or "")
+        if not ck or ck == normalize_combo_key(seed_recipe.get("combo_key") or ""):
             continue
         # Force derive pick_mode even if rewire labeled extend.
         action = "derive"

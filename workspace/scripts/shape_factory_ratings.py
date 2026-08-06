@@ -393,7 +393,7 @@ def _prompt_profile_name(job: Dict[str, Any]) -> Optional[str]:
                 if stem:
                     return stem
     job_key = str(job.get("job_key") or "")
-    m = re.search(r"prompt_profile-(.+?)(?:__source_|__000(?:_|$)|$)", job_key)
+    m = re.search(r"(?:pp|prompt_profile)-(.+?)(?:__(?:src|source_|still|start)|__000(?:_|$)|$)", job_key)
     if m:
         name = m.group(1).strip("_")
         if name and name != "backfill":
