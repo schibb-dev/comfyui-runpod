@@ -51,11 +51,10 @@ services:
       - ./custom_nodes.yaml:/workspace/custom_nodes.yaml:ro
       # Scripts directory for bootstrap and utilities
       - ./scripts:/workspace/scripts:ro
-      # Shape factory pools/jobs/pipelines (read-only map API; jobs dir writable for UI queue)
+      # Catalog (shapes/pools/pipelines/chains) stays read-only; runtime under
+      # shape_factory/ (jobs, schedule, quarantine, dismissals, logs) is writable.
       - ./.data:/workspace/.data:ro
-      - ./.data/shape_factory/jobs:/workspace/.data/shape_factory/jobs
-      # Live hourly cadence / queue routing controls (Home UI writes this)
-      - ./.data/shape_factory/hourly-schedule.json:/workspace/.data/shape_factory/hourly-schedule.json
+      - ./.data/shape_factory:/workspace/.data/shape_factory
       # Workspace scripts (tuning/watch utilities used at runtime)
       - ./workspace/scripts:/workspace/ws_scripts:ro
       # Custom nodes: use the image's baked-in nodes (from custom_nodes.yaml at build time).

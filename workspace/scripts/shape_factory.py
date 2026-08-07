@@ -2695,9 +2695,9 @@ def resolve_quarantine_registry_path(
     Choose the quarantine registry file.
 
     Prefer an explicit path, then ``data_root/shape_factory/quarantine.json``,
-    then ``DEFAULT_QUARANTINE_PATH``. When the preferred file sits on a read-only
-    mount (common for ``/workspace/.data`` in Docker), fall back to the writable
-    jobs mount: ``data_root/shape_factory/jobs/quarantine.json``.
+    then ``DEFAULT_QUARANTINE_PATH``. When the preferred parent is read-only
+    (legacy Docker mounts that only exposed ``jobs`` RW), fall back to
+    ``data_root/shape_factory/jobs/quarantine.json``.
     """
     candidates: list[Path] = []
     if quarantine_path is not None:

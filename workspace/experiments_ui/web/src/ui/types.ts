@@ -110,6 +110,8 @@ export type ComfyHistoryItem = {
   changed_at?: string | null;
   error_message?: string | null;
   error_node?: string | null;
+  /** True when Comfy said success but no image/video outputs were produced. */
+  hollow_success?: boolean;
   workflow_name?: string | null;
   /** Shape-factory job_key when workflow_name maps to a factory job. */
   job_key?: string | null;
@@ -1331,6 +1333,9 @@ export type ShapeFactoryUnqueueResponse = {
 export type ShapeFactoryDiscardRequest = {
   job_key?: string;
   job_path?: string;
+  prompt_id?: string;
+  /** Comfy-history failure stub with no factory .job.json — dismiss instead of file delete. */
+  history_from_comfy?: boolean;
   reason?: string;
   /** When true, permanently delete job + sidecars. When false, rename to `.discarded` (archive). */
   expunge?: boolean;
@@ -1343,6 +1348,8 @@ export type ShapeFactoryDiscardResponse = {
   status?: string | null;
   discarded?: boolean;
   expunged?: boolean;
+  dismissed?: boolean;
+  history_stub?: boolean;
   renamed?: string[];
   deleted?: string[];
   previous_status?: string;
@@ -1807,6 +1814,8 @@ export type WorkProductItem = {
   details?: WorkProductDetailRow[];
   /** Synthetic / promoted from Comfy queue — always pin first in the UI. */
   live_from_comfy?: boolean;
+  /** Attached from Comfy /history (may lack a factory .job.json). */
+  history_from_comfy?: boolean;
 };
 
 export type WorkProductFamilyOption = {

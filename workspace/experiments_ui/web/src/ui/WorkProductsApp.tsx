@@ -297,8 +297,20 @@ function canUpdatePendingJobTrim(item: WorkProductItem): boolean {
   return isJobTrimEditable(item);
 }
 
+/** Comfy /history failure merged into Workbench with no factory job file. */
+function isHistoryFailureStub(item: WorkProductItem): boolean {
+  if (String(item.job_path || "").trim()) return false;
+  if (item.history_from_comfy) return true;
+  const construction = item.construction || {};
+  if (String(construction.source || "") === "comfy_history") return true;
+  const s = workProductStatusKey(item);
+  if (!(s === "error" || s === "failed" || s === "interrupted" || s === "abandoned")) return false;
+  return Boolean(String(item.prompt_id || "").trim() || String(item.job_key || "").trim());
+}
+
 /** Synthetic Comfy live stub — no factory .job.json to demote to pending. */
 function isNonFactoryWorkProduct(item: WorkProductItem): boolean {
+  if (isHistoryFailureStub(item)) return false;
   if (!String(item.job_path || "").trim()) return true;
   const key = String(item.job_key || "");
   if (key.startsWith("live__")) return true;
@@ -328,12 +340,15 @@ function canDiscardPendingWorkProduct(item: WorkProductItem): boolean {
 /**
  * Terminal failures remain in Work Products as the failure record until archived/deleted.
  * Archive soft-renames to `.discarded` (forensics on disk; no restore UI).
+ * History-only stubs (no .job.json) are dismissible the same way.
  */
 function canArchiveTerminalWorkProduct(item: WorkProductItem): boolean {
+  const s = workProductStatusKey(item);
+  if (!(s === "error" || s === "failed" || s === "interrupted" || s === "abandoned")) return false;
+  if (isHistoryFailureStub(item)) return true;
   if (isNonFactoryWorkProduct(item)) return false;
   if (!String(item.job_key || "").trim() && !String(item.job_path || "").trim()) return false;
-  const s = workProductStatusKey(item);
-  return s === "error" || s === "failed" || s === "interrupted" || s === "abandoned";
+  return true;
 }
 
 /** Pending drafts or terminal failures — hard-delete job JSON (+ sidecars). */
@@ -2650,11 +2665,16 @@ function WorkProductQuickQueue({
 
   const discard = async () => {
     if (!canDelete || busy) return;
-    const kind = deleteIsPendingOnly ? "pending job" : "failed job";
+    const historyStub = isHistoryFailureStub(item);
+    const kind = historyStub ? "history failure" : deleteIsPendingOnly ? "pending job" : "failed job";
     const ok = window.confirm(
-      `Permanently delete this ${kind}?\n\n` +
-        "This expunges the .job.json and related sidecars (prompt/submit/timings/workflow) from disk. " +
-        "It cannot be undone. Media outputs under output/ are not deleted.",
+      historyStub
+        ? `Dismiss this ${kind} from Workbench?\n\n` +
+            "There is no factory .job.json on disk — this only hides the Comfy history stub. " +
+            "It will not reappear after refresh. Media under output/ is not deleted."
+        : `Permanently delete this ${kind}?\n\n` +
+            "This expunges the .job.json and related sidecars (prompt/submit/timings/workflow) from disk. " +
+            "It cannot be undone. Media outputs under output/ are not deleted.",
     );
     if (!ok) return;
     setBusy(true);
@@ -2663,10 +2683,16 @@ function WorkProductQuickQueue({
       const res = await discardShapeFactoryJob({
         job_key: jobKey || undefined,
         job_path: String(item.job_path || "").trim() || undefined,
+        prompt_id: String(item.prompt_id || "").trim() || undefined,
+        history_from_comfy: isHistoryFailureStub(item) || Boolean(item.history_from_comfy),
         reason: deleteIsPendingOnly ? "user_expunged" : "user_expunged_failure",
         expunge: true,
       });
-      setMsg(`Deleted${res.job_key ? ` · ${res.job_key}` : ""}`);
+      setMsg(
+        res.history_stub || res.dismissed
+          ? `Dismissed history failure${res.job_key ? ` · ${res.job_key}` : ""}`
+          : `Deleted${res.job_key ? ` · ${res.job_key}` : ""}`,
+      );
       onCommitted?.();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));
@@ -2690,10 +2716,16 @@ function WorkProductQuickQueue({
       const res = await discardShapeFactoryJob({
         job_key: jobKey || undefined,
         job_path: String(item.job_path || "").trim() || undefined,
+        prompt_id: String(item.prompt_id || "").trim() || undefined,
+        history_from_comfy: isHistoryFailureStub(item) || Boolean(item.history_from_comfy),
         reason: "user_archived_failure",
         expunge: false,
       });
-      setMsg(`Archived failure${res.job_key ? ` · ${res.job_key}` : ""}`);
+      setMsg(
+        res.history_stub || res.dismissed
+          ? `Dismissed history failure${res.job_key ? ` · ${res.job_key}` : ""}`
+          : `Archived failure${res.job_key ? ` · ${res.job_key}` : ""}`,
+      );
       onCommitted?.();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));
@@ -3632,6 +3664,8 @@ export function WorkProductsApp() {
         await discardShapeFactoryJob({
           job_key: String(it.job_key || "").trim() || undefined,
           job_path: String(it.job_path || "").trim() || undefined,
+          prompt_id: String(it.prompt_id || "").trim() || undefined,
+          history_from_comfy: isHistoryFailureStub(it) || Boolean(it.history_from_comfy),
           reason: "user_bulk_expunged_failure",
           expunge: true,
         });

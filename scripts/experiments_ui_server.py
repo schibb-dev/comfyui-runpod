@@ -1691,16 +1691,34 @@ def _shape_factory_discard_payload(cfg: ServerConfig, body: Dict[str, Any]) -> D
         sys.path.insert(0, str(d))
     from shape_factory import discard_pending_job  # type: ignore
     from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+    from shape_factory_work_products import dismiss_history_work_product  # type: ignore
 
     job_key = str(body.get("job_key") or "").strip() or None
     job_path_raw = str(body.get("job_path") or "").strip() or None
-    if not job_key and not job_path_raw:
+    prompt_id = str(body.get("prompt_id") or "").strip() or None
+    history_stub = bool(body.get("history_from_comfy") or body.get("history_stub"))
+    if not job_key and not job_path_raw and not prompt_id:
         raise ValueError("missing_job_key")
     reason = str(body.get("reason") or "user_removed").strip() or "user_removed"
     expunge_raw = body.get("expunge")
     expunge = True if expunge_raw is None else bool(expunge_raw) and str(expunge_raw).lower() not in {"0", "false", "no"}
     data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
-    return discard_pending_job(
+    output_root = Path(cfg.output_root).expanduser().resolve()
+
+    def _dismiss() -> Dict[str, Any]:
+        return dismiss_history_work_product(
+            data_root=data_root,
+            prompt_id=prompt_id,
+            job_key=job_key,
+            reason=reason if reason != "user_removed" else "user_dismissed_history",
+            output_root=output_root,
+        )
+
+    # History-only stubs never had a .job.json — dismiss so they stop reappearing.
+    if history_stub and not job_path_raw:
+        return _dismiss()
+
+    result = discard_pending_job(
         data_root=data_root,
         job_key=job_key,
         job_path=Path(job_path_raw) if job_path_raw else None,
@@ -1708,6 +1726,14 @@ def _shape_factory_discard_payload(cfg: ServerConfig, body: Dict[str, Any]) -> D
         reason=reason,
         expunge=expunge,
     )
+    if (
+        isinstance(result, dict)
+        and not result.get("ok")
+        and result.get("error") == "job_not_found"
+        and (prompt_id or job_key)
+    ):
+        return _dismiss()
+    return result
 
 
 def _shape_factory_update_pending_trim_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -5921,6 +5947,30 @@ def _history_status_and_times(record: Any) -> Dict[str, Any]:
     return out
 
 
+def _demote_hollow_history_success(
+    status_info: Dict[str, Any],
+    *,
+    primary_video: Optional[str],
+    primary_image: Optional[str],
+) -> Dict[str, Any]:
+    """
+    Comfy often marks graphs ``success`` even when no media was produced
+    (early abort / bad LoadImage still leaves scalar ``value`` outputs).
+    Treat those as errors in Queue history so they don't look like keepers.
+    """
+    st = str(status_info.get("status") or "").strip().lower()
+    if st not in {"success", "complete", "completed"}:
+        return status_info
+    if primary_video or primary_image:
+        return status_info
+    status_info = dict(status_info)
+    status_info["status"] = "error"
+    status_info["hollow_success"] = True
+    if not status_info.get("error_message"):
+        status_info["error_message"] = "no output media (Comfy reported success)"
+    return status_info
+
+
 def _extract_input_media_from_prompt(prompt_obj: Any) -> Tuple[Optional[str], Optional[str]]:
     if not isinstance(prompt_obj, dict):
         return (None, None)
@@ -6850,6 +6900,11 @@ class Handler(BaseHTTPRequestHandler):
                     workflow_name = _guess_workflow_name(prompt_obj, raw_prompt)
                     key_params = _extract_key_params_from_prompt(prompt_obj)
                     status_info = _history_status_and_times(record)
+                    status_info = _demote_hollow_history_success(
+                        status_info,
+                        primary_video=pv,
+                        primary_image=pi,
+                    )
 
                     def _mk_url(rel: Optional[str]) -> Optional[str]:
                         if not isinstance(rel, str) or not rel:
@@ -6898,6 +6953,7 @@ class Handler(BaseHTTPRequestHandler):
                             "changed_at": status_info.get("changed_at"),
                             "error_message": status_info.get("error_message"),
                             "error_node": status_info.get("error_node"),
+                            "hollow_success": bool(status_info.get("hollow_success")),
                             "workflow_name": title,
                             "job_key": job_key,
                             "key_params": key_params,

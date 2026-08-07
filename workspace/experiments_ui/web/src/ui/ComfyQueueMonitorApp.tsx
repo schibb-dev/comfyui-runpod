@@ -442,7 +442,13 @@ function HistoryItemRow({ item }: { item: ComfyHistoryItem }) {
   ].filter(Boolean);
   const statusVisual = historyStatusVisual(item.status);
   const statusLabel =
-    statusVisual === "error" ? "error" : statusVisual === "interrupted" ? "interrupted" : item.status || "done";
+    statusVisual === "error"
+      ? item.hollow_success
+        ? "no output"
+        : "error"
+      : statusVisual === "interrupted"
+        ? "interrupted"
+        : item.status || "done";
   const errLine = item.error_message ? String(item.error_message).trim() : null;
 
   return (

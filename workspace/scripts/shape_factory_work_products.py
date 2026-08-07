@@ -6,6 +6,7 @@ import json
 import os
 import re
 import urllib.parse
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -2114,6 +2115,171 @@ def _history_queue_index(record: Any) -> int:
     return -1
 
 
+DISMISSALS_BASENAME = "work_products_dismissed.json"
+
+
+def work_products_dismissals_path(data_root: Path, output_root: Optional[Path] = None) -> Path:
+    """
+    Prefer the canonical runtime path under ``shape_factory/``.
+
+    Falls back to ``jobs/`` or ``output/_status/`` when the preferred parent is
+    not writable (legacy container mounts that only exposed ``jobs`` RW).
+    """
+    data_root = Path(data_root).expanduser().resolve()
+    candidates: List[Path] = [
+        data_root / "shape_factory" / DISMISSALS_BASENAME,
+        data_root / "shape_factory" / "jobs" / DISMISSALS_BASENAME,
+    ]
+    if output_root is not None:
+        candidates.append(Path(output_root).expanduser().resolve() / "_status" / DISMISSALS_BASENAME)
+    for path in candidates:
+        parent = path.parent
+        if not parent.is_dir():
+            continue
+        probe = parent / f".wp_dismiss_write_probe_{os.getpid()}"
+        try:
+            probe.write_text("ok", encoding="utf-8")
+            try:
+                probe.unlink(missing_ok=True)
+            except TypeError:
+                if probe.is_file():
+                    probe.unlink()
+            return path
+        except OSError:
+            try:
+                if probe.is_file():
+                    probe.unlink()
+            except OSError:
+                pass
+            continue
+    return candidates[0]
+
+
+def _dismissal_read_candidates(data_root: Path, output_root: Optional[Path] = None) -> List[Path]:
+    data_root = Path(data_root).expanduser().resolve()
+    out: List[Path] = [
+        data_root / "shape_factory" / DISMISSALS_BASENAME,
+        data_root / "shape_factory" / "jobs" / DISMISSALS_BASENAME,
+    ]
+    if output_root is not None:
+        out.append(Path(output_root).expanduser().resolve() / "_status" / DISMISSALS_BASENAME)
+    return out
+
+
+def load_work_products_dismissals(
+    data_root: Path,
+    output_root: Optional[Path] = None,
+) -> Dict[str, Any]:
+    empty = {"prompt_ids": [], "job_keys": [], "entries": []}
+    for path in _dismissal_read_candidates(data_root, output_root):
+        if not path.is_file():
+            continue
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(doc, dict):
+            continue
+        pids = [str(x).strip() for x in (doc.get("prompt_ids") or []) if str(x).strip()]
+        keys = [str(x).strip() for x in (doc.get("job_keys") or []) if str(x).strip()]
+        entries = [e for e in (doc.get("entries") or []) if isinstance(e, dict)]
+        return {
+            "prompt_ids": pids,
+            "job_keys": keys,
+            "entries": entries,
+            "updated_at": doc.get("updated_at"),
+            "path": str(path),
+        }
+    return empty
+
+
+def save_work_products_dismissals(
+    data_root: Path,
+    doc: Dict[str, Any],
+    output_root: Optional[Path] = None,
+) -> Path:
+    path = work_products_dismissals_path(data_root, output_root=output_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    out = {
+        "schema_version": "comfyui-runpod.work-products-dismissed.v0",
+        "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "prompt_ids": sorted(set(str(x).strip() for x in (doc.get("prompt_ids") or []) if str(x).strip())),
+        "job_keys": sorted(set(str(x).strip() for x in (doc.get("job_keys") or []) if str(x).strip())),
+        "entries": list(doc.get("entries") or [])[-500:],
+    }
+    path.write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def is_work_product_dismissed(
+    dismissals: Dict[str, Any],
+    *,
+    prompt_id: Optional[str] = None,
+    job_key: Optional[str] = None,
+) -> bool:
+    pid = str(prompt_id or "").strip()
+    jk = str(job_key or "").strip()
+    pids = set(dismissals.get("prompt_ids") or [])
+    keys = set(dismissals.get("job_keys") or [])
+    if pid and pid in pids:
+        return True
+    if jk and jk in keys:
+        return True
+    return False
+
+
+def dismiss_history_work_product(
+    *,
+    data_root: Path,
+    prompt_id: Optional[str] = None,
+    job_key: Optional[str] = None,
+    reason: str = "user_dismissed_history",
+    output_root: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """
+    Hide a Comfy-history failure stub that has no factory ``.job.json``.
+
+    Workbench synthesizes these from ``/history``; discard cannot rename a missing
+    job file, so we persist a dismissal list and filter on the next load.
+    """
+    pid = str(prompt_id or "").strip() or None
+    jk = str(job_key or "").strip() or None
+    if not pid and not jk:
+        return {"ok": False, "error": "missing_prompt_or_job_key"}
+    data_root = Path(data_root).expanduser().resolve()
+    out_root = Path(output_root).expanduser().resolve() if output_root else None
+    doc = load_work_products_dismissals(data_root, output_root=out_root)
+    pids = list(doc.get("prompt_ids") or [])
+    keys = list(doc.get("job_keys") or [])
+    entries = list(doc.get("entries") or [])
+    if pid and pid not in pids:
+        pids.append(pid)
+    if jk and jk not in keys:
+        keys.append(jk)
+    entries.append(
+        {
+            "prompt_id": pid,
+            "job_key": jk,
+            "reason": str(reason or "user_dismissed_history"),
+            "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+    )
+    path = save_work_products_dismissals(
+        data_root,
+        {"prompt_ids": pids, "job_keys": keys, "entries": entries},
+        output_root=out_root,
+    )
+    return {
+        "ok": True,
+        "dismissed": True,
+        "history_stub": True,
+        "prompt_id": pid,
+        "job_key": jk,
+        "dismissals_path": str(path),
+        "reason": str(reason or "user_dismissed_history"),
+    }
+
+
 def attach_comfy_history_failures(
     payload: Dict[str, Any],
     *,
@@ -2158,6 +2324,11 @@ def attach_comfy_history_failures(
     jobs_root = Path(data_root) / "shape_factory" / "jobs" if data_root else None
     out_root = Path(output_root).resolve() if output_root else None
     data_r = Path(data_root).resolve() if data_root else None
+    dismissals = (
+        load_work_products_dismissals(data_r, output_root=out_root)
+        if data_r is not None
+        else {"prompt_ids": [], "job_keys": []}
+    )
 
     ordered = sorted(
         ((pid, record) for pid, record in history.items() if isinstance(pid, str) and isinstance(record, dict)),
@@ -2167,6 +2338,7 @@ def attach_comfy_history_failures(
 
     failure_rows: List[Dict[str, Any]] = []
     touched = 0
+    dismissed_skipped = 0
     for pid, record in ordered:
         if len(failure_rows) >= max(1, int(max_failures)):
             break
@@ -2184,6 +2356,10 @@ def attach_comfy_history_failures(
         prompt = _history_prompt_obj(record)
         extra = _history_extra_data(record)
         job_key = _job_key_from_comfy_extra(extra) or _job_key_from_filename_prefix(prompt) or ""
+
+        if is_work_product_dismissed(dismissals, prompt_id=pid, job_key=job_key or None):
+            dismissed_skipped += 1
+            continue
 
         def _apply_error(row: Dict[str, Any]) -> Dict[str, Any]:
             row = dict(row)
@@ -2277,6 +2453,7 @@ def attach_comfy_history_failures(
         payload["count"] = len(items)
 
     payload["history_failure_count"] = len(failure_rows) + touched
+    payload["history_dismissed_skipped"] = dismissed_skipped
     return payload
 
 
