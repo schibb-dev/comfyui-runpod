@@ -6570,6 +6570,8 @@ class Handler(BaseHTTPRequestHandler):
                     if output_thumb is None:
                         output_thumb = primary_image_url or media.get("input_thumb_url")
                     # Prefer a human title from the durable output basename when workflow is anonymous.
+                    # Resolve job_key from the raw workflow name before title rewrite (basename is not a job_key).
+                    job_key = _queue_item_job_key(workflow_name)
                     title = workflow_name
                     if not title or str(title).startswith("graph (") or str(title).startswith("client:"):
                         for cand in (pv, pi, media.get("input_media_relpath")):
@@ -6586,6 +6588,7 @@ class Handler(BaseHTTPRequestHandler):
                             "error_message": status_info.get("error_message"),
                             "error_node": status_info.get("error_node"),
                             "workflow_name": title,
+                            "job_key": job_key,
                             "key_params": key_params,
                             "queue_index": _history_queue_index(record),
                             "primary_video_relpath": pv,

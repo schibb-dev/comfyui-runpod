@@ -111,6 +111,8 @@ export type ComfyHistoryItem = {
   error_message?: string | null;
   error_node?: string | null;
   workflow_name?: string | null;
+  /** Shape-factory job_key when workflow_name maps to a factory job. */
+  job_key?: string | null;
   queue_index?: number | null;
   key_params?: Record<string, unknown>;
   primary_video_relpath?: string | null;

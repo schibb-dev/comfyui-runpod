@@ -432,6 +432,9 @@ function HistoryItemRow({ item }: { item: ComfyHistoryItem }) {
     basename(item.primary_image_relpath) ||
     shortId(item.prompt_id, 16);
   const libraryRel = historyAssetRelpath(item);
+  const jobKey = String(item.job_key || "").trim() || null;
+  const pid = String(item.prompt_id || "").trim();
+  const workbenchUrl = workbenchHref({ jobKey, promptId: pid || null });
   const detailParts = [
     item.input_media_relpath ? `in ${basename(item.input_media_relpath)}` : null,
     item.error_node ? `node ${item.error_node}` : null,
@@ -464,13 +467,28 @@ function HistoryItemRow({ item }: { item: ComfyHistoryItem }) {
       changedAt={item.changed_at}
       errorMessage={errLine}
       actions={
-        libraryRel ? (
-          <a className="pipeline-row__link" href={discoveryLibraryHref(libraryRel)} title="Open in Library">
-            Open in Library
+        <>
+          {libraryRel ? (
+            <a className="pipeline-row__link" href={discoveryLibraryHref(libraryRel)} title="Open in Library">
+              Open in Library
+            </a>
+          ) : (
+            <span className="pipeline-row__meta">No library path</span>
+          )}
+          <a
+            className="pipeline-row__link"
+            href={workbenchUrl}
+            title={
+              jobKey
+                ? `Open ${jobKey} in Workbench`
+                : pid
+                  ? `Find prompt ${pid} in Workbench`
+                  : "Open Workbench"
+            }
+          >
+            Workbench
           </a>
-        ) : (
-          <span className="pipeline-row__meta">No library path</span>
-        )
+        </>
       }
     />
   );

@@ -3029,6 +3029,8 @@ function DiscoveryLibraryInner() {
   const [pollMin, setPollMin] = useState<(typeof DISCOVERY_LIBRARY_POLL_CHOICES)[number]>(() => loadDiscoveryPollMin());
   const [err, setErr] = useState("");
   const [desktopSelectedKey, setDesktopSelectedKey] = useState<string | null>(null);
+  /** Keep deep-link / lineage jump selection when the item is outside the filtered list. */
+  const pinnedDesktopSelectionKeyRef = useRef<string | null>(null);
   /** Preview row resolved via lineage when not in the truncated library list. */
   const [lineageJumpItem, setLineageJumpItem] = useState<DiscoveryLibraryItem | null>(null);
   const [phoneLineageJumpItem, setPhoneLineageJumpItem] = useState<DiscoveryLibraryItem | null>(null);
@@ -3179,6 +3181,7 @@ function DiscoveryLibraryInner() {
         }
       } else {
         setLineageJumpItem(null);
+        pinnedDesktopSelectionKeyRef.current = discoveryItemKey(target);
         setDesktopSelectedKey(discoveryItemKey(target));
         queueMicrotask(() => desktopListScrollRef.current?.focus());
       }
@@ -3219,8 +3222,10 @@ function DiscoveryLibraryInner() {
         }
         setPhoneViewerOpen(true);
       } else {
+        const key = discoveryItemKey(target);
+        pinnedDesktopSelectionKeyRef.current = key;
         setLineageJumpItem(target);
-        setDesktopSelectedKey(discoveryItemKey(target));
+        setDesktopSelectedKey(key);
         queueMicrotask(() => desktopListScrollRef.current?.focus());
       }
     },
@@ -3260,8 +3265,10 @@ function DiscoveryLibraryInner() {
         }
         setPhoneViewerOpen(true);
       } else {
+        const key = discoveryItemKey(target);
+        pinnedDesktopSelectionKeyRef.current = key;
         setLineageJumpItem(target);
-        setDesktopSelectedKey(discoveryItemKey(target));
+        setDesktopSelectedKey(key);
         queueMicrotask(() => desktopListScrollRef.current?.focus());
       }
       return true;
@@ -3331,9 +3338,18 @@ function DiscoveryLibraryInner() {
     }
     setDesktopSelectedKey((cur) => {
       if (cur != null && displayed.some((it) => discoveryItemKey(it) === cur)) return cur;
+      const pinned = pinnedDesktopSelectionKeyRef.current;
+      if (cur != null && pinned && cur === pinned) return cur;
+      if (
+        cur != null &&
+        lineageJumpItem &&
+        discoveryItemKey(lineageJumpItem) === cur
+      ) {
+        return cur;
+      }
       return discoveryItemKey(displayed[0]);
     });
-  }, [isPhone, displayed]);
+  }, [isPhone, displayed, lineageJumpItem]);
 
   useEffect(() => {
     if (isPhone || desktopSelectedKey == null) return;
@@ -3362,7 +3378,13 @@ function DiscoveryLibraryInner() {
   useEffect(() => {
     if (isPhone) return;
 
+    const clearPinnedSelection = () => {
+      pinnedDesktopSelectionKeyRef.current = null;
+      setLineageJumpItem(null);
+    };
+
     const moveSelection = (delta: number) => {
+      clearPinnedSelection();
       setDesktopSelectedKey((cur) => {
         const i = cur == null ? -1 : displayed.findIndex((it) => discoveryItemKey(it) === cur);
         if (i < 0) {
@@ -3458,8 +3480,10 @@ function DiscoveryLibraryInner() {
       } else if (k === "ArrowUp") {
         moveSelection(-1);
       } else if (k === "Home") {
+        clearPinnedSelection();
         setDesktopSelectedKey(discoveryItemKey(displayed[0]));
       } else if (k === "End") {
+        clearPinnedSelection();
         setDesktopSelectedKey(discoveryItemKey(displayed[displayed.length - 1]));
       }
     };
@@ -3800,6 +3824,7 @@ function DiscoveryLibraryInner() {
                   onSendToExemplarLibrary={() => sendToExemplarLibrary(discoveryItemKey(it))}
                   onGoToExemplarLibrary={() => desktopExemplarNavRef.current()}
                   onActivate={() => {
+                    pinnedDesktopSelectionKeyRef.current = null;
                     setLineageJumpItem(null);
                     setDesktopSelectedKey(discoveryItemKey(it));
                     desktopListScrollRef.current?.focus();
