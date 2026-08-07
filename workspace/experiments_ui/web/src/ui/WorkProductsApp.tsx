@@ -326,7 +326,7 @@ function canDiscardPendingWorkProduct(item: WorkProductItem): boolean {
 }
 
 /**
- * Terminal failures remain in Work Products as the failure record until archived.
+ * Terminal failures remain in Work Products as the failure record until archived/deleted.
  * Archive soft-renames to `.discarded` (forensics on disk; no restore UI).
  */
 function canArchiveTerminalWorkProduct(item: WorkProductItem): boolean {
@@ -334,6 +334,11 @@ function canArchiveTerminalWorkProduct(item: WorkProductItem): boolean {
   if (!String(item.job_key || "").trim() && !String(item.job_path || "").trim()) return false;
   const s = workProductStatusKey(item);
   return s === "error" || s === "failed" || s === "interrupted" || s === "abandoned";
+}
+
+/** Pending drafts or terminal failures — hard-delete job JSON (+ sidecars). */
+function canDeleteWorkProduct(item: WorkProductItem): boolean {
+  return canDiscardPendingWorkProduct(item) || canArchiveTerminalWorkProduct(item);
 }
 
 function isRunningLiveItem(item: WorkProductItem): boolean {
@@ -2606,8 +2611,9 @@ function WorkProductQuickQueue({
     !(extendOn && identityNeeded && !identitySelectedPath && !identityLoading);
   const canRerun = Boolean(jobKey) && !busy;
   const canUnqueue = canUnqueueWorkProduct(item) && !busy;
-  const canDiscard = canDiscardPendingWorkProduct(item) && !busy;
   const canArchive = canArchiveTerminalWorkProduct(item) && !busy;
+  const canDelete = canDeleteWorkProduct(item) && !busy;
+  const deleteIsPendingOnly = canDiscardPendingWorkProduct(item);
   const nonFactory = isNonFactoryWorkProduct(item);
 
   const unqueue = async () => {
@@ -2643,11 +2649,12 @@ function WorkProductQuickQueue({
   };
 
   const discard = async () => {
-    if (!canDiscard || busy) return;
+    if (!canDelete || busy) return;
+    const kind = deleteIsPendingOnly ? "pending job" : "failed job";
     const ok = window.confirm(
-      "Permanently delete this pending job?\n\n" +
+      `Permanently delete this ${kind}?\n\n` +
         "This expunges the .job.json and related sidecars (prompt/submit/timings/workflow) from disk. " +
-        "It cannot be undone. Completed media outputs are not deleted.",
+        "It cannot be undone. Media outputs under output/ are not deleted.",
     );
     if (!ok) return;
     setBusy(true);
@@ -2656,10 +2663,10 @@ function WorkProductQuickQueue({
       const res = await discardShapeFactoryJob({
         job_key: jobKey || undefined,
         job_path: String(item.job_path || "").trim() || undefined,
-        reason: "user_expunged",
+        reason: deleteIsPendingOnly ? "user_expunged" : "user_expunged_failure",
         expunge: true,
       });
-      setMsg(`Expunged pending job${res.job_key ? ` · ${res.job_key}` : ""}`);
+      setMsg(`Deleted${res.job_key ? ` · ${res.job_key}` : ""}`);
       onCommitted?.();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));
@@ -2672,8 +2679,9 @@ function WorkProductQuickQueue({
     if (!canArchive || busy) return;
     const ok = window.confirm(
       "Archive this failed job?\n\n" +
-        "Removes it from Work Products. The job + sidecars are renamed to .discarded on disk " +
-        "(kept for forensics; no restore UI). Media outputs are not deleted.",
+        "Removes it from Workbench. The job + sidecars are renamed to .discarded on disk " +
+        "(kept for forensics; no restore UI). Prefer Delete if you want them gone for good. " +
+        "Media outputs are not deleted.",
     );
     if (!ok) return;
     setBusy(true);
@@ -3055,21 +3063,25 @@ function WorkProductQuickQueue({
               type="button"
               className="drt-btn work-product-quick-queue__discard"
               disabled={!canArchive}
-              title="Remove from Work Products; soft-archive job + sidecars as .discarded (no restore UI)"
+              title="Remove from Workbench; soft-archive job + sidecars as .discarded (no restore UI)"
               onClick={() => void archive()}
             >
               Archive
             </button>
           </>
         ) : null}
-        {canDiscard ? (
+        {canDelete ? (
           <>
             <span className="work-product-quick-queue__sep" aria-hidden="true" />
             <button
               type="button"
               className="drt-btn work-product-quick-queue__discard"
-              disabled={!canDiscard}
-              title="Permanently delete this pending job and its sidecars from disk"
+              disabled={!canDelete}
+              title={
+                deleteIsPendingOnly
+                  ? "Permanently delete this pending job and its sidecars from disk"
+                  : "Permanently delete this failed job and its sidecars from disk"
+              }
               onClick={() => void discard()}
             >
               Delete
@@ -3473,6 +3485,8 @@ export function WorkProductsApp() {
   const [hourlyOnly, setHourlyOnly] = useState(() => (deepLink.filter ? false : loadHourlyOnly()));
   const [statusOff, setStatusOff] = useState<Set<string>>(() => loadStatusFilterOff());
   const [markerOff, setMarkerOff] = useState<Set<string>>(() => loadMarkerFilterOff());
+  const [clearFailedBusy, setClearFailedBusy] = useState(false);
+  const [clearFailedMsg, setClearFailedMsg] = useState<string | null>(null);
   const deepLinkScrolled = useRef(false);
 
   const statusCounts = useMemo(() => {
@@ -3515,6 +3529,11 @@ export function WorkProductsApp() {
         sort,
       ),
     [items, nameQuery, sort, statusOff, markerOff],
+  );
+
+  const failedVisible = useMemo(
+    () => visibleItems.filter((it) => canArchiveTerminalWorkProduct(it)),
+    [visibleItems],
   );
 
   useEffect(() => {
@@ -3591,6 +3610,45 @@ export function WorkProductsApp() {
       .finally(() => {
         if (!opts?.quiet) setLoading(false);
       });
+  };
+
+  const clearFailedVisible = async () => {
+    const targets = failedVisible;
+    if (!targets.length || clearFailedBusy) return;
+    const ok = window.confirm(
+      `Permanently delete ${targets.length} failed job${targets.length === 1 ? "" : "s"} ` +
+        `from the current Workbench list?\n\n` +
+        "Statuses: error, failed, interrupted, abandoned.\n" +
+        "Deletes .job.json + sidecars. Media under output/ is kept.\n" +
+        "Only the currently loaded/filtered rows are affected.",
+    );
+    if (!ok) return;
+    setClearFailedBusy(true);
+    setClearFailedMsg(null);
+    let deleted = 0;
+    const errors: string[] = [];
+    for (const it of targets) {
+      try {
+        await discardShapeFactoryJob({
+          job_key: String(it.job_key || "").trim() || undefined,
+          job_path: String(it.job_path || "").trim() || undefined,
+          reason: "user_bulk_expunged_failure",
+          expunge: true,
+        });
+        deleted += 1;
+      } catch (e) {
+        errors.push(
+          `${it.job_key || "?"}: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+    setClearFailedBusy(false);
+    setClearFailedMsg(
+      errors.length
+        ? `Deleted ${deleted}/${targets.length} · ${errors.length} failed`
+        : `Deleted ${deleted} failed job${deleted === 1 ? "" : "s"}`,
+    );
+    refresh({ quiet: true });
   };
 
   useEffect(() => {
@@ -3715,6 +3773,24 @@ export function WorkProductsApp() {
             <button type="button" onClick={() => refresh()}>
               Refresh
             </button>
+            {failedVisible.length ? (
+              <button
+                type="button"
+                className="work-products-clear-failed"
+                disabled={clearFailedBusy}
+                title="Permanently delete error/failed/interrupted/abandoned jobs in the current list (filtered view)"
+                onClick={() => void clearFailedVisible()}
+              >
+                {clearFailedBusy
+                  ? "Deleting…"
+                  : `Delete failed (${failedVisible.length})`}
+              </button>
+            ) : null}
+            {clearFailedMsg ? (
+              <span className="work-products-clear-failed__msg" title={clearFailedMsg}>
+                {clearFailedMsg}
+              </span>
+            ) : null}
           </>
         }
       />

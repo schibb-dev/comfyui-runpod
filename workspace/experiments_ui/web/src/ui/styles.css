@@ -12061,6 +12061,30 @@ tr.disabled:hover td {
   padding: 4px 8px;
 }
 
+.work-products-clear-failed {
+  font-size: 12px;
+  padding: 4px 10px;
+  border: 1px solid color-mix(in srgb, #b45353 55%, var(--border));
+  background: color-mix(in srgb, #b45353 14%, transparent);
+  color: var(--text);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.work-products-clear-failed:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.work-products-clear-failed__msg {
+  font-size: 11px;
+  color: var(--muted);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .work-products-search {
   display: inline-flex;
   align-items: center;
