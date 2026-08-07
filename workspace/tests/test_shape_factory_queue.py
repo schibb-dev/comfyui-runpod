@@ -223,8 +223,9 @@ class ShapeFactoryQueueTests(unittest.TestCase):
                 template_defaults={"skip_first_frames": 47, "frame_load_cap": 0},
                 read_sidecar=False,
             )
-        self.assertEqual(params3["skip_first_frames"], 19)
-        self.assertTrue(meta3 and meta3.get("source") == "template_clamped")
+        # Template skip is ignored — do not inherit authoring-clip fossils.
+        self.assertNotIn("skip_first_frames", params3)
+        self.assertIsNone(meta3)
 
         # Lengthen-only cap must not invent skip=0.
         with mock.patch(

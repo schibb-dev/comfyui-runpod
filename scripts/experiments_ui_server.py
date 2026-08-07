@@ -1755,6 +1755,196 @@ def _shape_factory_update_pending_trim_payload(cfg: ServerConfig, body: Dict[str
     )
 
 
+def _clips_registry_path(cfg: "ServerConfig") -> Path:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    import asset_registry as areg  # type: ignore
+
+    # Always under the live Comfy output tree (writable), not shape-factory .data.
+    og = Path(cfg.output_root).expanduser().resolve() / "og"
+    return areg.default_registry_path(og)
+
+
+def _resolve_parent_content_id_for_media(
+    cfg: "ServerConfig",
+    media_relpath: str,
+    *,
+    con: Any = None,
+) -> tuple[Optional[str], Optional[Path], float]:
+    """Return (content_id, abs_path, duration_s) for an output-relative media path."""
+    rel = _normalize_rel_posix(media_relpath)
+    if not rel:
+        return None, None, 0.0
+    abs_path = _safe_join(cfg.output_root, rel)
+    if abs_path is None or not abs_path.is_file():
+        return None, None, 0.0
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    import asset_registry as areg  # type: ignore
+    from shape_factory_queue import _probe_media_frame_meta  # type: ignore
+
+    duration = float((_probe_media_frame_meta(abs_path) or {}).get("duration") or 0.0)
+    own = con is None
+    if own:
+        reg = _clips_registry_path(cfg)
+        con = areg.connect(reg)
+    try:
+        existing = areg.by_relpath(con, rel)
+        if existing and existing.get("content_id"):
+            cid = str(existing["content_id"])
+        else:
+            cid = areg.register(con, abs_path, relpath=rel, kind="video", with_dims=False)
+    finally:
+        if own:
+            con.close()
+    return cid, abs_path, duration
+
+
+def _shape_factory_clips_list_payload(cfg: "ServerConfig", q: Dict[str, List[str]]) -> Dict[str, Any]:
+    """GET /api/shape-factory/clips?media_relpath=og/... or parent_content_id=..."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_clips import (  # type: ignore
+        connect_clips,
+        get_default_clip_id,
+        import_trims_presets_as_clips,
+        list_clips_for_parent,
+    )
+
+    parent = (q.get("parent_content_id") or [""])[0].strip()
+    media_rel = (q.get("media_relpath") or [""])[0].strip()
+    duration = 0.0
+    abs_path: Optional[Path] = None
+    reg = _clips_registry_path(cfg)
+    con = connect_clips(reg)
+    try:
+        if not parent and media_rel:
+            parent_id, abs_path, duration = _resolve_parent_content_id_for_media(
+                cfg, media_rel, con=con
+            )
+            parent = parent_id or ""
+        if not parent:
+            raise ValueError("missing_parent")
+
+        # Bridge sidecar presets once when listing by media.
+        if abs_path is not None and abs_path.is_file():
+            sidecar = abs_path.with_suffix(".trims.json")
+            if sidecar.is_file():
+                try:
+                    doc = json.loads(sidecar.read_text(encoding="utf-8"))
+                    import_trims_presets_as_clips(
+                        con,
+                        parent_content_id=parent,
+                        trims_doc=doc if isinstance(doc, dict) else {},
+                        duration_s=duration or None,
+                    )
+                except Exception:
+                    pass
+        clips = list_clips_for_parent(con, parent)
+        default_id = get_default_clip_id(con, parent)
+    finally:
+        con.close()
+    return {
+        "ok": True,
+        "parent_content_id": parent,
+        "default_clip_id": default_id,
+        "clips": clips,
+        "media_relpath": media_rel or None,
+    }
+
+
+def _shape_factory_clips_mutate_payload(cfg: "ServerConfig", body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    POST /api/shape-factory/clips
+      { op: create|update|delete|set_default, ... }
+    """
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_clips import (  # type: ignore
+        connect_clips,
+        create_clip,
+        delete_clip,
+        get_clip,
+        set_default_clip,
+        update_clip,
+    )
+
+    op = str(body.get("op") or "create").strip().lower()
+    reg = _clips_registry_path(cfg)
+    con = connect_clips(reg)
+    try:
+        if op == "create":
+            parent = str(body.get("parent_content_id") or "").strip()
+            media_rel = str(body.get("media_relpath") or "").strip()
+            duration = 0.0
+            if not parent and media_rel:
+                parent_id, _abs, duration = _resolve_parent_content_id_for_media(cfg, media_rel)
+                parent = parent_id or ""
+            if not parent:
+                raise ValueError("missing_parent")
+            try:
+                tin = float(body.get("mark_in") if body.get("mark_in") is not None else body.get("mark_in_s"))
+                tout = float(body.get("mark_out") if body.get("mark_out") is not None else body.get("mark_out_s"))
+            except (TypeError, ValueError) as e:
+                raise ValueError("bad_marks") from e
+            clip = create_clip(
+                con,
+                parent_content_id=parent,
+                mark_in_s=tin,
+                mark_out_s=tout,
+                label=str(body.get("label") or "Clip"),
+                origin=str(body.get("origin") or "workbench"),
+                duration_s=duration or None,
+            )
+            if body.get("set_default"):
+                set_default_clip(con, parent, clip["clip_id"])
+            from shape_factory_clips import get_default_clip_id as _get_def  # type: ignore
+
+            return {
+                "ok": True,
+                "clip": clip,
+                "default_clip_id": _get_def(con, parent),
+            }
+        if op == "update":
+            cid = str(body.get("clip_id") or "").strip()
+            if not cid:
+                raise ValueError("missing_clip_id")
+            kwargs: Dict[str, Any] = {}
+            if body.get("mark_in") is not None or body.get("mark_in_s") is not None:
+                kwargs["mark_in_s"] = float(body.get("mark_in") if body.get("mark_in") is not None else body.get("mark_in_s"))
+            if body.get("mark_out") is not None or body.get("mark_out_s") is not None:
+                kwargs["mark_out_s"] = float(body.get("mark_out") if body.get("mark_out") is not None else body.get("mark_out_s"))
+            if body.get("label") is not None:
+                kwargs["label"] = str(body.get("label"))
+            clip = update_clip(con, cid, **kwargs)
+            return {"ok": True, "clip": clip}
+        if op == "delete":
+            cid = str(body.get("clip_id") or "").strip()
+            if not cid:
+                raise ValueError("missing_clip_id")
+            ok = delete_clip(con, cid)
+            return {"ok": ok, "clip_id": cid}
+        if op == "set_default":
+            parent = str(body.get("parent_content_id") or "").strip()
+            media_rel = str(body.get("media_relpath") or "").strip()
+            if not parent and media_rel:
+                parent_id, _a, _d = _resolve_parent_content_id_for_media(cfg, media_rel)
+                parent = parent_id or ""
+            if not parent:
+                raise ValueError("missing_parent")
+            raw_cid = body.get("clip_id")
+            cid = str(raw_cid).strip() if raw_cid is not None and str(raw_cid).strip() else None
+            default_id = set_default_clip(con, parent, cid)
+            return {"ok": True, "parent_content_id": parent, "default_clip_id": default_id}
+        raise ValueError(f"bad_op:{op}")
+    finally:
+        con.close()
+
+
 def _shape_factory_prompt_profile_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
     d = _workspace_scripts_dir()
     if d.is_dir() and str(d) not in sys.path:
@@ -6757,6 +6947,32 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return _json_response(self, 500, {"ok": False, "error": "work_products_failed", "detail": str(e)})
 
+        if path == "/api/shape-factory/clips":
+            try:
+                payload = _shape_factory_clips_list_payload(cfg, q)
+                return _json_response(self, 200, payload)
+            except ValueError as e:
+                return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+            except Exception as e:
+                detail = str(e)
+                # Workbench fans out one GET per card; soft-fail lock/contention
+                # so the page stays usable (empty chips) instead of error spam.
+                if "database is locked" in detail.lower() or "locked" in detail.lower():
+                    return _json_response(
+                        self,
+                        200,
+                        {
+                            "ok": True,
+                            "parent_content_id": None,
+                            "default_clip_id": None,
+                            "clips": [],
+                            "media_relpath": (q.get("media_relpath") or [None])[0],
+                            "degraded": True,
+                            "detail": detail,
+                        },
+                    )
+                return _json_response(self, 500, {"ok": False, "error": "clips_list_failed", "detail": detail})
+
         if path == "/api/shape-factory/hourly-schedule":
             try:
                 payload = _hourly_schedule_payload(cfg)
@@ -7011,6 +7227,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_shape_factory_discard_post()
         if path == "/api/shape-factory/update-pending-trim":
             return self._handle_shape_factory_update_pending_trim_post()
+        if path == "/api/shape-factory/clips":
+            return self._handle_shape_factory_clips_post()
         if path == "/api/shape-factory/quarantine/release":
             return self._handle_shape_factory_quarantine_release_post()
         if path == "/api/shape-factory/hourly-schedule":
@@ -7161,6 +7379,23 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, 409, payload)
         if payload.get("error") == "job_not_found":
             return _json_response(self, 404, payload)
+        code = 200 if payload.get("ok", True) else 400
+        return _json_response(self, code, payload)
+
+    def _handle_shape_factory_clips_post(self) -> None:
+        """POST /api/shape-factory/clips — create/update/delete/set_default."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _shape_factory_clips_mutate_payload(cfg, body if isinstance(body, dict) else {})
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except KeyError as e:
+            return _json_response(self, 404, {"ok": False, "error": "not_found", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "clips_mutate_failed", "detail": str(e)})
         code = 200 if payload.get("ok", True) else 400
         return _json_response(self, code, payload)
 

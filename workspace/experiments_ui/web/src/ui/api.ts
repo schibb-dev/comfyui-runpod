@@ -826,6 +826,66 @@ export async function updatePendingShapeFactoryTrim(
   return j;
 }
 
+export type ShapeFactoryClip = {
+  clip_id: string;
+  parent_content_id: string;
+  mark_in_s: number;
+  mark_out_s: number;
+  label?: string | null;
+  origin?: string | null;
+};
+
+export type ShapeFactoryClipsListResponse = {
+  ok: boolean;
+  parent_content_id?: string;
+  default_clip_id?: string | null;
+  clips?: ShapeFactoryClip[];
+  error?: string;
+  detail?: string;
+};
+
+export async function listShapeFactoryClips(opts: {
+  mediaRelpath?: string;
+  parentContentId?: string;
+}): Promise<ShapeFactoryClipsListResponse> {
+  const sp = new URLSearchParams();
+  if (opts.mediaRelpath) sp.set("media_relpath", opts.mediaRelpath);
+  if (opts.parentContentId) sp.set("parent_content_id", opts.parentContentId);
+  const r = await fetch(`/api/shape-factory/clips?${sp.toString()}`);
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryClipsListResponse;
+  if (!r.ok || !j.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`GET /api/shape-factory/clips failed: ${r.status}${detail ? `: ${detail}` : ""}`);
+  }
+  return j;
+}
+
+export async function mutateShapeFactoryClip(body: Record<string, unknown>): Promise<{
+  ok: boolean;
+  clip?: ShapeFactoryClip;
+  default_clip_id?: string | null;
+  error?: string;
+  detail?: string;
+}> {
+  const r = await fetch("/api/shape-factory/clips", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as {
+    ok: boolean;
+    clip?: ShapeFactoryClip;
+    default_clip_id?: string | null;
+    error?: string;
+    detail?: string;
+  };
+  if (!r.ok || !j.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`POST /api/shape-factory/clips failed: ${r.status}${detail ? `: ${detail}` : ""}`);
+  }
+  return j;
+}
+
 async function postWorkflowExplorerFactoryUpdate(
   path: "/api/workflow-explorer/factory/assets" | "/api/workflow-explorer/factory/workflows",
   body: Record<string, unknown>,

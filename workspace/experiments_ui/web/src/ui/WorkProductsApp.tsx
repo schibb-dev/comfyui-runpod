@@ -1,7 +1,7 @@
 import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { cancelWorkItem, createWorkItems, discardShapeFactoryJob, fetchIdentityStillCandidates, fetchShapeFactoryJsonPeek, fetchShapeFactoryWorkProducts, mintIdentityStill, replayShapeFactory, runDispositionStep, unqueueShapeFactory, updatePendingShapeFactoryTrim } from "./api";
-import type { IdentityStillCandidate, IdentityStillMintTarget } from "./api";
+import { cancelWorkItem, createWorkItems, discardShapeFactoryJob, fetchIdentityStillCandidates, fetchShapeFactoryJsonPeek, fetchShapeFactoryWorkProducts, listShapeFactoryClips, mintIdentityStill, mutateShapeFactoryClip, replayShapeFactory, runDispositionStep, unqueueShapeFactory, updatePendingShapeFactoryTrim } from "./api";
+import type { IdentityStillCandidate, IdentityStillMintTarget, ShapeFactoryClip } from "./api";
 import { ComfyLiveMetricsBar, ComfyLivePreview } from "./ComfyLivePreview";
 import { PageHeader } from "./PageHeader";
 import { PipelineScreen } from "./PipelineScreen";
@@ -665,6 +665,160 @@ function trimOverridesFromState(state: InputTrimState, frameCountHint?: number |
   };
 }
 
+function formatClipTimecode(sec: number): string {
+  if (!Number.isFinite(sec) || sec < 0) return "0:00";
+  const s = Math.floor(sec % 60);
+  const m = Math.floor(sec / 60) % 60;
+  const h = Math.floor(sec / 3600);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+}
+
+function SourceClipBookmarks({
+  mediaRelpath,
+  duration,
+  markIn,
+  markOut,
+  trimEditable,
+  onApplyClip,
+}: {
+  mediaRelpath: string | null;
+  duration: number;
+  markIn: number | null;
+  markOut: number | null;
+  trimEditable: boolean;
+  onApplyClip: (markIn: number, markOut: number) => void;
+}) {
+  const [clips, setClips] = useState<ShapeFactoryClip[]>([]);
+  const [defaultId, setDefaultId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const reload = React.useCallback(async () => {
+    if (!mediaRelpath) {
+      setClips([]);
+      setDefaultId(null);
+      return;
+    }
+    try {
+      const res = await listShapeFactoryClips({ mediaRelpath });
+      setClips(res.clips || []);
+      setDefaultId(res.default_clip_id || null);
+      setErr(null);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }, [mediaRelpath]);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  if (!mediaRelpath) return null;
+
+  const canSave =
+    trimEditable &&
+    markIn != null &&
+    markOut != null &&
+    Number.isFinite(markIn) &&
+    Number.isFinite(markOut) &&
+    markOut > markIn + 0.05;
+
+  return (
+    <div className="work-product-viewer__clips" title="Clips are bookmarks on this source video">
+      <div className="work-product-viewer__clips-row">
+        <span className="work-product-viewer__clips-label">Clips</span>
+        {clips.length === 0 ? (
+          <span className="factory-muted">none — save a span as a bookmark</span>
+        ) : (
+          clips.map((c) => (
+            <button
+              key={c.clip_id}
+              type="button"
+              className={
+                "work-product-viewer__clip-chip" +
+                (defaultId === c.clip_id ? " work-product-viewer__clip-chip--default" : "")
+              }
+              title={`${c.label || "Clip"} · ${formatClipTimecode(c.mark_in_s)}–${formatClipTimecode(c.mark_out_s)}`}
+              disabled={busy}
+              onClick={() => onApplyClip(c.mark_in_s, c.mark_out_s)}
+            >
+              {defaultId === c.clip_id ? "★ " : ""}
+              {c.label || "Clip"} {formatClipTimecode(c.mark_in_s)}–{formatClipTimecode(c.mark_out_s)}
+            </button>
+          ))
+        )}
+      </div>
+      <div className="work-product-viewer__clips-actions">
+        <button
+          type="button"
+          disabled={!canSave || busy}
+          onClick={() => {
+            if (!canSave || markIn == null || markOut == null) return;
+            setBusy(true);
+            void mutateShapeFactoryClip({
+              op: "create",
+              media_relpath: mediaRelpath,
+              mark_in: markIn,
+              mark_out: markOut,
+              label: "Clip",
+              origin: "workbench",
+            })
+              .then(() => reload())
+              .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
+              .finally(() => setBusy(false));
+          }}
+        >
+          Save as clip
+        </button>
+        <button
+          type="button"
+          disabled={!canSave || busy}
+          onClick={() => {
+            if (!canSave || markIn == null || markOut == null) return;
+            setBusy(true);
+            void mutateShapeFactoryClip({
+              op: "create",
+              media_relpath: mediaRelpath,
+              mark_in: markIn,
+              mark_out: markOut,
+              label: "Default",
+              origin: "workbench",
+              set_default: true,
+            })
+              .then(() => reload())
+              .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
+              .finally(() => setBusy(false));
+          }}
+        >
+          Save as default
+        </button>
+        {defaultId ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              setBusy(true);
+              void mutateShapeFactoryClip({
+                op: "set_default",
+                media_relpath: mediaRelpath,
+                clip_id: null,
+              })
+                .then(() => reload())
+                .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
+                .finally(() => setBusy(false));
+            }}
+          >
+            Clear default
+          </button>
+        ) : null}
+      </div>
+      {err ? <p className="work-product-viewer__trim-warn">{err}</p> : null}
+      {duration > 0 ? null : null}
+    </div>
+  );
+}
+
 function WorkProductViewer({
   item,
   outputTrim,
@@ -1064,6 +1218,29 @@ function WorkProductViewer({
                 {sourceTrim.warning}
               </p>
             ) : null}
+            <SourceClipBookmarks
+              mediaRelpath={queuedSourceRel}
+              duration={sourceTrim.duration}
+              markIn={sourceTrim.markIn}
+              markOut={sourceTrim.markOut}
+              trimEditable={trimEditable}
+              onApplyClip={(mi, mo) => {
+                if (!trimEditable) return;
+                const next = {
+                  ...sourceTrim,
+                  markIn: mi,
+                  markOut: mo,
+                  dirty: true,
+                  warning: null,
+                  clampedDefault: false,
+                };
+                onSourceTrimChange(next);
+                persistTrim(next, queuedSourceRel, `wp-src:${item.job_key}`, {
+                  updatePendingJob: true,
+                  defaults: sourceDefaults,
+                });
+              }}
+            />
           </div>
         ) : showSourceThumb ? (
           <WorkProductSourceThumbPreview item={item} />
@@ -1152,6 +1329,29 @@ function WorkProductViewer({
                   {sourceTrim.warning}
                 </p>
               ) : null}
+              <SourceClipBookmarks
+                mediaRelpath={sourceRel}
+                duration={sourceTrim.duration}
+                markIn={sourceTrim.markIn}
+                markOut={sourceTrim.markOut}
+                trimEditable={trimEditable}
+                onApplyClip={(mi, mo) => {
+                  if (!trimEditable) return;
+                  const next = {
+                    ...sourceTrim,
+                    markIn: mi,
+                    markOut: mo,
+                    dirty: true,
+                    warning: null,
+                    clampedDefault: false,
+                  };
+                  onSourceTrimChange(next);
+                  persistTrim(next, sourceRel, `wp-src:${item.job_key}`, {
+                    updatePendingJob: true,
+                    defaults: sourceDefaults,
+                  });
+                }}
+              />
             </>
           ) : sourceThumb ? (
             <img className="work-product-viewer__source-img" src={sourceThumb} alt={source?.basename || "source"} />

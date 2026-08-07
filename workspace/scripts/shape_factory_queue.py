@@ -846,8 +846,38 @@ def _load_work_products_trim_seconds(media_abs: Path) -> Optional[Tuple[float, f
     return tin, tout
 
 
+def hostify_media_abs(media_abs: Optional[Path]) -> Optional[Path]:
+    """Resolve container ``/workspace/...`` paths to host-visible files when needed."""
+    if media_abs is None:
+        return None
+    p = Path(media_abs).expanduser()
+    if p.is_file():
+        return p.resolve()
+    try:
+        from shape_factory import hostify_repo_path
+
+        mapped = hostify_repo_path(p)
+        if mapped.is_file():
+            return mapped.resolve()
+    except Exception:
+        pass
+    # Common bind aliases when API runs on host.
+    text = str(p).replace("\\", "/")
+    aliases = (
+        ("/workspace/output/", "/home/yuji/comfyui-runpod-data/output/"),
+        ("/workspace/input/", "/home/yuji/comfyui-runpod-data/input/"),
+    )
+    for src, dst in aliases:
+        if text.startswith(src):
+            cand = Path(dst + text[len(src) :])
+            if cand.is_file():
+                return cand.resolve()
+    return p
+
+
 def _probe_media_frame_meta(media_abs: Path) -> Dict[str, Any]:
-    info = ffprobe_video_info(media_abs) if media_abs.is_file() else {}
+    media = hostify_media_abs(media_abs) or Path(media_abs)
+    info = ffprobe_video_info(media) if media.is_file() else {}
     fps = parse_avg_frame_rate(info.get("avg_frame_rate"), default=18.0)
     fc = info.get("frame_count")
     try:
@@ -877,19 +907,21 @@ def resolve_vhs_window_overrides(
     """
     Build skip/cap parameter patch + optional ``trim_clamped`` metadata.
 
-    Prefer explicit skip/cap parameters, else work-products trim sidecar, else
-    template defaults when those are out of range for the media (policy 2).
+    Prefer explicit skip/cap parameters, else work-products trim sidecar.
+    Catalog template skip/cap are **ignored** (fossilized on authoring media) —
+    rebound sources seed from clips / full file via ``shape_factory_clips``.
 
     Only writes ``skip_first_frames`` / ``frame_load_cap`` when those keys were
-    explicitly provided or introduced by sidecar / template clamp — so an
-    extend-only ``frame_load_cap`` lengthen value does not zero out template skip.
+    explicitly provided or introduced by sidecar — so an extend-only
+    ``frame_load_cap`` lengthen value does not invent skip=0.
     """
     params_in = dict(parameters) if isinstance(parameters, dict) else {}
     out_params = dict(params_in)
     meta: Optional[Dict[str, Any]] = None
+    media_resolved = hostify_media_abs(media_abs) if media_abs is not None else None
     media_meta = (
-        _probe_media_frame_meta(media_abs)
-        if media_abs is not None
+        _probe_media_frame_meta(media_resolved)
+        if media_resolved is not None
         else {"fps": 18.0, "frame_count": 0, "duration": 0.0}
     )
     fps = float(media_meta["fps"])
@@ -903,8 +935,8 @@ def resolve_vhs_window_overrides(
     trim_intent = explicit_skip or (explicit_skip and explicit_cap)
     source: Optional[str] = "overrides" if explicit_skip else None
 
-    if source is None and read_sidecar and media_abs is not None:
-        marks = _load_work_products_trim_seconds(media_abs)
+    if source is None and read_sidecar and media_resolved is not None and media_resolved.is_file():
+        marks = _load_work_products_trim_seconds(media_resolved)
         if marks is not None:
             win = trim_seconds_to_vhs_window(
                 mark_in=marks[0],
@@ -933,30 +965,8 @@ def resolve_vhs_window_overrides(
                     ),
                 }
 
-    if source is None and template_defaults and frame_count > 0:
-        req_skip = int(template_defaults.get("skip_first_frames") or 0)
-        req_cap = int(template_defaults.get("frame_load_cap") or 0)
-        skip, cap, clamped = clamp_vhs_load_window(
-            skip_first_frames=req_skip,
-            frame_load_cap=req_cap,
-            frame_count=frame_count,
-        )
-        if clamped:
-            out_params["skip_first_frames"] = skip
-            out_params["frame_load_cap"] = cap
-            explicit_skip = True
-            explicit_cap = True
-            trim_intent = True
-            source = "template_clamped"
-            meta = {
-                "source": source,
-                "requested_skip_first_frames": req_skip,
-                "requested_frame_load_cap": req_cap,
-                "skip_first_frames": skip,
-                "frame_load_cap": cap,
-                "frame_count": frame_count,
-                "message": f"template skip {req_skip} → {skip} for this clip ({frame_count} frames)",
-            }
+    # template_defaults retained in signature for callers, but never applied as policy.
+    _ = template_defaults
 
     if trim_intent and frame_count > 0:
         try:
@@ -1425,13 +1435,13 @@ def replay_from_request_body(
         construction["identity_anchor"] = identity_meta.get("path")
         construction["identity_evidence"] = identity_meta.get("evidence")
 
-    # Resolve VHS input window (explicit overrides → sidecar → OOR template clamp).
+    # Resolve VHS input window (explicit overrides → sidecar; never template skip).
     video_slot_for_trim = _video_source_slot(shape, bindings)
     media_for_trim: Optional[Path] = None
     if video_slot_for_trim:
         raw_media = str(bindings.get(video_slot_for_trim) or "").strip()
         if raw_media:
-            media_for_trim = Path(raw_media).expanduser()
+            media_for_trim = hostify_media_abs(Path(raw_media).expanduser())
     template_defaults = vhs_loader_defaults_for_shape(
         shape,
         data_root=data_root,
@@ -1614,7 +1624,7 @@ def derive_from_request_body(
     if video_slot_for_trim:
         raw_media = str(bindings.get(video_slot_for_trim) or "").strip()
         if raw_media:
-            media_for_trim = Path(raw_media).expanduser()
+            media_for_trim = hostify_media_abs(Path(raw_media).expanduser())
     template_defaults = vhs_loader_defaults_for_shape(
         shape,
         data_root=data_root,

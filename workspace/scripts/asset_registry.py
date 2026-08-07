@@ -67,8 +67,26 @@ def image_dims(path: Path) -> tuple[Optional[int], Optional[int]]:
 
 def connect(registry_path: Path) -> sqlite3.Connection:
     registry_path.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(registry_path))
+    con = sqlite3.connect(str(registry_path), timeout=30.0)
     con.row_factory = sqlite3.Row
+    try:
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("PRAGMA busy_timeout=30000")
+    except sqlite3.Error:
+        pass
+    tables = {
+        r[0]
+        for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    if "assets" in tables and "meta" in tables:
+        cols = {r["name"] for r in con.execute("PRAGMA table_info(assets)")}
+        if "mtime" in cols:
+            # Hot path: schema already applied — no DDL/commit (avoids lock storms).
+            return con
+
+    dirty = "assets" not in tables or "meta" not in tables
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS assets (
@@ -93,16 +111,28 @@ def connect(registry_path: Path) -> sqlite3.Connection:
     cols = {r["name"] for r in con.execute("PRAGMA table_info(assets)")}
     if "mtime" not in cols:
         con.execute("ALTER TABLE assets ADD COLUMN mtime REAL")
+        dirty = True
     con.execute("CREATE INDEX IF NOT EXISTS idx_assets_relpath ON assets(current_relpath)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_assets_ext ON assets(ext)")
     con.execute(
         "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)"
     )
-    con.execute(
-        "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
-        (str(REGISTRY_SCHEMA_VERSION),),
-    )
-    con.commit()
+    row = con.execute(
+        "SELECT value FROM meta WHERE key='schema_version'"
+    ).fetchone()
+    try:
+        ver = int(row["value"]) if row else 0
+    except (TypeError, ValueError, KeyError):
+        ver = 0
+    # Never decrease: clip schema (and others) may bump past REGISTRY_SCHEMA_VERSION.
+    if ver < REGISTRY_SCHEMA_VERSION:
+        con.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
+            (str(REGISTRY_SCHEMA_VERSION),),
+        )
+        dirty = True
+    if dirty:
+        con.commit()
     return con
 
 

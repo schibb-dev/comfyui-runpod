@@ -509,6 +509,27 @@ def add_backfill_subparser(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--apply", action="store_true", help="Write jobs (default: dry-run summary only)")
     p.set_defaults(func=cmd_backfill_jobs)
 
+    pc = sub.add_parser(
+        "backfill-clips",
+        help="Import nontrivial *.trims.json presets as Clip bookmarks (idempotent)",
+    )
+    pc.add_argument("--output-root", default="/home/yuji/comfyui-runpod-data/output")
+    pc.add_argument("--registry", default=None, help="asset_registry.sqlite (default: output/_status/)")
+    pc.add_argument("--apply", action="store_true", help="Write clips (default: dry-run count only)")
+    pc.set_defaults(func=cmd_backfill_clips)
+
+
+def cmd_backfill_clips(args: argparse.Namespace) -> int:
+    from shape_factory_clips import backfill_clips_from_trims_sidecars
+
+    summary = backfill_clips_from_trims_sidecars(
+        output_root=Path(args.output_root).expanduser(),
+        registry_path=Path(args.registry).expanduser() if args.registry else None,
+        apply=bool(args.apply),
+    )
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    return 0 if summary.get("ok") else 1
+
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Shape-factory job backfill")

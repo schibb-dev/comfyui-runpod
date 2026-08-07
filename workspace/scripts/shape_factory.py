@@ -1312,6 +1312,8 @@ def generate_job_for_picks(
     if not is_litegraph_workflow(workflow):
         raise RuntimeError(f"not a LiteGraph workflow: {template_path}")
     sanitize_linked_text_widget_defaults(workflow)
+    # Catalog templates bake authoring-clip skip/cap; rebound sources must not inherit them.
+    zero_vhs_load_window_on_workflow(workflow)
 
     warnings: list[str] = []
     bindings_meta: dict[str, Any] = {}
@@ -1361,6 +1363,36 @@ def generate_job_for_picks(
     output_prefix = f"{prefix_root}/{job_key}"
     changes = strip_video_previews_and_redirect_outputs(workflow, output_prefix)
 
+    # Seed use window from clips / full file (never catalog template skip).
+    draft_for_window: dict[str, Any] = {"bindings": bindings_meta}
+    if isinstance(construction, dict) and construction:
+        draft_for_window["construction"] = construction
+    if isinstance(adhoc_overrides, dict):
+        params = adhoc_overrides.get("parameters")
+        if isinstance(params, dict) and (
+            params.get("skip_first_frames") is not None
+            or params.get("frame_load_cap") is not None
+            or params.get("mark_in") is not None
+            or params.get("mark_out") is not None
+        ):
+            draft_for_window["vhs_window"] = {
+                k: params[k]
+                for k in ("skip_first_frames", "frame_load_cap", "mark_in", "mark_out", "clip_id")
+                if k in params and params[k] is not None
+            }
+        clip_ovr = adhoc_overrides.get("source_clip_id") or adhoc_overrides.get("clip_id")
+        if clip_ovr:
+            draft_for_window["source_clip_id"] = str(clip_ovr).strip()
+    try:
+        seed_job_use_window_from_clips(
+            draft_for_window,
+            data_root=data_root,
+            source_path=picks.get("source_video"),
+        )
+        apply_job_vhs_window_to_workflow(draft_for_window, workflow)
+    except Exception as exc:
+        warnings.append(f"clip_use_window_seed_failed: {exc}")
+
     workflow_out = workflow_dir / family / f"{job_key}.workflow.json"
     workflow_out.parent.mkdir(parents=True, exist_ok=True)
     workflow_out.write_text(json.dumps(workflow, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
@@ -1384,6 +1416,11 @@ def generate_job_for_picks(
         "warnings": warnings,
         "deposits": shape.get("deposits") or {},
     }
+    if isinstance(draft_for_window.get("vhs_window"), dict):
+        job_meta["vhs_window"] = draft_for_window["vhs_window"]
+    if draft_for_window.get("source_clip_id"):
+        job_meta["source_clip_id"] = str(draft_for_window["source_clip_id"])
+
     if disposition_entry:
         job_meta["disposition_entry"] = str(disposition_entry).strip()
         if disposition_note:
@@ -3954,9 +3991,16 @@ def submit_job_file(
         raise RuntimeError("not a LiteGraph workflow")
 
     # Workbench trim edits land on job["vhs_window"]; re-apply before convert.
+    # If missing, seed from clips / full file (never catalog template skip).
+    if not (isinstance(job.get("vhs_window"), dict) and job.get("vhs_window")):
+        try:
+            seed_job_use_window_from_clips(job, data_root=data_root)
+        except Exception:
+            zero_vhs_load_window_on_workflow(workflow)
     vhs_apply = apply_job_vhs_window_to_workflow(job, workflow)
     if vhs_apply and vhs_apply.get("vhs"):
         atomic_write_json(workflow_path, workflow)
+        atomic_write_json(job_path, job)
 
     shape_path = resolve_job_asset_path(
         str(job.get("shape_path") or ""),
@@ -4588,6 +4632,121 @@ def update_pending_job_vhs_window(
         "prompt_cleared": cleared_prompt,
         "status": status or "pending",
     }
+
+
+def zero_vhs_load_window_on_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
+    """Clear fossilized catalog skip/cap on VHS_LoadVideoPath nodes (full-file default)."""
+    return apply_dev_tuning_ui(
+        workflow,
+        {"vhs_load_video_path": {"skip_first_frames": 0, "frame_load_cap": 0}},
+    )
+
+
+def default_asset_registry_path(data_root: Path) -> Path:
+    """Prefer ``<data_root>/output/og`` → ``.../output/_status/asset_registry.sqlite``."""
+    import asset_registry as areg
+
+    root = Path(data_root).expanduser().resolve()
+    # If caller already passed the comfy data root that contains output/, use it.
+    og = root / "output" / "og"
+    if not og.is_dir() and (root / "og").is_dir():
+        og = root / "og"
+    if not og.is_dir():
+        # Fall back to host/comfy conventional path.
+        host_og = Path("/home/yuji/comfyui-runpod-data/output/og")
+        if host_og.is_dir():
+            og = host_og
+        else:
+            ws_og = Path("/workspace/output/og")
+            if ws_og.is_dir():
+                og = ws_og
+    return areg.default_registry_path(og)
+
+
+def seed_job_use_window_from_clips(
+    job: dict[str, Any],
+    *,
+    data_root: Path,
+    source_path: Optional[Path] = None,
+) -> Optional[dict[str, Any]]:
+    """
+    Resolve Asset/Clip/Use window for a job and write ``vhs_window`` / ``source_clip_id``.
+
+    Returns the resolved use dict, or None on soft failure.
+    """
+    from shape_factory_clips import connect_clips, resolve_job_use_window
+    from shape_factory_queue import _probe_media_frame_meta, hostify_media_abs
+
+    bindings = job.get("bindings") if isinstance(job.get("bindings"), dict) else {}
+    src = bindings.get("source_video")
+    raw = ""
+    parent_cid = None
+    if isinstance(src, dict):
+        raw = str(src.get("path") or "").strip()
+        parent_cid = str(src.get("content_id") or "").strip() or None
+    elif isinstance(src, str):
+        raw = src.strip()
+    if source_path is not None:
+        media = hostify_media_abs(Path(source_path))
+    elif raw:
+        media = hostify_media_abs(Path(raw))
+    else:
+        media = None
+    media_meta = _probe_media_frame_meta(media) if media and media.is_file() else {}
+    if not parent_cid and media and media.is_file():
+        try:
+            import asset_registry as areg
+
+            reg = default_asset_registry_path(data_root)
+            con_a = areg.connect(reg)
+            try:
+                rel = ""
+                try:
+                    out_root = Path(data_root).expanduser().resolve() / "output"
+                    rel = str(media.resolve().relative_to(out_root)).replace("\\", "/")
+                except Exception:
+                    rel = media.name
+                parent_cid = areg.register(con_a, media, relpath=rel, kind="video", with_dims=False)
+                if isinstance(src, dict) and parent_cid:
+                    src["content_id"] = parent_cid
+            finally:
+                con_a.close()
+        except Exception:
+            parent_cid = None
+
+    reg_path = default_asset_registry_path(data_root)
+    try:
+        con = connect_clips(reg_path)
+    except Exception:
+        con = None
+    try:
+        use = resolve_job_use_window(
+            job=job,
+            source_clip_id=str(job.get("source_clip_id") or "").strip() or None,
+            parent_content_id=parent_cid,
+            media_meta=media_meta,
+            con=con,
+        )
+    finally:
+        if con is not None:
+            con.close()
+
+    vhs_window = {
+        "skip_first_frames": int(use.get("skip_first_frames") or 0),
+        "frame_load_cap": int(use.get("frame_load_cap") or 0),
+        "source": str(use.get("source") or "full"),
+    }
+    if use.get("mark_in") is not None:
+        vhs_window["mark_in"] = float(use["mark_in"])
+    if use.get("mark_out") is not None:
+        vhs_window["mark_out"] = float(use["mark_out"])
+    if use.get("clip_id"):
+        vhs_window["clip_id"] = str(use["clip_id"])
+        job["source_clip_id"] = str(use["clip_id"])
+    if use.get("message"):
+        vhs_window["message"] = str(use["message"])
+    job["vhs_window"] = vhs_window
+    return use
 
 
 def apply_job_vhs_window_to_workflow(job: dict[str, Any], workflow: dict[str, Any]) -> Optional[dict[str, Any]]:
