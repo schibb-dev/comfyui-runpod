@@ -9,6 +9,7 @@ from shape_factory_work_products import (
     _filename_prefix_from_prompt,
     _relpath_under,
     _shape_view,
+    attach_comfy_history_failures,
     attach_live_comfy_queue,
     construction_from_plan,
     decode_prompt_markup,
@@ -407,6 +408,95 @@ class TestWorkProducts(unittest.TestCase):
         self.assertEqual(out["items"][1]["status"], "queued")
         self.assertEqual(out["items"][2]["status"], "complete")
         self.assertEqual(out.get("comfy_demoted_stale"), 1)
+
+    def test_attach_comfy_history_failures_synthesizes_and_enriches(self):
+        payload = {
+            "ok": True,
+            "limit": 10,
+            "families": [{"slug": "FB9_GEX2"}],
+            "items": [
+                {
+                    "job_key": "hourly__known",
+                    "prompt_id": "pid-known",
+                    "status": "complete",
+                    "error": None,
+                }
+            ],
+        }
+        long_msg = "CUDA out of memory\nTried to allocate 2.00 GiB"
+        history = {
+            "pid-known": {
+                "prompt": [3, "pid-known", {}, {"workflow_name": "hourly__known"}],
+                "status": {
+                    "status_str": "error",
+                    "completed": False,
+                    "messages": [
+                        [
+                            "execution_error",
+                            {
+                                "exception_type": "RuntimeError",
+                                "exception_message": long_msg,
+                                "node_id": "84",
+                                "node_type": "SamplerCustomAdvanced",
+                                "timestamp": 1_700_000_000_000,
+                            },
+                        ]
+                    ],
+                },
+            },
+            "pid-orphan": {
+                "prompt": [
+                    2,
+                    "pid-orphan",
+                    {
+                        "80": {
+                            "class_type": "VHS_VideoCombine",
+                            "inputs": {"filename_prefix": "output/og/x/FB9_GEX2_shape"},
+                        }
+                    },
+                    {},
+                ],
+                "status": {
+                    "status_str": "error",
+                    "completed": False,
+                    "messages": [
+                        [
+                            "execution_error",
+                            {
+                                "exception_message": "VHS_LoadVideoPath: No frames generated",
+                                "node_type": "VHS_LoadVideoPath",
+                            },
+                        ]
+                    ],
+                },
+            },
+            "pid-ok": {
+                "prompt": [1, "pid-ok", {}, {}],
+                "status": {"status_str": "success", "completed": True, "messages": []},
+            },
+        }
+        out = attach_comfy_history_failures(payload, history=history)
+        self.assertGreaterEqual(out.get("history_failure_count") or 0, 2)
+        # Known prompt enriched in place
+        known = next(i for i in out["items"] if i.get("prompt_id") == "pid-known")
+        self.assertEqual(known.get("status"), "error")
+        self.assertIn("CUDA out of memory", str(known.get("error") or ""))
+        self.assertIn("Tried to allocate", str(known.get("error") or ""))
+        # Orphan history failure appears as a stub
+        orphan = next(i for i in out["items"] if i.get("prompt_id") == "pid-orphan")
+        self.assertEqual(orphan.get("status"), "error")
+        self.assertIn("No frames generated", str(orphan.get("error") or ""))
+        self.assertTrue(orphan.get("history_from_comfy"))
+
+    def test_extract_history_error_fallback_when_no_message(self):
+        from shape_factory import extract_history_execution_error, format_history_error_text
+
+        err = extract_history_execution_error(
+            {"status": {"status_str": "error", "completed": False, "messages": []}}
+        )
+        self.assertIsNotNone(err)
+        text = format_history_error_text(err)
+        self.assertIn("no Comfy exception text", text)
 
     def test_reconcile_rebinds_interrupted_job_by_workflow_name(self):
         from shape_factory_work_products import reconcile_inflight_jobs_with_comfy

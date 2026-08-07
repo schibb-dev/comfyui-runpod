@@ -605,6 +605,11 @@ function WorkProductSourceThumbPreview({ item }: { item: WorkProductItem }) {
               {visual === "error" ? "✕" : visual === "interrupted" ? "⊘" : "▣"}
             </span>
             <span>{emptyTitle} — source preview unavailable</span>
+            {item.error ? (
+              <span className="work-product-live__error-snip" title={item.error}>
+                {String(item.error).trim()}
+              </span>
+            ) : null}
           </div>
         )}
         <span

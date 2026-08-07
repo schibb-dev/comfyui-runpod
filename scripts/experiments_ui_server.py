@@ -1780,6 +1780,7 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
         sys.path.insert(0, str(d))
     from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
     from shape_factory_work_products import (  # type: ignore
+        attach_comfy_history_failures,
         attach_live_comfy_queue,
         demote_stale_inflight_items,
         list_recent_work_products,
@@ -1799,11 +1800,17 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
     # the UI never shows ghost running/queued rows after clears/restarts.
     comfy = str(cfg.comfy_server).rstrip("/")
     queue_obj: Any = None
+    history_obj: Any = None
     reconcile: Dict[str, Any] | None = None
     try:
         queue_obj = _http_json("GET", f"{comfy}/queue", timeout_s=8)
     except Exception as e:
         queue_obj = {"error": "comfy_queue_fetch_failed", "detail": str(e)}
+    try:
+        # Same window as Queue monitor history so failures align.
+        history_obj = _http_json("GET", f"{comfy}/history?max_items=80", timeout_s=30)
+    except Exception as e:
+        history_obj = {"error": "comfy_history_fetch_failed", "detail": str(e)}
     if isinstance(queue_obj, dict) and "error" not in queue_obj:
         try:
             reconcile = reconcile_inflight_jobs_with_comfy(
@@ -1840,6 +1847,19 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
             queue_running=queue_obj.get("queue_running"),
             queue_pending=queue_obj.get("queue_pending"),
         )
+    if isinstance(history_obj, dict) and "error" not in history_obj:
+        try:
+            payload = attach_comfy_history_failures(
+                payload,
+                history=history_obj,
+                data_root=data_root,
+                output_root=cfg.output_root,
+                max_failures=max(20, min(80, int(limit))),
+            )
+        except Exception as e:
+            payload["history_attach_error"] = str(e)
+    elif isinstance(history_obj, dict) and history_obj.get("error"):
+        payload["history_attach_error"] = history_obj.get("detail") or history_obj.get("error")
     if reconcile is not None:
         payload["comfy_reconcile"] = reconcile
     return payload
@@ -5661,21 +5681,50 @@ def _history_status_and_times(record: Any) -> Dict[str, Any]:
                 started_ms = float(ts)
             if started_ms is None:
                 started_ms = float(ts)
-        if kind == "execution_error":
-            out["status"] = "error"
-            exc = meta.get("exception_message") or meta.get("exception_type") or "execution_error"
-            out["error_message"] = str(exc).strip() or "execution_error"
-            node = meta.get("node_type") or meta.get("node_id")
-            if node is not None:
-                out["error_node"] = str(node)
-        elif kind == "execution_interrupted":
-            out["status"] = "interrupted"
-            out["error_message"] = "Interrupted"
-            node = meta.get("node_type") or meta.get("node_id")
-            if node is not None:
-                out["error_node"] = str(node)
-        elif kind == "execution_success" and out["status"] not in ("error", "interrupted"):
+        if kind == "execution_success" and out["status"] not in ("error", "interrupted"):
             out["status"] = "success"
+
+    # Prefer shared extractor (full exception text + status fallback).
+    try:
+        d = _workspace_scripts_dir()
+        if d.is_dir() and str(d) not in sys.path:
+            sys.path.insert(0, str(d))
+        from shape_factory import extract_history_execution_error, format_history_error_text  # type: ignore
+
+        err = extract_history_execution_error(record)
+        if err:
+            kind = str(err.get("kind") or "")
+            if kind == "execution_interrupted" or out["status"] == "interrupted":
+                out["status"] = "interrupted"
+            elif out["status"] not in ("interrupted",):
+                out["status"] = "error"
+            out["error_message"] = format_history_error_text(err) or err.get("exception_message")
+            node = err.get("node_type") or err.get("node_id")
+            if node is not None:
+                out["error_node"] = str(node)
+    except Exception:
+        # Local fallback if workspace scripts are unavailable.
+        for msg in messages:
+            if not isinstance(msg, list) or not msg:
+                continue
+            kind = msg[0] if isinstance(msg[0], str) else ""
+            meta = msg[1] if len(msg) > 1 and isinstance(msg[1], dict) else {}
+            if kind == "execution_error":
+                out["status"] = "error"
+                exc = meta.get("exception_message") or meta.get("exception_type") or "execution_error"
+                out["error_message"] = str(exc).strip() or "execution_error"
+                node = meta.get("node_type") or meta.get("node_id")
+                if node is not None:
+                    out["error_node"] = str(node)
+            elif kind == "execution_interrupted":
+                out["status"] = "interrupted"
+                out["error_message"] = "Interrupted"
+                node = meta.get("node_type") or meta.get("node_id")
+                if node is not None:
+                    out["error_node"] = str(node)
+
+    if out["status"] in ("error", "failed", "interrupted") and not out.get("error_message"):
+        out["error_message"] = "execution failed (no Comfy exception text)"
 
     out["queued_at"] = _ms_to_utc_iso(started_ms)
     out["changed_at"] = _ms_to_utc_iso(changed_ms) or out["queued_at"]

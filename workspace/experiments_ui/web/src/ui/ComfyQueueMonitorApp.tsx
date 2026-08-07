@@ -443,9 +443,7 @@ function HistoryItemRow({ item }: { item: ComfyHistoryItem }) {
   const statusVisual = historyStatusVisual(item.status);
   const statusLabel =
     statusVisual === "error" ? "error" : statusVisual === "interrupted" ? "interrupted" : item.status || "done";
-  const errLine = item.error_message
-    ? String(item.error_message).trim().replace(/\s+/g, " ").slice(0, 220)
-    : null;
+  const errLine = item.error_message ? String(item.error_message).trim() : null;
 
   return (
     <QueuePipelineRow

@@ -4830,17 +4830,23 @@ def history_status_str(history: dict[str, Any]) -> str:
 
 
 def extract_history_execution_error(history: dict[str, Any]) -> Optional[dict[str, Any]]:
-    """Pull Comfy ``execution_error`` fields from a history entry (if present)."""
+    """Pull Comfy ``execution_error`` / interrupt fields from a history entry (if present)."""
     status = history.get("status") if isinstance(history.get("status"), dict) else {}
     messages = status.get("messages") if isinstance(status.get("messages"), list) else []
     for msg in messages:
         if not isinstance(msg, (list, tuple)) or not msg:
             continue
-        if str(msg[0]) != "execution_error":
+        kind = str(msg[0] or "")
+        if kind not in ("execution_error", "execution_interrupted"):
             continue
         info = msg[1] if len(msg) > 1 and isinstance(msg[1], dict) else {}
-        text = str(info.get("exception_message") or "").strip()
-        # Comfy often appends a second line with allocation details; keep first line primary.
+        text = str(
+            info.get("exception_message")
+            or info.get("message")
+            or info.get("exception_type")
+            or ("Interrupted" if kind == "execution_interrupted" else "")
+            or ""
+        ).strip()
         first_line = text.splitlines()[0].strip() if text else ""
         out: dict[str, Any] = {
             "exception_type": str(info.get("exception_type") or "").strip() or None,
@@ -4848,26 +4854,63 @@ def extract_history_execution_error(history: dict[str, Any]) -> Optional[dict[st
             "exception_summary": first_line or None,
             "node_id": str(info.get("node_id") or "").strip() or None,
             "node_type": str(info.get("node_type") or "").strip() or None,
+            "kind": kind,
         }
         if not any(out.get(k) for k in ("exception_message", "node_type", "exception_type")):
+            if kind == "execution_interrupted":
+                out["exception_message"] = "Interrupted"
+                out["exception_summary"] = "Interrupted"
+                return out
             return None
         return out
+
+    # Status says failed but no structured execution_error message.
+    status_str = str(status.get("status_str") or "").strip().lower()
+    completed = status.get("completed")
+    if status_str in {"error", "failed"} or completed is False:
+        detail = str(status.get("message") or status.get("error") or "").strip()
+        if not detail or detail.lower() in {"error", "failed"}:
+            detail = "execution failed (no Comfy exception text)"
+        return {
+            "exception_type": None,
+            "exception_message": detail,
+            "exception_summary": detail.splitlines()[0].strip() if detail else detail,
+            "node_id": None,
+            "node_type": None,
+            "kind": "status_fallback",
+        }
     return None
 
 
+def format_history_error_text(err: Optional[dict[str, Any]], *, max_chars: int = 8000) -> str:
+    """Full operator-facing error string from ``extract_history_execution_error``."""
+    if not isinstance(err, dict):
+        return ""
+    node = str(err.get("node_type") or "").strip()
+    node_id = str(err.get("node_id") or "").strip()
+    etype = str(err.get("exception_type") or "").strip()
+    body = str(err.get("exception_message") or err.get("exception_summary") or "").strip()
+    head_bits = [b for b in (node, f"#{node_id}" if node_id and node_id != node else "", etype) if b]
+    head = " · ".join(head_bits)
+    if head and body:
+        text = f"{head}: {body}" if not body.lower().startswith(node.lower()) else body
+    else:
+        text = body or head
+    text = text.strip()
+    if max_chars > 0 and len(text) > max_chars:
+        return text[: max_chars - 1] + "…"
+    return text
+
+
 def apply_history_error_to_submit(submit: dict[str, Any], history: dict[str, Any]) -> None:
-    """Persist a short, UI-friendly Comfy error onto the job submit block."""
+    """Persist Comfy error details onto the job submit block (full message kept)."""
     err = extract_history_execution_error(history)
     if not err:
         return
-    summary = str(err.get("exception_summary") or err.get("exception_message") or "").strip()
+    text = format_history_error_text(err)
+    if text:
+        submit["error"] = text
     node_type = str(err.get("node_type") or "").strip()
-    if summary and node_type:
-        submit["error"] = f"{node_type}: {summary}"[:400]
-    elif summary:
-        submit["error"] = summary[:400]
-    elif node_type:
-        submit["error"] = f"{node_type} failed"[:400]
     submit["error_node"] = node_type or None
     submit["error_node_id"] = err.get("node_id")
     submit["error_type"] = err.get("exception_type")

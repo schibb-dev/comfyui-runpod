@@ -1235,6 +1235,19 @@ def _work_product_item_from_job(
         or submit.get("status")
         or ("deposited" if deposit else "pending")
     )
+    error_text = str(submit.get("error") or "").strip() or None
+    comfy_err = submit.get("comfy_error") if isinstance(submit.get("comfy_error"), dict) else None
+    if comfy_err:
+        try:
+            from shape_factory import format_history_error_text
+
+            full = format_history_error_text(comfy_err)
+            if full and (not error_text or len(full) > len(error_text)):
+                error_text = full
+        except Exception:
+            pass
+    if not error_text and str(status).lower() == "interrupted":
+        error_text = str(submit.get("interrupted_reason") or "").strip() or None
     parent_output = job.get("parent_output") or construction.get("parent_output")
     parent_rel = _relpath_under(output_root, parent_output)
     parent_url = _file_url(parent_rel)
@@ -1334,12 +1347,10 @@ def _work_product_item_from_job(
         "prompt_id": submit.get("prompt_id"),
         "submitted_at": submit.get("submitted_at"),
         "deposited_at": deposit.get("deposited_at"),
-        "error": (
-            submit.get("error")
-            or (submit.get("interrupted_reason") if str(status).lower() == "interrupted" else None)
-        ),
+        "error": error_text,
         "error_node": submit.get("error_node"),
         "error_type": submit.get("error_type"),
+        "comfy_error": comfy_err,
         "output_relpath": output_rel,
         "output_url": _file_url(output_rel),
         "output_thumb_url": _file_url(thumb_rel),
@@ -2070,6 +2081,202 @@ def attach_live_comfy_queue(
     payload["items"] = merged[: max(limit, len(live_items))]
     payload["count"] = len(payload["items"])
     payload["live_comfy_count"] = len(live_items)
+    return payload
+
+
+def _history_prompt_obj(record: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(record, dict):
+        return None
+    raw = record.get("prompt")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, list) and len(raw) >= 3 and isinstance(raw[2], dict):
+        return raw[2]
+    return None
+
+
+def _history_extra_data(record: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(record, dict):
+        return None
+    raw = record.get("prompt")
+    if isinstance(raw, list) and len(raw) >= 4 and isinstance(raw[3], dict):
+        return raw[3]
+    extra = record.get("extra") or record.get("extra_data")
+    return extra if isinstance(extra, dict) else None
+
+
+def _history_queue_index(record: Any) -> int:
+    if not isinstance(record, dict):
+        return -1
+    raw = record.get("prompt")
+    if isinstance(raw, list) and raw and isinstance(raw[0], (int, float)):
+        return int(raw[0])
+    return -1
+
+
+def attach_comfy_history_failures(
+    payload: Dict[str, Any],
+    *,
+    history: Any,
+    data_root: Optional[Path] = None,
+    output_root: Optional[Path] = None,
+    max_failures: int = 40,
+) -> Dict[str, Any]:
+    """
+    Merge recent Comfy history errors/interrupts into work-products.
+
+    Queue history shows every failed prompt; Workbench previously only listed
+    factory ``.job.json`` files (+ live queue). This attaches matching factory
+    jobs and synthesizes stubs for history-only failures so the lists align.
+    """
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        return payload
+    if not isinstance(history, dict) or not history:
+        payload["history_failure_count"] = 0
+        return payload
+
+    try:
+        from shape_factory import extract_history_execution_error, format_history_error_text
+    except ImportError:
+        payload["history_failure_count"] = 0
+        return payload
+
+    items = list(payload.get("items") or [])
+    by_pid: Dict[str, int] = {}
+    by_job_key: Dict[str, int] = {}
+    for i, it in enumerate(items):
+        if not isinstance(it, dict):
+            continue
+        pid = str(it.get("prompt_id") or "").strip()
+        if pid and pid not in by_pid:
+            by_pid[pid] = i
+        jk = str(it.get("job_key") or "").strip()
+        if jk and jk not in by_job_key:
+            by_job_key[jk] = i
+
+    family_slugs = [str(f.get("slug") or "") for f in (payload.get("families") or []) if isinstance(f, dict)]
+    jobs_root = Path(data_root) / "shape_factory" / "jobs" if data_root else None
+    out_root = Path(output_root).resolve() if output_root else None
+    data_r = Path(data_root).resolve() if data_root else None
+
+    ordered = sorted(
+        ((pid, record) for pid, record in history.items() if isinstance(pid, str) and isinstance(record, dict)),
+        key=lambda kv: _history_queue_index(kv[1]),
+        reverse=True,
+    )
+
+    failure_rows: List[Dict[str, Any]] = []
+    touched = 0
+    for pid, record in ordered:
+        if len(failure_rows) >= max(1, int(max_failures)):
+            break
+        err = extract_history_execution_error(record)
+        if not err:
+            continue
+        kind = str(err.get("kind") or "")
+        status = "interrupted" if kind == "execution_interrupted" else "error"
+        # Skip pure successes that somehow produced an empty fallback
+        st = record.get("status") if isinstance(record.get("status"), dict) else {}
+        if st.get("completed") is True and kind == "status_fallback":
+            continue
+        error_text = format_history_error_text(err) or str(err.get("exception_message") or "").strip()
+        error_node = str(err.get("node_type") or err.get("node_id") or "").strip() or None
+        prompt = _history_prompt_obj(record)
+        extra = _history_extra_data(record)
+        job_key = _job_key_from_comfy_extra(extra) or _job_key_from_filename_prefix(prompt) or ""
+
+        def _apply_error(row: Dict[str, Any]) -> Dict[str, Any]:
+            row = dict(row)
+            row["status"] = status
+            row["prompt_id"] = pid
+            row["error"] = error_text or row.get("error")
+            if error_node:
+                row["error_node"] = error_node
+            row["error_type"] = err.get("exception_type") or row.get("error_type")
+            row["comfy_error"] = err
+            row["history_from_comfy"] = True
+            row["live_from_comfy"] = False
+            row["details"] = _detail_rows(row)
+            return row
+
+        # Already on the page — enrich in place (don't duplicate).
+        if pid in by_pid:
+            idx = by_pid[pid]
+            items[idx] = _apply_error(items[idx])
+            touched += 1
+            continue
+        if job_key and job_key in by_job_key:
+            idx = by_job_key[job_key]
+            items[idx] = _apply_error(items[idx])
+            touched += 1
+            continue
+
+        found_path, found_job = (None, None)
+        if jobs_root is not None:
+            found_path, found_job = _find_job_by_prompt_id(jobs_root, pid)
+            if found_path is None and job_key:
+                for path in jobs_root.glob(f"*/{job_key}.job.json"):
+                    try:
+                        loaded = json.loads(path.read_text(encoding="utf-8"))
+                    except Exception:
+                        continue
+                    if isinstance(loaded, dict):
+                        found_path, found_job = path, loaded
+                        break
+        if found_path is not None and isinstance(found_job, dict) and out_root is not None and data_r is not None:
+            # Persist error onto submit so later scans keep the text.
+            submit = found_job.get("submit") if isinstance(found_job.get("submit"), dict) else {}
+            submit = dict(submit)
+            submit["status"] = status
+            submit["prompt_id"] = pid
+            try:
+                from shape_factory import apply_history_error_to_submit
+
+                apply_history_error_to_submit(submit, record)
+            except Exception:
+                submit["error"] = error_text
+                submit["comfy_error"] = err
+            found_job = dict(found_job)
+            found_job["submit"] = submit
+            try:
+                found_path.write_text(json.dumps(found_job, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            except Exception:
+                pass
+            row = _work_product_item_from_job(
+                found_path,
+                found_job,
+                data_root=data_r,
+                output_root=out_root,
+                status_override=status,
+            )
+            row = _apply_error(row)
+            failure_rows.append(row)
+            continue
+
+        # History-only failure (no factory job file) — still show in Workbench.
+        stub = _synthetic_live_work_product(
+            prompt_id=pid,
+            status=status,
+            prompt=prompt,
+            family_slugs=family_slugs,
+            output_root=out_root,
+        )
+        stub["job_key"] = job_key or f"history__{pid[:12]}"
+        stub["construction"] = {"step": "history", "source": "comfy_history"}
+        failure_rows.append(_apply_error(stub))
+
+    if failure_rows:
+        # Failures first (newest history), then existing items (live already prepended earlier).
+        merged = failure_rows + items
+        limit = int(payload.get("limit") or len(merged))
+        # Keep room for attached failures even when over limit.
+        payload["items"] = merged[: max(limit, len(failure_rows))]
+        payload["count"] = len(payload["items"])
+    else:
+        payload["items"] = items
+        payload["count"] = len(items)
+
+    payload["history_failure_count"] = len(failure_rows) + touched
     return payload
 
 
