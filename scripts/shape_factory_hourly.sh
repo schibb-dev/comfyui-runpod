@@ -22,7 +22,7 @@ HOURLY_PREDICTED_SHARE="${HOURLY_PREDICTED_SHARE:-0.35}"
 export HOURLY_PREDICTED_SHARE
 
 # Families maintained every tick (deposit / submit / status).
-MAINT_FAMILIES=(FB9_GEX2 FB9_GEX_FACIAL FB9_GEX X-KNEEL-FB9 FB9-FaceBlast)
+MAINT_FAMILIES=(FB9_GEX2 FB9_GEX2_identity_anchor FB9_GEX_FACIAL FB9_GEX X-KNEEL-FB9 FB9-FaceBlast)
 
 mkdir -p "$(dirname "$LOG")" "$(dirname "$STATE")"
 
@@ -244,6 +244,14 @@ if [ "$PLAN_OK" != "True" ]; then
   exit 0
 fi
 
+# Prefer identity-anchor plate when the plan upgraded Extend (family may change).
+PLAN_FAMILY=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('family') or '')" "$PLAN_JSON")
+if [ -n "$PLAN_FAMILY" ]; then
+  FAMILY="$PLAN_FAMILY"
+fi
+UPGRADED_FROM=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('upgraded_from') or '')" "$PLAN_JSON")
+IDENTITY_EV=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('identity_evidence') or '')" "$PLAN_JSON")
+
 PICK_MODE=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('pick_mode','replay'))" "$PLAN_JSON")
 RATING_KIND=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('rating_kind',''))" "$PLAN_JSON")
 STEP_KIND=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('step',''))" "$PLAN_JSON")
@@ -274,7 +282,11 @@ PY
   DISP_ENTRY=$(python3 -c "import json; print(json.load(open('$PLAN_FILE')).get('disposition_entry',''))")
 fi
 
-log "phase=seed — family=$FAMILY cursor=$CURSOR pick_mode=$PICK_MODE step=$STEP_KIND rating_kind=${RATING_KIND:-?} disposition=${DISP_ENTRY:-?} recipes=$RECIPE_COUNT source=$REPLAY_SOURCE combo=$COMBO_KEY"
+if [ -n "$UPGRADED_FROM" ]; then
+  log "phase=seed — family=$FAMILY (from $UPGRADED_FROM identity=$IDENTITY_EV) cursor=$CURSOR pick_mode=$PICK_MODE step=$STEP_KIND rating_kind=${RATING_KIND:-?} disposition=${DISP_ENTRY:-?} recipes=$RECIPE_COUNT source=$REPLAY_SOURCE combo=$COMBO_KEY"
+else
+  log "phase=seed — family=$FAMILY cursor=$CURSOR pick_mode=$PICK_MODE step=$STEP_KIND rating_kind=${RATING_KIND:-?} disposition=${DISP_ENTRY:-?} recipes=$RECIPE_COUNT source=$REPLAY_SOURCE combo=$COMBO_KEY"
+fi
 GEN_RC=0
 (
   cd "$SCRIPTS"

@@ -592,6 +592,7 @@ JOB_KEY_SLOT_ABBREV: Dict[str, str] = {
     "source_video": "src",
     "source_video_ref": "src_ref",
     "source_still": "still",
+    "identity_anchor": "id",
     "source_image": "srcimg",
     "start_image": "start",
 }
@@ -635,7 +636,7 @@ def _combo_key_from_job_bindings(bindings: Dict[str, Any]) -> Optional[str]:
 
 
 def _primary_video_binding(bindings: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    for slot in ("source_video", "source_video_ref", "source_still"):
+    for slot in ("source_video", "source_video_ref", "source_still", "identity_anchor"):
         b = bindings.get(slot)
         if isinstance(b, dict) and (b.get("url") or b.get("thumb_url") or b.get("path")):
             return b

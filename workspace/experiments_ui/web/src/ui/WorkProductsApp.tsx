@@ -1,6 +1,7 @@
 import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { cancelWorkItem, createWorkItems, discardShapeFactoryJob, fetchShapeFactoryJsonPeek, fetchShapeFactoryWorkProducts, replayShapeFactory, runDispositionStep, unqueueShapeFactory, updatePendingShapeFactoryTrim } from "./api";
+import { cancelWorkItem, createWorkItems, discardShapeFactoryJob, fetchIdentityStillCandidates, fetchShapeFactoryJsonPeek, fetchShapeFactoryWorkProducts, mintIdentityStill, replayShapeFactory, runDispositionStep, unqueueShapeFactory, updatePendingShapeFactoryTrim } from "./api";
+import type { IdentityStillCandidate, IdentityStillMintTarget } from "./api";
 import { ComfyLiveMetricsBar, ComfyLivePreview } from "./ComfyLivePreview";
 import { PageHeader } from "./PageHeader";
 import { PipelineScreen } from "./PipelineScreen";
@@ -2281,6 +2282,14 @@ function WorkProductQuickQueue({
   const [deriveTouched, setDeriveTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [identityNeeded, setIdentityNeeded] = useState(false);
+  const [identityCandidates, setIdentityCandidates] = useState<IdentityStillCandidate[]>([]);
+  const [identityMintTargets, setIdentityMintTargets] = useState<IdentityStillMintTarget[]>([]);
+  const [identitySelectedPath, setIdentitySelectedPath] = useState<string>("");
+  const [identitySelectedId, setIdentitySelectedId] = useState<string>("");
+  const [identityLineage, setIdentityLineage] = useState<string>("");
+  const [identityLoading, setIdentityLoading] = useState(false);
+  const [identityMintBusy, setIdentityMintBusy] = useState(false);
 
   // Hard reset only when navigating to a different job.
   useEffect(() => {
@@ -2294,6 +2303,12 @@ function WorkProductQuickQueue({
     setVaryFamily(smartVaryFamily(item));
     setDeriveFamily(smartDeriveFamily(item));
     setMsg(null);
+    setIdentityNeeded(false);
+    setIdentityCandidates([]);
+    setIdentityMintTargets([]);
+    setIdentitySelectedPath("");
+    setIdentitySelectedId("");
+    setIdentityLineage("");
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: job switch only
   }, [item.job_key]);
 
@@ -2314,7 +2329,76 @@ function WorkProductQuickQueue({
 
   const relpath = String(item.output_relpath || "").trim();
   const jobKey = String(item.job_key || "").trim();
-  const canAct = Boolean(relpath) && (extendOn || varyOn || (deriveOn && canDerive)) && !busy;
+
+  // Load identity-still candidates when Extend targets a family that needs an image slot.
+  useEffect(() => {
+    if (!extendOn || !relpath) {
+      setIdentityNeeded(false);
+      setIdentityCandidates([]);
+      setIdentityMintTargets([]);
+      setIdentitySelectedPath("");
+      setIdentitySelectedId("");
+      setIdentityLineage("");
+      return;
+    }
+    let cancelled = false;
+    const fam = extendFamily || defaultExtend || "";
+    setIdentityLoading(true);
+    void (async () => {
+      try {
+        const res = await fetchIdentityStillCandidates({
+          relpath,
+          job_key: jobKey || undefined,
+          family_slug: fam || undefined,
+        });
+        if (cancelled) return;
+        const needed = Boolean(res.needed);
+        setIdentityNeeded(needed);
+        const cands = Array.isArray(res.candidates) ? res.candidates : [];
+        setIdentityCandidates(cands);
+        setIdentityMintTargets(Array.isArray(res.mint_targets) ? res.mint_targets : []);
+        const summary = (res.lineage_summary || [])
+          .map((h) => {
+            const name = String(h.relpath || "").split("/").pop() || "";
+            const famH = h.family_slug ? `@${h.family_slug}` : "";
+            return name ? `${name}${famH}` : "";
+          })
+          .filter(Boolean)
+          .reverse()
+          .join(" → ");
+        setIdentityLineage(summary);
+        if (needed) {
+          const rec = cands.find((c) => c.id === res.recommended_id) || cands[0];
+          if (rec?.path) {
+            setIdentitySelectedPath(rec.path);
+            setIdentitySelectedId(rec.id);
+          } else {
+            setIdentitySelectedPath("");
+            setIdentitySelectedId("");
+          }
+        } else {
+          setIdentitySelectedPath("");
+          setIdentitySelectedId("");
+        }
+      } catch {
+        if (cancelled) return;
+        // Stale API or missing route — don't block Extend on non-identity families.
+        setIdentityNeeded(false);
+        setIdentityCandidates([]);
+        setIdentityMintTargets([]);
+      } finally {
+        if (!cancelled) setIdentityLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [extendOn, extendFamily, defaultExtend, relpath, jobKey]);
+  const canAct =
+    Boolean(relpath) &&
+    (extendOn || varyOn || (deriveOn && canDerive)) &&
+    !busy &&
+    !(extendOn && identityNeeded && !identitySelectedPath && !identityLoading);
   const canRerun = Boolean(jobKey) && !busy;
   const canUnqueue = canUnqueueWorkProduct(item) && !busy;
   const canDiscard = canDiscardPendingWorkProduct(item) && !busy;
@@ -2447,6 +2531,14 @@ function WorkProductQuickQueue({
       setMsg("Select Extend, Vary, and/or Derive");
       return;
     }
+    if (extendOn && identityNeeded && !identitySelectedPath) {
+      if (identityMintTargets.length) {
+        setMsg("Pick or mint an identity still before Extend");
+      } else {
+        setMsg("missing_identity_still — no still or video frame available");
+      }
+      return;
+    }
     setBusy(true);
     setMsg("");
     const parts: string[] = [];
@@ -2510,6 +2602,9 @@ function WorkProductQuickQueue({
               job_key: item.job_key || undefined,
               front: when === "now",
               overrides,
+              ...(route.step_id === "advance.extend" && identitySelectedPath
+                ? { identity_anchor: identitySelectedPath }
+                : {}),
             });
             const label = advanceRouteLabel(route.step_id);
             const fam = route.factory_family ? `@${route.factory_family}` : "";
@@ -2544,6 +2639,33 @@ function WorkProductQuickQueue({
       setMsg(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const mintIdentity = async (target: IdentityStillMintTarget) => {
+    if (identityMintBusy || busy) return;
+    setIdentityMintBusy(true);
+    setMsg(null);
+    try {
+      const res = await mintIdentityStill({
+        video_relpath: target.video_relpath,
+        video_path: target.video_path,
+        at: target.at || "start",
+      });
+      const cand = res.candidate;
+      if (cand?.path) {
+        setIdentityCandidates((prev) => {
+          if (prev.some((c) => c.id === cand.id || c.path === cand.path)) return prev;
+          return [cand, ...prev];
+        });
+        setIdentitySelectedPath(cand.path);
+        setIdentitySelectedId(cand.id);
+        setMsg(`Minted identity still · ${cand.relpath || cand.path}`);
+      }
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setIdentityMintBusy(false);
     }
   };
 
@@ -2786,6 +2908,69 @@ function WorkProductQuickQueue({
                 "Derive",
               )
             : null}
+        </div>
+      ) : null}
+      {extendOn && identityNeeded ? (
+        <div className="work-product-identity-still" aria-label="Identity still">
+          <div className="work-product-identity-still__head">
+            <span className="work-product-quick-queue__label">Identity</span>
+            {identityLoading ? <span className="work-product-quick-queue__hint">Loading…</span> : null}
+            {!identityLoading && identitySelectedPath ? (
+              <span className="work-product-quick-queue__hint" title={identitySelectedPath}>
+                selected
+              </span>
+            ) : null}
+            {!identityLoading && !identitySelectedPath ? (
+              <span className="work-product-quick-queue__hint">pick or mint a still</span>
+            ) : null}
+          </div>
+          {identityLineage ? (
+            <p className="work-product-identity-still__lineage" title={identityLineage}>
+              {identityLineage}
+            </p>
+          ) : null}
+          {identityCandidates.length ? (
+            <div className="work-product-identity-still__strip" role="listbox" aria-label="Identity still candidates">
+              {identityCandidates.map((c) => {
+                const selected = c.id === identitySelectedId || c.path === identitySelectedPath;
+                const thumb = c.thumb_url || c.url || "";
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    role="option"
+                    aria-selected={selected}
+                    className={`work-product-identity-still__thumb${selected ? " is-selected" : ""}`}
+                    title={`${c.label || c.evidence || "still"}${c.evidence === "first_frame" ? " (last resort)" : ""}`}
+                    disabled={busy}
+                    onClick={() => {
+                      setIdentitySelectedPath(c.path);
+                      setIdentitySelectedId(c.id);
+                    }}
+                  >
+                    {thumb ? <img src={thumb} alt="" loading="lazy" /> : <span>{(c.evidence || "?").slice(0, 3)}</span>}
+                    <span className="work-product-identity-still__ev">{c.evidence || ""}</span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+          {identityMintTargets.length ? (
+            <div className="work-product-identity-still__mints">
+              {identityMintTargets.slice(0, 3).map((t) => (
+                <button
+                  key={`${t.video_relpath || t.video_path}-${t.lineage_depth}`}
+                  type="button"
+                  className="drt-btn work-product-identity-still__mint"
+                  disabled={busy || identityMintBusy}
+                  title={t.label || "Mint first frame"}
+                  onClick={() => void mintIdentity(t)}
+                >
+                  {identityMintBusy ? "Minting…" : t.label || "First frame"}
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
       ) : null}
       {msg ? <p className="work-product-quick-queue__msg" title={msg}>{msg}</p> : null}

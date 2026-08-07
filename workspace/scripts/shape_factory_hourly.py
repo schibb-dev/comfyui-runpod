@@ -117,6 +117,165 @@ def _default_data_root() -> Path:
     return (repo / ".data").resolve()
 
 
+def _default_workspace_root(data_root: Optional[Path] = None) -> Path:
+    root = (data_root or _default_data_root()).resolve()
+    # Prefer sibling workspace/ next to .data/
+    cand = root.parent / "workspace"
+    if cand.is_dir():
+        return cand.resolve()
+    env = os.environ.get("SHAPE_FACTORY_WORKSPACE_ROOT", "").strip()
+    if env:
+        p = Path(env).expanduser()
+        if p.is_dir():
+            return p.resolve()
+    return cand.resolve()
+
+
+def _default_output_root(data_root: Optional[Path] = None) -> Path:
+    env = os.environ.get("SHAPE_FACTORY_OUTPUT_ROOT", "").strip()
+    if env:
+        p = Path(env).expanduser()
+        if p.is_dir():
+            return p.resolve()
+    for cand in (
+        Path("/home/yuji/comfyui-runpod-data/output"),
+        (data_root or _default_data_root()).parent / "workspace" / "output",
+    ):
+        if cand.is_dir():
+            return cand.resolve()
+    return Path("/home/yuji/comfyui-runpod-data/output")
+
+
+# Appetite-driven Extend on these families can upgrade to an identity-anchor plate
+# when a still resolves (lineage / binding / first-frame mint).
+_IDENTITY_EXTEND_FAMILY: Dict[str, str] = {
+    "FB9_GEX2": "FB9_GEX2_identity_anchor",
+}
+
+
+def prefer_identity_anchor_on_extend(
+    plan: Dict[str, Any],
+    *,
+    data_root: Optional[Path] = None,
+    workspace_root: Optional[Path] = None,
+    output_root: Optional[Path] = None,
+    allow_mint: bool = True,
+) -> Dict[str, Any]:
+    """
+    Prefer identity-anchor shape on Extend when a still is recoverable.
+
+    If lineage/bindings (or a minted first frame) yield an identity still, retarget
+    the plan to ``FB9_GEX2_identity_anchor`` and bind ``identity_anchor``. Otherwise
+    leave the plan on the original family (plain GEX2 extend).
+    """
+    if not isinstance(plan, dict) or not plan.get("ok"):
+        return plan
+    flag = os.environ.get("HOURLY_IDENTITY_ANCHOR", "1").strip().lower()
+    if flag in ("0", "false", "no", "off"):
+        return plan
+    action = str(plan.get("pick_mode") or plan.get("derive_action") or "").strip().lower()
+    if action != "extend":
+        return plan
+    src_fam = str(plan.get("family") or "").strip()
+    target_fam = _IDENTITY_EXTEND_FAMILY.get(src_fam)
+    if not target_fam:
+        return plan
+
+    data_root = (data_root or _default_data_root()).resolve()
+    shape_path = data_root / "shapes" / f"{target_fam}.shape.yaml"
+    if not shape_path.is_file():
+        return plan
+
+    workspace_root = (workspace_root or _default_workspace_root(data_root)).resolve()
+    output_root = (output_root or _default_output_root(data_root)).resolve()
+
+    picks = dict(plan.get("picks") or {}) if isinstance(plan.get("picks"), dict) else {}
+    parent = str(plan.get("parent_output") or "").strip()
+    source_video = str(picks.get("source_video") or parent or "").strip()
+    if not source_video:
+        return plan
+
+    # Relpath for candidates API (best-effort under output_root).
+    rel = source_video.replace("\\", "/")
+    out_s = str(output_root).replace("\\", "/").rstrip("/")
+    if rel.startswith(out_s + "/"):
+        rel = rel[len(out_s) + 1 :]
+    if not rel.startswith("og/") and "/og/" in rel:
+        rel = "og/" + rel.split("/og/", 1)[1]
+
+    try:
+        from shape_factory_identity_still import (
+            list_identity_still_candidates,
+            mint_identity_still_from_video,
+        )
+    except ImportError:
+        return plan
+
+    try:
+        cands = list_identity_still_candidates(
+            relpath=rel,
+            family_slug=target_fam,
+            job_key="",
+            workspace_root=workspace_root,
+            output_root=output_root,
+            data_root=data_root,
+            media_abs=Path(source_video) if Path(source_video).is_file() else None,
+            include_rated=False,
+        )
+    except Exception:
+        return plan
+
+    still_path = ""
+    evidence = ""
+    rows = cands.get("candidates") if isinstance(cands, dict) else None
+    if isinstance(rows, list) and rows:
+        rec_id = cands.get("recommended_id")
+        chosen = next((r for r in rows if r.get("id") == rec_id), rows[0])
+        still_path = str(chosen.get("path") or "").strip()
+        evidence = str(chosen.get("evidence") or "candidate")
+
+    if not still_path and allow_mint:
+        targets = cands.get("mint_targets") if isinstance(cands, dict) else None
+        if isinstance(targets, list) and targets:
+            t0 = targets[0] if isinstance(targets[0], dict) else {}
+            try:
+                minted = mint_identity_still_from_video(
+                    video_path=str(t0.get("video_path") or ""),
+                    video_relpath=str(t0.get("video_relpath") or ""),
+                    at=str(t0.get("at") or "start"),
+                    workspace_root=workspace_root,
+                    output_root=output_root,
+                    data_root=data_root,
+                )
+                cand = minted.get("candidate") if isinstance(minted, dict) else None
+                if isinstance(cand, dict):
+                    still_path = str(cand.get("path") or "").strip()
+                    evidence = str(cand.get("evidence") or "first_frame")
+            except Exception:
+                still_path = ""
+
+    if not still_path or not Path(still_path).is_file():
+        out = dict(plan)
+        out["identity_anchor_skipped"] = "no_still"
+        return out
+
+    picks = dict(picks)
+    picks["identity_anchor"] = still_path
+    # Rebuild combo key so identity still participates in dedupe.
+    combo_key = _combo_key_from_slot_paths({slot: str(path) for slot, path in sorted(picks.items())})
+    preview = {slot: Path(str(path)).name for slot, path in sorted(picks.items())}
+
+    out = dict(plan)
+    out["upgraded_from"] = src_fam
+    out["family"] = target_fam
+    out["picks"] = picks
+    out["bindings_preview"] = preview
+    out["combo_key"] = combo_key
+    out["identity_anchor"] = still_path
+    out["identity_evidence"] = evidence
+    return out
+
+
 def _default_job_dir(data_root: Path) -> Path:
     return data_root / "shape_factory" / "jobs"
 
@@ -1742,7 +1901,7 @@ def plan_hourly_derive(
                 out["archive_og_forced"] = bool(hold_meta.get("archive_og_forced"))
             if hold_meta.get("archive_og_candidate_count") is not None:
                 out["archive_og_candidate_count"] = hold_meta.get("archive_og_candidate_count")
-        return out
+        return prefer_identity_anchor_on_extend(out, data_root=data_root)
 
     # Prefer failing over to replay rather than re-queueing a combo we just ran.
     if fallback is not None:
@@ -2364,6 +2523,9 @@ def predict_hourly_gex2(
     preview["hold_axis"] = plan.get("hold_axis")
     preview["hold_values"] = plan.get("hold_values")
     preview["hold_facet_constrained"] = plan.get("hold_facet_constrained")
+    preview["upgraded_from"] = plan.get("upgraded_from")
+    preview["identity_anchor"] = plan.get("identity_anchor")
+    preview["identity_evidence"] = plan.get("identity_evidence")
     return preview
 
 

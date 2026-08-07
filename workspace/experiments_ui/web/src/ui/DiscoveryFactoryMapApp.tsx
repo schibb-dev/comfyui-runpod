@@ -394,6 +394,7 @@ function DetailPanel({
     if (selectedPair?.gap !== "source" || selectedPair?.phase === "future") return "";
     const b = bindings || {};
     const row =
+      b.identity_anchor ||
       b.source_still ||
       b.source_video ||
       Object.values(b).find((r) => r?.binding_type === "load_image");
@@ -648,7 +649,10 @@ function DetailPanel({
                   .filter(
                     ([slot]) =>
                       !(
-                        (slot === "source_video" || slot === "source_still" || slot === "source_video_ref") &&
+                        (slot === "source_video" ||
+                          slot === "source_still" ||
+                          slot === "identity_anchor" ||
+                          slot === "source_video_ref") &&
                         source &&
                         mediaHasInspector(source)
                       ),
@@ -713,7 +717,10 @@ function DetailPanel({
               .filter(
                 ([slot]) =>
                   !(
-                    (slot === "source_video" || slot === "source_still" || slot === "source_video_ref") &&
+                    (slot === "source_video" ||
+                      slot === "source_still" ||
+                      slot === "identity_anchor" ||
+                      slot === "source_video_ref") &&
                     source &&
                     mediaHasInspector(source)
                   ),

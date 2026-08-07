@@ -1567,6 +1567,9 @@ def _fast_track_extend(cfg: "ServerConfig", rel: str, body: Dict[str, Any]) -> D
         overrides = body.get("overrides")
         if isinstance(overrides, dict) and overrides:
             replay_body["overrides"] = overrides
+        for alias in ("identity_anchor", "source_still", "identity_still"):
+            if alias in body and body.get(alias) not in (None, ""):
+                replay_body[alias] = body.get(alias)
         try:
             return _shape_factory_replay_payload(cfg, replay_body)
         except ValueError as e:
@@ -2527,6 +2530,9 @@ def _disposition_hook_runner(cfg: "ServerConfig", rel: str, body: Dict[str, Any]
         overrides = merged.get("overrides")
         if isinstance(overrides, dict) and overrides:
             replay_body["overrides"] = overrides
+        for alias in ("identity_anchor", "source_still", "identity_still"):
+            if alias in merged and merged.get(alias) not in (None, ""):
+                replay_body[alias] = merged.get(alias)
         if not replay_body.get("job_key"):
             return {"ok": False, "reason": "no_replay_context"}
         try:
@@ -2692,7 +2698,21 @@ def _run_asset_disposition_step_payload(cfg: ServerConfig, body: Dict[str, Any])
 
     og_root = _prefer_flat_library_dir(cfg.output_root, "og")
     catalog = _discovery_load_disposition_catalog(cfg)
-    extra = {k: body[k] for k in ("job_key", "family_slug", "family", "facet", "front") if k in body}
+    extra = {
+        k: body[k]
+        for k in (
+            "job_key",
+            "family_slug",
+            "family",
+            "facet",
+            "front",
+            "identity_anchor",
+            "source_still",
+            "identity_still",
+            "overrides",
+        )
+        if k in body
+    }
     if "front" in extra:
         extra["front"] = bool(extra.get("front"))
     payload = run_disposition_step(
@@ -2732,6 +2752,56 @@ def _run_asset_disposition_step_payload(cfg: ServerConfig, body: Dict[str, Any])
         payload = dict(payload)
         payload["work_item_error"] = str(e)
     return payload
+
+
+def _identity_still_candidates_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
+    """GET /api/discovery/identity-still/candidates?relpath=&job_key=&family_slug="""
+    rel = (q.get("relpath") or [""])[0].strip()
+    if not rel:
+        raise ValueError("missing relpath")
+    job_key = (q.get("job_key") or [""])[0].strip()
+    family_slug = (q.get("family_slug") or q.get("family") or [""])[0].strip()
+    media_abs = _safe_join(cfg.output_root, rel)
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_identity_still import list_identity_still_candidates  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    return list_identity_still_candidates(
+        relpath=rel,
+        family_slug=family_slug,
+        job_key=job_key,
+        workspace_root=cfg.workspace_root,
+        output_root=cfg.output_root,
+        data_root=data_root,
+        media_abs=media_abs if media_abs is not None and media_abs.is_file() else None,
+    )
+
+
+def _identity_still_mint_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /api/discovery/identity-still/mint { video_relpath|video_path, at? }"""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_identity_still import mint_identity_still_from_video  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    video_relpath = str(body.get("video_relpath") or "").strip()
+    video_path = str(body.get("video_path") or "").strip()
+    if not video_relpath and not video_path:
+        raise ValueError("missing video_relpath")
+    at = str(body.get("at") or "start").strip() or "start"
+    return mint_identity_still_from_video(
+        video_path=video_path,
+        video_relpath=video_relpath,
+        at=at,
+        workspace_root=cfg.workspace_root,
+        output_root=cfg.output_root,
+        data_root=data_root,
+    )
 
 
 def _discovery_work_items_list_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
@@ -6391,6 +6461,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_discovery_work_items_pool_get(q)
         if path == "/api/discovery/asset-audit":
             return self._handle_discovery_asset_audit_get(q)
+        if path == "/api/discovery/identity-still/candidates":
+            return self._handle_discovery_identity_still_candidates_get(q)
 
         if path == "/api/home/summary":
             return self._handle_home_summary_get(q)
@@ -6862,6 +6934,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_discovery_asset_disposition_toggle_post()
         if path == "/api/discovery/asset-disposition/run-step":
             return self._handle_discovery_asset_disposition_run_step_post()
+        if path == "/api/discovery/identity-still/mint":
+            return self._handle_discovery_identity_still_mint_post()
         if path == "/api/discovery/work-items/create":
             return self._handle_discovery_work_items_create_post()
         if path == "/api/discovery/work-items/cancel":
@@ -8262,7 +8336,7 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_discovery_asset_disposition_run_step_post(self) -> None:
         """
         POST /api/discovery/asset-disposition/run-step
-          { relpath, step_id, job_key?, family_slug?, facet? }
+          { relpath, step_id, job_key?, family_slug?, facet?, identity_anchor?, overrides? }
         """
         cfg = self.server.cfg
         obj = self._read_request_json()
@@ -8278,6 +8352,33 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, 500, {"ok": False, "error": "disposition_step_failed", "detail": str(e)})
         status = 200 if payload.get("ok", True) else 400
         return _json_response(self, status, payload)
+
+    def _handle_discovery_identity_still_candidates_get(self, q: Dict[str, List[str]]) -> None:
+        """GET /api/discovery/identity-still/candidates?relpath=&job_key=&family_slug="""
+        cfg = self.server.cfg
+        try:
+            payload = _identity_still_candidates_payload(cfg, q)
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "identity_still_candidates_failed", "detail": str(e)})
+        return _json_response(self, 200, payload)
+
+    def _handle_discovery_identity_still_mint_post(self) -> None:
+        """POST /api/discovery/identity-still/mint { video_relpath|video_path, at? }"""
+        cfg = self.server.cfg
+        obj = self._read_request_json()
+        if obj is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _identity_still_mint_payload(cfg, obj if isinstance(obj, dict) else {})
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except FileNotFoundError as e:
+            return _json_response(self, 404, {"ok": False, "error": "video_missing", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "identity_still_mint_failed", "detail": str(e)})
+        return _json_response(self, 200, payload)
 
     def _handle_discovery_work_items_get(self, q: Dict[str, List[str]]) -> None:
         """GET /api/discovery/work-items?source_relpath=...&pool=...&status=..."""
@@ -9362,6 +9463,7 @@ def main() -> int:
         "POST /api/discovery/asset-ratings/set, POST /api/discovery/asset-appetite/set, "
         "GET/POST /api/discovery/disposition-catalog, GET /api/discovery/disposition-suggest, "
         "POST /api/discovery/asset-disposition/toggle, POST /api/discovery/asset-disposition/run-step, "
+        "GET /api/discovery/identity-still/candidates, POST /api/discovery/identity-still/mint, "
         "GET /api/discovery/work-items, GET /api/discovery/work-items/pool, "
         "POST /api/discovery/work-items/create, POST /api/discovery/work-items/cancel, "
         "POST /api/discovery/work-items/priority, "

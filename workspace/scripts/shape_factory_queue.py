@@ -63,6 +63,282 @@ def _video_source_slot(shape: Dict[str, Any], bindings: Dict[str, str]) -> Optio
     return None
 
 
+def _image_source_slots(shape: Dict[str, Any]) -> list[str]:
+    """Required (non-optional) image / load_image slots — e.g. identity_anchor, source_still."""
+    out: list[str] = []
+    reqs = shape.get("requires") if isinstance(shape.get("requires"), list) else []
+    for req in reqs:
+        if not isinstance(req, dict) or req.get("optional"):
+            continue
+        slot = str(req.get("slot") or "").strip()
+        if not slot:
+            continue
+        media = str(req.get("media") or "").strip().lower()
+        btype = str((req.get("binding") or {}).get("type") or "").strip().lower() if isinstance(req.get("binding"), dict) else ""
+        if media == "image" or btype == "load_image" or "still" in slot.lower() or "anchor" in slot.lower():
+            if slot not in out:
+                out.append(slot)
+    return out
+
+
+def _resolve_still_file(
+    raw: str,
+    *,
+    workspace_root: Path,
+    output_root: Path,
+    data_root: Path,
+) -> Optional[Path]:
+    """Resolve a still path or basename to an existing file under known input roots."""
+    s = str(raw or "").strip()
+    if not s:
+        return None
+    try:
+        return resolve_existing_path(
+            s,
+            output_root=output_root,
+            data_root=data_root,
+            workspace_root=workspace_root,
+        )
+    except FileNotFoundError:
+        pass
+    bn = Path(s).name
+    if not bn:
+        return None
+    roots = [
+        Path("/home/yuji/comfyui-runpod-data/input"),
+        Path(workspace_root).expanduser().resolve() / "input",
+        Path(data_root).expanduser().resolve() / "input",
+        Path(output_root).expanduser().resolve().parent / "input",
+    ]
+    for root in roots:
+        cand = root / bn
+        if cand.is_file():
+            return cand.resolve()
+        # Also accept input/<bn> style under root
+        if (root / "input" / bn).is_file():
+            return (root / "input" / bn).resolve()
+    return None
+
+
+def _infer_still_from_media(
+    media_abs: str,
+    *,
+    workspace_root: Path,
+    output_root: Path,
+    data_root: Path,
+) -> Optional[Tuple[str, str]]:
+    """
+    Recover a LoadImage still from an output's embedded prompt.
+
+    Returns ``(abs_path, evidence)`` or None.
+    """
+    path = Path(str(media_abs or "")).expanduser()
+    if not path.is_file():
+        try:
+            path = resolve_existing_path(
+                str(media_abs),
+                output_root=output_root,
+                data_root=data_root,
+                workspace_root=workspace_root,
+            )
+        except FileNotFoundError:
+            return None
+    try:
+        from shape_factory_seed_sources import infer_source_still, source_still_relpath
+    except ImportError:
+        return None
+    import shutil
+
+    ffprobe = shutil.which("ffprobe")
+    info = infer_source_still(path, ffprobe=ffprobe)
+    if not info:
+        return None
+    bn = str(info.get("source_basename") or "").strip()
+    rel = source_still_relpath(bn) if bn else ""
+    resolved = _resolve_still_file(rel or bn, workspace_root=workspace_root, output_root=output_root, data_root=data_root)
+    if resolved is None:
+        return None
+    evidence = str(info.get("evidence") or "embedded_load_image")
+    return str(resolved), evidence
+
+
+def _collect_identity_media_candidates(
+    *,
+    job: Optional[Dict[str, Any]],
+    bindings: Dict[str, str],
+    output_abs: str,
+) -> list[str]:
+    """Videos to probe for an embedded LoadImage still (nearest first)."""
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(p: str) -> None:
+        n = _norm_media_path(p)
+        if n and n not in seen:
+            seen.add(n)
+            out.append(n)
+
+    add(output_abs)
+    if isinstance(job, dict):
+        add(str(job.get("parent_output") or ""))
+        cons = job.get("construction") if isinstance(job.get("construction"), dict) else {}
+        add(str(cons.get("parent_output") or ""))
+        for slot in ("source_video", "source_video_ref", "video"):
+            add(str(bindings.get(slot) or ""))
+        # Prior job source before extend rebind is already in bindings when we call
+        # this before/after rebind — also check deposit/submit outputs of parent chain.
+    for slot in ("source_video", "source_video_ref", "video"):
+        add(str(bindings.get(slot) or ""))
+    return out
+
+
+def _resolve_identity_still_for_shape(
+    *,
+    shape: Dict[str, Any],
+    body: Dict[str, Any],
+    job: Optional[Dict[str, Any]],
+    bindings: Dict[str, str],
+    output_abs: str,
+    workspace_root: Path,
+    output_root: Path,
+    data_root: Path,
+) -> Tuple[Dict[str, str], Optional[Dict[str, Any]]]:
+    """
+    Fill required image slots (identity_anchor / source_still) when missing.
+
+    Ladder: explicit body path → existing still bindings (cross-slot) →
+    embedded LoadImage on output/parent videos.
+    """
+    needed = _image_source_slots(shape)
+    if not needed:
+        return bindings, None
+
+    next_bindings = dict(bindings)
+    meta: Dict[str, Any] = {"slots": {}, "evidence": None}
+
+    # Explicit operator overrides (aliases).
+    explicit_raw = (
+        body.get("identity_anchor")
+        or body.get("source_still")
+        or body.get("identity_still")
+        or ""
+    )
+    explicit_path = ""
+    if isinstance(explicit_raw, str) and explicit_raw.strip():
+        explicit_path = explicit_raw.strip()
+    elif isinstance(explicit_raw, dict):
+        explicit_path = str(explicit_raw.get("path") or "").strip()
+    body_bindings = body.get("bindings") if isinstance(body.get("bindings"), dict) else {}
+    for alias in ("identity_anchor", "source_still"):
+        if explicit_path:
+            break
+        spec = body_bindings.get(alias)
+        if isinstance(spec, str) and spec.strip():
+            explicit_path = spec.strip()
+        elif isinstance(spec, dict):
+            explicit_path = str(spec.get("path") or "").strip()
+
+    resolved_explicit: Optional[Path] = None
+    if explicit_path:
+        resolved_explicit = _resolve_still_file(
+            explicit_path,
+            workspace_root=workspace_root,
+            output_root=output_root,
+            data_root=data_root,
+        )
+        if resolved_explicit is None:
+            raise ValueError(f"identity_still_not_found: {explicit_path}")
+
+    # Prefer any still already on the seed job.
+    existing_still = ""
+    for alias in ("identity_anchor", "source_still"):
+        cand = str(next_bindings.get(alias) or "").strip()
+        if cand:
+            existing_still = cand
+            break
+
+    inferred: Optional[Tuple[str, str]] = None
+    if resolved_explicit is None and not existing_still:
+        for media in _collect_identity_media_candidates(
+            job=job, bindings=next_bindings, output_abs=output_abs
+        ):
+            inferred = _infer_still_from_media(
+                media,
+                workspace_root=workspace_root,
+                output_root=output_root,
+                data_root=data_root,
+            )
+            if inferred:
+                break
+        # Walk parent_output one more hop via job_output_index when available.
+        if inferred is None and output_abs:
+            try:
+                from shape_factory_job_output_index import (
+                    default_job_output_index_path,
+                    lookup_by_relpath,
+                    open_job_output_index,
+                )
+
+                og_guess = Path(output_root) / "og"
+                idx_path = default_job_output_index_path(og_guess if og_guess.is_dir() else Path(output_root))
+                if idx_path.is_file():
+                    con = open_job_output_index(idx_path)
+                    try:
+                        # Normalize to og/... relpath when possible
+                        rel = str(output_abs).replace("\\", "/")
+                        for prefix in (str(Path(output_root).resolve()) + "/", str(output_root) + "/"):
+                            if rel.startswith(prefix):
+                                rel = rel[len(prefix) :]
+                                break
+                        if not rel.startswith("og/") and "/og/" in rel:
+                            rel = "og/" + rel.split("/og/", 1)[1]
+                        row = lookup_by_relpath(con, rel, output_root=Path(output_root))
+                        parent = str((row or {}).get("parent_output") or "").strip()
+                        if parent:
+                            inferred = _infer_still_from_media(
+                                parent,
+                                workspace_root=workspace_root,
+                                output_root=output_root,
+                                data_root=data_root,
+                            )
+                    finally:
+                        con.close()
+            except Exception:
+                pass
+
+    still_path = ""
+    evidence = None
+    if resolved_explicit is not None:
+        still_path = str(resolved_explicit)
+        evidence = "body"
+    elif existing_still:
+        got = _resolve_still_file(
+            existing_still,
+            workspace_root=workspace_root,
+            output_root=output_root,
+            data_root=data_root,
+        )
+        still_path = str(got) if got is not None else existing_still
+        evidence = "job_binding"
+    elif inferred:
+        still_path, evidence = inferred
+
+    for slot in needed:
+        if str(next_bindings.get(slot) or "").strip():
+            meta["slots"][slot] = {"path": next_bindings[slot], "evidence": "existing"}
+            continue
+        if not still_path:
+            raise ValueError(
+                f"missing_identity_still: shape requires {slot!r} but no still was provided "
+                f"or recoverable from lineage (pass identity_anchor / source_still)"
+            )
+        next_bindings[slot] = still_path
+        meta["slots"][slot] = {"path": still_path, "evidence": evidence}
+    meta["evidence"] = evidence
+    meta["path"] = still_path or None
+    return next_bindings, meta
+
+
 def _parent_frame_count(job: Optional[Dict[str, Any]]) -> Optional[int]:
     """Best-effort generation length from a prior job's captured workload / probes.
 
@@ -1133,6 +1409,22 @@ def replay_from_request_body(
             ),
         }
 
+    # Bind identity_anchor / source_still when the target shape requires an image slot.
+    bindings, identity_meta = _resolve_identity_still_for_shape(
+        shape=shape,
+        body=body,
+        job=job if isinstance(job, dict) else None,
+        bindings=bindings,
+        output_abs=output_abs,
+        workspace_root=workspace_root,
+        output_root=output_root,
+        data_root=data_root,
+    )
+    if identity_meta and construction is not None:
+        construction = dict(construction)
+        construction["identity_anchor"] = identity_meta.get("path")
+        construction["identity_evidence"] = identity_meta.get("evidence")
+
     # Resolve VHS input window (explicit overrides → sidecar → OOR template clamp).
     video_slot_for_trim = _video_source_slot(shape, bindings)
     media_for_trim: Optional[Path] = None
@@ -1179,6 +1471,8 @@ def replay_from_request_body(
         result.setdefault("extend", extend)
         if construction:
             result["construction"] = construction
+        if identity_meta:
+            result["identity_anchor"] = identity_meta
         if recovered_prompt:
             result["prompt_profile_recovered"] = recovered_prompt
         if trim_clamped:

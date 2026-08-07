@@ -44,6 +44,8 @@ CONSTRUCTION_PLAN_KEYS: tuple[str, ...] = (
     "recent_combo_penalty",
     "upgraded_from",
     "family",
+    "identity_anchor",
+    "identity_evidence",
 )
 
 

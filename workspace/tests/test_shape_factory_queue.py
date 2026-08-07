@@ -424,6 +424,116 @@ class ShapeFactoryQueueTests(unittest.TestCase):
         self.assertIn("hourly__prompt_profile-1ff2227780fb", src)
         self.assertNotIn("X-FB9-POSE-2026-04-16-171828_OG_00001.mp4", src)
 
+    def test_extend_fills_identity_anchor_from_body(self) -> None:
+        from shape_factory_queue import replay_from_request_body
+
+        still = Path("/tmp/id_anchor_test_face.jpeg")
+        still.write_bytes(b"fake-jpeg")
+        job = {
+            "job_key": "gex2_seed",
+            "family_slug": "FB9_GEX2",
+            "bindings": {
+                "prompt_profile": {"path": "/data/prompts/x.json"},
+                "source_video": {"path": "/data/output/og/clip.mp4"},
+            },
+            "submit": {"outputs": ["/data/output/og/clip_out.mp4"], "status": "complete"},
+        }
+        captured: dict = {}
+
+        def fake_queue(**kwargs):
+            captured.update(kwargs)
+            return {"ok": True, "job_key": "next", "pick_mode": kwargs.get("pick_mode")}
+
+        shape = {
+            "requires": [
+                {"slot": "source_video", "media": "video"},
+                {"slot": "identity_anchor", "media": "image", "binding": {"type": "load_image"}},
+                {"slot": "prompt_profile", "binding": {"type": "prompt_bundle"}},
+            ]
+        }
+        with mock.patch("shape_factory_queue._find_job_doc", return_value=(job, Path("x.job.json"))), mock.patch(
+            "shape_factory_queue.load_yaml", return_value=shape
+        ), mock.patch(
+            "shape_factory_queue.resolve_or_recover_prompt_profile_binding",
+            side_effect=lambda bindings, **_k: (bindings, None),
+        ), mock.patch(
+            "shape_factory_queue._resolve_shape_path", return_value=Path("shape.yaml")
+        ), mock.patch(
+            "shape_factory_queue.queue_shape_factory_combo", side_effect=fake_queue
+        ), mock.patch(
+            "shape_factory_queue.resolve_vhs_window_overrides",
+            side_effect=lambda **kw: (kw.get("parameters") or {}, False),
+        ), mock.patch(
+            "shape_factory_queue.vhs_loader_defaults_for_shape",
+            return_value={"skip_first_frames": 0, "frame_load_cap": 0},
+        ):
+            out = replay_from_request_body(
+                {
+                    "job_key": "gex2_seed",
+                    "family_slug": "FB9_GEX2_identity_anchor",
+                    "extend": True,
+                    "identity_anchor": str(still),
+                    "dry_run": True,
+                },
+                repo_root=REPO_ROOT,
+                workspace_root=REPO_ROOT / "workspace",
+                output_root=Path("/tmp"),
+                comfy_server="http://127.0.0.1:8188",
+            )
+        self.assertTrue(out.get("ok"), out)
+        self.assertEqual(captured.get("pick_mode"), "extend")
+        self.assertEqual(
+            Path(str((captured.get("bindings") or {}).get("identity_anchor") or "")).resolve(),
+            still.resolve(),
+        )
+        cons = captured.get("construction") or {}
+        self.assertTrue(cons.get("identity_anchor"))
+        self.assertEqual(cons.get("identity_evidence"), "body")
+
+    def test_extend_fills_identity_anchor_from_source_still_binding(self) -> None:
+        from shape_factory_queue import _resolve_identity_still_for_shape
+
+        still = Path("/tmp/id_anchor_from_binding.jpeg")
+        still.write_bytes(b"fake")
+        shape = {
+            "requires": [
+                {"slot": "identity_anchor", "media": "image", "binding": {"type": "load_image"}},
+            ]
+        }
+        bindings, meta = _resolve_identity_still_for_shape(
+            shape=shape,
+            body={},
+            job=None,
+            bindings={"source_still": str(still)},
+            output_abs="",
+            workspace_root=REPO_ROOT / "workspace",
+            output_root=Path("/tmp"),
+            data_root=REPO_ROOT / ".data",
+        )
+        self.assertEqual(Path(bindings["identity_anchor"]).resolve(), still.resolve())
+        self.assertEqual((meta or {}).get("evidence"), "job_binding")
+
+    def test_extend_missing_identity_still_raises(self) -> None:
+        from shape_factory_queue import _resolve_identity_still_for_shape
+
+        shape = {
+            "requires": [
+                {"slot": "identity_anchor", "media": "image", "binding": {"type": "load_image"}},
+            ]
+        }
+        with self.assertRaises(ValueError) as ctx:
+            _resolve_identity_still_for_shape(
+                shape=shape,
+                body={},
+                job=None,
+                bindings={},
+                output_abs="/no/such/video.mp4",
+                workspace_root=REPO_ROOT / "workspace",
+                output_root=Path("/tmp"),
+                data_root=REPO_ROOT / ".data",
+            )
+        self.assertIn("missing_identity_still", str(ctx.exception))
+
     def test_derive_from_request_body_rewires_and_sets_pick_mode(self) -> None:
         from shape_factory_queue import derive_from_request_body
 

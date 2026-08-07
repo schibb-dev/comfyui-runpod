@@ -985,6 +985,128 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
         self.assertEqual(plan.get("combo_key"), archive["combo_key"])
         self.assertTrue(plan.get("archive_og"))
 
+    def test_prefer_identity_anchor_upgrades_when_still_resolves(self) -> None:
+        import tempfile
+        from unittest import mock
+
+        from shape_factory_hourly import prefer_identity_anchor_on_extend
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            data = root / "data"
+            ws = root / "workspace"
+            out = root / "output"
+            shapes = data / "shapes"
+            inp = ws / "input"
+            og = out / "og"
+            for p in (shapes, inp, og):
+                p.mkdir(parents=True)
+            (shapes / "FB9_GEX2_identity_anchor.shape.yaml").write_text(
+                "family_slug: FB9_GEX2_identity_anchor\n", encoding="utf-8"
+            )
+            still = inp / "face.jpeg"
+            still.write_bytes(b"still")
+            clip = og / "clip.mp4"
+            clip.write_bytes(b"vid")
+
+            plan = {
+                "ok": True,
+                "family": "FB9_GEX2",
+                "pick_mode": "extend",
+                "derive_action": "extend",
+                "picks": {
+                    "source_video": str(clip),
+                    "prompt_profile": str(data / "prompt.json"),
+                },
+                "parent_output": str(clip),
+                "combo_key": "old",
+            }
+            (data / "prompt.json").write_text("{}", encoding="utf-8")
+
+            with mock.patch(
+                "shape_factory_identity_still.list_identity_still_candidates",
+                return_value={
+                    "ok": True,
+                    "needed": True,
+                    "recommended_id": "a1",
+                    "candidates": [
+                        {
+                            "id": "a1",
+                            "path": str(still),
+                            "evidence": "lineage_root",
+                            "label": "Lineage",
+                        }
+                    ],
+                    "mint_targets": [],
+                },
+            ):
+                out_plan = prefer_identity_anchor_on_extend(
+                    plan,
+                    data_root=data,
+                    workspace_root=ws,
+                    output_root=out,
+                    allow_mint=False,
+                )
+
+            self.assertEqual(out_plan.get("family"), "FB9_GEX2_identity_anchor")
+            self.assertEqual(out_plan.get("upgraded_from"), "FB9_GEX2")
+            self.assertEqual(Path(out_plan["picks"]["identity_anchor"]).resolve(), still.resolve())
+            self.assertEqual(out_plan.get("identity_evidence"), "lineage_root")
+            self.assertNotEqual(out_plan.get("combo_key"), "old")
+
+    def test_prefer_identity_anchor_falls_back_without_still(self) -> None:
+        import tempfile
+        from unittest import mock
+
+        from shape_factory_hourly import prefer_identity_anchor_on_extend
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            data = root / "data"
+            ws = root / "workspace"
+            out = root / "output"
+            shapes = data / "shapes"
+            og = out / "og"
+            for p in (shapes, ws / "input", og):
+                p.mkdir(parents=True)
+            (shapes / "FB9_GEX2_identity_anchor.shape.yaml").write_text(
+                "family_slug: FB9_GEX2_identity_anchor\n", encoding="utf-8"
+            )
+            clip = og / "clip.mp4"
+            clip.write_bytes(b"vid")
+            plan = {
+                "ok": True,
+                "family": "FB9_GEX2",
+                "pick_mode": "extend",
+                "picks": {"source_video": str(clip), "prompt_profile": "/tmp/p.json"},
+                "parent_output": str(clip),
+            }
+            with mock.patch(
+                "shape_factory_identity_still.list_identity_still_candidates",
+                return_value={
+                    "ok": True,
+                    "needed": True,
+                    "candidates": [],
+                    "mint_targets": [],
+                },
+            ):
+                out_plan = prefer_identity_anchor_on_extend(
+                    plan,
+                    data_root=data,
+                    workspace_root=ws,
+                    output_root=out,
+                    allow_mint=True,
+                )
+            self.assertEqual(out_plan.get("family"), "FB9_GEX2")
+            self.assertIsNone(out_plan.get("upgraded_from"))
+            self.assertEqual(out_plan.get("identity_anchor_skipped"), "no_still")
+
+    def test_prefer_identity_anchor_skips_non_extend(self) -> None:
+        from shape_factory_hourly import prefer_identity_anchor_on_extend
+
+        plan = {"ok": True, "family": "FB9_GEX2", "pick_mode": "derive", "picks": {}}
+        self.assertIs(prefer_identity_anchor_on_extend(plan, data_root=REPO_ROOT / ".data"), plan)
+
 
 if __name__ == "__main__":
     unittest.main()

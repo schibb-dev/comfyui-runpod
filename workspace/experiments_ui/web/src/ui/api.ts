@@ -534,6 +534,8 @@ export async function runDispositionStep(body: {
   facet?: AppetiteFacet;
   front?: boolean;
   overrides?: ShapeFactoryMapQueueOverrides;
+  identity_anchor?: string;
+  source_still?: string;
 }): Promise<RunDispositionStepResponse> {
   const r = await fetch("/api/discovery/asset-disposition/run-step", {
     method: "POST",
@@ -546,6 +548,93 @@ export async function runDispositionStep(body: {
     throw new Error(`POST /api/discovery/asset-disposition/run-step failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
   }
   return j;
+}
+
+export type IdentityStillCandidate = {
+  id: string;
+  path: string;
+  relpath?: string;
+  url?: string;
+  thumb_url?: string;
+  evidence?: string;
+  label?: string;
+  lineage_depth?: number;
+  source_video_relpath?: string;
+};
+
+export type IdentityStillMintTarget = {
+  video_relpath?: string;
+  video_path?: string;
+  at?: string;
+  evidence?: string;
+  label?: string;
+  lineage_depth?: number;
+  family_slug?: string;
+};
+
+export type IdentityStillCandidatesResponse = {
+  ok: boolean;
+  needed?: boolean;
+  slots?: string[];
+  recommended_id?: string | null;
+  candidates?: IdentityStillCandidate[];
+  mint_targets?: IdentityStillMintTarget[];
+  lineage_summary?: Array<{
+    relpath?: string;
+    depth?: number;
+    family_slug?: string | null;
+    job_key?: string | null;
+  }>;
+  family_slug?: string | null;
+  relpath?: string;
+  error?: string;
+  detail?: string;
+};
+
+export async function fetchIdentityStillCandidates(params: {
+  relpath: string;
+  job_key?: string;
+  family_slug?: string;
+}): Promise<IdentityStillCandidatesResponse> {
+  const sp = new URLSearchParams();
+  sp.set("relpath", params.relpath);
+  if (params.job_key) sp.set("job_key", params.job_key);
+  if (params.family_slug) sp.set("family_slug", params.family_slug);
+  const r = await fetch(`/api/discovery/identity-still/candidates?${sp.toString()}`);
+  const j = (await r.json().catch(() => ({}))) as IdentityStillCandidatesResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET /api/discovery/identity-still/candidates failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function mintIdentityStill(body: {
+  video_relpath?: string;
+  video_path?: string;
+  at?: string;
+}): Promise<{ ok: boolean; candidate?: IdentityStillCandidate; sha256?: string; error?: string; detail?: string }> {
+  const r = await fetch("/api/discovery/identity-still/mint", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as {
+    ok?: boolean;
+    candidate?: IdentityStillCandidate;
+    sha256?: string;
+    error?: string;
+    detail?: string;
+  };
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST /api/discovery/identity-still/mint failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return { ok: true, candidate: j.candidate, sha256: j.sha256 };
 }
 
 export async function listWorkItems(params: {
