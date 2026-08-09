@@ -22,6 +22,7 @@ from shape_factory import (
     load_effective_quarantine_registry,
     load_yaml,
     requires_by_slot,
+    resolve_pool_members,
     submit_job_file,
 )
 from shape_factory_map import (
@@ -1059,6 +1060,10 @@ def _apply_binding_overrides(
     if isinstance(parameters, dict) and parameters:
         adhoc["parameters"] = parameters
 
+    clip_id = overrides.get("source_clip_id") or overrides.get("clip_id")
+    if clip_id not in (None, ""):
+        adhoc["source_clip_id"] = str(clip_id).strip()
+
     return picks, adhoc
 
 
@@ -1270,6 +1275,121 @@ def queue_from_request_body(
         force=bool(body.get("force") or False),
         overrides=_parse_overrides(body),
     )
+
+
+def _first_pool_member_for_slot(pools_doc: Dict[str, Any], slot: str) -> Optional[Path]:
+    pools = pools_doc.get("pools") if isinstance(pools_doc.get("pools"), dict) else {}
+    pool_def = pools.get(slot)
+    if not isinstance(pool_def, dict):
+        for _name, cand in pools.items():
+            if isinstance(cand, dict) and str(cand.get("slot") or "").strip() == slot:
+                pool_def = cand
+                break
+    if not isinstance(pool_def, dict):
+        return None
+    members = resolve_pool_members(pool_def)
+    return members[0] if members else None
+
+
+def queue_from_source_media(
+    *,
+    media_abs: Path,
+    family_slug: str,
+    body: Dict[str, Any],
+    repo_root: Path,
+    workspace_root: Path,
+    output_root: Path,
+    comfy_server: str,
+) -> Dict[str, Any]:
+    """
+    Fresh combo when there is no parent factory job: bind this media as source_video,
+    pick the first pool prompt_profile, resolve identity from body, apply clip overrides.
+    """
+    family = str(family_slug or "").strip()
+    if not family:
+        raise ValueError("family_slug is required")
+    media = hostify_media_abs(Path(media_abs).expanduser()) or Path(media_abs).expanduser()
+    if not media.is_file():
+        raise FileNotFoundError(f"source media not found: {media}")
+
+    data_root = resolve_shape_factory_data_root(repo_root=repo_root)
+    shape_path = _resolve_shape_path(
+        data_root / "shapes" / f"{family}.shape.yaml",
+        data_root=data_root,
+        family_slug=family,
+    )
+    shape = load_yaml(shape_path)
+    pools_path = data_root / "pools" / family / "pools.yaml"
+    if not pools_path.is_file():
+        raise FileNotFoundError(f"pools.yaml not found: {pools_path}")
+    pools_doc = load_yaml(pools_path)
+
+    bindings: Dict[str, str] = {}
+    video_slot = _video_source_slot(shape, {}) or "source_video"
+    bindings[video_slot] = str(media.resolve())
+
+    prompt_path = _first_pool_member_for_slot(pools_doc, "prompt_profile")
+    if prompt_path is None:
+        raise ValueError(f"no prompt_profile pool members for family {family!r}")
+    bindings["prompt_profile"] = str(prompt_path.resolve())
+
+    bindings, identity_meta = _resolve_identity_still_for_shape(
+        shape=shape,
+        body=body,
+        job=None,
+        bindings=bindings,
+        output_abs=str(media.resolve()),
+        workspace_root=workspace_root,
+        output_root=output_root,
+        data_root=data_root,
+    )
+
+    overrides = _parse_overrides(body)
+    params_for_trim = overrides.get("parameters") if isinstance(overrides.get("parameters"), dict) else {}
+    template_defaults = vhs_loader_defaults_for_shape(
+        shape,
+        data_root=data_root,
+        workspace_root=workspace_root,
+        output_root=output_root,
+    )
+    resolved_params, trim_clamped = resolve_vhs_window_overrides(
+        parameters=params_for_trim,
+        media_abs=media if media.is_file() else None,
+        template_defaults=template_defaults,
+        read_sidecar=True,
+    )
+    if resolved_params != params_for_trim:
+        overrides = dict(overrides)
+        overrides["parameters"] = resolved_params
+
+    result = queue_shape_factory_combo(
+        family_slug=family,
+        bindings=bindings,
+        combo_key=None,
+        data_root=data_root,
+        workspace_root=workspace_root,
+        output_root=output_root,
+        comfy_server=comfy_server,
+        front=bool(body.get("front") or False),
+        dry_run=bool(body.get("dry_run") or False),
+        dev=bool(body.get("dev") or False),
+        force=bool(body.get("force") or False),
+        overrides=overrides,
+        pick_mode="adhoc",
+        parent_output=str(media.resolve()),
+        construction={
+            "source": "queue_from_source_media",
+            "media": str(media.resolve()),
+        },
+    )
+    if isinstance(result, dict):
+        result.setdefault("fresh_combo", True)
+        result.setdefault("extend", False)
+        if identity_meta:
+            result["identity_anchor"] = identity_meta
+        if trim_clamped:
+            result["trim_clamped"] = trim_clamped
+    return result
 
 
 def _find_job_doc(data_root: Path, job_key: str) -> Optional[Tuple[Dict[str, Any], Path]]:

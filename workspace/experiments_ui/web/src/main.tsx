@@ -4,6 +4,7 @@ import { App } from "./ui/App";
 import { AppShell } from "./ui/AppShell";
 import { ComfyQueueMonitorApp } from "./ui/ComfyQueueMonitorApp";
 import { DiscoveryLibraryApp } from "./ui/DiscoveryLibraryApp";
+import { ClipsLibraryApp } from "./ui/ClipsLibraryApp";
 import { DiscoveryFactoryMapApp } from "./ui/DiscoveryFactoryMapApp";
 import { DiscoveryRatingQueueApp } from "./ui/DiscoveryRatingQueueApp";
 import { HomeDashboard } from "./ui/HomeDashboard";
@@ -25,6 +26,7 @@ const SCREENS: Record<AppRouteId, React.ComponentType> = {
   workbench: WorkProductsApp,
   "vision-slices": VisionSliceReviewApp,
   library: DiscoveryLibraryApp,
+  clips: ClipsLibraryApp,
   experiments: App,
 };
 

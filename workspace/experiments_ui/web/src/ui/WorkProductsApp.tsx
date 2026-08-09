@@ -1,7 +1,8 @@
 import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { cancelWorkItem, createWorkItems, discardShapeFactoryJob, fetchIdentityStillCandidates, fetchShapeFactoryJsonPeek, fetchShapeFactoryWorkProducts, listShapeFactoryClips, mintIdentityStill, mutateShapeFactoryClip, replayShapeFactory, runDispositionStep, unqueueShapeFactory, updatePendingShapeFactoryTrim } from "./api";
+import { cancelWorkItem, createWorkItems, discardShapeFactoryJob, fetchIdentityStillCandidates, fetchShapeFactoryJsonPeek, fetchShapeFactoryWorkProducts, mintIdentityStill, replayShapeFactory, runDispositionStep, unqueueShapeFactory, updatePendingShapeFactoryTrim } from "./api";
 import type { IdentityStillCandidate, IdentityStillMintTarget, ShapeFactoryClip } from "./api";
+import { ClipBookmarksRail } from "./ClipBookmarksRail";
 import { ComfyLiveMetricsBar, ComfyLivePreview } from "./ComfyLivePreview";
 import { PageHeader } from "./PageHeader";
 import { PipelineScreen } from "./PipelineScreen";
@@ -666,177 +667,32 @@ function emptyTrimState(fps = 18): InputTrimState {
   };
 }
 
-function trimOverridesFromState(state: InputTrimState, frameCountHint?: number | null): {
+function trimOverridesFromState(
+  state: InputTrimState,
+  frameCountHint?: number | null,
+  sourceClipId?: string | null,
+): {
   overrides?: ShapeFactoryMapQueueOverrides;
   warning: string | null;
 } {
-  if (!state.dirty && !state.clampedDefault) {
+  const clipId = String(sourceClipId || "").trim();
+  const hasClip = Boolean(clipId);
+  if (!state.dirty && !state.clampedDefault && !hasClip) {
     return { warning: state.warning };
   }
   const win = marksToVhsWindow(state.markIn, state.markOut, state.duration, state.fps, frameCountHint);
+  const overrides: ShapeFactoryMapQueueOverrides = {};
+  if (state.dirty || state.clampedDefault || hasClip) {
+    overrides.parameters = {
+      skip_first_frames: win.skip_first_frames,
+      frame_load_cap: win.frame_load_cap,
+    };
+  }
+  if (hasClip) overrides.source_clip_id = clipId;
   return {
-    overrides: {
-      parameters: {
-        skip_first_frames: win.skip_first_frames,
-        frame_load_cap: win.frame_load_cap,
-      },
-    },
+    overrides: Object.keys(overrides).length ? overrides : undefined,
     warning: win.warning || state.warning,
   };
-}
-
-function formatClipTimecode(sec: number): string {
-  if (!Number.isFinite(sec) || sec < 0) return "0:00";
-  const s = Math.floor(sec % 60);
-  const m = Math.floor(sec / 60) % 60;
-  const h = Math.floor(sec / 3600);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
-}
-
-function SourceClipBookmarks({
-  mediaRelpath,
-  duration,
-  markIn,
-  markOut,
-  trimEditable,
-  onApplyClip,
-}: {
-  mediaRelpath: string | null;
-  duration: number;
-  markIn: number | null;
-  markOut: number | null;
-  trimEditable: boolean;
-  onApplyClip: (markIn: number, markOut: number) => void;
-}) {
-  const [clips, setClips] = useState<ShapeFactoryClip[]>([]);
-  const [defaultId, setDefaultId] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  const reload = React.useCallback(async () => {
-    if (!mediaRelpath) {
-      setClips([]);
-      setDefaultId(null);
-      return;
-    }
-    try {
-      const res = await listShapeFactoryClips({ mediaRelpath });
-      setClips(res.clips || []);
-      setDefaultId(res.default_clip_id || null);
-      setErr(null);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    }
-  }, [mediaRelpath]);
-
-  useEffect(() => {
-    void reload();
-  }, [reload]);
-
-  if (!mediaRelpath) return null;
-
-  const canSave =
-    trimEditable &&
-    markIn != null &&
-    markOut != null &&
-    Number.isFinite(markIn) &&
-    Number.isFinite(markOut) &&
-    markOut > markIn + 0.05;
-
-  return (
-    <div className="work-product-viewer__clips" title="Clips are bookmarks on this source video">
-      <div className="work-product-viewer__clips-row">
-        <span className="work-product-viewer__clips-label">Clips</span>
-        {clips.length === 0 ? (
-          <span className="factory-muted">none — save a span as a bookmark</span>
-        ) : (
-          clips.map((c) => (
-            <button
-              key={c.clip_id}
-              type="button"
-              className={
-                "work-product-viewer__clip-chip" +
-                (defaultId === c.clip_id ? " work-product-viewer__clip-chip--default" : "")
-              }
-              title={`${c.label || "Clip"} · ${formatClipTimecode(c.mark_in_s)}–${formatClipTimecode(c.mark_out_s)}`}
-              disabled={busy}
-              onClick={() => onApplyClip(c.mark_in_s, c.mark_out_s)}
-            >
-              {defaultId === c.clip_id ? "★ " : ""}
-              {c.label || "Clip"} {formatClipTimecode(c.mark_in_s)}–{formatClipTimecode(c.mark_out_s)}
-            </button>
-          ))
-        )}
-      </div>
-      <div className="work-product-viewer__clips-actions">
-        <button
-          type="button"
-          disabled={!canSave || busy}
-          onClick={() => {
-            if (!canSave || markIn == null || markOut == null) return;
-            setBusy(true);
-            void mutateShapeFactoryClip({
-              op: "create",
-              media_relpath: mediaRelpath,
-              mark_in: markIn,
-              mark_out: markOut,
-              label: "Clip",
-              origin: "workbench",
-            })
-              .then(() => reload())
-              .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
-              .finally(() => setBusy(false));
-          }}
-        >
-          Save as clip
-        </button>
-        <button
-          type="button"
-          disabled={!canSave || busy}
-          onClick={() => {
-            if (!canSave || markIn == null || markOut == null) return;
-            setBusy(true);
-            void mutateShapeFactoryClip({
-              op: "create",
-              media_relpath: mediaRelpath,
-              mark_in: markIn,
-              mark_out: markOut,
-              label: "Default",
-              origin: "workbench",
-              set_default: true,
-            })
-              .then(() => reload())
-              .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
-              .finally(() => setBusy(false));
-          }}
-        >
-          Save as default
-        </button>
-        {defaultId ? (
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => {
-              setBusy(true);
-              void mutateShapeFactoryClip({
-                op: "set_default",
-                media_relpath: mediaRelpath,
-                clip_id: null,
-              })
-                .then(() => reload())
-                .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
-                .finally(() => setBusy(false));
-            }}
-          >
-            Clear default
-          </button>
-        ) : null}
-      </div>
-      {err ? <p className="work-product-viewer__trim-warn">{err}</p> : null}
-      {duration > 0 ? null : null}
-    </div>
-  );
 }
 
 function WorkProductViewer({
@@ -847,6 +703,9 @@ function WorkProductViewer({
   onSourceTrimChange,
   outputDefaults,
   sourceDefaults,
+  selectedClipId,
+  onSelectClip,
+  onUseForExtend,
 }: {
   item: WorkProductItem;
   outputTrim: InputTrimState;
@@ -854,6 +713,9 @@ function WorkProductViewer({
   onOutputTrimChange: (next: InputTrimState) => void;
   onSourceTrimChange: (next: InputTrimState) => void;
   outputDefaults: { skip_first_frames: number; frame_load_cap: number };
+  selectedClipId?: string | null;
+  onSelectClip?: (clip: ShapeFactoryClip | null) => void;
+  onUseForExtend?: (clip: ShapeFactoryClip) => void;
   sourceDefaults: { skip_first_frames: number; frame_load_cap: number };
 }) {
   const videoUrl = item.output_url || null;
@@ -1238,12 +1100,16 @@ function WorkProductViewer({
                 {sourceTrim.warning}
               </p>
             ) : null}
-            <SourceClipBookmarks
+            <ClipBookmarksRail
               mediaRelpath={queuedSourceRel}
               duration={sourceTrim.duration}
               markIn={sourceTrim.markIn}
               markOut={sourceTrim.markOut}
               trimEditable={trimEditable}
+              origin="workbench"
+              selectedClipId={selectedClipId}
+              onSelectClip={onSelectClip}
+              onUseForExtend={onUseForExtend}
               onApplyClip={(mi, mo) => {
                 if (!trimEditable) return;
                 const next = {
@@ -1349,12 +1215,16 @@ function WorkProductViewer({
                   {sourceTrim.warning}
                 </p>
               ) : null}
-              <SourceClipBookmarks
+              <ClipBookmarksRail
                 mediaRelpath={sourceRel}
                 duration={sourceTrim.duration}
                 markIn={sourceTrim.markIn}
                 markOut={sourceTrim.markOut}
                 trimEditable={trimEditable}
+                origin="workbench"
+                selectedClipId={selectedClipId}
+                onSelectClip={onSelectClip}
+                onUseForExtend={onUseForExtend}
                 onApplyClip={(mi, mo) => {
                   if (!trimEditable) return;
                   const next = {
@@ -2467,6 +2337,8 @@ function WorkProductQuickQueue({
   extendFamilyDefaults,
   outputTrim,
   sourceTrim,
+  sourceClipId,
+  extendFromClipRef,
   onCommitted,
 }: {
   item: WorkProductItem;
@@ -2474,6 +2346,8 @@ function WorkProductQuickQueue({
   extendFamilyDefaults?: Record<string, string>;
   outputTrim: InputTrimState;
   sourceTrim: InputTrimState;
+  sourceClipId?: string | null;
+  extendFromClipRef?: React.MutableRefObject<((clip: ShapeFactoryClip) => void) | null>;
   onCommitted?: () => void;
 }) {
   const open = item.work_items_open || [];
@@ -2839,7 +2713,11 @@ function WorkProductQuickQueue({
           try {
             const trimState = route.step_id === "advance.extend" ? outputTrim : sourceTrim;
             const frameHint = route.step_id === "advance.extend" ? item.media_meta?.frame_count : null;
-            const { overrides, warning } = trimOverridesFromState(trimState, frameHint);
+            const { overrides, warning } = trimOverridesFromState(
+              trimState,
+              frameHint,
+              route.step_id === "advance.vary" ? sourceClipId : null,
+            );
             const res = await runDispositionStep({
               relpath,
               step_id: route.step_id,
@@ -2886,6 +2764,81 @@ function WorkProductQuickQueue({
       setBusy(false);
     }
   };
+
+  const runExtendFromClip = async (clip: ShapeFactoryClip, when: "now" | "later" = "now") => {
+    if (!relpath || busy) return;
+    if (identityNeeded && !identitySelectedPath) {
+      setMsg(identityMintTargets.length ? "Pick or mint an identity still before Extend" : "missing_identity_still — no still or video frame available");
+      return;
+    }
+    setExtendOn(true);
+    setBusy(true);
+    setMsg("");
+    try {
+      const created = await createWorkItems({
+        source_relpath: relpath,
+        routes: [{ step_id: "advance.extend", factory_family: extendFamily || defaultExtend || undefined }],
+        queue_now: when === "now",
+      });
+      const win = marksToVhsWindow(
+        clip.mark_in_s,
+        clip.mark_out_s,
+        sourceTrim.duration || Math.max(0, clip.mark_out_s - clip.mark_in_s),
+        sourceTrim.fps || parseFps(item.media_meta?.fps),
+        null,
+      );
+      const overrides: ShapeFactoryMapQueueOverrides = {
+        source_clip_id: clip.clip_id,
+        parameters: {
+          skip_first_frames: win.skip_first_frames,
+          frame_load_cap: win.frame_load_cap,
+        },
+      };
+      const res = await runDispositionStep({
+        relpath,
+        step_id: "advance.extend",
+        family_slug: extendFamily || defaultExtend || undefined,
+        job_key: item.job_key || undefined,
+        front: when === "now",
+        overrides,
+        ...(identitySelectedPath ? { identity_anchor: identitySelectedPath } : {}),
+      });
+      const nested = (res.result as Record<string, unknown> | undefined) || {};
+      const nestedResult = (nested.result as Record<string, unknown> | undefined) || {};
+      const nextKey = String(nested.job_key || nestedResult.job_key || "").trim();
+      const clampMsg = String(
+        (nested.trim_clamped as { message?: string } | undefined)?.message ||
+          (nestedResult.trim_clamped as { message?: string } | undefined)?.message ||
+          win.warning ||
+          "",
+      ).trim();
+      setMsg(
+        [
+          `Use for Extend ${when}`,
+          created.count != null ? `${created.count} route(s)` : null,
+          nextKey ? `→${nextKey}` : res.hook || "ok",
+          clampMsg,
+        ]
+          .filter(Boolean)
+          .join(" · "),
+      );
+      onCommitted?.();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!extendFromClipRef) return;
+    extendFromClipRef.current = (clip) => {
+      void runExtendFromClip(clip, "now");
+    };
+    return () => {
+      if (extendFromClipRef) extendFromClipRef.current = null;
+    };
+  });
 
   const mintIdentity = async (target: IdentityStillMintTarget) => {
     if (identityMintBusy || busy) return;
@@ -3233,6 +3186,8 @@ function WorkProductDetails({
   extendFamilyDefaults,
   outputTrim,
   sourceTrim,
+  sourceClipId,
+  extendFromClipRef,
   onCommitted,
 }: {
   item: WorkProductItem;
@@ -3240,6 +3195,8 @@ function WorkProductDetails({
   extendFamilyDefaults?: Record<string, string>;
   outputTrim: InputTrimState;
   sourceTrim: InputTrimState;
+  sourceClipId?: string | null;
+  extendFromClipRef?: React.MutableRefObject<((clip: ShapeFactoryClip) => void) | null>;
   onCommitted?: () => void;
 }) {
   const groups = useMemo(() => {
@@ -3323,6 +3280,8 @@ function WorkProductDetails({
         extendFamilyDefaults={extendFamilyDefaults}
         outputTrim={outputTrim}
         sourceTrim={sourceTrim}
+        sourceClipId={sourceClipId}
+        extendFromClipRef={extendFromClipRef}
         onCommitted={onCommitted}
       />
       <div className="work-product-details__groups">
@@ -3427,6 +3386,8 @@ function WorkProductRow({
       : familyVhsDefaults(families, varyFamily || String(item.family_slug || ""));
   const [outputTrim, setOutputTrim] = useState<InputTrimState>(() => emptyTrimState(parseFps(item.media_meta?.fps)));
   const [sourceTrim, setSourceTrim] = useState<InputTrimState>(() => emptyTrimState(parseFps(item.media_meta?.fps)));
+  const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+  const extendFromClipRef = useRef<((clip: ShapeFactoryClip) => void) | null>(null);
 
   return (
     <article
@@ -3489,6 +3450,20 @@ function WorkProductRow({
           onSourceTrimChange={setSourceTrim}
           outputDefaults={outputDefaults}
           sourceDefaults={sourceDefaults}
+          selectedClipId={selectedClipId}
+          onSelectClip={(c) => setSelectedClipId(c?.clip_id || null)}
+          onUseForExtend={(clip) => {
+            setSelectedClipId(clip.clip_id);
+            setSourceTrim((prev) => ({
+              ...prev,
+              markIn: clip.mark_in_s,
+              markOut: clip.mark_out_s,
+              dirty: true,
+              warning: null,
+              clampedDefault: false,
+            }));
+            extendFromClipRef.current?.(clip);
+          }}
         />
         <WorkProductDetails
           item={item}
@@ -3496,6 +3471,8 @@ function WorkProductRow({
           extendFamilyDefaults={extendFamilyDefaults}
           outputTrim={outputTrim}
           sourceTrim={sourceTrim}
+          sourceClipId={selectedClipId}
+          extendFromClipRef={extendFromClipRef}
           onCommitted={onCommitted}
         />
       </div>

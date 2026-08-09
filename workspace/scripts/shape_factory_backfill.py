@@ -518,6 +518,8 @@ def add_backfill_subparser(sub: argparse._SubParsersAction) -> None:
     pc.add_argument("--apply", action="store_true", help="Write clips (default: dry-run count only)")
     pc.set_defaults(func=cmd_backfill_clips)
 
+    add_backfill_clips_workflows_subparser(sub)
+
 
 def cmd_backfill_clips(args: argparse.Namespace) -> int:
     from shape_factory_clips import backfill_clips_from_trims_sidecars
@@ -526,6 +528,93 @@ def cmd_backfill_clips(args: argparse.Namespace) -> int:
         output_root=Path(args.output_root).expanduser(),
         registry_path=Path(args.registry).expanduser() if args.registry else None,
         apply=bool(args.apply),
+    )
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    return 0 if summary.get("ok") else 1
+
+
+def cmd_backfill_clips_from_workflows(args: argparse.Namespace) -> int:
+    from shape_factory_clips import backfill_clips_from_workflows
+
+    summary = backfill_clips_from_workflows(
+        workflows_root=Path(args.workflows_root).expanduser(),
+        output_root=Path(args.output_root).expanduser(),
+        data_root=Path(args.data_root).expanduser() if args.data_root else None,
+        jobs_root=Path(args.jobs_root).expanduser() if args.jobs_root else None,
+        registry_path=Path(args.registry).expanduser() if args.registry else None,
+        apply=bool(args.apply),
+        top=int(args.top),
+        include_template_skips=bool(args.include_template_skips),
+        set_default=not bool(args.no_default),
+    )
+    # Keep dry-run readable: full candidate list; apply: drop bulky samples if huge
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    return 0 if summary.get("ok") else 1
+
+
+def add_backfill_clips_workflows_subparser(sub: argparse._SubParsersAction) -> None:
+    pw = sub.add_parser(
+        "backfill-clips-from-workflows",
+        help="Farm Clip bookmarks from VHS windows embedded in saved UI workflows",
+    )
+    pw.add_argument(
+        "--workflows-root",
+        default="/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows",
+    )
+    pw.add_argument("--output-root", default="/home/yuji/comfyui-runpod-data/output")
+    pw.add_argument(
+        "--data-root",
+        default="/home/yuji/comfyui-runpod-data",
+        help="Comfy data root for resolving output/… paths",
+    )
+    pw.add_argument(
+        "--jobs-root",
+        default="/home/yuji/src/comfyui-runpod/.data/shape_factory/jobs",
+        help="Factory jobs dir (downstream source_video gravity)",
+    )
+    pw.add_argument("--registry", default=None, help="asset_registry.sqlite (default: output/_status/)")
+    pw.add_argument("--top", type=int, default=100, help="Max ranked editorial windows to import")
+    pw.add_argument(
+        "--include-template-skips",
+        action="store_true",
+        help="Also import bare template skips (47/57/85 with cap=0)",
+    )
+    pw.add_argument("--no-default", action="store_true", help="Do not set default_clip on parents")
+    pw.add_argument("--apply", action="store_true", help="Write clips (default: dry-run candidates)")
+    pw.set_defaults(func=cmd_backfill_clips_from_workflows)
+
+    pp = sub.add_parser(
+        "backfill-clips-from-pngs",
+        help="Farm Clip bookmarks from VHS windows in companion PNG embeds (asset-centric)",
+    )
+    pp.add_argument("--output-root", default="/home/yuji/comfyui-runpod-data/output")
+    pp.add_argument("--data-root", default="/home/yuji/comfyui-runpod-data")
+    pp.add_argument(
+        "--jobs-root",
+        default="/home/yuji/src/comfyui-runpod/.data/shape_factory/jobs",
+    )
+    pp.add_argument("--registry", default=None)
+    pp.add_argument("--top", type=int, default=150, help="Max ranked editorial windows to import")
+    pp.add_argument("--max-pngs", type=int, default=0, help="Limit PNG scan (0=all under output/og)")
+    pp.add_argument("--include-template-skips", action="store_true")
+    pp.add_argument("--no-default", action="store_true")
+    pp.add_argument("--apply", action="store_true")
+    pp.set_defaults(func=cmd_backfill_clips_from_pngs)
+
+
+def cmd_backfill_clips_from_pngs(args: argparse.Namespace) -> int:
+    from shape_factory_clips import backfill_clips_from_companion_pngs
+
+    summary = backfill_clips_from_companion_pngs(
+        output_root=Path(args.output_root).expanduser(),
+        data_root=Path(args.data_root).expanduser() if args.data_root else None,
+        jobs_root=Path(args.jobs_root).expanduser() if args.jobs_root else None,
+        registry_path=Path(args.registry).expanduser() if args.registry else None,
+        apply=bool(args.apply),
+        top=int(args.top),
+        include_template_skips=bool(args.include_template_skips),
+        set_default=not bool(args.no_default),
+        max_pngs=int(args.max_pngs or 0),
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0 if summary.get("ok") else 1

@@ -163,6 +163,49 @@ class TestShapeFactoryClips(unittest.TestCase):
             self.assertEqual(media_path_for_trims_sidecar(sc), media)
             self.assertIsNone(media_path_for_trims_sidecar(root / "missing.trims.json"))
 
+    def test_list_clips_library_joins_assets(self) -> None:
+        from shape_factory_clips import connect_clips, create_clip, list_clips_library, set_default_clip
+
+        with _tmpdir() as td:
+            reg = Path(td) / "asset_registry.sqlite"
+            con = connect_clips(reg)
+            parent = "e" * 64
+            con.execute(
+                """
+                INSERT INTO assets(
+                    content_id, size, mtime, ext, kind, width, height,
+                    current_relpath, first_seen, last_seen, status
+                ) VALUES (?, 1, 1.0, '.mp4', 'video', NULL, NULL, ?, 't', 't', 'present')
+                """,
+                (parent, "og/demo/parent.mp4"),
+            )
+            a = create_clip(
+                con,
+                parent_content_id=parent,
+                mark_in_s=1.0,
+                mark_out_s=2.5,
+                label="Demo",
+                origin="workflow_import",
+            )
+            create_clip(
+                con,
+                parent_content_id=parent,
+                mark_in_s=3.0,
+                mark_out_s=4.0,
+                label="Other",
+                origin="manual",
+            )
+            set_default_clip(con, parent, a["clip_id"])
+            lib = list_clips_library(con, origin="workflow_import", q="parent.mp4")
+            self.assertEqual(lib["total"], 1)
+            row = lib["clips"][0]
+            self.assertEqual(row["clip_id"], a["clip_id"])
+            self.assertEqual(row["media_relpath"], "og/demo/parent.mp4")
+            self.assertTrue(row["is_default"])
+            self.assertAlmostEqual(row["duration_s"], 1.5)
+            self.assertIn("workflow_import", lib["origin_counts"])
+            con.close()
+
 
 if __name__ == "__main__":
     unittest.main()

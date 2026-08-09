@@ -1,6 +1,6 @@
 # Disposition, buckets, and review — model reference
 
-**Last updated:** 2026-07-09
+**Last updated:** 2026-08-07
 
 A skimmable map of the day-to-day process for reviewing clips, committing work intent, and feeding the factory — not a schema dump or API reference. For implementation detail see [RATINGS_V1_PLAN.md](./RATINGS_V1_PLAN.md).
 
@@ -13,6 +13,20 @@ ComfyUI output is broad and messy by design. The goal is **discovery**: generate
 This document names the **implicit process** you already use in a review session so software can stay out of the way. It is a mental model, not a mandate to build every box on the diagram.
 
 **Anti-goals:** full API listing, over-engineered orchestration, or pretending every planned feature is shipped.
+
+### Asset / Clip / Use (factory north star)
+
+For factory and hourly work, treat three layers distinctly:
+
+| Layer | Role |
+|-------|------|
+| **Asset** | Parent video on disk / in the library |
+| **Clip** | Named bookmark span on that asset — the editorial unit operators mean by “this bit” |
+| **Use** | This job’s window (`vhs_window` / `source_clip_id`) — may match a clip, extend past it, or be adhoc |
+
+**Phase 1 (shipped):** Discovery Library is the home for browsing/creating clips and **Queue from clip** (family + identity + now/later). Workbench chips can **Use for Extend** with the same overrides. Resolve order remains use → source_clip → default_clip → sibling → full.
+
+**Phase 2 (planned):** Hourly / pools prefer an asset’s default clip when binding `source_video`.
 
 ---
 
@@ -416,6 +430,8 @@ sequenceDiagram
 | Term | Definition |
 |------|------------|
 | **Asset** | One output file (e.g. `og/.../clip.mp4`) plus `group_id` / lineage identity |
+| **Clip** | Named bookmark span on an asset (mark-in/out) — the primary editorial unit for factory / hourly intent |
+| **Use** | This job’s VHS window (`vhs_window` / `source_clip_id`) — may match a clip, extend past it, or be adhoc |
 | **Triage pass** | A review session outcome recorded in `triage_index.json` |
 | **Disposition** | Optional, mutable editing intent on an asset |
 | **Work instance** | One committed route (pool + priority) → factory job |
@@ -423,6 +439,8 @@ sequenceDiagram
 | **Pool** | Destination for work instances (Extend, Vary, Refine backlog, …) |
 | **Priority** | Scheduling hint (Queue now = front / urgent) — not a pool |
 | **Batch dismiss** | End review batch; commit triage for disposed clips only |
+
+**Asset / Clip / Use (north star).** Operators should browse and queue from **clips** in Discovery (Phase 1: clip rail + Queue from clip), not from whole-file scrubber side-effects. Resolve order on the factory side is already use → source_clip → default_clip → sibling → full. Phase 2 will bias hourly / pools toward asset default clips; Phase 3 adds clip-centric browse and ratings.
 
 ---
 

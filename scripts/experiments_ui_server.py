@@ -1546,20 +1546,60 @@ def _resolve_replay_job_from_relpath(cfg: "ServerConfig", rel: str, body: Dict[s
     return job_key, family
 
 
+
+def _queue_fresh_from_source_media(cfg: "ServerConfig", rel: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Fresh combo when no parent job exists — Discovery / Rate clip queue fallback."""
+    family = str(body.get("family_slug") or body.get("family") or "").strip()
+    if not family:
+        return {"ok": False, "reason": "family_slug_required_for_fresh_combo"}
+    media_abs = _safe_join(cfg.output_root, rel)
+    if media_abs is None or not media_abs.is_file():
+        return {"ok": False, "reason": "source_media_not_found"}
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_queue import queue_from_source_media  # type: ignore
+
+    try:
+        out = queue_from_source_media(
+            media_abs=media_abs,
+            family_slug=family,
+            body=body,
+            repo_root=_repo_root(),
+            workspace_root=cfg.workspace_root,
+            output_root=cfg.output_root,
+            comfy_server=str(cfg.comfy_server),
+        )
+        if isinstance(out, dict):
+            out.setdefault("fresh_combo", True)
+            out.setdefault("extend_fallback", "fresh_combo")
+            out.setdefault("source_media_relpath", rel)
+        return out
+    except Exception as e:
+        return {"ok": False, "reason": str(e), "fresh_combo": False}
+
+
 def _fast_track_extend(cfg: "ServerConfig", rel: str, body: Dict[str, Any]) -> Dict[str, Any]:
     """
     Best-effort immediate 'do more WITH this' on fast_track: Extend (chain output ->
     video slot), falling back to a plain replay for still-source families. Never raises.
+
+    When no parent job is indexable, queue a fresh combo from this media as source_video.
     """
     try:
         explicit_family = str(body.get("family_slug") or body.get("family") or "").strip()
         job_key, family = _resolve_replay_job_from_relpath(cfg, rel, body)
+        target = explicit_family or family
+
         if not job_key:
-            return {"ok": False, "reason": "no_replay_context"}
+            if not target:
+                return {"ok": False, "reason": "no_replay_context"}
+            fresh_body = dict(body)
+            fresh_body["family_slug"] = target
+            return _queue_fresh_from_source_media(cfg, rel, fresh_body)
 
         replay_body: Dict[str, Any] = {"job_key": job_key, "extend": True}
         # Prefer an explicit target family from the request over the source job's family.
-        target = explicit_family or family
         if target:
             replay_body["family_slug"] = target
         if body.get("front"):
@@ -1826,6 +1866,40 @@ def _resolve_parent_content_id_for_media(
         if own:
             con.close()
     return cid, abs_path, duration
+
+
+def _shape_factory_clips_library_payload(cfg: "ServerConfig", q: Dict[str, List[str]]) -> Dict[str, Any]:
+    """GET /api/shape-factory/clips/library — browse clips across parents."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_clips import connect_clips, list_clips_library  # type: ignore
+
+    def _int(name: str, default: int) -> int:
+        raw = (q.get(name) or [""])[0].strip()
+        if not raw:
+            return default
+        try:
+            return int(raw)
+        except ValueError:
+            return default
+
+    origin = (q.get("origin") or [""])[0].strip() or None
+    query = (q.get("q") or [""])[0].strip() or None
+    defaults_only = (q.get("defaults_only") or [""])[0].strip().lower() in ("1", "true", "yes")
+    reg = _clips_registry_path(cfg)
+    con = connect_clips(reg)
+    try:
+        return list_clips_library(
+            con,
+            limit=_int("limit", 100),
+            offset=_int("offset", 0),
+            origin=origin,
+            q=query,
+            defaults_only=defaults_only,
+        )
+    finally:
+        con.close()
 
 
 def _shape_factory_clips_list_payload(cfg: "ServerConfig", q: Dict[str, List[str]]) -> Dict[str, Any]:
@@ -2770,7 +2844,10 @@ def _disposition_hook_runner(cfg: "ServerConfig", rel: str, body: Dict[str, Any]
             if alias in merged and merged.get(alias) not in (None, ""):
                 replay_body[alias] = merged.get(alias)
         if not replay_body.get("job_key"):
-            return {"ok": False, "reason": "no_replay_context"}
+            fresh_body = dict(merged)
+            if target:
+                fresh_body["family_slug"] = target
+            return _queue_fresh_from_source_media(cfg, rel, fresh_body)
         try:
             return _shape_factory_replay_payload(cfg, replay_body)
         except ValueError as e:
@@ -7002,6 +7079,15 @@ class Handler(BaseHTTPRequestHandler):
                 return _json_response(self, code, payload)
             except Exception as e:
                 return _json_response(self, 500, {"ok": False, "error": "work_products_failed", "detail": str(e)})
+
+        if path == "/api/shape-factory/clips/library":
+            try:
+                payload = _shape_factory_clips_library_payload(cfg, q)
+                return _json_response(self, 200, payload)
+            except Exception as e:
+                return _json_response(
+                    self, 500, {"ok": False, "error": "clips_library_failed", "detail": str(e)}
+                )
 
         if path == "/api/shape-factory/clips":
             try:

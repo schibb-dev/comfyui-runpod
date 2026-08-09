@@ -833,6 +833,17 @@ export type ShapeFactoryClip = {
   mark_out_s: number;
   label?: string | null;
   origin?: string | null;
+  notes?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  media_relpath?: string | null;
+  media_basename?: string | null;
+  media_url?: string | null;
+  asset_kind?: string | null;
+  asset_ext?: string | null;
+  asset_mtime?: number | null;
+  is_default?: boolean;
+  duration_s?: number;
 };
 
 export type ShapeFactoryClipsListResponse = {
@@ -840,6 +851,23 @@ export type ShapeFactoryClipsListResponse = {
   parent_content_id?: string;
   default_clip_id?: string | null;
   clips?: ShapeFactoryClip[];
+  error?: string;
+  detail?: string;
+};
+
+export type ShapeFactoryClipsLibraryResponse = {
+  ok: boolean;
+  clips?: ShapeFactoryClip[];
+  count?: number;
+  total?: number;
+  limit?: number;
+  offset?: number;
+  origin_counts?: Record<string, number>;
+  filters?: {
+    origin?: string | null;
+    q?: string | null;
+    defaults_only?: boolean;
+  };
   error?: string;
   detail?: string;
 };
@@ -856,6 +884,29 @@ export async function listShapeFactoryClips(opts: {
   if (!r.ok || !j.ok) {
     const detail = [j.error, j.detail].filter(Boolean).join(": ");
     throw new Error(`GET /api/shape-factory/clips failed: ${r.status}${detail ? `: ${detail}` : ""}`);
+  }
+  return j;
+}
+
+export async function listShapeFactoryClipsLibrary(opts?: {
+  limit?: number;
+  offset?: number;
+  origin?: string | null;
+  q?: string | null;
+  defaultsOnly?: boolean;
+}): Promise<ShapeFactoryClipsLibraryResponse> {
+  const sp = new URLSearchParams();
+  if (opts?.limit != null) sp.set("limit", String(opts.limit));
+  if (opts?.offset != null) sp.set("offset", String(opts.offset));
+  if (opts?.origin?.trim()) sp.set("origin", opts.origin.trim());
+  if (opts?.q?.trim()) sp.set("q", opts.q.trim());
+  if (opts?.defaultsOnly) sp.set("defaults_only", "1");
+  const qs = sp.toString();
+  const r = await fetch(`/api/shape-factory/clips/library${qs ? `?${qs}` : ""}`);
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryClipsLibraryResponse;
+  if (!r.ok || !j.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`GET /api/shape-factory/clips/library failed: ${r.status}${detail ? `: ${detail}` : ""}`);
   }
   return j;
 }

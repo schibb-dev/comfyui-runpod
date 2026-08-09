@@ -6,11 +6,14 @@ import {
   fetchDiscoveryWorkflowFacets,
   submitPromptToQueue,
 } from "./api";
+import type { ShapeFactoryClip } from "./api";
 import { formatUnixMtime, formatIsoDateTime } from "./locale";
 import { parseDiscoveryDeepLinkRelpath } from "./discoveryDeepLink";
 import { APPETITE_ROW_GLYPH, appetiteRowTitle, discoveryRatingsRollupFromResponse } from "./discoveryRatingsRollup";
 import { DiscoveryAssetLineagePanel } from "./DiscoveryAssetLineagePanel";
 import { DiscoveryAssetRatingsPanel } from "./DiscoveryAssetRatingsPanel";
+import { ClipBookmarksRail } from "./ClipBookmarksRail";
+import { DiscoveryQueueFromClip } from "./DiscoveryQueueFromClip";
 import { MediaAssetCard } from "./MediaAssetCard";
 import { VideoAutoplayToggle } from "./VideoAutoplayToggle";
 import { VideoTrimControls } from "./VideoTrimControls";
@@ -2473,6 +2476,7 @@ function DiscoveryDesktopPreview({
 
   const [markIn, setMarkIn] = useState<number | null>(null);
   const [markOut, setMarkOut] = useState<number | null>(null);
+  const [activeClip, setActiveClip] = useState<ShapeFactoryClip | null>(null);
   const [previewDuration, setPreviewDuration] = useState(0);
   const [trimUiCurrentTime, setTrimUiCurrentTime] = useState(0);
   const [previewPlayEpoch, bumpPreviewPlayState] = useReducer((n: number) => n + 1, 0);
@@ -2616,10 +2620,12 @@ function DiscoveryDesktopPreview({
   useEffect(() => {
     skipTrimPersistRef.current = true;
     setTrimActivePresetId(null);
+    setActiveClip(null);
     let cancelled = false;
     if (!it || !playUrl) {
       setMarkIn(null);
       setMarkOut(null);
+      setActiveClip(null);
       queueMicrotask(() => {
         if (!cancelled) skipTrimPersistRef.current = false;
       });
@@ -2631,6 +2637,7 @@ function DiscoveryDesktopPreview({
     (async () => {
       const loaded = await loadDiscoveryTrimAsync(TRIM_CONTEXT_DISCOVERY_PLAYER, trimMedia, k);
       if (cancelled) return;
+      setActiveClip(null);
       if (loaded) {
         setMarkIn(loaded.in);
         setMarkOut(loaded.out);
@@ -2883,26 +2890,62 @@ function DiscoveryDesktopPreview({
             )}
           </div>
           {playUrl ? (
-            <VideoTrimControls
-              className="discovery-desktop-preview-trim"
-              videoRef={previewVideoRef}
-              duration={previewDuration}
-              currentTime={trimUiCurrentTime}
-              markIn={markIn}
-              markOut={markOut}
-              mode={trimPlaybackLoop ? "repeat" : "stop_at_end"}
-              mediaSyncKey={k}
-              size="large"
-              onSeek={setTrimUiCurrentTime}
-              onSyncTime={setTrimUiCurrentTime}
-              onMarkInChange={setMarkIn}
-              onMarkOutChange={setMarkOut}
-              onClear={() => {
-                setMarkIn(null);
-                setMarkOut(null);
-              }}
-              onModeChange={(m) => setTrimPlaybackLoop(m === "repeat")}
-            />
+            <>
+              <VideoTrimControls
+                className="discovery-desktop-preview-trim"
+                videoRef={previewVideoRef}
+                duration={previewDuration}
+                currentTime={trimUiCurrentTime}
+                markIn={markIn}
+                markOut={markOut}
+                mode={trimPlaybackLoop ? "repeat" : "stop_at_end"}
+                mediaSyncKey={k}
+                size="large"
+                onSeek={setTrimUiCurrentTime}
+                onSyncTime={setTrimUiCurrentTime}
+                onMarkInChange={(v) => {
+                  setActiveClip(null);
+                  setMarkIn(v);
+                }}
+                onMarkOutChange={(v) => {
+                  setActiveClip(null);
+                  setMarkOut(v);
+                }}
+                onClear={() => {
+                  setActiveClip(null);
+                  setMarkIn(null);
+                  setMarkOut(null);
+                }}
+                onModeChange={(m) => setTrimPlaybackLoop(m === "repeat")}
+              />
+              <ClipBookmarksRail
+                className="discovery-desktop-preview-clips"
+                mediaRelpath={trimMedia}
+                duration={previewDuration}
+                markIn={markIn}
+                markOut={markOut}
+                trimEditable
+                origin="discovery"
+                selectedClipId={activeClip?.clip_id || null}
+                onSelectClip={setActiveClip}
+                onApplyClip={(mi, mo, clip) => {
+                  setMarkIn(mi);
+                  setMarkOut(mo);
+                  if (clip) setActiveClip(clip);
+                }}
+              />
+              {it ? (
+                <DiscoveryQueueFromClip
+                  item={it}
+                  mediaRelpath={trimMedia}
+                  markIn={markIn}
+                  markOut={markOut}
+                  duration={previewDuration}
+                  fps={Number(it.frame_rate) || 18}
+                  activeClip={activeClip}
+                />
+              ) : null}
+            </>
           ) : null}
         </div>
       </div>

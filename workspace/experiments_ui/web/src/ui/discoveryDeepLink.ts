@@ -5,6 +5,29 @@ export function discoveryLibraryHref(relpath?: string | null): string {
   return `/discovery?relpath=${encodeURIComponent(norm)}`;
 }
 
+/** Build a Clips library URL, optionally selecting a clip. */
+export function clipsLibraryHref(opts?: { clipId?: string | null; q?: string | null }): string {
+  const sp = new URLSearchParams();
+  const clipId = String(opts?.clipId || "").trim();
+  const q = String(opts?.q || "").trim();
+  if (clipId) sp.set("clip_id", clipId);
+  if (q) sp.set("q", q);
+  const qs = sp.toString();
+  return qs ? `/discovery/clips?${qs}` : "/discovery/clips";
+}
+
+export function parseClipsDeepLink(search: string = window.location.search): {
+  clipId: string | null;
+  q: string | null;
+  origin: string | null;
+} {
+  const sp = new URLSearchParams(search);
+  const clipId = (sp.get("clip_id") || "").trim() || null;
+  const q = (sp.get("q") || "").trim() || null;
+  const origin = (sp.get("origin") || "").trim() || null;
+  return { clipId, q, origin };
+}
+
 /** Read `?relpath=` from a search string (defaults to current location). */
 export function parseDiscoveryDeepLinkRelpath(search: string = window.location.search): string | null {
   const sp = new URLSearchParams(search);

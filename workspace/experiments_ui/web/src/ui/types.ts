@@ -1227,6 +1227,8 @@ export type ShapeFactoryPromptProfile = {
 };
 
 export type ShapeFactoryMapQueueOverrides = {
+  source_clip_id?: string;
+  clip_id?: string;
   prompt_profile?: {
     label?: string;
     positive?: string;
