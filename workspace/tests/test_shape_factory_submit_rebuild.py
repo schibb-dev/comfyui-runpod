@@ -193,6 +193,26 @@ class ShapeFactorySubmitRebuildTests(unittest.TestCase):
             self.assertFalse(hostify_job_paths(job))
             self.assertTrue(job["pools_path"].startswith("/workspace/"))
 
+    def test_dockerify_and_coerce_pool_prompt_dir(self) -> None:
+        from unittest.mock import patch
+
+        from shape_factory import coerce_pool_fs_path, dockerify_repo_path, resolve_dir
+
+        host_dir = "/home/yuji/src/comfyui-runpod/.data/pools/FB9_GEX2/prompts"
+        with patch("shape_factory._running_in_docker", return_value=True):
+            self.assertEqual(
+                str(dockerify_repo_path(host_dir)),
+                "/workspace/.data/pools/FB9_GEX2/prompts",
+            )
+
+        prompts = REPO_ROOT / ".data/pools/FB9_GEX2/prompts"
+        if not prompts.is_dir():
+            self.skipTest("FB9_GEX2 prompts dir missing")
+        got = coerce_pool_fs_path(host_dir)
+        self.assertTrue(got.is_dir())
+        members = resolve_dir({"dir": host_dir, "ext": [".json"]})
+        self.assertTrue(members, "expected prompt JSON members for FB9_GEX2")
+
     def test_resolve_existing_path_recovers_corrupt_dot_data(self) -> None:
         from shape_factory_map import resolve_existing_path
 
@@ -206,6 +226,77 @@ class ShapeFactorySubmitRebuildTests(unittest.TestCase):
             data_root=data_root,
         )
         self.assertEqual(resolved, shape.resolve())
+
+    def test_resolve_existing_path_aliases_workspace_input_to_bind_dir(self) -> None:
+        from shape_factory_map import resolve_existing_path
+
+        bind = Path("/home/yuji/comfyui-runpod-data/input")
+        samples = sorted(bind.glob("IDM*.jpeg"))[:1]
+        if not samples:
+            self.skipTest("no IDM*.jpeg under bind input")
+        still = samples[0]
+        bogus = REPO_ROOT / "workspace" / "input" / still.name
+        self.assertFalse(bogus.is_file(), "fixture assumes checkout workspace/input lacks still")
+        resolved = resolve_existing_path(
+            str(bogus),
+            output_root=Path("/home/yuji/comfyui-runpod-data/output"),
+            data_root=REPO_ROOT / ".data",
+            workspace_root=REPO_ROOT / "workspace",
+        )
+        self.assertEqual(resolved, still.resolve())
+
+    def test_comfy_load_image_relpath_uses_basename_not_input_prefix(self) -> None:
+        from shape_factory import comfy_load_image_relpath, comfy_workspace_relpath
+
+        still = Path(
+            "/home/yuji/comfyui-runpod-data/input/"
+            "IDM1fd44be7b45f1ba733bfd23c25d57685ced0404edb6102b06c2ff41a102c7be8.jpeg"
+        )
+        if not still.is_file():
+            self.skipTest("identity still missing from bind input")
+        data_root = Path("/home/yuji/comfyui-runpod-data")
+        load_rel, load_warn = comfy_load_image_relpath(still, data_root)
+        self.assertEqual(load_rel, still.name)
+        self.assertIsNone(load_warn)
+        vhs_rel, _ = comfy_workspace_relpath(still, data_root)
+        self.assertEqual(vhs_rel, f"input/{still.name}")
+
+    def test_hostify_workspace_input_maps_to_bind_dir(self) -> None:
+        from shape_factory import hostify_repo_path
+
+        name = "IDM1fd44be7b45f1ba733bfd23c25d57685ced0404edb6102b06c2ff41a102c7be8.jpeg"
+        bind = Path("/home/yuji/comfyui-runpod-data/input") / name
+        if not bind.is_file():
+            self.skipTest("identity still missing from bind input")
+        mapped = hostify_repo_path(f"/workspace/input/{name}")
+        self.assertEqual(mapped, bind.resolve())
+        mapped_checkout = hostify_repo_path(str(REPO_ROOT / "workspace" / "input" / name))
+        self.assertEqual(mapped_checkout, bind.resolve())
+
+    def test_apply_api_slot_bindings_hard_fails_missing_required_image(self) -> None:
+        from shape_factory import apply_api_slot_bindings
+
+        shape = {
+            "requires": [
+                {
+                    "slot": "identity_anchor",
+                    "media": "image",
+                    "binding": {"type": "load_image", "node_id": 500},
+                }
+            ]
+        }
+        job = {
+            "bindings": {
+                "identity_anchor": {
+                    "path": "/no/such/identity_still_does_not_exist.jpeg",
+                    "binding_type": "load_image",
+                }
+            }
+        }
+        with self.assertRaises(RuntimeError) as ctx:
+            apply_api_slot_bindings({}, shape, job, Path("/home/yuji/comfyui-runpod-data"))
+        self.assertIn("missing binding asset", str(ctx.exception))
+        self.assertIn("identity_anchor", str(ctx.exception))
 
     def test_hostify_job_paths_rewrites_fields(self) -> None:
         from shape_factory import hostify_job_paths

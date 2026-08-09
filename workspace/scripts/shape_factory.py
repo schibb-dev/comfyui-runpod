@@ -754,30 +754,106 @@ def expand_date_tokens(value: str) -> str:
     return re.sub(r"%date:([^%]+)%", repl, value)
 
 
+def comfy_bind_input_dir() -> Path:
+    """Host directory mounted at /workspace/input and /ComfyUI/input."""
+    env = os.environ.get("COMFYUI_BIND_INPUT_DIR", "").strip()
+    if env:
+        return Path(env).expanduser().resolve()
+    return Path("/home/yuji/comfyui-runpod-data/input").resolve()
+
+
 def comfy_workspace_relpath(path: Path, data_root: Path) -> tuple[str, Optional[str]]:
-    """Map host bind paths to ComfyUI-facing paths (input/…, output/…)."""
+    """Map host bind paths to ComfyUI-facing paths (input/…, output/…).
+
+    Prefer this for VHS / workspace-style loaders. LoadImage must use
+    ``comfy_load_image_relpath`` (Comfy resolves inside ``/ComfyUI/input``).
+    """
     path = path.expanduser().resolve()
     data_root = data_root.expanduser().resolve()
-    input_root = data_root / "input"
+    input_roots = (
+        data_root / "input",
+        comfy_bind_input_dir(),
+        default_workspace_root() / "input",
+    )
     output_root = data_root / "output"
+    for input_root in input_roots:
+        try:
+            if path.is_relative_to(input_root):
+                return f"input/{path.relative_to(input_root).as_posix()}", None
+        except AttributeError:
+            try:
+                rel_in = path.relative_to(input_root)
+                return f"input/{rel_in.as_posix()}", None
+            except Exception:
+                pass
     try:
-        if path.is_relative_to(input_root):
-            return f"input/{path.relative_to(input_root).as_posix()}", None
         if path.is_relative_to(output_root):
             return f"output/{path.relative_to(output_root).as_posix()}", None
     except AttributeError:
-        # Python <3.9 compat (not expected here, but safe)
-        try:
-            rel_in = path.relative_to(input_root)
-            return f"input/{rel_in.as_posix()}", None
-        except Exception:
-            pass
         try:
             rel_out = path.relative_to(output_root)
             return f"output/{rel_out.as_posix()}", None
         except Exception:
             pass
     return path.name, f"path outside data root {data_root}; using basename only"
+
+
+def comfy_load_image_relpath(path: Path, data_root: Path) -> tuple[str, Optional[str]]:
+    """Comfy LoadImage value: path relative to ``/ComfyUI/input`` (not ``input/...``)."""
+    path = path.expanduser().resolve()
+    data_root = data_root.expanduser().resolve()
+    input_roots = (
+        comfy_bind_input_dir(),
+        data_root / "input",
+        default_workspace_root() / "input",
+        Path("/workspace/input"),
+        Path("/ComfyUI/input"),
+    )
+    for input_root in input_roots:
+        try:
+            root = input_root.expanduser().resolve()
+        except Exception:
+            continue
+        try:
+            if not path.is_relative_to(root):
+                continue
+            rel = path.relative_to(root)
+            # Flat files → basename; nested under input → keep subdir/file.
+            return (path.name if rel.parent == Path(".") else rel.as_posix()), None
+        except (AttributeError, ValueError, OSError):
+            continue
+    return path.name, f"LoadImage path outside input roots; using basename {path.name!r}"
+
+
+def coerce_pool_fs_path(raw: str | Path) -> Path:
+    """
+    Resolve a pool member path across host/container aliases.
+
+    Pool YAML often stores host paths (``/home/yuji/src/comfyui-runpod/.data/...``)
+    while the Experiments UI inside Docker only sees ``/workspace/.data/...``.
+    Prefer a path that exists.
+    """
+    text = str(raw or "").strip().replace("\\", "/")
+    if not text:
+        return Path(text)
+    candidates: list[Path] = [Path(text).expanduser()]
+    try:
+        candidates.append(dockerify_repo_path(text))
+    except Exception:
+        pass
+    try:
+        candidates.append(hostify_repo_path(text))
+    except Exception:
+        pass
+    seen: set[str] = set()
+    for cand in candidates:
+        key = str(cand)
+        if key in seen:
+            continue
+        seen.add(key)
+        if cand.exists():
+            return cand
+    return candidates[0]
 
 
 def resolve_glob(spec: dict[str, Any]) -> list[Path]:
@@ -788,8 +864,13 @@ def resolve_glob(spec: dict[str, Any]) -> list[Path]:
     # stdlib glob so year folders like og/2025-* and nested ** patterns both work.
     import glob as _glob
 
-    expanded = str(Path(pattern).expanduser())
+    expanded = str(coerce_pool_fs_path(pattern))
     raw_paths = _glob.glob(expanded, recursive=True)
+    # If host-path globs miss inside Docker, retry the dockerified pattern string.
+    if not raw_paths:
+        alt = str(dockerify_repo_path(pattern))
+        if alt != expanded:
+            raw_paths = _glob.glob(alt, recursive=True)
     paths = sorted({Path(p).resolve() for p in raw_paths if Path(p).is_file()})
     if isinstance(limit, int) and limit > 0:
         paths = paths[:limit]
@@ -797,7 +878,7 @@ def resolve_glob(spec: dict[str, Any]) -> list[Path]:
 
 
 def resolve_dir(spec: dict[str, Any]) -> list[Path]:
-    root = Path(str(spec.get("dir") or "")).expanduser()
+    root = coerce_pool_fs_path(str(spec.get("dir") or ""))
     if not root.is_dir():
         return []
     exts = {str(e).lower() for e in (spec.get("ext") or [".json"])}
@@ -853,7 +934,7 @@ def pool_index_member_paths(index_doc: dict[str, Any], pool_id: str) -> list[Pat
 
 
 def resolve_pool_index(spec: dict[str, Any]) -> list[Path]:
-    index_path = Path(str(spec.get("glob") or spec.get("index") or "")).expanduser()
+    index_path = coerce_pool_fs_path(str(spec.get("glob") or spec.get("index") or ""))
     pool_id = str(spec.get("pool_id") or "").strip()
     if not index_path.is_file():
         return []
@@ -1025,7 +1106,7 @@ def apply_load_image(workflow: dict[str, Any], node_id: int, asset_path: Path, d
     node = find_node(workflow, node_id)
     if node is None:
         raise RuntimeError(f"LoadImage node {node_id} not found")
-    rel, warn = comfy_workspace_relpath(asset_path, data_root)
+    rel, warn = comfy_load_image_relpath(asset_path, data_root)
     if warn:
         warnings.append(warn)
     widgets = node.get("widgets_values")
@@ -1962,7 +2043,13 @@ def apply_api_slot_bindings(
         try:
             asset_path = resolve_job_asset_path(raw_path, data_root=data_root)
         except FileNotFoundError:
-            warnings.append(f"missing binding asset for slot {slot!r}: {raw_path}")
+            msg = f"missing binding asset for slot {slot!r}: {raw_path}"
+            # Required image anchors must not silently drop (fake "success" without identity).
+            if not req.get("optional") and (
+                btype == "load_image" or str(req.get("media") or "").lower() == "image"
+            ):
+                raise RuntimeError(msg) from None
+            warnings.append(msg)
             continue
 
         if btype == "vhs_load_video_path":
@@ -1978,10 +2065,22 @@ def apply_api_slot_bindings(
                     continue
                 node.setdefault("inputs", {})["video"] = rel
                 patched += 1
+            # Companion PNGs from other shapes often use different node ids; fall back
+            # to the first VHS_LoadVideoPath when the shape's id is absent.
+            if patched == 0 and node_id is not None:
+                for _key, node in prompt.items():
+                    if not isinstance(node, dict) or node.get("class_type") != "VHS_LoadVideoPath":
+                        continue
+                    node.setdefault("inputs", {})["video"] = rel
+                    patched += 1
+                    warnings.append(
+                        f"vhs_load_video_path: node {node_id!r} missing; patched first VHS_LoadVideoPath"
+                    )
+                    break
             if patched == 0:
                 warnings.append(f"no VHS_LoadVideoPath node {node_id!r} in API prompt")
         elif btype == "load_image":
-            rel, warn = comfy_workspace_relpath(asset_path, data_root)
+            rel, warn = comfy_load_image_relpath(asset_path, data_root)
             if warn:
                 warnings.append(warn)
             node_id = binding.get("node_id")
@@ -1993,6 +2092,16 @@ def apply_api_slot_bindings(
                     continue
                 node.setdefault("inputs", {})["image"] = rel
                 patched += 1
+            if patched == 0 and node_id is not None:
+                for _key, node in prompt.items():
+                    if not isinstance(node, dict) or node.get("class_type") != "LoadImage":
+                        continue
+                    node.setdefault("inputs", {})["image"] = rel
+                    patched += 1
+                    warnings.append(
+                        f"load_image: node {node_id!r} missing; patched first LoadImage"
+                    )
+                    break
             if patched == 0:
                 warnings.append(f"no LoadImage node {node_id!r} in API prompt")
         elif btype == "prompt_bundle":
@@ -3606,6 +3715,40 @@ def _binding_patch_failures(warnings: list[str], shape: dict[str, Any], job: dic
     return fatal
 
 
+def _rebind_job_slots_to_ui_workflow(
+    workflow: dict[str, Any],
+    shape: dict[str, Any],
+    job: dict[str, Any],
+    data_root: Path,
+) -> list[str]:
+    """Re-paint job bindings onto the LiteGraph workflow before /workflow/convert."""
+    warnings: list[str] = []
+    req_by_slot = requires_by_slot(shape)
+    bindings = job.get("bindings") if isinstance(job.get("bindings"), dict) else {}
+    for slot, meta in bindings.items():
+        if not isinstance(meta, dict):
+            continue
+        req = req_by_slot.get(slot)
+        if not req:
+            continue
+        raw_path = str(meta.get("path") or "").strip()
+        if not raw_path:
+            continue
+        try:
+            asset_path = resolve_job_asset_path(raw_path, data_root=data_root)
+        except FileNotFoundError:
+            btype = str((req.get("binding") or {}).get("type") or "")
+            msg = f"missing binding asset for slot {slot!r}: {raw_path}"
+            if not req.get("optional") and (
+                btype == "load_image" or str(req.get("media") or "").lower() == "image"
+            ):
+                raise RuntimeError(msg) from None
+            warnings.append(msg)
+            continue
+        warnings.extend(apply_slot_binding(workflow, req, asset_path, data_root))
+    return warnings
+
+
 def resolve_prompt_for_job(
     job: dict[str, Any],
     shape: dict[str, Any],
@@ -3616,13 +3759,27 @@ def resolve_prompt_for_job(
 ) -> tuple[dict[str, Any], str, list[str]]:
     warnings: list[str] = []
     dev_spec = job.get("dev_tuning", {}).get("spec") if isinstance(job.get("dev_tuning"), dict) else None
+    # Fix LoadImage / VHS paths from job bindings before convert (stale generated workflows
+    # often still have input/<file> or a dead workspace/input host path).
+    warnings.extend(_rebind_job_slots_to_ui_workflow(workflow, shape, job, data_root))
     try:
         prompt_obj = convert_ui_workflow_to_prompt(server, workflow, timeout_s=convert_timeout)
         warnings.extend(sync_prompt_inputs_from_ui_workflow(workflow, prompt_obj))
         warnings.extend(sanitize_converted_prompt(workflow, prompt_obj))
+        # Re-apply bindings on the API prompt so LoadImage uses basename form even if
+        # convert echoed a stale widget value.
+        warnings.extend(apply_api_slot_bindings(prompt_obj, shape, job, data_root))
         if isinstance(dev_spec, dict):
             apply_dev_tuning_api(prompt_obj, dev_spec)
+        fatal = _binding_patch_failures(warnings, shape, job)
+        if fatal:
+            raise RuntimeError(
+                "workflow_convert produced prompt missing required bindings: "
+                + "; ".join(fatal)
+            )
         return prompt_obj, "workflow_convert", warnings
+    except RuntimeError:
+        raise
     except Exception as exc:
         warnings.append(f"workflow_convert_failed: {exc}")
 
@@ -3681,6 +3838,31 @@ def shape_factory_repo_root() -> Path:
     return parent.parent if parent.name == "workspace" else parent
 
 
+def dockerify_repo_path(raw: str | Path) -> Path:
+    """Map host repo/data paths to container ``/workspace/...`` mounts when in Docker."""
+    text = str(raw or "").strip().replace("\\", "/")
+    if not text:
+        return Path(text)
+    p = Path(text).expanduser()
+    if not _running_in_docker():
+        return p
+    # Always rewrite known host prefixes — pool YAML is authored on the host, and
+    # those paths are not mounted 1:1 inside the container.
+    aliases = (
+        ("/home/yuji/src/comfyui-runpod/.data/", "/workspace/.data/"),
+        ("/home/yuji/src/comfyui-runpod/workspace/", "/workspace/"),
+        ("/home/yuji/comfyui-runpod-data/output/", "/workspace/output/"),
+        ("/home/yuji/comfyui-runpod-data/input/", "/workspace/input/"),
+        ("/home/yuji/comfyui-runpod-data/comfyui_user/", "/workspace/comfyui_user/"),
+    )
+    for src, dst in aliases:
+        if text == src.rstrip("/"):
+            return Path(dst.rstrip("/"))
+        if text.startswith(src):
+            return Path(dst + text[len(src) :])
+    return p
+
+
 def hostify_repo_path(raw: str | Path) -> Path:
     """Map container paths (/workspace/...) to host paths when running outside Docker."""
     text = str(raw or "").strip()
@@ -3697,6 +3879,7 @@ def hostify_repo_path(raw: str | Path) -> Path:
     workspace = default_workspace_root()
     comfy_user = Path("/home/yuji/comfyui-runpod-data/comfyui_user")
     output_root = Path("/home/yuji/comfyui-runpod-data/output")
+    bind_input = comfy_bind_input_dir()
 
     if text.startswith("/workspace/.data/") or text == "/workspace/.data":
         rel = text[len("/workspace/.data") :].lstrip("/")
@@ -3707,6 +3890,11 @@ def hostify_repo_path(raw: str | Path) -> Path:
     if text.startswith("/workspace/output/") or text == "/workspace/output":
         rel = text[len("/workspace/output") :].lstrip("/")
         return (output_root / rel).resolve() if rel else output_root.resolve()
+    # /workspace/input is the bind mount of COMFYUI_BIND_INPUT_DIR — not the often-empty
+    # checkout path at <repo>/workspace/input.
+    if text.startswith("/workspace/input/") or text == "/workspace/input":
+        rel = text[len("/workspace/input") :].lstrip("/")
+        return (bind_input / rel).resolve() if rel else bind_input.resolve()
     if text.startswith("/workspace/"):
         rel = text[len("/workspace/") :]
         # Prefer data-root comfyui_user when the workspace copy is empty/missing.
@@ -3715,7 +3903,25 @@ def hostify_repo_path(raw: str | Path) -> Path:
             cand = (comfy_user / sub).resolve() if sub else comfy_user.resolve()
             if cand.exists() or not (workspace / "comfyui_user").exists():
                 return cand
+        if rel.startswith("input/") or rel == "input":
+            sub = rel[len("input") :].lstrip("/")
+            cand = (bind_input / sub).resolve() if sub else bind_input.resolve()
+            ws_cand = (workspace / rel).resolve()
+            if cand.exists() or not ws_cand.exists():
+                return cand
         return (workspace / rel).resolve()
+    # Host checkout workspace/input/<file> → bind input when checkout copy is missing.
+    ws_input = (workspace / "input").resolve()
+    try:
+        host_path = Path(text).expanduser()
+        resolved_host = host_path.resolve() if host_path.exists() else host_path
+        if str(resolved_host).startswith(str(ws_input) + os.sep) or resolved_host == ws_input:
+            rel = str(resolved_host)[len(str(ws_input)) :].lstrip("/\\")
+            cand = (bind_input / rel).resolve() if rel else bind_input.resolve()
+            if cand.exists() or not resolved_host.exists():
+                return cand
+    except Exception:
+        pass
     return Path(text).expanduser()
 
 

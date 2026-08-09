@@ -480,6 +480,38 @@ def _runtime_path_candidates(
             "/home/yuji/src/comfyui-runpod/workspace/comfyui_user",
         ):
             add(host_user + rel)
+
+    # Input stills: Docker mounts COMFYUI_BIND_INPUT_DIR at both /workspace/input and
+    # /ComfyUI/input. Host jobs often store the empty checkout path
+    # (.../src/comfyui-runpod/workspace/input/<file>) while the real files live under
+    # the bind dir (.../comfyui-runpod-data/input/<file>).
+    bind_input = (
+        os.environ.get("COMFYUI_BIND_INPUT_DIR", "").strip().replace("\\", "/").rstrip("/")
+        or "/home/yuji/comfyui-runpod-data/input"
+    )
+    input_roots = (
+        bind_input,
+        "/home/yuji/comfyui-runpod-data/input",
+        "/home/yuji/src/comfyui-runpod/workspace/input",
+        "/workspace/input",
+    )
+    input_rel: Optional[str] = None
+    for root in input_roots:
+        prefix = root.rstrip("/") + "/"
+        if s.startswith(prefix):
+            input_rel = s[len(prefix) :]
+            break
+        if s == root.rstrip("/"):
+            input_rel = ""
+            break
+    if input_rel is not None:
+        for root in input_roots:
+            add(root.rstrip("/") + (f"/{input_rel}" if input_rel else ""))
+        # Bare basename under each root (covers "input/<name>" style leftovers).
+        bn = Path(input_rel).name if input_rel else ""
+        if bn:
+            for root in input_roots:
+                add(f"{root.rstrip('/')}/{bn}")
     return out
 
 
