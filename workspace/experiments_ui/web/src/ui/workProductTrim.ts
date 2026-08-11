@@ -37,11 +37,14 @@ export function clampVhsWindow(
   const reqSkip = Math.max(0, Math.floor(skipFirstFrames));
   const reqCap = Math.max(0, Math.floor(frameLoadCap));
   if (fc <= 0) {
+    // Keep the requested window. Zeroing here used to make Re-run/Submit send
+    // skip=0,cap=0 while marks were still set (source duration not loaded yet),
+    // which overrode the work-products trim sidecar on the backend.
     return {
-      skip_first_frames: 0,
-      frame_load_cap: 0,
-      clamped: reqSkip !== 0 || reqCap !== 0,
-      warning: reqSkip || reqCap ? "clip length unknown — reset loader window to 0" : null,
+      skip_first_frames: reqSkip,
+      frame_load_cap: reqCap,
+      clamped: false,
+      warning: reqSkip || reqCap ? "clip length unknown — skip/cap not clamped to media" : null,
       frame_count: 0,
     };
   }
@@ -106,9 +109,17 @@ export function marksToVhsWindow(
         : 0;
   const bounds = dur > 0 ? phoneTrimBounds(markIn, markOut, dur) : null;
   const inSec = bounds ? bounds.in : Math.max(0, markIn ?? 0);
-  const outSec = bounds ? bounds.out : markOut ?? dur;
+  const outSec = bounds
+    ? bounds.out
+    : markOut != null && Number.isFinite(markOut)
+      ? Math.max(inSec, Number(markOut))
+      : dur > 0
+        ? dur
+        : inSec;
   const reqSkip = Math.max(0, Math.round(inSec * fpsN));
-  const toEnd = !bounds || (dur > 0 && bounds.out >= dur - 1e-3);
+  // Only "load to EOF" when we know media duration and the out mark is at/near it.
+  // Missing duration must NOT collapse to cap=0 — that ignores the end of the Use window.
+  const toEnd = dur > 0 && outSec >= dur - 1e-3;
   const reqCap = toEnd ? 0 : Math.max(0, Math.round((outSec - inSec) * fpsN));
   return clampVhsWindow(reqSkip, reqCap, fc);
 }

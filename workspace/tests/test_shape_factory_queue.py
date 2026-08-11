@@ -251,6 +251,81 @@ class ShapeFactoryQueueTests(unittest.TestCase):
         self.assertEqual(api["1"]["inputs"]["skip_first_frames"], 5)
         self.assertEqual(api["1"]["inputs"]["frame_load_cap"], 12)
 
+    def test_resolve_vhs_window_zeros_do_not_block_sidecar(self) -> None:
+        """Re-run UI race sent skip=0,cap=0; sidecar trim must still apply."""
+        import tempfile
+        from shape_factory_queue import resolve_vhs_window_overrides
+
+        with tempfile.TemporaryDirectory() as td:
+            media = Path(td) / "clip.mp4"
+            media.write_bytes(b"fake")
+            sidecar = media.with_suffix(".trims.json")
+            sidecar.write_text(
+                json.dumps(
+                    {
+                        "v": 1,
+                        "contexts": {
+                            "work-products": {
+                                "active_preset_id": "t1",
+                                "presets": [{"id": "t1", "label": "Trim", "in": 1.944444, "out": 3.973929}],
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "shape_factory_queue._probe_media_frame_meta",
+                return_value={"fps": 18.0, "frame_count": 97, "duration": 5.388889},
+            ), mock.patch(
+                "shape_factory_queue.hostify_media_abs",
+                side_effect=lambda p: Path(p) if p is not None else None,
+            ):
+                params, _meta = resolve_vhs_window_overrides(
+                    parameters={"skip_first_frames": 0, "frame_load_cap": 0},
+                    media_abs=media,
+                    read_sidecar=True,
+                )
+            self.assertEqual(params["skip_first_frames"], 35)
+            self.assertEqual(params["frame_load_cap"], 37)
+
+            # Explicit marks (full file) still win over sidecar.
+            with mock.patch(
+                "shape_factory_queue._probe_media_frame_meta",
+                return_value={"fps": 18.0, "frame_count": 97, "duration": 5.388889},
+            ), mock.patch(
+                "shape_factory_queue.hostify_media_abs",
+                side_effect=lambda p: Path(p) if p is not None else None,
+            ):
+                params2, _meta2 = resolve_vhs_window_overrides(
+                    parameters={"mark_in": 0.0, "mark_out": 5.388889, "skip_first_frames": 0, "frame_load_cap": 0},
+                    media_abs=media,
+                    read_sidecar=True,
+                )
+            self.assertEqual(params2["skip_first_frames"], 0)
+            self.assertEqual(params2["frame_load_cap"], 0)
+
+            # Non-trivial marks derive skip/cap even if client sent wrong zeros.
+            with mock.patch(
+                "shape_factory_queue._probe_media_frame_meta",
+                return_value={"fps": 18.0, "frame_count": 97, "duration": 5.388889},
+            ), mock.patch(
+                "shape_factory_queue.hostify_media_abs",
+                side_effect=lambda p: Path(p) if p is not None else None,
+            ):
+                params3, _meta3 = resolve_vhs_window_overrides(
+                    parameters={
+                        "mark_in": 1.944444,
+                        "mark_out": 3.973929,
+                        "skip_first_frames": 0,
+                        "frame_load_cap": 0,
+                    },
+                    media_abs=media,
+                    read_sidecar=True,
+                )
+            self.assertEqual(params3["skip_first_frames"], 35)
+            self.assertEqual(params3["frame_load_cap"], 37)
+
     def test_failed_extend_retry_uses_frames_before_and_parent_output(self) -> None:
         from shape_factory_queue import _parent_frame_count, replay_from_request_body
 

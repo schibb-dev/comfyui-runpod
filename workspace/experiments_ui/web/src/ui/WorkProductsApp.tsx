@@ -684,6 +684,9 @@ function trimOverridesFromState(
   const overrides: ShapeFactoryMapQueueOverrides = {};
   if (state.dirty || state.clampedDefault || hasClip) {
     overrides.parameters = {
+      // Seconds are authoritative on the backend when present.
+      ...(state.markIn != null ? { mark_in: state.markIn } : {}),
+      ...(state.markOut != null ? { mark_out: state.markOut } : {}),
       skip_first_frames: win.skip_first_frames,
       frame_load_cap: win.frame_load_cap,
     };

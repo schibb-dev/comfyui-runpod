@@ -908,7 +908,9 @@ def resolve_vhs_window_overrides(
     """
     Build skip/cap parameter patch + optional ``trim_clamped`` metadata.
 
-    Prefer explicit skip/cap parameters, else work-products trim sidecar.
+    Prefer ``mark_in``/``mark_out`` (seconds), then non-zero skip/cap parameters,
+    else work-products trim sidecar. Bare ``skip=0,cap=0`` without marks does
+    **not** block the sidecar (UI race when media duration was unknown).
     Catalog template skip/cap are **ignored** (fossilized on authoring media) —
     rebound sources seed from clips / full file via ``shape_factory_clips``.
 
@@ -931,10 +933,67 @@ def resolve_vhs_window_overrides(
 
     explicit_skip = params_in.get("skip_first_frames") not in (None, "")
     explicit_cap = params_in.get("frame_load_cap") not in (None, "")
+    has_marks = params_in.get("mark_in") not in (None, "") or params_in.get("mark_out") not in (None, "")
+    try:
+        skip_v = int(params_in.get("skip_first_frames") or 0) if explicit_skip else None
+    except (TypeError, ValueError):
+        skip_v = 0 if explicit_skip else None
+    try:
+        cap_v = int(params_in.get("frame_load_cap") or 0) if explicit_cap else None
+    except (TypeError, ValueError):
+        cap_v = 0 if explicit_cap else None
+    # Bare skip=0,cap=0 without marks is often a UI race (duration unknown → zeros),
+    # not an intentional full-file override. Allow the work-products sidecar to win.
+    weak_full_file_zeros = (
+        not has_marks
+        and explicit_skip
+        and int(skip_v or 0) == 0
+        and (not explicit_cap or int(cap_v or 0) == 0)
+    )
     # Trim intent: both skip and cap from UI/sidecar, or skip alone.
     # Extend lengthen often sets frame_load_cap alone — that is not a trim window.
-    trim_intent = explicit_skip or (explicit_skip and explicit_cap)
-    source: Optional[str] = "overrides" if explicit_skip else None
+    trim_intent = bool(explicit_skip and not weak_full_file_zeros) or has_marks
+    source: Optional[str] = "overrides" if (explicit_skip and not weak_full_file_zeros) or has_marks else None
+
+    if has_marks:
+        try:
+            tin = float(params_in["mark_in"]) if params_in.get("mark_in") not in (None, "") else 0.0
+        except (TypeError, ValueError):
+            tin = 0.0
+        try:
+            tout = (
+                float(params_in["mark_out"])
+                if params_in.get("mark_out") not in (None, "")
+                else (duration if duration > 0 else tin)
+            )
+        except (TypeError, ValueError):
+            tout = duration if duration > 0 else tin
+        win = trim_seconds_to_vhs_window(
+            mark_in=tin,
+            mark_out=tout,
+            duration_s=duration,
+            fps=fps,
+            frame_count=frame_count or None,
+        )
+        out_params["skip_first_frames"] = int(win["skip_first_frames"])
+        out_params["frame_load_cap"] = int(win["frame_load_cap"])
+        explicit_skip = True
+        explicit_cap = True
+        trim_intent = True
+        source = "overrides"
+        if win.get("clamped"):
+            meta = {
+                "source": source,
+                "requested_skip_first_frames": win["requested_skip_first_frames"],
+                "requested_frame_load_cap": win["requested_frame_load_cap"],
+                "skip_first_frames": win["skip_first_frames"],
+                "frame_load_cap": win["frame_load_cap"],
+                "frame_count": win["frame_count"],
+                "message": (
+                    f"trim skip {win['requested_skip_first_frames']} → {win['skip_first_frames']}"
+                    f" for this clip ({win['frame_count']} frames)"
+                ),
+            }
 
     if source is None and read_sidecar and media_resolved is not None and media_resolved.is_file():
         marks = _load_work_products_trim_seconds(media_resolved)
