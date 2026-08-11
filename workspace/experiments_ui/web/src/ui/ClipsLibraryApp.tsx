@@ -1,22 +1,39 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchDiscoveryLibraryItem,
+  listShapeFactoryClipsDerived,
   listShapeFactoryClipsLibrary,
+  mutateShapeFactoryClip,
   type ShapeFactoryClip,
+  type ShapeFactoryClipDerivedItem,
+  type ShapeFactoryClipsLibraryParent,
 } from "./api";
-import { formatClipTimecode } from "./ClipBookmarksRail";
+import { ClipBookmarksRail, formatClipTimecode } from "./ClipBookmarksRail";
 import { DiscoveryQueueFromClip } from "./DiscoveryQueueFromClip";
-import { discoveryLibraryHref, parseClipsDeepLink } from "./discoveryDeepLink";
+import { discoveryLibraryHref, parseClipsDeepLink, workbenchHref } from "./discoveryDeepLink";
 import { cachedEnsureThumbUrl, enqueueEnsureThumb } from "./ensureThumbQueue";
 import { PageHeader } from "./PageHeader";
 import type { DiscoveryLibraryItem } from "./types";
 import { useTrimPlaybackEnforcement } from "./useTrimPlayback";
+import { VideoAutoplayToggle } from "./VideoAutoplayToggle";
 import { VideoTrimControls, type VideoTrimPlaybackMode } from "./VideoTrimControls";
 
 const PAGE_SIZE = 80;
 const CLIPS_DETAIL_LAYOUT_KEY = "clips_library_detail_layout_v1";
+const CLIPS_VIEW_KEY = "clips_library_view_v1";
+const CLIPS_AUTOPLAY_KEY = "clips_library_video_autoplay";
+const CLIPS_LOOP_KEY = "clips_library_loop_playback";
+const MARK_EPS = 1e-3;
 
 type ClipsDetailLayout = "stacked" | "split";
+type ClipsBrowseView = "all" | "by_source" | "derived";
+
+type ClipDraft = {
+  markIn: number;
+  markOut: number;
+  label: string;
+  notes: string;
+};
 
 function loadClipsDetailLayout(): ClipsDetailLayout {
   try {
@@ -31,6 +48,60 @@ function loadClipsDetailLayout(): ClipsDetailLayout {
 function persistClipsDetailLayout(layout: ClipsDetailLayout) {
   try {
     localStorage.setItem(CLIPS_DETAIL_LAYOUT_KEY, layout);
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadClipsBrowseView(deepView: ClipsBrowseView | null): ClipsBrowseView {
+  if (deepView === "all" || deepView === "by_source" || deepView === "derived") return deepView;
+  try {
+    const v = localStorage.getItem(CLIPS_VIEW_KEY);
+    if (v === "by_source" || v === "all" || v === "derived") return v;
+  } catch {
+    /* ignore */
+  }
+  return "all";
+}
+
+function persistClipsBrowseView(view: ClipsBrowseView) {
+  try {
+    localStorage.setItem(CLIPS_VIEW_KEY, view);
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadClipsAutoplay(): boolean {
+  try {
+    return localStorage.getItem(CLIPS_AUTOPLAY_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function persistClipsAutoplay(on: boolean) {
+  try {
+    localStorage.setItem(CLIPS_AUTOPLAY_KEY, on ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadClipsLoop(): boolean {
+  try {
+    const raw = localStorage.getItem(CLIPS_LOOP_KEY);
+    if (raw === "0") return false;
+    if (raw === "1") return true;
+  } catch {
+    /* ignore */
+  }
+  return true;
+}
+
+function persistClipsLoop(on: boolean) {
+  try {
+    localStorage.setItem(CLIPS_LOOP_KEY, on ? "1" : "0");
   } catch {
     /* ignore */
   }
@@ -62,6 +133,29 @@ function stubLibraryItem(relpath: string): DiscoveryLibraryItem {
     video_relpath: relpath,
     video_url: fileUrlFromRel(relpath),
   };
+}
+
+function draftFromClip(clip: ShapeFactoryClip): ClipDraft {
+  return {
+    markIn: clip.mark_in_s,
+    markOut: clip.mark_out_s,
+    label: String(clip.label || "").trim() || "Clip",
+    notes: String(clip.notes || ""),
+  };
+}
+
+function marksEqual(a: number, b: number): boolean {
+  return Math.abs(a - b) < MARK_EPS;
+}
+
+function isDraftDirty(draft: ClipDraft, clip: ShapeFactoryClip): boolean {
+  const base = draftFromClip(clip);
+  return (
+    !marksEqual(draft.markIn, base.markIn) ||
+    !marksEqual(draft.markOut, base.markOut) ||
+    draft.label !== base.label ||
+    draft.notes !== base.notes
+  );
 }
 
 function ClipThumb({ relpath, markIn }: { relpath: string | null | undefined; markIn: number }) {
@@ -107,52 +201,126 @@ export function ClipsLibraryApp() {
   const [q, setQ] = useState(deep.q || "");
   const [origin, setOrigin] = useState<string>(deep.origin || "");
   const [defaultsOnly, setDefaultsOnly] = useState(false);
+  const [browseView, setBrowseView] = useState<ClipsBrowseView>(() =>
+    loadClipsBrowseView(deep.view || (deep.mediaRelpath ? "by_source" : null)),
+  );
+  const [mediaFilter, setMediaFilter] = useState<string | null>(deep.mediaRelpath);
+  /** When set in Derived view, only show outputs from this clip. */
+  const [derivedClipFilter, setDerivedClipFilter] = useState<string | null>(
+    deep.view === "derived" ? deep.clipId : null,
+  );
   const [clips, setClips] = useState<ShapeFactoryClip[]>([]);
+  const [parents, setParents] = useState<ShapeFactoryClipsLibraryParent[]>([]);
+  const [derived, setDerived] = useState<ShapeFactoryClipDerivedItem[]>([]);
+  const [derivedTotal, setDerivedTotal] = useState(0);
+  const [selectedDerivedKey, setSelectedDerivedKey] = useState<string | null>(null);
   const [total, setTotal] = useState(0);
   const [originCounts, setOriginCounts] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(deep.clipId);
   const [libraryItem, setLibraryItem] = useState<DiscoveryLibraryItem | null>(null);
+  const [draft, setDraft] = useState<ClipDraft | null>(null);
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [editMsg, setEditMsg] = useState<string | null>(null);
+  const [siblingsEpoch, setSiblingsEpoch] = useState(0);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const videoAutoplayRef = useRef(false);
+  const dirtyRef = useRef(false);
   const [videoDuration, setVideoDuration] = useState(0);
   const [videoTime, setVideoTime] = useState(0);
-  const [trimMode, setTrimMode] = useState<VideoTrimPlaybackMode>("repeat");
+  const [videoAutoplay, setVideoAutoplay] = useState(loadClipsAutoplay);
+  const [loopPlayback, setLoopPlayback] = useState(loadClipsLoop);
   const [detailLayout, setDetailLayout] = useState<ClipsDetailLayout>(() => loadClipsDetailLayout());
+
+  videoAutoplayRef.current = videoAutoplay;
+  const trimMode: VideoTrimPlaybackMode = loopPlayback ? "repeat" : "stop_at_end";
+  const showParentPicker = browseView === "by_source" && !mediaFilter;
+  const showDerivedList = browseView === "derived";
 
   const setDetailLayoutFromUser = useCallback((layout: ClipsDetailLayout) => {
     setDetailLayout(layout);
     persistClipsDetailLayout(layout);
   }, []);
 
+  const setBrowseViewFromUser = useCallback((view: ClipsBrowseView) => {
+    setBrowseView(view);
+    persistClipsBrowseView(view);
+    if (view === "all") {
+      setMediaFilter(null);
+      setDerivedClipFilter(null);
+    }
+    if (view === "derived") {
+      setDerivedClipFilter(null);
+    }
+  }, []);
+
+  const setVideoAutoplayFromUser = useCallback((on: boolean) => {
+    setVideoAutoplay(on);
+    persistClipsAutoplay(on);
+    if (on) {
+      const v = videoRef.current;
+      if (v) void v.play().catch(() => {});
+    }
+  }, []);
+
+  const setLoopPlaybackFromUser = useCallback((on: boolean) => {
+    setLoopPlayback(on);
+    persistClipsLoop(on);
+  }, []);
+
   const reload = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
+      if (browseView === "derived") {
+        const res = await listShapeFactoryClipsDerived({
+          limit: 200,
+          clipId: derivedClipFilter,
+          mediaRelpath: mediaFilter,
+          includePending: true,
+        });
+        const rows = res.items || [];
+        setDerived(rows);
+        setDerivedTotal(res.total ?? rows.length);
+        setSelectedDerivedKey((prev) => {
+          if (prev && rows.some((r) => r.job_key === prev)) return prev;
+          return rows[0]?.job_key || null;
+        });
+        return;
+      }
+      const activeMedia = browseView === "by_source" ? mediaFilter : null;
       const res = await listShapeFactoryClipsLibrary({
         limit: PAGE_SIZE,
         offset: 0,
         origin: origin || null,
         q: q || null,
         defaultsOnly,
+        mediaRelpath: activeMedia,
       });
       const rows = res.clips || [];
       setClips(rows);
+      setParents(res.parents || []);
       setTotal(res.total ?? rows.length);
       setOriginCounts(res.origin_counts || {});
       setSelectedId((prev) => {
+        if (browseView === "by_source" && !activeMedia) return null;
         if (prev && rows.some((c) => c.clip_id === prev)) return prev;
         return rows[0]?.clip_id || null;
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setClips([]);
+      setParents([]);
+      setDerived([]);
+      setDerivedTotal(0);
       setTotal(0);
     } finally {
       setLoading(false);
     }
-  }, [origin, q, defaultsOnly]);
+  }, [origin, q, defaultsOnly, browseView, mediaFilter, derivedClipFilter]);
 
   useEffect(() => {
     void reload();
@@ -163,9 +331,64 @@ export function ClipsLibraryApp() {
     [clips, selectedId],
   );
 
+  const dirty = Boolean(selected && draft && isDraftDirty(draft, selected));
+  dirtyRef.current = dirty;
+
+  // Sync draft when selection identity changes (not on every list patch of same clip).
+  const draftClipIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!selected) {
+      setDraft(null);
+      draftClipIdRef.current = null;
+      return;
+    }
+    if (draftClipIdRef.current !== selected.clip_id) {
+      draftClipIdRef.current = selected.clip_id;
+      setDraft(draftFromClip(selected));
+      setEditError(null);
+      setEditMsg(null);
+    }
+  }, [selected]);
+
   const mediaRelpath = selected?.media_relpath || null;
-  const markIn = selected != null ? selected.mark_in_s : null;
-  const markOut = selected != null ? selected.mark_out_s : null;
+  const markIn = draft?.markIn ?? null;
+  const markOut = draft?.markOut ?? null;
+
+  const confirmDiscardIfDirty = useCallback((): boolean => {
+    if (!dirtyRef.current) return true;
+    return window.confirm("Discard unsaved clip edits?");
+  }, []);
+
+  const selectClipId = useCallback(
+    (nextId: string | null) => {
+      if (nextId === selectedId) return;
+      if (!confirmDiscardIfDirty()) return;
+      setSelectedId(nextId);
+    },
+    [confirmDiscardIfDirty, selectedId],
+  );
+
+  const ensureClipInList = useCallback((clip: ShapeFactoryClip) => {
+    setClips((prev) => {
+      const idx = prev.findIndex((c) => c.clip_id === clip.clip_id);
+      if (idx >= 0) {
+        const next = prev.slice();
+        next[idx] = { ...next[idx], ...clip };
+        return next;
+      }
+      return [clip, ...prev];
+    });
+  }, []);
+
+  const selectClipRow = useCallback(
+    (clip: ShapeFactoryClip) => {
+      if (clip.clip_id === selectedId) return;
+      if (!confirmDiscardIfDirty()) return;
+      ensureClipInList(clip);
+      setSelectedId(clip.clip_id);
+    },
+    [confirmDiscardIfDirty, ensureClipInList, selectedId],
+  );
 
   useEffect(() => {
     if (!mediaRelpath) {
@@ -189,37 +412,72 @@ export function ClipsLibraryApp() {
 
   useEffect(() => {
     const v = videoRef.current;
-    if (!v || markIn == null) return;
+    if (!v || !selected) return;
+    const target = selected.mark_in_s;
     const seek = () => {
       try {
-        v.currentTime = markIn;
+        v.currentTime = target;
       } catch {
         /* ignore */
       }
+      if (videoAutoplayRef.current) void v.play().catch(() => {});
     };
     if (v.readyState >= 1) seek();
     else v.addEventListener("loadedmetadata", seek, { once: true });
-  }, [selectedId, markIn, mediaRelpath]);
+  }, [selectedId, mediaRelpath, selected?.mark_in_s]);
 
   useTrimPlaybackEnforcement(videoRef, {
     mediaKey: selectedId || "",
     markIn,
     markOut,
     mode: trimMode,
-    enabled: Boolean(selected && mediaRelpath),
+    enabled: Boolean(selected && mediaRelpath && draft),
   });
 
   useEffect(() => {
-    if (!selectedId) return;
     const sp = new URLSearchParams(window.location.search);
-    sp.set("clip_id", selectedId);
+    if (selectedId) sp.set("clip_id", selectedId);
+    else sp.delete("clip_id");
     if (q) sp.set("q", q);
     else sp.delete("q");
     if (origin) sp.set("origin", origin);
     else sp.delete("origin");
+    sp.set("view", browseView);
+    if ((browseView === "by_source" || browseView === "derived") && mediaFilter) {
+      sp.set("media", mediaFilter);
+    } else {
+      sp.delete("media");
+      sp.delete("media_relpath");
+    }
+    if (browseView === "derived" && derivedClipFilter) sp.set("clip_id", derivedClipFilter);
     const next = `${window.location.pathname}?${sp.toString()}`;
     window.history.replaceState(null, "", next);
-  }, [selectedId, q, origin]);
+  }, [selectedId, q, origin, browseView, mediaFilter, derivedClipFilter]);
+
+  const selectParentMedia = useCallback(
+    (rel: string) => {
+      if (!confirmDiscardIfDirty()) return;
+      setMediaFilter(rel.replace(/\\/g, "/"));
+      setSelectedId(null);
+    },
+    [confirmDiscardIfDirty],
+  );
+
+  const clearParentMedia = useCallback(() => {
+    if (!confirmDiscardIfDirty()) return;
+    setMediaFilter(null);
+    setSelectedId(null);
+  }, [confirmDiscardIfDirty]);
+
+  const selectedParent = useMemo(() => {
+    if (!mediaFilter) return null;
+    return parents.find((p) => p.media_relpath === mediaFilter) || null;
+  }, [mediaFilter, parents]);
+
+  const selectedDerived = useMemo(
+    () => derived.find((d) => d.job_key === selectedDerivedKey) || null,
+    [derived, selectedDerivedKey],
+  );
 
   const originOptions = useMemo(() => {
     const keys = Object.keys(originCounts).sort((a, b) => (originCounts[b] || 0) - (originCounts[a] || 0));
@@ -228,12 +486,153 @@ export function ClipsLibraryApp() {
 
   const queueItem = libraryItem || (mediaRelpath ? stubLibraryItem(mediaRelpath) : null);
 
+  const revertDraft = useCallback(() => {
+    if (!selected) return;
+    setDraft(draftFromClip(selected));
+    setEditError(null);
+    setEditMsg(null);
+  }, [selected]);
+
+  const patchDefaultsForParent = useCallback((parentMedia: string, defaultId: string | null) => {
+    setClips((prev) =>
+      prev.map((c) => {
+        if (c.media_relpath !== parentMedia) return c;
+        return { ...c, is_default: defaultId != null && c.clip_id === defaultId };
+      }),
+    );
+  }, []);
+
+  const saveDraft = useCallback(async () => {
+    if (!selected || !draft) return;
+    setEditBusy(true);
+    setEditError(null);
+    setEditMsg(null);
+    try {
+      const res = await mutateShapeFactoryClip({
+        op: "update",
+        clip_id: selected.clip_id,
+        mark_in: draft.markIn,
+        mark_out: draft.markOut,
+        label: draft.label,
+        notes: draft.notes,
+      });
+      const updated = res.clip;
+      if (!updated) throw new Error("update returned no clip");
+      const merged: ShapeFactoryClip = {
+        ...selected,
+        ...updated,
+        media_relpath: selected.media_relpath,
+        media_basename: selected.media_basename,
+        media_url: selected.media_url,
+        is_default: selected.is_default,
+      };
+      ensureClipInList(merged);
+      setDraft(draftFromClip(merged));
+      draftClipIdRef.current = merged.clip_id;
+      setSiblingsEpoch((n) => n + 1);
+      setEditMsg("Saved");
+    } catch (e) {
+      setEditError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setEditBusy(false);
+    }
+  }, [draft, ensureClipInList, selected]);
+
+  const saveAsNew = useCallback(async () => {
+    if (!selected || !draft || !mediaRelpath) return;
+    setEditBusy(true);
+    setEditError(null);
+    setEditMsg(null);
+    try {
+      const res = await mutateShapeFactoryClip({
+        op: "create",
+        media_relpath: mediaRelpath,
+        mark_in: draft.markIn,
+        mark_out: draft.markOut,
+        label: draft.label || "Clip",
+        notes: draft.notes,
+        origin: "discovery",
+      });
+      const created = res.clip;
+      if (!created) throw new Error("create returned no clip");
+      const merged: ShapeFactoryClip = {
+        ...created,
+        media_relpath: mediaRelpath,
+        media_basename: selected.media_basename,
+        media_url: selected.media_url,
+        is_default: false,
+      };
+      ensureClipInList(merged);
+      setTotal((t) => t + 1);
+      draftClipIdRef.current = null; // force draft resync
+      setSelectedId(merged.clip_id);
+      setSiblingsEpoch((n) => n + 1);
+      setEditMsg("Saved as new clip");
+    } catch (e) {
+      setEditError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setEditBusy(false);
+    }
+  }, [draft, ensureClipInList, mediaRelpath, selected]);
+
+  const setDefault = useCallback(
+    async (makeDefault: boolean) => {
+      if (!selected || !mediaRelpath) return;
+      setEditBusy(true);
+      setEditError(null);
+      setEditMsg(null);
+      try {
+        await mutateShapeFactoryClip({
+          op: "set_default",
+          media_relpath: mediaRelpath,
+          clip_id: makeDefault ? selected.clip_id : null,
+        });
+        patchDefaultsForParent(mediaRelpath, makeDefault ? selected.clip_id : null);
+        setSiblingsEpoch((n) => n + 1);
+        setEditMsg(makeDefault ? "Set as default" : "Cleared default");
+      } catch (e) {
+        setEditError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setEditBusy(false);
+      }
+    },
+    [mediaRelpath, patchDefaultsForParent, selected],
+  );
+
+  const deleteSelected = useCallback(async () => {
+    if (!selected) return;
+    if (!window.confirm(`Delete clip “${selected.label || "Clip"}”?`)) return;
+    setEditBusy(true);
+    setEditError(null);
+    setEditMsg(null);
+    try {
+      await mutateShapeFactoryClip({ op: "delete", clip_id: selected.clip_id });
+      const deletedId = selected.clip_id;
+      const idx = clips.findIndex((c) => c.clip_id === deletedId);
+      const neighbor = clips[idx + 1] || clips[idx - 1] || null;
+      setClips((prev) => prev.filter((c) => c.clip_id !== deletedId));
+      setTotal((t) => Math.max(0, t - 1));
+      dirtyRef.current = false;
+      draftClipIdRef.current = null;
+      setSelectedId(neighbor?.clip_id || null);
+      setSiblingsEpoch((n) => n + 1);
+      setEditMsg("Deleted");
+    } catch (e) {
+      setEditError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setEditBusy(false);
+    }
+  }, [clips, selected]);
+
+  const displayTitle = draft?.label || selected?.label || "Untitled clip";
+  const derivedOutRel = selectedDerived?.output_relpath || null;
+
   return (
     <div className="discovery-screen clips-lib-screen">
       <div className="panel discovery-panel clips-lib-root">
         <PageHeader
           title="Clips"
-          subtitle="Browse clip bookmarks across parent videos — preview the window, open the parent, or queue from the selected clip."
+          subtitle="Browse and edit clip bookmarks across parent videos — adjust the window, set defaults, or queue from the selected clip."
           actions={
             <div className="clips-lib-header-actions">
               <form
@@ -274,6 +673,37 @@ export function ClipsLibraryApp() {
                 />
                 Defaults only
               </label>
+              <div className="segmented clips-lib-view-switch" role="radiogroup" aria-label="Browse by">
+                <button
+                  type="button"
+                  role="radio"
+                  className={"seg-btn" + (browseView === "all" ? " active" : "")}
+                  aria-checked={browseView === "all"}
+                  onClick={() => setBrowseViewFromUser("all")}
+                >
+                  All clips
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  className={"seg-btn" + (browseView === "by_source" ? " active" : "")}
+                  aria-checked={browseView === "by_source"}
+                  onClick={() => setBrowseViewFromUser("by_source")}
+                  title="Browse clips grouped by source video"
+                >
+                  By source
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  className={"seg-btn" + (browseView === "derived" ? " active" : "")}
+                  aria-checked={browseView === "derived"}
+                  onClick={() => setBrowseViewFromUser("derived")}
+                  title="Videos produced from clip bookmarks"
+                >
+                  Derived
+                </button>
+              </div>
               <button type="button" className="drt-btn" disabled={loading} onClick={() => void reload()}>
                 Refresh
               </button>
@@ -281,48 +711,174 @@ export function ClipsLibraryApp() {
           }
         >
           <p className="clips-lib-meta factory-muted">
-            {loading ? "Loading…" : `${total} clip${total === 1 ? "" : "s"}`}
-            {!loading && clips.length < total ? ` · showing ${clips.length}` : ""}
+            {loading
+              ? "Loading…"
+              : showDerivedList
+                ? `${derivedTotal} derived video${derivedTotal === 1 ? "" : "s"}`
+                : showParentPicker
+                  ? `${parents.length} source video${parents.length === 1 ? "" : "s"}`
+                  : `${total} clip${total === 1 ? "" : "s"}`}
+            {!loading && !showParentPicker && !showDerivedList && clips.length < total
+              ? ` · showing ${clips.length}`
+              : ""}
+            {!loading && browseView === "by_source" && mediaFilter
+              ? ` · ${selectedParent?.media_basename || mediaFilter.split("/").pop()}`
+              : ""}
+            {!loading && showDerivedList && derivedClipFilter ? " · filtered to one clip" : ""}
           </p>
         </PageHeader>
 
         {error ? <p className="drt-err clips-lib-state">{error}</p> : null}
 
         <div className="clips-lib-layout">
-          <aside className="clips-lib-list" aria-label="Clip library">
-            {!loading && clips.length === 0 ? (
-              <p className="factory-muted clips-lib-empty">No clips match these filters.</p>
-            ) : null}
-            {clips.map((c) => {
-              const active = c.clip_id === selectedId;
-              const span = Math.max(0, c.mark_out_s - c.mark_in_s);
-              return (
-                <button
-                  key={c.clip_id}
-                  type="button"
-                  className={"clips-lib-card" + (active ? " clips-lib-card--active" : "")}
-                  onClick={() => setSelectedId(c.clip_id)}
-                >
-                  <div className="clips-lib-card__thumb">
-                    <ClipThumb relpath={c.media_relpath} markIn={c.mark_in_s} />
-                  </div>
-                  <div className="clips-lib-card__body">
-                    <div className="clips-lib-card__title">
-                      {c.label || formatClipTimecode(c.mark_in_s)}
-                      {c.is_default ? <span className="clips-lib-badge clips-lib-badge--default">default</span> : null}
-                    </div>
-                    <div className="clips-lib-card__meta mono">
-                      {formatClipTimecode(c.mark_in_s)}–{formatClipTimecode(c.mark_out_s)}
-                      <span className="factory-muted"> · {span.toFixed(1)}s</span>
-                    </div>
-                    <div className="clips-lib-card__path" title={c.media_relpath || undefined}>
-                      {c.media_basename || c.media_relpath || "(unresolved parent)"}
-                    </div>
-                    <div className="clips-lib-card__origin">{originLabel(c.origin)}</div>
-                  </div>
+          <aside
+            className="clips-lib-list"
+            aria-label={
+              showDerivedList ? "Derived videos" : showParentPicker ? "Source videos" : "Clip library"
+            }
+          >
+            {browseView === "by_source" && mediaFilter ? (
+              <div className="clips-lib-source-bar">
+                <button type="button" className="drt-btn clips-lib-source-bar__back" onClick={clearParentMedia}>
+                  ← Sources
                 </button>
-              );
-            })}
+                <span className="clips-lib-source-bar__name" title={mediaFilter}>
+                  {selectedParent?.media_basename || mediaFilter.split("/").pop() || mediaFilter}
+                </span>
+              </div>
+            ) : null}
+
+            {showDerivedList && (derivedClipFilter || mediaFilter) ? (
+              <div className="clips-lib-source-bar">
+                <button
+                  type="button"
+                  className="drt-btn clips-lib-source-bar__back"
+                  onClick={() => {
+                    setDerivedClipFilter(null);
+                    setMediaFilter(null);
+                  }}
+                >
+                  Clear filter
+                </button>
+                <span className="clips-lib-source-bar__name">
+                  {derivedClipFilter ? `clip ${derivedClipFilter.slice(0, 12)}…` : mediaFilter}
+                </span>
+              </div>
+            ) : null}
+
+            {showParentPicker ? (
+              <>
+                {!loading && parents.length === 0 ? (
+                  <p className="factory-muted clips-lib-empty">No source videos match these filters.</p>
+                ) : null}
+                {parents.map((p) => (
+                  <button
+                    key={p.media_relpath}
+                    type="button"
+                    className="clips-lib-card clips-lib-parent-card"
+                    onClick={() => selectParentMedia(p.media_relpath)}
+                  >
+                    <div className="clips-lib-card__thumb">
+                      <ClipThumb relpath={p.media_relpath} markIn={0} />
+                    </div>
+                    <div className="clips-lib-card__body">
+                      <div className="clips-lib-card__title">
+                        {p.media_basename || p.media_relpath}
+                        {p.has_default ? (
+                          <span className="clips-lib-badge clips-lib-badge--default">has default</span>
+                        ) : null}
+                      </div>
+                      <div className="clips-lib-card__meta">
+                        {p.clip_count} clip{p.clip_count === 1 ? "" : "s"}
+                      </div>
+                      <div className="clips-lib-card__path" title={p.media_relpath}>
+                        {p.media_relpath}
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </>
+            ) : showDerivedList ? (
+              <>
+                {!loading && derived.length === 0 ? (
+                  <p className="factory-muted clips-lib-empty">
+                    No derived videos yet — queue from a clip to populate this list.
+                  </p>
+                ) : null}
+                {derived.map((d) => {
+                  const active = d.job_key === selectedDerivedKey;
+                  return (
+                    <button
+                      key={d.job_key}
+                      type="button"
+                      className={"clips-lib-card" + (active ? " clips-lib-card--active" : "")}
+                      onClick={() => setSelectedDerivedKey(d.job_key)}
+                    >
+                      <div className="clips-lib-card__thumb">
+                        <ClipThumb relpath={d.output_relpath} markIn={0} />
+                      </div>
+                      <div className="clips-lib-card__body">
+                        <div className="clips-lib-card__title">
+                          {d.output_basename || d.job_key}
+                          {d.is_hourly ? <span className="clips-lib-badge">hourly</span> : null}
+                        </div>
+                        <div className="clips-lib-card__meta">
+                          {d.family_slug || "—"}
+                          {d.status ? <span className="factory-muted"> · {d.status}</span> : null}
+                        </div>
+                        <div className="clips-lib-card__path" title={d.source_clip_id}>
+                          from {d.clip_label || "clip"}
+                          {d.source_media_basename ? ` · ${d.source_media_basename}` : ""}
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </>
+            ) : (
+              <>
+                {!loading && clips.length === 0 ? (
+                  <p className="factory-muted clips-lib-empty">No clips match these filters.</p>
+                ) : null}
+                {clips.map((c) => {
+                  const active = c.clip_id === selectedId;
+                  const span = Math.max(0, c.mark_out_s - c.mark_in_s);
+                  return (
+                    <button
+                      key={c.clip_id}
+                      type="button"
+                      className={"clips-lib-card" + (active ? " clips-lib-card--active" : "")}
+                      onClick={() => selectClipId(c.clip_id)}
+                    >
+                      <div className="clips-lib-card__thumb">
+                        <ClipThumb relpath={c.media_relpath} markIn={c.mark_in_s} />
+                      </div>
+                      <div className="clips-lib-card__body">
+                        <div className="clips-lib-card__title">
+                          {c.label || formatClipTimecode(c.mark_in_s)}
+                          {c.is_default ? (
+                            <span className="clips-lib-badge clips-lib-badge--default">default</span>
+                          ) : null}
+                          {active && dirty ? (
+                            <span className="clips-lib-badge clips-lib-badge--dirty">unsaved</span>
+                          ) : null}
+                        </div>
+                        <div className="clips-lib-card__meta mono">
+                          {formatClipTimecode(c.mark_in_s)}–{formatClipTimecode(c.mark_out_s)}
+                          <span className="factory-muted"> · {span.toFixed(1)}s</span>
+                        </div>
+                        {browseView === "all" ? (
+                          <div className="clips-lib-card__path" title={c.media_relpath || undefined}>
+                            {c.media_basename || c.media_relpath || "(unresolved parent)"}
+                          </div>
+                        ) : null}
+                        <div className="clips-lib-card__origin">{originLabel(c.origin)}</div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </>
+            )}
           </aside>
 
           <section
@@ -330,19 +886,103 @@ export function ClipsLibraryApp() {
               "clips-lib-detail" +
               (detailLayout === "split" ? " clips-lib-detail--split" : " clips-lib-detail--stacked")
             }
-            aria-label="Selected clip"
+            aria-label={showDerivedList ? "Selected derived video" : "Selected clip"}
           >
-            {!selected ? (
-              <p className="factory-muted clips-lib-empty">Select a clip to preview.</p>
+            {showDerivedList ? (
+              !selectedDerived ? (
+                <p className="factory-muted clips-lib-empty">Select a derived video to preview.</p>
+              ) : (
+                <>
+                  <div className="clips-lib-detail__head">
+                    <div>
+                      <h2 className="clips-lib-detail__title">
+                        {selectedDerived.output_basename || selectedDerived.job_key}
+                      </h2>
+                      <p className="clips-lib-detail__sub mono">
+                        {selectedDerived.family_slug || "—"}
+                        {selectedDerived.status ? ` · ${selectedDerived.status}` : ""}
+                        {selectedDerived.is_hourly ? " · hourly" : ""}
+                      </p>
+                      <p className="clips-lib-detail__path" title={derivedOutRel || undefined}>
+                        {derivedOutRel || "(no output file yet)"}
+                      </p>
+                      <p className="clips-lib-detail__sub">
+                        From clip{" "}
+                        <button
+                          type="button"
+                          className="clips-lib-inline-link"
+                          onClick={() => {
+                            setDerivedClipFilter(selectedDerived.source_clip_id);
+                            setBrowseViewFromUser("all");
+                            setSelectedId(selectedDerived.source_clip_id);
+                          }}
+                        >
+                          {selectedDerived.clip_label || selectedDerived.source_clip_id}
+                        </button>
+                        {selectedDerived.source_media_basename
+                          ? ` · ${selectedDerived.source_media_basename}`
+                          : ""}
+                      </p>
+                    </div>
+                    <div className="clips-lib-detail__actions">
+                      {derivedOutRel ? (
+                        <a className="drt-btn" href={discoveryLibraryHref(derivedOutRel)}>
+                          Open in Library
+                        </a>
+                      ) : null}
+                      <a className="drt-btn" href={workbenchHref({ jobKey: selectedDerived.job_key })}>
+                        Open in Workbench
+                      </a>
+                      <button
+                        type="button"
+                        className="drt-btn"
+                        onClick={() => setDerivedClipFilter(selectedDerived.source_clip_id)}
+                        title="Show only outputs from this source clip"
+                      >
+                        Filter to clip
+                      </button>
+                    </div>
+                  </div>
+                  {derivedOutRel ? (
+                    <div className="clips-lib-stage clips-lib-stage--stacked">
+                      <div className="clips-lib-stage__viewer">
+                        <div className="clips-lib-player-wrap">
+                          <video
+                            key={derivedOutRel}
+                            className="clips-lib-player"
+                            src={fileUrlFromRel(derivedOutRel)}
+                            controls
+                            playsInline
+                            preload="metadata"
+                            autoPlay={videoAutoplay}
+                            muted={videoAutoplay}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="factory-muted clips-lib-empty">
+                      Job matched a clip but no output file is on disk yet ({selectedDerived.status || "pending"}).
+                    </p>
+                  )}
+                </>
+              )
+            ) : showParentPicker ? (
+              <p className="factory-muted clips-lib-empty">Select a source video to browse its clips.</p>
+            ) : !selected || !draft ? (
+              <p className="factory-muted clips-lib-empty">Select a clip to edit.</p>
             ) : !mediaRelpath ? (
               <p className="drt-err">Parent media path missing for this clip — cannot preview.</p>
             ) : (
               <>
                 <div className="clips-lib-detail__head">
                   <div>
-                    <h2 className="clips-lib-detail__title">{selected.label || "Untitled clip"}</h2>
+                    <h2 className="clips-lib-detail__title">
+                      {displayTitle}
+                      {dirty ? <span className="clips-lib-badge clips-lib-badge--dirty">unsaved</span> : null}
+                    </h2>
                     <p className="clips-lib-detail__sub mono">
-                      {formatClipTimecode(selected.mark_in_s)}–{formatClipTimecode(selected.mark_out_s)}
+                      {formatClipTimecode(draft.markIn)}–{formatClipTimecode(draft.markOut)}
                       {" · "}
                       {originLabel(selected.origin)}
                       {selected.is_default ? " · default" : ""}
@@ -383,6 +1023,18 @@ export function ClipsLibraryApp() {
                     <a className="drt-btn" href={discoveryLibraryHref(mediaRelpath)}>
                       Open in Library
                     </a>
+                    <button
+                      type="button"
+                      className="drt-btn"
+                      onClick={() => {
+                        setDerivedClipFilter(selected.clip_id);
+                        setBrowseView("derived");
+                        persistClipsBrowseView("derived");
+                      }}
+                      title="List videos produced from this clip"
+                    >
+                      Show derived
+                    </button>
                   </div>
                 </div>
 
@@ -402,6 +1054,8 @@ export function ClipsLibraryApp() {
                         controls
                         playsInline
                         preload="metadata"
+                        autoPlay={videoAutoplay}
+                        muted={videoAutoplay}
                         onLoadedMetadata={(e) => {
                           const d = e.currentTarget.duration;
                           if (Number.isFinite(d) && d > 0) setVideoDuration(d);
@@ -426,22 +1080,136 @@ export function ClipsLibraryApp() {
                       mode={trimMode}
                       mediaSyncKey={selected.clip_id}
                       size="default"
-                      readOnly
                       onSeek={setVideoTime}
                       onSyncTime={setVideoTime}
-                      onMarkInChange={() => undefined}
-                      onMarkOutChange={() => undefined}
-                      onModeChange={setTrimMode}
-                      onClear={() => undefined}
+                      onMarkInChange={(t) => setDraft((d) => (d ? { ...d, markIn: t } : d))}
+                      onMarkOutChange={(t) => setDraft((d) => (d ? { ...d, markOut: t } : d))}
+                      onModeChange={(m) => setLoopPlaybackFromUser(m === "repeat")}
+                      onClear={revertDraft}
+                    />
+
+                    <div className="clips-lib-player-tools">
+                      <VideoAutoplayToggle
+                        className="clips-lib-autoplay"
+                        videoAutoplay={videoAutoplay}
+                        onVideoAutoplayChange={setVideoAutoplayFromUser}
+                        label="Autoplay (muted)"
+                      />
+                      <button
+                        type="button"
+                        className={"drq-loop-toggle" + (loopPlayback ? " drq-loop-toggle--on" : "")}
+                        aria-pressed={loopPlayback}
+                        title={loopPlayback ? "Loop clip window" : "Stop at out point"}
+                        onClick={() => setLoopPlaybackFromUser(!loopPlayback)}
+                      >
+                        <span className="drq-loop-toggle__icon" aria-hidden="true">
+                          ↻
+                        </span>
+                        Loop {loopPlayback ? "on" : "off"}
+                      </button>
+                    </div>
+
+                    <ClipBookmarksRail
+                      key={`${mediaRelpath}::${siblingsEpoch}`}
+                      className="clips-lib-siblings"
+                      mediaRelpath={mediaRelpath}
+                      duration={videoDuration}
+                      markIn={markIn}
+                      markOut={markOut}
+                      trimEditable={false}
+                      showActions={false}
+                      origin="discovery"
+                      selectedClipId={selected.clip_id}
+                      onSelectClip={(clip) => {
+                        if (clip) selectClipRow(clip);
+                      }}
+                      onApplyClip={(_mi, _mo, clip) => {
+                        if (clip) selectClipRow(clip);
+                      }}
                     />
                   </div>
 
                   <aside className="clips-lib-stage__controls" aria-label="Clip controls">
-                    {selected.notes ? (
-                      <p className="clips-lib-notes factory-muted" title={selected.notes}>
-                        {selected.notes}
-                      </p>
-                    ) : null}
+                    <div className="clips-lib-editor">
+                      <label className="clips-lib-editor__field">
+                        <span>Label</span>
+                        <input
+                          type="text"
+                          value={draft.label}
+                          disabled={editBusy}
+                          onChange={(e) => setDraft((d) => (d ? { ...d, label: e.target.value } : d))}
+                          aria-label="Clip label"
+                        />
+                      </label>
+                      <label className="clips-lib-editor__field">
+                        <span>Notes</span>
+                        <textarea
+                          value={draft.notes}
+                          disabled={editBusy}
+                          rows={3}
+                          onChange={(e) => setDraft((d) => (d ? { ...d, notes: e.target.value } : d))}
+                          aria-label="Clip notes"
+                        />
+                      </label>
+                      <div className="clips-lib-editor__actions">
+                        <button
+                          type="button"
+                          className="drt-btn"
+                          disabled={!dirty || editBusy}
+                          onClick={() => void saveDraft()}
+                        >
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          className="drt-btn"
+                          disabled={!dirty || editBusy}
+                          onClick={revertDraft}
+                        >
+                          Revert
+                        </button>
+                        <button
+                          type="button"
+                          className="drt-btn"
+                          disabled={!dirty || editBusy}
+                          onClick={() => void saveAsNew()}
+                          title="Create a new clip with the current draft window"
+                        >
+                          Save as new
+                        </button>
+                        {selected.is_default ? (
+                          <button
+                            type="button"
+                            className="drt-btn"
+                            disabled={editBusy}
+                            onClick={() => void setDefault(false)}
+                          >
+                            Clear default
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="drt-btn"
+                            disabled={editBusy}
+                            onClick={() => void setDefault(true)}
+                          >
+                            Set default
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="drt-btn clips-lib-editor__delete"
+                          disabled={editBusy}
+                          onClick={() => void deleteSelected()}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                      {editError ? <p className="drt-err clips-lib-editor__status">{editError}</p> : null}
+                      {editMsg && !editError ? (
+                        <p className="factory-muted clips-lib-editor__status">{editMsg}</p>
+                      ) : null}
+                    </div>
 
                     {queueItem ? (
                       <DiscoveryQueueFromClip
@@ -452,6 +1220,7 @@ export function ClipsLibraryApp() {
                         duration={videoDuration}
                         fps={queueItem.frame_rate || 16}
                         activeClip={selected}
+                        origin="clips"
                       />
                     ) : null}
                   </aside>

@@ -653,14 +653,29 @@ def _build_discovery_og_wip_index(cfg: "ServerConfig") -> Dict[str, Any]:
     return built
 
 
+_DISCOVERY_INDEX_CACHE: Dict[str, Tuple[float, int, Dict[str, Any]]] = {}
+
+
 def _load_discovery_index_disk(path: Path) -> Optional[Dict[str, Any]]:
     if not path.exists():
         return None
     try:
+        st = path.stat()
+        key = str(path)
+        cached = _DISCOVERY_INDEX_CACHE.get(key)
+        if cached and cached[0] == st.st_mtime and cached[1] == st.st_size:
+            return cached[2]
         obj = _read_json(path)
     except Exception:
         return None
-    return obj if isinstance(obj, dict) else None
+    if not isinstance(obj, dict):
+        return None
+    try:
+        st = path.stat()
+        _DISCOVERY_INDEX_CACHE[key] = (st.st_mtime, st.st_size, obj)
+    except OSError:
+        pass
+    return obj
 
 
 def _discovery_index_health_path(path: Path) -> Path:
@@ -1886,6 +1901,7 @@ def _shape_factory_clips_library_payload(cfg: "ServerConfig", q: Dict[str, List[
 
     origin = (q.get("origin") or [""])[0].strip() or None
     query = (q.get("q") or [""])[0].strip() or None
+    media_relpath = (q.get("media_relpath") or q.get("media") or [""])[0].strip() or None
     defaults_only = (q.get("defaults_only") or [""])[0].strip().lower() in ("1", "true", "yes")
     reg = _clips_registry_path(cfg)
     con = connect_clips(reg)
@@ -1897,6 +1913,45 @@ def _shape_factory_clips_library_payload(cfg: "ServerConfig", q: Dict[str, List[
             origin=origin,
             q=query,
             defaults_only=defaults_only,
+            media_relpath=media_relpath,
+        )
+    finally:
+        con.close()
+
+
+def _shape_factory_clips_derived_payload(cfg: "ServerConfig", q: Dict[str, List[str]]) -> Dict[str, Any]:
+    """GET /api/shape-factory/clips/derived — outputs from jobs that used a clip bookmark."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_clips import connect_clips, list_clip_derived_videos  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    def _int(name: str, default: int) -> int:
+        raw = (q.get(name) or [""])[0].strip()
+        if not raw:
+            return default
+        try:
+            return int(raw)
+        except ValueError:
+            return default
+
+    clip_id = (q.get("clip_id") or [""])[0].strip() or None
+    media_relpath = (q.get("media_relpath") or q.get("media") or [""])[0].strip() or None
+    include_pending = (q.get("include_pending") or [""])[0].strip().lower() in ("1", "true", "yes")
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    jobs_root = Path(data_root) / "shape_factory" / "jobs"
+    reg = _clips_registry_path(cfg)
+    con = connect_clips(reg)
+    try:
+        return list_clip_derived_videos(
+            jobs_root=jobs_root,
+            output_root=cfg.output_root,
+            con=con,
+            clip_id=clip_id,
+            media_relpath=media_relpath,
+            limit=_int("limit", 200),
+            include_without_output=include_pending,
         )
     finally:
         con.close()
@@ -1991,6 +2046,7 @@ def _shape_factory_clips_mutate_payload(cfg: "ServerConfig", body: Dict[str, Any
                 tout = float(body.get("mark_out") if body.get("mark_out") is not None else body.get("mark_out_s"))
             except (TypeError, ValueError) as e:
                 raise ValueError("bad_marks") from e
+            create_notes = body.get("notes")
             clip = create_clip(
                 con,
                 parent_content_id=parent,
@@ -1998,6 +2054,7 @@ def _shape_factory_clips_mutate_payload(cfg: "ServerConfig", body: Dict[str, Any
                 mark_out_s=tout,
                 label=str(body.get("label") or "Clip"),
                 origin=str(body.get("origin") or "workbench"),
+                notes=str(create_notes) if create_notes is not None else None,
                 duration_s=duration or None,
             )
             if body.get("set_default"):
@@ -2020,6 +2077,8 @@ def _shape_factory_clips_mutate_payload(cfg: "ServerConfig", body: Dict[str, Any
                 kwargs["mark_out_s"] = float(body.get("mark_out") if body.get("mark_out") is not None else body.get("mark_out_s"))
             if body.get("label") is not None:
                 kwargs["label"] = str(body.get("label"))
+            if body.get("notes") is not None:
+                kwargs["notes"] = str(body.get("notes"))
             clip = update_clip(con, cid, **kwargs)
             return {"ok": True, "clip": clip}
         if op == "delete":
@@ -3755,10 +3814,18 @@ def _discovery_compute_asset_ratings(
     return payload
 
 
+_LINEAGE_GRAPH_CACHE: Dict[str, Tuple[float, int, Dict[str, Any]]] = {}
+
+
 def _discovery_load_lineage_graph(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {"version": 1, "edges": []}
     try:
+        st = path.stat()
+        key = str(path)
+        cached = _LINEAGE_GRAPH_CACHE.get(key)
+        if cached and cached[0] == st.st_mtime and cached[1] == st.st_size:
+            return cached[2]
         obj = _read_json(path)
     except Exception:
         return {"version": 1, "edges": []}
@@ -3767,6 +3834,11 @@ def _discovery_load_lineage_graph(path: Path) -> Dict[str, Any]:
     edges = obj.get("edges")
     if not isinstance(edges, list):
         obj["edges"] = []
+    try:
+        st = path.stat()
+        _LINEAGE_GRAPH_CACHE[str(path)] = (st.st_mtime, st.st_size, obj)
+    except OSError:
+        pass
     return obj
 
 
@@ -3810,6 +3882,11 @@ def _discovery_persist_lineage_edge_rows(cfg: "ServerConfig", rows: List[Dict[st
         doc["version"] = 1
         doc["updated_at"] = _dt.datetime.now(tz=_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         _atomic_write_json(path, doc)
+        try:
+            st = path.stat()
+            _LINEAGE_GRAPH_CACHE[str(path)] = (st.st_mtime, st.st_size, doc)
+        except OSError:
+            _LINEAGE_GRAPH_CACHE.pop(str(path), None)
         return added
 
 
@@ -4377,7 +4454,33 @@ def _discovery_lineage_file_url(cfg: "ServerConfig", relpath: Any) -> Optional[s
     return "/files/" + urllib.parse.quote(in_norm, safe="")
 
 
-def _discovery_lineage_summarize_item(item: Dict[str, Any], cfg: Optional["ServerConfig"] = None) -> Dict[str, Any]:
+def _discovery_lineage_file_url_unchecked(relpath: Any) -> Optional[str]:
+    """Build a ``/files/`` URL without existence probes (lineage lists are latency-sensitive)."""
+    if not isinstance(relpath, str) or not relpath.strip():
+        return None
+    norm = _normalize_rel_posix(relpath.strip().lstrip("/"))
+    if not norm:
+        return None
+    return "/files/" + urllib.parse.quote(norm, safe="")
+
+
+def _discovery_lineage_summarize_item(
+    item: Dict[str, Any],
+    cfg: Optional["ServerConfig"] = None,
+    *,
+    enrich: bool = False,
+    ratings_doc: Optional[Dict[str, Any]] = None,
+    appetite_doc: Optional[Dict[str, Any]] = None,
+    disposition_doc: Optional[Dict[str, Any]] = None,
+    work_items_doc: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Compact item summary for lineage UI cards.
+
+    By default skips ratings/appetite/work-item enrichment and disk existence checks:
+    enriching every sibling while reloading indexes held the GIL for tens of seconds and
+    starved the rest of the Discovery page (ratings, facets, parameters).
+    """
     if not isinstance(item, dict):
         out = {
             "group_id": None,
@@ -4399,18 +4502,27 @@ def _discovery_lineage_summarize_item(item: Dict[str, Any], cfg: Optional["Serve
     }
     out["media_kind"] = _discovery_lineage_media_kind(out)
     if cfg is not None:
-        thumb_u = _discovery_lineage_file_url(cfg, out.get("thumb_relpath"))
+        # Prefer cheap URLs for graph cards; existence probing is for single-asset detail paths.
+        thumb_u = _discovery_lineage_file_url_unchecked(out.get("thumb_relpath"))
         if thumb_u:
             out["thumb_url"] = thumb_u
-        primary_u = _discovery_lineage_file_url(cfg, out.get("relpath"))
+        primary_u = _discovery_lineage_file_url_unchecked(out.get("relpath"))
         if primary_u:
             out["url"] = primary_u
-        video_u = _discovery_lineage_file_url(cfg, out.get("video_relpath"))
+        video_u = _discovery_lineage_file_url_unchecked(out.get("video_relpath"))
         if video_u:
             out["video_url"] = video_u
         if not thumb_u and primary_u and out.get("media_kind") in ("png", "image"):
             out["thumb_url"] = primary_u
-        out = _discovery_enrich_item_ratings(out, cfg)
+        if enrich:
+            out = _discovery_enrich_item_ratings(
+                out,
+                cfg,
+                ratings_doc=ratings_doc,
+                appetite_doc=appetite_doc,
+                disposition_doc=disposition_doc,
+                work_items_doc=work_items_doc,
+            )
     return out
 
 
@@ -4908,7 +5020,11 @@ def _discovery_compute_asset_lineage_graph_only(
         "external_sources": external_sources,
         "errors": infer_errors,
         "notes": [
-            "Merged graph edges with live parent inference from this asset's embedded prompt (infer_parents=1).",
+            (
+                "Merged graph edges with live parent inference from this asset's embedded prompt (infer_parents=1)."
+                if infer_parents
+                else "Read persisted discovery_lineage_edges.json only (infer_parents=0)."
+            ),
             "provenance_chain is oldest → current; external/workspace inputs appear as source before the seed.",
         ],
     }
@@ -7087,6 +7203,15 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return _json_response(
                     self, 500, {"ok": False, "error": "clips_library_failed", "detail": str(e)}
+                )
+
+        if path == "/api/shape-factory/clips/derived":
+            try:
+                payload = _shape_factory_clips_derived_payload(cfg, q)
+                return _json_response(self, 200, payload)
+            except Exception as e:
+                return _json_response(
+                    self, 500, {"ok": False, "error": "clips_derived_failed", "detail": str(e)}
                 )
 
         if path == "/api/shape-factory/clips":

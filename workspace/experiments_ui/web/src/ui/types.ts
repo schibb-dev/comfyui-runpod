@@ -1240,6 +1240,9 @@ export type ShapeFactoryMapQueueOverrides = {
     overlap?: number;
     frame_load_cap?: number;
     skip_first_frames?: number;
+    /** Seconds — preferred Use window; factory re-derives skip/cap with probed fps. */
+    mark_in?: number;
+    mark_out?: number;
   };
 };
 
@@ -1696,6 +1699,12 @@ export type WorkProductDetailRow = {
   json_path?: string;
   /** Inline peek kind (e.g. shape contract, decoded prompt). */
   peek?: "shape" | "prompt" | string;
+  /** Binding / media preview thumbnail (/files/…). */
+  thumb_url?: string | null;
+  /** Direct asset URL (/files/…) when the binding is media. */
+  asset_url?: string | null;
+  /** Workspace-relative path for deep links (Discovery / files). */
+  relpath?: string | null;
 };
 
 export type WorkProductBinding = {

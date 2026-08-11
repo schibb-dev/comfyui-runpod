@@ -2943,6 +2943,7 @@ function DiscoveryDesktopPreview({
                   duration={previewDuration}
                   fps={Number(it.frame_rate) || 18}
                   activeClip={activeClip}
+                  origin="library"
                 />
               ) : null}
             </>

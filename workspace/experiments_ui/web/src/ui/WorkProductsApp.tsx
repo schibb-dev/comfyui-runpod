@@ -1,7 +1,7 @@
 import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { cancelWorkItem, createWorkItems, discardShapeFactoryJob, fetchIdentityStillCandidates, fetchShapeFactoryJsonPeek, fetchShapeFactoryWorkProducts, mintIdentityStill, replayShapeFactory, runDispositionStep, unqueueShapeFactory, updatePendingShapeFactoryTrim } from "./api";
-import type { IdentityStillCandidate, IdentityStillMintTarget, ShapeFactoryClip } from "./api";
+import { discardShapeFactoryJob, fetchShapeFactoryJsonPeek, fetchShapeFactoryWorkProducts, replayShapeFactory, unqueueShapeFactory, updatePendingShapeFactoryTrim } from "./api";
+import type { ShapeFactoryClip } from "./api";
 import { ClipBookmarksRail } from "./ClipBookmarksRail";
 import { ComfyLiveMetricsBar, ComfyLivePreview } from "./ComfyLivePreview";
 import { PageHeader } from "./PageHeader";
@@ -20,10 +20,11 @@ import {
   vhsDefaultsToMarks,
 } from "./workProductTrim";
 import { useTrimPlaybackEnforcement, type TrimPlaybackMode } from "./useTrimPlayback";
-import { parseWorkbenchDeepLink } from "./discoveryDeepLink";
+import { discoveryLibraryHref, parseWorkbenchDeepLink, submitHref } from "./discoveryDeepLink";
 import type {
   ShapeFactoryMapQueueOverrides,
   WorkItem,
+  WorkProductBinding,
   WorkProductDetailRow,
   WorkProductFamilyOption,
   WorkProductItem,
@@ -1944,15 +1945,90 @@ function ShapePeekButton({ shape, label }: { shape: WorkProductShapeProfile; lab
   );
 }
 
+function bindingAssetHref(row: WorkProductDetailRow): string | null {
+  const rel = String(row.relpath || "").trim().replace(/^\/+/, "").replace(/\\/g, "/");
+  const asset = String(row.asset_url || "").trim();
+  if (rel) {
+    // Indexed outputs → Discovery; input stills / other files → /files/.
+    if (/^(og|wip|output)\//i.test(rel) || /\.mp4($|\?)/i.test(rel)) {
+      return discoveryLibraryHref(rel);
+    }
+    return "/files/" + encodeURIComponent(rel);
+  }
+  return asset || null;
+}
+
+function BindingDetailValue({ row }: { row: WorkProductDetailRow }) {
+  const thumb = String(row.thumb_url || "").trim() || null;
+  const href = bindingAssetHref(row);
+  const label = enrichRoleMentions(row.value);
+  const openLabel = href?.startsWith("/discovery") ? "Open in Discovery" : "Open asset";
+  return (
+    <div className="work-product-binding-media">
+      {thumb ? (
+        href ? (
+          <a className="work-product-binding-media__thumb" href={href} title={openLabel}>
+            <img src={thumb} alt="" loading="lazy" />
+          </a>
+        ) : (
+          <span className="work-product-binding-media__thumb">
+            <img src={thumb} alt="" loading="lazy" />
+          </span>
+        )
+      ) : null}
+      <div className="work-product-binding-media__meta">
+        <div className="work-product-binding-media__value" title={row.value}>
+          {label}
+        </div>
+        {href ? (
+          <a className="work-product-binding-media__link" href={href}>
+            {row.relpath || openLabel}
+          </a>
+        ) : row.relpath ? (
+          <span className="work-product-binding-media__link work-product-binding-media__link--muted">
+            {row.relpath}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/** Merge media fields from item.bindings when detail rows lack thumb/url (stale API process). */
+function enrichBindingDetailRow(
+  row: WorkProductDetailRow,
+  bindings?: Record<string, WorkProductBinding> | null,
+): WorkProductDetailRow {
+  if (!row.label.startsWith("Binding · ")) return row;
+  const slot = row.label.slice("Binding · ".length).trim();
+  const meta = bindings?.[slot];
+  if (!meta) return row;
+  return {
+    ...row,
+    thumb_url: row.thumb_url || meta.thumb_url || null,
+    asset_url: row.asset_url || meta.url || null,
+    relpath: row.relpath || meta.relpath || null,
+  };
+}
+
 function DetailValue({
   row,
   prompt,
   shape,
+  bindings,
 }: {
   row: WorkProductDetailRow;
   prompt?: WorkProductPromptProfile | null;
   shape?: WorkProductShapeProfile | null;
+  bindings?: Record<string, WorkProductBinding> | null;
 }) {
+  const bindingRow = row.label.startsWith("Binding · ") ? enrichBindingDetailRow(row, bindings) : row;
+  if (
+    bindingRow.label.startsWith("Binding · ") &&
+    (bindingRow.thumb_url || bindingRow.asset_url || bindingRow.relpath)
+  ) {
+    return <BindingDetailValue row={bindingRow} />;
+  }
   if (row.peek === "shape" && shape && !shape.missing) {
     return <ShapePeekButton shape={shape} label={row.value} />;
   }
@@ -2319,29 +2395,44 @@ function smartExtendFamily(item: WorkProductItem, successors: Record<string, str
   return src;
 }
 
-/** Seed must have job_key plus at least one recoverable source/prompt binding. */
-function canDeriveWorkProduct(item: WorkProductItem): boolean {
-  if (!String(item.job_key || "").trim()) return false;
-  const binds = item.bindings || {};
-  const slots = Object.values(binds);
-  if (!slots.length) return false;
-  return slots.some((b) => Boolean(String(b?.path || b?.relpath || "").trim()));
+
+
+function badgePriorityClass(priority: string | undefined): string {
+  return priority === "front" ? "work-product-badge--front" : "work-product-badge--pending";
 }
 
-function advanceRouteLabel(stepId: string): string {
-  if (stepId === "advance.extend") return "Extend";
-  if (stepId === "advance.derive") return "Derive";
-  return "Vary";
+function workbenchAdvanceSubmitHref(
+  item: WorkProductItem,
+  opts: {
+    outputTrim: InputTrimState;
+    sourceClipId?: string | null;
+    extendFamilyDefaults?: Record<string, string>;
+    step?: string | null;
+    clip?: ShapeFactoryClip | null;
+  },
+): string {
+  const media = String(item.output_relpath || "").trim();
+  const successors = opts.extendFamilyDefaults || EMPTY_EXTEND_DEFAULTS;
+  const family = smartExtendFamily(item, successors);
+  const clip = opts.clip || null;
+  return submitHref({
+    mediaRelpath: media || null,
+    fromJob: item.job_key || null,
+    family: family || item.family_slug || null,
+    markIn: clip ? clip.mark_in_s : opts.outputTrim.markIn,
+    markOut: clip ? clip.mark_out_s : opts.outputTrim.markOut,
+    clipId: clip?.clip_id || opts.sourceClipId || null,
+    step: opts.step || "advance.extend",
+    origin: "workbench",
+  });
 }
 
 function WorkProductQuickQueue({
   item,
-  families,
   extendFamilyDefaults,
   outputTrim,
   sourceTrim,
   sourceClipId,
-  extendFromClipRef,
   onCommitted,
 }: {
   item: WorkProductItem;
@@ -2350,163 +2441,28 @@ function WorkProductQuickQueue({
   outputTrim: InputTrimState;
   sourceTrim: InputTrimState;
   sourceClipId?: string | null;
-  extendFromClipRef?: React.MutableRefObject<((clip: ShapeFactoryClip) => void) | null>;
   onCommitted?: () => void;
 }) {
   const open = item.work_items_open || [];
   const extendOpen = openPoolItem(open, "extend");
   const varyOpen = openPoolItem(open, "vary");
   const deriveOpen = openPoolItem(open, "derive");
-  const sourceFamily = String(item.family_slug || "").trim();
-  const successors = extendFamilyDefaults || EMPTY_EXTEND_DEFAULTS;
-  const defaultExtend = smartExtendFamily(item, successors);
-  const defaultVary = smartVaryFamily(item);
-  const defaultDerive = smartDeriveFamily(item);
-  const canDerive = canDeriveWorkProduct(item);
-  const familyOpts = useMemo(() => {
-    const rows = [...(families || [])];
-    for (const slug of [sourceFamily, defaultExtend, defaultVary, defaultDerive]) {
-      if (slug && !rows.some((f) => f.slug === slug)) {
-        rows.unshift({ slug });
-      }
-    }
-    return rows;
-  }, [families, sourceFamily, defaultExtend, defaultVary, defaultDerive]);
-
-  const [extendOn, setExtendOn] = useState(() => Boolean(extendOpen));
-  const [varyOn, setVaryOn] = useState(() => Boolean(varyOpen));
-  const [deriveOn, setDeriveOn] = useState(() => Boolean(deriveOpen));
-  const [extendFamily, setExtendFamily] = useState(defaultExtend);
-  const [varyFamily, setVaryFamily] = useState(defaultVary);
-  const [deriveFamily, setDeriveFamily] = useState(defaultDerive);
-  const [extendTouched, setExtendTouched] = useState(false);
-  const [varyTouched, setVaryTouched] = useState(false);
-  const [deriveTouched, setDeriveTouched] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [identityNeeded, setIdentityNeeded] = useState(false);
-  const [identityCandidates, setIdentityCandidates] = useState<IdentityStillCandidate[]>([]);
-  const [identityMintTargets, setIdentityMintTargets] = useState<IdentityStillMintTarget[]>([]);
-  const [identitySelectedPath, setIdentitySelectedPath] = useState<string>("");
-  const [identitySelectedId, setIdentitySelectedId] = useState<string>("");
-  const [identityLineage, setIdentityLineage] = useState<string>("");
-  const [identityLoading, setIdentityLoading] = useState(false);
-  const [identityMintBusy, setIdentityMintBusy] = useState(false);
-
-  // Hard reset only when navigating to a different job.
-  useEffect(() => {
-    setExtendOn(Boolean(openPoolItem(item.work_items_open, "extend")));
-    setVaryOn(Boolean(openPoolItem(item.work_items_open, "vary")));
-    setDeriveOn(Boolean(openPoolItem(item.work_items_open, "derive")));
-    setExtendTouched(false);
-    setVaryTouched(false);
-    setDeriveTouched(false);
-    setExtendFamily(smartExtendFamily(item, successors));
-    setVaryFamily(smartVaryFamily(item));
-    setDeriveFamily(smartDeriveFamily(item));
-    setMsg(null);
-    setIdentityNeeded(false);
-    setIdentityCandidates([]);
-    setIdentityMintTargets([]);
-    setIdentitySelectedPath("");
-    setIdentitySelectedId("");
-    setIdentityLineage("");
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: job switch only
-  }, [item.job_key]);
-
-  // Open work items may appear after commit / quiet refresh — check those boxes,
-  // but never uncheck just because a route is not yet (or no longer) open.
-  useEffect(() => {
-    if (openPoolItem(item.work_items_open, "extend")) setExtendOn(true);
-    if (openPoolItem(item.work_items_open, "vary")) setVaryOn(true);
-    if (openPoolItem(item.work_items_open, "derive")) setDeriveOn(true);
-  }, [item.work_items_open_count, item.work_items_open]);
-
-  // Refresh smart family defaults until the operator picks an override.
-  useEffect(() => {
-    if (!extendTouched) setExtendFamily(smartExtendFamily(item, successors));
-    if (!varyTouched) setVaryFamily(smartVaryFamily(item));
-    if (!deriveTouched) setDeriveFamily(smartDeriveFamily(item));
-  }, [item.family_slug, item.work_items_open, item.work_items_open_count, successors, extendTouched, varyTouched, deriveTouched, item]);
-
   const relpath = String(item.output_relpath || "").trim();
   const jobKey = String(item.job_key || "").trim();
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
 
-  // Load identity-still candidates when Extend targets a family that needs an image slot.
-  useEffect(() => {
-    if (!extendOn || !relpath) {
-      setIdentityNeeded(false);
-      setIdentityCandidates([]);
-      setIdentityMintTargets([]);
-      setIdentitySelectedPath("");
-      setIdentitySelectedId("");
-      setIdentityLineage("");
-      return;
-    }
-    let cancelled = false;
-    const fam = extendFamily || defaultExtend || "";
-    setIdentityLoading(true);
-    void (async () => {
-      try {
-        const res = await fetchIdentityStillCandidates({
-          relpath,
-          job_key: jobKey || undefined,
-          family_slug: fam || undefined,
-        });
-        if (cancelled) return;
-        const needed = Boolean(res.needed);
-        setIdentityNeeded(needed);
-        const cands = Array.isArray(res.candidates) ? res.candidates : [];
-        setIdentityCandidates(cands);
-        setIdentityMintTargets(Array.isArray(res.mint_targets) ? res.mint_targets : []);
-        const summary = (res.lineage_summary || [])
-          .map((h) => {
-            const name = String(h.relpath || "").split("/").pop() || "";
-            const famH = h.family_slug ? `@${h.family_slug}` : "";
-            return name ? `${name}${famH}` : "";
-          })
-          .filter(Boolean)
-          .reverse()
-          .join(" → ");
-        setIdentityLineage(summary);
-        if (needed) {
-          const rec = cands.find((c) => c.id === res.recommended_id) || cands[0];
-          if (rec?.path) {
-            setIdentitySelectedPath(rec.path);
-            setIdentitySelectedId(rec.id);
-          } else {
-            setIdentitySelectedPath("");
-            setIdentitySelectedId("");
-          }
-        } else {
-          setIdentitySelectedPath("");
-          setIdentitySelectedId("");
-        }
-      } catch {
-        if (cancelled) return;
-        // Stale API or missing route — don't block Extend on non-identity families.
-        setIdentityNeeded(false);
-        setIdentityCandidates([]);
-        setIdentityMintTargets([]);
-      } finally {
-        if (!cancelled) setIdentityLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [extendOn, extendFamily, defaultExtend, relpath, jobKey]);
-  const canAct =
-    Boolean(relpath) &&
-    (extendOn || varyOn || (deriveOn && canDerive)) &&
-    !busy &&
-    !(extendOn && identityNeeded && !identitySelectedPath && !identityLoading);
   const canRerun = Boolean(jobKey) && !busy;
   const canUnqueue = canUnqueueWorkProduct(item) && !busy;
   const canArchive = canArchiveTerminalWorkProduct(item) && !busy;
   const canDelete = canDeleteWorkProduct(item) && !busy;
   const deleteIsPendingOnly = canDiscardPendingWorkProduct(item);
   const nonFactory = isNonFactoryWorkProduct(item);
+  const submitUrl = workbenchAdvanceSubmitHref(item, {
+    outputTrim,
+    sourceClipId,
+    extendFamilyDefaults,
+  });
 
   const unqueue = async () => {
     const pid = String(item.prompt_id || "").trim();
@@ -2619,7 +2575,7 @@ function WorkProductQuickQueue({
       const { overrides, warning } = trimOverridesFromState(sourceTrim, null);
       const res = await replayShapeFactory({
         job_key: jobKey,
-        family_slug: sourceFamily || undefined,
+        family_slug: String(item.family_slug || "").trim() || undefined,
         extend: false,
         front: when === "now",
         overrides,
@@ -2647,365 +2603,37 @@ function WorkProductQuickQueue({
     }
   };
 
-  const commit = async (when: "now" | "later") => {
-    if (!relpath || busy) return;
-    if (!extendOn && !varyOn && !(deriveOn && canDerive)) {
-      setMsg("Select Extend, Vary, and/or Derive");
-      return;
-    }
-    if (extendOn && identityNeeded && !identitySelectedPath) {
-      if (identityMintTargets.length) {
-        setMsg("Pick or mint an identity still before Extend");
-      } else {
-        setMsg("missing_identity_still — no still or video frame available");
-      }
-      return;
-    }
-    setBusy(true);
-    setMsg("");
-    const parts: string[] = [];
-    try {
-      // Unchecked routes: cancel pending (skip running).
-      for (const pool of ["extend", "vary", "derive"] as const) {
-        const checked = pool === "extend" ? extendOn : pool === "vary" ? varyOn : deriveOn && canDerive;
-        if (checked) continue;
-        const wi = openPoolItem(item.work_items_open, pool);
-        if (!wi) continue;
-        if (wi.status === "running") {
-          parts.push(`${pool}: left running`);
-          continue;
-        }
-        const cancelled = await cancelWorkItem({ work_id: wi.work_id, reason: "unchecked_on_work_products" });
-        if (cancelled.skipped_running) parts.push(`${pool}: left running`);
-        else if (cancelled.cancelled) parts.push(`${pool}: cancelled`);
-      }
-
-      const routes: Array<{ step_id: string; factory_family?: string }> = [];
-      if (extendOn) {
-        routes.push({
-          step_id: "advance.extend",
-          factory_family: extendFamily || defaultExtend || undefined,
-        });
-      }
-      if (varyOn) {
-        routes.push({
-          step_id: "advance.vary",
-          factory_family: varyFamily || defaultVary || undefined,
-        });
-      }
-      if (deriveOn && canDerive) {
-        routes.push({
-          step_id: "advance.derive",
-          factory_family: deriveFamily || defaultDerive || undefined,
-        });
-      }
-
-      if (routes.length) {
-        const created = await createWorkItems({
-          source_relpath: relpath,
-          routes,
-          queue_now: when === "now",
-        });
-        const bits = [`${when}: ${created.count ?? routes.length} route(s)`];
-        if (created.upgraded) bits.push(`↑${created.upgraded}`);
-        if (created.demoted) bits.push(`↓${created.demoted}`);
-        if (created.skipped_running) bits.push(`skip ${created.skipped_running} running`);
-        parts.push(bits.join(" "));
-
-        for (const route of routes) {
-          try {
-            const trimState = route.step_id === "advance.extend" ? outputTrim : sourceTrim;
-            const frameHint = route.step_id === "advance.extend" ? item.media_meta?.frame_count : null;
-            const { overrides, warning } = trimOverridesFromState(
-              trimState,
-              frameHint,
-              route.step_id === "advance.vary" ? sourceClipId : null,
-            );
-            const res = await runDispositionStep({
-              relpath,
-              step_id: route.step_id,
-              family_slug: route.factory_family,
-              job_key: item.job_key || undefined,
-              front: when === "now",
-              overrides,
-              ...(route.step_id === "advance.extend" && identitySelectedPath
-                ? { identity_anchor: identitySelectedPath }
-                : {}),
-            });
-            const label = advanceRouteLabel(route.step_id);
-            const fam = route.factory_family ? `@${route.factory_family}` : "";
-            const nested = (res.result as Record<string, unknown> | undefined) || {};
-            const nestedResult = (nested.result as Record<string, unknown> | undefined) || {};
-            const jobKey = String(nested.job_key || nestedResult.job_key || "").trim();
-            const clampMsg =
-              String(
-                (nested.trim_clamped as { message?: string } | undefined)?.message ||
-                  (nestedResult.trim_clamped as { message?: string } | undefined)?.message ||
-                  warning ||
-                  "",
-              ).trim() || "";
-            parts.push(
-              [
-                jobKey ? `${label}${fam}→${jobKey}` : `${label}${fam}: ${res.hook || "ok"}`,
-                clampMsg,
-              ]
-                .filter(Boolean)
-                .join(" · "),
-            );
-          } catch (e) {
-            const label = advanceRouteLabel(route.step_id);
-            parts.push(`${label}: ${e instanceof Error ? e.message : String(e)}`);
-          }
-        }
-      }
-
-      setMsg(parts.join(" · ") || "Done");
-      onCommitted?.();
-    } catch (e) {
-      setMsg(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const runExtendFromClip = async (clip: ShapeFactoryClip, when: "now" | "later" = "now") => {
-    if (!relpath || busy) return;
-    if (identityNeeded && !identitySelectedPath) {
-      setMsg(identityMintTargets.length ? "Pick or mint an identity still before Extend" : "missing_identity_still — no still or video frame available");
-      return;
-    }
-    setExtendOn(true);
-    setBusy(true);
-    setMsg("");
-    try {
-      const created = await createWorkItems({
-        source_relpath: relpath,
-        routes: [{ step_id: "advance.extend", factory_family: extendFamily || defaultExtend || undefined }],
-        queue_now: when === "now",
-      });
-      const win = marksToVhsWindow(
-        clip.mark_in_s,
-        clip.mark_out_s,
-        sourceTrim.duration || Math.max(0, clip.mark_out_s - clip.mark_in_s),
-        sourceTrim.fps || parseFps(item.media_meta?.fps),
-        null,
-      );
-      const overrides: ShapeFactoryMapQueueOverrides = {
-        source_clip_id: clip.clip_id,
-        parameters: {
-          skip_first_frames: win.skip_first_frames,
-          frame_load_cap: win.frame_load_cap,
-        },
-      };
-      const res = await runDispositionStep({
-        relpath,
-        step_id: "advance.extend",
-        family_slug: extendFamily || defaultExtend || undefined,
-        job_key: item.job_key || undefined,
-        front: when === "now",
-        overrides,
-        ...(identitySelectedPath ? { identity_anchor: identitySelectedPath } : {}),
-      });
-      const nested = (res.result as Record<string, unknown> | undefined) || {};
-      const nestedResult = (nested.result as Record<string, unknown> | undefined) || {};
-      const nextKey = String(nested.job_key || nestedResult.job_key || "").trim();
-      const clampMsg = String(
-        (nested.trim_clamped as { message?: string } | undefined)?.message ||
-          (nestedResult.trim_clamped as { message?: string } | undefined)?.message ||
-          win.warning ||
-          "",
-      ).trim();
-      setMsg(
-        [
-          `Use for Extend ${when}`,
-          created.count != null ? `${created.count} route(s)` : null,
-          nextKey ? `→${nextKey}` : res.hook || "ok",
-          clampMsg,
-        ]
-          .filter(Boolean)
-          .join(" · "),
-      );
-      onCommitted?.();
-    } catch (e) {
-      setMsg(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  useEffect(() => {
-    if (!extendFromClipRef) return;
-    extendFromClipRef.current = (clip) => {
-      void runExtendFromClip(clip, "now");
-    };
-    return () => {
-      if (extendFromClipRef) extendFromClipRef.current = null;
-    };
-  });
-
-  const mintIdentity = async (target: IdentityStillMintTarget) => {
-    if (identityMintBusy || busy) return;
-    setIdentityMintBusy(true);
-    setMsg(null);
-    try {
-      const res = await mintIdentityStill({
-        video_relpath: target.video_relpath,
-        video_path: target.video_path,
-        at: target.at || "start",
-      });
-      const cand = res.candidate;
-      if (cand?.path) {
-        setIdentityCandidates((prev) => {
-          if (prev.some((c) => c.id === cand.id || c.path === cand.path)) return prev;
-          return [cand, ...prev];
-        });
-        setIdentitySelectedPath(cand.path);
-        setIdentitySelectedId(cand.id);
-        setMsg(`Minted identity still · ${cand.relpath || cand.path}`);
-      }
-    } catch (e) {
-      setMsg(e instanceof Error ? e.message : String(e));
-    } finally {
-      setIdentityMintBusy(false);
-    }
-  };
-
-  const familySelect = (
-    value: string,
-    onChange: (slug: string) => void,
-    disabled: boolean,
-    label: string,
-  ) => (
-    <label className="work-product-quick-queue__family-wrap">
-      <span className="work-product-quick-queue__family-label">{label}</span>
-      <select
-        className="work-product-quick-queue__family"
-        value={value || sourceFamily}
-        disabled={disabled || !familyOpts.length}
-        aria-label={`${label} target family`}
-        title={
-          label === "Extend"
-            ? "Family whose shape runs this Extend (defaults to next pipeline stage when known)"
-            : label === "Derive"
-              ? "Family whose shape runs this Derive (defaults to the source family)"
-              : "Family whose shape runs this Vary (defaults to the source family)"
-        }
-        onChange={(e) => onChange(e.target.value)}
-        onClick={(e) => e.stopPropagation()}
+  const openBadge = (wi: WorkItem | null, label: string) =>
+    wi ? (
+      <span
+        className={`work-product-badge ${badgePriorityClass(wi.priority)}`}
+        title={`${label} · ${wi.status}`}
       >
-        {familyOpts.map((f) => (
-          <option key={f.slug} value={f.slug}>
-            {f.slug}
-          </option>
-        ))}
-        {!familyOpts.length && (value || sourceFamily) ? (
-          <option value={value || sourceFamily}>{value || sourceFamily}</option>
-        ) : null}
-      </select>
-    </label>
-  );
+        {label}:{wi.priority === "front" ? "now" : "later"}
+        {wi.status === "running" ? "·run" : ""}
+      </span>
+    ) : null;
 
   return (
-    <div className="work-product-quick-queue" role="group" aria-label="Quick queue — advance">
+    <div className="work-product-quick-queue" role="group" aria-label="Job actions">
       <div className="work-product-quick-queue__row">
-        <span className="work-product-quick-queue__label" title="Queue this output for further processing">
-          Queue
+        <span className="work-product-quick-queue__label" title="Compose the next Advance on Submit">
+          Advance
         </span>
-        <label
-          className={`work-product-quick-queue__check${!relpath ? " work-product-quick-queue__check--na" : ""}`}
-          title={
-            !relpath
-              ? "Extend needs an output — not available for this job"
-              : "Extend — chain this output as the next source_video"
-          }
-        >
-          <input
-            type="checkbox"
-            checked={extendOn}
-            disabled={busy || !relpath || extendOpen?.status === "running"}
-            onChange={(e) => setExtendOn(e.target.checked)}
-          />
-          Extend
-          {extendOpen ? (
-            <span className={`work-product-badge ${badgeClass(extendOpen.priority)}`} title={`Extend · ${extendOpen.status}`}>
-              {extendOpen.priority === "front" ? "now" : "later"}
-              {extendOpen.status === "running" ? "·run" : ""}
-            </span>
-          ) : null}
-        </label>
-        <label
-          className={`work-product-quick-queue__check${!relpath ? " work-product-quick-queue__check--na" : ""}`}
-          title={
-            !relpath
-              ? "Vary needs an output — not available for this job"
-              : "Vary — same bindings (exact replay)"
-          }
-        >
-          <input
-            type="checkbox"
-            checked={varyOn}
-            disabled={busy || !relpath || varyOpen?.status === "running"}
-            onChange={(e) => setVaryOn(e.target.checked)}
-          />
-          Vary
-          {varyOpen ? (
-            <span className={`work-product-badge ${badgeClass(varyOpen.priority)}`} title={`Vary · ${varyOpen.status}`}>
-              {varyOpen.priority === "front" ? "now" : "later"}
-              {varyOpen.status === "running" ? "·run" : ""}
-            </span>
-          ) : null}
-        </label>
-        <label
-          className={`work-product-quick-queue__check${!relpath || !canDerive ? " work-product-quick-queue__check--na" : ""}`}
-          title={
-            !relpath
-              ? "Derive needs an output — not available for this job"
-              : !canDerive
-                ? "Derive needs recoverable source/prompt bindings on this job"
-                : "Derive — new combo from this seed (rewire prompt and/or source)"
-          }
-        >
-          <input
-            type="checkbox"
-            checked={deriveOn && canDerive}
-            disabled={busy || !relpath || !canDerive || deriveOpen?.status === "running"}
-            onChange={(e) => setDeriveOn(e.target.checked)}
-          />
-          Derive
-          {deriveOpen ? (
-            <span className={`work-product-badge ${badgeClass(deriveOpen.priority)}`} title={`Derive · ${deriveOpen.status}`}>
-              {deriveOpen.priority === "front" ? "now" : "later"}
-              {deriveOpen.status === "running" ? "·run" : ""}
-            </span>
-          ) : null}
-        </label>
-        <span className="work-product-quick-queue__sep" aria-hidden="true" />
-        <button
-          type="button"
-          className={`drt-btn work-product-quick-queue__now${!relpath ? " work-product-quick-queue__route--na" : ""}`}
-          disabled={!canAct}
-          title={
-            !relpath
-              ? "Needs an output to queue Extend/Vary/Derive"
-              : "Commit checked routes at front of queue and enqueue now"
-          }
-          onClick={() => void commit("now")}
-        >
-          Now
-        </button>
-        <button
-          type="button"
-          className={`drt-btn work-product-quick-queue__later${!relpath ? " work-product-quick-queue__route--na" : ""}`}
-          disabled={!canAct}
-          title={
-            !relpath
-              ? "Needs an output to queue Extend/Vary/Derive"
-              : "Commit checked routes at normal priority (behind front)"
-          }
-          onClick={() => void commit("later")}
-        >
-          Later
-        </button>
+        {relpath ? (
+          <a
+            className="drt-btn work-product-quick-queue__now"
+            href={submitUrl}
+            title="Open Submit with Extend / Vary / Derive for this output"
+          >
+            Open in Submit
+          </a>
+        ) : (
+          <span className="work-product-quick-queue__hint">No output</span>
+        )}
+        {openBadge(extendOpen, "Extend")}
+        {openBadge(varyOpen, "Vary")}
+        {openBadge(deriveOpen, "Derive")}
         <span className="work-product-quick-queue__sep" aria-hidden="true" />
         <span className="work-product-quick-queue__label">Re-run</span>
         <button
@@ -3076,112 +2704,12 @@ function WorkProductQuickQueue({
             </button>
           </>
         ) : null}
-        {!relpath ? <span className="work-product-quick-queue__hint">No output</span> : null}
       </div>
-      {extendOn || varyOn || (deriveOn && canDerive) ? (
-        <div className="work-product-quick-queue__families">
-          {extendOn
-            ? familySelect(
-                extendFamily,
-                (slug) => {
-                  setExtendTouched(true);
-                  setExtendFamily(slug);
-                },
-                busy || !relpath || extendOpen?.status === "running",
-                "Extend",
-              )
-            : null}
-          {varyOn
-            ? familySelect(
-                varyFamily,
-                (slug) => {
-                  setVaryTouched(true);
-                  setVaryFamily(slug);
-                },
-                busy || !relpath || varyOpen?.status === "running",
-                "Vary",
-              )
-            : null}
-          {deriveOn && canDerive
-            ? familySelect(
-                deriveFamily,
-                (slug) => {
-                  setDeriveTouched(true);
-                  setDeriveFamily(slug);
-                },
-                busy || !relpath || deriveOpen?.status === "running",
-                "Derive",
-              )
-            : null}
-        </div>
-      ) : null}
-      {extendOn && identityNeeded ? (
-        <div className="work-product-identity-still" aria-label="Identity still">
-          <div className="work-product-identity-still__head">
-            <span className="work-product-quick-queue__label">Identity</span>
-            {identityLoading ? <span className="work-product-quick-queue__hint">Loading…</span> : null}
-            {!identityLoading && identitySelectedPath ? (
-              <span className="work-product-quick-queue__hint" title={identitySelectedPath}>
-                selected
-              </span>
-            ) : null}
-            {!identityLoading && !identitySelectedPath ? (
-              <span className="work-product-quick-queue__hint">pick or mint a still</span>
-            ) : null}
-          </div>
-          {identityLineage ? (
-            <p className="work-product-identity-still__lineage" title={identityLineage}>
-              {identityLineage}
-            </p>
-          ) : null}
-          {identityCandidates.length ? (
-            <div className="work-product-identity-still__strip" role="listbox" aria-label="Identity still candidates">
-              {identityCandidates.map((c) => {
-                const selected = c.id === identitySelectedId || c.path === identitySelectedPath;
-                const thumb = c.thumb_url || c.url || "";
-                return (
-                  <button
-                    key={c.id}
-                    type="button"
-                    role="option"
-                    aria-selected={selected}
-                    className={`work-product-identity-still__thumb${selected ? " is-selected" : ""}`}
-                    title={`${c.label || c.evidence || "still"}${c.evidence === "first_frame" ? " (last resort)" : ""}`}
-                    disabled={busy}
-                    onClick={() => {
-                      setIdentitySelectedPath(c.path);
-                      setIdentitySelectedId(c.id);
-                    }}
-                  >
-                    {thumb ? <img src={thumb} alt="" loading="lazy" /> : <span>{(c.evidence || "?").slice(0, 3)}</span>}
-                    <span className="work-product-identity-still__ev">{c.evidence || ""}</span>
-                  </button>
-                );
-              })}
-            </div>
-          ) : null}
-          {identityMintTargets.length ? (
-            <div className="work-product-identity-still__mints">
-              {identityMintTargets.slice(0, 3).map((t) => (
-                <button
-                  key={`${t.video_relpath || t.video_path}-${t.lineage_depth}`}
-                  type="button"
-                  className="drt-btn work-product-identity-still__mint"
-                  disabled={busy || identityMintBusy}
-                  title={t.label || "Mint first frame"}
-                  onClick={() => void mintIdentity(t)}
-                >
-                  {identityMintBusy ? "Minting…" : t.label || "First frame"}
-                </button>
-              ))}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
       {msg ? <p className="work-product-quick-queue__msg" title={msg}>{msg}</p> : null}
     </div>
   );
 }
+
 
 function WorkProductDetails({
   item,
@@ -3190,7 +2718,6 @@ function WorkProductDetails({
   outputTrim,
   sourceTrim,
   sourceClipId,
-  extendFromClipRef,
   onCommitted,
 }: {
   item: WorkProductItem;
@@ -3199,7 +2726,6 @@ function WorkProductDetails({
   outputTrim: InputTrimState;
   sourceTrim: InputTrimState;
   sourceClipId?: string | null;
-  extendFromClipRef?: React.MutableRefObject<((clip: ShapeFactoryClip) => void) | null>;
   onCommitted?: () => void;
 }) {
   const groups = useMemo(() => {
@@ -3284,7 +2810,6 @@ function WorkProductDetails({
         outputTrim={outputTrim}
         sourceTrim={sourceTrim}
         sourceClipId={sourceClipId}
-        extendFromClipRef={extendFromClipRef}
         onCommitted={onCommitted}
       />
       <div className="work-product-details__groups">
@@ -3314,7 +2839,12 @@ function WorkProductDetails({
               >
                 <dt>{displayDetailLabel(group.id, row.label)}</dt>
                 <dd>
-                  <DetailValue row={valueRow} prompt={prompt} shape={shape} />
+                  <DetailValue
+                    row={valueRow}
+                    prompt={prompt}
+                    shape={shape}
+                    bindings={item.bindings}
+                  />
                 </dd>
               </div>
             );
@@ -3390,7 +2920,6 @@ function WorkProductRow({
   const [outputTrim, setOutputTrim] = useState<InputTrimState>(() => emptyTrimState(parseFps(item.media_meta?.fps)));
   const [sourceTrim, setSourceTrim] = useState<InputTrimState>(() => emptyTrimState(parseFps(item.media_meta?.fps)));
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
-  const extendFromClipRef = useRef<((clip: ShapeFactoryClip) => void) | null>(null);
 
   return (
     <article
@@ -3465,7 +2994,14 @@ function WorkProductRow({
               warning: null,
               clampedDefault: false,
             }));
-            extendFromClipRef.current?.(clip);
+            const href = workbenchAdvanceSubmitHref(item, {
+              outputTrim,
+              sourceClipId: clip.clip_id,
+              extendFamilyDefaults,
+              clip,
+              step: "advance.extend",
+            });
+            window.location.assign(href);
           }}
         />
         <WorkProductDetails
@@ -3475,7 +3011,6 @@ function WorkProductRow({
           outputTrim={outputTrim}
           sourceTrim={sourceTrim}
           sourceClipId={selectedClipId}
-          extendFromClipRef={extendFromClipRef}
           onCommitted={onCommitted}
         />
       </div>

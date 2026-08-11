@@ -24,10 +24,12 @@ from __future__ import annotations
 import argparse
 import copy
 import datetime as _dt
+import hashlib
 import itertools
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -762,6 +764,81 @@ def comfy_bind_input_dir() -> Path:
     return Path("/home/yuji/comfyui-runpod-data/input").resolve()
 
 
+# Managed LoadImage staging under Comfy input (see docs/ASSET_LIFECYCLE_PLAN.md).
+FACTORY_LOAD_IMAGE_SUBDIR = "_factory"
+_CONTENT_SHA256_RE = re.compile(r"[0-9a-f]{64}", re.IGNORECASE)
+
+
+def _content_id_for_load_image_stage(path: Path) -> str:
+    """Prefer a 64-hex token embedded in the filename; else sha256 of file bytes."""
+    m = _CONTENT_SHA256_RE.search(path.name)
+    if m:
+        return m.group(0).lower()
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def stage_load_image_for_comfy(src: Path, input_root: Path) -> tuple[str, list[str]]:
+    """
+    Stage ``src`` into ``input/_factory/<content_id><ext>`` for Comfy LoadImage.
+
+    Prefers hardlink → symlink → copy. Returns
+    ``(widget_relpath, warnings)`` where widget_relpath is relative to the
+    Comfy input root (e.g. ``_factory/abc….png``).
+    """
+    warnings: list[str] = []
+    src = src.expanduser().resolve()
+    if not src.is_file():
+        raise FileNotFoundError(f"LoadImage stage source missing: {src}")
+    input_root = input_root.expanduser().resolve()
+    stage_dir = input_root / FACTORY_LOAD_IMAGE_SUBDIR
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    ext = src.suffix.lower() or ".png"
+    cid = _content_id_for_load_image_stage(src)
+    dest = stage_dir / f"{cid}{ext}"
+    widget = f"{FACTORY_LOAD_IMAGE_SUBDIR}/{cid}{ext}"
+
+    if dest.exists() or dest.is_symlink():
+        try:
+            if os.path.samefile(dest, src):
+                return widget, warnings
+        except OSError:
+            pass
+        # Content-addressed name already present: reuse (idempotent across jobs).
+        if dest.is_file() and not dest.is_symlink():
+            return widget, warnings
+        try:
+            dest.unlink()
+        except OSError as e:
+            raise RuntimeError(f"cannot replace staged LoadImage {dest}: {e}") from e
+
+    try:
+        os.link(src, dest)
+        warnings.append(f"staged LoadImage hardlink → {widget}")
+    except OSError:
+        try:
+            dest.symlink_to(os.path.relpath(src, stage_dir))
+            warnings.append(f"staged LoadImage symlink → {widget}")
+        except OSError:
+            shutil.copy2(src, dest)
+            warnings.append(f"staged LoadImage copy → {widget}")
+    return widget, warnings
+
+
+def _resolve_load_image_stage_root(data_root: Path) -> Path:
+    """Prefer the Comfy bind input dir; fall back to ``data_root/input``."""
+    bind = comfy_bind_input_dir()
+    try:
+        if bind.is_dir():
+            return bind
+    except OSError:
+        pass
+    return (data_root.expanduser().resolve() / "input")
+
+
 def comfy_workspace_relpath(path: Path, data_root: Path) -> tuple[str, Optional[str]]:
     """Map host bind paths to ComfyUI-facing paths (input/…, output/…).
 
@@ -799,7 +876,12 @@ def comfy_workspace_relpath(path: Path, data_root: Path) -> tuple[str, Optional[
 
 
 def comfy_load_image_relpath(path: Path, data_root: Path) -> tuple[str, Optional[str]]:
-    """Comfy LoadImage value: path relative to ``/ComfyUI/input`` (not ``input/...``)."""
+    """Comfy LoadImage value: path relative to ``/ComfyUI/input`` (not ``input/...``).
+
+    Paths already under an input root are returned as-is (basename or nested).
+    Paths outside input (e.g. ``output/og/…/*.png`` identity anchors) are staged
+    into ``input/_factory/<content_id><ext>`` so Comfy can resolve them.
+    """
     path = path.expanduser().resolve()
     data_root = data_root.expanduser().resolve()
     input_roots = (
@@ -822,7 +904,14 @@ def comfy_load_image_relpath(path: Path, data_root: Path) -> tuple[str, Optional
             return (path.name if rel.parent == Path(".") else rel.as_posix()), None
         except (AttributeError, ValueError, OSError):
             continue
-    return path.name, f"LoadImage path outside input roots; using basename {path.name!r}"
+    if not path.is_file():
+        return path.name, f"LoadImage path outside input roots; using basename {path.name!r}"
+    try:
+        stage_root = _resolve_load_image_stage_root(data_root)
+        widget, warns = stage_load_image_for_comfy(path, stage_root)
+        return widget, (warns[0] if warns else f"staged LoadImage → {widget}")
+    except Exception as e:
+        return path.name, f"LoadImage stage failed ({e}); using basename {path.name!r}"
 
 
 def coerce_pool_fs_path(raw: str | Path) -> Path:

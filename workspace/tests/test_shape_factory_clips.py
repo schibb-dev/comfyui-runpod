@@ -289,6 +289,73 @@ class TestShapeFactoryClips(unittest.TestCase):
             self.assertTrue(row["is_default"])
             self.assertAlmostEqual(row["duration_s"], 1.5)
             self.assertIn("workflow_import", lib["origin_counts"])
+            parents = lib.get("parents") or []
+            self.assertEqual(len(parents), 1)
+            self.assertEqual(parents[0]["media_relpath"], "og/demo/parent.mp4")
+            self.assertEqual(parents[0]["clip_count"], 1)
+            self.assertTrue(parents[0]["has_default"])
+            by_media = list_clips_library(con, media_relpath="og/demo/parent.mp4")
+            self.assertEqual(by_media["total"], 2)
+            self.assertEqual(by_media["filters"]["media_relpath"], "og/demo/parent.mp4")
+            con.close()
+
+    def test_list_clip_derived_videos(self) -> None:
+        import json
+
+        from shape_factory_clips import connect_clips, create_clip, list_clip_derived_videos
+
+        with _tmpdir() as td:
+            root = Path(td)
+            reg = root / "asset_registry.sqlite"
+            jobs = root / "jobs" / "FB9_GEX"
+            out = root / "output"
+            jobs.mkdir(parents=True)
+            out.mkdir(parents=True)
+            con = connect_clips(reg)
+            parent = "f" * 64
+            con.execute(
+                """
+                INSERT INTO assets(
+                    content_id, size, mtime, ext, kind, width, height,
+                    current_relpath, first_seen, last_seen, status
+                ) VALUES (?, 1, 1.0, '.mp4', 'video', NULL, NULL, ?, 't', 't', 'present')
+                """,
+                (parent, "og/demo/parent.mp4"),
+            )
+            clip = create_clip(
+                con,
+                parent_content_id=parent,
+                mark_in_s=0.0,
+                mark_out_s=2.0,
+                label="Seed",
+                origin="test",
+            )
+            prefix = "og/demo/derived_out"
+            (out / "og" / "demo").mkdir(parents=True)
+            video = out / f"{prefix}_00001.mp4"
+            video.write_bytes(b"\x00\x00")
+            job = {
+                "job_key": "demo_derived_job",
+                "family_slug": "FB9_GEX",
+                "created_at": "2026-08-09T00:00:00Z",
+                "source_clip_id": clip["clip_id"],
+                "vhs_window": {"clip_id": clip["clip_id"], "source": "source_clip"},
+                "output_prefix": prefix,
+                "submit": {"status": "deposited"},
+                "deposit": {"deposited_at": "2026-08-09T00:01:00Z", "videos": [str(video)]},
+            }
+            (jobs / "demo_derived_job.job.json").write_text(json.dumps(job), encoding="utf-8")
+            res = list_clip_derived_videos(
+                jobs_root=root / "jobs",
+                output_root=out,
+                con=con,
+                clip_id=clip["clip_id"],
+            )
+            self.assertEqual(res["total"], 1)
+            row = res["items"][0]
+            self.assertEqual(row["source_clip_id"], clip["clip_id"])
+            self.assertEqual(row["output_relpath"], f"{prefix}_00001.mp4")
+            self.assertEqual(row["clip_label"], "Seed")
             con.close()
 
 

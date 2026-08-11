@@ -16,7 +16,9 @@ export type ClipBookmarksRailProps = {
   markIn: number | null;
   markOut: number | null;
   trimEditable: boolean;
-  origin?: "discovery" | "workbench";
+  /** When false, only show sibling chips (no save/default actions). Default true. */
+  showActions?: boolean;
+  origin?: "discovery" | "workbench" | "submit";
   selectedClipId?: string | null;
   onSelectClip?: (clip: ShapeFactoryClip | null) => void;
   onApplyClip: (markIn: number, markOut: number, clip?: ShapeFactoryClip) => void;
@@ -30,6 +32,7 @@ export function ClipBookmarksRail({
   markIn,
   markOut,
   trimEditable,
+  showActions = true,
   origin = "workbench",
   selectedClipId = null,
   onSelectClip,
@@ -117,88 +120,89 @@ export function ClipBookmarksRail({
           })
         )}
       </div>
-      <div className="work-product-viewer__clips-actions">
-        <button
-          type="button"
-          disabled={!canSave || busy}
-          onClick={() => {
-            if (!canSave || markIn == null || markOut == null) return;
-            setBusy(true);
-            void mutateShapeFactoryClip({
-              op: "create",
-              media_relpath: mediaRelpath,
-              mark_in: markIn,
-              mark_out: markOut,
-              label: "Clip",
-              origin,
-            })
-              .then((res) => {
-                void reload();
-                if (res.clip) onSelectClip?.(res.clip);
-              })
-              .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
-              .finally(() => setBusy(false));
-          }}
-        >
-          Save as clip
-        </button>
-        <button
-          type="button"
-          disabled={!canSave || busy}
-          onClick={() => {
-            if (!canSave || markIn == null || markOut == null) return;
-            setBusy(true);
-            void mutateShapeFactoryClip({
-              op: "create",
-              media_relpath: mediaRelpath,
-              mark_in: markIn,
-              mark_out: markOut,
-              label: "Default",
-              origin,
-              set_default: true,
-            })
-              .then((res) => {
-                void reload();
-                if (res.clip) onSelectClip?.(res.clip);
-              })
-              .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
-              .finally(() => setBusy(false));
-          }}
-        >
-          Save as default
-        </button>
-        {defaultId ? (
+      {showActions ? (
+        <div className="work-product-viewer__clips-actions">
           <button
             type="button"
-            disabled={busy}
+            disabled={!canSave || busy}
             onClick={() => {
+              if (!canSave || markIn == null || markOut == null) return;
               setBusy(true);
               void mutateShapeFactoryClip({
-                op: "set_default",
+                op: "create",
                 media_relpath: mediaRelpath,
-                clip_id: null,
+                mark_in: markIn,
+                mark_out: markOut,
+                label: "Clip",
+                origin,
               })
-                .then(() => reload())
+                .then((res) => {
+                  void reload();
+                  if (res.clip) onSelectClip?.(res.clip);
+                })
                 .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
                 .finally(() => setBusy(false));
             }}
           >
-            Clear default
+            Save as clip
           </button>
-        ) : null}
-        {onUseForExtend && selected ? (
           <button
             type="button"
-            disabled={busy}
-            className="work-product-viewer__clip-use-extend"
-            onClick={() => onUseForExtend(selected)}
+            disabled={!canSave || busy}
+            onClick={() => {
+              if (!canSave || markIn == null || markOut == null) return;
+              setBusy(true);
+              void mutateShapeFactoryClip({
+                op: "create",
+                media_relpath: mediaRelpath,
+                mark_in: markIn,
+                mark_out: markOut,
+                label: "Default",
+                origin,
+                set_default: true,
+              })
+                .then((res) => {
+                  void reload();
+                  if (res.clip) onSelectClip?.(res.clip);
+                })
+                .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
+                .finally(() => setBusy(false));
+            }}
           >
-            Use for Extend
+            Save as default
           </button>
-        ) : null}
-      </div>
+          {defaultId ? (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                setBusy(true);
+                void mutateShapeFactoryClip({
+                  op: "set_default",
+                  media_relpath: mediaRelpath,
+                  clip_id: null,
+                })
+                  .then(() => reload())
+                  .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
+                  .finally(() => setBusy(false));
+              }}
+            >
+              Clear default
+            </button>
+          ) : null}
+          {onUseForExtend && selected ? (
+            <button
+              type="button"
+              disabled={busy}
+              className="work-product-viewer__clip-use-extend"
+              onClick={() => onUseForExtend(selected)}
+            >
+              Use for Extend
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       {err ? <p className="work-product-viewer__trim-warn">{err}</p> : null}
-      {duration > 0 ? null : null}
     </div>
   );
 }

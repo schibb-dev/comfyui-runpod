@@ -112,6 +112,67 @@ class IdentityStillCandidatesTests(unittest.TestCase):
             self.assertEqual(Path(cands[0]["path"]).resolve(), still_bind.resolve())
             self.assertEqual(payload["recommended_id"], cands[0]["id"])
 
+    def test_default_excludes_unrelated_rated_and_global_mints(self) -> None:
+        from shape_factory_identity_still import list_identity_still_candidates
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            ws = root / "workspace"
+            out = root / "output"
+            data = root / "data"
+            inp = ws / "input"
+            og = out / "og"
+            for p in (inp, og):
+                p.mkdir(parents=True)
+
+            clip = og / "clip.mp4"
+            clip.write_bytes(b"clip")
+            thumb = og / "clip.png"
+            thumb.write_bytes(b"thumb")
+            unrelated = inp / "IDMunrelateddeadbeef.jpeg"
+            unrelated.write_bytes(b"unrelated")
+            rated = inp / "rated_face.jpeg"
+            rated.write_bytes(b"rated")
+
+            shape = {
+                "requires": [
+                    {"slot": "identity_anchor", "media": "image", "binding": {"type": "load_image"}},
+                ]
+            }
+            with mock.patch(
+                "shape_factory_identity_still._infer_still_from_media",
+                return_value=None,
+            ), mock.patch(
+                "shape_factory_identity_still._collect_rated_opener_stills",
+                return_value=[
+                    {
+                        "id": "rated",
+                        "path": str(rated),
+                        "relpath": "input/rated_face.jpeg",
+                        "url": "/files/input/rated_face.jpeg",
+                        "thumb_url": "/files/input/rated_face.jpeg",
+                        "evidence": "rated_opener",
+                        "label": "Rated",
+                    }
+                ],
+            ):
+                payload = list_identity_still_candidates(
+                    relpath="og/clip.mp4",
+                    family_slug="FB9_GEX2_identity_anchor",
+                    workspace_root=ws,
+                    output_root=out,
+                    data_root=data,
+                    media_abs=clip,
+                    shape=shape,
+                )
+
+            paths = {Path(c["path"]).resolve() for c in payload["candidates"]}
+            self.assertIn(thumb.resolve(), paths)
+            self.assertNotIn(unrelated.resolve(), paths)
+            self.assertNotIn(rated.resolve(), paths)
+            self.assertTrue(all(c.get("evidence") != "rated_opener" for c in payload["candidates"]))
+            self.assertEqual(payload["candidates"][0]["evidence"], "lineage_thumb")
+
     def test_mint_targets_prefer_earliest_ancestor(self) -> None:
         from shape_factory_identity_still import list_identity_still_candidates
 

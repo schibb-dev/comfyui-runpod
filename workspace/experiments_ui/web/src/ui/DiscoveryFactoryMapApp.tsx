@@ -276,13 +276,13 @@ function MediaAssetInspector({
 
   return (
     <div className={"sfmap-media-inspector" + (compact ? " sfmap-media-inspector--compact" : "")}>
-      {!compact && media.thumb_url ? (
+      {media.thumb_url ? (
         <button
           type="button"
-          className="sfmap-detail-preview"
+          className={"sfmap-detail-preview" + (compact ? " sfmap-detail-preview--compact" : "")}
           onClick={() =>
             onOpenMedia({
-              kind: media.url ? "video" : "image",
+              kind: mediaLooksLikeVideo(media) && media.url ? "video" : "image",
               url: media.url || media.thumb_url!,
               title: media.basename || displayTitle,
             })
@@ -295,7 +295,20 @@ function MediaAssetInspector({
       {subtitle ? <div className="sfmap-detail-meta">{subtitle}</div> : null}
       {meta?.length ? <div className="sfmap-detail-meta">{meta.join(" · ")}</div> : null}
       {media.relpath ? (
-        <div className="sfmap-detail-kv mono sfmap-detail-path">{media.relpath}</div>
+        media.url || media.thumb_url ? (
+          <a
+            className="sfmap-detail-kv mono sfmap-detail-path sfmap-detail-path--link"
+            href={
+              /^(og|wip|output)\//i.test(media.relpath) || /\.mp4($|\?)/i.test(media.relpath)
+                ? `/discovery?relpath=${encodeURIComponent(media.relpath)}`
+                : media.url || media.thumb_url || "#"
+            }
+          >
+            {media.relpath}
+          </a>
+        ) : (
+          <div className="sfmap-detail-kv mono sfmap-detail-path">{media.relpath}</div>
+        )
       ) : media.path ? (
         <div className="sfmap-detail-kv mono sfmap-detail-path">{media.path}</div>
       ) : null}

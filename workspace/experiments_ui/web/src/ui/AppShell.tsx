@@ -24,8 +24,8 @@ function NavLink({ route, active }: { route: AppRoute; active: boolean }) {
  * Global application frame: a single top navigation bar shared by every screen,
  * plus a content region the screen fills.
  *
- * Pipeline peers (Library · Clips · Factory · Rating · Workbench · Queue) are flat —
- * Workbench is the job-setup activity lens, not a parent chrome for the others.
+ * Pipeline peers (Library · Clips · Factory · Rating · Submit · Workbench · Queue) are flat —
+ * Submit composes jobs; Workbench tracks job status; Queue monitors Comfy.
  */
 export function AppShell({
   active,

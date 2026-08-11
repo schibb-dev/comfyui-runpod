@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Identity-still candidates + mint for shapes that require an image slot.
 
-Two entry points share one ranking ladder:
-  A) still-first — starter LoadImage / job binding already known
+Candidates are scoped to this asset's ancestry (not a global still picker):
+
+  A) still-first — job binding / starter LoadImage already known
   B) video-first — walk parent_output / embedded prompt lineage back to a still
+  C) lineage thumb — companion PNG next to an ancestor video (earliest/deepest first)
 
 Last resort: mint the first frame of the earliest ancestor video (or this clip).
+Optional ``include_rated`` can append unrelated high-rated opener stills (off by default).
 """
 
 from __future__ import annotations
@@ -27,9 +30,10 @@ EVIDENCE_RANK = {
     "lineage_root": 0,
     "job_binding": 1,
     "ancestor_opener": 2,
-    "rated_opener": 3,
-    "minted": 4,
-    "first_frame": 5,
+    "lineage_thumb": 3,
+    "rated_opener": 4,  # opt-in only — unrelated library openers
+    "minted": 5,
+    "first_frame": 6,
     "body": 0,
     "embedded_load_image": 0,
     "png_load_image": 0,
@@ -150,6 +154,20 @@ def _job_family(job: Optional[Dict[str, Any]], index_row: Optional[Dict[str, Any
 def _is_opener_family(family_slug: str) -> bool:
     s = str(family_slug or "").strip().lower().replace("_", "-")
     return any(h in s for h in _OPENER_FAMILY_HINTS)
+
+
+def _companion_thumb_for_video(abs_path: str) -> Optional[Path]:
+    """Earliest/preview thumb beside a video (``clip.mp4`` → ``clip.png``)."""
+    p = Path(str(abs_path or "")).expanduser()
+    if not p.is_file():
+        return None
+    if p.suffix.lower() not in {".mp4", ".webm", ".mov"}:
+        return None
+    for ext in (".png", ".jpg", ".jpeg", ".webp"):
+        cand = p.with_suffix(ext)
+        if cand.is_file():
+            return cand.resolve()
+    return None
 
 
 def _relpath_from_abs(abs_path: str, output_root: Path) -> str:
@@ -445,12 +463,14 @@ def list_identity_still_candidates(
     media_abs: Optional[Path] = None,
     job: Optional[Dict[str, Any]] = None,
     shape: Optional[Dict[str, Any]] = None,
-    include_rated: bool = True,
+    include_rated: bool = False,
     max_candidates: int = _MAX_CANDIDATES,
 ) -> Dict[str, Any]:
     """
     Ranked identity-still candidates + mint targets for Workbench Extend.
 
+    Default candidates come only from this asset's job bindings and video lineage
+    (plus companion thumbs). ``include_rated`` is opt-in for unrelated library openers.
     Lazy first-frame: listed under ``mint_targets`` (not pre-extracted).
     """
     fam = str(family_slug or "").strip()
@@ -585,28 +605,28 @@ def list_identity_still_candidates(
                         )
                     )
 
-    # Prior minted frames under input/
-    input_roots = [
-        Path("/home/yuji/comfyui-runpod-data/input"),
-        Path(workspace_root) / "input",
-        Path(data_root) / "input",
-    ]
-    for root in input_roots:
-        if not root.is_dir():
+    # Companion thumbs beside lineage videos (deepest / earliest ancestor first).
+    for hop in sorted(hops, key=lambda h: -int(h.get("depth") or 0)):
+        thumb = _companion_thumb_for_video(str(hop.get("abs_path") or ""))
+        if thumb is None:
             continue
-        try:
-            for p in sorted(root.glob(f"{_MINT_PREFIX}*.jpeg"))[:20]:
-                push(
-                    _still_row(
-                        p,
-                        evidence="minted",
-                        label=f"Minted · {p.name[:20]}",
-                        workspace_root=workspace_root,
-                    )
-                )
-        except OSError:
-            pass
-        break
+        depth = int(hop.get("depth") or 0)
+        fam_h = str(hop.get("family_slug") or "")
+        label = (
+            f"Ancestor thumb · {fam_h or Path(str(hop.get('relpath') or thumb)).stem}"
+            if depth > 0
+            else f"Clip thumb · {Path(str(hop.get('relpath') or thumb)).name}"
+        )
+        push(
+            _still_row(
+                thumb,
+                evidence="lineage_thumb",
+                label=label,
+                workspace_root=workspace_root,
+                lineage_depth=depth,
+                source_video_relpath=str(hop.get("relpath") or "") or None,
+            )
+        )
 
     if include_rated:
         for row in _collect_rated_opener_stills(
@@ -619,9 +639,11 @@ def list_identity_still_candidates(
     def sort_key(row: Dict[str, Any]) -> Tuple[int, int, str]:
         ev = str(row.get("evidence") or "")
         rank = EVIDENCE_RANK.get(ev, 50)
-        # Prefer deeper lineage for lineage_root (closer to starter)
+        # Prefer deeper lineage (closer to starter / earliest ancestor)
         depth = int(row.get("lineage_depth") or 0)
-        depth_score = -depth if ev in ("lineage_root", "ancestor_opener") else depth
+        depth_score = (
+            -depth if ev in ("lineage_root", "ancestor_opener", "lineage_thumb") else depth
+        )
         return (rank, depth_score, str(row.get("path") or ""))
 
     candidates.sort(key=sort_key)

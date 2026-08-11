@@ -2287,6 +2287,9 @@ body {
   padding: 12px;
   background: #050810;
   position: relative;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .discovery-preview-layout-switch {
@@ -2392,9 +2395,22 @@ body {
   flex: 0 0 auto;
   flex-shrink: 0;
   margin-top: 4px;
+  /* Clear hanging in/out handles that sit below the timeline track. */
+  margin-bottom: 0.65rem;
   padding-top: 10px;
+  padding-bottom: 0.35rem;
   border-top: 1px solid var(--border);
   width: 100%;
+  position: relative;
+  z-index: 2;
+}
+
+.discovery-desktop-preview-clips {
+  flex: 0 0 auto;
+  position: relative;
+  z-index: 1;
+  margin-top: 0.15rem;
+  padding: 0 0.15rem;
 }
 
 .discovery-trim-head-main {
@@ -8866,6 +8882,16 @@ tr.disabled:hover td {
   opacity: 0.9;
 }
 
+.sfmap-detail-path--link {
+  color: var(--link, #5aa2ff);
+  text-decoration: none;
+  display: inline-block;
+}
+
+.sfmap-detail-path--link:hover {
+  text-decoration: underline;
+}
+
 .sfmap-detail-actions {
   display: flex;
   flex-wrap: wrap;
@@ -8935,6 +8961,26 @@ tr.disabled:hover td {
 
 .sfmap-inspector-tooltip .sfmap-detail-preview {
   margin-bottom: 6px;
+}
+
+.sfmap-media-inspector--compact:has(.sfmap-detail-preview) {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 8px 10px;
+  align-items: start;
+}
+
+.sfmap-media-inspector--compact .sfmap-detail-preview--compact {
+  grid-row: 1 / span 4;
+  width: 48px;
+  margin: 0;
+  border-radius: 6px;
+}
+
+.sfmap-media-inspector--compact .sfmap-detail-preview--compact img {
+  width: 48px;
+  height: 48px;
+  max-height: 48px;
 }
 
 .sfmap-media-inspector--compact .sfmap-detail-kv {
@@ -12678,13 +12724,39 @@ tr.disabled:hover td {
 }
 
 .discovery-queue-from-clip {
-  margin-top: 0.45rem;
+  margin-top: 0.55rem;
   display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  padding: 0.45rem 0.5rem;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.75rem;
+  padding: 0.5rem 0.6rem;
   border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
   border-radius: 6px;
+  flex: 0 0 auto;
+  position: relative;
+  z-index: 1;
+  background: color-mix(in srgb, var(--panel, #151922) 92%, #000);
+  min-width: 0;
+}
+
+.discovery-queue-from-clip__cta {
+  flex: 0 0 auto;
+  text-decoration: none;
+}
+
+.discovery-queue-from-clip__cta--disabled,
+.discovery-queue-from-clip a[aria-disabled="true"] {
+  opacity: 0.45;
+  pointer-events: none;
+  cursor: default;
+}
+
+.discovery-queue-from-clip__status {
+  flex: 1 1 8rem;
+  min-width: 0;
+  font-size: 0.78rem;
+  line-height: 1.3;
 }
 
 .discovery-queue-from-clip__head,
@@ -12777,8 +12849,169 @@ tr.disabled:hover td {
   line-height: 1.35;
 }
 
-.discovery-desktop-preview-clips {
-  padding: 0 0.15rem;
+.submit-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  /* .layout already sets height:100% + overflow:auto for the app shell */
+  min-height: 0;
+  align-content: start;
+}
+
+.submit-composer__empty {
+  display: grid;
+  gap: 0.75rem;
+  max-width: 36rem;
+  padding: 0.5rem 0;
+}
+
+.submit-composer__empty-actions,
+.submit-composer__links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+/* Reuse Workbench row chrome; widen the stage for compose (not a job list card). */
+.submit-composer__stage {
+  border: 1px solid var(--border, #2a3142);
+  border-radius: 8px;
+  /* Do not clip tall compose content — page scrolls via .layout */
+  overflow: visible;
+  background: color-mix(in srgb, var(--panel, #12161f) 92%, transparent);
+  flex: 0 0 auto;
+}
+
+/* Stacked: media above compose controls */
+.submit-composer__stage.work-product-row--stacked .work-product-viewer {
+  max-width: none;
+  border-right: none;
+  border-bottom: 1px solid var(--border);
+}
+
+.submit-composer__stage.work-product-row--stacked .work-product-viewer__main {
+  max-width: min(720px, 100%);
+}
+
+/* Side-by-side: give the Use stage real width (Workbench list cards stay narrow). */
+.submit-composer__stage.work-product-row--split .work-product-row__body {
+  grid-template-columns: minmax(320px, 1.15fr) minmax(280px, 0.85fr);
+}
+
+.submit-composer__stage.work-product-row--split .work-product-viewer {
+  max-width: none;
+  border-right: 1px solid var(--border);
+  border-bottom: none;
+}
+
+.submit-composer__stage.work-product-row--split .work-product-viewer__main {
+  max-width: none;
+}
+
+@media (max-width: 900px) {
+  .submit-composer__stage.work-product-row--split .work-product-viewer {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+.submit-composer__compose {
+  padding: 12px 14px 16px;
+  min-width: 0;
+}
+
+.submit-composer__compose .work-product-quick-queue {
+  margin: 0;
+}
+
+.submit-composer__construction {
+  margin-top: 0.65rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--border, #2a3142);
+  display: grid;
+  gap: 0.45rem;
+}
+
+.submit-composer__construction-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.submit-composer__construction-chips {
+  margin: 0;
+}
+
+.submit-composer__construction-list {
+  margin: 0;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.submit-composer__construction-row {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(0, 1fr);
+  gap: 0.4rem;
+  align-items: start;
+  font-size: 0.85rem;
+}
+
+.submit-composer__construction-row dt {
+  margin: 0;
+  color: var(--muted, #8b93a7);
+  font-weight: 500;
+}
+
+.submit-composer__construction-row dd {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.submit-composer__construction-sub {
+  color: var(--muted, #8b93a7);
+}
+
+.submit-composer__construction-warn {
+  color: color-mix(in srgb, #e6b35a 85%, white);
+}
+
+.submit-composer__construction-ident {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  max-width: 100%;
+}
+
+.submit-composer__construction-ident-thumb {
+  width: 28px;
+  height: 28px;
+  object-fit: cover;
+  border-radius: 3px;
+  border: 1px solid var(--border, #2a3142);
+  flex: 0 0 auto;
+}
+
+.submit-composer__ready--ok {
+  background: color-mix(in srgb, #3d8f6a 35%, transparent);
+}
+
+.submit-composer__ready--blocked {
+  background: color-mix(in srgb, #c47a3a 35%, transparent);
+}
+
+.submit-composer__when--preferred {
+  outline: 1px solid color-mix(in srgb, var(--accent, #6ea8fe) 55%, transparent);
+}
+
+/* Clips page: keep Submit CTA in the controls column, clear of the editor. */
+.clips-lib-stage__controls .discovery-queue-from-clip {
+  margin-top: 0.35rem;
+  margin-bottom: 0.25rem;
 }
 
 .work-product-viewer__clips-actions button:disabled,
@@ -13265,6 +13498,63 @@ tr.disabled:hover td {
   color: var(--text);
   line-height: 1.35;
   min-width: 0;
+}
+
+.work-product-binding-media {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.work-product-binding-media__thumb {
+  flex: 0 0 auto;
+  display: block;
+  width: 56px;
+  height: 56px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--panel-2, #1a1a1a) 80%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border, #333) 70%, transparent);
+  text-decoration: none;
+}
+
+.work-product-binding-media__thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.work-product-binding-media__meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.work-product-binding-media__value {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.work-product-binding-media__link {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent);
+  text-decoration: none;
+  word-break: break-all;
+  line-height: 1.3;
+}
+
+.work-product-binding-media__link:hover {
+  text-decoration: underline;
+}
+
+.work-product-binding-media__link--muted {
+  color: var(--muted);
 }
 
 .work-product-details__row--kv dd {
@@ -14985,6 +15275,131 @@ tr.disabled:hover td {
 .clips-lib-stage--split .clips-lib-player {
   max-height: 100%;
   object-fit: contain;
+}
+
+.clips-lib-player-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem 1rem;
+  margin-top: 0.4rem;
+}
+
+.clips-lib-autoplay {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.clips-lib-autoplay input {
+  margin: 0;
+}
+
+.clips-lib-badge--dirty {
+  background: color-mix(in srgb, #e8b84a 28%, transparent);
+  color: #f0d78a;
+  margin-left: 0.35rem;
+}
+
+.clips-lib-view-switch {
+  flex: 0 0 auto;
+}
+
+.clips-lib-source-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.35rem 0.15rem 0.55rem;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: color-mix(in srgb, var(--panel, #151922) 92%, #000);
+}
+
+.clips-lib-source-bar__back {
+  flex: 0 0 auto;
+}
+
+.clips-lib-source-bar__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.clips-lib-parent-card .clips-lib-card__path {
+  font-size: 0.72rem;
+}
+
+.clips-lib-inline-link {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: none;
+  color: var(--accent, #7eb6ff);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.clips-lib-siblings {
+  margin-top: 0.15rem;
+}
+
+.clips-lib-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel, #151922) 88%, #000);
+}
+
+.clips-lib-editor__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.clips-lib-editor__field input,
+.clips-lib-editor__field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: 4px;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  background: #0b0d12;
+  color: var(--text, #e7eaf3);
+  padding: 0.35rem 0.45rem;
+  font: inherit;
+  font-size: 0.9rem;
+  resize: vertical;
+}
+
+.clips-lib-editor__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.clips-lib-editor__delete {
+  margin-left: auto;
+  color: var(--bad, #ff5a7a);
+}
+
+.clips-lib-editor__status {
+  margin: 0;
+  font-size: 0.82rem;
 }
 
 .clips-lib-empty,

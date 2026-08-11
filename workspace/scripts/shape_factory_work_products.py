@@ -268,6 +268,51 @@ def _thumb_rel_for_video(video_rel: Optional[str]) -> Optional[str]:
     return None
 
 
+_MEDIA_FILE_EXTS = (".mp4", ".webm", ".mov", ".png", ".jpg", ".jpeg", ".webp", ".gif")
+_VIDEO_FILE_EXTS = (".mp4", ".webm", ".mov")
+_IMAGE_FILE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+
+
+def _binding_media_relpath(abs_p: Any, *, data_root: Path, output_root: Path) -> Optional[str]:
+    """Map a binding path to a /files/-servable relpath (output/… or input/…)."""
+    raw = str(abs_p or "").strip()
+    if not raw:
+        return None
+    rel = _relpath_under(output_root, raw)
+    if rel is None:
+        rel = _relpath_under(data_root, raw)
+    if rel is not None:
+        return rel
+    # Host bind-dir / checkout input aliases → input/<name>
+    try:
+        from shape_factory_map import _relpath_guess_from_abs  # type: ignore
+    except Exception:
+        _relpath_guess_from_abs = None  # type: ignore
+    if _relpath_guess_from_abs is not None:
+        guessed = _relpath_guess_from_abs(raw)
+        if guessed:
+            return guessed
+    # Basename lookup under known input roots (empty workspace/input → bind dir).
+    bn = Path(raw.replace("\\", "/")).name
+    if not bn or bn == raw.rstrip("/"):
+        return None
+    input_roots = (
+        Path(os.environ.get("COMFYUI_BIND_INPUT_DIR") or "/home/yuji/comfyui-runpod-data/input"),
+        Path("/home/yuji/comfyui-runpod-data/input"),
+        Path("/home/yuji/src/comfyui-runpod/workspace/input"),
+        data_root / "input",
+        output_root.parent / "input",
+    )
+    for root in input_roots:
+        try:
+            cand = Path(root).expanduser() / bn
+            if cand.is_file():
+                return f"input/{bn}"
+        except Exception:
+            continue
+    return None
+
+
 def _binding_entry_from_meta(
     slot: str,
     meta: Dict[str, Any],
@@ -276,24 +321,21 @@ def _binding_entry_from_meta(
     output_root: Path,
 ) -> Dict[str, Any]:
     abs_p = meta.get("path")
-    rel = _relpath_under(output_root, abs_p)
-    if rel is None:
-        rel = _relpath_under(data_root, abs_p)
+    rel = _binding_media_relpath(abs_p, data_root=data_root, output_root=output_root)
+    low = str(abs_p or rel or "").lower()
+    is_media = low.endswith(_MEDIA_FILE_EXTS)
     entry: Dict[str, Any] = {
         "path": abs_p,
         "basename": _basename(abs_p),
         "relpath": rel,
-        "url": _file_url(rel)
-        if rel and str(abs_p or "").lower().endswith((".mp4", ".png", ".jpg", ".jpeg", ".webp", ".webm"))
-        else None,
+        "url": _file_url(rel) if rel and is_media else None,
         "binding_type": meta.get("binding_type"),
         "role": meta.get("role"),
     }
-    if str(slot) in {"source_video", "source_image", "start_image", "image"} and entry.get("relpath"):
-        low = str(abs_p or "").lower()
-        if low.endswith(".mp4"):
-            entry["thumb_url"] = _file_url(_thumb_rel_for_video(entry["relpath"]))
-        elif low.endswith((".png", ".jpg", ".jpeg", ".webp")):
+    if rel and is_media:
+        if low.endswith(_VIDEO_FILE_EXTS):
+            entry["thumb_url"] = _file_url(_thumb_rel_for_video(rel))
+        elif low.endswith(_IMAGE_FILE_EXTS):
             entry["thumb_url"] = entry.get("url")
     return entry
 
@@ -816,7 +858,16 @@ def _detail_rows(item: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Flat labeled rows for the debug details panel (first-pass presentation)."""
     rows: List[Dict[str, Any]] = []
 
-    def add(label: str, value: Any, *, json_path: Any = None, peek: Any = None) -> None:
+    def add(
+        label: str,
+        value: Any,
+        *,
+        json_path: Any = None,
+        peek: Any = None,
+        thumb_url: Any = None,
+        asset_url: Any = None,
+        relpath: Any = None,
+    ) -> None:
         if value is None or value == "" or value == []:
             return
         if isinstance(value, (dict, list)):
@@ -834,6 +885,15 @@ def _detail_rows(item: Dict[str, Any]) -> List[Dict[str, Any]]:
         pk = str(peek or "").strip()
         if pk:
             row["peek"] = pk
+        tu = str(thumb_url or "").strip()
+        if tu:
+            row["thumb_url"] = tu
+        au = str(asset_url or "").strip()
+        if au:
+            row["asset_url"] = au
+        rp = str(relpath or "").strip().replace("\\", "/")
+        if rp:
+            row["relpath"] = rp
         rows.append(row)
 
     add("Created", item.get("created_at"))
@@ -947,10 +1007,14 @@ def _detail_rows(item: Dict[str, Any]) -> List[Dict[str, Any]]:
             f"type={meta.get('binding_type')}" if meta.get("binding_type") else "",
             _format_role(meta.get("role")),
         ]
+        path_s = str(meta.get("path") or "")
         add(
             f"Binding · {slot}",
-            " · ".join(b for b in bits if b),
-            json_path=meta.get("path") if str(meta.get("path") or "").lower().endswith(".json") else None,
+            " · ".join(b for b in bits if b) or path_s or slot,
+            json_path=path_s if path_s.lower().endswith(".json") else None,
+            thumb_url=meta.get("thumb_url"),
+            asset_url=meta.get("url"),
+            relpath=meta.get("relpath"),
         )
 
     prompt = item.get("prompt_profile")

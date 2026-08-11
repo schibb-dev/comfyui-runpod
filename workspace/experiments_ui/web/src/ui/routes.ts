@@ -13,6 +13,7 @@ export type AppRouteId =
   | "clips"
   | "rate"
   | "workbench"
+  | "submit"
   | "vision-slices"
   | "experiments"
   | "workflows"
@@ -31,7 +32,7 @@ export type AppRoute = {
 };
 
 // Order matters for nav rendering (left → right).
-// Pipeline peers: Library (find) · Clips (spans) · Factory (manage) · Rating · Workbench.
+// Pipeline: Library · Clips · Factory · Rating · Submit · Workbench · Queue.
 export const APP_ROUTES: AppRoute[] = [
   { id: "home", path: "/", label: "Home", hint: "Resume the loop — rate, triage, generate", group: "pipeline" },
   { id: "library", path: "/discovery", label: "Library", hint: "Search and find indexed media", group: "pipeline" },
@@ -39,13 +40,20 @@ export const APP_ROUTES: AppRoute[] = [
   { id: "factory", path: "/discovery/factory-map", label: "Factory", hint: "Manage shape families · recover / replay", group: "pipeline" },
   { id: "rate", path: "/discovery/rate", label: "Rating", hint: "Rating bootstrap queue", group: "pipeline" },
   {
+    id: "submit",
+    path: "/submit",
+    label: "Submit",
+    hint: "Compose a factory job and submit now or later",
+    group: "pipeline",
+  },
+  {
     id: "workbench",
     path: "/workbench",
     label: "Workbench",
-    hint: "Set up jobs that seed factories · buckets · workflows",
+    hint: "Job status — pending trim, retry, bindings, discard",
     group: "pipeline",
   },
-  { id: "queue", path: "/comfy-queue", label: "Queue", hint: "What's generating right now", group: "pipeline" },
+  { id: "queue", path: "/comfy-queue", label: "Queue", hint: "What's generating on Comfy right now", group: "pipeline" },
   { id: "vision-slices", path: "/vision/slices", label: "Vision slices", hint: "V1 time-slice captions vs video", group: "tools" },
   { id: "experiments", path: "/experiments", label: "Experiments", hint: "Tune experiments & runs", group: "tools" },
   { id: "workflows", path: "/workflow-explorer", label: "Workflows", hint: "Workflow & factory-asset explorer", group: "tools" },
@@ -67,6 +75,7 @@ const MATCHERS: { id: AppRouteId; test: (p: string) => boolean }[] = [
   { id: "orchestrator", test: (p) => p.startsWith("/orchestrator") },
   { id: "workflows", test: (p) => p.startsWith("/workflow-explorer") },
   { id: "experiments", test: (p) => p.startsWith("/experiments") },
+  { id: "submit", test: (p) => p.startsWith("/submit") },
   // Canonical /workbench; keep /work-products as a deep-link alias.
   { id: "workbench", test: (p) => p.startsWith("/workbench") || p.startsWith("/work-products") },
   { id: "vision-slices", test: (p) => p.startsWith("/vision") },

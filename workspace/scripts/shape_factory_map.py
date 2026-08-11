@@ -210,6 +210,13 @@ def _path_media_row(
             row["thumb_url"] = thumb["url"]
         if thumb.get("relpath"):
             row["thumb_relpath"] = thumb["relpath"]
+    elif not row.get("thumb_url"):
+        # Still / image bindings: the asset itself is the thumb.
+        hint = str(row.get("relpath") or path).lower()
+        if hint.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")) and row.get("url"):
+            row["thumb_url"] = row["url"]
+            if row.get("relpath"):
+                row["thumb_relpath"] = row["relpath"]
     return row
 
 

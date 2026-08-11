@@ -693,6 +693,156 @@ export async function createWorkItems(body: {
   return j;
 }
 
+/** Single client entry for Submit compose: work-item(s) + disposition advance routes. */
+export type ComposeSubmitRoute = {
+  stepId: string;
+  family: string;
+  identityAnchor?: string | null;
+};
+
+export type ComposeSubmitAdvanceRequest = {
+  mediaRelpath: string;
+  when: "now" | "later";
+  routes: ComposeSubmitRoute[];
+  overrides?: ShapeFactoryMapQueueOverrides;
+  /** Seed job when advancing from Workbench / from_job deep-link. */
+  jobKey?: string | null;
+};
+
+export type ComposeSubmitAdvanceResult = {
+  ok: true;
+  when: "now" | "later";
+  jobKeys: string[];
+  workItemCount: number | null;
+  message: string;
+};
+
+function advanceRouteLabel(stepId: string): string {
+  if (stepId === "advance.extend") return "Extend";
+  if (stepId === "advance.derive") return "Derive";
+  if (stepId === "advance.vary") return "Vary";
+  return stepId || "route";
+}
+
+export async function composeSubmitAdvance(req: ComposeSubmitAdvanceRequest): Promise<ComposeSubmitAdvanceResult> {
+  const relpath = String(req.mediaRelpath || "").trim().replace(/\\/g, "/");
+  if (!relpath) throw new Error("composeSubmitAdvance: missing mediaRelpath");
+  const routes = (req.routes || [])
+    .map((r) => ({
+      stepId: String(r.stepId || "").trim() || "advance.extend",
+      family: String(r.family || "").trim(),
+      identityAnchor: r.identityAnchor ? String(r.identityAnchor).trim() : "",
+    }))
+    .filter((r) => r.family);
+  if (!routes.length) throw new Error("composeSubmitAdvance: select Extend, Vary, and/or Derive with a family");
+  const when = req.when === "now" ? "now" : "later";
+  const jobKeySeed = String(req.jobKey || "").trim() || undefined;
+
+  const created = await createWorkItems({
+    source_relpath: relpath,
+    routes: routes.map((r) => ({ step_id: r.stepId, factory_family: r.family })),
+    queue_now: when === "now",
+  });
+
+  const parts: string[] = [
+    when === "now" ? "Submit now" : "Submit later",
+    created.count != null ? `${created.count} route(s)` : null,
+  ].filter(Boolean) as string[];
+  const jobKeys: string[] = [];
+
+  for (const route of routes) {
+    const res = await runDispositionStep({
+      relpath,
+      step_id: route.stepId,
+      family_slug: route.family,
+      job_key: jobKeySeed,
+      front: when === "now",
+      overrides: req.overrides,
+      ...(route.stepId === "advance.extend" && route.identityAnchor
+        ? { identity_anchor: route.identityAnchor }
+        : {}),
+    });
+    const nested = (res.result as Record<string, unknown> | undefined) || {};
+    const nestedResult = (nested.result as Record<string, unknown> | undefined) || {};
+    const reason = String(nested.reason || nested.error || nestedResult.reason || "").trim();
+    if (nested.ok === false) {
+      throw new Error(`${advanceRouteLabel(route.stepId)}: ${reason || "submit failed"}`);
+    }
+    const jobKey = String(nested.job_key || nestedResult.job_key || "").trim();
+    if (jobKey) jobKeys.push(jobKey);
+    const clampMessage =
+      String(
+        (nested.trim_clamped as { message?: string } | undefined)?.message ||
+          (nestedResult.trim_clamped as { message?: string } | undefined)?.message ||
+          "",
+      ).trim() || "";
+    const fam = route.family ? `@${route.family}` : "";
+    const label = advanceRouteLabel(route.stepId);
+    parts.push(
+      [jobKey ? `${label}${fam}→${jobKey}` : `${label}${fam}: ${res.hook || "ok"}`, clampMessage]
+        .filter(Boolean)
+        .join(" · "),
+    );
+  }
+
+  return {
+    ok: true,
+    when,
+    jobKeys,
+    workItemCount: created.count != null ? Number(created.count) : null,
+    message: parts.join(" · "),
+  };
+}
+
+/** @deprecated Prefer composeSubmitAdvance — kept for single-route callers. */
+export type ComposeSubmitExtendRequest = {
+  mediaRelpath: string;
+  family: string;
+  when: "now" | "later";
+  overrides?: ShapeFactoryMapQueueOverrides;
+  identityAnchor?: string | null;
+  stepId?: string;
+  jobKey?: string | null;
+};
+
+export type ComposeSubmitExtendResult = {
+  ok: true;
+  when: "now" | "later";
+  jobKey: string | null;
+  workItemCount: number | null;
+  freshCombo: boolean;
+  clampMessage: string | null;
+  hook: string | null;
+  message: string;
+};
+
+export async function composeSubmitExtend(req: ComposeSubmitExtendRequest): Promise<ComposeSubmitExtendResult> {
+  const stepId = String(req.stepId || "advance.extend").trim() || "advance.extend";
+  const advanced = await composeSubmitAdvance({
+    mediaRelpath: req.mediaRelpath,
+    when: req.when,
+    overrides: req.overrides,
+    jobKey: req.jobKey,
+    routes: [
+      {
+        stepId,
+        family: req.family,
+        identityAnchor: req.identityAnchor,
+      },
+    ],
+  });
+  return {
+    ok: true,
+    when: advanced.when,
+    jobKey: advanced.jobKeys[0] || null,
+    workItemCount: advanced.workItemCount,
+    freshCombo: false,
+    clampMessage: null,
+    hook: null,
+    message: advanced.message,
+  };
+}
+
 export async function cancelWorkItem(body: { work_id: string; reason?: string }): Promise<WorkItemsCancelResponse> {
   const r = await fetch("/api/discovery/work-items/cancel", {
     method: "POST",
@@ -855,6 +1005,14 @@ export type ShapeFactoryClipsListResponse = {
   detail?: string;
 };
 
+export type ShapeFactoryClipsLibraryParent = {
+  media_relpath: string;
+  media_basename?: string | null;
+  clip_count: number;
+  has_default?: boolean;
+  asset_mtime?: number | null;
+};
+
 export type ShapeFactoryClipsLibraryResponse = {
   ok: boolean;
   clips?: ShapeFactoryClip[];
@@ -863,10 +1021,13 @@ export type ShapeFactoryClipsLibraryResponse = {
   limit?: number;
   offset?: number;
   origin_counts?: Record<string, number>;
+  /** Source videos with clip counts (for by-source browse). */
+  parents?: ShapeFactoryClipsLibraryParent[];
   filters?: {
     origin?: string | null;
     q?: string | null;
     defaults_only?: boolean;
+    media_relpath?: string | null;
   };
   error?: string;
   detail?: string;
@@ -888,12 +1049,70 @@ export async function listShapeFactoryClips(opts: {
   return j;
 }
 
+export type ShapeFactoryClipDerivedItem = {
+  job_key: string;
+  family_slug?: string | null;
+  status?: string | null;
+  created_at?: string | null;
+  deposited_at?: string | null;
+  source_clip_id: string;
+  clip_label?: string | null;
+  clip_mark_in_s?: number | null;
+  clip_mark_out_s?: number | null;
+  source_media_relpath?: string | null;
+  source_media_basename?: string | null;
+  vhs_source?: string | null;
+  output_relpath?: string | null;
+  output_basename?: string | null;
+  output_url?: string | null;
+  output_thumb_url?: string | null;
+  is_hourly?: boolean;
+};
+
+export type ShapeFactoryClipsDerivedResponse = {
+  ok: boolean;
+  items?: ShapeFactoryClipDerivedItem[];
+  count?: number;
+  total?: number;
+  scanned_jobs?: number;
+  matched_jobs?: number;
+  filters?: {
+    clip_id?: string | null;
+    media_relpath?: string | null;
+    include_without_output?: boolean;
+  };
+  error?: string;
+  detail?: string;
+};
+
+export async function listShapeFactoryClipsDerived(opts?: {
+  limit?: number;
+  clipId?: string | null;
+  mediaRelpath?: string | null;
+  includePending?: boolean;
+}): Promise<ShapeFactoryClipsDerivedResponse> {
+  const sp = new URLSearchParams();
+  if (opts?.limit != null) sp.set("limit", String(opts.limit));
+  if (opts?.clipId?.trim()) sp.set("clip_id", opts.clipId.trim());
+  if (opts?.mediaRelpath?.trim()) sp.set("media_relpath", opts.mediaRelpath.trim().replace(/\\/g, "/"));
+  if (opts?.includePending) sp.set("include_pending", "1");
+  const qs = sp.toString();
+  const r = await fetch(`/api/shape-factory/clips/derived${qs ? `?${qs}` : ""}`);
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryClipsDerivedResponse;
+  if (!r.ok || !j.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`GET /api/shape-factory/clips/derived failed: ${r.status}${detail ? `: ${detail}` : ""}`);
+  }
+  return j;
+}
+
 export async function listShapeFactoryClipsLibrary(opts?: {
   limit?: number;
   offset?: number;
   origin?: string | null;
   q?: string | null;
   defaultsOnly?: boolean;
+  mediaRelpath?: string | null;
 }): Promise<ShapeFactoryClipsLibraryResponse> {
   const sp = new URLSearchParams();
   if (opts?.limit != null) sp.set("limit", String(opts.limit));
@@ -901,6 +1120,7 @@ export async function listShapeFactoryClipsLibrary(opts?: {
   if (opts?.origin?.trim()) sp.set("origin", opts.origin.trim());
   if (opts?.q?.trim()) sp.set("q", opts.q.trim());
   if (opts?.defaultsOnly) sp.set("defaults_only", "1");
+  if (opts?.mediaRelpath?.trim()) sp.set("media_relpath", opts.mediaRelpath.trim().replace(/\\/g, "/"));
   const qs = sp.toString();
   const r = await fetch(`/api/shape-factory/clips/library${qs ? `?${qs}` : ""}`);
   const j = (await r.json().catch(() => ({}))) as ShapeFactoryClipsLibraryResponse;
@@ -1083,7 +1303,8 @@ export async function fetchDiscoveryAssetLineage(
   if (opts?.persist) sp.set("persist", "1");
   if (opts?.graphOnly) sp.set("graph_only", "1");
   if (opts?.inferParents === false) sp.set("infer_parents", "0");
-  else if (opts?.graphOnly) sp.set("infer_parents", "1");
+  else if (opts?.inferParents === true) sp.set("infer_parents", "1");
+  else if (opts?.graphOnly) sp.set("infer_parents", "0");
   if (opts?.peekGroupId) sp.set("peek_group_id", opts.peekGroupId);
   const r = await fetch(`/api/discovery/asset-lineage?${sp.toString()}`);
   const j = (await r.json()) as DiscoveryAssetLineageResponse & { error?: string; path?: string };

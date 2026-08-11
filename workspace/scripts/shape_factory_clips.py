@@ -173,6 +173,7 @@ def list_clips_library(
     origin: Optional[str] = None,
     q: Optional[str] = None,
     defaults_only: bool = False,
+    media_relpath: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Browse clips across parents, joined to asset current_relpath when known."""
     lim = max(1, min(int(limit or 100), 500))
@@ -183,6 +184,7 @@ def list_clips_library(
     q_raw = str(q or "").strip()
     q_f = q_raw.lower() if q_raw else None
     like = f"%{q_f}%" if q_f else None
+    media_f = str(media_relpath or "").strip().replace("\\", "/") or None
 
     where = ["1=1"]
     params: List[Any] = []
@@ -203,6 +205,10 @@ def list_clips_library(
         params.extend([like, like, like, like])
     if defaults_only:
         where.append("p.default_clip_id = c.clip_id")
+    if media_f:
+        # char(92) = backslash — normalize Windows-style paths in SQL.
+        where.append("replace(IFNULL(a.current_relpath,''), char(92), '/') = ?")
+        params.append(media_f)
 
     where_sql = " AND ".join(where)
     from_sql = """
@@ -262,6 +268,57 @@ def list_clips_library(
         key = str(r["origin"] or "").strip() or "(none)"
         origin_counts[key] = int(r["n"])
 
+    # Parent index for "by source" browse — same filters except media_relpath.
+    parent_where = ["1=1"]
+    parent_params: List[Any] = []
+    if origin_empty:
+        parent_where.append("(c.origin IS NULL OR TRIM(c.origin) = '')")
+    elif origin_f:
+        parent_where.append("c.origin = ?")
+        parent_params.append(origin_f)
+    if like is not None:
+        parent_where.append(
+            "("
+            "lower(IFNULL(c.label,'')) LIKE ? OR "
+            "lower(IFNULL(c.notes,'')) LIKE ? OR "
+            "lower(IFNULL(c.clip_id,'')) LIKE ? OR "
+            "lower(IFNULL(a.current_relpath,'')) LIKE ?"
+            ")"
+        )
+        parent_params.extend([like, like, like, like])
+    if defaults_only:
+        parent_where.append("p.default_clip_id = c.clip_id")
+    parent_where.append("IFNULL(a.current_relpath, '') != ''")
+    parent_where_sql = " AND ".join(parent_where)
+    parents: List[Dict[str, Any]] = []
+    for r in con.execute(
+        f"""
+        SELECT
+            replace(a.current_relpath, char(92), '/') AS media_relpath,
+            COUNT(*) AS clip_count,
+            MAX(CASE WHEN p.default_clip_id = c.clip_id THEN 1 ELSE 0 END) AS has_default,
+            MAX(a.mtime) AS asset_mtime
+        {from_sql}
+        WHERE {parent_where_sql}
+        GROUP BY replace(a.current_relpath, char(92), '/')
+        ORDER BY clip_count DESC, asset_mtime DESC, media_relpath ASC
+        LIMIT 500
+        """,
+        tuple(parent_params),
+    ).fetchall():
+        rel = str(r["media_relpath"] or "").strip().replace("\\", "/")
+        if not rel:
+            continue
+        parents.append(
+            {
+                "media_relpath": rel,
+                "media_basename": Path(rel).name,
+                "clip_count": int(r["clip_count"] or 0),
+                "has_default": bool(int(r["has_default"] or 0)),
+                "asset_mtime": float(r["asset_mtime"]) if r["asset_mtime"] is not None else None,
+            }
+        )
+
     return {
         "ok": True,
         "clips": clips,
@@ -270,10 +327,12 @@ def list_clips_library(
         "limit": lim,
         "offset": off,
         "origin_counts": origin_counts,
+        "parents": parents,
         "filters": {
             "origin": "(none)" if origin_empty else origin_f,
             "q": q_raw or None,
             "defaults_only": bool(defaults_only),
+            "media_relpath": media_f,
         },
     }
 
@@ -446,6 +505,208 @@ def marks_to_vhs_window(
         fps=float(fps) if fps > 0 else 18.0,
         frame_count=frame_count,
     )
+
+
+def _job_source_clip_id(job: Dict[str, Any]) -> Optional[str]:
+    cid = str(job.get("source_clip_id") or "").strip()
+    if cid:
+        return cid
+    win = job.get("vhs_window") if isinstance(job.get("vhs_window"), dict) else {}
+    cid = str(win.get("clip_id") or "").strip()
+    return cid or None
+
+
+def _output_relpath_for_job(job: Dict[str, Any], *, output_root: Path) -> Optional[str]:
+    """Best-effort deposited / predicted output relpath under output_root."""
+    output_root = Path(output_root).expanduser().resolve()
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    deposit = job.get("deposit") if isinstance(job.get("deposit"), dict) else {}
+    candidates: List[str] = []
+    for src in (submit.get("outputs"), deposit.get("videos")):
+        if isinstance(src, list):
+            for x in src:
+                s = str(x or "").strip()
+                if s:
+                    candidates.append(s)
+    for abs_out in candidates:
+        try:
+            p = Path(abs_out).expanduser().resolve()
+            rel = p.relative_to(output_root).as_posix()
+            return rel
+        except Exception:
+            # Already relative?
+            rel = str(abs_out).replace("\\", "/").lstrip("/")
+            if rel.startswith("og/") or rel.startswith("wip/") or rel.startswith("output/"):
+                if (output_root / rel).is_file():
+                    return rel
+    prefix = str(job.get("output_prefix") or "").strip().replace("\\", "/")
+    if not prefix:
+        return None
+    for suffix in ("_00001.mp4", "_PREVIEW_00001.mp4", "_FINAL_00001.mp4"):
+        cand = output_root / f"{prefix}{suffix}"
+        if cand.is_file():
+            try:
+                return cand.resolve().relative_to(output_root).as_posix()
+            except Exception:
+                return f"{prefix}{suffix}".lstrip("/")
+    stem = Path(prefix).name
+    parent = (output_root / Path(prefix).parent).resolve()
+    if parent.is_dir():
+        matches = sorted(parent.glob(f"{stem}*.mp4"))
+        if matches:
+            try:
+                return matches[0].resolve().relative_to(output_root).as_posix()
+            except Exception:
+                return None
+    return None
+
+
+def list_clip_derived_videos(
+    *,
+    jobs_root: Path,
+    output_root: Path,
+    con: Optional[sqlite3.Connection] = None,
+    clip_id: Optional[str] = None,
+    media_relpath: Optional[str] = None,
+    limit: int = 200,
+    include_without_output: bool = False,
+) -> Dict[str, Any]:
+    """
+    List factory job outputs that used a clip bookmark (source_clip_id / vhs_window.clip_id).
+
+    Scans ``jobs_root/**/*.job.json``. Optional filters narrow to one clip or all clips
+    on a parent media path.
+    """
+    jobs_root = Path(jobs_root).expanduser()
+    output_root = Path(output_root).expanduser().resolve()
+    lim = max(1, min(int(limit or 200), 500))
+    clip_f = str(clip_id or "").strip() or None
+    media_f = str(media_relpath or "").strip().replace("\\", "/") or None
+
+    allowed_clip_ids: Optional[set] = None
+    if clip_f:
+        allowed_clip_ids = {clip_f}
+    elif media_f and con is not None:
+        # Resolve parent → clip ids for that media.
+        row = con.execute(
+            "SELECT content_id FROM assets WHERE replace(current_relpath, char(92), '/') = ?",
+            (media_f,),
+        ).fetchone()
+        if row and row["content_id"]:
+            parent = str(row["content_id"])
+            allowed_clip_ids = {
+                str(r["clip_id"])
+                for r in con.execute(
+                    "SELECT clip_id FROM clips WHERE parent_content_id=?",
+                    (parent,),
+                ).fetchall()
+            }
+        else:
+            allowed_clip_ids = set()
+
+    clip_meta: Dict[str, Dict[str, Any]] = {}
+    if con is not None:
+        for r in con.execute(
+            """
+            SELECT c.clip_id, c.label, c.mark_in_s, c.mark_out_s, c.parent_content_id,
+                   a.current_relpath AS media_relpath
+            FROM clips c
+            LEFT JOIN assets a ON a.content_id = c.parent_content_id
+            """
+        ).fetchall():
+            cid = str(r["clip_id"] or "").strip()
+            if not cid:
+                continue
+            rel = str(r["media_relpath"] or "").strip().replace("\\", "/") or None
+            clip_meta[cid] = {
+                "clip_id": cid,
+                "label": str(r["label"] or "").strip() or "Clip",
+                "mark_in_s": float(r["mark_in_s"] or 0.0),
+                "mark_out_s": float(r["mark_out_s"] or 0.0),
+                "parent_content_id": str(r["parent_content_id"] or "").strip() or None,
+                "media_relpath": rel,
+                "media_basename": Path(rel).name if rel else None,
+            }
+
+    items: List[Dict[str, Any]] = []
+    scanned = 0
+    matched_jobs = 0
+    if jobs_root.is_dir():
+        for path in jobs_root.rglob("*.job.json"):
+            scanned += 1
+            try:
+                raw = path.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+            if "clip_" not in raw and "source_clip_id" not in raw:
+                continue
+            try:
+                job = json.loads(raw)
+            except Exception:
+                continue
+            if not isinstance(job, dict):
+                continue
+            cid = _job_source_clip_id(job)
+            if not cid:
+                continue
+            if allowed_clip_ids is not None and cid not in allowed_clip_ids:
+                continue
+            matched_jobs += 1
+            out_rel = _output_relpath_for_job(job, output_root=output_root)
+            if not out_rel and not include_without_output:
+                continue
+            meta = clip_meta.get(cid) or {"clip_id": cid, "label": "Clip"}
+            submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+            deposit = job.get("deposit") if isinstance(job.get("deposit"), dict) else {}
+            status = str(
+                submit.get("status") or ("deposited" if deposit else job.get("status") or "pending")
+            ).strip()
+            win = job.get("vhs_window") if isinstance(job.get("vhs_window"), dict) else {}
+            items.append(
+                {
+                    "job_key": str(job.get("job_key") or path.stem.replace(".job", "")),
+                    "family_slug": str(job.get("family_slug") or path.parent.name or ""),
+                    "status": status,
+                    "created_at": job.get("created_at"),
+                    "deposited_at": deposit.get("deposited_at"),
+                    "source_clip_id": cid,
+                    "clip_label": meta.get("label"),
+                    "clip_mark_in_s": meta.get("mark_in_s"),
+                    "clip_mark_out_s": meta.get("mark_out_s"),
+                    "source_media_relpath": meta.get("media_relpath"),
+                    "source_media_basename": meta.get("media_basename"),
+                    "vhs_source": win.get("source"),
+                    "output_relpath": out_rel,
+                    "output_basename": Path(out_rel).name if out_rel else None,
+                    "output_url": ("/files/" + out_rel.replace("\\", "/")) if out_rel else None,
+                    "output_thumb_url": (
+                        "/files/" + str(Path(out_rel).with_suffix(".png")).replace("\\", "/")
+                        if out_rel
+                        else None
+                    ),
+                    "is_hourly": str(job.get("job_key") or path.name).startswith("hourly__"),
+                }
+            )
+
+    def _sort_key(row: Dict[str, Any]) -> Tuple[str, str]:
+        return (str(row.get("created_at") or ""), str(row.get("job_key") or ""))
+
+    items.sort(key=_sort_key, reverse=True)
+    total = len(items)
+    items = items[:lim]
+    return {
+        "ok": True,
+        "items": items,
+        "count": len(items),
+        "total": total,
+        "scanned_jobs": scanned,
+        "matched_jobs": matched_jobs,
+        "filters": {
+            "clip_id": clip_f,
+            "media_relpath": media_f,
+            "include_without_output": bool(include_without_output),
+        },
+    }
 
 
 def resolve_job_use_window(

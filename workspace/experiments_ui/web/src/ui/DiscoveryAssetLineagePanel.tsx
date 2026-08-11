@@ -286,7 +286,9 @@ export function DiscoveryAssetLineagePanel({
     setLoading(true);
     setError("");
     try {
-      const body = await fetchDiscoveryAssetLineage(seedItem.relpath, { graphOnly: true, inferParents: true });
+      // graph_only + no live infer: persisted edges only (fast). Live infer can take tens of seconds
+      // and would block other Discovery panels while the API holds the GIL.
+      const body = await fetchDiscoveryAssetLineage(seedItem.relpath, { graphOnly: true, inferParents: false });
       setData(body);
     } catch (e) {
       setData(null);
