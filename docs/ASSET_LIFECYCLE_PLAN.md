@@ -1,5 +1,7 @@
 # Asset lifecycle: registry, job backfill, relocation, image reorg
 
+**Scope:** **Asset lifecycle** = custody of the media object (identity, presence, location, references). For judgment, clips, disposition, factory work, and re-entry into review — the **corpus lifecycle** — see [`CORPUS_LIFECYCLE.md`](./CORPUS_LIFECYCLE.md). Do not use bare “lifecycle” without the qualifier.
+
 Status: **Phases 0–1 shipped** (content registry + job backfill). Phases 2–4 planned.
 
 - Phase 0 registry: done (`asset_registry.py`, v2 with `mtime` rehash cache).
@@ -151,6 +153,20 @@ references (hardlink/symlink or registry pointer), reclaiming space. Then strip
 taxonomy — `input/stills/used/` (referenced by an output/job) vs
 `input/stills/unused/` (+ `_archive/` for junk) — with full reference rewrite.
 
+### Interim: factory LoadImage staging (`input/_factory/`)   [shipped]
+
+Until Phase 4 reorg, shape-factory **stages** stills that live outside Comfy input
+(e.g. identity anchors under `output/og/…`) into:
+
+```text
+input/_factory/<content_id><ext>
+```
+
+via hardlink → symlink → copy (`stage_load_image_for_comfy` in `shape_factory.py`).
+`LoadImage` widgets then receive `_factory/<content_id><ext>`. Content id prefers a
+64-hex token in the source basename, else `sha256(bytes)`. This is a managed
+staging area only — not a full input taxonomy; Phase 4 may absorb or relocate it.
+
 ## Design notes / decisions
 - Identity: exact sha256 now; perceptual hash reserved.
 - Storage: SQLite at `output/output/_status/asset_registry.sqlite` (writable in both
@@ -159,3 +175,4 @@ taxonomy — `input/stills/used/` (referenced by an output/job) vs
   `origin:"backfill"` marker and a distinct `__backfill__` job key so they are
   filterable and never collide with live jobs.
 - Companion assets (png/mp4/xmp sharing a stem) are always treated as a unit for moves.
+- **`input/_factory/`**: managed LoadImage staging for factory jobs (see interim note above).

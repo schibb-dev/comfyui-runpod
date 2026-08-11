@@ -49,6 +49,7 @@ nav:
     - Ratings v1: RATINGS_V1_PLAN.md
     - Bucket model: DISPOSITION_BUCKET_MODEL.md
     - Bucket model Phase 2: BUCKET_MODEL_PHASE2_PLAN.md
+    - Corpus lifecycle: CORPUS_LIFECYCLE.md
     - Asset lifecycle: ASSET_LIFECYCLE_PLAN.md
     - Workflow repair: WORKFLOW_REPAIR_PLAN.md
   - Reference:

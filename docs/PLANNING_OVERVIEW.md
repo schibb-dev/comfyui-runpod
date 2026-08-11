@@ -224,6 +224,8 @@ _Use this section during mental exploration. Promote bullets into a program’s 
 | Discovery FS watcher + enrichment jobs (planned) | [`DISCOVERY_INDEX_WATCHER_PLAN.md`](./DISCOVERY_INDEX_WATCHER_PLAN.md) |
 | Lineage DB sketch | [`LINEAGE_INDEX_SKETCH.md`](./LINEAGE_INDEX_SKETCH.md) |
 | Bucket model Phase 2 (work items, pools) | [`BUCKET_MODEL_PHASE2_PLAN.md`](./BUCKET_MODEL_PHASE2_PLAN.md) |
+| Corpus lifecycle (judgment + generation loop) | [`CORPUS_LIFECYCLE.md`](./CORPUS_LIFECYCLE.md) |
+| Asset lifecycle (file custody / locate / move) | [`ASSET_LIFECYCLE_PLAN.md`](./ASSET_LIFECYCLE_PLAN.md) |
 | Output path drift (prevent / detect / recover) | [`OUTPUT_PATH_MITIGATION.md`](./OUTPUT_PATH_MITIGATION.md) |
 | Queue & containers | [`SCHEDULED_AND_CONTAINER_JOBS_RUNDOWN.md`](./SCHEDULED_AND_CONTAINER_JOBS_RUNDOWN.md) |
 | Workspace projects & resubmit MVP | [`WORKSPACE_PROJECTS_RUNDOWN.md`](./WORKSPACE_PROJECTS_RUNDOWN.md) |
