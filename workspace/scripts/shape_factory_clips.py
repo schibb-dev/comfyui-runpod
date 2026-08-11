@@ -454,13 +454,15 @@ def resolve_job_use_window(
     source_clip_id: Optional[str] = None,
     parent_content_id: Optional[str] = None,
     media_meta: Optional[Dict[str, Any]] = None,
+    media_abs: Optional[Path] = None,
     con: Optional[sqlite3.Connection] = None,
     registry_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
     Resolve this run's use window.
 
-    Order: explicit job vhs_window → source_clip_id → parent default_clip → full file.
+    Order: explicit job vhs_window → source_clip_id → parent default_clip →
+    sibling clip → work-products ``.trims.json`` sidecar → full file.
     Never reads catalog template skip/cap.
     """
     meta = dict(media_meta or {})
@@ -636,6 +638,43 @@ def resolve_job_use_window(
                 "frame_count": frame_count,
                 "duration": duration,
             }
+
+        # Work-products trim sidecar (Workbench marks) before full-file default.
+        if media_abs is not None:
+            try:
+                from shape_factory_queue import _load_work_products_trim_seconds, hostify_media_abs
+
+                media_resolved = hostify_media_abs(Path(media_abs))
+                marks = (
+                    _load_work_products_trim_seconds(media_resolved)
+                    if media_resolved is not None and media_resolved.is_file()
+                    else None
+                )
+            except Exception:
+                marks = None
+            if marks is not None:
+                tin, tout = clamp_marks(float(marks[0]), float(marks[1]), duration_s=duration or None)
+                vhs = marks_to_vhs_window(
+                    mark_in_s=tin,
+                    mark_out_s=tout,
+                    duration_s=duration,
+                    fps=fps,
+                    frame_count=frame_count or None,
+                )
+                skip = int(vhs["skip_first_frames"])
+                cap = int(vhs["frame_load_cap"])
+                if not (frame_count > 0 and skip >= frame_count):
+                    return {
+                        "source": "sidecar",
+                        "clip_id": None,
+                        "mark_in": tin,
+                        "mark_out": tout,
+                        "skip_first_frames": skip,
+                        "frame_load_cap": cap,
+                        "fps": fps,
+                        "frame_count": frame_count,
+                        "duration": duration,
+                    }
 
         return {
             "source": "full",

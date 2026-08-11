@@ -4931,6 +4931,7 @@ def seed_job_use_window_from_clips(
             source_clip_id=str(job.get("source_clip_id") or "").strip() or None,
             parent_content_id=parent_cid,
             media_meta=media_meta,
+            media_abs=media if media and media.is_file() else None,
             con=con,
         )
     finally:

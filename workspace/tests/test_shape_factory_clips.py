@@ -116,6 +116,91 @@ class TestShapeFactoryClips(unittest.TestCase):
             self.assertEqual(explicit["frame_load_cap"], 10)
             con.close()
 
+    def test_resolve_sidecar_before_full(self) -> None:
+        """Workbench .trims.json applies when no clip; default clip still wins over sidecar."""
+        import json
+
+        from shape_factory_clips import (
+            connect_clips,
+            create_clip,
+            resolve_job_use_window,
+            set_default_clip,
+        )
+
+        with _tmpdir() as td:
+            root = Path(td)
+            media_path = root / "src.mp4"
+            media_path.write_bytes(b"fake")
+            sidecar = media_path.with_suffix(".trims.json")
+            sidecar.write_text(
+                json.dumps(
+                    {
+                        "v": 1,
+                        "contexts": {
+                            "work-products": {
+                                "active_preset_id": "p1",
+                                "presets": [
+                                    {"id": "p1", "label": "Trim", "in": 1.0, "out": 3.0, "at": 1},
+                                ],
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            media_meta = {"fps": 10.0, "frame_count": 100, "duration": 10.0}
+
+            # No clips → sidecar window (skip=10, cap=20 at 10fps).
+            from_sidecar = resolve_job_use_window(
+                job={},
+                parent_content_id="f" * 64,
+                media_meta=media_meta,
+                media_abs=media_path,
+                con=None,
+            )
+            self.assertEqual(from_sidecar["source"], "sidecar")
+            self.assertEqual(from_sidecar["skip_first_frames"], 10)
+            self.assertEqual(from_sidecar["frame_load_cap"], 20)
+            self.assertEqual(from_sidecar["mark_in"], 1.0)
+            self.assertEqual(from_sidecar["mark_out"], 3.0)
+
+            # No sidecar path / missing marks → full.
+            full = resolve_job_use_window(
+                job={},
+                parent_content_id="f" * 64,
+                media_meta=media_meta,
+                media_abs=None,
+                con=None,
+            )
+            self.assertEqual(full["source"], "full")
+            self.assertEqual(full["skip_first_frames"], 0)
+
+            # Default clip beats sidecar.
+            reg = root / "asset_registry.sqlite"
+            con = connect_clips(reg)
+            parent = "g" * 64
+            clip = create_clip(
+                con,
+                parent_content_id=parent,
+                mark_in_s=2.0,
+                mark_out_s=4.0,
+                label="ClipWins",
+                duration_s=10.0,
+            )
+            set_default_clip(con, parent, clip["clip_id"])
+            defaulted = resolve_job_use_window(
+                job={},
+                parent_content_id=parent,
+                media_meta=media_meta,
+                media_abs=media_path,
+                con=con,
+            )
+            self.assertEqual(defaulted["source"], "default_clip")
+            self.assertEqual(defaulted["clip_id"], clip["clip_id"])
+            self.assertEqual(defaulted["skip_first_frames"], 20)
+            self.assertEqual(defaulted["frame_load_cap"], 20)
+            con.close()
+
     def test_import_trims_presets(self) -> None:
         from shape_factory_clips import connect_clips, get_default_clip_id, import_trims_presets_as_clips
 
