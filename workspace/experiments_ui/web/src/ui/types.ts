@@ -1243,6 +1243,9 @@ export type ShapeFactoryMapQueueOverrides = {
     /** Seconds — preferred Use window; factory re-derives skip/cap with probed fps. */
     mark_in?: number;
     mark_out?: number;
+    /** Comfy noise seed (RandomNoise / KSampler); fixed on apply. */
+    seed?: number;
+    noise_seed?: number;
   };
 };
 
@@ -1280,12 +1283,16 @@ export type ShapeFactoryReplayRequest = {
   family_slug?: string;
   extend?: boolean;
   front?: boolean;
+  /** Hold job seed (`same`) or draw a new one (`new`). */
+  seed_mode?: "same" | "new";
   overrides?: ShapeFactoryMapQueueOverrides;
 };
 
 export type ShapeFactoryReplayResponse = ShapeFactoryMapQueueResponse & {
   extend?: boolean;
   replay_of_job_key?: string | null;
+  noise_seed?: number | null;
+  seed_mode?: string | null;
   trim_clamped?: {
     source?: string;
     message?: string;
@@ -1816,6 +1823,10 @@ export type WorkProductItem = {
     skip_first_frames?: number;
     frame_load_cap?: number;
   } | null;
+  /** Comfy noise seed extracted from prompt / construction. */
+  noise_seed?: number | null;
+  /** How seed was chosen on replay (same / new / …), when known. */
+  seed_mode?: string | null;
   work_items_open?: WorkItem[];
   work_items?: WorkItem[];
   work_items_open_count?: number;

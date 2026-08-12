@@ -29,10 +29,16 @@ export type AppRoute = {
   /** Short helper text for tooltips. */
   hint?: string;
   group: AppNavGroup;
+  /**
+   * When false, the route still resolves (deep links / AppShell active state)
+   * but is omitted from the primary nav. Default true.
+   */
+  nav?: boolean;
 };
 
 // Order matters for nav rendering (left → right).
-// Pipeline: Library · Clips · Factory · Rating · Submit · Workbench · Queue.
+// Pipeline: Library · Clips · Factory · Rating · Workbench · Queue.
+// Submit is intent-modal only (doors → /submit?…); not a nav destination.
 export const APP_ROUTES: AppRoute[] = [
   { id: "home", path: "/", label: "Home", hint: "Resume the loop — rate, triage, generate", group: "pipeline" },
   { id: "library", path: "/discovery", label: "Library", hint: "Search and find indexed media", group: "pipeline" },
@@ -43,8 +49,9 @@ export const APP_ROUTES: AppRoute[] = [
     id: "submit",
     path: "/submit",
     label: "Submit",
-    hint: "Compose a factory job and submit now or later",
+    hint: "Intent-only compose — open from Library, Clips, or Workbench",
     group: "pipeline",
+    nav: false,
   },
   {
     id: "workbench",
@@ -99,7 +106,7 @@ export function routeHref(id: AppRouteId): string {
 }
 
 export function routesForGroup(group: AppNavGroup): AppRoute[] {
-  return APP_ROUTES.filter((r) => r.group === group);
+  return APP_ROUTES.filter((r) => r.group === group && r.nav !== false);
 }
 
 export function routeLabel(id: AppRouteId): string {

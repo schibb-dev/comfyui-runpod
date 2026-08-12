@@ -580,9 +580,10 @@ def build_adhoc_dev_tuning(parameters: Dict[str, Any], *, data_root: Path) -> Op
     Map UI parameter knobs onto a sparse dev-tuning patch.
 
     Only keys present in ``parameters`` are patched (frames/steps/overlap and/or
-    VHS skip_first_frames / frame_load_cap). Unmentioned knobs are left alone so
-    the shape template / production graph keeps its defaults — do **not** inherit
-    ``dev-fast.yaml`` (that profile is opt-in via ``--dev`` only).
+    VHS skip_first_frames / frame_load_cap, and/or ``seed`` / ``noise_seed``).
+    Unmentioned knobs are left alone so the shape template / production graph
+    keeps its defaults — do **not** inherit ``dev-fast.yaml`` (that profile is
+    opt-in via ``--dev`` only).
 
     ``data_root`` is accepted for call-site compatibility; the patch is built from
     ``parameters`` alone.
@@ -619,12 +620,183 @@ def build_adhoc_dev_tuning(parameters: Dict[str, Any], *, data_root: Path) -> Op
         tuning["vhs_load_video_path"] = vhs_patch
         touched = True
 
+    seed_raw = parameters.get("seed")
+    if seed_raw is None or seed_raw == "":
+        seed_raw = parameters.get("noise_seed")
+    if seed_raw is not None and seed_raw != "":
+        tuning["noise_seed"] = int(seed_raw)
+        touched = True
+
     if not touched:
         return None
 
     tuning["profile_id"] = "adhoc-ui"
     tuning["output_prefix_suffix"] = str(parameters.get("output_prefix_suffix") or "_adhoc")
     return tuning
+
+
+def _coerce_int_seed(raw: Any) -> Optional[int]:
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return int(raw)
+    if isinstance(raw, float) and raw.is_integer():
+        return int(raw)
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def extract_job_noise_seed(job: Optional[Dict[str, Any]], job_path: Optional[Path] = None) -> Optional[int]:
+    """Best-effort Comfy noise seed from a prior job's prompt / construction."""
+    if isinstance(job, dict):
+        for key in ("noise_seed", "seed", "used_seed"):
+            coerced = _coerce_int_seed(job.get(key))
+            if coerced is not None:
+                return coerced
+        construction = job.get("construction") if isinstance(job.get("construction"), dict) else {}
+        for key in ("noise_seed", "seed", "used_seed"):
+            coerced = _coerce_int_seed(construction.get(key))
+            if coerced is not None:
+                return coerced
+        adhoc = job.get("adhoc_overrides") if isinstance(job.get("adhoc_overrides"), dict) else {}
+        params = adhoc.get("parameters") if isinstance(adhoc.get("parameters"), dict) else {}
+        for key in ("seed", "noise_seed"):
+            coerced = _coerce_int_seed(params.get(key))
+            if coerced is not None:
+                return coerced
+        dev = job.get("dev_tuning") if isinstance(job.get("dev_tuning"), dict) else {}
+        spec = dev.get("spec") if isinstance(dev.get("spec"), dict) else {}
+        coerced = _coerce_int_seed(dev.get("noise_seed") or spec.get("noise_seed"))
+        if coerced is not None:
+            return coerced
+
+    prompt_obj: Optional[Dict[str, Any]] = None
+    if isinstance(job, dict):
+        for key in ("prompt", "api_prompt"):
+            raw = job.get(key)
+            if isinstance(raw, dict) and raw:
+                prompt_obj = raw
+                break
+    if prompt_obj is None and job_path is not None:
+        sibling = job_path.with_name(job_path.name.replace(".job.json", ".prompt.json"))
+        if sibling.is_file():
+            try:
+                doc = json.loads(sibling.read_text(encoding="utf-8"))
+            except Exception:
+                doc = None
+            if isinstance(doc, dict):
+                # Sibling may be {prompt: {...}} or the prompt map itself.
+                inner = doc.get("prompt") if isinstance(doc.get("prompt"), dict) else doc
+                if isinstance(inner, dict):
+                    prompt_obj = inner
+
+    if isinstance(prompt_obj, dict):
+        try:
+            from comfy_meta_lib import collect_seeds_from_prompt  # type: ignore
+
+            info = collect_seeds_from_prompt(prompt_obj)
+            used = info.get("used_seed") if isinstance(info, dict) else None
+            coerced = _coerce_int_seed(used)
+            if coerced is not None:
+                return coerced
+        except Exception:
+            pass
+        # Inline fallback if comfy_meta_lib is unavailable.
+        for _nid, node in prompt_obj.items():
+            if not isinstance(node, dict):
+                continue
+            ctype = node.get("class_type")
+            inputs = node.get("inputs") if isinstance(node.get("inputs"), dict) else {}
+            if ctype == "RandomNoise":
+                coerced = _coerce_int_seed(inputs.get("noise_seed"))
+                if coerced is not None:
+                    return coerced
+        for _nid, node in prompt_obj.items():
+            if not isinstance(node, dict):
+                continue
+            if node.get("class_type") in ("KSampler", "KSamplerAdvanced"):
+                inputs = node.get("inputs") if isinstance(node.get("inputs"), dict) else {}
+                coerced = _coerce_int_seed(inputs.get("seed"))
+                if coerced is not None:
+                    return coerced
+    return None
+
+
+def resolve_queue_seed_parameter(
+    body: Dict[str, Any],
+    *,
+    job: Optional[Dict[str, Any]] = None,
+    job_path: Optional[Path] = None,
+) -> tuple[Optional[int], Optional[str]]:
+    """
+    Resolve noise-seed policy for factory queue / replay.
+
+    Precedence:
+    1. Explicit ``overrides.parameters.seed`` / ``noise_seed``
+    2. ``seed_mode=same`` → hold seed from ``job`` / prompt (if recoverable)
+    3. Default / ``seed_mode=new`` → fresh random draw
+
+    Seed-surfing (walk nearby seeds) is intentionally not implemented yet.
+    Returns ``(seed_or_none, mode_applied)``.
+    """
+    import random
+
+    overrides = body.get("overrides") if isinstance(body.get("overrides"), dict) else {}
+    params = overrides.get("parameters") if isinstance(overrides.get("parameters"), dict) else {}
+    explicit = _coerce_int_seed(
+        params.get("seed") if params.get("seed") not in (None, "") else params.get("noise_seed")
+    )
+    if explicit is not None:
+        return explicit, "explicit"
+
+    mode = str(body.get("seed_mode") or "new").strip().lower() or "new"
+    if mode in ("hold", "keep"):
+        mode = "same"
+    if mode in ("random", "fresh", "default"):
+        mode = "new"
+    if mode not in ("same", "new"):
+        mode = "new"
+
+    if mode == "new":
+        return int(random.randint(0, 2**31 - 1)), "new"
+
+    held = extract_job_noise_seed(job, job_path)
+    if held is not None:
+        return held, "same"
+    # Same requested but unknown — fall back to a new draw so we never silently
+    # reuse a fixed template seed and produce lookalike outputs.
+    return int(random.randint(0, 2**31 - 1)), "same_missing_new"
+
+
+# Backward-compatible name used by replay callers / tests.
+resolve_replay_seed_parameter = resolve_queue_seed_parameter
+
+
+def apply_seed_policy_to_overrides(
+    overrides: Optional[Dict[str, Any]],
+    *,
+    seed_mode: Optional[str] = None,
+    job: Optional[Dict[str, Any]] = None,
+    job_path: Optional[Path] = None,
+) -> tuple[Dict[str, Any], Optional[int], Optional[str]]:
+    """Ensure overrides carry a seed per default-new policy; return updated overrides."""
+    base = dict(overrides) if isinstance(overrides, dict) else {}
+    seed_value, mode = resolve_queue_seed_parameter(
+        {"overrides": base, "seed_mode": seed_mode},
+        job=job,
+        job_path=job_path,
+    )
+    if seed_value is None:
+        return base, None, mode
+    params = dict(base.get("parameters") if isinstance(base.get("parameters"), dict) else {})
+    params["seed"] = int(seed_value)
+    base["parameters"] = params
+    return base, int(seed_value), mode
 
 
 def clamp_vhs_load_window(
@@ -1143,12 +1315,18 @@ def queue_shape_factory_combo(
     pick_mode: str = "product",
     parent_output: Optional[str] = None,
     construction: Optional[Dict[str, Any]] = None,
+    seed_mode: Optional[str] = None,
+    seed_job: Optional[Dict[str, Any]] = None,
+    seed_job_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
     Generate + submit one explicit slot binding combo.
 
     ``bindings`` maps slot name -> absolute filesystem path (as returned by the map API).
     ``overrides`` may include ``prompt_profile`` (inline edits) and ``parameters`` (frames/steps/…).
+
+    Noise seed defaults to a **new** random draw unless ``overrides.parameters.seed`` is set
+    or ``seed_mode="same"`` (hold ``seed_job``'s seed).
     """
     family = str(family_slug or "").strip()
     if not family:
@@ -1162,6 +1340,22 @@ def queue_shape_factory_combo(
     output_root = output_root.expanduser().resolve()
     comfy_data_root = _comfy_data_root(workspace_root=workspace_root, output_root=output_root)
     overrides = overrides if isinstance(overrides, dict) else {}
+    overrides, seed_value, seed_mode_applied = apply_seed_policy_to_overrides(
+        overrides,
+        seed_mode=seed_mode,
+        job=seed_job,
+        job_path=seed_job_path,
+    )
+    if seed_value is not None or seed_mode_applied:
+        construction = dict(construction) if isinstance(construction, dict) else {}
+        if seed_value is not None:
+            construction["noise_seed"] = int(seed_value)
+        if seed_mode_applied:
+            construction["seed_mode"] = seed_mode_applied
+        if not construction.get("step"):
+            construction["step"] = str(pick_mode or "product")
+        if not construction.get("pick_mode"):
+            construction["pick_mode"] = str(pick_mode or "product")
 
     shape_path = _resolve_shape_path(data_root / "shapes" / f"{family}.shape.yaml", data_root=data_root, family_slug=family)
     pools_path = data_root / "pools" / family / "pools.yaml"
@@ -1291,6 +1485,9 @@ def queue_shape_factory_combo(
         "overrides_applied": adhoc_meta or None,
         "pick_mode": mode,
         "parent_output": parent_output,
+        "noise_seed": int(seed_value) if seed_value is not None else None,
+        "seed_mode": seed_mode_applied,
+        "construction": construction,
         "submit": submit,
     }
 
@@ -1490,7 +1687,7 @@ def replay_from_request_body(
         found = _find_job_doc(data_root, job_key)
         if not found:
             raise ValueError(f"job not found: {job_key}")
-        job, _job_path = found
+        job, job_path = found
         family_slug = family_slug or str(job.get("family_slug") or "").strip()
         job_bindings = job.get("bindings") if isinstance(job.get("bindings"), dict) else {}
         for slot, spec in job_bindings.items():
@@ -1512,6 +1709,7 @@ def replay_from_request_body(
             output_abs = _extend_source_path(job, output_abs="", body=body, bindings=bindings)
     else:
         job = None
+        job_path = None
         raw = body.get("bindings")
         if isinstance(raw, dict):
             for slot, spec in raw.items():
@@ -1552,6 +1750,7 @@ def replay_from_request_body(
     pick_mode = "replay"
     parent_output: Optional[str] = None
     construction: Optional[Dict[str, Any]] = None
+    seed_mode = str(body.get("seed_mode") or "").strip() or None
 
     if extend:
         if not output_abs:
@@ -1654,12 +1853,13 @@ def replay_from_request_body(
         pick_mode=pick_mode,
         parent_output=parent_output,
         construction=construction,
+        seed_mode=seed_mode,
+        seed_job=job if isinstance(job, dict) else None,
+        seed_job_path=job_path,
     )
     if isinstance(result, dict):
         result.setdefault("replay_of_job_key", job_key or None)
         result.setdefault("extend", extend)
-        if construction:
-            result["construction"] = construction
         if identity_meta:
             result["identity_anchor"] = identity_meta
         if recovered_prompt:
@@ -1847,6 +2047,9 @@ def derive_from_request_body(
         pick_mode=pick_mode,
         parent_output=parent_output,
         construction=construction,
+        seed_mode=str(body.get("seed_mode") or "").strip() or None,
+        seed_job=job,
+        seed_job_path=_job_path,
     )
     if isinstance(result, dict):
         result.setdefault("ok", True)

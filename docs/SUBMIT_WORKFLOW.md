@@ -4,16 +4,28 @@
 
 Single mechanism for **creating** factory jobs (and optionally submitting them to Comfy). Many entry points deep-link here with intent; they do not each own a private submit UI.
 
-## Roles (working proposal — not locked)
+## Locked: intent-modal (not a UI dialog)
 
-Judge by the UI, not this table. Until Submit feels right next to Workbench, ownership below is a **draft split** to steer the refactor.
+Submit is **intent-modal**: a focused `/submit` **page** that only composes when a door hands off a subject. It is **not** a floating dialog, and **not** a media browser.
 
-| Surface | Proposed owns | Proposed does *not* own |
-|---------|---------------|-------------------------|
-| **Submit** (`/submit`) | Compose next job: media stage, Use (trim/clips), family/step, identity, now/later, construction preview | Job list, pending-job mutation, live Comfy watch |
-| **Workbench** (`/workbench`) | Job **status**: list/filter, pending trim on *this* job, unqueue/discard, bindings/JSON, result preview, doors into Submit | Inline create / Quick queue Advance |
+| Lock | Decision |
+|------|----------|
+| Entry | Via door / deep link with intent (`media`, `clip_id`, and/or `from_job`) |
+| Bare `/submit` | Empty doorway list only — never pick media on Submit |
+| Chrome | Full-page compose (viewer + trim + clips + identity + construction) |
+| Nav | **Not in primary nav** — `/submit` is door-only; bare hits still show the empty doorway state |
+| Exit | After commit → Workbench / Queue; **Back to {origin}** when `origin` is set |
+
+New doorways (Factory map, Rating, richer Clips/Library CTAs) should only build `submitHref({…})` — they must not grow private submit UIs.
+
+## Roles
+
+| Surface | Owns | Does *not* own |
+|---------|------|----------------|
+| **Submit** (`/submit`) | Compose next job: media stage, Use (trim/clips), family/step, identity, now/later, construction preview | Browsing corpus; job list; pending-job mutation; live Comfy watch |
+| **Workbench** (`/workbench`) | Job **status**: list/filter, pending trim on *this* job, unqueue/discard, bindings/JSON, result preview, doors into Submit | Primary “create from clip/asset” UX |
 | **Queue** (`/comfy-queue`) | Live Comfy running / pending / history | Compose or job CRUD |
-| **Library / Clips / Factory / Rating** | Find & judge; hand off intent to Submit | Private submit UIs |
+| **Library / Clips / Factory / Rating** | Find & judge; **hand off intent** to Submit | Private submit UIs |
 
 **Visual target:** Submit should feel like Workbench’s compose chrome (viewer + trim + clips + identity + now/later), not a form card. Workbench keeps that chrome only where it mutates or inspects an *existing* job.
 
@@ -36,22 +48,24 @@ flowchart TB
 
 | Param | Meaning |
 |-------|---------|
-| `media` | Parent media relpath (required for clip/extend compose) |
+| `media` | Parent media relpath (required for clip/extend compose once resolved) |
 | `clip_id` | Shape-factory clip id (preferred Use) |
 | `mark_in` / `mark_out` | Seconds; used when no clip_id |
 | `family` | Factory family slug |
 | `identity` | Absolute or resolvable identity-still path |
 | `when` | `now` \| `later` (default later in UI; user can change) |
-| `from_job` | Seed job key (later doors) |
+| `from_job` | Seed job key (Workbench Advance door) |
 | `step` | Disposition step (default `advance.extend`) |
-| `origin` | Optional label of the door (`library`, `clips`, …) |
+| `origin` | Door label for Back link (`library`, `clips`, `workbench`, …) |
+
+**Intent present** when any of `media`, `clip_id`, or `from_job` is set. Otherwise show the empty doorway state.
 
 ## Canonical pipe
 
 1. Resolve **Use** (clip → marks → full) + family + optional identity + priority.
 2. Create work-item route + run disposition step (`advance.extend`) / equivalent factory queue.
 3. **Submit now** (`front` / queue_now) vs **later** (pending for hourly / Workbench).
-4. Success: links to Workbench (`?job=`) and Comfy Queue.
+4. Success: links to Workbench (`?job=`), Comfy Queue, and Back to origin when known.
 
 ## Construction preview
 
@@ -69,12 +83,16 @@ Submit shows a **pre-job intent** panel (not Workbench’s post-job `details` / 
 
 After commit, inspect the real job on Workbench. The Submit panel keeps reflecting compose state, not the created job.
 
-## Doors (first slice)
+## Doors
+
+**Shipped**
 
 - Library / Clips: “Open in Submit” via `submitHref` (replaces inline Queue now/later on the clip rail).
 - Workbench: “Open in Submit” for Advance (Extend / Vary / Derive); re-run / unqueue / archive / delete stay on Workbench.
 
-Later (if the split holds): Factory map, Rating Advance → same href shape.
+**Next**
+
+- Factory map, Rating Advance, and any remaining inline create CTAs → same `submitHref` shape (no private compose).
 
 ## Naming
 

@@ -901,6 +901,16 @@ def _detail_rows(item: Dict[str, Any]) -> List[Dict[str, Any]]:
     add("Status", item.get("status"))
     add("Error", item.get("error"))
     add("Error node", item.get("error_node"))
+    seed_val = item.get("noise_seed")
+    if seed_val is None:
+        c0 = item.get("construction") if isinstance(item.get("construction"), dict) else {}
+        seed_val = c0.get("noise_seed") if c0.get("noise_seed") is not None else c0.get("seed")
+    add("Seed", seed_val)
+    seed_mode = item.get("seed_mode")
+    if seed_mode is None:
+        c0 = item.get("construction") if isinstance(item.get("construction"), dict) else {}
+        seed_mode = c0.get("seed_mode")
+    add("Seed mode", seed_mode)
     timing = item.get("timing") if isinstance(item.get("timing"), dict) else {}
     if timing:
         add("Exec", timing.get("label") or timing.get("exec_sec"))
@@ -1381,6 +1391,28 @@ def _work_product_item_from_job(
 
     applied_vhs = _applied_vhs_window_from_job(job, path)
 
+    noise_seed = None
+    try:
+        from shape_factory_queue import extract_job_noise_seed
+
+        noise_seed = extract_job_noise_seed(job, path)
+    except Exception:
+        noise_seed = None
+    seed_mode = None
+    if isinstance(construction, dict):
+        seed_mode = construction.get("seed_mode")
+        if noise_seed is None:
+            for key in ("noise_seed", "seed", "used_seed"):
+                raw = construction.get(key)
+                if isinstance(raw, bool):
+                    continue
+                if isinstance(raw, int):
+                    noise_seed = int(raw)
+                    break
+                if isinstance(raw, float) and float(raw).is_integer():
+                    noise_seed = int(raw)
+                    break
+
     item: Dict[str, Any] = {
         "job_key": job.get("job_key") or path.stem.replace(".job", ""),
         "job_path": str(path),
@@ -1425,6 +1457,8 @@ def _work_product_item_from_job(
         "media_meta": media_meta or None,
         "timing": timing,
         "applied_vhs": applied_vhs,
+        "noise_seed": noise_seed,
+        "seed_mode": seed_mode,
         "construction": construction,
         "warnings": job.get("warnings") or [],
     }

@@ -732,5 +732,47 @@ class ShapeFactoryQueueTests(unittest.TestCase):
         self.assertIn("derive_no_distinct_combo", str(ctx.exception))
 
 
+class ShapeFactoryReplaySeedTests(unittest.TestCase):
+    def test_adhoc_tuning_patches_noise_seed(self) -> None:
+        from shape_factory import apply_dev_tuning_api
+        from shape_factory_queue import build_adhoc_dev_tuning
+
+        tuning = build_adhoc_dev_tuning({"seed": 42}, data_root=REPO_ROOT / ".data")
+        self.assertIsNotNone(tuning)
+        assert tuning is not None
+        self.assertEqual(tuning.get("noise_seed"), 42)
+        prompt = {
+            "1": {"class_type": "RandomNoise", "inputs": {"noise_seed": 1, "control_after_generate": "randomize"}},
+            "2": {"class_type": "KSampler", "inputs": {"seed": 9}},
+        }
+        apply_dev_tuning_api(prompt, tuning)
+        self.assertEqual(prompt["1"]["inputs"]["noise_seed"], 42)
+        self.assertEqual(prompt["1"]["inputs"]["control_after_generate"], "fixed")
+        self.assertEqual(prompt["2"]["inputs"]["seed"], 42)
+
+    def test_resolve_replay_seed_modes(self) -> None:
+        from shape_factory_queue import extract_job_noise_seed, resolve_replay_seed_parameter
+
+        job = {"prompt": {"9": {"class_type": "RandomNoise", "inputs": {"noise_seed": 777}}}}
+        self.assertEqual(extract_job_noise_seed(job), 777)
+        seed_new, mode_new = resolve_replay_seed_parameter({"seed_mode": "new"}, job=job, job_path=None)
+        self.assertEqual(mode_new, "new")
+        self.assertIsInstance(seed_new, int)
+        seed_same, mode_same = resolve_replay_seed_parameter({"seed_mode": "same"}, job=job, job_path=None)
+        self.assertEqual((seed_same, mode_same), (777, "same"))
+        # Default (no seed_mode) is a new random draw.
+        seed_default, mode_default = resolve_replay_seed_parameter({}, job=job, job_path=None)
+        self.assertEqual(mode_default, "new")
+        self.assertIsInstance(seed_default, int)
+        self.assertNotEqual(seed_default, 777)
+        # Explicit seed wins over mode.
+        seed_ex, mode_ex = resolve_replay_seed_parameter(
+            {"seed_mode": "new", "overrides": {"parameters": {"seed": 42}}},
+            job=job,
+            job_path=None,
+        )
+        self.assertEqual((seed_ex, mode_ex), (42, "explicit"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2086,6 +2086,8 @@ const DETAIL_CHIP_LABELS = new Set([
   "Step",
   "Rating kind",
   "Disposition",
+  "Seed",
+  "Seed mode",
 ]);
 
 type DetailGroupDef = {
@@ -2121,6 +2123,8 @@ const DETAIL_GROUPS: DetailGroupDef[] = [
     kv: true,
     labels: [
       "Created",
+      "Seed",
+      "Seed mode",
       "Job key",
       "Job file",
       "Comfy prompt ID",
@@ -2308,6 +2312,8 @@ const DETAIL_LABELS: Record<string, string> = {
   "Prompt id": "Comfy prompt ID",
   "Submit prompt JSON": "Comfy submit JSON",
   "Output prefix": "Output prefix",
+  Seed: "Seed",
+  "Seed mode": "Seed mode",
   "Plan source tag": "Source",
   "Derive action": "Derive",
   "Combo key": "Combo",
@@ -2451,6 +2457,14 @@ function WorkProductQuickQueue({
   const jobKey = String(item.job_key || "").trim();
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [rerunTrimMode, setRerunTrimMode] = useState<"job" | "edited">(() =>
+    sourceTrim.dirty || sourceTrim.clampedDefault ? "edited" : "job",
+  );
+  const [rerunSeedMode, setRerunSeedMode] = useState<"same" | "new">("new");
+
+  useEffect(() => {
+    if (sourceTrim.dirty || sourceTrim.clampedDefault) setRerunTrimMode("edited");
+  }, [sourceTrim.dirty, sourceTrim.clampedDefault]);
 
   const canRerun = Boolean(jobKey) && !busy;
   const canUnqueue = canUnqueueWorkProduct(item) && !busy;
@@ -2572,17 +2586,36 @@ function WorkProductQuickQueue({
     setBusy(true);
     setMsg("");
     try {
-      const { overrides, warning } = trimOverridesFromState(sourceTrim, null);
+      let overrides: ShapeFactoryMapQueueOverrides | undefined;
+      let warning: string | null = null;
+      if (rerunTrimMode === "edited") {
+        const fromTrim = trimOverridesFromState(
+          { ...sourceTrim, dirty: true },
+          null,
+          sourceClipId,
+        );
+        overrides = fromTrim.overrides;
+        warning = fromTrim.warning;
+      }
       const res = await replayShapeFactory({
         job_key: jobKey,
         family_slug: String(item.family_slug || "").trim() || undefined,
         extend: false,
         front: when === "now",
+        seed_mode: rerunSeedMode,
         overrides,
       });
       const nextKey = String(res.job_key || "").trim();
       const pid = String(res.prompt_id || "").trim();
       const clampMsg = res.trim_clamped?.message || warning;
+      const seedLabel =
+        res.seed_mode === "new"
+          ? `seed new${res.noise_seed != null ? ` ${res.noise_seed}` : ""}`
+          : res.seed_mode === "same" || res.seed_mode === "explicit"
+            ? `seed same${res.noise_seed != null ? ` ${res.noise_seed}` : ""}`
+            : res.seed_mode === "same_missing"
+              ? "seed same (missing — template)"
+              : null;
       setMsg(
         [
           nextKey
@@ -2590,6 +2623,8 @@ function WorkProductQuickQueue({
             : pid
               ? `Re-run ${when} queued · ${pid}`
               : `Re-run ${when} queued`,
+          `trim ${rerunTrimMode}`,
+          seedLabel,
           clampMsg,
         ]
           .filter(Boolean)
@@ -2635,12 +2670,60 @@ function WorkProductQuickQueue({
         {openBadge(varyOpen, "Vary")}
         {openBadge(deriveOpen, "Derive")}
         <span className="work-product-quick-queue__sep" aria-hidden="true" />
-        <span className="work-product-quick-queue__label">Re-run</span>
+        <span className="work-product-quick-queue__label" title="New job from this recipe — trim and seed are independent">
+          Re-run
+        </span>
+        <div className="work-product-rerun-opts" role="group" aria-label="Re-run trim">
+          <span className="work-product-rerun-opts__label">Trim</span>
+          <div className="segmented work-product-rerun-opts__seg">
+            <button
+              type="button"
+              className={rerunTrimMode === "job" ? "seg-btn active" : "seg-btn"}
+              disabled={busy}
+              title="Keep the Use window baked into this job"
+              onClick={() => setRerunTrimMode("job")}
+            >
+              As job
+            </button>
+            <button
+              type="button"
+              className={rerunTrimMode === "edited" ? "seg-btn active" : "seg-btn"}
+              disabled={busy}
+              title="Use the source marks currently on this card"
+              onClick={() => setRerunTrimMode("edited")}
+            >
+              As edited
+            </button>
+          </div>
+        </div>
+        <div className="work-product-rerun-opts" role="group" aria-label="Re-run seed">
+          <span className="work-product-rerun-opts__label">Seed</span>
+          <div className="segmented work-product-rerun-opts__seg">
+            <button
+              type="button"
+              className={rerunSeedMode === "same" ? "seg-btn active" : "seg-btn"}
+              disabled={busy}
+              title="Hold this job’s noise seed (exact retry when trim also matches)"
+              onClick={() => setRerunSeedMode("same")}
+            >
+              Same
+            </button>
+            <button
+              type="button"
+              className={rerunSeedMode === "new" ? "seg-btn active" : "seg-btn"}
+              disabled={busy}
+              title="Draw a new noise seed; keep other bindings"
+              onClick={() => setRerunSeedMode("new")}
+            >
+              New
+            </button>
+          </div>
+        </div>
         <button
           type="button"
           className="drt-btn work-product-quick-queue__rerun"
           disabled={!canRerun}
-          title="Submit a new identical job at the front of the queue"
+          title={`New job · trim ${rerunTrimMode} · seed ${rerunSeedMode} · front of queue`}
           onClick={() => void rerun("now")}
         >
           Now
@@ -2649,7 +2732,7 @@ function WorkProductQuickQueue({
           type="button"
           className="drt-btn work-product-quick-queue__rerun"
           disabled={!canRerun}
-          title="Submit a new identical job at normal queue priority"
+          title={`New job · trim ${rerunTrimMode} · seed ${rerunSeedMode} · normal priority`}
           onClick={() => void rerun("later")}
         >
           Later
@@ -2754,6 +2837,18 @@ function WorkProductDetails({
           </span>
         ) : null}
         {item.family_slug ? <span className="work-product-badge">{item.family_slug}</span> : null}
+        {item.noise_seed != null && Number.isFinite(Number(item.noise_seed)) ? (
+          <span
+            className="work-product-badge work-product-badge--seed"
+            title={
+              item.seed_mode
+                ? `Noise seed · mode ${item.seed_mode}`
+                : "Noise seed (RandomNoise / KSampler)"
+            }
+          >
+            seed {Number(item.noise_seed)}
+          </span>
+        ) : null}
         {item.pick_mode ? (
           <span className={`work-product-badge ${badgeClass(item.pick_mode)}`}>{item.pick_mode}</span>
         ) : null}

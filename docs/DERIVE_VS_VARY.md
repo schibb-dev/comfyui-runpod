@@ -1,6 +1,6 @@
 # Derive vs Vary vs Extend
 
-**Last updated:** 2026-08-06
+**Last updated:** 2026-08-11
 
 Short operator map for Workbench advance actions and hourly “Derived” badges.
 
@@ -14,6 +14,29 @@ Short operator map for Workbench advance actions and hourly “Derived” badges
 | **Derived** badge | Jobs stamped `pick_mode` / construction as derive (Workbench Derive, hourly appetite, CLI) | N/A |
 
 **Vary ≠ Derive.** Vary keeps the seed’s bindings. Derive builds a distinct combo from the seed.
+
+## Re-run (Workbench)
+
+**Re-run** creates a **new** job from *this job’s* recipe. It is not Advance and not an in-place edit.
+
+Allow-list (everything else is held):
+
+| Axis | Control | Meaning |
+|------|---------|---------|
+| **Trim** | As job / As edited | Job’s baked Use window vs source marks on the card |
+| **Seed** | Same / New (default **New**) | Hold this job’s noise seed vs draw a new one |
+| **Priority** | Now / Later | Front vs normal queue |
+
+Factory queue / Submit / Re-run default to a **new random seed** unless an explicit `parameters.seed` is set or `seed_mode=same` is requested. Seed-surfing (nearby seeds) is deferred.
+
+Typical intents:
+
+- **Same trim + new seed** — resample
+- **Edited trim + same seed** — same draw, different Use window
+- **Same + same** — exact retry (debug / confirm)
+- **Edited + new** — both changed (still Re-run; media/workflow swaps are Recompose)
+
+Family, bindings paths, identity, and prompt stay with the seed job.
 
 ## How to create Derived jobs
 

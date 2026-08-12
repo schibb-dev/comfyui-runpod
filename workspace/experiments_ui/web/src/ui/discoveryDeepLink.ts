@@ -91,10 +91,11 @@ export function submitHref(opts?: {
   if (step) sp.set("step", step);
   if (origin) sp.set("origin", origin);
   const qs = sp.toString();
+  // Bare /submit is the intent-modal empty state — doors should always pass intent.
   return qs ? `/submit?${qs}` : "/submit";
 }
 
-export function parseSubmitDeepLink(search: string = window.location.search): {
+export type SubmitDeepLink = {
   mediaRelpath: string | null;
   clipId: string | null;
   markIn: number | null;
@@ -105,7 +106,9 @@ export function parseSubmitDeepLink(search: string = window.location.search): {
   fromJob: string | null;
   step: string | null;
   origin: string | null;
-} {
+};
+
+export function parseSubmitDeepLink(search: string = window.location.search): SubmitDeepLink {
   const sp = new URLSearchParams(search);
   const mediaRaw = (sp.get("media") || sp.get("media_relpath") || "").trim().replace(/\\/g, "/");
   const clipId = (sp.get("clip_id") || "").trim() || null;
@@ -134,6 +137,48 @@ export function parseSubmitDeepLink(search: string = window.location.search): {
     step,
     origin,
   };
+}
+
+/** Intent-modal: compose only when a door handed off a subject. */
+export function hasSubmitIntent(intent: Pick<SubmitDeepLink, "mediaRelpath" | "clipId" | "fromJob">): boolean {
+  return Boolean(
+    String(intent.mediaRelpath || "").trim() ||
+      String(intent.clipId || "").trim() ||
+      String(intent.fromJob || "").trim(),
+  );
+}
+
+/** Map `origin` query to a Back link (door surface). */
+export function submitOriginHref(
+  origin: string | null | undefined,
+  opts?: { mediaRelpath?: string | null; clipId?: string | null; fromJob?: string | null },
+): { href: string; label: string } | null {
+  const o = String(origin || "")
+    .trim()
+    .toLowerCase();
+  if (!o) return null;
+  const media = String(opts?.mediaRelpath || "").trim() || null;
+  const clipId = String(opts?.clipId || "").trim() || null;
+  const fromJob = String(opts?.fromJob || "").trim() || null;
+  if (o === "library" || o === "discovery") {
+    return { href: discoveryLibraryHref(media), label: "Back to Library" };
+  }
+  if (o === "clips" || o === "clip") {
+    return {
+      href: clipsLibraryHref({ mediaRelpath: media, clipId, view: media ? "by_source" : "all" }),
+      label: "Back to Clips",
+    };
+  }
+  if (o === "workbench" || o === "work-products" || o === "work_products") {
+    return { href: workbenchHref({ jobKey: fromJob }), label: "Back to Workbench" };
+  }
+  if (o === "factory" || o === "factory-map" || o === "factory_map") {
+    return { href: "/discovery/factory-map", label: "Back to Factory" };
+  }
+  if (o === "rate" || o === "rating") {
+    return { href: "/discovery/rate", label: "Back to Rating" };
+  }
+  return null;
 }
 
 /** Workbench deep-link: prefer factory job_key, else prompt_id / free-text q. */

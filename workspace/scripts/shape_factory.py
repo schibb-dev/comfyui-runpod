@@ -162,7 +162,7 @@ def resolve_dev_tuning(
 
 
 def apply_dev_tuning_ui(workflow: dict[str, Any], tuning: dict[str, Any]) -> dict[str, Any]:
-    changes: dict[str, Any] = {"ui_nodes": [], "vhs": []}
+    changes: dict[str, Any] = {"ui_nodes": [], "vhs": [], "seed": []}
     ui_nodes = tuning.get("ui_nodes") if isinstance(tuning.get("ui_nodes"), dict) else {}
     for raw_id, spec in ui_nodes.items():
         if not isinstance(spec, dict):
@@ -200,11 +200,35 @@ def apply_dev_tuning_ui(workflow: dict[str, Any], tuning: dict[str, Any]) -> dic
                     preview_params["frame_load_cap"] = int(frame_cap)
                 entry["frame_load_cap"] = int(frame_cap)
             changes["vhs"].append(entry)
+
+    if tuning.get("noise_seed") is not None and tuning.get("noise_seed") != "":
+        seed_i = int(tuning["noise_seed"])
+        for node in workflow.get("nodes") or []:
+            if not isinstance(node, dict):
+                continue
+            ntype = str(node.get("type") or "")
+            if ntype not in {"RandomNoise", "KSampler", "KSamplerAdvanced"}:
+                continue
+            widgets = node.get("widgets_values")
+            entry: dict[str, Any] = {"node_id": node.get("id"), "type": ntype, "noise_seed": seed_i}
+            if isinstance(widgets, list) and widgets:
+                widgets[0] = seed_i
+                if len(widgets) > 1 and isinstance(widgets[1], str):
+                    widgets[1] = "fixed"
+                entry["widgets_values"] = list(widgets)
+            elif isinstance(widgets, dict):
+                if "noise_seed" in widgets or ntype == "RandomNoise":
+                    widgets["noise_seed"] = seed_i
+                if "seed" in widgets or ntype in {"KSampler", "KSamplerAdvanced"}:
+                    widgets["seed"] = seed_i
+                if "control_after_generate" in widgets:
+                    widgets["control_after_generate"] = "fixed"
+            changes["seed"].append(entry)
     return changes
 
 
 def apply_dev_tuning_api(prompt: dict[str, Any], tuning: dict[str, Any]) -> dict[str, Any]:
-    changes: dict[str, Any] = {"api_nodes": [], "vhs": []}
+    changes: dict[str, Any] = {"api_nodes": [], "vhs": [], "seed": []}
     api_nodes = tuning.get("api_nodes") if isinstance(tuning.get("api_nodes"), dict) else {}
     for node_key, spec in api_nodes.items():
         if not isinstance(spec, dict):
@@ -234,6 +258,22 @@ def apply_dev_tuning_api(prompt: dict[str, Any], tuning: dict[str, Any]) -> dict
                 inputs["frame_load_cap"] = int(frame_cap)
                 entry["frame_load_cap"] = int(frame_cap)
             changes["vhs"].append(entry)
+
+    if tuning.get("noise_seed") is not None and tuning.get("noise_seed") != "":
+        seed_i = int(tuning["noise_seed"])
+        for key, node in prompt.items():
+            if not isinstance(node, dict):
+                continue
+            ctype = node.get("class_type")
+            inputs = node.setdefault("inputs", {})
+            if ctype == "RandomNoise":
+                inputs["noise_seed"] = seed_i
+                inputs["control_after_generate"] = "fixed"
+                changes["seed"].append({"node_id": str(key), "class_type": ctype, "noise_seed": seed_i})
+            elif ctype in ("KSampler", "KSamplerAdvanced"):
+                inputs["seed"] = seed_i
+                inputs["control_after_generate"] = "fixed"
+                changes["seed"].append({"node_id": str(key), "class_type": ctype, "seed": seed_i})
     return changes
 
 
@@ -1622,6 +1662,7 @@ def generate_job_for_picks(
                 "ui_nodes": dev_tuning.get("ui_nodes"),
                 "api_nodes": dev_tuning.get("api_nodes"),
                 "vhs_load_video_path": dev_tuning.get("vhs_load_video_path"),
+                "noise_seed": dev_tuning.get("noise_seed"),
                 "output_prefix_suffix": dev_tuning.get("output_prefix_suffix"),
             },
         }
