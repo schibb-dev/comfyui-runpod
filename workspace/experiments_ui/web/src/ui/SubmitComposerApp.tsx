@@ -11,9 +11,16 @@ import {
   type ShapeFactoryClip,
 } from "./api";
 import { ClipBookmarksRail } from "./ClipBookmarksRail";
-import { clipsLibraryHref, discoveryLibraryHref, parseSubmitDeepLink, workbenchHref } from "./discoveryDeepLink";
+import {
+  clipsLibraryHref,
+  discoveryLibraryHref,
+  hasSubmitIntent,
+  parseSubmitDeepLink,
+  submitOriginHref,
+  workbenchHref,
+} from "./discoveryDeepLink";
 import { PageHeader } from "./PageHeader";
-import { pickDefaultExtendFamily } from "./submitFamily";
+import { isExtendFamilyOption, pickDefaultExtendFamily } from "./submitFamily";
 import type { ShapeFactoryMapQueueOverrides, WorkProductFamilyOption } from "./types";
 import { VideoTrimControls, type VideoTrimPlaybackMode } from "./VideoTrimControls";
 import { useTrimPlaybackEnforcement } from "./useTrimPlayback";
@@ -287,7 +294,10 @@ export function SubmitComposerApp() {
           mediaRelpath || intent.mediaRelpath,
         );
         const seedFamily = String(intent.family || "").trim() || extendDefault;
-        setExtendFamily((prev) => prev || extendDefault);
+        setExtendFamily((prev) => {
+          const prevOk = Boolean(prev) && rows.some((f) => f.slug === prev && isExtendFamilyOption(f));
+          return prevOk ? prev : extendDefault;
+        });
         setVaryFamily((prev) => prev || seedFamily);
         setDeriveFamily((prev) => prev || seedFamily);
       })
@@ -420,6 +430,16 @@ export function SubmitComposerApp() {
     return rows;
   }, [families, extendFamily, varyFamily, deriveFamily]);
 
+  /** Extend targets must accept a video Use — hide I2V / still-only shapes. */
+  const extendFamilyOpts = useMemo(() => {
+    const rows = families.filter(isExtendFamilyOption);
+    if (extendFamily && !rows.some((f) => f.slug === extendFamily)) {
+      const hit = families.find((f) => f.slug === extendFamily);
+      rows.unshift(hit || { slug: extendFamily });
+    }
+    return rows.length ? rows : familyOpts;
+  }, [families, extendFamily, familyOpts]);
+
   const buildOverrides = useCallback((): {
     overrides?: ShapeFactoryMapQueueOverrides;
     warning: string | null;
@@ -523,19 +543,20 @@ export function SubmitComposerApp() {
     onChange: (slug: string) => void,
     label: string,
     title: string,
+    opts: WorkProductFamilyOption[] = familyOpts,
   ) => (
     <label className="work-product-quick-queue__family-wrap">
       <span className="work-product-quick-queue__family-label">{label}</span>
       <select
         className="work-product-quick-queue__family"
         value={value}
-        disabled={busy || !familyOpts.length}
+        disabled={busy || !opts.length}
         aria-label={`${label} target family`}
         title={title}
         onChange={(e) => onChange(e.target.value)}
       >
-        {familyOpts.length === 0 ? <option value="">Loading…</option> : null}
-        {familyOpts.map((f) => (
+        {opts.length === 0 ? <option value="">Loading…</option> : null}
+        {opts.map((f) => (
           <option key={f.slug} value={f.slug}>
             {f.slug}
           </option>
@@ -544,7 +565,20 @@ export function SubmitComposerApp() {
     </label>
   );
 
-  const hasIntent = Boolean(mediaRelpath.trim() || clipId.trim());
+  const hasIntent = hasSubmitIntent({
+    mediaRelpath: mediaRelpath || intent.mediaRelpath,
+    clipId: clipId || intent.clipId,
+    fromJob: intent.fromJob,
+  });
+  const originBack = useMemo(
+    () =>
+      submitOriginHref(intent.origin, {
+        mediaRelpath: mediaRelpath || intent.mediaRelpath,
+        clipId: clipId || activeClip?.clip_id || intent.clipId,
+        fromJob: intent.fromJob,
+      }),
+    [activeClip?.clip_id, clipId, intent.clipId, intent.fromJob, intent.mediaRelpath, intent.origin, mediaRelpath],
+  );
 
   const constructionPreview = useMemo(() => {
     const routes: { kind: string; family: string; shapeId: string | null }[] = [];
@@ -658,52 +692,68 @@ export function SubmitComposerApp() {
     <div className="layout submit-composer panel">
       <PageHeader
         title="Submit"
-        subtitle="Compose a factory job — one pipe, many doors. Workbench tracks job status; Queue watches Comfy."
+        subtitle="Compose a factory job from a door handoff — Library, Clips, and Workbench find the subject; Submit only composes."
         actions={
-          <div className="discovery-preview-layout-switch" role="group" aria-label="Compose layout">
-            <span className="discovery-preview-layout-switch__label">Layout</span>
-            <div className="segmented">
-              <button
-                type="button"
-                className={layout === "split" ? "seg-btn active" : "seg-btn"}
-                onClick={() => {
-                  setLayout("split");
-                  persistLayout("split");
-                }}
-              >
-                Side by side
-              </button>
-              <button
-                type="button"
-                className={layout === "stacked" ? "seg-btn active" : "seg-btn"}
-                onClick={() => {
-                  setLayout("stacked");
-                  persistLayout("stacked");
-                }}
-              >
-                Stacked
-              </button>
-            </div>
+          <div className="submit-composer__header-actions">
+            {originBack ? (
+              <a className="drt-btn" href={originBack.href}>
+                {originBack.label}
+              </a>
+            ) : null}
+            {hasIntent ? (
+              <div className="discovery-preview-layout-switch" role="group" aria-label="Compose layout">
+                <span className="discovery-preview-layout-switch__label">Layout</span>
+                <div className="segmented">
+                  <button
+                    type="button"
+                    className={layout === "split" ? "seg-btn active" : "seg-btn"}
+                    onClick={() => {
+                      setLayout("split");
+                      persistLayout("split");
+                    }}
+                  >
+                    Side by side
+                  </button>
+                  <button
+                    type="button"
+                    className={layout === "stacked" ? "seg-btn active" : "seg-btn"}
+                    onClick={() => {
+                      setLayout("stacked");
+                      persistLayout("stacked");
+                    }}
+                  >
+                    Stacked
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </div>
         }
       />
 
       {!hasIntent ? (
-        <div className="submit-composer__empty">
-          <p>
-            Open Submit from <strong>Library</strong> or <strong>Clips</strong> with a clip or scrubber window selected.
+        <div className="submit-composer__empty" aria-label="Submit needs intent">
+          <p className="submit-composer__empty-lead">
+            Submit is <strong>intent-only</strong> — open it from a doorway with a clip, scrubber window, or job.
+            This screen does not browse the corpus.
           </p>
           <p className="factory-muted">
-            Or pass <span className="mono">?media=…&clip_id=…</span> / <span className="mono">mark_in</span> /{" "}
-            <span className="mono">mark_out</span>.
+            Deep link shape: <span className="mono">/submit?media=…&clip_id=…</span> or{" "}
+            <span className="mono">from_job=…</span> (+ optional <span className="mono">origin</span>).
           </p>
-          <div className="submit-composer__empty-actions">
-            <a className="drt-btn" href="/discovery">
-              Open Library
+          <div className="submit-composer__empty-doors" role="list">
+            <a className="drt-btn" href="/discovery" role="listitem">
+              Library
             </a>
-            <a className="drt-btn" href={clipsLibraryHref({ view: "all" })}>
-              Open Clips
+            <a className="drt-btn" href={clipsLibraryHref({ view: "all" })} role="listitem">
+              Clips
             </a>
+            <a className="drt-btn" href="/workbench" role="listitem">
+              Workbench
+            </a>
+            <span className="factory-muted submit-composer__empty-soon" role="listitem">
+              Factory · Rating doors next
+            </span>
           </div>
         </div>
       ) : (
@@ -722,6 +772,11 @@ export function SubmitComposerApp() {
               </code>
             </div>
             <div className="submit-composer__links">
+              {originBack ? (
+                <a className="drt-btn" href={originBack.href}>
+                  {originBack.label}
+                </a>
+              ) : null}
               {mediaRelpath ? (
                 <a className="drt-btn" href={discoveryLibraryHref(mediaRelpath)}>
                   Library
@@ -905,7 +960,8 @@ export function SubmitComposerApp() {
                           extendFamily,
                           setExtendFamily,
                           "Extend",
-                          "Family whose shape runs this Extend",
+                          "Family whose shape runs this Extend (video source_video)",
+                          extendFamilyOpts,
                         )
                       : null}
                     {varyOn
@@ -1012,6 +1068,11 @@ export function SubmitComposerApp() {
                     <a className="drt-btn" href="/comfy-queue">
                       Open Queue
                     </a>
+                    {originBack ? (
+                      <a className="drt-btn" href={originBack.href}>
+                        {originBack.label}
+                      </a>
+                    ) : null}
                   </div>
                 ) : null}
               </div>
