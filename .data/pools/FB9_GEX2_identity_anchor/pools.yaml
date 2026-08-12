@@ -1,0 +1,44 @@
+schema_version: comfyui-runpod.pools.v0
+shape: /home/yuji/src/comfyui-runpod/.data/shapes/FB9_GEX2_identity_anchor.shape.yaml
+
+pools:
+  source_video:
+    slot: source_video
+    description: >
+      Clips to extend / chain (same idea as FB9_GEX2). Prefer keepers you want
+      to lengthen while holding identity via identity_anchor.
+    members:
+      - glob: /home/yuji/comfyui-runpod-data/output/og/**/FB9_GEX2*.mp4
+        limit: 400
+      - glob: /home/yuji/comfyui-runpod-data/output/og/**/FB9_GEX_FACIAL*.mp4
+        limit: 200
+      - glob: /home/yuji/comfyui-runpod-data/output/og/**/X-Kneel-FB9-*.mp4
+        limit: 200
+
+  identity_anchor:
+    slot: identity_anchor
+    description: >
+      Still that feeds Wan CLIP-vision for identity lock across the extension.
+      Use a clean frontal / three-quarter face still of the subject.
+    members:
+      - glob: /home/yuji/comfyui-runpod-data/input/**/*.jpeg
+        limit: 800
+      - glob: /home/yuji/comfyui-runpod-data/input/**/*.png
+        limit: 400
+      - glob: /home/yuji/comfyui-runpod-data/input/**/*.jpg
+        limit: 400
+
+  prompt_profile:
+    slot: prompt_profile
+    description: Reuse GEX2 prompt bundles for now
+    members:
+      - dir: /workspace/.data/pools/FB9_GEX2/prompts
+        ext: [".json"]
+
+deposit_pools:
+  FB9_GEX2_identity_anchor_X_og:
+    slot: final_video
+    description: Identity-anchored extend outputs
+    seed_members:
+      - glob: /home/yuji/comfyui-runpod-data/output/og/**/FB9_GEX2_identity_anchor_shape/**/*.mp4
+        limit: 200

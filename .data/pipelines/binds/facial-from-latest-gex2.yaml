@@ -1,0 +1,5 @@
+# Step 2 bind: primary video = most recent FB9_GEX2 deposit (pipeline / chain replay)
+source_video:
+  from: pool
+  pool: FB9_GEX2_X_og
+  pick: last

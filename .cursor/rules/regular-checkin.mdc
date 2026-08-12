@@ -11,6 +11,7 @@ Cadence goal: **commit early, commit often** — small themed commits while cont
 - After each usable slice (code + the tests/docs that belong with it), **pause and offer to commit** before starting the next slice. Do this mid-session, not only at the end.
 - If two or more unrelated edits are already mixed in the working tree, **propose splitting** into themed commits rather than one catch-all.
 - After a working session with substantive edits, remind once if project files are still uncommitted.
-- **Never** stage secrets or runtime data: `.env*`, tokens, `.data/`, `tmp/`, `docs/.build/`, `workspace/output/`, `workspace/input/`, `node_modules/`, `custom_nodes/` trees.
+- **Never** stage secrets or runtime data: `.env*`, tokens, `tmp/`, `docs/.build/`, `workspace/output/`, `workspace/input/`, `node_modules/`, `custom_nodes/` trees.
+- **`.data/`**: ignore runtime by default (jobs, indexes, `_replay/`, candidates, quarantine). **Do** commit allowlisted factory defs: `shapes/`, `pools/*/pools.yaml`, `pools/*/prompts/catalog-default.json`, `pipelines/`, `chains/`, `WORKFLOW_FACTORY_NEXT.md` (see root `.gitignore`).
 - Only create commits when the user asks (or explicitly agrees to a proposed commit batch).
 - **After a successful commit, push to the tracked remote** unless there is a clear issue (failed hooks, secrets risk, diverged/rebased history needing force-push, no upstream, or the user said not to). Prefer a normal `git push`; never force-push to main/master unless explicitly requested.

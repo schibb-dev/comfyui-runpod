@@ -1,0 +1,39 @@
+schema_version: comfyui-runpod.shape.v0
+shape_id: wan-i2v-still+prompt
+family_slug: FB8VA4
+graph_hash: 748fd512e284ff700701c6efb18e656a0802d4d9f9988be98e19f8c99a74e8f5
+template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/FB8VA4-2026-01-11-224827_OG_00001-readable.json
+candidate: /home/yuji/src/comfyui-runpod/.data/template_candidates/FB8VA4-2026-01-11-224827_OG_00001.candidate.json
+
+requires:
+  - slot: source_still
+    role: A
+    media: image
+    binding:
+      type: load_image
+      node_id: 88
+      field: image
+
+  - slot: prompt_profile
+    role: C
+    media: text
+    binding:
+      type: prompt_bundle
+      positive: { node_id: 408, widget_index: 0 }
+      negative: { node_id: 409, widget_index: 0 }
+
+produces:
+  - slot: final_video
+    role: X
+    media: video
+    binding:
+      node_id: 398
+      node_type: VHS_VideoCombine
+
+deposits:
+  final_video:
+    to_pool: pool:FB8VA4_X_og
+
+output_prefix_root: og/%date:yyyy-MM-dd%/FB8VA4_shape
+
+rules: []

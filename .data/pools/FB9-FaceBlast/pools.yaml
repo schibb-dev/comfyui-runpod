@@ -1,0 +1,29 @@
+schema_version: comfyui-runpod.pools.v0
+shape: /home/yuji/src/comfyui-runpod/.data/shapes/FB9-FaceBlast.shape.yaml
+
+pools:
+  source_still:
+    slot: source_still
+    description: >
+      Start frames for FaceBlast i2v (A slot). Comfy LoadImage only accepts files
+      under input/, so do not pool output/og companion PNGs here.
+    members:
+      - glob: /home/yuji/comfyui-runpod-data/input/**/*.png
+        limit: 200
+
+  prompt_profile:
+    slot: prompt_profile
+    description: FaceBlast prompt bundles (C slot)
+    members:
+      - dir: /workspace/.data/pools/FB9-FaceBlast/prompts
+        ext: [".json"]
+
+deposit_pools:
+  FB9-FaceBlast_X_og:
+    slot: final_video
+    description: FB9-FaceBlast shape_factory outputs (final_video)
+    seed_members:
+      - glob: /home/yuji/comfyui-runpod-data/output/og/**/*FaceBlast*.mp4
+        limit: 200
+      - glob: /home/yuji/comfyui-runpod-data/output/og/**/FB9-FaceBlast_shape/**/*.mp4
+        limit: 100

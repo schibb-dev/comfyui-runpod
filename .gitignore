@@ -73,6 +73,26 @@ workspace/comfyui_user/
 workspace/ComfyUI
 workspace/comfyui-wan
 
+# .data/ is mostly local runtime — ignore by default, then allowlist factory defs.
+.data/**
+!.data/shapes/
+!.data/shapes/**
+!.data/pools/
+!.data/pools/*/
+!.data/pools/*/pools.yaml
+!.data/pools/*/prompts/
+!.data/pools/*/prompts/catalog-default.json
+!.data/pipelines/
+!.data/pipelines/**
+!.data/chains/
+!.data/chains/**
+!.data/WORKFLOW_FACTORY_NEXT.md
+
+# Still never track pool runtime / derived indexes under the allowlisted dirs
+.data/pools/*/index.json
+.data/pools/*/prompts/_replay/
+.data/pools/*/prompts/_replay/**
+
 # SFTP (output-sftp): persisted SSH host keys — never commit
 .data/output-sftp-ssh-hostkeys/
 

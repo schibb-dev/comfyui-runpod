@@ -1,0 +1,31 @@
+schema_version: comfyui-runpod.chain.v0
+chain_id: best-examples
+description: |
+  Proven shape-factory chains (validated 2026-07-03).
+  Hourly GEX2 ticks use product rotation across prompt × source_video (see shape_factory_hourly.py).
+  Samples below are curated references — not the hourly pick list.
+
+samples:
+  - id: idle-gex2-00001-facial
+    pick_index: 0
+    gex2_prompt: catalog-default
+    source: og/2026-04-03/FB9_GEX2_2026-04-03_00001.mp4
+    facial_ref: og/2026-04-03/FB9_GEX_FACIAL_2026-04-03_00001.mp4
+    proven:
+      gex2_exec_sec: 1380
+      facial_exec_sec: 1020
+    note: "Best prod-quality baseline — idle on April seed 00001"
+
+  - id: kneel-gex2-00002-facial
+    pick_index: 1
+    gex2_prompt: catalog-default
+    source: og/2026-04-03/FB9_GEX2_2026-04-03_00002.mp4
+    facial_ref: og/2026-04-03/FB9_GEX_FACIAL_2026-04-03_00007.mp4
+    proven:
+      gex2_exec_sec: 1008
+      facial_exec_sec: 249
+    note: "Best dev-fast kneel chain — kneel on April seed 00002"
+
+defaults:
+  binds_facial_latest: /home/yuji/src/comfyui-runpod/.data/pipelines/binds/facial-from-latest-gex2.yaml
+  dev: false

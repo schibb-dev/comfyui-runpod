@@ -1,0 +1,39 @@
+schema_version: comfyui-runpod.shape.v0
+shape_id: wan-i2v-still+prompt
+family_slug: X-KNEEL-FB9
+graph_hash: 703420280442c9f158ffde91fb67637ebd235a930490fdf5a3b308b8f14d7104
+template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/X-KNEEL-FB9-readable.json
+candidate: /home/yuji/src/comfyui-runpod/.data/template_candidates/X-KNEEL-FB9.candidate.json
+
+requires:
+  - slot: source_still
+    role: A
+    media: image
+    binding:
+      type: load_image
+      node_id: 88
+      field: image
+
+  - slot: prompt_profile
+    role: C
+    media: text
+    binding:
+      type: prompt_bundle
+      positive: { node_id: 408, widget_index: 0 }
+      negative: { node_id: 409, widget_index: 0 }
+
+produces:
+  - slot: final_video
+    role: X
+    media: video
+    binding:
+      node_id: 398
+      node_type: VHS_VideoCombine
+
+deposits:
+  final_video:
+    to_pool: pool:X-KNEEL_X_og
+
+output_prefix_root: og/%date:yyyy-MM-dd%/X-Kneel-FB9_shape
+
+rules: []

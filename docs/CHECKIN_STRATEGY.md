@@ -126,7 +126,7 @@ After each phase, run a quick sanity check (e.g. `docker compose config`, or `np
 - **Cadence**: Check in **per logical slice** (often same day, often mid-session), not in multi-week dumps. Good triggers: “this spike is usable / tests pass / I’m about to start the next slice or context-switch.” Prefer several small commits over one giant catch-up.
 - **Between slices**: Pause and commit (or explicitly park) before starting unrelated work so themes don’t tangle in one working tree.
 - **Session end**: If `git status` still shows project code/docs you intend to keep, commit or park intentionally (stash/branch) before stopping.
-- **Before committing**: Run `git status` and scan for credentials, `.env*` backups, `.data/`, `tmp/`, `docs/.build/`, `custom_nodes/` content (if you’re ignoring it), and large files.
+- **Before committing**: Run `git status` and scan for credentials, `.env*` backups, `.data/` runtime (jobs, indexes, `_replay/` — defs under `shapes/` / `pools/*/pools.yaml` are allowlisted), `tmp/`, `docs/.build/`, `custom_nodes/` content (if you’re ignoring it), and large files.
 - **Branches**: Use short-lived branches for features (e.g. `feat/ops-scripts`), then merge to `main` so history stays clear.
 - **Commit messages**: Use a short prefix: `feat:`, `fix:`, `docs:`, `chore:` so you can filter and revert by type.
 - **Custom node changes**: If you must keep local patches (e.g. in ComfyUI-Custom-Scripts), either:

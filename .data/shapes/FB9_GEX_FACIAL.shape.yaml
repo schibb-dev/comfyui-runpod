@@ -1,0 +1,52 @@
+schema_version: comfyui-runpod.shape.v0
+shape_id: wan-v2v-facial
+family_slug: FB9_GEX_FACIAL
+graph_hash: c12c4e13e077b0c8af4d23ec50faf78906337a9b195dfd8fdcd2644128da7391
+template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/FB9_GEX_FACIAL_2026-04-26_00001-readable.json
+candidate: /home/yuji/src/comfyui-runpod/.data/template_candidates/FB9_GEX_FACIAL_2026-04-26_00001.candidate.json
+
+# FB9 facial variant: two video inputs (primary + ref). Step 2 of gex2→facial pipeline
+# binds primary from pool:FB9_GEX2_X_og.
+requires:
+  - slot: source_video
+    role: X
+    media: video
+    binding:
+      type: vhs_load_video_path
+      node_id: 377
+      field: video
+
+  - slot: source_video_ref
+    role: B
+    media: video
+    optional: true
+    binding:
+      type: vhs_load_video_path
+      node_id: 386
+      field: video
+
+  - slot: prompt_profile
+    role: C
+    media: text
+    binding:
+      type: prompt_bundle
+      positive: { node_id: 380, widget_index: 0 }
+      negative: { node_id: 17, widget_index: 0 }
+
+produces:
+  - slot: final_video
+    role: X
+    media: video
+    binding:
+      node_id: 80
+      node_type: VHS_VideoCombine
+
+deposits:
+  final_video:
+    to_pool: pool:FB9_GEX_FACIAL_X_og
+
+output_prefix_root: og/%date:yyyy-MM-dd%/FB9_GEX_FACIAL_shape
+
+# Fast iteration: shape_factory generate --dev (see .data/shapes/dev-fast.yaml)
+
+rules: []

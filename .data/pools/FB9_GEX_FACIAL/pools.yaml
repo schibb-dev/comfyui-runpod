@@ -1,0 +1,47 @@
+schema_version: comfyui-runpod.pools.v0
+shape: /home/yuji/src/comfyui-runpod/.data/shapes/FB9_GEX_FACIAL.shape.yaml
+
+pools:
+  source_video:
+    slot: source_video
+    description: >
+      Primary input (X slot) — FB9_GEX2 step-1 outputs (pool index + disk) and
+      related GEX2 variants for facial rewires.
+    members:
+      - glob: /workspace/.data/pools/FB9_GEX2/index.json
+        kind: pool_index
+        pool_id: FB9_GEX2_X_og
+      - glob: /home/yuji/comfyui-runpod-data/output/og/**/FB9_GEX2*.mp4
+        limit: 800
+      - glob: /home/yuji/comfyui-runpod-data/output/og/**/X-Kneel-FB9-*.mp4
+        limit: 400
+
+  source_video_ref:
+    slot: source_video_ref
+    description: Secondary reference clip (B slot) — independent pick
+    members:
+      - glob: /home/yuji/comfyui-runpod-data/output/og/**/X-Kneel-FB9-*.mp4
+        limit: 400
+      - glob: /home/yuji/comfyui-runpod-data/output/og/**/FB9_GEX2*.mp4
+        limit: 300
+      - glob: /home/yuji/comfyui-runpod-data/output/og/**/FB9_GEX_2026-*.mp4
+        limit: 200
+
+  prompt_profile:
+    slot: prompt_profile
+    description: Facial-specific prompt bundles
+    members:
+      - dir: /workspace/.data/pools/FB9_GEX_FACIAL/prompts
+        ext: [".json"]
+
+deposit_pools:
+  FB9_GEX_FACIAL_X_og:
+    slot: final_video
+    description: Step-2 shape_factory outputs (FB9_GEX_FACIAL final_video)
+    seed_members:
+      - glob: /home/yuji/comfyui-runpod-data/output/og/**/FB9_GEX_FACIAL*.mp4
+        limit: 800
+      - glob: /home/yuji/comfyui-runpod-data/output/og/**/FB9_GEX2_FACIAL*.mp4
+        limit: 500
+      - glob: /home/yuji/comfyui-runpod-data/output/og/**/FB9_GEX_FACIAL_shape/**/*.mp4
+        limit: 200

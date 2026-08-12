@@ -1,0 +1,29 @@
+schema_version: comfyui-runpod.pools.v0
+shape: /home/yuji/src/comfyui-runpod/.data/shapes/FB8VA5-ZOOMOUT.shape.yaml
+
+pools:
+  source_still:
+    slot: source_still
+    description: >
+      Start frames (A slot). Comfy LoadImage only accepts files under input/,
+      so do not pool output/og companion PNGs here.
+    members:
+      - glob: /home/yuji/comfyui-runpod-data/input/**/*.png
+        limit: 200
+
+  prompt_profile:
+    slot: prompt_profile
+    description: Prompt bundles (C slot)
+    members:
+      - dir: /workspace/.data/pools/FB8VA5-ZOOMOUT/prompts
+        ext: [".json"]
+
+deposit_pools:
+  FB8VA5-ZOOMOUT_X_og:
+    slot: final_video
+    description: FB8VA5-ZOOMOUT shape_factory outputs (final_video)
+    seed_members:
+      - glob: /home/yuji/comfyui-runpod-data/output/og/**/FB8VA5-ZOOMOUT*.mp4
+        limit: 200
+      - glob: /home/yuji/comfyui-runpod-data/output/og/**/FB8VA5-ZOOMOUT_shape/**/*.mp4
+        limit: 200

@@ -1,0 +1,25 @@
+schema_version: comfyui-runpod.pipeline.v0
+pipeline_id: fb9-gex2-to-facial
+description: FB9_GEX2 base render → deposit X → FB9_GEX_FACIAL variant
+
+steps:
+  - id: gex2-base
+    shape: /home/yuji/src/comfyui-runpod/.data/shapes/FB9_GEX2.shape.yaml
+    pools: /home/yuji/src/comfyui-runpod/.data/pools/FB9_GEX2/pools.yaml
+    pick: zip
+    deposits:
+      final_video: pool:FB9_GEX2_X_og
+
+  - id: facial
+    shape: /home/yuji/src/comfyui-runpod/.data/shapes/FB9_GEX_FACIAL.shape.yaml
+    pools: /home/yuji/src/comfyui-runpod/.data/pools/FB9_GEX_FACIAL/pools.yaml
+    pick: zip
+    binds_override:
+      source_video:
+        from: pool
+        pool: FB9_GEX2_X_og
+        pick: last
+    deposits:
+      final_video: pool:FB9_GEX_FACIAL_X_og
+
+rules: []

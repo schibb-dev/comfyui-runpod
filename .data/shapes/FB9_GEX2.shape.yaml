@@ -1,0 +1,42 @@
+schema_version: comfyui-runpod.shape.v0
+shape_id: wan-v2v-source+prompt
+family_slug: FB9_GEX2
+graph_hash: 0ac755226924fd9875810eca4a7d6894fa288ed7ad95e1be180f0d6e38b31368
+template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/FB9_GEX2-readable.json
+candidate: /home/yuji/src/comfyui-runpod/.data/template_candidates/FB9_GEX2.candidate.json
+
+# Slot contract (composability class). Roles are labels for pipeline wiring — not an exhaustive taxonomy.
+requires:
+  - slot: source_video
+    role: B
+    media: video
+    binding:
+      type: vhs_load_video_path
+      node_id: 377
+      field: video
+
+  - slot: prompt_profile
+    role: C
+    media: text
+    binding:
+      type: prompt_bundle
+      positive: { node_id: 380, widget_index: 0 }
+      negative: { node_id: 17, widget_index: 0 }
+
+produces:
+  - slot: final_video
+    role: X
+    media: video
+    binding:
+      node_id: 80
+      node_type: VHS_VideoCombine
+
+deposits:
+  final_video:
+    to_pool: pool:FB9_GEX2_X_og
+
+output_prefix_root: og/%date:yyyy-MM-dd%/FB9_GEX2_shape
+
+# Fast iteration: shape_factory generate --dev (see .data/shapes/dev-fast.yaml)
+
+rules: []

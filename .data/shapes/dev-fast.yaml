@@ -1,0 +1,40 @@
+schema_version: comfyui-runpod.dev-tuning.v0
+profile_id: dev-fast
+description: >
+  Short-frame profile for shape_factory iteration. Production FB9 graphs often
+  extend ~80–88 frames (~30+ min). This profile targets ~16 frames and fewer
+  steps so pipeline wiring can be validated in minutes.
+
+# LiteGraph nodes patched by node id (shared across FB9_GEX2 / FB9_GEX_FACIAL family).
+ui_nodes:
+  84:
+    type: mxSlider
+    title: Frames
+    widgets_values: [16, 16, 0]
+  82:
+    type: mxSlider
+    title: Steps
+    widgets_values: [8, 8, 0]
+  387:
+    type: mxSlider
+    title: Overlap
+    widgets_values: [4, 4, 0]
+
+api_nodes:
+  "84":
+    inputs:
+      Xi: 16
+      Xf: 16
+  "82":
+    inputs:
+      Xi: 8
+      Xf: 8
+  "387":
+    inputs:
+      Xi: 4
+      Xf: 4
+
+vhs_load_video_path:
+  frame_load_cap: 32
+
+output_prefix_suffix: _dev

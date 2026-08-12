@@ -1,0 +1,40 @@
+schema_version: comfyui-runpod.pools.v0
+shape: /home/yuji/src/comfyui-runpod/.data/shapes/FB9_GEX2.shape.yaml
+
+pools:
+  source_video:
+    slot: source_video
+    description: >
+      Source clips for VHS_LoadVideoPath. Includes original X-Kneel seeds,
+      2025-era OG library clips, and prior FB9_GEX2 outputs (for chaining).
+      Hourly derive samples here even when a clip has never appeared in a past
+      recipe combo, and biases selection toward Kneel / 2025 sources.
+    members:
+      # Prefer original kneel seeds (broad visual variety).
+      - glob: /home/yuji/comfyui-runpod-data/output/og/**/X-Kneel-FB9-*.mp4
+        limit: 900
+      - glob: /home/yuji/comfyui-runpod-data/input/**/X-Kneel*.mp4
+        limit: 200
+      # 2025-era OG library (hourly biases toward these for first-hop / extend variety).
+      - glob: /home/yuji/comfyui-runpod-data/output/og/2025-*/*.mp4
+        limit: 500
+      # Prior GEX2 outputs as optional chain sources.
+      - glob: /home/yuji/comfyui-runpod-data/output/og/**/FB9_GEX2*.mp4
+        limit: 400
+
+  prompt_profile:
+    slot: prompt_profile
+    description: Prompt bundles (C slot) — independent of which video is chosen
+    members:
+      - dir: /workspace/.data/pools/FB9_GEX2/prompts
+        ext: [".json"]
+
+deposit_pools:
+  FB9_GEX2_X_og:
+    slot: final_video
+    description: Step-1 shape_factory outputs (FB9_GEX2 final_video)
+    seed_members:
+      - glob: /home/yuji/comfyui-runpod-data/output/og/**/FB9_GEX2_shape/**/*.mp4
+        limit: 200
+      - glob: /home/yuji/comfyui-runpod-data/output/og/**/FB9_GEX2*.mp4
+        limit: 800

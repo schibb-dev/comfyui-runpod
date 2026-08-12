@@ -1,0 +1,29 @@
+schema_version: comfyui-runpod.pipeline.v0
+pipeline_id: fb9-april03-replay
+description: |
+  Replay early-April chained renders (pattern from 2026-04-03 og/):
+  FB9_GEX2 base (source from April seed pool) → deposit → FB9_GEX_FACIAL.
+  April 3 had ~20 GEX2 + ~16 FACIAL same-day pairs.
+
+steps:
+  - id: gex2-base
+    shape: /home/yuji/src/comfyui-runpod/.data/shapes/FB9_GEX2.shape.yaml
+    pools: /home/yuji/src/comfyui-runpod/.data/pools/FB9_GEX2/pools.yaml
+    pick: zip
+    pick_index: 1
+    deposits:
+      final_video: pool:FB9_GEX2_X_og
+
+  - id: facial
+    shape: /home/yuji/src/comfyui-runpod/.data/shapes/FB9_GEX_FACIAL.shape.yaml
+    pools: /home/yuji/src/comfyui-runpod/.data/pools/FB9_GEX_FACIAL/pools.yaml
+    pick: zip
+    binds_override:
+      source_video:
+        from: pool
+        pool: FB9_GEX2_X_og
+        pick: last
+    deposits:
+      final_video: pool:FB9_GEX_FACIAL_X_og
+
+rules: []

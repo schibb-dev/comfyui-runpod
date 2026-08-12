@@ -1,0 +1,41 @@
+schema_version: comfyui-runpod.chain.v0
+chain_id: apr-early-samples
+description: |
+  Late March / early April replay samples for hourly chain ticks.
+  Rotates pick_index on FB9_GEX2 zip pool (April 3 seeds).
+
+samples:
+  - id: s1-gex2-idle-00001
+    pick_index: 0
+    gex2_prompt: catalog-default
+    note: "Apr 3 idle on seed 00001 (zip index 0)"
+
+  - id: s2-gex2-kneel-00002
+    pick_index: 1
+    gex2_prompt: catalog-default
+    note: "Apr 3 kneel on seed 00002 (zip index 1)"
+
+  - id: s3-gex2-idle-00003
+    pick_index: 0
+    blocked: true
+    note: "Needs explicit source bind for 00003 — zip pool only pairs 2 prompts × first N sources"
+
+  - id: s4-apr02-gex-v1
+    pick_index: 0
+    gex2_prompt: catalog-default
+    shape: FB9_GEX
+    note: "Apr 2 FB9_GEX v1 — product pool via FB9_GEX family"
+
+  - id: s5-mar31-facial-only
+    blocked: true
+    note: "Mar 31 FACIAL-only era — FACIAL standalone, no GEX2 precursor in factory"
+
+  - id: s6-mar28-kneel-still
+    shape: X-KNEEL-FB9
+    source_still: input/*.png
+    note: "Mar 28 X-Kneel branch — i2v from stills; future kneel→gex2 chain"
+
+defaults:
+  pipeline_gex2_facial: /home/yuji/src/comfyui-runpod/.data/pipelines/fb9-gex2-to-facial.pipeline.yaml
+  binds_facial_latest: /home/yuji/src/comfyui-runpod/.data/pipelines/binds/facial-from-latest-gex2.yaml
+  dev: true
