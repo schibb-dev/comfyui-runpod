@@ -11356,6 +11356,12 @@ tr.disabled:hover td {
   gap: 8px;
   flex-wrap: wrap;
 }
+.page-header__updating {
+  color: var(--muted);
+  font-size: 0.85rem;
+  letter-spacing: 0.01em;
+  user-select: none;
+}
 
 @media (max-width: 1024px) {
   .page-header {

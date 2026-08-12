@@ -15,6 +15,7 @@ import { discoveryLibraryHref, workbenchHref } from "./discoveryDeepLink";
 import { PageHeader } from "./PageHeader";
 import { PipelineMediaPlayer, vhsWindowFromKeyParams } from "./PipelineMediaPlayer";
 import { PipelineFilterRow, PipelineList, PipelineScreen, PipelineScroll } from "./PipelineScreen";
+import { getSessionListCache, setSessionListCache } from "./sessionListCache";
 import type {
   ComfyHistoryItem,
   ComfyLogEntry,
@@ -25,6 +26,15 @@ import type {
   QueueLedgerStatus,
   QueueResponse,
 } from "./types";
+
+const COMFY_QUEUE_CACHE_KEY = "comfy-queue";
+
+type ComfyQueueCachePayload = {
+  data: QueueResponse | null;
+  history: ComfyHistoryItem[];
+  ledger: QueueLedgerStatus | null;
+  ledgerEvents: QueueLedgerEvent[];
+};
 
 function basename(rel?: string | null): string {
   const p = (rel || "").replace(/\\/g, "/");
@@ -878,13 +888,17 @@ function QueueLedgerPanel({
 }
 
 export function ComfyQueueMonitorApp() {
-  const [data, setData] = useState<QueueResponse | null>(null);
-  const [history, setHistory] = useState<ComfyHistoryItem[]>([]);
-  const [ledger, setLedger] = useState<QueueLedgerStatus | null>(null);
-  const [ledgerEvents, setLedgerEvents] = useState<QueueLedgerEvent[]>([]);
+  const initialCache = getSessionListCache<ComfyQueueCachePayload>(COMFY_QUEUE_CACHE_KEY);
+  const [data, setData] = useState<QueueResponse | null>(() => initialCache?.value.data ?? null);
+  const [history, setHistory] = useState<ComfyHistoryItem[]>(() => initialCache?.value.history ?? []);
+  const [ledger, setLedger] = useState<QueueLedgerStatus | null>(() => initialCache?.value.ledger ?? null);
+  const [ledgerEvents, setLedgerEvents] = useState<QueueLedgerEvent[]>(
+    () => initialCache?.value.ledgerEvents ?? [],
+  );
   const [error, setError] = useState("");
   const [ledgerErr, setLedgerErr] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(() => !initialCache);
+  const [refreshing, setRefreshing] = useState(false);
   const [ledgerBusy, setLedgerBusy] = useState(false);
   const [pageTab, setPageTab] = useState<"queue" | "ledger">("queue");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -894,9 +908,18 @@ export function ComfyQueueMonitorApp() {
     pending: true,
     history: true,
   });
+  const hasDataRef = useRef(Boolean(initialCache?.value.data || (initialCache?.value.history.length ?? 0)));
+  hasDataRef.current = Boolean(data || history.length);
+  const refreshGenRef = useRef(0);
 
-  const refresh = async () => {
-    setLoading(true);
+  const refresh = async (opts?: { soft?: boolean }) => {
+    const soft =
+      opts?.soft === true ||
+      hasDataRef.current ||
+      Boolean(getSessionListCache<ComfyQueueCachePayload>(COMFY_QUEUE_CACHE_KEY));
+    const gen = ++refreshGenRef.current;
+    if (soft) setRefreshing(true);
+    else setLoading(true);
     setError("");
     try {
       const [q, h, led, ev] = await Promise.all([
@@ -908,8 +931,11 @@ export function ComfyQueueMonitorApp() {
         }),
         fetchQueueLedgerEvents(30).catch(() => null),
       ]);
+      if (gen !== refreshGenRef.current) return;
+      const nextHistory = Array.isArray(h.items) ? h.items : [];
+      const prev = getSessionListCache<ComfyQueueCachePayload>(COMFY_QUEUE_CACHE_KEY)?.value;
       setData(q);
-      setHistory(Array.isArray(h.items) ? h.items : []);
+      setHistory(nextHistory);
       if (led) {
         setLedger(led);
         setLedgerErr("");
@@ -917,10 +943,19 @@ export function ComfyQueueMonitorApp() {
       if (ev && Array.isArray(ev.events)) {
         setLedgerEvents(ev.events);
       }
+      setSessionListCache<ComfyQueueCachePayload>(COMFY_QUEUE_CACHE_KEY, {
+        data: q,
+        history: nextHistory,
+        ledger: led ?? prev?.ledger ?? null,
+        ledgerEvents: ev && Array.isArray(ev.events) ? ev.events : prev?.ledgerEvents ?? [],
+      });
     } catch (e) {
+      if (gen !== refreshGenRef.current) return;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (gen !== refreshGenRef.current) return;
+      if (soft) setRefreshing(false);
+      else setLoading(false);
     }
   };
 
@@ -932,6 +967,13 @@ export function ComfyQueueMonitorApp() {
       const [led, ev] = await Promise.all([fetchQueueLedgerStatus(), fetchQueueLedgerEvents(30)]);
       setLedger(led);
       if (Array.isArray(ev.events)) setLedgerEvents(ev.events);
+      const prev = getSessionListCache<ComfyQueueCachePayload>(COMFY_QUEUE_CACHE_KEY)?.value;
+      setSessionListCache<ComfyQueueCachePayload>(COMFY_QUEUE_CACHE_KEY, {
+        data: prev?.data ?? data,
+        history: prev?.history ?? history,
+        ledger: led,
+        ledgerEvents: Array.isArray(ev.events) ? ev.events : prev?.ledgerEvents ?? [],
+      });
     } catch (e) {
       setLedgerErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -940,11 +982,14 @@ export function ComfyQueueMonitorApp() {
   };
 
   useEffect(() => {
-    void refresh();
+    void refresh({ soft: Boolean(initialCache) });
     const t = window.setInterval(() => {
-      void refresh();
+      if (document.visibilityState === "hidden") return;
+      void refresh({ soft: true });
     }, 5000);
     return () => window.clearInterval(t);
+    // Mount + poll only; refresh closes over setters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const runningRaw = data?.comfyui?.running ?? [];
@@ -999,8 +1044,17 @@ export function ComfyQueueMonitorApp() {
         subtitle={subtitle}
         actions={
           <>
-            <button type="button" onClick={() => void refresh()} disabled={loading}>
-              Refresh
+            {refreshing ? (
+              <span className="page-header__updating" aria-live="polite">
+                updating…
+              </span>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => void refresh({ soft: hasDataRef.current })}
+              disabled={loading && !hasDataRef.current}
+            >
+              {refreshing ? "Updating…" : "Refresh"}
             </button>
             {pageTab === "queue" ? (
               <button
@@ -1009,7 +1063,7 @@ export function ComfyQueueMonitorApp() {
                 onClick={() => {
                   void (async () => {
                     await comfyClear();
-                    await refresh();
+                    await refresh({ soft: true });
                   })();
                 }}
               >
@@ -1157,7 +1211,7 @@ export function ComfyQueueMonitorApp() {
                           key={`${item.prompt_id ?? "run"}:${i}`}
                           item={item}
                           kind="running"
-                          onRefresh={() => void refresh()}
+                          onRefresh={() => void refresh({ soft: true })}
                         />
                       ))
                     ) : (
@@ -1174,7 +1228,7 @@ export function ComfyQueueMonitorApp() {
                           key={`${item.prompt_id ?? "pend"}:${i}`}
                           item={item}
                           kind="pending"
-                          onRefresh={() => void refresh()}
+                          onRefresh={() => void refresh({ soft: true })}
                         />
                       ))
                     ) : (

@@ -21,6 +21,7 @@ import {
 } from "./workProductTrim";
 import { useTrimPlaybackEnforcement, type TrimPlaybackMode } from "./useTrimPlayback";
 import { discoveryLibraryHref, parseWorkbenchDeepLink, submitHref } from "./discoveryDeepLink";
+import { getSessionListCache, setSessionListCache } from "./sessionListCache";
 import type {
   ShapeFactoryMapQueueOverrides,
   WorkItem,
@@ -43,6 +44,36 @@ const HOURLY_ONLY_KEY = "work-products-hourly-only";
 const STATUS_FILTER_OFF_KEY = "work-products-status-filter-off";
 const MARKER_FILTER_OFF_KEY = "work-products-marker-filter-off";
 const JSON_CACHE = new Map<string, { text: string; basename?: string; truncated?: boolean; error?: string }>();
+
+type WorkProductsCachePayload = {
+  items: WorkProductItem[];
+  families: WorkProductFamilyOption[];
+  extend_family_defaults: Record<string, string>;
+};
+
+function workProductsCacheKey(limit: number, hourlyOnly: boolean): string {
+  return `work-products:${limit}:${hourlyOnly ? 1 : 0}`;
+}
+
+function applyWorkProductsCachePayload(
+  payload: WorkProductsCachePayload,
+  setters: {
+    setItems: (items: WorkProductItem[]) => void;
+    setFamilies: (families: WorkProductFamilyOption[]) => void;
+    setExtendFamilyDefaults: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+  },
+): void {
+  setters.setItems(payload.items);
+  setters.setFamilies(payload.families);
+  setters.setExtendFamilyDefaults((prev) => {
+    const next = payload.extend_family_defaults || {};
+    try {
+      return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
+    } catch {
+      return next;
+    }
+  });
+}
 
 type WorkProductSort = "created_desc" | "created_asc" | "family_asc" | "family_desc" | "status" | "pick_mode";
 
@@ -3118,18 +3149,31 @@ export function WorkProductsApp() {
   const [layout, setLayout] = useState<RowLayout>(() => loadLayout());
   const [sort, setSort] = useState<WorkProductSort>(() => loadSort());
   const [nameQuery, setNameQuery] = useState(() => deepLink.filter || "");
-  const [items, setItems] = useState<WorkProductItem[]>([]);
-  const [families, setFamilies] = useState<WorkProductFamilyOption[]>([]);
-  const [extendFamilyDefaults, setExtendFamilyDefaults] = useState<Record<string, string>>({});
+  const initialLimit = deepLink.filter ? 80 : 50;
+  const initialHourlyOnly = deepLink.filter ? false : loadHourlyOnly();
+  const initialCache = getSessionListCache<WorkProductsCachePayload>(
+    workProductsCacheKey(initialLimit, initialHourlyOnly),
+  );
+  const [items, setItems] = useState<WorkProductItem[]>(() => initialCache?.value.items ?? []);
+  const [families, setFamilies] = useState<WorkProductFamilyOption[]>(
+    () => initialCache?.value.families ?? [],
+  );
+  const [extendFamilyDefaults, setExtendFamilyDefaults] = useState<Record<string, string>>(
+    () => initialCache?.value.extend_family_defaults ?? {},
+  );
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [limit, setLimit] = useState(() => (deepLink.filter ? 80 : 50));
-  const [hourlyOnly, setHourlyOnly] = useState(() => (deepLink.filter ? false : loadHourlyOnly()));
+  const [loading, setLoading] = useState(() => !initialCache);
+  const [refreshing, setRefreshing] = useState(false);
+  const [limit, setLimit] = useState(() => initialLimit);
+  const [hourlyOnly, setHourlyOnly] = useState(() => initialHourlyOnly);
   const [statusOff, setStatusOff] = useState<Set<string>>(() => loadStatusFilterOff());
   const [markerOff, setMarkerOff] = useState<Set<string>>(() => loadMarkerFilterOff());
   const [clearFailedBusy, setClearFailedBusy] = useState(false);
   const [clearFailedMsg, setClearFailedMsg] = useState<string | null>(null);
   const deepLinkScrolled = useRef(false);
+  const itemsLenRef = useRef(items.length);
+  itemsLenRef.current = items.length;
+  const refreshGenRef = useRef(0);
 
   const statusCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -3233,24 +3277,38 @@ export function WorkProductsApp() {
   };
 
   const refresh = (opts?: { quiet?: boolean }) => {
-    if (!opts?.quiet) setLoading(true);
+    const cacheKey = workProductsCacheKey(limit, hourlyOnly);
+    const soft =
+      opts?.quiet === true ||
+      itemsLenRef.current > 0 ||
+      Boolean(getSessionListCache<WorkProductsCachePayload>(cacheKey));
+    const gen = ++refreshGenRef.current;
+    if (soft) setRefreshing(true);
+    else setLoading(true);
     void fetchShapeFactoryWorkProducts({ limit, hourlyOnly })
       .then((res) => {
-        setItems(res.items || []);
-        setFamilies(res.families || []);
-        setExtendFamilyDefaults((prev) => {
-          const next = res.extend_family_defaults || {};
-          try {
-            return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
-          } catch {
-            return next;
-          }
+        if (gen !== refreshGenRef.current) return;
+        const payload: WorkProductsCachePayload = {
+          items: res.items || [],
+          families: res.families || [],
+          extend_family_defaults: res.extend_family_defaults || {},
+        };
+        setSessionListCache(cacheKey, payload);
+        applyWorkProductsCachePayload(payload, {
+          setItems,
+          setFamilies,
+          setExtendFamilyDefaults,
         });
         setError(null);
       })
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .catch((e) => {
+        if (gen !== refreshGenRef.current) return;
+        setError(e instanceof Error ? e.message : String(e));
+      })
       .finally(() => {
-        if (!opts?.quiet) setLoading(false);
+        if (gen !== refreshGenRef.current) return;
+        if (soft) setRefreshing(false);
+        else setLoading(false);
       });
   };
 
@@ -3297,27 +3355,44 @@ export function WorkProductsApp() {
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    const cacheKey = workProductsCacheKey(limit, hourlyOnly);
+    const cached = getSessionListCache<WorkProductsCachePayload>(cacheKey);
+    const gen = ++refreshGenRef.current;
+    if (cached) {
+      applyWorkProductsCachePayload(cached.value, {
+        setItems,
+        setFamilies,
+        setExtendFamilyDefaults,
+      });
+      setLoading(false);
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+      setRefreshing(false);
+    }
     setError(null);
     void (async () => {
       try {
         const res = await fetchShapeFactoryWorkProducts({ limit, hourlyOnly });
-        if (cancelled) return;
-        setItems(res.items || []);
-        setFamilies(res.families || []);
-        setExtendFamilyDefaults((prev) => {
-          const next = res.extend_family_defaults || {};
-          try {
-            return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
-          } catch {
-            return next;
-          }
+        if (cancelled || gen !== refreshGenRef.current) return;
+        const payload: WorkProductsCachePayload = {
+          items: res.items || [],
+          families: res.families || [],
+          extend_family_defaults: res.extend_family_defaults || {},
+        };
+        setSessionListCache(cacheKey, payload);
+        applyWorkProductsCachePayload(payload, {
+          setItems,
+          setFamilies,
+          setExtendFamilyDefaults,
         });
       } catch (e) {
-        if (cancelled) return;
+        if (cancelled || gen !== refreshGenRef.current) return;
         setError(e instanceof Error ? e.message : String(e));
       } finally {
-        if (!cancelled) setLoading(false);
+        if (cancelled || gen !== refreshGenRef.current) return;
+        setLoading(false);
+        setRefreshing(false);
       }
     })();
     return () => {
@@ -3329,7 +3404,10 @@ export function WorkProductsApp() {
   useEffect(() => {
     const needs = items.some((it) => isLivePreviewItem(it));
     if (!needs) return;
-    const id = window.setInterval(() => refresh({ quiet: true }), 8000);
+    const id = window.setInterval(() => {
+      if (document.visibilityState === "hidden") return;
+      refresh({ quiet: true });
+    }, 8000);
     return () => window.clearInterval(id);
   }, [items, limit, hourlyOnly]);
 
@@ -3414,8 +3492,17 @@ export function WorkProductsApp() {
                 </button>
               </div>
             </div>
-            <button type="button" onClick={() => refresh()}>
-              Refresh
+            {refreshing ? (
+              <span className="page-header__updating" aria-live="polite">
+                updating…
+              </span>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => refresh({ quiet: itemsLenRef.current > 0 })}
+              disabled={loading && !items.length}
+            >
+              {refreshing ? "Updating…" : "Refresh"}
             </button>
             {failedVisible.length ? (
               <button
