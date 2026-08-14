@@ -1666,6 +1666,8 @@ def generate_job_for_picks(
                 "output_prefix_suffix": dev_tuning.get("output_prefix_suffix"),
             },
         }
+    if isinstance(job_meta.get("vhs_window"), dict):
+        sync_job_dev_tuning_from_vhs_window(job_meta)
     job_path = job_dir / family / f"{job_key}.job.json"
     job_path.parent.mkdir(parents=True, exist_ok=True)
     gen_t1 = time.time()
@@ -2728,6 +2730,7 @@ def validate_workflow_document(
             dev_spec = job.get("dev_tuning", {}).get("spec") if isinstance(job.get("dev_tuning"), dict) else None
             if isinstance(dev_spec, dict):
                 apply_dev_tuning_api(prompt_obj, dev_spec)
+            apply_job_vhs_window_to_prompt(job, prompt_obj)
             warnings = apply_api_slot_bindings(prompt_obj, shape, job, data_root)
             report["binding_warnings"] = warnings
         report["prompt_object"] = prompt_obj
@@ -3901,6 +3904,8 @@ def resolve_prompt_for_job(
         warnings.extend(apply_api_slot_bindings(prompt_obj, shape, job, data_root))
         if isinstance(dev_spec, dict):
             apply_dev_tuning_api(prompt_obj, dev_spec)
+        # vhs_window is source of truth; apply last so a stale {0,0} spec cannot clobber trim.
+        apply_job_vhs_window_to_prompt(job, prompt_obj)
         fatal = _binding_patch_failures(warnings, shape, job)
         if fatal:
             raise RuntimeError(
@@ -3920,6 +3925,7 @@ def resolve_prompt_for_job(
     warnings.extend(apply_api_slot_bindings(prompt, shape, job, data_root))
     if isinstance(dev_spec, dict):
         apply_dev_tuning_api(prompt, dev_spec)
+    apply_job_vhs_window_to_prompt(job, prompt)
     fatal = _binding_patch_failures(warnings, shape, job)
     if fatal:
         raise RuntimeError(
@@ -5083,32 +5089,73 @@ def seed_job_use_window_from_clips(
     if use.get("message"):
         vhs_window["message"] = str(use["message"])
     job["vhs_window"] = vhs_window
+    sync_job_dev_tuning_from_vhs_window(job)
     return use
 
 
-def apply_job_vhs_window_to_workflow(job: dict[str, Any], workflow: dict[str, Any]) -> Optional[dict[str, Any]]:
-    """Re-apply ``job['vhs_window']`` onto a LiteGraph workflow (submit-time safety net)."""
+def vhs_window_as_tuning(job: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Build a ``vhs_load_video_path`` tuning blob from ``job['vhs_window']``."""
     win = job.get("vhs_window") if isinstance(job.get("vhs_window"), dict) else None
     if not win:
         return None
+    vhs: dict[str, Any] = {}
     skip = win.get("skip_first_frames")
     cap = win.get("frame_load_cap")
-    if skip is None and cap is None:
-        return None
-    tuning: dict[str, Any] = {"vhs_load_video_path": {}}
     if skip is not None:
         try:
-            tuning["vhs_load_video_path"]["skip_first_frames"] = max(0, int(skip))
+            vhs["skip_first_frames"] = max(0, int(skip))
         except (TypeError, ValueError):
             pass
     if cap is not None:
         try:
-            tuning["vhs_load_video_path"]["frame_load_cap"] = max(0, int(cap))
+            vhs["frame_load_cap"] = max(0, int(cap))
         except (TypeError, ValueError):
             pass
-    if not tuning["vhs_load_video_path"]:
+    if not vhs:
         return None
+    return {"vhs_load_video_path": vhs}
+
+
+def sync_job_dev_tuning_from_vhs_window(job: dict[str, Any]) -> bool:
+    """
+    Keep ``dev_tuning.spec.vhs_load_video_path`` aligned with ``vhs_window``.
+
+    Submit applies ``apply_dev_tuning_api`` after /workflow/convert. A stale
+    ``{skip:0, cap:0}`` spec would otherwise overwrite the converted trim.
+    """
+    tuning = vhs_window_as_tuning(job)
+    if not tuning:
+        return False
+    vhs = tuning["vhs_load_video_path"]
+    dev = job.get("dev_tuning") if isinstance(job.get("dev_tuning"), dict) else {}
+    spec = dev.get("spec") if isinstance(dev.get("spec"), dict) else {}
+    prev = spec.get("vhs_load_video_path") if isinstance(spec.get("vhs_load_video_path"), dict) else {}
+    if (
+        prev.get("skip_first_frames") == vhs.get("skip_first_frames")
+        and prev.get("frame_load_cap") == vhs.get("frame_load_cap")
+    ):
+        return False
+    spec = dict(spec)
+    spec["vhs_load_video_path"] = {**prev, **vhs}
+    job["dev_tuning"] = {**dev, "spec": spec}
+    return True
+
+
+def apply_job_vhs_window_to_workflow(job: dict[str, Any], workflow: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Re-apply ``job['vhs_window']`` onto a LiteGraph workflow (submit-time safety net)."""
+    tuning = vhs_window_as_tuning(job)
+    if not tuning:
+        return None
+    sync_job_dev_tuning_from_vhs_window(job)
     return apply_dev_tuning_ui(workflow, tuning)
+
+
+def apply_job_vhs_window_to_prompt(job: dict[str, Any], prompt: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Paint ``vhs_window`` onto the API prompt after convert / ``apply_dev_tuning_api``."""
+    tuning = vhs_window_as_tuning(job)
+    if not tuning:
+        return None
+    return apply_dev_tuning_api(prompt, tuning)
 
 
 def _job_sidecar_candidates(job_path: Path, job: dict[str, Any]) -> list[Path]:
