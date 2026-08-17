@@ -72,8 +72,16 @@ INIT_SFTP_HOSTKEYS_SH="$REPO_ROOT/scripts/init_output_sftp_ssh_hostkeys.sh"
 chmod +x "$WAIT_COMPOSE_BOOT_SH" "$INIT_SFTP_HOSTKEYS_SH" 2>/dev/null || true
 QWAIT="$(printf '%q' "$WAIT_COMPOSE_BOOT_SH")"
 
+KEEP_PY="$REPO_ROOT/scripts/comfyui_keep.py"
+chmod +x "$KEEP_PY" 2>/dev/null || true
+QKEEP="$(printf '%q' "$KEEP_PY")"
+PYTHON3="$(command -v python3 || echo /usr/bin/python3)"
+QPYTHON="$(printf '%q' "$PYTHON3")"
+
 DOCKER_UNIT="$USER_SYSTEMD/comfyui-runpod-docker.service"
 VITE_UNIT="$USER_SYSTEMD/comfyui-runpod-vite.service"
+KEEP_UNIT="$USER_SYSTEMD/comfyui-runpod-keep.service"
+KEEP_TIMER="$USER_SYSTEMD/comfyui-runpod-keep.timer"
 
 cat >"$DOCKER_UNIT" <<EOF
 [Unit]
@@ -97,6 +105,34 @@ ExecStop=/bin/bash -lc "exec $QDOCKER compose --env-file .env -f docker-compose.
 
 [Install]
 WantedBy=default.target
+EOF
+
+cat >"$KEEP_UNIT" <<EOF
+[Unit]
+Description=ComfyUI capped compose-up keeper (one tick)
+Documentation=file://$REPO_ROOT/scripts/install-systemd-boot.sh
+After=comfyui-runpod-docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=$REPO_ROOT
+Environment="PATH=$compose_service_path"
+# Does not use Docker restart policies. compose up only after preflight; see scripts/comfyui_keep.py.
+ExecStart=$QPYTHON $QKEEP
+EOF
+
+cat >"$KEEP_TIMER" <<EOF
+[Unit]
+Description=Wake ComfyUI keeper every 2 minutes (capped retries)
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=2min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
 EOF
 
 cat >"$VITE_UNIT" <<EOF
@@ -124,23 +160,28 @@ WantedBy=default.target
 EOF
 
 ENABLED=0
-if systemctl --user daemon-reload 2>/dev/null && systemctl --user enable comfyui-runpod-docker.service comfyui-runpod-vite.service 2>/dev/null; then
+if systemctl --user daemon-reload 2>/dev/null && systemctl --user enable comfyui-runpod-docker.service comfyui-runpod-vite.service comfyui-runpod-keep.timer 2>/dev/null; then
   ENABLED=1
+  systemctl --user start comfyui-runpod-keep.timer 2>/dev/null || true
 else
-  echo "Note: systemctl --user enable failed (no user D-Bus session?). Units were written; from a logged-in session run: systemctl --user daemon-reload && systemctl --user enable comfyui-runpod-docker.service comfyui-runpod-vite.service" >&2
+  echo "Note: systemctl --user enable failed (no user D-Bus session?). Units were written; from a logged-in session run: systemctl --user daemon-reload && systemctl --user enable comfyui-runpod-docker.service comfyui-runpod-vite.service comfyui-runpod-keep.timer && systemctl --user start comfyui-runpod-keep.timer" >&2
 fi
 
 echo "Installed:"
 echo "  $DOCKER_UNIT"
 echo "  $VITE_UNIT"
+echo "  $KEEP_UNIT"
+echo "  $KEEP_TIMER"
 echo ""
 if [[ "$ENABLED" -eq 1 ]]; then
-  echo "Enabled user units: comfyui-runpod-docker.service, comfyui-runpod-vite.service"
+  echo "Enabled user units: comfyui-runpod-docker.service, comfyui-runpod-vite.service, comfyui-runpod-keep.timer"
   echo "Start now:  systemctl --user start comfyui-runpod-docker.service && systemctl --user start comfyui-runpod-vite.service"
 else
   echo "Enable manually when D-Bus is available (see note above)."
 fi
-echo "Status:     systemctl --user status comfyui-runpod-docker.service comfyui-runpod-vite.service"
+echo "Status:     systemctl --user status comfyui-runpod-docker.service comfyui-runpod-vite.service comfyui-runpod-keep.timer"
+echo "Keep logs:  $REPO_ROOT/.data/comfyui-keep.log"
+echo "Hold (skip retries):  touch $REPO_ROOT/.data/comfyui.hold"
 echo ""
 echo "WSL2 / headless user session:  sudo loginctl enable-linger \"$USER\""
 echo "After changing restart policy or boot scripts, recreate once so Docker picks up compose settings:"

@@ -3,9 +3,9 @@
 set -euo pipefail
 
 USER_SYSTEMD="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-for u in comfyui-runpod-vite.service comfyui-runpod-docker.service; do
+for u in comfyui-runpod-keep.timer comfyui-runpod-keep.service comfyui-runpod-vite.service comfyui-runpod-docker.service; do
   systemctl --user disable --now "$u" 2>/dev/null || true
   rm -f "$USER_SYSTEMD/$u"
 done
 systemctl --user daemon-reload
-echo "Removed comfyui-runpod-docker.service and comfyui-runpod-vite.service from $USER_SYSTEMD"
+echo "Removed comfyui-runpod-docker.service, comfyui-runpod-vite.service, and comfyui-runpod-keep.{service,timer} from $USER_SYSTEMD"

@@ -8,6 +8,10 @@ ENV_FILE="${ENV_FILE:-$REPO_ROOT/.env}"
 
 DOCKER_WAIT_S="${DOCKER_BOOT_WAIT_S:-180}"
 PATH_WAIT_S="${COMFYUI_BIND_WAIT_S:-120}"
+CHECK_ONLY=0
+if [[ "${1:-}" == "--check-only" ]]; then
+  CHECK_ONLY=1
+fi
 
 read_env() {
   local key="$1" default="${2:-}"
@@ -24,10 +28,22 @@ read_env() {
   fi
 }
 
+docker_ready() {
+  # Docker Desktop: `docker info` can hang; socket path may not be /var/run/docker.sock.
+  timeout 8 docker ps >/dev/null 2>&1
+}
+
 wait_for_docker() {
+  if [[ "$CHECK_ONLY" -eq 1 ]]; then
+    if docker_ready; then
+      return 0
+    fi
+    echo "Docker not ready (socket + docker info)." >&2
+    return 1
+  fi
   local i max=$((DOCKER_WAIT_S / 2))
   for ((i = 1; i <= max; i++)); do
-    if [[ -S /var/run/docker.sock ]] && docker info >/dev/null 2>&1; then
+    if docker_ready; then
       return 0
     fi
     sleep 2
@@ -38,6 +54,13 @@ wait_for_docker() {
 
 wait_for_dir() {
   local dir="$1" label="$2"
+  if [[ "$CHECK_ONLY" -eq 1 ]]; then
+    if [[ -d "$dir" ]]; then
+      return 0
+    fi
+    echo "Missing ${label}: ${dir}" >&2
+    return 1
+  fi
   local i max=$((PATH_WAIT_S / 2))
   for ((i = 1; i <= max; i++)); do
     if [[ -d "$dir" ]]; then

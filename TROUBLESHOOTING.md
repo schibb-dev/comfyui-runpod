@@ -271,6 +271,8 @@ npm run comfy:recreate
 docker compose -f docker-compose.yml -f docker-compose.output-sftp.yml up -d watch_queue output-sftp
 ```
 
+**Mid-session crash (OOM / exit 137):** Compose still uses `restart: "no"`. A user timer `comfyui-runpod-keep.timer` (every 2 minutes) runs `scripts/comfyui_keep.py`, which `compose up -d`s **only** after the same bind-path preflight (`wait_for_compose_boot.sh --check-only`). Caps: 3 attempts per 2 hours, 5 minute gap, 15 minute cooldown after OOM, 12 minute startup grace (do not recreate while `:8188` is still coming up). It does **not** kill a running-but-hung container. `systemctl --user stop comfyui-runpod-docker.service` leaves the boot unit inactive so the keeper stays out. To pause retries without stopping the stack: `touch .data/comfyui.hold`. Log: `.data/comfyui-keep.log`. Reinstall units: `bash scripts/install-systemd-boot.sh`.
+
 **Headless WSL boot:** `sudo loginctl enable-linger "$USER"` so `comfyui-runpod-docker.service` runs without an interactive login.
 
 **Manual start (no systemd):** `npm run up` after Docker Desktop is fully up.

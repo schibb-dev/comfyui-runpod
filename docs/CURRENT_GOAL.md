@@ -67,7 +67,8 @@ Helper scripts:
 - `scripts/windows_enable_docker_wsl_integration.ps1` — enable Ubuntu integration + restart Docker Desktop
 - `scripts/windows_docker_desktop_cleanup_and_install.ps1` — cleanup/reinstall Docker Desktop
 - `scripts/wsl_migrate_to_docker_desktop.sh` — remove snap/apt docker after Desktop integration works
-- `scripts/wait_for_compose_boot.sh` — preflight for systemd boot (docker + bind paths)
+- `scripts/wait_for_compose_boot.sh` — preflight for systemd boot (docker + bind paths); `--check-only` for the keeper tick
+- `scripts/comfyui_keep.py` — capped `compose up` after unexpected ComfyUI exits (`comfyui-runpod-keep.timer`)
 
 ---
 
