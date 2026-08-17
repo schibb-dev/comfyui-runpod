@@ -13,10 +13,12 @@ from workflow_repair import (  # noqa: E402
     FlattenLibraryOutputPrefixPromptRule,
     NodeTypeRenameRule,
     PromptStringImageMismatchRule,
+    StringConcatenateLegacyTextInputsRule,
     _error_matches_spec,
     default_repair_rules,
     load_prompt_error_rules,
     load_type_mappings,
+    migrate_string_concatenate_prompt_inputs,
     repair_until_stable,
 )
 
@@ -170,6 +172,92 @@ class WorkflowRepairTest(unittest.TestCase):
         ids = {type(r).__name__ for r in default_repair_rules()}
         self.assertIn("FlattenLibraryOutputPrefixRule", ids)
         self.assertIn("FlattenLibraryOutputPrefixPromptRule", ids)
+        self.assertIn("EasyConvertAnythingToIntBypassRule", ids)
+        self.assertIn("EasyPromptReplaceWidgetPadRule", ids)
+        self.assertIn("UnetGgufBackslashPathRule", ids)
+
+    def test_easy_convert_anything_replaced_with_vfi_float_to_int(self) -> None:
+        from workflow_repair import EasyConvertAnythingToIntBypassRule
+
+        workflow = {
+            "nodes": [
+                {
+                    "id": 425,
+                    "type": "easy mathFloat",
+                    "outputs": [{"name": "FLOAT", "type": "FLOAT", "links": [908]}],
+                },
+                {
+                    "id": 428,
+                    "type": "easy convertAnything",
+                    "title": "toInt",
+                    "widgets_values": ["int"],
+                    "inputs": [{"name": "*", "type": "*", "link": 908}],
+                    "outputs": [{"name": "int", "type": "INT", "links": [938]}],
+                },
+                {
+                    "id": 446,
+                    "type": "easy mathInt",
+                    "inputs": [{"name": "a", "type": "INT", "link": 938}],
+                },
+            ],
+            "links": [
+                [908, 425, 0, 428, 0, "*"],
+                [938, 428, 0, 446, 0, "INT"],
+            ],
+        }
+        rule = EasyConvertAnythingToIntBypassRule()
+        ctx = RepairContext(workflow=workflow)
+        self.assertTrue(rule.matches(ctx))
+        fixes = rule.apply(ctx)
+        self.assertTrue(fixes)
+        node = next(n for n in workflow["nodes"] if n["id"] == 428)
+        self.assertEqual(node["type"], "VFI FloatToInt")
+        self.assertEqual(node["inputs"][0]["name"], "float")
+        self.assertEqual(node["outputs"][0]["name"], "INT")
+        into = next(l for l in workflow["links"] if l[3] == 428)
+        self.assertEqual(into[5], "FLOAT")
+
+    def test_easy_prompt_replace_widget_pad(self) -> None:
+        from workflow_repair import EasyPromptReplaceWidgetPadRule
+
+        workflow = {
+            "nodes": [
+                {
+                    "id": 411,
+                    "type": "easy promptReplace",
+                    "widgets_values": ["photo", "video", "image", "video"],
+                }
+            ]
+        }
+        rule = EasyPromptReplaceWidgetPadRule()
+        ctx = RepairContext(workflow=workflow)
+        self.assertTrue(rule.matches(ctx))
+        rule.apply(ctx)
+        self.assertEqual(
+            workflow["nodes"][0]["widgets_values"],
+            ["", "photo", "video", "image", "video"],
+        )
+
+    def test_unet_gguf_backslash_path(self) -> None:
+        from workflow_repair import UnetGgufBackslashPathRule
+
+        workflow = {
+            "nodes": [
+                {
+                    "id": 458,
+                    "type": "UnetLoaderGGUFDisTorchMultiGPU",
+                    "widgets_values": ["WAN\\wan2.1-i2v-14b-720p-Q5_K_M.gguf", "cuda:0"],
+                }
+            ]
+        }
+        rule = UnetGgufBackslashPathRule()
+        ctx = RepairContext(workflow=workflow)
+        self.assertTrue(rule.matches(ctx))
+        rule.apply(ctx)
+        self.assertEqual(
+            workflow["nodes"][0]["widgets_values"][0],
+            "WAN/wan2.1-i2v-14b-720p-Q5_K_M.gguf",
+        )
 
 
 class MissingAssetRemapTest(unittest.TestCase):
@@ -193,6 +281,67 @@ class MissingAssetRemapTest(unittest.TestCase):
         fixes = rule.apply(ctx)
         self.assertTrue(fixes)
         self.assertNotEqual(workflow["nodes"][0]["widgets_values"][0], missing)
+
+
+class StringConcatenateLegacyTextInputsTest(unittest.TestCase):
+    def test_migrate_hybrid_text_b_link_wins_over_weak_string_b(self) -> None:
+        inputs = {
+            "string_a": ", ",
+            "string_b": "true",
+            "text_b": ["380", 0],
+        }
+        changed = migrate_string_concatenate_prompt_inputs(inputs)
+        self.assertTrue(changed)
+        self.assertNotIn("text_b", inputs)
+        self.assertEqual(inputs["string_b"], ["380", 0])
+        self.assertEqual(inputs["string_a"], ", ")
+
+    def test_ui_rename_remaps_text_slots(self) -> None:
+        workflow = {
+            "nodes": [
+                {
+                    "id": 224,
+                    "type": "Text Concatenate",
+                    "properties": {"Node name for S&R": "Text Concatenate"},
+                    "inputs": [
+                        {"name": "text_a", "link": 1},
+                        {"name": "text_b", "link": 2},
+                        {"name": "text_c", "link": None},
+                    ],
+                }
+            ]
+        }
+        ctx = RepairContext(workflow=workflow, object_info={"StringConcatenate": {}})
+        rule = NodeTypeRenameRule()
+        self.assertTrue(rule.matches(ctx))
+        rule.apply(ctx)
+        node = workflow["nodes"][0]
+        self.assertEqual(node["type"], "StringConcatenate")
+        names = [inp["name"] for inp in node["inputs"]]
+        self.assertEqual(names, ["string_a", "string_b"])
+
+    def test_prompt_rule_strips_text_kwargs(self) -> None:
+        prompt = {
+            "224": {
+                "class_type": "StringConcatenate",
+                "inputs": {
+                    "string_a": ", ",
+                    "string_b": "true",
+                    "text_b": ["380", 0],
+                },
+            }
+        }
+        rule = StringConcatenateLegacyTextInputsRule()
+        ctx = RepairContext(workflow={}, prompt=prompt)
+        self.assertTrue(rule.matches(ctx))
+        fixes = rule.apply(ctx)
+        self.assertEqual(len(fixes), 1)
+        self.assertEqual(fixes[0].rule_id, "string_concatenate_legacy_text_inputs")
+        self.assertNotIn("text_b", prompt["224"]["inputs"])
+        self.assertEqual(prompt["224"]["inputs"]["string_b"], ["380", 0])
+        self.assertTrue(
+            any(isinstance(r, StringConcatenateLegacyTextInputsRule) for r in default_repair_rules())
+        )
 
 
 if __name__ == "__main__":

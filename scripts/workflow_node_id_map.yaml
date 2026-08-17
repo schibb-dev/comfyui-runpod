@@ -19,3 +19,7 @@ mappings:
 
   # Add entries when the UI reports a missing node but the pack is installed — usually a rename.
   # "SkipLayerGuidanceWanVideo": "SkipLayerGuidanceDiT"
+
+  # NOTE: Text Concatenate → StringConcatenate also remaps text_a/text_b → string_a/string_b
+  # via workflow_repair.POST_TYPE_RENAME_HOOKS / StringConcatenateLegacyTextInputsRule.
+  # Without that remap, Comfy raises: StringConcatenate.execute() got unexpected keyword 'text_b'.

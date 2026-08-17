@@ -154,9 +154,88 @@ def _patch_load_image_with_filename(node: dict[str, Any], new_type: str) -> list
     return details
 
 
+def _patch_text_concatenate_to_string_concatenate(node: dict[str, Any], new_type: str) -> list[str]:
+    """
+    ``Text Concatenate`` uses text_a/text_b; core ``StringConcatenate`` uses string_a/string_b.
+    Rename the UI node and remap input slot names so graph_to_prompt does not emit text_*.
+    """
+    details: list[str] = []
+    node["type"] = new_type
+    props = node.get("properties")
+    if not isinstance(props, dict):
+        props = {}
+        node["properties"] = props
+    if props.get("Node name for S&R") in {None, "", "Text Concatenate"}:
+        props["Node name for S&R"] = new_type
+        details.append("properties.Node name for S&R")
+    inputs = node.get("inputs")
+    if isinstance(inputs, list):
+        kept: list[Any] = []
+        rename = {"text_a": "string_a", "text_b": "string_b"}
+        drop = {"text_c", "text_d", "text_e"}
+        for inp in inputs:
+            if not isinstance(inp, dict):
+                kept.append(inp)
+                continue
+            name = str(inp.get("name") or "")
+            if name in drop:
+                details.append(f"dropped input {name}")
+                continue
+            if name in rename:
+                inp["name"] = rename[name]
+                details.append(f"input {name}->{rename[name]}")
+            kept.append(inp)
+        node["inputs"] = kept
+    return details
+
+
 POST_TYPE_RENAME_HOOKS: dict[tuple[str, str], Callable[[dict[str, Any], str], list[str]]] = {
     ("LoadImageWithFilename|pysssss", "LoadImage"): _patch_load_image_with_filename,
+    ("Text Concatenate", "StringConcatenate"): _patch_text_concatenate_to_string_concatenate,
 }
+
+
+def migrate_string_concatenate_prompt_inputs(inputs: dict[str, Any]) -> list[str]:
+    """
+    Move legacy text_* keys onto string_* for StringConcatenate API prompts.
+    Links (list values) win over scalar placeholders left by a bad dual mapping.
+    """
+    if not isinstance(inputs, dict):
+        return []
+    changed: list[str] = []
+
+    def _is_link(val: Any) -> bool:
+        return isinstance(val, list) and len(val) >= 1
+
+    def _weak_scalar(val: Any) -> bool:
+        if val is None:
+            return True
+        if isinstance(val, str) and val.strip() in {"", ",", ", ", "true", "false", "True", "False"}:
+            return True
+        return False
+
+    for src, dst in (("text_a", "string_a"), ("text_b", "string_b")):
+        if src not in inputs:
+            continue
+        val = inputs.pop(src)
+        changed.append(f"pop {src}")
+        cur = inputs.get(dst)
+        if _is_link(val):
+            inputs[dst] = val
+            changed.append(f"{src} link -> {dst}")
+        elif dst not in inputs:
+            inputs[dst] = val
+            changed.append(f"{src} -> {dst}")
+        elif _is_link(cur):
+            pass
+        elif _weak_scalar(cur) and (isinstance(val, str) and val.strip() or _is_link(val)):
+            inputs[dst] = val
+            changed.append(f"{src} replace weak {dst}")
+    for extra in ("text_c", "text_d", "text_e"):
+        if extra in inputs:
+            inputs.pop(extra, None)
+            changed.append(f"drop {extra}")
+    return changed
 
 _ASSET_NODE_TYPES = frozenset({"LoadImage", "VHS_LoadVideo", "VHS_LoadVideoPath"})
 _INVALID_ASSET_RE = re.compile(r"Invalid (?:image|video) file: (.+)$", re.IGNORECASE)
@@ -879,14 +958,356 @@ def sanitize_prompt_string_inputs(workflow: dict[str, Any], prompt: dict[str, An
     return delegate.apply(ctx)
 
 
+class EasyConvertAnythingToIntBypassRule:
+    """
+    Replace easy convertAnything (toInt) with VFI FloatToInt.
+
+    workflow-to-api-converter maps widgets_values=['int'] to output_type='string',
+    which then breaks easy mathInt (str + int). VFI FloatToInt converts cleanly.
+    """
+
+    rule_id = "easy_convert_anything_toint_bypass"
+    phase = "ui_workflow"
+
+    @staticmethod
+    def _targets(workflow: dict[str, Any]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for node in workflow.get("nodes") or []:
+            if not isinstance(node, dict):
+                continue
+            ntype = str(node.get("type") or "")
+            if ntype == "VFI FloatToInt":
+                continue
+            if ntype != "easy convertAnything":
+                # Also upgrade bare FLOAT→INT bridges left by an earlier bypass.
+                continue
+            wv = node.get("widgets_values") or []
+            title = str(node.get("title") or "").lower()
+            want_int = False
+            if isinstance(wv, list) and wv and str(wv[0]).lower() in {"int", "integer"}:
+                want_int = True
+            if "int" in title:
+                want_int = True
+            if want_int:
+                out.append(node)
+        return out
+
+    def matches(self, ctx: RepairContext) -> bool:
+        if self._targets(ctx.workflow):
+            return True
+        return bool(self._float_to_mathint_bridges(ctx.workflow))
+
+    @staticmethod
+    def _float_to_mathint_bridges(workflow: dict[str, Any]) -> list[list[Any]]:
+        """Direct FLOAT producer → easy mathInt links (no cast node)."""
+        nodes = {n.get("id"): n for n in (workflow.get("nodes") or []) if isinstance(n, dict)}
+        bridges: list[list[Any]] = []
+        for link in workflow.get("links") or []:
+            if not isinstance(link, list) or len(link) < 6:
+                continue
+            src = nodes.get(link[1])
+            dst = nodes.get(link[3])
+            if not src or not dst:
+                continue
+            if str(dst.get("type") or "") not in {"easy mathInt", "easy mathFloat"}:
+                continue
+            # Prefer casting into mathInt only.
+            if str(dst.get("type") or "") != "easy mathInt":
+                continue
+            # Source is float math / float-typed output
+            src_type = str(src.get("type") or "")
+            if src_type in {"easy mathFloat", "easy mathInt"} or str(link[5]).upper() == "FLOAT":
+                # If already INT-typed from mathInt, skip
+                if src_type == "easy mathInt":
+                    continue
+                bridges.append(link)
+        return bridges
+
+    def apply(self, ctx: RepairContext) -> list[RepairFix]:
+        workflow = ctx.workflow
+        fixes: list[RepairFix] = []
+
+        # Pass 1: replace easy convertAnything toInt nodes in place.
+        for node in self._targets(workflow):
+            old_type = node.get("type")
+            node["type"] = "VFI FloatToInt"
+            node["title"] = node.get("title") or "toInt"
+            node["properties"] = {"Node name for S&R": "VFI FloatToInt"}
+            node["widgets_values"] = []
+            # Normalize IO names for converter.
+            for inp in node.get("inputs") or []:
+                if not isinstance(inp, dict):
+                    continue
+                if inp.get("name") in {"*", "float", None} or inp.get("type") in {"*", "FLOAT", None}:
+                    inp["name"] = "float"
+                    inp["type"] = "FLOAT"
+                    inp.pop("widget", None)
+            for out in node.get("outputs") or []:
+                if not isinstance(out, dict):
+                    continue
+                out["name"] = "INT"
+                out["type"] = "INT"
+                out["label"] = "INT"
+            # Fix link types into/out of this node.
+            nid = node.get("id")
+            for link in workflow.get("links") or []:
+                if not isinstance(link, list) or len(link) < 6:
+                    continue
+                if link[3] == nid:
+                    link[5] = "FLOAT"
+                if link[1] == nid:
+                    link[5] = "INT"
+            fixes.append(
+                RepairFix(
+                    rule_id=self.rule_id,
+                    phase=self.phase,
+                    summary=f"replace {old_type}:{nid} with VFI FloatToInt",
+                    node_id=nid,
+                )
+            )
+
+        # Pass 2: insert VFI FloatToInt on bare FLOAT→mathInt bridges.
+        bridges = self._float_to_mathint_bridges(workflow)
+        if not bridges:
+            return fixes
+
+        nodes = workflow.setdefault("nodes", [])
+        existing_ids = {n.get("id") for n in nodes if isinstance(n, dict)}
+        next_id = 1
+        while next_id in existing_ids:
+            next_id += 1
+        links = workflow.setdefault("links", [])
+        used_link_ids = {l[0] for l in links if isinstance(l, list) and l}
+        next_link_id = 1
+        while next_link_id in used_link_ids:
+            next_link_id += 1
+
+        for bridge in bridges:
+            # Reuse destination-side link id for INT out; new id for FLOAT in.
+            out_link_id = bridge[0]
+            into_link_id = next_link_id
+            while into_link_id in used_link_ids:
+                into_link_id += 1
+            used_link_ids.add(into_link_id)
+            next_link_id = into_link_id + 1
+
+            cast_id = next_id
+            while cast_id in existing_ids:
+                cast_id += 1
+            existing_ids.add(cast_id)
+            next_id = cast_id + 1
+
+            fr, fs, to, ts = bridge[1], bridge[2], bridge[3], bridge[4]
+            # Remove old bridge link
+            workflow["links"] = [l for l in workflow.get("links") or [] if not (isinstance(l, list) and l and l[0] == out_link_id)]
+            workflow["links"].append([into_link_id, fr, fs, cast_id, 0, "FLOAT"])
+            workflow["links"].append([out_link_id, cast_id, 0, to, ts, "INT"])
+
+            dst = next((n for n in nodes if isinstance(n, dict) and n.get("id") == to), None)
+            pos = (dst or {}).get("pos") or [0, 0]
+            nodes.append(
+                {
+                    "id": cast_id,
+                    "type": "VFI FloatToInt",
+                    "pos": pos,
+                    "size": {"0": 210, "1": 60},
+                    "flags": {},
+                    "order": 0,
+                    "mode": 0,
+                    "inputs": [{"name": "float", "type": "FLOAT", "link": into_link_id}],
+                    "outputs": [{"name": "INT", "type": "INT", "links": [out_link_id], "label": "INT"}],
+                    "title": "toInt",
+                    "properties": {"Node name for S&R": "VFI FloatToInt"},
+                    "widgets_values": [],
+                }
+            )
+            # Patch endpoint link refs.
+            src = next((n for n in nodes if isinstance(n, dict) and n.get("id") == fr), None)
+            if src:
+                for o in src.get("outputs") or []:
+                    if not isinstance(o, dict):
+                        continue
+                    ols = o.get("links")
+                    if isinstance(ols, list):
+                        o["links"] = [into_link_id if x == out_link_id else x for x in ols]
+            if dst:
+                for inp in dst.get("inputs") or []:
+                    if isinstance(inp, dict) and inp.get("link") == out_link_id:
+                        inp["type"] = "INT"
+            fixes.append(
+                RepairFix(
+                    rule_id=self.rule_id,
+                    phase=self.phase,
+                    summary=f"insert VFI FloatToInt {cast_id} on FLOAT→mathInt bridge {fr}→{to}",
+                    node_id=cast_id,
+                    details={"from": fr, "to": to, "into_link": into_link_id, "out_link": out_link_id},
+                )
+            )
+        return fixes
+
+
+class EasyPromptReplaceWidgetPadRule:
+    """
+    Prepend an empty widget so workflow-to-api-converter maps find/replace pairs.
+
+    Without the pad, widgets [find1,rep1,find2,…] become find1=rep1, replace1=find2, …
+    """
+
+    rule_id = "easy_prompt_replace_widget_pad"
+    phase = "ui_workflow"
+
+    @staticmethod
+    def _targets(workflow: dict[str, Any]) -> list[tuple[dict[str, Any], list[Any]]]:
+        out: list[tuple[dict[str, Any], list[Any]]] = []
+        for node in workflow.get("nodes") or []:
+            if not isinstance(node, dict):
+                continue
+            if str(node.get("type") or "") != "easy promptReplace":
+                continue
+            wv = node.get("widgets_values")
+            if not isinstance(wv, list) or len(wv) < 2:
+                continue
+            if wv and wv[0] == "":
+                continue
+            # Heuristic: even-length string pairs (find/replace).
+            if len(wv) % 2 != 0:
+                continue
+            if not all(isinstance(x, str) for x in wv):
+                continue
+            out.append((node, wv))
+        return out
+
+    def matches(self, ctx: RepairContext) -> bool:
+        return bool(self._targets(ctx.workflow))
+
+    def apply(self, ctx: RepairContext) -> list[RepairFix]:
+        fixes: list[RepairFix] = []
+        for node, wv in self._targets(ctx.workflow):
+            node["widgets_values"] = [""] + list(wv)
+            fixes.append(
+                RepairFix(
+                    rule_id=self.rule_id,
+                    phase=self.phase,
+                    summary=f"pad easy promptReplace widgets on node {node.get('id')} for convert mapping",
+                    node_id=node.get("id"),
+                    details={"before": wv, "after": node["widgets_values"]},
+                )
+            )
+        return fixes
+
+
+class UnetGgufBackslashPathRule:
+    """Normalize Windows-style WAN\\file.gguf widget paths to WAN/file.gguf."""
+
+    rule_id = "unet_gguf_backslash_path"
+    phase = "ui_workflow"
+
+    def matches(self, ctx: RepairContext) -> bool:
+        for node in ctx.workflow.get("nodes") or []:
+            if not isinstance(node, dict):
+                continue
+            wv = node.get("widgets_values")
+            if isinstance(wv, list) and any(isinstance(x, str) and "\\" in x and ".gguf" in x.lower() for x in wv):
+                return True
+        return False
+
+    def apply(self, ctx: RepairContext) -> list[RepairFix]:
+        fixes: list[RepairFix] = []
+        for node in ctx.workflow.get("nodes") or []:
+            if not isinstance(node, dict):
+                continue
+            wv = node.get("widgets_values")
+            if not isinstance(wv, list):
+                continue
+            changed = False
+            new_wv: list[Any] = []
+            for x in wv:
+                if isinstance(x, str) and "\\" in x and ".gguf" in x.lower():
+                    new_wv.append(x.replace("\\", "/"))
+                    changed = True
+                else:
+                    new_wv.append(x)
+            if changed:
+                node["widgets_values"] = new_wv
+                fixes.append(
+                    RepairFix(
+                        rule_id=self.rule_id,
+                        phase=self.phase,
+                        summary=f"normalize gguf path separators on node {node.get('id')}",
+                        node_id=node.get("id"),
+                        details={"widgets_values": new_wv},
+                    )
+                )
+        return fixes
+
+
+class StringConcatenateLegacyTextInputsRule:
+    """
+    Proactive prompt fix: StringConcatenate.execute() rejects text_a/text_b kwargs.
+
+    After Text Concatenate → StringConcatenate renames (or mixed converters), API prompts
+    often keep text_* alongside string_*. Migrate links and drop legacy keys.
+    """
+
+    rule_id = "string_concatenate_legacy_text_inputs"
+    phase = "prompt"
+
+    def matches(self, ctx: RepairContext) -> bool:
+        prompt = ctx.prompt
+        if not isinstance(prompt, dict):
+            return False
+        for node in prompt.values():
+            if not isinstance(node, dict):
+                continue
+            if str(node.get("class_type") or "") != "StringConcatenate":
+                continue
+            inputs = node.get("inputs")
+            if not isinstance(inputs, dict):
+                continue
+            if any(k in inputs for k in ("text_a", "text_b", "text_c", "text_d", "text_e")):
+                return True
+        return False
+
+    def apply(self, ctx: RepairContext) -> list[RepairFix]:
+        prompt = ctx.prompt
+        if not isinstance(prompt, dict):
+            return []
+        fixes: list[RepairFix] = []
+        for nid, node in prompt.items():
+            if not isinstance(node, dict):
+                continue
+            if str(node.get("class_type") or "") != "StringConcatenate":
+                continue
+            inputs = node.get("inputs")
+            if not isinstance(inputs, dict):
+                continue
+            changed = migrate_string_concatenate_prompt_inputs(inputs)
+            if not changed:
+                continue
+            fixes.append(
+                RepairFix(
+                    rule_id=self.rule_id,
+                    phase=self.phase,
+                    summary="StringConcatenate: migrate text_* inputs to string_*",
+                    node_id=nid,
+                    details={"changes": changed},
+                )
+            )
+        return fixes
+
+
 def default_repair_rules(
     map_path: Optional[Path] = None,
     repair_rules_path: Optional[Path] = None,
 ) -> list[RepairRule]:
     return [
         NodeTypeRenameRule(map_path=map_path),
+        EasyConvertAnythingToIntBypassRule(),
+        EasyPromptReplaceWidgetPadRule(),
+        UnetGgufBackslashPathRule(),
         MissingAssetRemapRule(),
         FlattenLibraryOutputPrefixRule(),
+        StringConcatenateLegacyTextInputsRule(),
         DeclarativePromptErrorRules(rules_path=repair_rules_path),
         FlattenLibraryOutputPrefixPromptRule(),
     ]
