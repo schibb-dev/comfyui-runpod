@@ -142,6 +142,69 @@ def list_shape_families(
     return uniq
 
 
+def is_extend_family_option(row: Dict[str, Any]) -> bool:
+    """Mirror Submit UI: video Extend targets (V2V / facial / source), not I2V/still/identity."""
+    slug = str(row.get("slug") or "").strip()
+    if not slug or "identity" in slug.lower():
+        return False
+    sid = str(row.get("shape_id") or "").strip().lower()
+    if not sid:
+        return True
+    if "i2v" in sid or "still" in sid:
+        return False
+    return "v2v" in sid or "facial" in sid or "source" in sid
+
+
+def _shapes_pipelines_fingerprint(data_root: Path) -> str:
+    """Cheap config stamp for client/session cache invalidation."""
+    latest = 0.0
+    count = 0
+    for root in (Path(data_root) / "shapes", Path(data_root) / "pipelines"):
+        if not root.is_dir():
+            continue
+        for pattern in ("*.yaml", "*.yml"):
+            for path in root.glob(pattern):
+                try:
+                    latest = max(latest, float(path.stat().st_mtime))
+                    count += 1
+                except OSError:
+                    continue
+    return f"{count}:{int(latest)}"
+
+
+def list_submit_family_sets(
+    data_root: Path,
+    *,
+    workspace_root: Optional[Path] = None,
+    output_root: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Config-only picker sets for Submit (extend / vary / derive).
+
+    Independent of jobs / Comfy reconcile — safe to cache aggressively.
+    """
+    families = list_shape_families(
+        data_root,
+        workspace_root=workspace_root,
+        output_root=output_root,
+    )
+    extend = [f for f in families if is_extend_family_option(f)]
+    # Vary/derive currently share the full family catalog; keep discrete lists for caching.
+    vary = list(families)
+    derive = list(families)
+    return {
+        "ok": True,
+        "schema_version": "comfyui-runpod.submit-families.v0",
+        "fingerprint": _shapes_pipelines_fingerprint(data_root),
+        "families": families,
+        "sets": {
+            "extend": extend,
+            "vary": vary,
+            "derive": derive,
+        },
+        "extend_family_defaults": list_extend_family_defaults(data_root),
+    }
+
+
 def _family_slug_from_shape_ref(shape: Any) -> str:
     """Best-effort family slug from a pipeline step `shape` path or slug."""
     raw = str(shape or "").strip()
@@ -1328,8 +1391,17 @@ def _work_product_item_from_job(
     parent_url = _file_url(parent_rel)
     parent_thumb = _file_url(_thumb_rel_for_video(parent_rel))
     # Queued/live jobs often lack parent_output — use source still/video as stand-in.
+    # Still-source shapes (BounceDanceA, FB8*, …) bind `source_still`, not `source_image`.
     if not parent_rel:
-        src = bindings_out.get("source_video") or bindings_out.get("source_image") or {}
+        src = (
+            bindings_out.get("source_video")
+            or bindings_out.get("source_image")
+            or bindings_out.get("source_still")
+            or bindings_out.get("identity_still")
+            or bindings_out.get("identity_anchor")
+            or bindings_out.get("start_image")
+            or {}
+        )
         if isinstance(src, dict) and (src.get("relpath") or src.get("url") or src.get("thumb_url")):
             parent_output = parent_output or src.get("path")
             parent_rel = src.get("relpath")

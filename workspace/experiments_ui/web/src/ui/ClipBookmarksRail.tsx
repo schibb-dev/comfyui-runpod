@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { listShapeFactoryClips, mutateShapeFactoryClip, type ShapeFactoryClip } from "./api";
+import { mutateShapeFactoryClip, type ShapeFactoryClip } from "./api";
+import { loadClipsForMedia, peekClipsForMedia } from "./shapeFactorySessionCache";
 
 export function formatClipTimecode(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) return "0:00";
@@ -45,21 +46,32 @@ export function ClipBookmarksRail({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const reload = useCallback(async () => {
-    if (!mediaRelpath) {
-      setClips([]);
-      setDefaultId(null);
-      return;
-    }
-    try {
-      const res = await listShapeFactoryClips({ mediaRelpath });
-      setClips(res.clips || []);
-      setDefaultId(res.default_clip_id || null);
-      setErr(null);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    }
-  }, [mediaRelpath]);
+  const applyClipsList = useCallback((res: { clips?: ShapeFactoryClip[]; default_clip_id?: string | null }) => {
+    setClips(res.clips || []);
+    setDefaultId(res.default_clip_id || null);
+  }, []);
+
+  const reload = useCallback(
+    async (opts?: { force?: boolean }) => {
+      if (!mediaRelpath) {
+        setClips([]);
+        setDefaultId(null);
+        return;
+      }
+      if (!opts?.force) {
+        const cached = peekClipsForMedia(mediaRelpath);
+        if (cached) applyClipsList(cached);
+      }
+      try {
+        const res = await loadClipsForMedia(mediaRelpath, { force: opts?.force });
+        applyClipsList(res);
+        setErr(null);
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [applyClipsList, mediaRelpath],
+  );
 
   useEffect(() => {
     void reload();
@@ -137,7 +149,7 @@ export function ClipBookmarksRail({
                 origin,
               })
                 .then((res) => {
-                  void reload();
+                  void reload({ force: true });
                   if (res.clip) onSelectClip?.(res.clip);
                 })
                 .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
@@ -162,7 +174,7 @@ export function ClipBookmarksRail({
                 set_default: true,
               })
                 .then((res) => {
-                  void reload();
+                  void reload({ force: true });
                   if (res.clip) onSelectClip?.(res.clip);
                 })
                 .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
@@ -182,7 +194,7 @@ export function ClipBookmarksRail({
                   media_relpath: mediaRelpath,
                   clip_id: null,
                 })
-                  .then(() => reload())
+                  .then(() => reload({ force: true }))
                   .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
                   .finally(() => setBusy(false));
               }}

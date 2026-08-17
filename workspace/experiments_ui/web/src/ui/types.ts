@@ -986,6 +986,7 @@ export type DiscoveryAssetLineageResponse = {
   seed?: DiscoveryAssetLineageItemSummary;
   graph_only?: boolean;
   infer_parents?: boolean;
+  infer_children?: boolean;
   provenance_chain?: DiscoveryAssetLineageAncestryNavEntry[];
   external_sources?: DiscoveryAssetLineageExternalSource[];
   ancestry_nav?: DiscoveryAssetLineageAncestryNavEntry[];
@@ -996,6 +997,7 @@ export type DiscoveryAssetLineageResponse = {
   merged_edge_count?: number;
   expansions?: DiscoveryAssetLineageExpansion[];
   edges?: unknown[];
+  child_scan_edges?: DiscoveryAssetLineageEdgeRow[];
   unresolved_source_strings?: string[];
   descendants?: unknown[];
   errors?: string[];
@@ -1848,6 +1850,22 @@ export type WorkProductFamilyOption = {
     skip_first_frames?: number;
     frame_load_cap?: number;
   };
+};
+
+/** GET /api/shape-factory/families — config-only picker bootstrap (no jobs/Comfy). */
+export type ShapeFactoryFamiliesResponse = {
+  ok: boolean;
+  schema_version?: string;
+  fingerprint?: string;
+  families?: WorkProductFamilyOption[];
+  sets?: {
+    extend?: WorkProductFamilyOption[];
+    vary?: WorkProductFamilyOption[];
+    derive?: WorkProductFamilyOption[];
+  };
+  extend_family_defaults?: Record<string, string>;
+  error?: string;
+  detail?: string;
 };
 
 export type WorkProductMediaMeta = {

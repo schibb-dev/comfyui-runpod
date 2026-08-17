@@ -198,6 +198,31 @@ export function workbenchHref(opts?: {
   return qs ? `/workbench?${qs}` : "/workbench";
 }
 
+/** Seed Workbench search from a library / lineage media path or basename. */
+export function workbenchHrefForMedia(opts: {
+  relpath?: string | null;
+  name?: string | null;
+  groupId?: string | null;
+}): string {
+  const rel = String(opts.relpath || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "");
+  const name = String(opts.name || "").trim();
+  const base = (rel.split("/").pop() || name || "").trim();
+  let q = base;
+  if (q.includes(".")) {
+    const stem = q.replace(/\.[^.]+$/, "");
+    if (stem) q = stem;
+  }
+  if (!q) {
+    const gid = String(opts.groupId || "").trim();
+    const m = /^og:stem:(.+)$/i.exec(gid) || /^wip:stem:(.+)$/i.exec(gid);
+    if (m) q = m[1];
+  }
+  return workbenchHref({ q: q || null });
+}
+
 export function parseWorkbenchDeepLink(search: string = window.location.search): {
   job: string | null;
   promptId: string | null;

@@ -13,9 +13,15 @@ import { DiscoveryQueueFromClip } from "./DiscoveryQueueFromClip";
 import { discoveryLibraryHref, parseClipsDeepLink, workbenchHref } from "./discoveryDeepLink";
 import { cachedEnsureThumbUrl, enqueueEnsureThumb } from "./ensureThumbQueue";
 import { PageHeader } from "./PageHeader";
+import {
+  loadIdentityStillCandidates,
+  peekFamiliesBootstrap,
+  prefetchFamiliesBootstrap,
+  putClipsForMedia,
+} from "./shapeFactorySessionCache";
+import { pickDefaultExtendFamily } from "./submitFamily";
 import type { DiscoveryLibraryItem } from "./types";
 import { useTrimPlaybackEnforcement } from "./useTrimPlayback";
-import { VideoAutoplayToggle } from "./VideoAutoplayToggle";
 import { VideoTrimControls, type VideoTrimPlaybackMode } from "./VideoTrimControls";
 
 const PAGE_SIZE = 80;
@@ -305,6 +311,13 @@ export function ClipsLibraryApp() {
       setParents(res.parents || []);
       setTotal(res.total ?? rows.length);
       setOriginCounts(res.origin_counts || {});
+      if (activeMedia) {
+        putClipsForMedia(activeMedia, {
+          ok: true,
+          clips: rows,
+          default_clip_id: rows.find((c) => c.is_default)?.clip_id || null,
+        });
+      }
       setSelectedId((prev) => {
         if (browseView === "by_source" && !activeMedia) return null;
         if (prev && rows.some((c) => c.clip_id === prev)) return prev;
@@ -326,10 +339,32 @@ export function ClipsLibraryApp() {
     void reload();
   }, [reload]);
 
+  useEffect(() => {
+    prefetchFamiliesBootstrap();
+  }, []);
+
   const selected = useMemo(
     () => clips.find((c) => c.clip_id === selectedId) || null,
     [clips, selectedId],
   );
+
+  // Warm Submit Extend identity while browsing Clips.
+  useEffect(() => {
+    const rel = String(selected?.media_relpath || "").trim();
+    if (!rel) return;
+    const boot = peekFamiliesBootstrap();
+    if (!boot?.families?.length) return;
+    const family = pickDefaultExtendFamily(
+      boot.extend_families?.length ? boot.extend_families : boot.families,
+      boot.extend_family_defaults || {},
+      null,
+      rel,
+    );
+    if (!family) return;
+    void loadIdentityStillCandidates({ relpath: rel, family_slug: family }).catch(() => {
+      /* ignore */
+    });
+  }, [selected?.media_relpath]);
 
   const dirty = Boolean(selected && draft && isDraftDirty(draft, selected));
   dirtyRef.current = dirty;
@@ -745,6 +780,13 @@ export function ClipsLibraryApp() {
                 <span className="clips-lib-source-bar__name" title={mediaFilter}>
                   {selectedParent?.media_basename || mediaFilter.split("/").pop() || mediaFilter}
                 </span>
+                <a
+                  className="drt-btn clips-lib-source-bar__library"
+                  href={discoveryLibraryHref(mediaFilter)}
+                  title="Open this source video in Library"
+                >
+                  Library
+                </a>
               </div>
             ) : null}
 
@@ -772,30 +814,39 @@ export function ClipsLibraryApp() {
                   <p className="factory-muted clips-lib-empty">No source videos match these filters.</p>
                 ) : null}
                 {parents.map((p) => (
-                  <button
-                    key={p.media_relpath}
-                    type="button"
-                    className="clips-lib-card clips-lib-parent-card"
-                    onClick={() => selectParentMedia(p.media_relpath)}
-                  >
-                    <div className="clips-lib-card__thumb">
-                      <ClipThumb relpath={p.media_relpath} markIn={0} />
-                    </div>
-                    <div className="clips-lib-card__body">
-                      <div className="clips-lib-card__title">
-                        {p.media_basename || p.media_relpath}
-                        {p.has_default ? (
-                          <span className="clips-lib-badge clips-lib-badge--default">has default</span>
-                        ) : null}
+                  <div key={p.media_relpath} className="clips-lib-card clips-lib-parent-card">
+                    <button
+                      type="button"
+                      className="clips-lib-parent-card__main"
+                      onClick={() => selectParentMedia(p.media_relpath)}
+                    >
+                      <div className="clips-lib-card__thumb">
+                        <ClipThumb relpath={p.media_relpath} markIn={0} />
                       </div>
-                      <div className="clips-lib-card__meta">
-                        {p.clip_count} clip{p.clip_count === 1 ? "" : "s"}
+                      <div className="clips-lib-card__body">
+                        <div className="clips-lib-card__title">
+                          {p.media_basename || p.media_relpath}
+                          {p.has_default ? (
+                            <span className="clips-lib-badge clips-lib-badge--default">has default</span>
+                          ) : null}
+                        </div>
+                        <div className="clips-lib-card__meta">
+                          {p.clip_count} clip{p.clip_count === 1 ? "" : "s"}
+                        </div>
+                        <div className="clips-lib-card__path" title={p.media_relpath}>
+                          {p.media_relpath}
+                        </div>
                       </div>
-                      <div className="clips-lib-card__path" title={p.media_relpath}>
-                        {p.media_relpath}
-                      </div>
-                    </div>
-                  </button>
+                    </button>
+                    <a
+                      className="drt-btn clips-lib-parent-card__library"
+                      href={discoveryLibraryHref(p.media_relpath)}
+                      title="Open this source video in Library"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      Library
+                    </a>
+                  </div>
                 ))}
               </>
             ) : showDerivedList ? (
@@ -975,9 +1026,14 @@ export function ClipsLibraryApp() {
               <p className="drt-err">Parent media path missing for this clip — cannot preview.</p>
             ) : (
               <>
-                <div className="clips-lib-detail__head">
-                  <div>
-                    <h2 className="clips-lib-detail__title">
+                <div
+                  className={
+                    "clips-lib-detail__head" +
+                    (detailLayout === "split" ? " clips-lib-detail__head--compact" : "")
+                  }
+                >
+                  <div className="clips-lib-detail__head-main">
+                    <h2 className="clips-lib-detail__title" title={mediaRelpath}>
                       {displayTitle}
                       {dirty ? <span className="clips-lib-badge clips-lib-badge--dirty">unsaved</span> : null}
                     </h2>
@@ -986,10 +1042,15 @@ export function ClipsLibraryApp() {
                       {" · "}
                       {originLabel(selected.origin)}
                       {selected.is_default ? " · default" : ""}
+                      {detailLayout === "split" && selected.media_basename
+                        ? ` · ${selected.media_basename}`
+                        : ""}
                     </p>
-                    <p className="clips-lib-detail__path" title={mediaRelpath}>
-                      {mediaRelpath}
-                    </p>
+                    {detailLayout !== "split" ? (
+                      <p className="clips-lib-detail__path" title={mediaRelpath}>
+                        {mediaRelpath}
+                      </p>
+                    ) : null}
                   </div>
                   <div className="clips-lib-detail__actions">
                     <div
@@ -1021,7 +1082,7 @@ export function ClipsLibraryApp() {
                       </div>
                     </div>
                     <a className="drt-btn" href={discoveryLibraryHref(mediaRelpath)}>
-                      Open in Library
+                      Library
                     </a>
                     <button
                       type="button"
@@ -1033,7 +1094,7 @@ export function ClipsLibraryApp() {
                       }}
                       title="List videos produced from this clip"
                     >
-                      Show derived
+                      Derived
                     </button>
                   </div>
                 </div>
@@ -1080,6 +1141,8 @@ export function ClipsLibraryApp() {
                       mode={trimMode}
                       mediaSyncKey={selected.clip_id}
                       size="default"
+                      autoplay={videoAutoplay}
+                      onAutoplayChange={setVideoAutoplayFromUser}
                       onSeek={setVideoTime}
                       onSyncTime={setVideoTime}
                       onMarkInChange={(t) => setDraft((d) => (d ? { ...d, markIn: t } : d))}
@@ -1088,48 +1151,50 @@ export function ClipsLibraryApp() {
                       onClear={revertDraft}
                     />
 
-                    <div className="clips-lib-player-tools">
-                      <VideoAutoplayToggle
-                        className="clips-lib-autoplay"
-                        videoAutoplay={videoAutoplay}
-                        onVideoAutoplayChange={setVideoAutoplayFromUser}
-                        label="Autoplay (muted)"
+                    {detailLayout !== "split" ? (
+                      <ClipBookmarksRail
+                        key={`${mediaRelpath}::${siblingsEpoch}`}
+                        className="clips-lib-siblings"
+                        mediaRelpath={mediaRelpath}
+                        duration={videoDuration}
+                        markIn={markIn}
+                        markOut={markOut}
+                        trimEditable={false}
+                        showActions={false}
+                        origin="discovery"
+                        selectedClipId={selected.clip_id}
+                        onSelectClip={(clip) => {
+                          if (clip) selectClipRow(clip);
+                        }}
+                        onApplyClip={(_mi, _mo, clip) => {
+                          if (clip) selectClipRow(clip);
+                        }}
                       />
-                      <button
-                        type="button"
-                        className={"drq-loop-toggle" + (loopPlayback ? " drq-loop-toggle--on" : "")}
-                        aria-pressed={loopPlayback}
-                        title={loopPlayback ? "Loop clip window" : "Stop at out point"}
-                        onClick={() => setLoopPlaybackFromUser(!loopPlayback)}
-                      >
-                        <span className="drq-loop-toggle__icon" aria-hidden="true">
-                          ↻
-                        </span>
-                        Loop {loopPlayback ? "on" : "off"}
-                      </button>
-                    </div>
-
-                    <ClipBookmarksRail
-                      key={`${mediaRelpath}::${siblingsEpoch}`}
-                      className="clips-lib-siblings"
-                      mediaRelpath={mediaRelpath}
-                      duration={videoDuration}
-                      markIn={markIn}
-                      markOut={markOut}
-                      trimEditable={false}
-                      showActions={false}
-                      origin="discovery"
-                      selectedClipId={selected.clip_id}
-                      onSelectClip={(clip) => {
-                        if (clip) selectClipRow(clip);
-                      }}
-                      onApplyClip={(_mi, _mo, clip) => {
-                        if (clip) selectClipRow(clip);
-                      }}
-                    />
+                    ) : null}
                   </div>
 
                   <aside className="clips-lib-stage__controls" aria-label="Clip controls">
+                    {detailLayout === "split" ? (
+                      <ClipBookmarksRail
+                        key={`${mediaRelpath}::${siblingsEpoch}::panel`}
+                        className="clips-lib-siblings clips-lib-siblings--panel"
+                        mediaRelpath={mediaRelpath}
+                        duration={videoDuration}
+                        markIn={markIn}
+                        markOut={markOut}
+                        trimEditable={false}
+                        showActions={false}
+                        origin="discovery"
+                        selectedClipId={selected.clip_id}
+                        onSelectClip={(clip) => {
+                          if (clip) selectClipRow(clip);
+                        }}
+                        onApplyClip={(_mi, _mo, clip) => {
+                          if (clip) selectClipRow(clip);
+                        }}
+                      />
+                    ) : null}
+
                     <div className="clips-lib-editor">
                       <label className="clips-lib-editor__field">
                         <span>Label</span>
@@ -1146,7 +1211,7 @@ export function ClipsLibraryApp() {
                         <textarea
                           value={draft.notes}
                           disabled={editBusy}
-                          rows={3}
+                          rows={detailLayout === "split" ? 2 : 3}
                           onChange={(e) => setDraft((d) => (d ? { ...d, notes: e.target.value } : d))}
                           aria-label="Clip notes"
                         />

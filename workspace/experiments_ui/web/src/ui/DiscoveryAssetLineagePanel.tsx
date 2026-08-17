@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchDiscoveryAssetLineage } from "./api";
+import { workbenchHrefForMedia } from "./discoveryDeepLink";
 import type {
   DiscoveryAssetLineageAncestryNavEntry,
   DiscoveryAssetLineageEdgeRow,
@@ -106,40 +107,59 @@ function LineageNodeCard({
     external ? str(item?.relpath) || str((item as { workspace_relpath?: string }).workspace_relpath) : null;
   const thumb = lineageThumbUrl(item, resolveLibraryItem, thumbRel);
   const kind = str(item?.media_kind);
+  const workbenchUrl = workbenchHrefForMedia({
+    relpath: str(item?.relpath) || str(item?.workspace_relpath) || null,
+    name: str(item?.name) || null,
+    groupId,
+  });
 
   return (
-    <button
-      type="button"
-      className={
-        "dal-node-card" +
-        (current ? " dal-node-card--current" : "") +
-        (layout === "chain" ? " dal-node-card--chain" : "") +
-        (external ? " dal-node-card--external" : "") +
-        (compact ? " dal-node-card--compact" : "")
-      }
-      onClick={() =>
-        onOpen({
-          ...summary,
-          relpath: str(item?.relpath) || str(item?.workspace_relpath) || summary.relpath,
-          external: external || undefined,
-        })
-      }
-      title={str(item?.relpath) || groupId}
-    >
-      <span className="dal-node-thumb-wrap" aria-hidden={thumb ? undefined : true}>
-        {thumb ? (
-          <img className="dal-node-thumb" src={thumb} alt="" loading="lazy" decoding="async" />
-        ) : (
-          <span className="dal-node-thumb dal-node-thumb--placeholder">{kind === "video" ? "▶" : external ? "in" : "◇"}</span>
-        )}
-      </span>
-      <span className="dal-node-text">
-        {current ? <span className="dal-node-badge">current</span> : null}
-        {external ? <span className="dal-node-badge">input</span> : null}
-        {ratingBadge(item)}
-        <span className="dal-node-label">{label}</span>
-      </span>
-    </button>
+    <span className={"dal-node-wrap" + (layout === "chain" ? " dal-node-wrap--chain" : "")}>
+      <button
+        type="button"
+        className={
+          "dal-node-card" +
+          (current ? " dal-node-card--current" : "") +
+          (layout === "chain" ? " dal-node-card--chain" : "") +
+          (external ? " dal-node-card--external" : "") +
+          (compact ? " dal-node-card--compact" : "")
+        }
+        onClick={() =>
+          onOpen({
+            ...summary,
+            relpath: str(item?.relpath) || str(item?.workspace_relpath) || summary.relpath,
+            external: external || undefined,
+          })
+        }
+        title={str(item?.relpath) || groupId}
+      >
+        <span className="dal-node-thumb-wrap" aria-hidden={thumb ? undefined : true}>
+          {thumb ? (
+            <img className="dal-node-thumb" src={thumb} alt="" loading="lazy" decoding="async" />
+          ) : (
+            <span className="dal-node-thumb dal-node-thumb--placeholder">
+              {kind === "video" ? "▶" : external ? "in" : "◇"}
+            </span>
+          )}
+        </span>
+        <span className="dal-node-text">
+          {current ? <span className="dal-node-badge">current</span> : null}
+          {external ? <span className="dal-node-badge">input</span> : null}
+          {ratingBadge(item)}
+          <span className="dal-node-label">{label}</span>
+        </span>
+      </button>
+      {!compact ? (
+        <a
+          className="dal-node-workbench"
+          href={workbenchUrl}
+          title="Find related factory jobs in Workbench"
+          onClick={(e) => e.stopPropagation()}
+        >
+          Workbench
+        </a>
+      ) : null}
+    </span>
   );
 }
 
@@ -278,7 +298,9 @@ export function DiscoveryAssetLineagePanel({
 }) {
   const [data, setData] = useState<DiscoveryAssetLineageResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  const [backfilling, setBackfilling] = useState(false);
   const [error, setError] = useState("");
+  const [backfillMsg, setBackfillMsg] = useState<string | null>(null);
   const [advOpen, setAdvOpen] = useState(false);
 
   const load = useCallback(async () => {
@@ -298,9 +320,50 @@ export function DiscoveryAssetLineagePanel({
     }
   }, [seedItem]);
 
+  const spotBackfill = useCallback(async () => {
+    if (!seedItem || backfilling) return;
+    setBackfilling(true);
+    setBackfillMsg(null);
+    setError("");
+    try {
+      // Live infer + persist for this seed (and a couple ancestor hops) so input stills
+      // and parent videos land in discovery_lineage_edges.json without a full corpus crawl.
+      const body = await fetchDiscoveryAssetLineage(seedItem.relpath, {
+        graphOnly: false,
+        inferParents: true,
+        inferChildren: true,
+        persist: true,
+        maxDepth: 3,
+      });
+      const added = Number(body.persisted_new_edges || 0);
+      const childHits = Array.isArray((body as { child_scan_edges?: unknown[] }).child_scan_edges)
+        ? (body as { child_scan_edges: unknown[] }).child_scan_edges.length
+        : 0;
+      setBackfillMsg(
+        added > 0
+          ? `Persisted ${added} new lineage edge${added === 1 ? "" : "s"}`
+            + (childHits ? ` (incl. ${childHits} forward-fill child hit${childHits === 1 ? "" : "s"}).` : ".")
+          : childHits > 0
+            ? `Found ${childHits} child hit${childHits === 1 ? "" : "s"} already in graph.`
+            : "No new edges (already in graph or no resolvable parents/children).",
+      );
+      // Refresh fast graph view so prepended input: parents show up.
+      const refreshed = await fetchDiscoveryAssetLineage(seedItem.relpath, {
+        graphOnly: true,
+        inferParents: false,
+      });
+      setData(refreshed);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBackfilling(false);
+    }
+  }, [seedItem, backfilling]);
+
   useEffect(() => {
     setData(null);
     setError("");
+    setBackfillMsg(null);
     void load();
   }, [load]);
 
@@ -355,7 +418,33 @@ export function DiscoveryAssetLineagePanel({
 
   return (
     <div className="dal-wrap" aria-label="Asset lineage">
+      <div className="dal-toolbar">
+        <button
+          type="button"
+          className="dal-btn"
+          disabled={loading || backfilling || !seedItem}
+          title="Probe this asset’s embedded prompt (parents) and forward-fill children via PNG grep + wired loaders; persist new edges, then refresh"
+          onClick={() => void spotBackfill()}
+        >
+          {backfilling ? "Backfilling…" : "Backfill lineage"}
+        </button>
+        <button
+          type="button"
+          className="dal-btn dal-btn--ghost"
+          disabled={loading || backfilling || !seedItem}
+          title="Reload saved graph only (fast)"
+          onClick={() => void load()}
+        >
+          Refresh
+        </button>
+        {backfillMsg ? <span className="dal-muted">{backfillMsg}</span> : null}
+      </div>
       {loading && !data ? <p className="discovery-mock-hint">Loading lineage…</p> : null}
+      {backfilling ? (
+        <p className="discovery-mock-hint">
+          Spot-backfilling this item (parents + forward-fill children). May take a while on large corpora…
+        </p>
+      ) : null}
       {error ? <div className="dal-err">{error}</div> : null}
       {!loading && data && !data.ok ? (
         <div className="dal-err">
@@ -381,8 +470,9 @@ export function DiscoveryAssetLineagePanel({
             </h4>
             {provenance.length <= 1 ? (
               <p className="discovery-mock-hint">
-                No upstream chain in the saved graph for this asset. Parent links appear when embedded prompt paths resolve to
-                other indexed rows (backfill or persist while exploring).
+                No upstream chain in the saved graph for this asset. Use{" "}
+                <strong>Backfill lineage</strong> to probe parents from embedded prompts and forward-fill
+                children (PNG grep + wired loaders), then persist edges — or run the corpus backfill script.
               </p>
             ) : (
               <div className="dal-provenance-chain" role="list">

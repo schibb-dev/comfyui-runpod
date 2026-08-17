@@ -1,9 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   composeSubmitAdvance,
-  fetchIdentityStillCandidates,
-  fetchShapeFactoryWorkProducts,
-  listShapeFactoryClips,
   listShapeFactoryClipsLibrary,
   mintIdentityStill,
   type IdentityStillCandidate,
@@ -20,6 +17,14 @@ import {
   workbenchHref,
 } from "./discoveryDeepLink";
 import { PageHeader } from "./PageHeader";
+import {
+  invalidateIdentityStill,
+  loadFamiliesBootstrap,
+  loadIdentityStillCandidates,
+  peekFamiliesBootstrap,
+  peekIdentityStill,
+  type FamiliesBootstrap,
+} from "./shapeFactorySessionCache";
 import { isExtendFamilyOption, pickDefaultExtendFamily } from "./submitFamily";
 import type { ShapeFactoryMapQueueOverrides, WorkProductFamilyOption } from "./types";
 import { VideoTrimControls, type VideoTrimPlaybackMode } from "./VideoTrimControls";
@@ -219,6 +224,7 @@ function SubmitConstructionPreview({
 export function SubmitComposerApp() {
   const intent = useMemo(() => parseSubmitDeepLink(), []);
   const initialRoutes = useMemo(() => stepToRouteFlags(intent.step), [intent.step]);
+  const cachedFamiliesBoot = useMemo(() => peekFamiliesBootstrap(), []);
   const [layout, setLayout] = useState<RowLayout>(() => loadLayout());
   const [mediaRelpath, setMediaRelpath] = useState(intent.mediaRelpath || "");
   const [clipId, setClipId] = useState(intent.clipId || "");
@@ -238,13 +244,92 @@ export function SubmitComposerApp() {
         Math.max(markOut ?? 0, markIn ?? 0, 0);
   const fps = 18;
 
-  const [families, setFamilies] = useState<WorkProductFamilyOption[]>([]);
+  const [families, setFamilies] = useState<WorkProductFamilyOption[]>(
+    () => cachedFamiliesBoot?.families || [],
+  );
+  const [extendFamilyRows, setExtendFamilyRows] = useState<WorkProductFamilyOption[]>(
+    () => cachedFamiliesBoot?.extend_families || cachedFamiliesBoot?.families || [],
+  );
+  const [varyFamilyRows, setVaryFamilyRows] = useState<WorkProductFamilyOption[]>(
+    () => cachedFamiliesBoot?.vary_families || cachedFamiliesBoot?.families || [],
+  );
+  const [deriveFamilyRows, setDeriveFamilyRows] = useState<WorkProductFamilyOption[]>(
+    () => cachedFamiliesBoot?.derive_families || cachedFamiliesBoot?.families || [],
+  );
   const [extendOn, setExtendOn] = useState(initialRoutes.extend);
   const [varyOn, setVaryOn] = useState(initialRoutes.vary);
   const [deriveOn, setDeriveOn] = useState(initialRoutes.derive);
-  const [extendFamily, setExtendFamily] = useState(intent.family || "");
-  const [varyFamily, setVaryFamily] = useState(intent.family || "");
-  const [deriveFamily, setDeriveFamily] = useState(intent.family || "");
+  const [extendFamily, setExtendFamily] = useState(() => {
+    if (intent.family) return intent.family;
+    if (!cachedFamiliesBoot) return "";
+    const pool = cachedFamiliesBoot.extend_families?.length
+      ? cachedFamiliesBoot.extend_families
+      : cachedFamiliesBoot.families;
+    return pickDefaultExtendFamily(
+      pool,
+      cachedFamiliesBoot.extend_family_defaults,
+      intent.family,
+      intent.mediaRelpath,
+    );
+  });
+  const [varyFamily, setVaryFamily] = useState(() => {
+    if (intent.family) return intent.family;
+    if (!cachedFamiliesBoot) return "";
+    const pool = cachedFamiliesBoot.extend_families?.length
+      ? cachedFamiliesBoot.extend_families
+      : cachedFamiliesBoot.families;
+    return (
+      pickDefaultExtendFamily(
+        pool,
+        cachedFamiliesBoot.extend_family_defaults,
+        intent.family,
+        intent.mediaRelpath,
+      ) || ""
+    );
+  });
+  const [deriveFamily, setDeriveFamily] = useState(() => {
+    if (intent.family) return intent.family;
+    if (!cachedFamiliesBoot) return "";
+    const pool = cachedFamiliesBoot.extend_families?.length
+      ? cachedFamiliesBoot.extend_families
+      : cachedFamiliesBoot.families;
+    return (
+      pickDefaultExtendFamily(
+        pool,
+        cachedFamiliesBoot.extend_family_defaults,
+        intent.family,
+        intent.mediaRelpath,
+      ) || ""
+    );
+  });
+
+  const applyFamiliesBoot = useCallback(
+    (boot: FamiliesBootstrap) => {
+      const rows = boot.families || [];
+      const extendRows = boot.extend_families?.length ? boot.extend_families : rows;
+      const varyRows = boot.vary_families?.length ? boot.vary_families : rows;
+      const deriveRows = boot.derive_families?.length ? boot.derive_families : rows;
+      const defaults = boot.extend_family_defaults || {};
+      setFamilies(rows);
+      setExtendFamilyRows(extendRows);
+      setVaryFamilyRows(varyRows);
+      setDeriveFamilyRows(deriveRows);
+      const extendDefault = pickDefaultExtendFamily(
+        extendRows,
+        defaults,
+        intent.family,
+        mediaRelpath || intent.mediaRelpath,
+      );
+      const seedFamily = String(intent.family || "").trim() || extendDefault;
+      setExtendFamily((prev) => {
+        const prevOk = Boolean(prev) && extendRows.some((f) => f.slug === prev && isExtendFamilyOption(f));
+        return prevOk ? prev : extendDefault;
+      });
+      setVaryFamily((prev) => prev || seedFamily);
+      setDeriveFamily((prev) => prev || seedFamily);
+    },
+    [intent.family, intent.mediaRelpath, mediaRelpath],
+  );
 
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -253,10 +338,23 @@ export function SubmitComposerApp() {
     () => (intent.when === "now" || intent.when === "later" ? intent.when : "later"),
   );
 
-  const [identityNeeded, setIdentityNeeded] = useState(false);
+  const cachedIdentity =
+    intent.mediaRelpath && (initialRoutes.extend || intent.family)
+      ? peekIdentityStill({
+          relpath: intent.mediaRelpath,
+          family_slug: intent.family || undefined,
+          job_key: intent.fromJob || undefined,
+        })
+      : null;
+
+  const [identityNeeded, setIdentityNeeded] = useState(() => Boolean(cachedIdentity?.needed));
   const [identityLoading, setIdentityLoading] = useState(false);
-  const [identityCandidates, setIdentityCandidates] = useState<IdentityStillCandidate[]>([]);
-  const [identityMintTargets, setIdentityMintTargets] = useState<IdentityStillMintTarget[]>([]);
+  const [identityCandidates, setIdentityCandidates] = useState<IdentityStillCandidate[]>(
+    () => (Array.isArray(cachedIdentity?.candidates) ? cachedIdentity!.candidates! : []),
+  );
+  const [identityMintTargets, setIdentityMintTargets] = useState<IdentityStillMintTarget[]>(
+    () => (Array.isArray(cachedIdentity?.mint_targets) ? cachedIdentity!.mint_targets! : []),
+  );
   const [identitySelectedPath, setIdentitySelectedPath] = useState(intent.identity || "");
   const [identitySelectedId, setIdentitySelectedId] = useState("");
   const [identityMintBusy, setIdentityMintBusy] = useState(false);
@@ -278,28 +376,15 @@ export function SubmitComposerApp() {
     setCurrentTime(0);
   }, [mediaKey]);
 
-  // Load families
+  // Load families (session cache first; soft-refresh in background)
   useEffect(() => {
     let cancelled = false;
-    void fetchShapeFactoryWorkProducts({ limit: 1 })
-      .then((res) => {
+    const cached = peekFamiliesBootstrap();
+    if (cached) applyFamiliesBoot(cached);
+    void loadFamiliesBootstrap()
+      .then((boot) => {
         if (cancelled) return;
-        const rows = res.families || [];
-        const defaults = res.extend_family_defaults || {};
-        setFamilies(rows);
-        const extendDefault = pickDefaultExtendFamily(
-          rows,
-          defaults,
-          intent.family,
-          mediaRelpath || intent.mediaRelpath,
-        );
-        const seedFamily = String(intent.family || "").trim() || extendDefault;
-        setExtendFamily((prev) => {
-          const prevOk = Boolean(prev) && rows.some((f) => f.slug === prev && isExtendFamilyOption(f));
-          return prevOk ? prev : extendDefault;
-        });
-        setVaryFamily((prev) => prev || seedFamily);
-        setDeriveFamily((prev) => prev || seedFamily);
+        applyFamiliesBoot(boot);
       })
       .catch(() => {
         /* surface on submit */
@@ -307,42 +392,24 @@ export function SubmitComposerApp() {
     return () => {
       cancelled = true;
     };
-  }, [intent.family, intent.mediaRelpath, mediaRelpath]);
+  }, [applyFamiliesBoot]);
 
-  // Resolve clip_id → marks / media
+  // Resolve clip_id → marks / media (skip when deep-link already has a window and no clip to resolve)
   useEffect(() => {
     const id = clipId.trim();
-    const media = mediaRelpath.trim();
-    if (!id && !media) return;
+    if (!id) return;
     let cancelled = false;
     void (async () => {
       try {
-        if (id) {
-          const lib = await listShapeFactoryClipsLibrary({ q: id, limit: 40 });
-          const hit =
-            (lib.clips || []).find((c) => c.clip_id === id) ||
-            (lib.clips || []).find((c) => (c.clip_id || "").startsWith(id));
-          if (cancelled || !hit) return;
-          setActiveClip(hit);
-          if (hit.media_relpath) setMediaRelpath(hit.media_relpath);
-          setMarkIn(hit.mark_in_s);
-          setMarkOut(hit.mark_out_s);
-          return;
-        }
-        if (media) {
-          const list = await listShapeFactoryClips({ mediaRelpath: media });
-          const clips = list.clips || [];
-          if (cancelled) return;
-          if (intent.clipId) {
-            const hit = clips.find((c) => c.clip_id === intent.clipId);
-            if (hit) {
-              setActiveClip(hit);
-              setMarkIn(hit.mark_in_s);
-              setMarkOut(hit.mark_out_s);
-              setClipId(hit.clip_id);
-            }
-          }
-        }
+        const lib = await listShapeFactoryClipsLibrary({ q: id, limit: 40 });
+        const hit =
+          (lib.clips || []).find((c) => c.clip_id === id) ||
+          (lib.clips || []).find((c) => (c.clip_id || "").startsWith(id));
+        if (cancelled || !hit) return;
+        setActiveClip(hit);
+        if (hit.media_relpath) setMediaRelpath(hit.media_relpath);
+        setMarkIn(hit.mark_in_s);
+        setMarkOut(hit.mark_out_s);
       } catch {
         /* keep deep-link marks */
       }
@@ -350,7 +417,7 @@ export function SubmitComposerApp() {
     return () => {
       cancelled = true;
     };
-  }, [clipId, mediaRelpath, intent.clipId]);
+  }, [clipId]);
 
   // Identity candidates — only when Extend is checked
   useEffect(() => {
@@ -362,12 +429,33 @@ export function SubmitComposerApp() {
       return;
     }
     let cancelled = false;
-    setIdentityLoading(true);
-    void fetchIdentityStillCandidates({
+    const opts = {
       relpath: rel,
       family_slug: extendFamily,
       job_key: intent.fromJob || undefined,
-    })
+    };
+    const cached = peekIdentityStill(opts);
+    if (cached) {
+      const needed = Boolean(cached.needed);
+      setIdentityNeeded(needed);
+      const cands = Array.isArray(cached.candidates) ? cached.candidates : [];
+      setIdentityCandidates(cands);
+      setIdentityMintTargets(Array.isArray(cached.mint_targets) ? cached.mint_targets : []);
+      if (needed) {
+        if (intent.identity && cands.some((c) => c.path === intent.identity)) {
+          setIdentitySelectedPath(intent.identity);
+          setIdentitySelectedId(cands.find((c) => c.path === intent.identity)?.id || "");
+        } else {
+          const rec = cands.find((c) => c.id === cached.recommended_id) || cands[0];
+          setIdentitySelectedPath(rec?.path || intent.identity || "");
+          setIdentitySelectedId(rec?.id || "");
+        }
+      }
+      setIdentityLoading(false);
+    } else {
+      setIdentityLoading(true);
+    }
+    void loadIdentityStillCandidates(opts)
       .then((res) => {
         if (cancelled) return;
         const needed = Boolean(res.needed);
@@ -391,9 +479,11 @@ export function SubmitComposerApp() {
       })
       .catch(() => {
         if (cancelled) return;
-        setIdentityNeeded(false);
-        setIdentityCandidates([]);
-        setIdentityMintTargets([]);
+        if (!cached) {
+          setIdentityNeeded(false);
+          setIdentityCandidates([]);
+          setIdentityMintTargets([]);
+        }
       })
       .finally(() => {
         if (!cancelled) setIdentityLoading(false);
@@ -423,22 +513,30 @@ export function SubmitComposerApp() {
     !(extendOn && identityNeeded && !identitySelectedPath);
 
   const familyOpts = useMemo(() => {
-    const rows = [...families];
+    const rows = [...varyFamilyRows];
     for (const slug of [extendFamily, varyFamily, deriveFamily]) {
       if (slug && !rows.some((f) => f.slug === slug)) rows.unshift({ slug });
     }
-    return rows;
-  }, [families, extendFamily, varyFamily, deriveFamily]);
+    return rows.length ? rows : families;
+  }, [varyFamilyRows, families, extendFamily, varyFamily, deriveFamily]);
 
-  /** Extend targets must accept a video Use — hide I2V / still-only shapes. */
+  /** Prefer server-partitioned extend set; fall back to client filter. */
   const extendFamilyOpts = useMemo(() => {
-    const rows = families.filter(isExtendFamilyOption);
+    const rows = [...(extendFamilyRows.length ? extendFamilyRows : families.filter(isExtendFamilyOption))];
     if (extendFamily && !rows.some((f) => f.slug === extendFamily)) {
-      const hit = families.find((f) => f.slug === extendFamily);
+      const hit = families.find((f) => f.slug === extendFamily) || extendFamilyRows.find((f) => f.slug === extendFamily);
       rows.unshift(hit || { slug: extendFamily });
     }
     return rows.length ? rows : familyOpts;
-  }, [families, extendFamily, familyOpts]);
+  }, [extendFamilyRows, families, extendFamily, familyOpts]);
+
+  const deriveFamilyOpts = useMemo(() => {
+    const rows = [...(deriveFamilyRows.length ? deriveFamilyRows : familyOpts)];
+    if (deriveFamily && !rows.some((f) => f.slug === deriveFamily)) {
+      rows.unshift({ slug: deriveFamily });
+    }
+    return rows;
+  }, [deriveFamilyRows, familyOpts, deriveFamily]);
 
   const buildOverrides = useCallback((): {
     overrides?: ShapeFactoryMapQueueOverrides;
@@ -523,6 +621,11 @@ export function SubmitComposerApp() {
       });
       const cand = res.candidate;
       if (cand?.path) {
+        invalidateIdentityStill({
+          relpath: mediaRelpath.trim(),
+          family_slug: extendFamily || undefined,
+          job_key: intent.fromJob || undefined,
+        });
         setIdentityCandidates((prev) => {
           if (prev.some((c) => c.id === cand.id || c.path === cand.path)) return prev;
           return [cand, ...prev];
@@ -970,6 +1073,7 @@ export function SubmitComposerApp() {
                           setVaryFamily,
                           "Vary",
                           "Family whose shape runs this Vary",
+                          varyFamilyRows.length ? varyFamilyRows : familyOpts,
                         )
                       : null}
                     {deriveOn
@@ -978,6 +1082,7 @@ export function SubmitComposerApp() {
                           setDeriveFamily,
                           "Derive",
                           "Family whose shape runs this Derive",
+                          deriveFamilyOpts,
                         )
                       : null}
                   </div>

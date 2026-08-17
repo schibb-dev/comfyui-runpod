@@ -22,6 +22,7 @@ import {
 import { useTrimPlaybackEnforcement, type TrimPlaybackMode } from "./useTrimPlayback";
 import { discoveryLibraryHref, parseWorkbenchDeepLink, submitHref } from "./discoveryDeepLink";
 import { getSessionListCache, setSessionListCache } from "./sessionListCache";
+import { rememberFamiliesFromWorkProducts } from "./shapeFactorySessionCache";
 import type {
   ShapeFactoryMapQueueOverrides,
   WorkItem,
@@ -474,7 +475,23 @@ function sortWorkProducts(items: WorkProductItem[], sort: WorkProductSort): Work
 }
 
 function workProductNameHaystack(item: WorkProductItem): string {
-  return [item.family_slug, item.job_key, item.status, item.prompt_id].filter(Boolean).join(" ").toLowerCase();
+  const parts: string[] = [
+    item.family_slug,
+    item.job_key,
+    item.status,
+    item.prompt_id,
+    item.output_relpath,
+    item.parent_output_relpath,
+    item.parent_output,
+  ];
+  const bindings = item.bindings;
+  if (bindings && typeof bindings === "object") {
+    for (const b of Object.values(bindings)) {
+      if (!b || typeof b !== "object") continue;
+      parts.push(b.relpath || "", b.basename || "", b.path || "");
+    }
+  }
+  return parts.filter(Boolean).join(" ").toLowerCase();
 }
 
 function filterWorkProductsByName(items: WorkProductItem[], query: string): WorkProductItem[] {
@@ -592,7 +609,14 @@ function badgeClass(kind?: string | null): string {
 }
 
 function sourcePreviewUrls(item: WorkProductItem): { thumb: string | null; video: string | null; label: string } {
-  const source = item.bindings?.source_video || item.bindings?.source_image || item.bindings?.start_image;
+  // Still-source families (e.g. BounceDanceA) bind `source_still`, not `source_image`.
+  const source =
+    item.bindings?.source_video ||
+    item.bindings?.source_image ||
+    item.bindings?.source_still ||
+    item.bindings?.identity_still ||
+    item.bindings?.identity_anchor ||
+    item.bindings?.start_image;
   const thumb =
     source?.thumb_url ||
     item.parent_output_thumb_url ||
@@ -3294,6 +3318,7 @@ export function WorkProductsApp() {
           extend_family_defaults: res.extend_family_defaults || {},
         };
         setSessionListCache(cacheKey, payload);
+        rememberFamiliesFromWorkProducts(payload);
         applyWorkProductsCachePayload(payload, {
           setItems,
           setFamilies,
@@ -3364,6 +3389,7 @@ export function WorkProductsApp() {
         setFamilies,
         setExtendFamilyDefaults,
       });
+      rememberFamiliesFromWorkProducts(cached.value);
       setLoading(false);
       setRefreshing(true);
     } else {
@@ -3381,6 +3407,7 @@ export function WorkProductsApp() {
           extend_family_defaults: res.extend_family_defaults || {},
         };
         setSessionListCache(cacheKey, payload);
+        rememberFamiliesFromWorkProducts(payload);
         applyWorkProductsCachePayload(payload, {
           setItems,
           setFamilies,

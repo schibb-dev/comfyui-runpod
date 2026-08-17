@@ -30,6 +30,7 @@ import mimetypes
 import os
 import posixpath
 import re
+import shutil
 import sqlite3
 import struct
 import subprocess
@@ -84,6 +85,14 @@ def _comfy_submit_prompt(
     Returns Comfy's JSON body. Raises on network / HTTP / JSON errors (urllib / json).
     """
     comfy = str(comfy_server).rstrip("/")
+    # Normalize Windows-style model paths (WAN\file.gguf → WAN/file.gguf) before validate.
+    try:
+        from comfyui_submit import _normalize_prompt_paths_for_linux  # type: ignore
+
+        prompt = json.loads(json.dumps(prompt))
+        _normalize_prompt_paths_for_linux(prompt)
+    except Exception:
+        prompt = json.loads(json.dumps(prompt)) if not isinstance(prompt, dict) else prompt
     payload: Dict[str, Any] = {"prompt": prompt, "client_id": client_id}
     if front:
         payload["front"] = True
@@ -763,7 +772,9 @@ def _discovery_source_string_references_input(raw: str, match_keys: set) -> bool
 
 def _discovery_grep_output_pngs_for_basename(cfg: "ServerConfig", basename: str) -> List[str]:
     """
-    Fast search: PNGs under og/wip whose embedded text cites ``basename`` (typical Comfy input hash name).
+    Fast search: PNGs under og/wip whose embedded text cites ``basename``.
+
+    Prefers ``rg`` when available. Uses flat/nested og|wip roots (see ``_prefer_flat_library_dir``).
     Returns output-root relpaths.
     """
     bn = str(basename or "").strip()
@@ -771,17 +782,27 @@ def _discovery_grep_output_pngs_for_basename(cfg: "ServerConfig", basename: str)
         return []
     rels: List[str] = []
     seen: set = set()
-    for sub in ("output/og", "output/wip"):
-        root = _safe_join(cfg.output_root, sub)
+    rg_bin = shutil.which("rg")
+    for root in _og_wip_library_roots(cfg):
         if root is None or not root.is_dir():
             continue
         try:
-            proc = subprocess.run(
-                ["grep", "-r", "-l", "-F", "--include=*.png", bn, str(root)],
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
+            if rg_bin:
+                proc = subprocess.run(
+                    [rg_bin, "-l", "-F", "--glob", "*.png", "--no-messages", bn, str(root)],
+                    capture_output=True,
+                    text=True,
+                    timeout=45,
+                )
+            else:
+                proc = subprocess.run(
+                    ["grep", "-r", "-l", "-F", "--include=*.png", bn, str(root)],
+                    capture_output=True,
+                    text=True,
+                    timeout=45,
+                )
+        except subprocess.TimeoutExpired:
+            continue
         except Exception:
             continue
         if proc.returncode not in (0, 1):
@@ -798,6 +819,39 @@ def _discovery_grep_output_pngs_for_basename(cfg: "ServerConfig", basename: str)
                 seen.add(rel)
                 rels.append(rel)
     return rels
+
+
+def _discovery_index_items_matching_stem(
+    idx: Dict[str, Any],
+    stem: str,
+    *,
+    exclude_group_id: str = "",
+    limit: int = 300,
+) -> List[Dict[str, Any]]:
+    """Discovery rows whose name/relpath embeds ``stem`` (factory ``src-…`` / companion names)."""
+    needle = str(stem or "").strip().lower()
+    if len(needle) < 8:
+        return []
+    items = idx.get("items")
+    if not isinstance(items, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        gid = str(it.get("group_id") or "")
+        if exclude_group_id and gid == exclude_group_id:
+            continue
+        blob = " ".join(
+            str(it.get(k) or "")
+            for k in ("name", "relpath", "video_relpath", "thumb_relpath", "group_id")
+        ).lower()
+        if needle not in blob:
+            continue
+        out.append(it)
+        if limit > 0 and len(out) >= limit:
+            break
+    return out
 
 
 def _discovery_index_item_for_png_relpath(idx: Dict[str, Any], png_rel: str) -> Optional[Dict[str, Any]]:
@@ -829,11 +883,23 @@ def _discovery_scan_index_for_input_children(
     input_norm: str,
 ) -> List[Dict[str, Any]]:
     """
-    Find indexed og/wip rows whose embedded prompt cites this workspace input file.
-    Uses a fast PNG grep under og/wip, then maps hits to Discovery index rows.
+    Find indexed og/wip rows whose *wired* Load* nodes cite this workspace input file.
+
+    Prefers the inverted citation index; falls back to PNG basename grep + verify.
     """
     parent_gid = _discovery_workspace_input_group_id(input_norm)
     bn = Path(_normalize_rel_posix(input_norm)).name
+    parent_keys = _discovery_media_citation_match_keys(input_norm)
+    # Synthetic seed-shaped dict so citation lookup can reuse the same path.
+    seed_like = {
+        "group_id": parent_gid,
+        "relpath": _normalize_rel_posix(input_norm),
+        "name": bn,
+    }
+    indexed = _discovery_citations_lookup_child_edges(cfg, seed_like, limit=200)
+    if indexed:
+        return indexed
+
     out: List[Dict[str, Any]] = []
     seen_children: set = set()
     for png_rel in _discovery_grep_output_pngs_for_basename(cfg, bn):
@@ -841,19 +907,467 @@ def _discovery_scan_index_for_input_children(
         if not isinstance(it, dict):
             continue
         gid = str(it.get("group_id") or "")
-        if not gid or gid in seen_children:
+        if not gid or gid in seen_children or gid == parent_gid:
+            continue
+        via = _discovery_child_item_cites_parent_via_wired_loader(cfg, it, parent_keys)
+        if not via:
             continue
         seen_children.add(gid)
+        try:
+            _discovery_citations_index_child_item(cfg, it, force=False)
+        except Exception:
+            pass
         out.append(
             {
                 "child_group_id": gid,
                 "parent_group_id": parent_gid,
-                "via_source_raw": bn,
+                "via_source_raw": via,
                 "resolved_parent_relpath": _normalize_rel_posix(input_norm),
-                "evidence": "png_prompt_grep",
+                "evidence": "png_prompt_grep_wired",
             }
         )
     return out
+
+
+def _discovery_media_citation_match_keys(rel_or_name: str) -> set:
+    """Path / basename / stem keys used to decide whether a loader string cites this media."""
+    n = _normalize_rel_posix(str(rel_or_name or "").strip().lstrip("/").replace("\\", "/"))
+    if not n:
+        return set()
+    bn = Path(n).name
+    stem = Path(bn).stem
+    keys = {n.lower(), bn.lower()}
+    if stem:
+        keys.add(stem.lower())
+    p = n
+    while p.lower().startswith("output/"):
+        p = p[7:]
+        if p:
+            keys.add(p.lower())
+    return {k for k in keys if k}
+
+
+def _discovery_source_string_references_media(raw: str, match_keys: set) -> bool:
+    if not match_keys:
+        return False
+    s0 = str(raw or "").strip().replace("\\", "/")
+    if not s0:
+        return False
+    s = _normalize_rel_posix(s0.lstrip("/")).lower()
+    if s in match_keys:
+        return True
+    bn = Path(s0).name.lower()
+    if bn in match_keys:
+        return True
+    stem = Path(bn).stem.lower()
+    if stem and stem in match_keys:
+        # Avoid matching a SaveVideo prefix stem against an unrelated file unless extless equality is exact.
+        if not _discovery_path_has_media_ext(s0):
+            return False
+        return True
+    for k in match_keys:
+        if "/" in k and (s == k or s.endswith("/" + k)):
+            return True
+    return False
+
+
+def _discovery_companion_png_relpath_for_item(
+    cfg: "ServerConfig", child_item: Dict[str, Any]
+) -> Optional[str]:
+    """Best companion PNG relpath for embedded-prompt extraction (avoid probing MP4)."""
+    probe_rel = _discovery_lineage_facets_probe_relpath(child_item)
+    if not probe_rel:
+        return None
+    if str(probe_rel).lower().endswith(".png"):
+        return _normalize_rel_posix(probe_rel)
+    thumb = child_item.get("thumb_relpath")
+    if isinstance(thumb, str) and thumb.lower().endswith(".png"):
+        return _normalize_rel_posix(thumb)
+    abs_media = _safe_join(cfg.output_root, _normalize_rel_posix(probe_rel))
+    if abs_media is not None:
+        cand = abs_media.with_suffix(".png")
+        if cand.is_file():
+            try:
+                return cand.resolve().relative_to(cfg.output_root.resolve()).as_posix()
+            except Exception:
+                pass
+    return _normalize_rel_posix(probe_rel)
+
+
+def _discovery_wired_loader_paths_for_item(cfg: "ServerConfig", child_item: Dict[str, Any]) -> List[str]:
+    """Output-feeding Load* media paths from the child's companion PNG (PNG-only, no ffprobe)."""
+    png_rel = _discovery_companion_png_relpath_for_item(cfg, child_item)
+    if not png_rel or not str(png_rel).lower().endswith(".png"):
+        return []
+    abs_png = _safe_join(cfg.output_root, png_rel)
+    if abs_png is None or not abs_png.is_file():
+        return []
+    try:
+        chunks = _read_png_text_chunks(abs_png)
+        meta = _import_comfy_meta_lib()
+        pr_obj, _wf = meta.extract_prompt_workflow_from_png_chunks(chunks)
+    except Exception:
+        return []
+    if not isinstance(pr_obj, dict) or not _looks_like_comfy_api_prompt(pr_obj):
+        return []
+    wired = _api_prompt_output_feeding_loader_paths(pr_obj)
+    out: List[str] = []
+    seen: set = set()
+    for s in wired.get("output_feeding_loader_paths") or []:
+        if not isinstance(s, str):
+            continue
+        ss = s.strip()
+        if not ss or ss in seen:
+            continue
+        seen.add(ss)
+        out.append(ss)
+    return out
+
+
+def _discovery_child_item_cites_parent_via_wired_loader(
+    cfg: "ServerConfig",
+    child_item: Dict[str, Any],
+    parent_match_keys: set,
+) -> Optional[str]:
+    """
+    Return the wired loader path string on ``child_item`` that cites the parent, or None.
+
+    PNG-only (no MP4 ffprobe): orphan / preview-only loaders are ignored via the same
+    output-feeding reachability filter as parent inference.
+    """
+    for s in _discovery_wired_loader_paths_for_item(cfg, child_item):
+        if _discovery_source_string_references_media(s, parent_match_keys):
+            return s
+    return None
+
+
+# --- Inverted citation index (forward-fill) ---------------------------------
+
+_DISCOVERY_CITATIONS_LOCK = threading.Lock()
+
+
+def _discovery_citations_db_path(cfg: "ServerConfig") -> Path:
+    return _output_status_dir(cfg.output_root) / "discovery_lineage_citations.sqlite"
+
+
+def _discovery_citations_ensure_schema(con: sqlite3.Connection) -> None:
+    con.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS citations (
+          parent_key TEXT NOT NULL,
+          child_group_id TEXT NOT NULL,
+          via_source_raw TEXT NOT NULL DEFAULT '',
+          evidence TEXT,
+          child_relpath TEXT,
+          updated_at TEXT,
+          PRIMARY KEY (parent_key, child_group_id, via_source_raw)
+        );
+        CREATE INDEX IF NOT EXISTS idx_citations_parent ON citations(parent_key);
+        CREATE INDEX IF NOT EXISTS idx_citations_child ON citations(child_group_id);
+        CREATE TABLE IF NOT EXISTS citation_scan_state (
+          child_group_id TEXT PRIMARY KEY,
+          probe_relpath TEXT,
+          scanned_at TEXT,
+          loader_count INTEGER,
+          ok INTEGER
+        );
+        """
+    )
+
+
+def _discovery_citations_connect(cfg: "ServerConfig") -> sqlite3.Connection:
+    path = _discovery_citations_db_path(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(path), timeout=60.0)
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA synchronous=NORMAL")
+    _discovery_citations_ensure_schema(con)
+    return con
+
+
+def _discovery_citations_upsert_postings(
+    cfg: "ServerConfig",
+    *,
+    child_group_id: str,
+    child_relpath: Optional[str],
+    via_paths: List[str],
+    evidence: str,
+    scanned: bool = True,
+    ok: bool = True,
+) -> int:
+    """
+    Replace citation postings for one child with wired loader paths.
+    Each via path is expanded to all match keys (basename, stem, stripped output/…).
+    Returns number of posting rows written.
+    """
+    gid = str(child_group_id or "").strip()
+    if not gid:
+        return 0
+    ts = _dt.datetime.now(tz=_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    probe = _normalize_rel_posix(str(child_relpath or "")) or None
+    rows: List[Tuple[str, str, str, str, Optional[str], str]] = []
+    for via in via_paths:
+        if not isinstance(via, str) or not via.strip():
+            continue
+        v = via.strip()
+        for pk in sorted(_discovery_media_citation_match_keys(v)):
+            if len(pk) < 4:
+                continue
+            rows.append((pk, gid, v, evidence, probe, ts))
+    with _DISCOVERY_CITATIONS_LOCK:
+        con = _discovery_citations_connect(cfg)
+        try:
+            con.execute("DELETE FROM citations WHERE child_group_id = ?", (gid,))
+            if rows:
+                con.executemany(
+                    """
+                    INSERT OR REPLACE INTO citations
+                      (parent_key, child_group_id, via_source_raw, evidence, child_relpath, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    rows,
+                )
+            if scanned:
+                con.execute(
+                    """
+                    INSERT OR REPLACE INTO citation_scan_state
+                      (child_group_id, probe_relpath, scanned_at, loader_count, ok)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (gid, probe, ts, len(via_paths), 1 if ok else 0),
+                )
+            con.commit()
+        finally:
+            con.close()
+    return len(rows)
+
+
+def _discovery_citations_index_child_item(
+    cfg: "ServerConfig",
+    child_item: Dict[str, Any],
+    *,
+    force: bool = False,
+) -> Dict[str, Any]:
+    """Extract wired loaders from child PNG and upsert inverted citation postings."""
+    if not isinstance(child_item, dict):
+        return {"ok": False, "error": "bad_item"}
+    gid = str(child_item.get("group_id") or "").strip()
+    if not gid:
+        return {"ok": False, "error": "missing_group_id"}
+    if not force:
+        with _DISCOVERY_CITATIONS_LOCK:
+            con = _discovery_citations_connect(cfg)
+            try:
+                row = con.execute(
+                    "SELECT scanned_at FROM citation_scan_state WHERE child_group_id = ?",
+                    (gid,),
+                ).fetchone()
+            finally:
+                con.close()
+        if row:
+            return {"ok": True, "skipped": True, "child_group_id": gid, "scanned_at": row[0]}
+
+    via_paths = _discovery_wired_loader_paths_for_item(cfg, child_item)
+    rel = (
+        str(child_item.get("relpath") or child_item.get("video_relpath") or "").strip()
+        or None
+    )
+    n = _discovery_citations_upsert_postings(
+        cfg,
+        child_group_id=gid,
+        child_relpath=rel,
+        via_paths=via_paths,
+        evidence="wired_loader_index",
+        scanned=True,
+        ok=True,
+    )
+    return {
+        "ok": True,
+        "child_group_id": gid,
+        "loader_count": len(via_paths),
+        "postings": n,
+        "via_paths": via_paths,
+    }
+
+
+def _discovery_citations_ingest_lineage_edge_rows(cfg: "ServerConfig", rows: List[Dict[str, Any]]) -> int:
+    """Incremental update from persisted parent→child lineage edges (does not clear other vias)."""
+    if not rows:
+        return 0
+    ts = _dt.datetime.now(tz=_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    postings: List[Tuple[str, str, str, str, Optional[str], str]] = []
+    for row in rows:
+        if not isinstance(row, dict) or _discovery_lineage_edge_looks_spurious(row):
+            continue
+        child = str(row.get("child_group_id") or "").strip()
+        via = str(row.get("via_source_raw") or "").strip()
+        parent_rel = str(row.get("resolved_parent_relpath") or "").strip()
+        if not child:
+            continue
+        keys: set = set()
+        if via:
+            keys |= _discovery_media_citation_match_keys(via)
+        if parent_rel:
+            keys |= _discovery_media_citation_match_keys(parent_rel)
+        if not keys:
+            continue
+        evidence = str(row.get("evidence") or "lineage_edge")
+        via_store = via or parent_rel
+        for pk in sorted(keys):
+            if len(pk) < 4:
+                continue
+            postings.append((pk, child, via_store, evidence, parent_rel or None, ts))
+    if not postings:
+        return 0
+    with _DISCOVERY_CITATIONS_LOCK:
+        con = _discovery_citations_connect(cfg)
+        try:
+            con.executemany(
+                """
+                INSERT OR REPLACE INTO citations
+                  (parent_key, child_group_id, via_source_raw, evidence, child_relpath, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                postings,
+            )
+            con.commit()
+        finally:
+            con.close()
+    return len(postings)
+
+
+def _discovery_citations_lookup_child_edges(
+    cfg: "ServerConfig",
+    seed_item: Dict[str, Any],
+    *,
+    limit: int = 200,
+) -> List[Dict[str, Any]]:
+    """O(children) forward-fill from the inverted citation index."""
+    if not isinstance(seed_item, dict):
+        return []
+    parent_gid = str(seed_item.get("group_id") or "").strip()
+    if not parent_gid:
+        return []
+    keys: set = set()
+    for k in ("relpath", "video_relpath", "name"):
+        v = seed_item.get(k)
+        if isinstance(v, str) and v.strip():
+            keys |= _discovery_media_citation_match_keys(v)
+    if not keys:
+        return []
+    key_list = sorted(keys)
+    placeholders = ",".join("?" for _ in key_list)
+    with _DISCOVERY_CITATIONS_LOCK:
+        con = _discovery_citations_connect(cfg)
+        try:
+            cur = con.execute(
+                f"""
+                SELECT child_group_id, via_source_raw, evidence, child_relpath
+                FROM citations
+                WHERE parent_key IN ({placeholders})
+                ORDER BY child_group_id, via_source_raw
+                """,
+                key_list,
+            )
+            raw_rows = cur.fetchall()
+        finally:
+            con.close()
+
+    out: List[Dict[str, Any]] = []
+    seen: set = set()
+    parent_rel = _normalize_rel_posix(
+        str(seed_item.get("relpath") or seed_item.get("video_relpath") or "")
+    ) or None
+    for child_gid, via, evidence, _child_rel in raw_rows:
+        cg = str(child_gid or "")
+        if not cg or cg == parent_gid or cg in seen:
+            continue
+        seen.add(cg)
+        out.append(
+            {
+                "child_group_id": cg,
+                "parent_group_id": parent_gid,
+                "via_source_raw": via,
+                "resolved_parent_relpath": parent_rel,
+                "evidence": evidence or "wired_loader_index",
+            }
+        )
+        if limit > 0 and len(out) >= limit:
+            break
+    return out
+
+
+def _discovery_seed_media_basenames_for_child_grep(seed_item: Dict[str, Any]) -> List[str]:
+    """Basenames worth grepping for when forward-filling children of an indexed row."""
+    names: List[str] = []
+    seen: set = set()
+    for k in ("relpath", "video_relpath", "name", "thumb_relpath"):
+        v = seed_item.get(k)
+        if not isinstance(v, str) or not v.strip():
+            continue
+        bn = Path(v.strip().replace("\\", "/")).name
+        if len(bn) < 8 or bn.lower() in seen:
+            continue
+        # Prefer media files; skip pure .json sidecars.
+        low = bn.lower()
+        if low.endswith((".mp4", ".webm", ".mov", ".mkv", ".png", ".jpg", ".jpeg", ".webp")):
+            seen.add(low)
+            names.append(bn)
+    mems = seed_item.get("members")
+    if isinstance(mems, list):
+        for mm in mems:
+            if not isinstance(mm, dict):
+                continue
+            for k in ("relpath", "name"):
+                v = mm.get(k)
+                if not isinstance(v, str) or not v.strip():
+                    continue
+                bn = Path(v.strip().replace("\\", "/")).name
+                low = bn.lower()
+                if len(bn) < 8 or low in seen:
+                    continue
+                if low.endswith((".mp4", ".webm", ".mov", ".mkv", ".png", ".jpg", ".jpeg", ".webp")):
+                    seen.add(low)
+                    names.append(bn)
+    return names
+
+
+def _discovery_scan_index_for_media_children(
+    cfg: "ServerConfig",
+    idx: Dict[str, Any],
+    seed_item: Dict[str, Any],
+    *,
+    limit: int = 200,
+    warm_index: bool = True,
+) -> List[Dict[str, Any]]:
+    """
+    Forward-fill children of an indexed media row.
+
+    Prefers the inverted citation SQLite index. On a cold miss, optionally warms the index
+    from Discovery rows whose names embed the seed stem (factory ``src-…`` keys), then
+    re-queries — no full-tree PNG grep.
+    """
+    if not isinstance(seed_item, dict):
+        return []
+    parent_gid = str(seed_item.get("group_id") or "")
+    if not parent_gid:
+        return []
+
+    edges = _discovery_citations_lookup_child_edges(cfg, seed_item, limit=limit)
+    if edges or not warm_index:
+        return edges
+
+    # Cold miss: index stem-named candidates (writes *all* of each child's citations).
+    for bn in _discovery_seed_media_basenames_for_child_grep(seed_item):
+        stem = Path(bn).stem
+        for it in _discovery_index_items_matching_stem(
+            idx, stem, exclude_group_id=parent_gid, limit=max(50, limit * 2)
+        ):
+            try:
+                _discovery_citations_index_child_item(cfg, it, force=False)
+            except Exception:
+                continue
+    return _discovery_citations_lookup_child_edges(cfg, seed_item, limit=limit)
 
 
 def _discovery_synthetic_library_item_for_workspace_media(
@@ -2122,6 +2636,22 @@ def _shape_factory_prompt_profile_payload(cfg: ServerConfig, q: Dict[str, List[s
     )
 
 
+def _shape_factory_families_payload(cfg: ServerConfig) -> Dict[str, Any]:
+    """GET /api/shape-factory/families — config-only extend/vary/derive picker sets."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+    from shape_factory_work_products import list_submit_family_sets  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    return list_submit_family_sets(
+        data_root,
+        workspace_root=cfg.workspace_root,
+        output_root=cfg.output_root,
+    )
+
+
 def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
     """GET /api/shape-factory/work-products — recent jobs with construction debug details."""
     d = _workspace_scripts_dir()
@@ -2493,6 +3023,130 @@ def _collect_path_like_strings(val: Any, out: set, *, depth: int = 0) -> None:
             _collect_path_like_strings(vv, out, depth=depth + 1)
 
 
+_DISCOVERY_MEDIA_LOADER_TYPES = frozenset(
+    {
+        "LoadImage",
+        "LoadImageWithFilename|pysssss",
+        "LoadVideo",
+        "VHS_LoadVideo",
+        "VHS_LoadVideoPath",
+        "VHS_LoadVideoFFmpeg",
+        "VHS_LoadVideoFFmpegPath",
+    }
+)
+_DISCOVERY_OUTPUT_SINK_TYPES = frozenset(
+    {
+        "VHS_VideoCombine",
+        "SaveVideo",
+        "SaveImage",
+        "SaveAnimatedWEBP",
+        "SaveAnimatedPNG",
+    }
+)
+
+
+def _discovery_loader_media_string(inputs: Dict[str, Any]) -> Optional[str]:
+    """Scalar media path/filename from a LoadImage / LoadVideo-style inputs dict."""
+    for key in ("image", "video", "path", "file", "url"):
+        val = inputs.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip().replace("\\", "/")
+        if isinstance(val, list) and val:
+            last = val[-1]
+            if isinstance(last, str) and last.strip():
+                return last.strip().replace("\\", "/")
+    return None
+
+
+def _discovery_node_is_saved_output_sink(node: Dict[str, Any]) -> bool:
+    ct = str(node.get("class_type") or "")
+    if ct not in _DISCOVERY_OUTPUT_SINK_TYPES:
+        return False
+    inputs = node.get("inputs") if isinstance(node.get("inputs"), dict) else {}
+    # Preview combines usually set save_output=False; require an explicit save when present.
+    if "save_output" in inputs:
+        return bool(inputs.get("save_output"))
+    return True
+
+
+def _discovery_node_is_any_output_sink(node: Dict[str, Any]) -> bool:
+    return str(node.get("class_type") or "") in _DISCOVERY_OUTPUT_SINK_TYPES
+
+
+def _api_prompt_output_feeding_loader_paths(prompt: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Media paths from LoadImage / LoadVideo* nodes that can reach a *saved* output sink.
+
+    Orphan loaders (no outbound links) and loaders that only feed Preview / dead subgraphs
+    are omitted. Multiple loaders that all feed the saved output are kept (multi-input graphs).
+    """
+    if not isinstance(prompt, dict) or not prompt:
+        return {
+            "output_feeding_loader_paths_ok": False,
+            "output_feeding_loader_paths": [],
+            "output_feeding_loader_count": 0,
+            "saved_output_sink_count": 0,
+        }
+
+    nodes: Dict[str, Dict[str, Any]] = {}
+    consumers: Dict[str, List[str]] = {}
+    for nid, node in prompt.items():
+        if not isinstance(node, dict):
+            continue
+        sid = str(nid)
+        nodes[sid] = node
+        inputs = node.get("inputs") if isinstance(node.get("inputs"), dict) else {}
+        for _iname, ival in inputs.items():
+            for src_id, _slot in _coerce_comfy_link_pairs(ival):
+                consumers.setdefault(str(src_id), []).append(sid)
+
+    saved_sinks = {nid for nid, node in nodes.items() if _discovery_node_is_saved_output_sink(node)}
+    sink_set = saved_sinks
+    used_preview_fallback = False
+    if not sink_set:
+        sink_set = {nid for nid, node in nodes.items() if _discovery_node_is_any_output_sink(node)}
+        used_preview_fallback = bool(sink_set)
+
+    def _reaches_sink(start: str) -> bool:
+        seen: set = set()
+        q: collections.deque = collections.deque([start])
+        while q:
+            cur = q.popleft()
+            if cur in seen:
+                continue
+            seen.add(cur)
+            if cur in sink_set and cur != start:
+                return True
+            for dst in consumers.get(cur) or []:
+                if dst not in seen:
+                    q.append(dst)
+        return False
+
+    paths: List[str] = []
+    seen_paths: set = set()
+    for nid, node in nodes.items():
+        if str(node.get("class_type") or "") not in _DISCOVERY_MEDIA_LOADER_TYPES:
+            continue
+        inputs = node.get("inputs") if isinstance(node.get("inputs"), dict) else {}
+        media = _discovery_loader_media_string(inputs)
+        if not media:
+            continue
+        if not sink_set or not _reaches_sink(nid):
+            continue
+        if media in seen_paths:
+            continue
+        seen_paths.add(media)
+        paths.append(media)
+
+    return {
+        "output_feeding_loader_paths_ok": True,
+        "output_feeding_loader_paths": paths,
+        "output_feeding_loader_count": len(paths),
+        "saved_output_sink_count": len(saved_sinks),
+        "output_feeding_used_preview_fallback": used_preview_fallback,
+    }
+
+
 def _api_prompt_source_asset_fingerprint(prompt: Dict[str, Any]) -> Dict[str, Any]:
     paths: set = set()
     for _nid, node in prompt.items():
@@ -2506,7 +3160,13 @@ def _api_prompt_source_asset_fingerprint(prompt: Dict[str, Any]) -> Dict[str, An
         ps = ps[:200]
     m = _import_comfy_meta_lib()
     h = m.stable_json_sha256({"paths": ps})
-    return {"source_path_like_count": len(paths), "source_paths_sample": ps[:40], "source_paths_fingerprint": h}
+    out: Dict[str, Any] = {
+        "source_path_like_count": len(paths),
+        "source_paths_sample": ps[:40],
+        "source_paths_fingerprint": h,
+    }
+    out.update(_api_prompt_output_feeding_loader_paths(prompt))
+    return out
 
 
 def _api_prompt_lora_fingerprint(prompt: Dict[str, Any]) -> Dict[str, Any]:
@@ -3866,6 +4526,8 @@ def _discovery_persist_lineage_edge_rows(cfg: "ServerConfig", rows: List[Dict[st
         for row in rows:
             if not isinstance(row, dict):
                 continue
+            if _discovery_lineage_edge_looks_spurious(row):
+                continue
             key = (
                 str(row.get("child_group_id") or ""),
                 str(row.get("parent_group_id") or ""),
@@ -3887,14 +4549,57 @@ def _discovery_persist_lineage_edge_rows(cfg: "ServerConfig", rows: List[Dict[st
             _LINEAGE_GRAPH_CACHE[str(path)] = (st.st_mtime, st.st_size, doc)
         except OSError:
             _LINEAGE_GRAPH_CACHE.pop(str(path), None)
+        # Keep inverted citation index warm for forward-fill lookups.
+        try:
+            _discovery_citations_ingest_lineage_edge_rows(cfg, rows)
+        except Exception:
+            pass
         return added
 
 
 def _discovery_extract_source_path_strings_from_facets_payload(payload: Dict[str, Any]) -> List[str]:
+    """
+    Parent-hint strings for lineage.
+
+    Prefer media paths from Load* nodes that feed a saved output (orphan / dead loaders
+    omitted). Fall back to the broad path-like sample only when the wired analysis is absent.
+    """
     out: List[str] = []
     seen: set = set()
+
+    def _add(s: Any) -> None:
+        if not isinstance(s, str):
+            return
+        ss = s.strip()
+        if not ss or ss in seen:
+            return
+        seen.add(ss)
+        out.append(ss)
+
     probes = payload.get("png_workflow_probes")
     if isinstance(probes, list):
+        wired_any = False
+        for pr in probes:
+            if not isinstance(pr, dict):
+                continue
+            facets = pr.get("facets")
+            if not isinstance(facets, dict):
+                continue
+            api = facets.get("api_prompt")
+            if not isinstance(api, dict):
+                continue
+            sources = api.get("sources")
+            if not isinstance(sources, dict):
+                continue
+            if sources.get("output_feeding_loader_paths_ok"):
+                wired_any = True
+                sample = sources.get("output_feeding_loader_paths")
+                if isinstance(sample, list):
+                    for s in sample:
+                        _add(s)
+        if wired_any:
+            return out
+        # Legacy / failed analysis: broad path-like scrape (includes SaveVideo prefixes, orphans).
         for pr in probes:
             if not isinstance(pr, dict):
                 continue
@@ -3911,13 +4616,7 @@ def _discovery_extract_source_path_strings_from_facets_payload(payload: Dict[str
             if not isinstance(sample, list):
                 continue
             for s in sample:
-                if not isinstance(s, str):
-                    continue
-                ss = s.strip()
-                if not ss or ss in seen:
-                    continue
-                seen.add(ss)
-                out.append(ss)
+                _add(s)
     return out
 
 
@@ -3930,6 +4629,109 @@ def _discovery_lineage_source_string_is_assetish(s: str) -> bool:
         return True
     if low.startswith("input/"):
         return True
+    return False
+
+
+def _discovery_path_has_media_ext(s: str) -> bool:
+    low = str(s or "").strip().lower().replace("\\", "/")
+    if "?" in low:
+        low = low.split("?", 1)[0]
+    if "#" in low:
+        low = low.split("#", 1)[0]
+    return any(low.endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm", ".mov", ".mkv"))
+
+
+def _discovery_lineage_child_output_stems(child_item: Optional[Dict[str, Any]]) -> List[str]:
+    """Basenames / stems for the child row (primary + members), lowercased."""
+    if not isinstance(child_item, dict):
+        return []
+    names: List[str] = []
+    for k in ("name", "relpath", "video_relpath", "thumb_relpath"):
+        v = child_item.get(k)
+        if isinstance(v, str) and v.strip():
+            names.append(Path(v.strip()).name)
+    mems = child_item.get("members")
+    if isinstance(mems, list):
+        for mm in mems:
+            if not isinstance(mm, dict):
+                continue
+            for k in ("name", "relpath"):
+                v = mm.get(k)
+                if isinstance(v, str) and v.strip():
+                    names.append(Path(v.strip()).name)
+    out: List[str] = []
+    seen: set = set()
+    for nm in names:
+        low = nm.lower().strip()
+        if not low or low in seen:
+            continue
+        seen.add(low)
+        out.append(low)
+        stem = Path(low).stem
+        if stem and stem not in seen:
+            seen.add(stem)
+            out.append(stem)
+        # Comfy batch suffix: Foo_00001 → Foo
+        if len(stem) > 6 and stem[-6] == "_" and stem[-5:].isdigit():
+            prefix = stem[:-6]
+            if prefix and prefix not in seen:
+                seen.add(prefix)
+                out.append(prefix)
+    return out
+
+
+def _discovery_lineage_source_usable_as_parent_hint(
+    raw: str,
+    *,
+    child_item: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """
+    Whether an embedded prompt string may be used as a lineage *parent* hint.
+
+    SaveVideo / VHS ``filename_prefix`` widgets often embed the child's own output
+    stem without an extension (e.g. ``output/og/.../FB9_GEX2_2026-04-14``). Those
+    must not be treated as parents — prefix-matching them to the newest sibling
+    pollutes descendant trees.
+    """
+    s = str(raw or "").strip().replace("\\", "/")
+    if not s or len(s) > 4096:
+        return False
+    low = s.lower()
+    if low.startswith("video/") or low.startswith("audio/") or low.startswith("image/"):
+        return False
+    if "round(" in low or low in {"true", "false", "null"}:
+        return False
+    if not _discovery_lineage_source_string_is_assetish(s):
+        return False
+    # Concrete media paths only for parent edges (extensionless = almost always output naming).
+    if not _discovery_path_has_media_ext(s):
+        return False
+    base = Path(s).name.lower()
+    stem = Path(base).stem.lower()
+    for child_tok in _discovery_lineage_child_output_stems(child_item):
+        if base == child_tok or stem == child_tok:
+            return False
+        if child_tok.startswith(stem + "_") or child_tok.startswith(base + "_"):
+            return False
+    return True
+
+
+def _discovery_lineage_edge_looks_spurious(e: Dict[str, Any]) -> bool:
+    """Persisted / inferred edges that attach siblings via SaveVideo filename prefixes."""
+    if not isinstance(e, dict):
+        return True
+    evidence = str(e.get("evidence") or "").strip()
+    # Basename grep / workspace input edges intentionally may lack a directory.
+    if evidence in {"workspace_input", "png_prompt_grep"}:
+        return False
+    via = str(e.get("via_source_raw") or "").strip()
+    if evidence == "png_prompt_source_path":
+        if not via:
+            return True
+        if not _discovery_path_has_media_ext(via):
+            return True
+        if not _discovery_lineage_source_usable_as_parent_hint(via):
+            return True
     return False
 
 
@@ -4046,6 +4848,8 @@ def _discovery_find_item_by_output_relpath_prefix(idx: Dict[str, Any], hint_rel:
     """
     Match Discovery rows when a prompt cites an output path **without** the final ``_00001.mp4`` suffix.
     E.g. ``output/og/.../Foo_OG`` → ``output/og/.../Foo_OG_00001.mp4``.
+
+    Ambiguous prefixes (many ``Foo_0000N`` siblings) return None — never pick "newest".
     """
     prefix = _normalize_rel_posix(str(hint_rel or "").strip())
     if not prefix or "/" not in prefix:
@@ -4068,8 +4872,15 @@ def _discovery_find_item_by_output_relpath_prefix(idx: Dict[str, Any], hint_rel:
                 break
     if not hits:
         return None
-    hits.sort(key=lambda x: float(x.get("mtime") or 0), reverse=True)
-    return hits[0]
+    # Dedupe by group_id — many members can hit the same row.
+    by_gid: Dict[str, Dict[str, Any]] = {}
+    for it in hits:
+        gid = str(it.get("group_id") or "") or str(it.get("relpath") or id(it))
+        by_gid.setdefault(gid, it)
+    uniq = list(by_gid.values())
+    if len(uniq) != 1:
+        return None
+    return uniq[0]
 
 
 def _discovery_resolve_lineage_parent_for_source(
@@ -4078,18 +4889,23 @@ def _discovery_resolve_lineage_parent_for_source(
     raw: str,
     *,
     child_gid: str,
+    child_item: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str], Optional[Dict[str, Any]]]:
     """
     Resolve one embedded path string to an indexed parent row, output relpath, or external file metadata.
     """
+    if not _discovery_lineage_source_usable_as_parent_hint(raw, child_item=child_item):
+        return None, None, None
     resolved_rel = _discovery_try_resolve_path_like_to_relpath(cfg, raw)
     pit = _discovery_item_for_relpath(idx, resolved_rel) if resolved_rel else None
     if pit is None:
         pit = _discovery_find_item_by_media_basename(idx, raw)
     if pit is None and resolved_rel:
         pit = _discovery_find_item_by_media_basename(idx, Path(resolved_rel).name)
-    if pit is None:
+    if pit is None and _discovery_path_has_media_ext(raw):
         for rel in _discovery_candidate_output_relpaths_for_path_hint(cfg, raw):
+            # Only exact-ish prefix match when the hint itself named a media file;
+            # never for SaveVideo filename_prefix stems.
             pit = _discovery_find_item_by_output_relpath_prefix(idx, rel)
             if pit is not None:
                 resolved_rel = _discovery_lineage_facets_probe_relpath(pit)
@@ -4172,7 +4988,9 @@ def _discovery_infer_lineage_session_edges(
         strings = _discovery_extract_source_path_strings_from_facets_payload(facets)
         parent_items: Dict[str, Dict[str, Any]] = {}
         for s in strings:
-            pit, edge_rel, ext = _discovery_resolve_lineage_parent_for_source(cfg, idx, s, child_gid=gid)
+            pit, edge_rel, ext = _discovery_resolve_lineage_parent_for_source(
+                cfg, idx, s, child_gid=gid, child_item=item
+            )
             if ext is not None:
                 external_sources.append(ext)
                 in_rel = ext.get("workspace_relpath")
@@ -4286,14 +5104,24 @@ def _discovery_merge_externals_into_provenance_chain(
         )
     if not ext_entries:
         return chain
+    return _discovery_splice_external_entries_onto_chain(chain, ext_entries, seed_gid)
+
+
+def _discovery_splice_external_entries_onto_chain(
+    chain: List[Dict[str, Any]],
+    ext_entries: List[Dict[str, Any]],
+    seed_gid: str,
+) -> List[Dict[str, Any]]:
+    if not ext_entries:
+        return chain
     if not chain:
-        out = ext_entries
+        out = list(ext_entries)
     elif chain and str(chain[-1].get("group_id") or "") == seed_gid:
         head = chain[:-1]
         seed_row = dict(chain[-1])
-        out = ext_entries + head + [seed_row]
+        out = list(ext_entries) + head + [seed_row]
     else:
-        out = ext_entries + chain
+        out = list(ext_entries) + list(chain)
 
     merged: List[Dict[str, Any]] = []
     for i, row in enumerate(out):
@@ -4311,6 +5139,84 @@ def _discovery_merge_externals_into_provenance_chain(
             r["role"] = "ancestor"
         merged.append(r)
     return merged
+
+
+def _discovery_input_parent_entries_from_edges(
+    cfg: "ServerConfig",
+    child_gid: str,
+    merged_edges: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Build external provenance cards from persisted ``input:…`` parent edges (graph-only mode)."""
+    if not child_gid:
+        return []
+    seen: set = set()
+    out: List[Dict[str, Any]] = []
+    for e in merged_edges:
+        if not isinstance(e, dict):
+            continue
+        if str(e.get("child_group_id") or "") != child_gid:
+            continue
+        pid = str(e.get("parent_group_id") or "")
+        if not pid.startswith("input:"):
+            continue
+        bn = pid[len("input:") :].strip()
+        if not bn or bn in seen:
+            continue
+        seen.add(bn)
+        via = str(e.get("via_source_raw") or bn)
+        resolved = str(e.get("resolved_parent_relpath") or "").strip().replace("\\", "/")
+        norm_in = resolved if resolved.lower().startswith("input/") else None
+        if not norm_in:
+            norm_in = _discovery_workspace_input_relpath_for_source(cfg, via) or _discovery_workspace_input_relpath_for_source(
+                cfg, bn
+            )
+        if not norm_in:
+            norm_in = f"input/{bn}"
+        name = Path(norm_in).name
+        item: Dict[str, Any] = {
+            "group_id": None,
+            "name": name,
+            "relpath": norm_in,
+            "workspace_relpath": norm_in,
+            "media_kind": "image" if name.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")) else "other",
+        }
+        tu = _discovery_lineage_file_url(cfg, norm_in)
+        if tu:
+            item["thumb_url"] = tu
+        item = _discovery_enrich_item_ratings(item, cfg)
+        out.append(
+            {
+                "depth": 0,
+                "role": "source",
+                "group_id": pid,
+                "item": item,
+                "via_source_raw": via,
+                "external": True,
+                "evidence": e.get("evidence"),
+            }
+        )
+    return out
+
+
+def _discovery_prepend_persisted_input_sources_to_chain(
+    cfg: "ServerConfig",
+    chain: List[Dict[str, Any]],
+    merged_edges: List[Dict[str, Any]],
+    seed_gid: str,
+) -> List[Dict[str, Any]]:
+    """
+    Graph-only loads skip live PNG infer, so ``input/`` stills only appear if we surface
+    persisted ``input:…`` edges onto the oldest indexed ancestor (usually the I2V OG).
+    """
+    if not chain or (chain and chain[0].get("external")):
+        return chain
+    root_gid = str(chain[0].get("group_id") or "")
+    if not root_gid:
+        return chain
+    ext_entries = _discovery_input_parent_entries_from_edges(cfg, root_gid, merged_edges)
+    if not ext_entries:
+        return chain
+    return _discovery_splice_external_entries_onto_chain(chain, ext_entries, seed_gid)
 
 
 def _discovery_candidate_output_relpaths_for_path_hint(cfg: "ServerConfig", raw: str) -> List[str]:
@@ -4557,13 +5463,13 @@ def _lineage_edge_parent_child(e: Dict[str, Any]) -> Tuple[str, str]:
 def _lineage_merge_edge_dicts(session_edges: List[Dict[str, Any]], graph_edges: List[Any]) -> List[Dict[str, Any]]:
     merged: Dict[Tuple[str, str], Dict[str, Any]] = {}
     for e in session_edges:
-        if not isinstance(e, dict):
+        if not isinstance(e, dict) or _discovery_lineage_edge_looks_spurious(e):
             continue
         pid, cid = _lineage_edge_parent_child(e)
         if pid and cid:
             merged[(cid, pid)] = e
     for e in graph_edges:
-        if not isinstance(e, dict):
+        if not isinstance(e, dict) or _discovery_lineage_edge_looks_spurious(e):
             continue
         pid, cid = _lineage_edge_parent_child(e)
         if pid and cid:
@@ -4677,6 +5583,9 @@ def _discovery_lineage_graph_views(
     by_gid = _discovery_index_items_by_group_id(idx)
     merged_edges = _lineage_merge_edge_dicts(session_edges, graph_edges)
     provenance_chain = _build_lineage_provenance_chain(seed_gid, merged_edges, by_gid, cfg)
+    provenance_chain = _discovery_prepend_persisted_input_sources_to_chain(
+        cfg, provenance_chain, merged_edges, seed_gid
+    )
     sibling_rows = _build_lineage_siblings_for_seed(seed_gid, merged_edges, by_gid, cfg)
     descendants_direct_seed = _build_lineage_direct_children(seed_gid, merged_edges, by_gid, cfg)
     descendants_transitive = _build_lineage_descendants_transitive(seed_gid, merged_edges, by_gid, limit=96)
@@ -4973,10 +5882,12 @@ def _discovery_compute_asset_lineage_graph_only(
     max_depth: int,
     peek_group_id: Optional[str],
     infer_parents: bool,
+    infer_children: bool = False,
 ) -> Dict[str, Any]:
     session_edges: List[Dict[str, Any]] = []
     external_sources: List[Dict[str, Any]] = []
     infer_errors: List[str] = []
+    child_scan_edges: List[Dict[str, Any]] = []
     if infer_parents:
         try:
             session_edges, external_sources = _discovery_infer_lineage_session_edges(
@@ -4984,6 +5895,12 @@ def _discovery_compute_asset_lineage_graph_only(
             )
         except Exception as e:
             infer_errors.append(f"infer_parents_failed:{e}")
+    if infer_children:
+        try:
+            child_scan_edges = _discovery_scan_index_for_media_children(cfg, idx, seed_item)
+            session_edges = list(session_edges) + list(child_scan_edges)
+        except Exception as e:
+            infer_errors.append(f"infer_children_failed:{e}")
 
     views = _discovery_lineage_graph_views(cfg, idx, seed_item, seed_gid, session_edges, peek_group_id=peek_group_id)
     provenance_chain = views["provenance_chain"]
@@ -4994,6 +5911,20 @@ def _discovery_compute_asset_lineage_graph_only(
 
     ratings_path = _discovery_ratings_index_path(cfg)
     ratings_doc = _discovery_load_ratings_index(cfg)
+    notes = [
+        (
+            "Merged graph edges with live parent inference from this asset's embedded prompt (infer_parents=1)."
+            if infer_parents
+            else "Read persisted discovery_lineage_edges.json only (infer_parents=0)."
+        ),
+        "provenance_chain is oldest → current; external/workspace inputs appear as source before the seed.",
+    ]
+    if infer_children:
+        notes.append(
+            f"Forward-fill via citation index "
+            f"(infer_children=1); candidates_verified={len(child_scan_edges)} "
+            f"db={_discovery_citations_db_path(cfg)}."
+        )
     payload: Dict[str, Any] = {
         "ok": True,
         "query_relpath": rel,
@@ -5001,6 +5932,7 @@ def _discovery_compute_asset_lineage_graph_only(
         "lineage_graph_path": str(views["lineage_graph_path"]),
         "graph_only": True,
         "infer_parents": bool(infer_parents),
+        "infer_children": bool(infer_children),
         "max_depth": max_depth,
         "persist": False,
         "persisted_new_edges": 0,
@@ -5018,15 +5950,9 @@ def _discovery_compute_asset_lineage_graph_only(
         "unresolved_source_strings": [],
         "descendants": views["descendants"],
         "external_sources": external_sources,
+        "child_scan_edges": child_scan_edges,
         "errors": infer_errors,
-        "notes": [
-            (
-                "Merged graph edges with live parent inference from this asset's embedded prompt (infer_parents=1)."
-                if infer_parents
-                else "Read persisted discovery_lineage_edges.json only (infer_parents=0)."
-            ),
-            "provenance_chain is oldest → current; external/workspace inputs appear as source before the seed.",
-        ],
+        "notes": notes,
     }
     if ratings_doc:
         payload["ratings_index_path"] = str(ratings_path)
@@ -5043,6 +5969,7 @@ def _discovery_compute_asset_lineage(
     peek_group_id: Optional[str],
     graph_only: bool = False,
     infer_parents: bool = True,
+    infer_children: bool = False,
 ) -> Dict[str, Any]:
     rel = _normalize_rel_posix(seed_rel.strip())
     if not rel:
@@ -5087,11 +6014,13 @@ def _discovery_compute_asset_lineage(
             max_depth=max_depth,
             peek_group_id=peek_group_id,
             infer_parents=infer_parents,
+            infer_children=infer_children,
         )
 
     processed_groups: set = set()
     queue: collections.deque = collections.deque()
-    queue.append((seed_item, 0))
+    if infer_parents:
+        queue.append((seed_item, 0))
 
     edges: List[Dict[str, Any]] = []
     expansions: List[Dict[str, Any]] = []
@@ -5128,7 +6057,9 @@ def _discovery_compute_asset_lineage(
         unresolved_for_node: List[str] = []
 
         for s in strings:
-            pit, edge_rel, ext = _discovery_resolve_lineage_parent_for_source(cfg, idx, s, child_gid=gid)
+            pit, edge_rel, ext = _discovery_resolve_lineage_parent_for_source(
+                cfg, idx, s, child_gid=gid, child_item=item
+            )
             if ext is not None:
                 external_sources.append(ext)
                 in_rel = ext.get("workspace_relpath")
@@ -5188,6 +6119,14 @@ def _discovery_compute_asset_lineage(
                     continue
                 queue.append((pit, depth + 1))
 
+    child_scan_edges: List[Dict[str, Any]] = []
+    if infer_children:
+        try:
+            child_scan_edges = _discovery_scan_index_for_media_children(cfg, idx, seed_item)
+            edges.extend(child_scan_edges)
+        except Exception as e:
+            errors.append(f"infer_children_failed:{e}")
+
     added = 0
     if persist and edges:
         rows: List[Dict[str, Any]] = []
@@ -5210,12 +6149,28 @@ def _discovery_compute_asset_lineage(
     merged_edges = views["merged_edges"]
     descendants_transitive = _build_lineage_descendants_transitive(seed_gid, merged_edges, by_gid, limit=96)
 
+    notes = [
+        "Parent links are inferred from LoadImage/LoadVideo* nodes in API-format prompts "
+        "that feed a saved output (VHS_VideoCombine/Save* with save_output=True). "
+        "Orphan loaders and preview-only branches are omitted.",
+        "provenance_chain is oldest → current; siblings / descendants read the merged session + discovery_lineage_edges.json graph.",
+        "Use graph_only=1 after backfill for fast panel loads without re-probing PNG metadata.",
+    ]
+    if infer_children:
+        notes.append(
+            f"Forward-fill via citation index "
+            f"(infer_children=1); children_found={len(child_scan_edges)} "
+            f"db={_discovery_citations_db_path(cfg)}."
+        )
+
     return {
         "ok": True,
         "query_relpath": rel,
         "discovery_index_path": str(cfg.discovery_index_path),
         "lineage_graph_path": str(views["lineage_graph_path"]),
         "graph_only": False,
+        "infer_parents": bool(infer_parents),
+        "infer_children": bool(infer_children),
         "max_depth": max_depth,
         "persist": bool(persist),
         "persisted_new_edges": int(added),
@@ -5232,12 +6187,9 @@ def _discovery_compute_asset_lineage(
         "merged_edge_count": views["merged_edge_count"],
         "unresolved_source_strings": unresolved,
         "descendants": views["descendants"],
+        "child_scan_edges": child_scan_edges,
         "errors": errors,
-        "notes": [
-            "Parent links are inferred from path-like strings embedded in API-format prompts stored in PNG text chunks (same extractor as GET /api/discovery/workflow-facets).",
-            "provenance_chain is oldest → current; siblings / descendants read the merged session + discovery_lineage_edges.json graph.",
-            "Use graph_only=1 after backfill for fast panel loads without re-probing PNG metadata.",
-        ],
+        "notes": notes,
     }
 
 
@@ -7188,6 +8140,14 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return _json_response(self, 500, {"ok": False, "error": "prompt_profile_failed", "detail": str(e)})
 
+        if path == "/api/shape-factory/families":
+            try:
+                payload = _shape_factory_families_payload(cfg)
+                code = 200 if payload.get("ok") else 500
+                return _json_response(self, code, payload)
+            except Exception as e:
+                return _json_response(self, 500, {"ok": False, "error": "families_failed", "detail": str(e)})
+
         if path == "/api/shape-factory/work-products":
             try:
                 payload = _shape_factory_work_products_payload(cfg, q)
@@ -8501,10 +9461,13 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_discovery_asset_lineage_get(self, q: Dict[str, List[str]]) -> None:
         """
         GET /api/discovery/asset-lineage?relpath=...&max_depth=6&persist=0&graph_only=1&peek_group_id=...
+          &infer_parents=1&infer_children=0
 
         Infer a navigable parent/child graph from embedded prompt path strings (PNG metadata),
         optionally persist discovered edges to ``discovery_lineage_edges.json`` for reverse
         (descendant) queries. ``graph_only=1`` reads the persisted graph only (fast after backfill).
+        ``infer_children=1`` forward-fills via the inverted citation index
+        (``discovery_lineage_citations.sqlite``), warming from stem-named candidates on cold miss.
         """
         cfg = self.server.cfg
         rel = (q.get("relpath") or [""])[0].strip()
@@ -8526,6 +9489,13 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 infer_parents = True
             break
+        infer_children = False
+        for v in q.get("infer_children", []):
+            if str(v).strip().lower() in ("1", "true", "yes"):
+                infer_children = True
+            else:
+                infer_children = False
+            break
         peek = (q.get("peek_group_id") or [""])[0].strip()
 
         idx_path = cfg.discovery_index_path
@@ -8533,16 +9503,28 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(idx, dict):
             return _json_response(self, 400, {"ok": False, "error": "discovery_index_missing", "detail": str(idx_path)})
         try:
+            # Allow persist with graph_only when doing a child/parent spot fill so the UI
+            # can write edges without the heavier multi-hop parent BFS path when desired.
+            do_persist = bool(persist) and (not graph_only or infer_children or infer_parents)
             payload = _discovery_compute_asset_lineage(
                 cfg,
                 idx,
                 rel,
                 max_depth=max_depth,
-                persist=persist and not graph_only,
+                persist=do_persist,
                 peek_group_id=peek or None,
                 graph_only=graph_only,
                 infer_parents=infer_parents,
+                infer_children=infer_children,
             )
+            if do_persist and graph_only and isinstance(payload, dict) and payload.get("ok"):
+                edges = payload.get("edges")
+                if isinstance(edges, list) and edges:
+                    ts = _dt.datetime.now(tz=_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    rows = [{**e, "updated_at": ts} for e in edges if isinstance(e, dict)]
+                    added = _discovery_persist_lineage_edge_rows(cfg, rows)
+                    payload["persist"] = True
+                    payload["persisted_new_edges"] = int(added)
         except Exception as e:
             return _json_response(self, 500, {"ok": False, "error": "asset_lineage_failed", "detail": str(e)})
         return _json_response(self, 200, payload)
@@ -10024,7 +11006,7 @@ def main() -> int:
     print(
         "[experiments-ui] comfy_live_routes=GET /api/comfy/live-preview, GET /api/comfy/live-status, GET /api/comfy/logs"
     )
-    print("[experiments-ui] shape_factory_routes=GET /api/shape-factory/map, GET /api/shape-factory/prompt-profile, GET /api/shape-factory/work-products, GET /api/shape-factory/json-peek, GET /api/shape-factory/quarantine, POST /api/shape-factory/queue, POST /api/shape-factory/replay, POST /api/shape-factory/derive, POST /api/shape-factory/unqueue, POST /api/shape-factory/discard, POST /api/shape-factory/update-pending-trim, POST /api/shape-factory/quarantine/release")
+    print(        "[experiments-ui] shape_factory_routes=GET /api/shape-factory/map, GET /api/shape-factory/prompt-profile, GET /api/shape-factory/families, GET /api/shape-factory/work-products, GET /api/shape-factory/json-peek, GET /api/shape-factory/quarantine, POST /api/shape-factory/queue, POST /api/shape-factory/replay, POST /api/shape-factory/derive, POST /api/shape-factory/unqueue, POST /api/shape-factory/discard, POST /api/shape-factory/update-pending-trim, POST /api/shape-factory/quarantine/release")
     server.serve_forever()
     return 0
 

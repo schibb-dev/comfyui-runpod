@@ -76,6 +76,21 @@ function IconStopAtEnd() {
   );
 }
 
+function IconAutoplay() {
+  return (
+    <svg className="video-trim-controls__svg" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M20 12a8 8 0 1 1-2.34-5.66"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <path d="M20 4.5v5h-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M9.5 9.2 15.2 12.5 9.5 15.8V9.2z" fill="currentColor" />
+    </svg>
+  );
+}
+
 function nextMode(mode: VideoTrimPlaybackMode): VideoTrimPlaybackMode {
   return mode === "repeat" ? "stop_at_end" : "repeat";
 }
@@ -396,6 +411,8 @@ export function VideoTrimControls({
   readOnly = false,
   seamMark = null,
   blendEndMark = null,
+  autoplay,
+  onAutoplayChange,
 }: {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   duration: number;
@@ -418,6 +435,9 @@ export function VideoTrimControls({
   seamMark?: number | null;
   /** Seconds where overlap blend ends / pure generated begins (optional). */
   blendEndMark?: number | null;
+  /** When provided with onAutoplayChange, shows an autoplay icon toggle in transport. */
+  autoplay?: boolean;
+  onAutoplayChange?: (on: boolean) => void;
 }) {
   const [, forceMediaUi] = useReducer((x: number) => x + 1, 0);
   const [markScrubFreeze, setMarkScrubFreeze] = useState<number | null>(null);
@@ -593,6 +613,19 @@ export function VideoTrimControls({
           <button type="button" aria-label="Go to trim end" title="Go to trim end" disabled={disabled} onClick={() => syncSeek(bounds ? bounds.out : liveDuration)}>
             <IconToEnd />
           </button>
+          {onAutoplayChange ? (
+            <button
+              type="button"
+              className={"video-trim-controls__autoplay" + (autoplay ? " video-trim-controls__autoplay--on" : "")}
+              role="switch"
+              aria-checked={Boolean(autoplay)}
+              aria-label={autoplay ? "Autoplay on. Switch off." : "Autoplay off. Switch on."}
+              title={autoplay ? "Autoplay on (muted)" : "Autoplay off"}
+              onClick={() => onAutoplayChange(!autoplay)}
+            >
+              <IconAutoplay />
+            </button>
+          ) : null}
         </div>
         <div className="video-trim-controls__io" role="group" aria-label="Set trim in and out">
           <button type="button" disabled={disabled || readOnly} onClick={setInAtPlayhead} title="Set in at playhead">

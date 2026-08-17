@@ -13,10 +13,12 @@ from shape_factory_work_products import (
     attach_live_comfy_queue,
     construction_from_plan,
     decode_prompt_markup,
+    is_extend_family_option,
     job_is_hourly_product,
     list_extend_family_defaults,
     list_recent_work_products,
     list_shape_families,
+    list_submit_family_sets,
     prefer_target_family,
 )
 
@@ -352,6 +354,53 @@ class TestWorkProducts(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertEqual(list_extend_family_defaults(data), {"Alpha": "Beta"})
+
+    def test_list_submit_family_sets_partitions_extend(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            data = root / "data"
+            shapes = data / "shapes"
+            shapes.mkdir(parents=True)
+            (shapes / "FB9_GEX2.shape.yaml").write_text(
+                "family_slug: FB9_GEX2\nshape_id: wan_v2v_gex2\n",
+                encoding="utf-8",
+            )
+            (shapes / "X-KNEEL-FB9.shape.yaml").write_text(
+                "family_slug: X-KNEEL-FB9\nshape_id: wan_i2v_kneel\n",
+                encoding="utf-8",
+            )
+            (shapes / "FB9_GEX2_identity_anchor.shape.yaml").write_text(
+                "family_slug: FB9_GEX2_identity_anchor\nshape_id: identity_anchor\n",
+                encoding="utf-8",
+            )
+            pipes = data / "pipelines"
+            pipes.mkdir(parents=True)
+            (pipes / "kneel-to-gex.pipeline.yaml").write_text(
+                "\n".join(
+                    [
+                        "pipeline_id: kneel-to-gex",
+                        "steps:",
+                        "  - id: kneel",
+                        "    shape: X-KNEEL-FB9.shape.yaml",
+                        "  - id: gex",
+                        "    shape: FB9_GEX2.shape.yaml",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            payload = list_submit_family_sets(data)
+            self.assertTrue(payload.get("ok"))
+            self.assertIn("fingerprint", payload)
+            extend_slugs = {f["slug"] for f in payload["sets"]["extend"]}
+            all_slugs = {f["slug"] for f in payload["families"]}
+            self.assertEqual(all_slugs, {"FB9_GEX2", "X-KNEEL-FB9", "FB9_GEX2_identity_anchor"})
+            self.assertIn("FB9_GEX2", extend_slugs)
+            self.assertNotIn("X-KNEEL-FB9", extend_slugs)
+            self.assertNotIn("FB9_GEX2_identity_anchor", extend_slugs)
+            self.assertEqual(payload["extend_family_defaults"], {"X-KNEEL-FB9": "FB9_GEX2"})
+            self.assertTrue(is_extend_family_option({"slug": "FB9_GEX2", "shape_id": "wan_v2v_gex2"}))
+            self.assertFalse(is_extend_family_option({"slug": "X-KNEEL-FB9", "shape_id": "wan_i2v_kneel"}))
 
     def test_attach_live_comfy_queue_synthesizes_missing_job(self):
         payload = {

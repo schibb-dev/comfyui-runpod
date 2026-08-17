@@ -8,7 +8,7 @@ import {
 } from "./api";
 import type { ShapeFactoryClip } from "./api";
 import { formatUnixMtime, formatIsoDateTime } from "./locale";
-import { parseDiscoveryDeepLinkRelpath } from "./discoveryDeepLink";
+import { parseDiscoveryDeepLinkRelpath, workbenchHrefForMedia } from "./discoveryDeepLink";
 import { APPETITE_ROW_GLYPH, appetiteRowTitle, discoveryRatingsRollupFromResponse } from "./discoveryRatingsRollup";
 import { DiscoveryAssetLineagePanel } from "./DiscoveryAssetLineagePanel";
 import { DiscoveryAssetRatingsPanel } from "./DiscoveryAssetRatingsPanel";
@@ -17,6 +17,7 @@ import { DiscoveryQueueFromClip } from "./DiscoveryQueueFromClip";
 import { MediaAssetCard } from "./MediaAssetCard";
 import { VideoAutoplayToggle } from "./VideoAutoplayToggle";
 import { VideoTrimControls } from "./VideoTrimControls";
+import { prefetchFamiliesBootstrap } from "./shapeFactorySessionCache";
 import { DiscoveryWorkflowFacetsPanel } from "./DiscoveryWorkflowFacetsPanel";
 import {
   discoveryTrimMediaRelpath,
@@ -168,7 +169,15 @@ function _discoverySessionGetBool01(key: string): boolean {
   }
 }
 
-type DiscoveryMetaDrawerTab = "details" | "parameters" | "assets" | "ratings" | "exemplars" | "workflows" | "facets";
+type DiscoveryMetaDrawerTab =
+  | "details"
+  | "clips"
+  | "parameters"
+  | "assets"
+  | "ratings"
+  | "exemplars"
+  | "workflows"
+  | "facets";
 
 const DISCOVERY_DESKTOP_META_TABS: ReadonlyArray<{
   id: DiscoveryMetaDrawerTab;
@@ -177,6 +186,7 @@ const DISCOVERY_DESKTOP_META_TABS: ReadonlyArray<{
   ariaLabel: string;
 }> = [
   { id: "details", label: "Details", ariaLabel: "Details" },
+  { id: "clips", label: "Clips", ariaLabel: "Clip bookmarks" },
   { id: "parameters", label: "Parameters", ariaLabel: "Parameters" },
   { id: "assets", label: "Lineage", ariaLabel: "Lineage and assets" },
   { id: "ratings", label: "Ratings", ariaLabel: "Ratings explorer" },
@@ -228,6 +238,8 @@ function discoveryMetaPanelLabelId(tab: DiscoveryMetaDrawerTab): string {
   switch (tab) {
     case "details":
       return "discovery-meta-tab-details";
+    case "clips":
+      return "discovery-meta-tab-clips";
     case "parameters":
       return "discovery-meta-tab-parameters";
     case "assets":
@@ -1014,6 +1026,13 @@ function DiscoveryItemMetaBody({
     <>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
         <span style={{ fontWeight: 700, fontSize: 15, wordBreak: "break-word", flex: "1 1 200px" }}>{it.name}</span>
+        <a
+          className="discovery-exemplar-meta-btn"
+          href={workbenchHrefForMedia({ relpath: it.video_relpath || it.relpath, name: it.name })}
+          title="Find related factory jobs in Workbench"
+        >
+          Open in Workbench
+        </a>
         <button
           type="button"
           className="discovery-exemplar-meta-btn"
@@ -1193,6 +1212,15 @@ function DiscoveryListThumbRow({
           {APPETITE_ROW_GLYPH[it.ratings.appetite]}
         </span>
       ) : null}
+      <a
+        className="discovery-exemplar-row-btn"
+        href={workbenchHrefForMedia({ relpath: it.video_relpath || it.relpath, name: it.name })}
+        title="Find related factory jobs in Workbench"
+        aria-label="Open in Workbench"
+        onClick={(e) => e.stopPropagation()}
+      >
+        Workbench
+      </a>
       <button
         type="button"
         className="discovery-exemplar-row-btn"
@@ -2890,63 +2918,33 @@ function DiscoveryDesktopPreview({
             )}
           </div>
           {playUrl ? (
-            <>
-              <VideoTrimControls
-                className="discovery-desktop-preview-trim"
-                videoRef={previewVideoRef}
-                duration={previewDuration}
-                currentTime={trimUiCurrentTime}
-                markIn={markIn}
-                markOut={markOut}
-                mode={trimPlaybackLoop ? "repeat" : "stop_at_end"}
-                mediaSyncKey={k}
-                size="large"
-                onSeek={setTrimUiCurrentTime}
-                onSyncTime={setTrimUiCurrentTime}
-                onMarkInChange={(v) => {
-                  setActiveClip(null);
-                  setMarkIn(v);
-                }}
-                onMarkOutChange={(v) => {
-                  setActiveClip(null);
-                  setMarkOut(v);
-                }}
-                onClear={() => {
-                  setActiveClip(null);
-                  setMarkIn(null);
-                  setMarkOut(null);
-                }}
-                onModeChange={(m) => setTrimPlaybackLoop(m === "repeat")}
-              />
-              <ClipBookmarksRail
-                className="discovery-desktop-preview-clips"
-                mediaRelpath={trimMedia}
-                duration={previewDuration}
-                markIn={markIn}
-                markOut={markOut}
-                trimEditable
-                origin="discovery"
-                selectedClipId={activeClip?.clip_id || null}
-                onSelectClip={setActiveClip}
-                onApplyClip={(mi, mo, clip) => {
-                  setMarkIn(mi);
-                  setMarkOut(mo);
-                  if (clip) setActiveClip(clip);
-                }}
-              />
-              {it ? (
-                <DiscoveryQueueFromClip
-                  item={it}
-                  mediaRelpath={trimMedia}
-                  markIn={markIn}
-                  markOut={markOut}
-                  duration={previewDuration}
-                  fps={Number(it.frame_rate) || 18}
-                  activeClip={activeClip}
-                  origin="library"
-                />
-              ) : null}
-            </>
+            <VideoTrimControls
+              className="discovery-desktop-preview-trim"
+              videoRef={previewVideoRef}
+              duration={previewDuration}
+              currentTime={trimUiCurrentTime}
+              markIn={markIn}
+              markOut={markOut}
+              mode={trimPlaybackLoop ? "repeat" : "stop_at_end"}
+              mediaSyncKey={k}
+              size="large"
+              onSeek={setTrimUiCurrentTime}
+              onSyncTime={setTrimUiCurrentTime}
+              onMarkInChange={(v) => {
+                setActiveClip(null);
+                setMarkIn(v);
+              }}
+              onMarkOutChange={(v) => {
+                setActiveClip(null);
+                setMarkOut(v);
+              }}
+              onClear={() => {
+                setActiveClip(null);
+                setMarkIn(null);
+                setMarkOut(null);
+              }}
+              onModeChange={(m) => setTrimPlaybackLoop(m === "repeat")}
+            />
           ) : null}
         </div>
       </div>
@@ -2996,6 +2994,43 @@ function DiscoveryDesktopPreview({
                   onSendToExemplarLibrary={() => onSendToExemplarLibrary(k)}
                   onGoToExemplarLibrary={onGoToExemplarLibrary}
                 />
+              ) : metaDrawerTab === "clips" ? (
+                <div className="discovery-desktop-clips-panel">
+                  {playUrl ? (
+                    <>
+                      <ClipBookmarksRail
+                        className="discovery-desktop-preview-clips"
+                        mediaRelpath={trimMedia}
+                        duration={previewDuration}
+                        markIn={markIn}
+                        markOut={markOut}
+                        trimEditable
+                        origin="discovery"
+                        selectedClipId={activeClip?.clip_id || null}
+                        onSelectClip={setActiveClip}
+                        onApplyClip={(mi, mo, clip) => {
+                          setMarkIn(mi);
+                          setMarkOut(mo);
+                          if (clip) setActiveClip(clip);
+                        }}
+                      />
+                      {it ? (
+                        <DiscoveryQueueFromClip
+                          item={it}
+                          mediaRelpath={trimMedia}
+                          markIn={markIn}
+                          markOut={markOut}
+                          duration={previewDuration}
+                          fps={Number(it.frame_rate) || 18}
+                          activeClip={activeClip}
+                          origin="library"
+                        />
+                      ) : null}
+                    </>
+                  ) : (
+                    <p className="factory-muted">Select a video to manage clip bookmarks.</p>
+                  )}
+                </div>
               ) : metaDrawerTab === "parameters" ? (
                 <DiscoveryComfyQueuePanel it={it} />
               ) : metaDrawerTab === "assets" ? (
@@ -3113,6 +3148,10 @@ function DiscoveryLibraryInner() {
     const t = setTimeout(() => setQApplied(qInput.trim()), 400);
     return () => clearTimeout(t);
   }, [qInput]);
+
+  useEffect(() => {
+    prefetchFamiliesBootstrap();
+  }, []);
 
   const load = useCallback(
     async (refresh: boolean, opts?: { soft?: boolean }) => {

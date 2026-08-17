@@ -77,6 +77,7 @@ import type {
   WorkItemsCancelResponse,
   WorkItemsPriorityResponse,
   WorkProductsResponse,
+  ShapeFactoryFamiliesResponse,
   VisionSliceCaptionsResponse,
   VisionTagJudgmentResponse,
   VisionTagJudgmentSaveResponse,
@@ -199,6 +200,18 @@ export async function fetchShapeFactoryPromptProfile(path: string): Promise<Shap
     const detail = [j.error, j.detail].filter(Boolean).join(": ");
     throw new Error(
       `GET /api/shape-factory/prompt-profile failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function fetchShapeFactoryFamilies(): Promise<ShapeFactoryFamiliesResponse> {
+  const r = await fetch("/api/shape-factory/families");
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryFamiliesResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET /api/shape-factory/families failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
     );
   }
   return j;
@@ -1295,7 +1308,14 @@ export async function fetchDiscoveryLibraryItem(opts: {
 
 export async function fetchDiscoveryAssetLineage(
   relpath: string,
-  opts?: { maxDepth?: number; persist?: boolean; peekGroupId?: string; graphOnly?: boolean; inferParents?: boolean }
+  opts?: {
+    maxDepth?: number;
+    persist?: boolean;
+    peekGroupId?: string;
+    graphOnly?: boolean;
+    inferParents?: boolean;
+    inferChildren?: boolean;
+  }
 ): Promise<DiscoveryAssetLineageResponse> {
   const sp = new URLSearchParams();
   sp.set("relpath", relpath);
@@ -1305,6 +1325,8 @@ export async function fetchDiscoveryAssetLineage(
   if (opts?.inferParents === false) sp.set("infer_parents", "0");
   else if (opts?.inferParents === true) sp.set("infer_parents", "1");
   else if (opts?.graphOnly) sp.set("infer_parents", "0");
+  if (opts?.inferChildren === true) sp.set("infer_children", "1");
+  else if (opts?.inferChildren === false) sp.set("infer_children", "0");
   if (opts?.peekGroupId) sp.set("peek_group_id", opts.peekGroupId);
   const r = await fetch(`/api/discovery/asset-lineage?${sp.toString()}`);
   const j = (await r.json()) as DiscoveryAssetLineageResponse & { error?: string; path?: string };
