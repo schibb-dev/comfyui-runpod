@@ -5299,7 +5299,7 @@
         "collapsed": false
       },
       "order": 55,
-      "mode": 0,
+      "mode": 2,
       "inputs": [
         {
           "label": " ",
@@ -5396,7 +5396,7 @@
           "links": null
         }
       ],
-      "title": "Preview",
+      "title": "DISABLED OUTPUT: Preview",
       "properties": {
         "cnr_id": "comfyui-videohelpersuite",
         "ver": "4c7858ddd5126f7293dc3c9f6e0fc4c263cde079",
@@ -5421,20 +5421,7 @@
         "save_metadata": true,
         "trim_to_audio": false,
         "pingpong": false,
-        "save_output": true,
-        "videopreview": {
-          "hidden": false,
-          "paused": false,
-          "params": {
-            "filename": "004759_RAW_00001.mp4",
-            "subfolder": "FaceBlast8A\\2025-09-10",
-            "type": "output",
-            "format": "video/h264-mp4",
-            "frame_rate": 16,
-            "workflow": "004759_RAW_00001.png",
-            "fullpath": "C:\\Users\\yuji\\UmeAiRT\\ComfyUI_windows_portable\\ComfyUI\\output\\FaceBlast8A\\2025-09-10\\004759_RAW_00001.mp4"
-          }
-        }
+        "save_output": false
       },
       "color": "#233",
       "bgcolor": "#355",

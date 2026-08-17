@@ -262,7 +262,7 @@
         "collapsed": false
       },
       "order": 41,
-      "mode": 0,
+      "mode": 2,
       "inputs": [
         {
           "label": " ",
@@ -359,7 +359,7 @@
           "links": null
         }
       ],
-      "title": "Preview",
+      "title": "DISABLED OUTPUT: Preview",
       "properties": {
         "cnr_id": "comfyui-videohelpersuite",
         "ver": "4c7858ddd5126f7293dc3c9f6e0fc4c263cde079",
@@ -384,20 +384,7 @@
         "save_metadata": false,
         "trim_to_audio": false,
         "pingpong": false,
-        "save_output": false,
-        "videopreview": {
-          "hidden": false,
-          "paused": false,
-          "params": {
-            "filename": "WAN_00018.mp4",
-            "subfolder": "",
-            "type": "temp",
-            "format": "video/h264-mp4",
-            "frame_rate": 16,
-            "workflow": "WAN_00018.png",
-            "fullpath": "F:\\AI\\dev\\WAN2.1 V2\\ComfyUI_windows_portable\\ComfyUI\\temp\\WAN_00018.mp4"
-          }
-        }
+        "save_output": false
       },
       "color": "#233",
       "bgcolor": "#355",

@@ -5282,7 +5282,7 @@
         "collapsed": false
       },
       "order": 55,
-      "mode": 0,
+      "mode": 2,
       "inputs": [
         {
           "label": " ",
@@ -5379,7 +5379,7 @@
           "links": null
         }
       ],
-      "title": "Preview",
+      "title": "DISABLED OUTPUT: Preview",
       "properties": {
         "Node name for S&R": "VHS_VideoCombine",
         "cnr_id": "comfyui-videohelpersuite",
@@ -5404,20 +5404,7 @@
         "save_metadata": true,
         "trim_to_audio": false,
         "pingpong": false,
-        "save_output": true,
-        "videopreview": {
-          "hidden": false,
-          "paused": false,
-          "params": {
-            "filename": "164538_%filename%_RAW_00002.mp4",
-            "subfolder": "FaceBlast8A\\2025-10-19",
-            "type": "output",
-            "format": "video/h264-mp4",
-            "frame_rate": 16,
-            "workflow": "164538_%filename%_RAW_00002.png",
-            "fullpath": "C:\\Users\\yuji\\UmeAiRT\\ComfyUI_windows_portable\\ComfyUI\\output\\FaceBlast8A\\2025-10-19\\164538_%filename%_RAW_00002.mp4"
-          }
-        }
+        "save_output": false
       },
       "color": "#233",
       "bgcolor": "#355",
