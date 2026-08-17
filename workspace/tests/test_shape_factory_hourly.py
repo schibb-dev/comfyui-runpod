@@ -656,8 +656,11 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
         b = select_seed_family(7)
         c = select_seed_family(8)
         self.assertEqual(a, b)
-        self.assertIn(a, {"FB9_GEX2", "FB9_GEX"})
-        self.assertIn(c, {"FB9_GEX2", "FB9_GEX"})
+        from shape_factory_hourly import _DEFAULT_SEED_FAMILY_WEIGHTS
+
+        allowed = {name for name, _w in _DEFAULT_SEED_FAMILY_WEIGHTS}
+        self.assertIn(a, allowed)
+        self.assertIn(c, allowed)
 
     def test_select_seed_family_respects_env_weights(self) -> None:
         import os
@@ -673,6 +676,152 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
                 os.environ.pop("HOURLY_SEED_FAMILIES", None)
             else:
                 os.environ["HOURLY_SEED_FAMILIES"] = prev
+
+    def test_select_seed_family_includes_still_templates(self) -> None:
+        from shape_factory_hourly import _DEFAULT_SEED_FAMILY_WEIGHTS, select_seed_family
+
+        names = {n for n, _w in _DEFAULT_SEED_FAMILY_WEIGHTS}
+        self.assertIn("FB9-FaceBlast", names)
+        self.assertIn("BounceDanceA", names)
+        self.assertIn("FB9_GEX", names)
+        self.assertNotIn("FB9_GEX2", names)
+        i2v = {
+            "FB9-FaceBlast",
+            "X-KNEEL-FB9",
+            "BounceDanceA",
+            "FB8VA4",
+            "FB8VB2",
+            "FB8VA5-ZOOMOUT",
+            "Breast-shake-FB8VA5",
+        }
+        i2v_w = sum(w for n, w in _DEFAULT_SEED_FAMILY_WEIGHTS if n in i2v)
+        total_w = sum(w for _n, w in _DEFAULT_SEED_FAMILY_WEIGHTS)
+        self.assertGreater(i2v_w, total_w // 2)
+        picked = {select_seed_family(i) for i in range(80)}
+        self.assertTrue(picked & {"FB9-FaceBlast", "X-KNEEL-FB9", "BounceDanceA", "FB8VA4"})
+        self.assertNotIn("FB9_GEX2", picked)
+
+    def test_still_recency_mult_boosts_fresh_input_images(self) -> None:
+        import os
+        import tempfile
+        import time
+        from pathlib import Path
+
+        from shape_factory_hourly import _still_recency_mult
+
+        prev_b = os.environ.get("HOURLY_RECENT_STILL_BOOST")
+        prev_d = os.environ.get("HOURLY_RECENT_STILL_DAYS")
+        try:
+            os.environ["HOURLY_RECENT_STILL_BOOST"] = "4.0"
+            os.environ["HOURLY_RECENT_STILL_DAYS"] = "14"
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td) / "input"
+                root.mkdir()
+                fresh = root / "fresh.jpeg"
+                stale = root / "stale.jpeg"
+                fresh.write_bytes(b"x")
+                stale.write_bytes(b"y")
+                now = time.time()
+                os.utime(fresh, (now, now))
+                os.utime(stale, (now - 40 * 86400, now - 40 * 86400))
+                self.assertGreater(_still_recency_mult(str(fresh), now_ts=now), 3.0)
+                self.assertEqual(_still_recency_mult(str(stale), now_ts=now), 1.0)
+                self.assertEqual(_still_recency_mult("/tmp/og/clip.mp4", now_ts=now), 1.0)
+                # BounceDance uses a stronger fresh-still boost.
+                bounce = _still_recency_mult(str(fresh), now_ts=now, family="BounceDanceA")
+                plain = _still_recency_mult(str(fresh), now_ts=now, family="FB9-FaceBlast")
+                self.assertGreater(bounce, plain)
+        finally:
+            if prev_b is None:
+                os.environ.pop("HOURLY_RECENT_STILL_BOOST", None)
+            else:
+                os.environ["HOURLY_RECENT_STILL_BOOST"] = prev_b
+            if prev_d is None:
+                os.environ.pop("HOURLY_RECENT_STILL_DAYS", None)
+            else:
+                os.environ["HOURLY_RECENT_STILL_DAYS"] = prev_d
+
+    def test_bouncedance_hourly_prefers_fresh_pool_product(self) -> None:
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        from shape_factory_hourly import plan_hourly_step
+
+        prev = os.environ.get("HOURLY_BOUNCEDANCE_FRESH_STILL_SHARE")
+        prev_cat = os.environ.get("HOURLY_INPUT_STILL_CATALOG")
+        try:
+            os.environ["HOURLY_BOUNCEDANCE_FRESH_STILL_SHARE"] = "1.0"
+            os.environ["HOURLY_INPUT_STILL_CATALOG"] = "0"
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                (root / "shapes").mkdir()
+                (root / "pools" / "BounceDanceA" / "prompts").mkdir(parents=True)
+                still = root / "input" / "new.jpeg"
+                still.parent.mkdir(parents=True)
+                still.write_bytes(b"img")
+                prompt = root / "pools" / "BounceDanceA" / "prompts" / "catalog-default.json"
+                prompt.write_text("{}", encoding="utf-8")
+                (root / "shapes" / "BounceDanceA.shape.yaml").write_text(
+                    "family_slug: BounceDanceA\n"
+                    "requires:\n"
+                    "  - slot: source_still\n"
+                    "  - slot: prompt_profile\n",
+                    encoding="utf-8",
+                )
+                (root / "pools" / "BounceDanceA" / "pools.yaml").write_text(
+                    "pools:\n"
+                    "  source_still:\n"
+                    "    slot: source_still\n"
+                    "    members:\n"
+                    f"      - glob: {still}\n"
+                    "  prompt_profile:\n"
+                    "    slot: prompt_profile\n"
+                    "    members:\n"
+                    f"      - dir: {prompt.parent}\n"
+                    '        ext: [".json"]\n',
+                    encoding="utf-8",
+                )
+                with mock.patch("shape_factory_hourly._is_top_of_hour", return_value=False):
+                    plan = plan_hourly_step(cursor=0, data_root=root, family="BounceDanceA")
+                self.assertTrue(plan.get("ok"), plan)
+                self.assertEqual(plan.get("pick_mode"), "pool_product")
+                self.assertTrue(plan.get("fresh_still_preferred"))
+                self.assertEqual(plan["picks"]["source_still"], str(still.resolve()))
+        finally:
+            if prev is None:
+                os.environ.pop("HOURLY_BOUNCEDANCE_FRESH_STILL_SHARE", None)
+            else:
+                os.environ["HOURLY_BOUNCEDANCE_FRESH_STILL_SHARE"] = prev
+            if prev_cat is None:
+                os.environ.pop("HOURLY_INPUT_STILL_CATALOG", None)
+            else:
+                os.environ["HOURLY_INPUT_STILL_CATALOG"] = prev_cat
+
+    def test_resolve_glob_mtime_desc_keeps_newest_under_limit(self) -> None:
+        import os
+        import tempfile
+        import time
+        from pathlib import Path
+
+        from shape_factory import resolve_glob
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            old = root / "old.png"
+            new = root / "new.png"
+            mid = root / "mid.png"
+            old.write_bytes(b"a")
+            new.write_bytes(b"b")
+            mid.write_bytes(b"c")
+            now = time.time()
+            os.utime(old, (now - 300, now - 300))
+            os.utime(mid, (now - 200, now - 200))
+            os.utime(new, (now - 10, now - 10))
+            paths = resolve_glob({"glob": str(root / "*.png"), "sort": "mtime_desc", "limit": 2})
+            names = {p.name for p in paths}
+            self.assertEqual(names, {"new.png", "mid.png"})
 
     def test_plan_pool_product_fallback_samples_required_slots(self) -> None:
         import tempfile
@@ -720,18 +869,28 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
 
     def test_find_chain_need_helpers(self) -> None:
         import tempfile
-        from shape_factory_hourly import find_gex2_needing_facial, find_kneel_needing_gex2
+        from shape_factory_hourly import (
+            find_gex2_needing_facial,
+            find_i2v_needing_gex,
+            find_kneel_needing_gex,
+            find_kneel_needing_gex2,
+        )
 
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             gex2 = root / "FB9_GEX2"
+            gex = root / "FB9_GEX"
             facial = root / "FB9_GEX_FACIAL"
             kneel = root / "X-KNEEL-FB9"
-            gex2.mkdir()
-            facial.mkdir()
-            kneel.mkdir()
+            faceblast = root / "FB9-FaceBlast"
+            bounce = root / "BounceDanceA"
+            for d in (gex2, gex, facial, kneel, faceblast, bounce):
+                d.mkdir()
             vid_g = "/tmp/gex2_out.mp4"
             vid_k = "/tmp/kneel_out.mp4"
+            vid_fb = "/tmp/faceblast_out.mp4"
+            vid_bd = "/tmp/bouncedance_final.mp4"
+            vid_bd_preview = "/tmp/bouncedance_PREVIEW.mp4"
             (gex2 / "a.job.json").write_text(
                 json.dumps(
                     {
@@ -752,8 +911,42 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            (faceblast / "fb.job.json").write_text(
+                json.dumps(
+                    {
+                        "job_key": "faceblast-1",
+                        "submit": {"status": "complete"},
+                        "deposit": {"videos": [vid_fb]},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (bounce / "bd.job.json").write_text(
+                json.dumps(
+                    {
+                        "job_key": "bounce-1",
+                        "submit": {"status": "completed"},
+                        "deposit": {
+                            "videos": [
+                                vid_bd,
+                                vid_bd_preview,
+                            ]
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
             self.assertEqual(find_gex2_needing_facial(job_dir=root), "gex2-a")
             self.assertEqual(find_kneel_needing_gex2(job_dir=root), "kneel-k")
+            self.assertEqual(find_kneel_needing_gex(job_dir=root), "kneel-k")
+            # BounceDanceA preferred over FaceBlast / Kneel when all need GEX.
+            hit = find_i2v_needing_gex(job_dir=root)
+            self.assertIsNotNone(hit)
+            assert hit is not None
+            self.assertEqual(hit.get("producer_family"), "BounceDanceA")
+            self.assertEqual(hit.get("job_key"), "bounce-1")
+            self.assertEqual(hit.get("video"), vid_bd)
+            self.assertNotEqual(hit.get("video"), vid_bd_preview)
             (facial / "f.job.json").write_text(
                 json.dumps({"bindings": {"source_video": {"path": vid_g}}}),
                 encoding="utf-8",
@@ -764,6 +957,30 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
             )
             self.assertIsNone(find_gex2_needing_facial(job_dir=root))
             self.assertIsNone(find_kneel_needing_gex2(job_dir=root))
+            # Consumed by GEX2 does not satisfy Kneel→GEX.
+            self.assertEqual(find_kneel_needing_gex(job_dir=root), "kneel-k")
+            (gex / "from_bounce.job.json").write_text(
+                json.dumps({"bindings": {"source_video": {"path": vid_bd}}}),
+                encoding="utf-8",
+            )
+            hit2 = find_i2v_needing_gex(job_dir=root)
+            self.assertIsNotNone(hit2)
+            assert hit2 is not None
+            self.assertEqual(hit2.get("producer_family"), "FB9-FaceBlast")
+            (gex / "from_faceblast.job.json").write_text(
+                json.dumps({"bindings": {"source_video": {"path": vid_fb}}}),
+                encoding="utf-8",
+            )
+            hit3 = find_i2v_needing_gex(job_dir=root)
+            self.assertIsNotNone(hit3)
+            assert hit3 is not None
+            self.assertEqual(hit3.get("producer_family"), "X-KNEEL-FB9")
+            (gex / "from_kneel.job.json").write_text(
+                json.dumps({"bindings": {"source_video": {"path": vid_k}}}),
+                encoding="utf-8",
+            )
+            self.assertIsNone(find_kneel_needing_gex(job_dir=root))
+            self.assertIsNone(find_i2v_needing_gex(job_dir=root))
 
     def test_top_of_hour_and_recent_five_star_multiplier(self) -> None:
         from datetime import datetime, timezone

@@ -1,7 +1,7 @@
 schema_version: comfyui-runpod.shape.v0
 shape_id: wan-i2v-still+prompt
 family_slug: FB8VA5-ZOOMOUT
-graph_hash: e5a83d5cd8d5505ecb94722a2b7d758a80482656693b41862c6e3ee19007b35b
+graph_hash: f7ca95b236948beabd32cbc5124f0804ddbd14da922e8c9f39c109874f1679c2
 template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/FB8VA5-ZOOMOUT-readable.json
 candidate: /home/yuji/src/comfyui-runpod/.data/template_candidates/FB8VA5-ZOOMOUT.candidate.json
 

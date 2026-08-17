@@ -9,6 +9,13 @@ pools:
       under input/, so do not pool output/og companion PNGs here.
     members:
       - glob: /home/yuji/comfyui-runpod-data/input/**/*.png
+        sort: mtime_desc
+        limit: 200
+      - glob: /home/yuji/comfyui-runpod-data/input/**/*.jpeg
+        sort: mtime_desc
+        limit: 200
+      - glob: /home/yuji/comfyui-runpod-data/input/**/*.jpg
+        sort: mtime_desc
         limit: 200
 
   prompt_profile:

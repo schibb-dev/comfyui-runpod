@@ -1,7 +1,7 @@
 schema_version: comfyui-runpod.shape.v0
 shape_id: wan-i2v-still+prompt
 family_slug: FB8VB2
-graph_hash: ca9d41cb4e409daa25c33fae5fa13a5e315899edd93e27a51d3f117156c5dc30
+graph_hash: b01ae61c190f53b75e366bd37cf9c19d49784ade7726d1908ed8657822572ce8
 template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/FB8VB2_2026-01-09_225941_EXT_00001-readable.json
 candidate: /home/yuji/src/comfyui-runpod/.data/template_candidates/FB8VB2_2026-01-09_225941_EXT_00001.candidate.json
 

@@ -2,7 +2,8 @@
 # Shape-factory maintenance + optional fill, gated by hourly-schedule.json.
 # Pending drain (shape_factory_pending_drain) owns pushing pending onto Comfy when
 # this tick leaves jobs pending (Comfy full / submit_mode=pending).
-# Priority when filling: GEX2→FACIAL chain, Kneel→GEX2 chain, then weighted seed.
+# Priority when filling: GEX2→FACIAL (drain), i2v→FB9_GEX (FaceBlast/BounceDance/Kneel/…), then seed.
+# Kneel→GEX2 is disabled — hourlies do not seed or chain into FB9_GEX2.
 # Install timer: bash scripts/install-shape-factory-hourly.sh
 set -euo pipefail
 
@@ -14,7 +15,6 @@ SCHEDULE="${SCHEDULE:-$REPO/.data/shape_factory/hourly-schedule.json}"
 JOBS_DIR="${JOBS_DIR:-$REPO/.data/shape_factory/jobs}"
 CHAIN_MANIFEST="${CHAIN_MANIFEST:-$REPO/.data/chains/best-examples.chain.yaml}"
 BINDS_FACIAL="$REPO/.data/pipelines/binds/facial-from-latest-gex2.yaml"
-BINDS_KNEEL_GEX2="$REPO/.data/pipelines/binds/gex2-from-latest-kneel.yaml"
 COMFY="${COMFY:-http://127.0.0.1:8188}"
 ADVANCE_CHAIN="${ADVANCE_CHAIN:-1}"
 DEV_CHAIN="${DEV_CHAIN:-0}"
@@ -22,7 +22,7 @@ HOURLY_PREDICTED_SHARE="${HOURLY_PREDICTED_SHARE:-0.35}"
 export HOURLY_PREDICTED_SHARE
 
 # Families maintained every tick (deposit / submit / status).
-MAINT_FAMILIES=(FB9_GEX2 FB9_GEX2_identity_anchor FB9_GEX_FACIAL FB9_GEX X-KNEEL-FB9 FB9-FaceBlast)
+MAINT_FAMILIES=(FB9_GEX2 FB9_GEX2_identity_anchor FB9_GEX_FACIAL FB9_GEX X-KNEEL-FB9 FB9-FaceBlast BounceDanceA FB8VA4 FB8VB2 FB8VA5-ZOOMOUT Breast-shake-FB8VA5)
 
 mkdir -p "$(dirname "$LOG")" "$(dirname "$STATE")"
 
@@ -129,6 +129,11 @@ read -r RUN PEND < <(queue_counts)
 SUBMIT_SLOTS=$(policy_field "$(queue_policy "$PEND" 0)" submit_slots)
 SUBMIT_SLOTS=${SUBMIT_SLOTS:-0}
 
+INBOX_JSON=$(cd "$SCRIPTS" && python3 ingest_windows_input_inbox.py --ensure --apply --inbox "${WINDOWS_INPUT_INBOX:-/mnt/e/comfyui-runpod-inbox}" --dest "${COMFYUI_BIND_INPUT_DIR:-/home/yuji/comfyui-runpod-data/input}" 2>>"$LOG" || true)
+log "windows-inbox ${INBOX_JSON:-failed}"
+STILL_SCAN=$(cd "$SCRIPTS" && python3 shape_factory_hourly.py input-stills-scan --data-root "$REPO/.data" 2>>"$LOG" || true)
+log "input-stills-scan ${STILL_SCAN:-failed}"
+
 (
   cd "$SCRIPTS"
   for fam in "${MAINT_FAMILIES[@]}"; do
@@ -201,34 +206,49 @@ PY
   exit 0
 fi
 
-# Phase 2: Kneel complete without GEX2 child
-NEED_KNEEL_GEX2=$(cd "$SCRIPTS" && python3 shape_factory_hourly.py need-gex2-from-kneel --data-root "$REPO/.data")
-if [ -n "$NEED_KNEEL_GEX2" ]; then
-  log "phase=gex2_from_kneel — Kneel complete without GEX2 ($NEED_KNEEL_GEX2)"
+# Phase 2: i2v/still-family complete without FB9_GEX child (FaceBlast, BounceDanceA, Kneel, …)
+NEED_I2V_JSON=$(cd "$SCRIPTS" && python3 shape_factory_hourly.py need-gex-from-i2v --data-root "$REPO/.data")
+NEED_I2V_KEY=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('job_key') or '')" "$NEED_I2V_JSON")
+if [ -n "$NEED_I2V_KEY" ]; then
+  NEED_I2V_FAM=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('producer_family') or '')" "$NEED_I2V_JSON")
+  NEED_I2V_VID=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('video') or '')" "$NEED_I2V_JSON")
+  log "phase=gex_from_i2v — $NEED_I2V_FAM complete without GEX ($NEED_I2V_KEY)"
+  BIND_I2V=$(mktemp --suffix=.yaml)
+  python3 - "$NEED_I2V_VID" "$BIND_I2V" <<'PY'
+import sys
+from pathlib import Path
+vid, out = sys.argv[1], Path(sys.argv[2])
+# Escape for YAML double-quoted scalar
+esc = vid.replace("\\", "\\\\").replace('"', '\\"')
+out.write_text(f'source_video:\n  from: path\n  path: "{esc}"\n', encoding="utf-8")
+PY
   (
     cd "$SCRIPTS"
     python3 shape_factory.py generate \
-      --shape "$(shape_for_family FB9_GEX2)" \
-      --pools "$(pools_for_family FB9_GEX2)" \
-      --binds-override "$BINDS_KNEEL_GEX2" \
+      --shape "$(shape_for_family FB9_GEX)" \
+      --pools "$(pools_for_family FB9_GEX)" \
+      --binds-override "$BIND_I2V" \
       --pick zip --limit 1 --job-suffix "$HOURLY_SUFFIX" \
       --output-prefix-root "$HOURLY_PREFIX_ROOT" \
       --job-key-prefix "$HOURLY_JOB_KEY_PREFIX" \
       "${dev_args[@]}" >> "$LOG" 2>&1
-    maybe_submit FB9_GEX2 "$DEST"
+    maybe_submit FB9_GEX "$DEST"
   )
-  python3 - "$STATE_JSON" "$NEED_KNEEL_GEX2" "$STATE" <<'PY'
+  rm -f "$BIND_I2V"
+  python3 - "$STATE_JSON" "$NEED_I2V_KEY" "$NEED_I2V_FAM" "$NEED_I2V_VID" "$STATE" <<'PY'
 import json, sys
 from pathlib import Path
 data = json.loads(sys.argv[1])
-data["phase"] = "gex2_from_kneel_queued"
-data["last_family"] = "FB9_GEX2"
+data["phase"] = "gex_from_i2v_queued"
+data["last_family"] = "FB9_GEX"
 data["last_pick_mode"] = "chain"
-data["last_kneel_job"] = sys.argv[2]
-Path(sys.argv[3]).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+data["last_i2v_job"] = sys.argv[2]
+data["last_i2v_producer"] = sys.argv[3]
+data["last_i2v_video"] = sys.argv[4]
+Path(sys.argv[5]).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
   mark_tick
-  log "gex2-from-kneel step queued dest=$DEST"
+  log "gex-from-i2v step queued producer=$NEED_I2V_FAM dest=$DEST"
   exit 0
 fi
 

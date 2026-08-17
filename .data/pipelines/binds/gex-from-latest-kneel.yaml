@@ -1,0 +1,6 @@
+# Chain bind: FB9_GEX primary video = most recent X-KNEEL deposit
+source_video:
+  from: pool
+  pool: X-KNEEL_X_og
+  pick: last
+  index: /home/yuji/src/comfyui-runpod/.data/pools/X-KNEEL-FB9/index.json

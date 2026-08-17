@@ -5,11 +5,22 @@ pools:
   source_still:
     slot: source_still
     description: >
-      Start frames (A slot). Comfy LoadImage only accepts files under input/,
-      so do not pool output/og companion PNGs here.
+      Start frames (A slot). Prefer newest Comfy input drops — BounceDance hourly
+      strongly biases to fresh stills (catalog first_seen / mtime). Comfy LoadImage
+      only accepts files under input/, so do not pool output/og companion PNGs here.
     members:
       - glob: /home/yuji/comfyui-runpod-data/input/**/*.png
-        limit: 200
+        sort: mtime_desc
+        limit: 80
+      - glob: /home/yuji/comfyui-runpod-data/input/**/*.jpeg
+        sort: mtime_desc
+        limit: 80
+      - glob: /home/yuji/comfyui-runpod-data/input/**/*.jpg
+        sort: mtime_desc
+        limit: 80
+      - glob: /home/yuji/comfyui-runpod-data/input/**/*.webp
+        sort: mtime_desc
+        limit: 40
 
   prompt_profile:
     slot: prompt_profile

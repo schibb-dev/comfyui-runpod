@@ -48,9 +48,12 @@ export function pickDefaultExtendFamily(
   if (base.includes("GEX2_FACIAL") || base.includes("GEX_FACIAL")) {
     if (has("FB9_GEX_FACIAL")) return "FB9_GEX_FACIAL";
   }
+  if ((base.includes("BOUNCE") || base.includes("DANCEA")) && has("FB9_GEX")) return "FB9_GEX";
+  if ((base.includes("FACEBLAST") || base.includes("FACE_BLAST")) && has("FB9_GEX")) return "FB9_GEX";
   if (base.includes("GEX2") && has("FB9_GEX2")) return "FB9_GEX2";
   if (base.includes("GEX") && has("FB9_GEX")) return "FB9_GEX";
-  // Kneel / still-origin OG clips → first V2V hop is GEX2 (not FACIAL).
+  // Image-started / Kneel OG clips → first V2V hop is FB9_GEX (not GEX2).
+  if ((base.includes("KNEEL") || base.includes("X-KNEEL")) && has("FB9_GEX")) return "FB9_GEX";
   if ((base.includes("KNEEL") || base.includes("X-KNEEL")) && has("FB9_GEX2")) return "FB9_GEX2";
 
   for (const pref of PREFERRED_EXTEND_FAMILIES) {

@@ -1,0 +1,26 @@
+schema_version: comfyui-runpod.pipeline.v0
+pipeline_id: faceblast-to-gex
+description: FB9-FaceBlast deposit → FB9_GEX (hourly i2v→GEX chain; Workbench Extend default)
+
+steps:
+  - id: faceblast
+    shape: /home/yuji/src/comfyui-runpod/.data/shapes/FB9-FaceBlast.shape.yaml
+    pools: /home/yuji/src/comfyui-runpod/.data/pools/FB9-FaceBlast/pools.yaml
+    pick: zip
+    deposits:
+      final_video: pool:FB9-FaceBlast_X_og
+
+  - id: gex
+    shape: /home/yuji/src/comfyui-runpod/.data/shapes/FB9_GEX.shape.yaml
+    pools: /home/yuji/src/comfyui-runpod/.data/pools/FB9_GEX/pools.yaml
+    pick: zip
+    binds_override:
+      source_video:
+        from: pool
+        pool: FB9-FaceBlast_X_og
+        pick: last
+        index: /home/yuji/src/comfyui-runpod/.data/pools/FB9-FaceBlast/index.json
+    deposits:
+      final_video: pool:FB9_GEX_X_og
+
+rules: []

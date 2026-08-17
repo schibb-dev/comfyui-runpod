@@ -383,27 +383,77 @@ def apply_asset_to_workflow(workflow: Any, asset_path: Path, input_root: Path) -
     return draft, warnings
 
 
-def strip_video_previews_and_redirect_outputs(workflow: Any, output_prefix: str) -> dict[str, int]:
-    changes = {"stripped_video_previews": 0, "redirected_outputs": 0}
+def strip_video_previews_and_redirect_outputs(
+    workflow: Any,
+    output_prefix: str,
+    *,
+    final_node_ids: Optional[set[int]] = None,
+) -> dict[str, int]:
+    """Keep only final video saves; mute preview/debug/raw combines so they are never stored."""
+    changes = {
+        "stripped_video_previews": 0,
+        "redirected_outputs": 0,
+        "disabled_non_final_outputs": 0,
+    }
     flat_prefix = flatten_output_prefix(str(output_prefix or "").rstrip("/"))
+    finals = {int(x) for x in (final_node_ids or set()) if str(x).strip() != ""}
+
+    def _is_non_final_title(title: str) -> bool:
+        t = str(title or "").lower()
+        return any(k in t for k in ("preview", "debug", "raw", "sample frame", "interpoled", "upscaled", "upint"))
+
     for node in workflow.get("nodes") or []:
         if not isinstance(node, dict):
             continue
         node_type = str(node.get("type") or node.get("class_type") or "")
-        if node_type != "VHS_VideoCombine":
+        if node_type not in {"VHS_VideoCombine", "SaveImage"}:
             continue
         widgets = node.get("widgets_values")
-        if not isinstance(widgets, dict):
+        if node_type == "VHS_VideoCombine" and not isinstance(widgets, dict):
             continue
-        if "videopreview" in widgets:
+        if isinstance(widgets, dict) and "videopreview" in widgets:
             widgets.pop("videopreview", None)
             changes["stripped_video_previews"] += 1
-        if node.get("mode", 0) not in (2, 4) and widgets.get("save_output") is not False:
-            title = str(node.get("title") or "")
-            suffix = "_PREVIEW" if "preview" in title.lower() or "raw" in title.lower() else "_FINAL"
-            widgets["filename_prefix"] = f"{flat_prefix}{suffix}"
-            widgets["save_metadata"] = True
-            changes["redirected_outputs"] += 1
+
+        try:
+            nid = int(node.get("id"))
+        except (TypeError, ValueError):
+            nid = -1
+        title = str(node.get("title") or "")
+        is_final = (nid in finals) if finals else (
+            node_type == "VHS_VideoCombine"
+            and node.get("mode", 0) not in (2, 4)
+            and not _is_non_final_title(title)
+            and (not isinstance(widgets, dict) or widgets.get("save_output") is not False)
+        )
+        # When finals are known, only those save. Otherwise mute preview/raw titles.
+        if finals:
+            keep = nid in finals
+        else:
+            keep = is_final and not _is_non_final_title(title)
+
+        if keep and node_type == "VHS_VideoCombine" and isinstance(widgets, dict):
+            if node.get("mode", 0) not in (2, 4) and widgets.get("save_output") is not False:
+                widgets["filename_prefix"] = flat_prefix
+                widgets["save_metadata"] = True
+                widgets["save_output"] = True
+                node["mode"] = 0
+                changes["redirected_outputs"] += 1
+            continue
+
+        # Mute / never-store for preview, debug, raw, and other non-final savers.
+        if node_type == "VHS_VideoCombine" and isinstance(widgets, dict):
+            if widgets.get("save_output") is not False or node.get("mode", 0) not in (2, 4):
+                widgets["save_output"] = False
+                node["mode"] = 2
+                if title and not title.upper().startswith("DISABLED"):
+                    node["title"] = f"DISABLED OUTPUT: {title}"
+                changes["disabled_non_final_outputs"] += 1
+        elif node_type == "SaveImage" and node.get("mode", 0) not in (2, 4):
+            node["mode"] = 2
+            if title and not title.upper().startswith("DISABLED"):
+                node["title"] = f"DISABLED OUTPUT: {title}"
+            changes["disabled_non_final_outputs"] += 1
     return changes
 
 

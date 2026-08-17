@@ -1,0 +1,26 @@
+schema_version: comfyui-runpod.pipeline.v0
+pipeline_id: bouncedance-to-gex
+description: BounceDanceA deposit → FB9_GEX (hourly i2v→GEX chain; Workbench Extend default)
+
+steps:
+  - id: bouncedance
+    shape: /home/yuji/src/comfyui-runpod/.data/shapes/BounceDanceA.shape.yaml
+    pools: /home/yuji/src/comfyui-runpod/.data/pools/BounceDanceA/pools.yaml
+    pick: zip
+    deposits:
+      final_video: pool:BounceDanceA_X_og
+
+  - id: gex
+    shape: /home/yuji/src/comfyui-runpod/.data/shapes/FB9_GEX.shape.yaml
+    pools: /home/yuji/src/comfyui-runpod/.data/pools/FB9_GEX/pools.yaml
+    pick: zip
+    binds_override:
+      source_video:
+        from: pool
+        pool: BounceDanceA_X_og
+        pick: last
+        index: /home/yuji/src/comfyui-runpod/.data/pools/BounceDanceA/index.json
+    deposits:
+      final_video: pool:FB9_GEX_X_og
+
+rules: []

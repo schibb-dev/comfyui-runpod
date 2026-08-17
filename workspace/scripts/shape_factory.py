@@ -38,7 +38,12 @@ from typing import Any, Optional
 
 import yaml
 
-from comfyui_submit import _http_json, convert_ui_workflow_to_prompt, submit_prompt_to_comfyui
+from comfyui_submit import (
+    _http_json,
+    _normalize_prompt_paths_for_linux,
+    convert_ui_workflow_to_prompt,
+    submit_prompt_to_comfyui,
+)
 from comfy_meta_lib import extract_prompt_workflow_from_png_chunks, read_png_text_chunks
 from snowflake_factory import strip_video_previews_and_redirect_outputs
 from snowflake_inventory import is_litegraph_workflow, read_json
@@ -49,7 +54,9 @@ from workflow_repair import (
     default_repair_rules,
     load_type_mappings,
     load_prompt_error_rules,
+    migrate_string_concatenate_prompt_inputs,
     patchable_missing_types,
+    repair_ui_until_stable,
     repair_until_stable,
     sanitize_prompt_string_inputs,
 )
@@ -536,7 +543,12 @@ def update_job_timings_on_status(
             execution["nodes"] = node_times.get("nodes")
             execution["nodes_tracked_sec"] = node_times.get("tracked_sec")
             execution["nodes_source"] = node_times.get("source")
-        hist_outputs = extract_history_output_paths(history, data_root)
+        by_node = extract_history_outputs_by_node(history, data_root)
+        if by_node:
+            submit["outputs_by_node"] = {
+                str(nid): [str(p) for p in paths] for nid, paths in by_node.items()
+            }
+        hist_outputs = extract_history_output_paths(history, data_root, job=job)
         if hist_outputs:
             submit["outputs"] = [str(p) for p in hist_outputs]
             submit["output_discovery"] = "comfy_history"
@@ -985,6 +997,31 @@ def coerce_pool_fs_path(raw: str | Path) -> Path:
     return candidates[0]
 
 
+def _resolve_glob_via_input_still_catalog(spec: dict[str, Any], expanded: str) -> Optional[list[Path]]:
+    """Newest-by-first_seen stills from the input catalog; None means fall back to glob."""
+    flag = os.environ.get("HOURLY_INPUT_STILL_CATALOG", "1").strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return None
+    try:
+        from input_still_catalog import (
+            default_catalog_path,
+            glob_ext_from_pattern,
+            list_recent_stills,
+        )
+    except ImportError:
+        return None
+    ext = glob_ext_from_pattern(expanded) or glob_ext_from_pattern(str(spec.get("glob") or ""))
+    if not ext:
+        return None
+    cat = default_catalog_path()
+    if not cat.is_file():
+        return None
+    limit = spec.get("limit")
+    lim = int(limit) if isinstance(limit, int) and limit > 0 else 200
+    paths = list_recent_stills(catalog_path=cat, exts=[ext], limit=lim)
+    return paths if paths else None
+
+
 def resolve_glob(spec: dict[str, Any]) -> list[Path]:
     pattern = str(spec.get("glob") or "").strip()
     if not pattern:
@@ -994,13 +1031,36 @@ def resolve_glob(spec: dict[str, Any]) -> list[Path]:
     import glob as _glob
 
     expanded = str(coerce_pool_fs_path(pattern))
+    cataloged = _resolve_glob_via_input_still_catalog(spec, expanded)
+    if cataloged is not None:
+        return cataloged
     raw_paths = _glob.glob(expanded, recursive=True)
     # If host-path globs miss inside Docker, retry the dockerified pattern string.
     if not raw_paths:
         alt = str(dockerify_repo_path(pattern))
         if alt != expanded:
             raw_paths = _glob.glob(alt, recursive=True)
-    paths = sorted({Path(p).resolve() for p in raw_paths if Path(p).is_file()})
+    paths = [
+        Path(p).resolve()
+        for p in raw_paths
+        if Path(p).is_file() and "/_factory/" not in str(Path(p)).replace("\\", "/")
+    ]
+    # Unique while keeping a stable iteration order before sort.
+    uniq: dict[str, Path] = {}
+    for path in paths:
+        uniq.setdefault(str(path), path)
+    paths = list(uniq.values())
+    sort_mode = str(spec.get("sort") or "name").strip().lower()
+    if sort_mode in {"mtime", "mtime_desc", "newest"}:
+        def _mtime(p: Path) -> float:
+            try:
+                return float(p.stat().st_mtime)
+            except OSError:
+                return 0.0
+
+        paths.sort(key=_mtime, reverse=True)
+    else:
+        paths.sort()
     if isinstance(limit, int) and limit > 0:
         paths = paths[:limit]
     return paths
@@ -1450,7 +1510,14 @@ def apply_binds_override(
     for slot, spec in (overrides or {}).items():
         if not isinstance(spec, dict):
             continue
-        if str(spec.get("from") or "") != "pool":
+        from_kind = str(spec.get("from") or "").strip().lower()
+        if from_kind in {"path", "file", "literal"}:
+            raw = str(spec.get("path") or spec.get("file") or "").strip()
+            if not raw:
+                raise RuntimeError(f"binds_override slot {slot!r} from={from_kind!r} missing path")
+            out[str(slot)] = [Path(raw).expanduser().resolve()]
+            continue
+        if from_kind != "pool":
             continue
         pool_id = str(spec.get("pool") or "").strip()
         if not pool_id:
@@ -1571,7 +1638,21 @@ def generate_job_for_picks(
         job_key = slug(job_key, room) + extra_suffix
 
     output_prefix = f"{prefix_root}/{job_key}"
-    changes = strip_video_previews_and_redirect_outputs(workflow, output_prefix)
+    final_node_ids: set[int] = set()
+    for prod in shape.get("produces") or []:
+        if not isinstance(prod, dict):
+            continue
+        binding = prod.get("binding") if isinstance(prod.get("binding"), dict) else {}
+        nid = binding.get("node_id")
+        if nid is None:
+            continue
+        try:
+            final_node_ids.add(int(nid))
+        except (TypeError, ValueError):
+            continue
+    changes = strip_video_previews_and_redirect_outputs(
+        workflow, output_prefix, final_node_ids=final_node_ids or None
+    )
 
     # Seed use window from clips / full file (never catalog template skip).
     draft_for_window: dict[str, Any] = {"bindings": bindings_meta}
@@ -2281,16 +2362,27 @@ def apply_api_slot_bindings(
     prefix = str(job.get("output_prefix") or "").rstrip("/")
     prefix = flatten_output_prefix(prefix)
     if prefix:
-        for node in prompt.values():
+        final_ids: set[str] = set()
+        for prod in shape.get("produces") or []:
+            if not isinstance(prod, dict):
+                continue
+            binding = prod.get("binding") if isinstance(prod.get("binding"), dict) else {}
+            nid = binding.get("node_id")
+            if nid is None:
+                continue
+            final_ids.add(str(nid))
+        for node_id, node in prompt.items():
             if not isinstance(node, dict) or node.get("class_type") != "VHS_VideoCombine":
                 continue
             inputs = node.setdefault("inputs", {})
-            if inputs.get("save_output") is False:
-                continue
-            if inputs.get("save_metadata") is True:
+            is_final = str(node_id) in final_ids if final_ids else bool(inputs.get("save_metadata") is True)
+            if is_final:
+                inputs["save_output"] = True
+                inputs["save_metadata"] = True
                 inputs["filename_prefix"] = prefix
             else:
-                inputs["filename_prefix"] = f"{prefix}_PREVIEW"
+                # Preview / debug / raw combines must never be stored.
+                inputs["save_output"] = False
 
     return warnings
 
@@ -2334,8 +2426,90 @@ def sync_prompt_inputs_from_ui_workflow(workflow: dict[str, Any], prompt: dict[s
 def sanitize_converted_prompt(workflow: dict[str, Any], prompt: dict[str, Any]) -> list[str]:
     """Fix common /workflow/convert issues before Comfy validation."""
     warnings = [f.summary for f in sanitize_prompt_string_inputs(workflow, prompt)]
+    before = json.dumps(prompt, sort_keys=True)
+    _normalize_prompt_paths_for_linux(prompt)
+    after = json.dumps(prompt, sort_keys=True)
+    if before != after:
+        warnings.append("normalized Windows-style model/asset paths to POSIX")
     warnings.extend(normalize_prompt_output_prefixes(prompt))
+    # Text Concatenate → StringConcatenate renames leave text_a/text_b in the API prompt;
+    # core StringConcatenate.execute() only accepts string_a/string_b (+ delimiter).
+    for nid, node in (prompt or {}).items():
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("class_type") or "") != "StringConcatenate":
+            continue
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict):
+            continue
+        changed = migrate_string_concatenate_prompt_inputs(inputs)
+        if changed:
+            warnings.append(f"StringConcatenate {nid}: migrate text_* → string_* ({', '.join(changed)})")
+    warnings.extend(enforce_no_stored_preview_outputs(workflow, prompt))
     return warnings
+
+
+def _vhs_title_is_non_final(title: str) -> bool:
+    t = str(title or "").lower()
+    return any(k in t for k in ("preview", "debug", "raw", "sample frame", "interpoled", "upscaled", "upint"))
+
+
+def enforce_no_stored_preview_outputs(
+    workflow: dict[str, Any],
+    prompt: dict[str, Any],
+    *,
+    final_node_ids: Optional[set[int]] = None,
+) -> list[str]:
+    """Force preview/debug/raw VHS combines to ``save_output=False`` (never store on disk)."""
+    warnings: list[str] = []
+    finals = {int(x) for x in (final_node_ids or set()) if str(x).strip() != ""}
+    ui_by_id: dict[str, dict[str, Any]] = {}
+    for node in workflow.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("type") or node.get("class_type") or "") != "VHS_VideoCombine":
+            continue
+        try:
+            ui_by_id[str(int(node.get("id")))] = node
+        except (TypeError, ValueError):
+            continue
+
+    for nid, node in (prompt or {}).items():
+        if not isinstance(node, dict) or str(node.get("class_type") or "") != "VHS_VideoCombine":
+            continue
+        inputs = node.setdefault("inputs", {})
+        ui = ui_by_id.get(str(nid))
+        title = str((ui or {}).get("title") or "")
+        mode = int((ui or {}).get("mode") or 0) if ui else 0
+        try:
+            nid_i = int(nid)
+        except (TypeError, ValueError):
+            nid_i = -1
+
+        must_mute = False
+        if finals and nid_i not in finals:
+            must_mute = True
+        elif mode in (2, 4):
+            must_mute = True
+        elif _vhs_title_is_non_final(title):
+            must_mute = True
+        elif isinstance((ui or {}).get("widgets_values"), dict):
+            # UI already asked not to save.
+            if (ui.get("widgets_values") or {}).get("save_output") is False:
+                must_mute = True
+
+        if must_mute and inputs.get("save_output") is not False:
+            inputs["save_output"] = False
+            warnings.append(f"VHS_VideoCombine {nid}: muted non-final/preview save_output")
+    return warnings
+
+
+
+def repair_ui_workflow_for_submit(workflow: dict[str, Any]) -> list[str]:
+    """Apply UI repair rules in-place (backslash gguf paths, easy-node convert hazards)."""
+    ctx = RepairContext(workflow=workflow)
+    fixes = repair_ui_until_stable(ctx, default_repair_rules())
+    return [f.summary for f in fixes]
 
 
 def comfy_node_errors(submit_body: dict[str, Any]) -> dict[str, Any]:
@@ -3895,6 +4069,9 @@ def resolve_prompt_for_job(
     # Fix LoadImage / VHS paths from job bindings before convert (stale generated workflows
     # often still have input/<file> or a dead workspace/input host path).
     warnings.extend(_rebind_job_slots_to_ui_workflow(workflow, shape, job, data_root))
+    # Stale generated workflows keep Windows WAN\ gguf paths and broken easy convertAnything
+    # toInt nodes — repair before /workflow/convert so Comfy never sees them.
+    warnings.extend(repair_ui_workflow_for_submit(workflow))
     try:
         prompt_obj = convert_ui_workflow_to_prompt(server, workflow, timeout_s=convert_timeout)
         warnings.extend(sync_prompt_inputs_from_ui_workflow(workflow, prompt_obj))
@@ -3902,6 +4079,21 @@ def resolve_prompt_for_job(
         # Re-apply bindings on the API prompt so LoadImage uses basename form even if
         # convert echoed a stale widget value.
         warnings.extend(apply_api_slot_bindings(prompt_obj, shape, job, data_root))
+        final_ids: set[int] = set()
+        for prod in shape.get("produces") or []:
+            if not isinstance(prod, dict):
+                continue
+            binding = prod.get("binding") if isinstance(prod.get("binding"), dict) else {}
+            nid = binding.get("node_id")
+            if nid is None:
+                continue
+            try:
+                final_ids.add(int(nid))
+            except (TypeError, ValueError):
+                continue
+        warnings.extend(
+            enforce_no_stored_preview_outputs(workflow, prompt_obj, final_node_ids=final_ids or None)
+        )
         if isinstance(dev_spec, dict):
             apply_dev_tuning_api(prompt_obj, dev_spec)
         # vhs_window is source of truth; apply last so a stale {0,0} spec cannot clobber trim.
@@ -3922,7 +4114,23 @@ def resolve_prompt_for_job(
     if seed_png is None:
         raise RuntimeError("no companion PNG for bindings; cannot build API prompt without /workflow/convert")
     prompt = extract_api_prompt_from_png(seed_png)
+    warnings.extend(sanitize_converted_prompt(workflow, prompt))
     warnings.extend(apply_api_slot_bindings(prompt, shape, job, data_root))
+    final_ids_fb: set[int] = set()
+    for prod in shape.get("produces") or []:
+        if not isinstance(prod, dict):
+            continue
+        binding = prod.get("binding") if isinstance(prod.get("binding"), dict) else {}
+        nid = binding.get("node_id")
+        if nid is None:
+            continue
+        try:
+            final_ids_fb.add(int(nid))
+        except (TypeError, ValueError):
+            continue
+    warnings.extend(
+        enforce_no_stored_preview_outputs(workflow, prompt, final_node_ids=final_ids_fb or None)
+    )
     if isinstance(dev_spec, dict):
         apply_dev_tuning_api(prompt, dev_spec)
     apply_job_vhs_window_to_prompt(job, prompt)
@@ -4190,8 +4398,22 @@ def rebuild_job_workflow(
         apply_dev_tuning_ui(workflow, dev_spec)
 
     output_prefix = flatten_output_prefix(str(job.get("output_prefix") or ""))
+    final_node_ids: set[int] = set()
+    for prod in shape.get("produces") or []:
+        if not isinstance(prod, dict):
+            continue
+        binding = prod.get("binding") if isinstance(prod.get("binding"), dict) else {}
+        nid = binding.get("node_id")
+        if nid is None:
+            continue
+        try:
+            final_node_ids.add(int(nid))
+        except (TypeError, ValueError):
+            continue
     if output_prefix:
-        strip_video_previews_and_redirect_outputs(workflow, output_prefix)
+        strip_video_previews_and_redirect_outputs(
+            workflow, output_prefix, final_node_ids=final_node_ids or None
+        )
 
     workflow_out = workflow_dir / family / f"{job_key}.workflow.json"
     workflow_out.parent.mkdir(parents=True, exist_ok=True)
@@ -5499,13 +5721,62 @@ def host_path_candidates_for_comfy_output(
     return out
 
 
-def extract_history_output_paths(history: dict[str, Any], data_root: Path) -> list[Path]:
-    paths: list[Path] = []
-    seen: set[str] = set()
+def produce_video_node_ids(
+    job: Optional[dict[str, Any]] = None,
+    shape: Optional[dict[str, Any]] = None,
+) -> list[str]:
+    """Node ids from shape ``produces`` video slots (the only outputs that should be kept)."""
+    doc = shape if isinstance(shape, dict) else None
+    if doc is None and isinstance(job, dict):
+        embedded = job.get("shape")
+        if isinstance(embedded, dict) and embedded.get("produces"):
+            doc = embedded
+        if doc is None:
+            raw = str(job.get("shape_path") or "").strip()
+            if raw:
+                try:
+                    path = Path(raw).expanduser()
+                    if path.is_file():
+                        doc = load_yaml(path)
+                except Exception:
+                    doc = None
+    out: list[str] = []
+    if not isinstance(doc, dict):
+        return out
+    for prod in doc.get("produces") or []:
+        if not isinstance(prod, dict):
+            continue
+        binding = prod.get("binding") if isinstance(prod.get("binding"), dict) else {}
+        nid = binding.get("node_id")
+        if nid is None:
+            continue
+        media = str(prod.get("media") or "").strip().lower()
+        slot = str(prod.get("slot") or "").strip().lower()
+        ntype = str(binding.get("node_type") or "").strip().lower()
+        looks_video = (
+            media in {"video", "mp4"}
+            or "video" in slot
+            or "vhs" in ntype
+            or slot in {"x", "final", "output"}
+            or "final" in slot
+        )
+        if not looks_video and (media or slot or ntype):
+            # Explicit non-video produce — skip.
+            if media and media not in {"video", "mp4"}:
+                continue
+        out.append(str(nid))
+    return out
+
+
+def extract_history_outputs_by_node(history: dict[str, Any], data_root: Path) -> dict[str, list[Path]]:
+    """Map Comfy history node id → saved mp4 host paths."""
+    by_node: dict[str, list[Path]] = {}
     outputs = history.get("outputs") if isinstance(history.get("outputs"), dict) else {}
-    for node_out in outputs.values():
+    for nid, node_out in outputs.items():
         if not isinstance(node_out, dict):
             continue
+        found: list[Path] = []
+        seen: set[str] = set()
         for key in ("gifs", "videos", "images"):
             for item in node_out.get(key) or []:
                 if not isinstance(item, dict):
@@ -5522,10 +5793,104 @@ def extract_history_output_paths(history: dict[str, Any], data_root: Path) -> li
                     fullpath=str(item.get("fullpath") or "") or None,
                 ):
                     if cand.is_file():
-                        key = str(cand)
-                        if key not in seen:
-                            seen.add(key)
-                            paths.append(cand)
+                        k = str(cand)
+                        if k not in seen:
+                            seen.add(k)
+                            found.append(cand)
+        if found:
+            by_node[str(nid)] = found
+    return by_node
+
+
+def _is_preview_or_raw_output_path(path: str | Path) -> bool:
+    stem = Path(str(path)).stem.lower()
+    return any(
+        token in stem
+        for token in ("_preview", "-preview", "_debug", "-debug", "_raw", "-raw", "preview_debug")
+    )
+
+
+def select_final_output_paths(
+    paths: list[Path],
+    *,
+    job: Optional[dict[str, Any]] = None,
+    shape: Optional[dict[str, Any]] = None,
+    history: Optional[dict[str, Any]] = None,
+    data_root: Optional[Path] = None,
+) -> list[Path]:
+    """
+    Prefer the shape ``produces`` VHS node output over preview/debug siblings.
+
+    ``_00001`` / ``_00002`` suffixes are NOT reliable — Comfy numbers by execution
+    order, and preview often lands on ``_00001`` while final is ``_00002``.
+    """
+    cleaned = [Path(p) for p in paths if str(p).strip()]
+    if not cleaned:
+        return []
+
+    produce_ids = produce_video_node_ids(job, shape)
+    by_node: dict[str, list[Path]] = {}
+    if isinstance(job, dict):
+        submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+        raw_map = submit.get("outputs_by_node")
+        if isinstance(raw_map, dict):
+            for nid, vals in raw_map.items():
+                if isinstance(vals, list):
+                    by_node[str(nid)] = [Path(str(v)) for v in vals if str(v).strip()]
+    if history is not None and data_root is not None:
+        by_node = extract_history_outputs_by_node(history, data_root) or by_node
+
+    if produce_ids and by_node:
+        picked: list[Path] = []
+        seen: set[str] = set()
+        for nid in produce_ids:
+            for path in by_node.get(str(nid)) or []:
+                key = str(path)
+                if key in seen:
+                    continue
+                seen.add(key)
+                picked.append(path)
+        if picked:
+            return picked
+
+    explicit_final = [p for p in cleaned if "_final" in p.stem.lower()]
+    if explicit_final:
+        return explicit_final
+    non_preview = [p for p in cleaned if not _is_preview_or_raw_output_path(p)]
+    return non_preview if non_preview else cleaned
+
+
+def extract_history_output_paths(
+    history: dict[str, Any],
+    data_root: Path,
+    *,
+    prefer_node_ids: Optional[list[str] | set[str]] = None,
+    job: Optional[dict[str, Any]] = None,
+    shape: Optional[dict[str, Any]] = None,
+) -> list[Path]:
+    by_node = extract_history_outputs_by_node(history, data_root)
+    prefer = [str(x) for x in (prefer_node_ids or produce_video_node_ids(job, shape) or [])]
+    if prefer:
+        paths: list[Path] = []
+        seen: set[str] = set()
+        for nid in prefer:
+            for path in by_node.get(str(nid)) or []:
+                key = str(path)
+                if key in seen:
+                    continue
+                seen.add(key)
+                paths.append(path)
+        if paths:
+            return paths
+    paths = []
+    seen = set()
+    for node_paths in by_node.values():
+        for path in node_paths:
+            key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            paths.append(path)
     return sorted(paths)
 
 
@@ -5698,7 +6063,12 @@ def update_job_status_from_comfy(
                 status = "interrupted"
             else:
                 submit["error"] = "Comfy execution error (no exception details in history)"
-    hist_outputs = extract_history_output_paths(history, data_root)
+    by_node = extract_history_outputs_by_node(history, data_root)
+    if by_node:
+        submit["outputs_by_node"] = {
+            str(nid): [str(p) for p in paths] for nid, paths in by_node.items()
+        }
+    hist_outputs = extract_history_output_paths(history, data_root, job=job)
     if hist_outputs:
         submit["outputs"] = [str(p) for p in hist_outputs]
         submit["output_discovery"] = "comfy_history"
@@ -5836,6 +6206,7 @@ def cmd_deposit(args: argparse.Namespace) -> int:
         if not isinstance(outputs, list) or not outputs:
             outputs = [str(p) for p in discover_job_outputs(job, data_root)]
         video_paths = [Path(str(p)).expanduser() for p in outputs if str(p).lower().endswith(".mp4")]
+        video_paths = select_final_output_paths(video_paths, job=job, data_root=data_root)
         if not video_paths:
             print(f"skip {job_key} (no mp4 outputs)")
             skipped += 1

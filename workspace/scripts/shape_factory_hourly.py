@@ -13,6 +13,7 @@ import math
 import os
 import random
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -66,8 +67,156 @@ def _is_2025_source(path: str) -> bool:
     return bool(_Y2025_NAME_RE.search(Path(text).name))
 
 
-def _source_promotion_mult(path: str) -> float:
-    """Weight multiplier for preferred library sources (X-Kneel, 2025-era OG)."""
+_INPUT_STILL_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+
+
+def _is_input_still(path: str) -> bool:
+    text = str(path or "").replace("\\", "/")
+    if not text:
+        return False
+    lower = text.lower()
+    if "/input/" not in lower and not lower.startswith("input/"):
+        return False
+    return Path(text).suffix.lower() in _INPUT_STILL_EXTS
+
+
+_FIRST_SEEN_CACHE: Optional[Tuple[float, Dict[str, float]]] = None
+
+
+def _catalog_first_seen_map() -> Dict[str, float]:
+    global _FIRST_SEEN_CACHE
+    try:
+        from input_still_catalog import default_catalog_path, load_first_seen_map
+    except ImportError:
+        return {}
+    path = default_catalog_path()
+    if not path.is_file():
+        return {}
+    try:
+        mtime = float(path.stat().st_mtime)
+    except OSError:
+        return {}
+    if _FIRST_SEEN_CACHE is not None and abs(_FIRST_SEEN_CACHE[0] - mtime) < 1e-6:
+        return _FIRST_SEEN_CACHE[1]
+    data = load_first_seen_map(path)
+    _FIRST_SEEN_CACHE = (mtime, data)
+    return data
+
+
+def _still_added_ts(path: str) -> Optional[float]:
+    """Prefer catalog first_seen (when this tree learned about the file) over filesystem mtime."""
+    text = str(path or "").strip()
+    if not text:
+        return None
+    catalog = _catalog_first_seen_map()
+    if catalog:
+        key = str(Path(text).expanduser())
+        if key in catalog:
+            return catalog[key]
+        try:
+            resolved = str(Path(text).expanduser().resolve())
+        except OSError:
+            resolved = ""
+        if resolved and resolved in catalog:
+            return catalog[resolved]
+    try:
+        return float(Path(text).stat().st_mtime)
+    except OSError:
+        return None
+
+
+def _still_recency_mult(
+    path: str,
+    *,
+    now_ts: Optional[float] = None,
+    family: str = "",
+) -> float:
+    """Boost recently added Comfy input stills (linear decay over HOURLY_RECENT_STILL_DAYS)."""
+    if not _is_input_still(path):
+        return 1.0
+    boost = max(1.0, float(os.environ.get("HOURLY_RECENT_STILL_BOOST", "4.0")))
+    window_days = max(0.1, float(os.environ.get("HOURLY_RECENT_STILL_DAYS", "14")))
+    # BounceDance (and friends) should chew through new inbox drops, not old stills.
+    if _prefers_fresh_stills(family):
+        boost = max(boost, float(os.environ.get("HOURLY_BOUNCEDANCE_RECENT_STILL_BOOST", "10.0")))
+        window_days = max(window_days, float(os.environ.get("HOURLY_BOUNCEDANCE_RECENT_STILL_DAYS", "21")))
+    now = float(now_ts) if now_ts is not None else time.time()
+    added = _still_added_ts(path)
+    if added is None:
+        return 1.0
+    age_days = max(0.0, (now - added) / 86400.0)
+    if age_days >= window_days:
+        return 1.0
+    t = age_days / window_days
+    return 1.0 + (boost - 1.0) * (1.0 - t)
+
+
+_FRESH_STILL_FAMILIES: Tuple[str, ...] = ("BounceDanceA",)
+
+
+def _prefers_fresh_stills(family: str) -> bool:
+    fam = str(family or "").strip()
+    if not fam:
+        return False
+    raw = os.environ.get("HOURLY_FRESH_STILL_FAMILIES", "").strip()
+    if raw:
+        allowed = {p.strip() for p in raw.split(",") if p.strip()}
+        return fam in allowed
+    return fam in _FRESH_STILL_FAMILIES
+
+
+def _still_popularity_mult(path: str, *, ratings_doc: Optional[dict[str, Any]] = None) -> float:
+    """Boost older input stills that have strong source ratings / keeper fanout."""
+    if not _is_input_still(path):
+        return 1.0
+    boost = max(1.0, float(os.environ.get("HOURLY_POPULAR_STILL_BOOST", "3.0")))
+    if boost <= 1.0:
+        return 1.0
+    # Leave brand-new stills to recency; popularity is for established keepers.
+    window_days = max(0.1, float(os.environ.get("HOURLY_RECENT_STILL_DAYS", "14")))
+    added = _still_added_ts(path)
+    if added is not None:
+        age_days = max(0.0, (time.time() - added) / 86400.0)
+        if age_days < window_days:
+            return 1.0
+    doc = ratings_doc
+    if doc is None:
+        try:
+            doc = _load_ratings_index(_default_data_root())
+        except Exception:
+            doc = None
+    table = (doc or {}).get("by_source_basename") if isinstance(doc, dict) else None
+    if not isinstance(table, dict) or not table:
+        return 1.0
+    bn = Path(str(path)).name
+    row = table.get(bn) if isinstance(table.get(bn), dict) else None
+    if row is None:
+        stem = Path(bn).stem
+        for key, cand in table.items():
+            if not isinstance(cand, dict):
+                continue
+            if str(key) == stem or Path(str(key)).stem == stem:
+                row = cand
+                break
+    if not isinstance(row, dict):
+        return 1.0
+    try:
+        inferred = float(row.get("inferred") if row.get("inferred") is not None else row.get("mean") or 0.0)
+    except (TypeError, ValueError):
+        inferred = 0.0
+    try:
+        keepers = int(row.get("keepers_4plus") or row.get("favorite_fanout") or 0)
+    except (TypeError, ValueError):
+        keepers = 0
+    if inferred >= 4.0 or keepers >= 2:
+        return boost
+    if inferred >= 3.5 or keepers >= 1:
+        return 1.0 + (boost - 1.0) * 0.5
+    return 1.0
+
+
+def _source_promotion_mult(path: str, *, family: str = "") -> float:
+    """Weight multiplier for preferred library sources (X-Kneel, 2025-era OG, stills)."""
     kneel_b = max(1.0, float(os.environ.get("HOURLY_KNEEL_SOURCE_BOOST", "2.5")))
     y2025_b = max(1.0, float(os.environ.get("HOURLY_2025_SOURCE_BOOST", "2.0")))
     mult = 1.0
@@ -75,19 +224,28 @@ def _source_promotion_mult(path: str) -> float:
         mult *= kneel_b
     if _is_2025_source(path):
         mult *= y2025_b
+    mult *= _still_recency_mult(path, family=family)
+    # Popularity is for other families' older keepers; BounceDance should stay new-image first.
+    if not _prefers_fresh_stills(family):
+        mult *= _still_popularity_mult(path)
     return mult
 
 
-def _recipe_promotion_mult(recipe: dict[str, Any]) -> float:
-    """Boost recipes whose source or output is an X-Kneel / 2025-era clip."""
+def _recipe_promotion_mult(recipe: dict[str, Any], *, family: str = "") -> float:
+    """Boost recipes whose source or output is an X-Kneel / 2025-era clip or a preferred still."""
     kneel_b = max(1.0, float(os.environ.get("HOURLY_KNEEL_SOURCE_BOOST", "2.5")))
     y2025_b = max(1.0, float(os.environ.get("HOURLY_2025_SOURCE_BOOST", "2.0")))
-    paths = [_recipe_source_path(recipe), str(recipe.get("output_path") or "")]
+    fam = str(family or recipe.get("family") or "").strip()
+    src = _recipe_source_path(recipe)
+    paths = [src, str(recipe.get("output_path") or "")]
     mult = 1.0
     if any(_is_kneel_source(p) for p in paths):
         mult *= kneel_b
     if any(_is_2025_source(p) for p in paths):
         mult *= y2025_b
+    mult *= _still_recency_mult(src, family=fam)
+    if not _prefers_fresh_stills(fam):
+        mult *= _still_popularity_mult(src)
     return mult
 
 
@@ -95,11 +253,13 @@ def _apply_source_promotion(
     recipes: List[dict[str, Any]],
     weights: List[float],
     weight_meta: Optional[List[dict[str, Any]]] = None,
+    *,
+    family: str = "",
 ) -> List[float]:
-    """Amplify Kneel / 2025-era recipes in weighted selection."""
+    """Amplify Kneel / 2025-era / fresh-still recipes in weighted selection."""
     out: List[float] = []
     for i, (recipe, weight) in enumerate(zip(recipes, weights)):
-        mult = _recipe_promotion_mult(recipe)
+        mult = _recipe_promotion_mult(recipe, family=family)
         out.append(float(weight) * mult)
         if weight_meta is not None and i < len(weight_meta) and isinstance(weight_meta[i], dict) and mult != 1.0:
             weight_meta[i] = dict(weight_meta[i])
@@ -490,6 +650,120 @@ def _job_is_replayable(job: dict[str, Any]) -> bool:
     if deposit.get("videos"):
         return True
     return False
+
+
+def _job_submit_status(job: dict[str, Any]) -> str:
+    """Normalize submit/job status (``complete`` vs ``completed``, top-level vs submit)."""
+    raw = job.get("status")
+    if raw:
+        text = str(raw).strip().lower()
+    else:
+        submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+        text = str(submit.get("status") or "").strip().lower()
+    if text == "completed":
+        return "complete"
+    return text
+
+
+def _job_is_complete(job: dict[str, Any]) -> bool:
+    return _job_submit_status(job) == "complete"
+
+
+def _is_preview_or_raw_media_path(path: str) -> bool:
+    """True for preview/debug/raw media names that must not feed chains or deposits."""
+    stem = Path(str(path or "")).stem.lower()
+    if not stem:
+        return False
+    return any(
+        token in stem
+        for token in (
+            "_preview",
+            "-preview",
+            "_debug",
+            "-debug",
+            "_raw",
+            "-raw",
+            "preview_debug",
+        )
+    )
+
+
+def _prefer_final_videos(vids: List[str], *, job: Optional[Dict[str, Any]] = None) -> List[str]:
+    """
+    Prefer the shape ``produces`` final VHS output over preview siblings.
+
+    Do not trust ``_00001`` / ``_00002`` ordering — preview often lands on 00001.
+    """
+    cleaned = [str(v) for v in vids if str(v).strip()]
+    if not cleaned:
+        return []
+    try:
+        from shape_factory import select_final_output_paths
+    except ImportError:
+        select_final_output_paths = None  # type: ignore
+    if select_final_output_paths is not None:
+        picked = select_final_output_paths(
+            [Path(v) for v in cleaned],
+            job=job,
+        )
+        if picked:
+            return [str(p) for p in picked]
+    finals = [v for v in cleaned if not _is_preview_or_raw_media_path(v)]
+    pool = finals if finals else cleaned
+    explicit = [v for v in pool if "_final" in Path(v).stem.lower()]
+    return explicit if explicit else pool
+
+
+def _job_deposit_videos_raw(job: dict[str, Any]) -> List[str]:
+    """All deposited/recorded videos (includes preview siblings if present)."""
+    dep = job.get("deposit") if isinstance(job.get("deposit"), dict) else {}
+    vids = [str(v) for v in (dep.get("videos") or []) if str(v).strip()]
+    if vids:
+        return vids
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    outs = submit.get("outputs") if isinstance(submit.get("outputs"), list) else job.get("outputs")
+    if isinstance(outs, list):
+        return [
+            str(x)
+            for x in outs
+            if str(x).strip().lower().endswith((".mp4", ".webm", ".mov"))
+        ]
+    if isinstance(outs, dict):
+        found: List[str] = []
+        for val in outs.values():
+            if isinstance(val, list):
+                found.extend(
+                    str(x)
+                    for x in val
+                    if str(x).strip().lower().endswith((".mp4", ".webm", ".mov"))
+                )
+            elif isinstance(val, str) and val.strip().lower().endswith((".mp4", ".webm", ".mov")):
+                found.append(val.strip())
+        return found
+    return []
+
+
+def _job_deposit_videos(job: dict[str, Any]) -> List[str]:
+    """Videos deposited or recorded as outputs for a completed job (finals preferred)."""
+    return _prefer_final_videos(_job_deposit_videos_raw(job), job=job)
+
+
+def _job_chain_output_video(job: dict[str, Any]) -> Optional[str]:
+    """Single best final video for hourly chains (never a preview/raw sibling)."""
+    vids = _job_deposit_videos(job)
+    if vids:
+        return vids[0]
+    return None
+
+
+def _job_source_video_path(job: dict[str, Any]) -> str:
+    sv = (job.get("bindings") or {}).get("source_video") or {}
+    if isinstance(sv, dict):
+        return str(sv.get("path") or "").strip()
+    if isinstance(sv, str):
+        return sv.strip()
+    picks = job.get("picks") if isinstance(job.get("picks"), dict) else {}
+    return str(picks.get("source_video") or "").strip()
 
 
 def _picks_from_job(
@@ -1219,7 +1493,7 @@ def plan_hourly_replay(
     )
     weights = _apply_recent_combo_penalty(recipes, weights, recent)
     weights = _apply_recent_source_penalty(recipes, weights, recent_sources)
-    weights = _apply_source_promotion(recipes, weights, weight_meta)
+    weights = _apply_source_promotion(recipes, weights, weight_meta, family=family)
     weights = _apply_archive_age_spread(recipes, weights, weight_meta)
 
     eligible_recipes: List[dict[str, Any]] = []
@@ -1565,7 +1839,8 @@ def _derive_rewire(
             )
 
         def _source_weight(path: str) -> float:
-            return float(_source_promotion_mult(path)) * float(_archive_age_spread_mult(path))
+            fam = str(seed.get("family") or "")
+            return float(_source_promotion_mult(path, family=fam)) * float(_archive_age_spread_mult(path))
 
         chosen_source = _pick_preferring_non_recent(
             alt_sources,
@@ -1789,7 +2064,7 @@ def plan_hourly_derive(
         ck = normalize_combo_key(recipe.get("combo_key") or "")
         if ck in recent:
             weight *= 0.08
-        weight *= _recipe_promotion_mult(recipe)
+        weight *= _recipe_promotion_mult(recipe, family=family)
         weight *= _archive_age_spread_mult(recipe)
         seeds.append({"recipe": recipe, "info": info})
         weights.append(weight)
@@ -1931,11 +2206,17 @@ def plan_hourly_derive(
 
 
 # Seed families for idle hourly ticks (weights sum to 100 by default).
+# Bias toward still+prompt (i2v) templates so input images get exercised.
+# FB9_GEX (v2v) remains allowed; FB9_GEX2 is intentionally excluded from seeds.
 _DEFAULT_SEED_FAMILY_WEIGHTS: Tuple[Tuple[str, int], ...] = (
-    ("FB9_GEX2", 70),
-    ("FB9_GEX", 30),
-    # FaceBlast / Kneel seeds paused: Comfy LoadImage rejects many still paths;
-    # keep Kneel→GEX2 chain follow-up, but do not generate new i2v seeds hourly.
+    ("FB9-FaceBlast", 22),
+    ("BounceDanceA", 20),
+    ("X-KNEEL-FB9", 18),
+    ("FB9_GEX", 15),
+    ("FB8VA4", 8),
+    ("FB8VB2", 7),
+    ("FB8VA5-ZOOMOUT", 5),
+    ("Breast-shake-FB8VA5", 5),
 )
 
 
@@ -1997,13 +2278,12 @@ def find_gex2_needing_facial(
                 job = json.loads(path.read_text(encoding="utf-8"))
             except Exception:
                 continue
-            if job.get("status") != "complete":
+            if not _job_is_complete(job):
                 continue
-            dep = job.get("deposit") if isinstance(job.get("deposit"), dict) else {}
-            vids = dep.get("videos") or []
-            if not vids:
+            vid = _job_chain_output_video(job)
+            if not vid:
                 continue
-            gex2_done.append((str(job.get("job_key") or path.stem), str(vids[-1])))
+            gex2_done.append((str(job.get("job_key") or path.stem), vid))
     facial_sources: Set[str] = set()
     facial_root = root / "FB9_GEX_FACIAL"
     if facial_root.is_dir():
@@ -2012,21 +2292,22 @@ def find_gex2_needing_facial(
                 job = json.loads(path.read_text(encoding="utf-8"))
             except Exception:
                 continue
-            sv = (job.get("bindings") or {}).get("source_video") or {}
-            if isinstance(sv, dict):
-                facial_sources.add(str(sv.get("path") or ""))
+            src = _job_source_video_path(job)
+            if src:
+                facial_sources.add(src)
     for job_key, vid in reversed(gex2_done):
         if vid not in facial_sources:
             return job_key
     return None
 
 
-def find_kneel_needing_gex2(
+def find_kneel_needing_consumer(
+    consumer_family: str,
     *,
     data_root: Optional[Path] = None,
     job_dir: Optional[Path] = None,
 ) -> Optional[str]:
-    """Return job_key of newest complete Kneel whose deposit is unused as a GEX2 source."""
+    """Return job_key of newest complete Kneel unused as ``consumer_family`` source_video."""
     root = job_dir or _default_job_root(data_root)
     kneel_done: List[Tuple[str, str]] = []
     kneel_root = root / "X-KNEEL-FB9"
@@ -2036,28 +2317,139 @@ def find_kneel_needing_gex2(
                 job = json.loads(path.read_text(encoding="utf-8"))
             except Exception:
                 continue
-            if job.get("status") != "complete":
+            if not _job_is_complete(job):
                 continue
-            dep = job.get("deposit") if isinstance(job.get("deposit"), dict) else {}
-            vids = dep.get("videos") or []
-            if not vids:
+            vid = _job_chain_output_video(job)
+            if not vid:
                 continue
-            kneel_done.append((str(job.get("job_key") or path.stem), str(vids[-1])))
-    gex2_sources: Set[str] = set()
-    gex2_root = root / "FB9_GEX2"
-    if gex2_root.is_dir():
-        for path in gex2_root.glob("*.job.json"):
+            kneel_done.append((str(job.get("job_key") or path.stem), vid))
+    consumer_sources: Set[str] = set()
+    consumer_root = root / str(consumer_family)
+    if consumer_root.is_dir():
+        for path in consumer_root.glob("*.job.json"):
             try:
                 job = json.loads(path.read_text(encoding="utf-8"))
             except Exception:
                 continue
-            sv = (job.get("bindings") or {}).get("source_video") or {}
-            if isinstance(sv, dict):
-                gex2_sources.add(str(sv.get("path") or ""))
+            src = _job_source_video_path(job)
+            if src:
+                consumer_sources.add(src)
     for job_key, vid in reversed(kneel_done):
-        if vid not in gex2_sources:
+        if vid not in consumer_sources:
             return job_key
     return None
+
+
+def find_kneel_needing_gex(
+    *,
+    data_root: Optional[Path] = None,
+    job_dir: Optional[Path] = None,
+) -> Optional[str]:
+    """Return job_key of newest complete Kneel whose deposit is unused as a FB9_GEX source."""
+    return find_kneel_needing_consumer("FB9_GEX", data_root=data_root, job_dir=job_dir)
+
+
+def find_kneel_needing_gex2(
+    *,
+    data_root: Optional[Path] = None,
+    job_dir: Optional[Path] = None,
+) -> Optional[str]:
+    """Return job_key of newest complete Kneel whose deposit is unused as a GEX2 source."""
+    return find_kneel_needing_consumer("FB9_GEX2", data_root=data_root, job_dir=job_dir)
+
+
+# Image/still (i2v) families that chain into FB9_GEX. BounceDanceA + FaceBlast first
+# so their deposits extend before Kneel / FB8 fillers when several are ready.
+_IMAGE_TO_GEX_FAMILIES: Tuple[str, ...] = (
+    "BounceDanceA",
+    "FB9-FaceBlast",
+    "FB8VA4",
+    "FB8VB2",
+    "FB8VA5-ZOOMOUT",
+    "Breast-shake-FB8VA5",
+    "X-KNEEL-FB9",
+)
+
+
+def _image_to_gex_families() -> List[str]:
+    import os
+
+    raw = os.environ.get("HOURLY_IMAGE_TO_GEX_FAMILIES", "").strip()
+    if not raw:
+        return list(_IMAGE_TO_GEX_FAMILIES)
+    out = [p.strip() for p in raw.split(",") if p.strip()]
+    return out or list(_IMAGE_TO_GEX_FAMILIES)
+
+
+def find_i2v_needing_gex(
+    *,
+    data_root: Optional[Path] = None,
+    job_dir: Optional[Path] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Newest complete i2v/still-family deposit not yet used as an FB9_GEX source_video.
+
+    Prefers non-Kneel producers when several are ready (see ``_IMAGE_TO_GEX_FAMILIES`` order),
+    then newest job within that preference band.
+    Returns ``{producer_family, job_key, video}`` or None.
+    """
+    root = job_dir or _default_job_root(data_root)
+    gex_sources: Set[str] = set()
+    gex_root = root / "FB9_GEX"
+    if gex_root.is_dir():
+        for path in gex_root.glob("*.job.json"):
+            try:
+                job = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            src = _job_source_video_path(job)
+            if src:
+                gex_sources.add(src)
+
+    # Collect candidates: (pref_rank, sort_key, family, job_key, video)
+    cands: List[Tuple[int, str, str, str, str]] = []
+    families = _image_to_gex_families()
+    for pref, fam in enumerate(families):
+        fam_root = root / fam
+        if not fam_root.is_dir():
+            continue
+        for path in fam_root.glob("*.job.json"):
+            try:
+                job = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not _job_is_complete(job):
+                continue
+            vid = _job_chain_output_video(job)
+            if not vid:
+                continue
+            # Skip if any sibling output (including old preview) was already extended.
+            raw_vids = _job_deposit_videos_raw(job) or [vid]
+            if any(v in gex_sources for v in raw_vids):
+                continue
+            job_key = str(job.get("job_key") or path.stem)
+            # Prefer newer files; path name is a stable tie-break.
+            try:
+                mtime = f"{path.stat().st_mtime:020.6f}"
+            except OSError:
+                mtime = "0"
+            cands.append((pref, mtime, fam, job_key, vid))
+
+    if not cands:
+        return None
+    # Lowest pref_rank first (FaceBlast before Kneel), then newest mtime.
+    cands.sort(key=lambda t: (t[0], t[1]), reverse=False)
+    # Within same pref, want newest — re-sort with mtime descending inside pref bands.
+    best_pref = cands[0][0]
+    band = [c for c in cands if c[0] == best_pref]
+    band.sort(key=lambda t: t[1], reverse=True)
+    _pref, _mt, fam, job_key, vid = band[0]
+    return {
+        "producer_family": fam,
+        "job_key": job_key,
+        "video": vid,
+        "consumer_family": "FB9_GEX",
+    }
 
 
 def plan_pool_product_fallback(
@@ -2115,7 +2507,12 @@ def plan_pool_product_fallback(
     rng = random.Random(int(cursor) ^ 0xB00F)
     picks: Dict[str, Path] = {}
     for slot, members in sorted(pool_paths.items()):
-        picks[slot] = members[rng.randrange(len(members))]
+        if any(_is_input_still(str(p)) for p in members):
+            weights = [_source_promotion_mult(str(p), family=family) for p in members]
+            picked, _ = _weighted_choice(members, weights, rng)  # type: ignore[arg-type]
+            picks[slot] = Path(str(picked))
+        else:
+            picks[slot] = members[rng.randrange(len(members))]
 
     recipe = _recipe_from_picks(
         family=family,
@@ -2199,7 +2596,7 @@ def plan_hourly_predicted_derive(
         ck = normalize_combo_key(recipe.get("combo_key") or "")
         if ck in recent:
             weight *= 0.08
-        weight *= _recipe_promotion_mult(recipe)
+        weight *= _recipe_promotion_mult(recipe, family=family)
         weight *= _archive_age_spread_mult(recipe)
         seeds.append({"recipe": recipe, "meta": meta})
         weights.append(weight)
@@ -2361,6 +2758,21 @@ def plan_hourly_step(
     predicted_share = max(0.0, min(1.0, predicted_share))
     top_of_hour = _is_top_of_hour()
 
+    # BounceDanceA (etc.): prefer brand-new input stills via pool_product before
+    # replaying old still recipes.
+    if _prefers_fresh_stills(family):
+        fresh_share = float(os.environ.get("HOURLY_BOUNCEDANCE_FRESH_STILL_SHARE", "0.85"))
+        fresh_share = max(0.0, min(1.0, fresh_share))
+        if random.Random(int(cursor) ^ 0xB0A1).random() < fresh_share:
+            fresh = plan_pool_product_fallback(
+                cursor=cursor, data_root=data_root, family=family
+            )
+            if fresh.get("ok"):
+                fresh["step"] = "pool_product"
+                fresh["fresh_still_preferred"] = True
+                fresh["top_of_hour"] = top_of_hour
+                return fresh
+
     predicted = plan_hourly_predicted_derive(
         cursor=cursor, data_root=data_root, job_dir=job_dir, family=family
     )
@@ -2482,15 +2894,17 @@ def predict_hourly_gex2(
             "ok": True,
         }
 
-    need_kneel = find_kneel_needing_gex2(data_root=data_root, job_dir=job_root)
-    if need_kneel:
+    need_i2v = find_i2v_needing_gex(data_root=data_root, job_dir=job_root)
+    if need_i2v:
         return {
             "cursor": cursor,
-            "phase_if_idle": "gex2_from_kneel",
-            "family": "FB9_GEX2",
+            "phase_if_idle": "gex_from_i2v",
+            "family": "FB9_GEX",
             "pick_mode": "chain",
-            "step": "chain_gex2_from_kneel",
-            "parent_job": need_kneel,
+            "step": "chain_gex_from_i2v",
+            "parent_job": need_i2v.get("job_key"),
+            "producer_family": need_i2v.get("producer_family"),
+            "source_video": need_i2v.get("video"),
             "ok": True,
         }
 
@@ -2901,8 +3315,20 @@ def main() -> int:
     nf = sub.add_parser("need-facial", help="Print GEX2 job_key needing FACIAL child (or empty)")
     nf.add_argument("--data-root", type=Path, default=None)
 
-    nk = sub.add_parser("need-gex2-from-kneel", help="Print Kneel job_key needing GEX2 child (or empty)")
+    nk = sub.add_parser(
+        "need-gex-from-i2v",
+        help="JSON: i2v/still-family job needing FB9_GEX child (or empty object)",
+    )
     nk.add_argument("--data-root", type=Path, default=None)
+
+    nkk = sub.add_parser("need-gex-from-kneel", help="Print Kneel job_key needing FB9_GEX child (or empty)")
+    nkk.add_argument("--data-root", type=Path, default=None)
+
+    nk2 = sub.add_parser(
+        "need-gex2-from-kneel",
+        help="Print Kneel job_key needing GEX2 child (or empty; legacy, unused by hourly)",
+    )
+    nk2.add_argument("--data-root", type=Path, default=None)
 
     qp = sub.add_parser(
         "queue-policy",
@@ -2935,6 +3361,14 @@ def main() -> int:
 
     pc = sub.add_parser("pending-count", help="Count factory jobs awaiting submit")
     pc.add_argument("--jobs-dir", type=Path, required=True)
+
+    iss = sub.add_parser(
+        "input-stills-scan",
+        help="Refresh the thin input-still catalog (incremental dir mtimes; no content hash)",
+    )
+    iss.add_argument("--data-root", type=Path, default=None)
+    iss.add_argument("--input-root", type=Path, default=None)
+    iss.add_argument("--catalog", type=Path, default=None)
 
     ss = sub.add_parser("schedule-status", help="JSON: hourly schedule due/next + fields")
     ss.add_argument("--schedule", type=Path, default=None)
@@ -2976,11 +3410,31 @@ def main() -> int:
             print(key)
         return 0
 
+    if args.cmd == "need-gex-from-i2v":
+        hit = find_i2v_needing_gex(data_root=data_root)
+        print(json.dumps(hit or {}, ensure_ascii=False))
+        return 0
+
+    if args.cmd == "need-gex-from-kneel":
+        key = find_kneel_needing_gex(data_root=data_root)
+        if key:
+            print(key)
+        return 0
+
     if args.cmd == "need-gex2-from-kneel":
         key = find_kneel_needing_gex2(data_root=data_root)
         if key:
             print(key)
         return 0
+
+    if args.cmd == "input-stills-scan":
+        from input_still_catalog import default_catalog_path, default_input_root, scan_input_stills
+
+        cat = args.catalog.expanduser().resolve() if args.catalog else default_catalog_path(data_root=data_root)
+        inp = args.input_root.expanduser().resolve() if args.input_root else default_input_root()
+        out = scan_input_stills(input_root=inp, catalog_path=cat)
+        print(json.dumps(out, ensure_ascii=False))
+        return 0 if out.get("ok") else 1
 
     if args.cmd == "pending-count":
         n = count_factory_pending_submit(jobs_dir=Path(args.jobs_dir))
