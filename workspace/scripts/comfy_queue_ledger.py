@@ -6,8 +6,10 @@ Design goals:
 - Passive: read /queue and keep a shadow ledger on disk.
 - Non-ACID: best effort over exact correctness.
 - Never silently drop a mirrored job on reboot: re-submit or park in backlog
-  (only unrecoverable if the prompt payload was never mirrored).
-- Safe-ish: avoid loops with attempt caps / breaker.
+  (only unrecoverable if the prompt payload was never mirrored) — unless Comfy
+  ``/history`` already shows the prompt finished (success/error/interrupted),
+  in which case restore is skipped to avoid duplicate identical runs.
+- Safe-ish: avoid loops with attempt caps / breaker / history skip.
 - Gentle: spillover mode keeps live pending near target; otherwise full restore.
 """
 
@@ -17,6 +19,7 @@ import argparse
 import json
 import sys
 import time
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -145,6 +148,97 @@ def _known_client_id(rec: Any) -> Optional[str]:
     return None
 
 
+def _fetch_prompt_history(server: str, prompt_id: str, timeout_s: int = 10) -> Optional[Dict[str, Any]]:
+    """
+    Return Comfy `/history/{prompt_id}` JSON, or None if the request fails.
+
+    An empty dict means the prompt is not in history (lost / never finished).
+    """
+    try:
+        obj = _http_json(
+            "GET",
+            f"{server.rstrip('/')}/history/{urllib.parse.quote(prompt_id, safe='')}",
+            timeout_s=timeout_s,
+        )
+    except Exception:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _history_terminal_reason(history_obj: Optional[Dict[str, Any]], prompt_id: str) -> Optional[str]:
+    """
+    If ``prompt_id`` already finished in Comfy history, return a short reason
+    (``success`` / ``error`` / ``interrupted`` / ``completed``). Otherwise None.
+
+    Used to avoid re-queueing jobs that left ``/queue`` because they finished
+    during a brief outage (the main source of identical ledger restores).
+    """
+    if not isinstance(history_obj, dict):
+        return None
+    entry = history_obj.get(prompt_id)
+    if not isinstance(entry, dict) or not entry:
+        return None
+    status = entry.get("status") if isinstance(entry.get("status"), dict) else {}
+    status_str = str(status.get("status_str") or "").strip().lower()
+    if status_str in {"success", "error", "interrupted"}:
+        return status_str
+    if status.get("completed") is True:
+        return "completed"
+    messages = status.get("messages") if isinstance(status.get("messages"), list) else []
+    for msg in messages:
+        if not isinstance(msg, (list, tuple)) or not msg:
+            continue
+        kind = str(msg[0] or "").strip().lower()
+        if kind in {"execution_success", "execution_error", "execution_interrupted"}:
+            return kind.replace("execution_", "")
+    # History payload present with outputs is treated as done even if status is sparse.
+    outputs = entry.get("outputs")
+    if isinstance(outputs, dict) and outputs:
+        return "has_outputs"
+    return None
+
+
+def _forget_mirrored_prompt(state: Dict[str, Any], prompt_id: str) -> None:
+    """Drop a finished prompt from restore mirrors so it cannot be re-queued."""
+    known = state.get("known")
+    if isinstance(known, dict):
+        known.pop(prompt_id, None)
+    for key in ("restore_attempts", "restore_last_ts", "expected_add_until_ts"):
+        bucket = state.get(key)
+        if isinstance(bucket, dict):
+            bucket.pop(prompt_id, None)
+    backlog = state.get("backlog")
+    if isinstance(backlog, list):
+        # Mutate in place so callers holding a reference stay consistent.
+        backlog[:] = [
+            x
+            for x in backlog
+            if not (isinstance(x, dict) and x.get("prompt_id") == prompt_id)
+        ]
+    snap = state.get("last_snapshot")
+    if isinstance(snap, dict):
+        for key in ("pending", "running"):
+            ids = snap.get(key)
+            if isinstance(ids, list):
+                ids[:] = [x for x in ids if x != prompt_id]
+
+
+def _prompt_already_finished(server: str, prompt_id: str) -> Tuple[Optional[str], str]:
+    """
+    Check Comfy history for a finished prompt.
+
+    Returns ``(reason, check)`` where ``check`` is ``ok`` / ``empty`` / ``error``.
+    ``reason`` is set only when the prompt is terminal in history.
+    """
+    hist = _fetch_prompt_history(server, prompt_id)
+    if hist is None:
+        return None, "error"
+    reason = _history_terminal_reason(hist, prompt_id)
+    if reason:
+        return reason, "ok"
+    return None, "empty"
+
+
 def _restore_missing_prompts(
     state: Dict[str, Any],
     *,
@@ -164,6 +258,9 @@ def _restore_missing_prompts(
     """
     Re-submit mirrored prompts missing from the live Comfy queue.
 
+    Skips prompts that already finished in Comfy ``/history`` (success/error/etc.)
+    so brief outages do not replay completed work under a new prompt_id.
+
     Returns (restored, parked, unrecoverable, updated_current_ids).
     ``source`` is used in event names: ``startup`` or ``outage``.
     """
@@ -172,13 +269,34 @@ def _restore_missing_prompts(
     restored = 0
     parked = 0
     unrecoverable = 0
+    skipped_done = 0
     live_ids = set(current_ids)
 
     def _live_full() -> bool:
         return live_slots is not None and restored >= int(live_slots)
 
+    def _skip_if_finished(pid: str, *, via: str) -> bool:
+        nonlocal skipped_done
+        reason, check = _prompt_already_finished(server, pid)
+        if not reason:
+            return False
+        skipped_done += 1
+        _forget_mirrored_prompt(state, pid)
+        log_event(
+            f"{source}_restore_skipped_already_done",
+            prompt_id=pid,
+            reason=reason,
+            history_check=check,
+            source=via,
+        )
+        stats = state.setdefault("stats", {})
+        stats["skipped_already_done"] = int(stats.get("skipped_already_done", 0)) + 1
+        return True
+
     def _try_submit(pid: str, prompt_obj: Dict[str, Any], *, extra_data: Any, outputs: Any, via: str) -> bool:
         nonlocal restored
+        if _skip_if_finished(pid, via=via):
+            return True  # accounted for; caller should not park
         attempts = int(state.get("restore_attempts", {}).get(pid, 0))
         if attempts >= int(max_restore_attempts):
             log_event(
@@ -249,6 +367,8 @@ def _restore_missing_prompts(
                 via="snapshot",
             ):
                 continue
+        if _skip_if_finished(pid, via="snapshot"):
+            continue
         if _push_backlog_item(state, pid):
             parked += 1
             log_event(f"{source}_parked_backlog", prompt_id=pid, reason="spillover_or_submit_failed")
@@ -285,7 +405,9 @@ def _restore_missing_prompts(
                 outputs=item.get("outputs_to_execute"),
                 via="backlog",
             ):
-                backlog.pop(i)
+                # Successful restore or already-done skip: drop this backlog row if still present.
+                if i < len(backlog) and isinstance(backlog[i], dict) and backlog[i].get("prompt_id") == pid:
+                    backlog.pop(i)
                 continue
             i += 1
 
@@ -294,6 +416,7 @@ def _restore_missing_prompts(
         restored=restored,
         parked_backlog=parked,
         unrecoverable=unrecoverable,
+        skipped_already_done=skipped_done,
         spillover=spillover,
         live_slots=live_slots,
     )
@@ -354,6 +477,7 @@ def _default_state() -> Dict[str, Any]:
             "suppressed_breaker": 0,
             "suppressed_cap": 0,
             "suppressed_cooldown": 0,
+            "skipped_already_done": 0,
             "cleared": 0,
         },
     }
@@ -907,6 +1031,19 @@ def main() -> int:
                             continue
                         if pid in observed_ids:
                             backlog.pop(i)
+                            continue
+                        done_reason, _done_check = _prompt_already_finished(args.server, pid)
+                        if done_reason:
+                            _forget_mirrored_prompt(state, pid)
+                            state.setdefault("stats", {})["skipped_already_done"] = int(
+                                state.setdefault("stats", {}).get("skipped_already_done", 0)
+                            ) + 1
+                            log_event(
+                                "refill_skipped_already_done",
+                                prompt_id=pid,
+                                reason=done_reason,
+                            )
+                            # _forget_mirrored_prompt already removed this backlog item.
                             continue
                         attempts = int(state.get("restore_attempts", {}).get(pid, 0))
                         last_ts = float(state.get("restore_last_ts", {}).get(pid, 0.0))
