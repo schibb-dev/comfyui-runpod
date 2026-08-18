@@ -1176,6 +1176,7 @@ def upsert_pool_index_members(
     new_members: list[dict[str, Any]],
     *,
     description: Optional[str] = None,
+    replace_job_keys: Optional[set[str]] = None,
 ) -> int:
     pools = index_doc.setdefault("pools", {})
     if not isinstance(pools, dict):
@@ -1186,16 +1187,23 @@ def upsert_pool_index_members(
         pools[pool_id] = pool
     if description and not pool.get("description"):
         pool["description"] = description
-    existing_paths = {
-        str(m.get("path"))
-        for m in (pool.get("members") or [])
-        if isinstance(m, dict) and isinstance(m.get("path"), str)
-    }
-    added = 0
     members = pool.setdefault("members", [])
     if not isinstance(members, list):
         members = []
         pool["members"] = members
+    replace = {str(k) for k in (replace_job_keys or set()) if str(k).strip()}
+    if replace:
+        members[:] = [
+            m
+            for m in members
+            if not (isinstance(m, dict) and str(m.get("job_key") or "") in replace)
+        ]
+    existing_paths = {
+        str(m.get("path"))
+        for m in members
+        if isinstance(m, dict) and isinstance(m.get("path"), str)
+    }
+    added = 0
     for rec in new_members:
         if not isinstance(rec, dict):
             continue
@@ -2375,7 +2383,14 @@ def apply_api_slot_bindings(
             if not isinstance(node, dict) or node.get("class_type") != "VHS_VideoCombine":
                 continue
             inputs = node.setdefault("inputs", {})
-            is_final = str(node_id) in final_ids if final_ids else bool(inputs.get("save_metadata") is True)
+            preview_prefix = _is_preview_or_raw_output_path(str(inputs.get("filename_prefix") or ""))
+            if preview_prefix:
+                is_final = False
+            elif final_ids:
+                is_final = str(node_id) in final_ids
+            else:
+                # save_metadata=True is a weak hint — inventory used to set it on preview too.
+                is_final = bool(inputs.get("save_metadata") is True)
             if is_final:
                 inputs["save_output"] = True
                 inputs["save_metadata"] = True
@@ -2486,12 +2501,19 @@ def enforce_no_stored_preview_outputs(
         except (TypeError, ValueError):
             nid_i = -1
 
+        ui_prefix = ""
+        if isinstance((ui or {}).get("widgets_values"), dict):
+            ui_prefix = str((ui.get("widgets_values") or {}).get("filename_prefix") or "")
+        api_prefix = str(inputs.get("filename_prefix") or "")
+
         must_mute = False
         if finals and nid_i not in finals:
             must_mute = True
         elif mode in (2, 4):
             must_mute = True
         elif _vhs_title_is_non_final(title):
+            must_mute = True
+        elif _is_preview_or_raw_output_path(api_prefix) or _is_preview_or_raw_output_path(ui_prefix):
             must_mute = True
         elif isinstance((ui or {}).get("widgets_values"), dict):
             # UI already asked not to save.
@@ -6231,7 +6253,9 @@ def cmd_deposit(args: argparse.Namespace) -> int:
                 member_record_for_path(p, job_key=job_key, source="shape_factory")
                 for p in video_paths
             ]
-            added = upsert_pool_index_members(index_doc, pool_id, new_members)
+            added = upsert_pool_index_members(
+                index_doc, pool_id, new_members, replace_job_keys={job_key}
+            )
             print(f"deposit {job_key} slot={slot} pool={pool_id} added={added} index={index_path}")
             deposited += added
 

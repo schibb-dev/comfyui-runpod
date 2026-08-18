@@ -525,39 +525,56 @@ def _output_relpath_for_job(job: Dict[str, Any], *, output_root: Path) -> Option
     for src in (submit.get("outputs"), deposit.get("videos")):
         if isinstance(src, list):
             for x in src:
-                s = str(x or "").strip()
+                s = str(x).strip()
                 if s:
                     candidates.append(s)
-    for abs_out in candidates:
+    rel = _keeper_video_relpath(candidates, output_root=output_root, job=job)
+    if rel:
+        return rel
+    prefix = str(job.get("output_prefix") or "").strip().replace("\\", "/")
+    if not prefix:
+        return None
+    cands: List[Path] = []
+    for suffix in ("_FINAL_00001.mp4", "_00002.mp4", "_00001.mp4"):
+        cand = output_root / f"{prefix}{suffix}"
+        if cand.is_file():
+            cands.append(cand)
+    stem = Path(prefix).name
+    parent = (output_root / Path(prefix).parent).resolve()
+    if parent.is_dir():
+        cands.extend(sorted(parent.glob(f"{stem}*.mp4")))
+    return _keeper_video_relpath([str(p) for p in cands], output_root=output_root, job=job)
+
+
+def _keeper_video_relpath(
+    paths: List[str],
+    *,
+    output_root: Path,
+    job: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    cleaned = [str(p).strip() for p in paths if str(p).strip()]
+    if not cleaned:
+        return None
+    picked: List[str] = list(cleaned)
+    try:
+        from shape_factory import select_final_output_paths
+
+        selected = select_final_output_paths([Path(p) for p in cleaned], job=job)
+        if selected:
+            picked = [str(p) for p in selected]
+    except Exception:
+        non_preview = [p for p in cleaned if "_preview" not in Path(p).stem.lower()]
+        finals = [p for p in (non_preview or cleaned) if "_final" in Path(p).stem.lower()]
+        picked = finals or non_preview or cleaned
+    for abs_out in picked:
         try:
             p = Path(abs_out).expanduser().resolve()
-            rel = p.relative_to(output_root).as_posix()
-            return rel
+            return p.relative_to(output_root).as_posix()
         except Exception:
-            # Already relative?
             rel = str(abs_out).replace("\\", "/").lstrip("/")
             if rel.startswith("og/") or rel.startswith("wip/") or rel.startswith("output/"):
                 if (output_root / rel).is_file():
                     return rel
-    prefix = str(job.get("output_prefix") or "").strip().replace("\\", "/")
-    if not prefix:
-        return None
-    for suffix in ("_00001.mp4", "_PREVIEW_00001.mp4", "_FINAL_00001.mp4"):
-        cand = output_root / f"{prefix}{suffix}"
-        if cand.is_file():
-            try:
-                return cand.resolve().relative_to(output_root).as_posix()
-            except Exception:
-                return f"{prefix}{suffix}".lstrip("/")
-    stem = Path(prefix).name
-    parent = (output_root / Path(prefix).parent).resolve()
-    if parent.is_dir():
-        matches = sorted(parent.glob(f"{stem}*.mp4"))
-        if matches:
-            try:
-                return matches[0].resolve().relative_to(output_root).as_posix()
-            except Exception:
-                return None
     return None
 
 

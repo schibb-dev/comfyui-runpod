@@ -7,6 +7,7 @@ import support  # noqa: F401  — injects workspace/scripts onto sys.path
 from shape_factory_work_products import (
     _family_from_output_prefix,
     _filename_prefix_from_prompt,
+    _keeper_output_rel,
     _relpath_under,
     _shape_view,
     attach_comfy_history_failures,
@@ -153,6 +154,39 @@ class TestWorkProducts(unittest.TestCase):
             binding = next(r for r in item["details"] if r["label"].startswith("Binding · prompt_profile"))
             self.assertIn("role=C", binding["value"])
             self.assertIn("prompt", binding["value"].lower())
+
+    def test_keeper_output_prefers_final_not_preview(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td) / "output"
+            hourly = out / "og" / "2026-08-16" / "hourly"
+            hourly.mkdir(parents=True)
+            preview = hourly / "job_PREVIEW_00001.mp4"
+            final = hourly / "job_FINAL_00001.mp4"
+            preview.write_bytes(b"p")
+            final.write_bytes(b"f")
+            rel = _keeper_output_rel([str(preview), str(final)], output_root=out)
+            self.assertEqual(rel, "og/2026-08-16/hourly/job_FINAL_00001.mp4")
+
+            from shape_factory_work_products import _work_product_item_from_job
+
+            jobs = Path(td) / "data" / "shape_factory" / "jobs" / "BounceDanceA"
+            jobs.mkdir(parents=True)
+            job = {
+                "family_slug": "BounceDanceA",
+                "job_key": "job",
+                "output_prefix": "og/2026-08-16/hourly/job",
+                "submit": {
+                    "status": "complete",
+                    "outputs": [str(preview), str(final)],
+                },
+            }
+            item = _work_product_item_from_job(
+                jobs / "job.job.json",
+                job,
+                data_root=Path(td) / "data",
+                output_root=out,
+            )
+            self.assertEqual(item.get("output_relpath"), "og/2026-08-16/hourly/job_FINAL_00001.mp4")
 
     def test_list_recent_sorts_by_created_at_not_mtime(self):
         with tempfile.TemporaryDirectory() as td:

@@ -562,12 +562,11 @@ def _discovery_is_ephemeral_work_artifact(name: str) -> bool:
     """
     Intermediate work products that should not enter Discovery.
 
-    Convention historically used a ``_RAW_`` role token in the basename
-    (e.g. ``…_RAW_00001.mp4``). These are throwaway save targets, not keepers.
+    Role tokens in the basename (``…_RAW_00001.mp4``, ``…_PREVIEW_00001.mp4``)
+    are throwaway save targets. Keep ``_FINAL_`` — that is the desired output.
     """
-    n = str(name or "")
-    # Match the role token, case-insensitive, as a path segment between underscores.
-    return "_RAW_" in n or "_raw_" in n
+    n = str(name or "").upper()
+    return any(tok in n for tok in ("_RAW_", "_PREVIEW_", "_DEBUG_"))
 
 
 def _build_discovery_og_wip_index(cfg: "ServerConfig") -> Dict[str, Any]:

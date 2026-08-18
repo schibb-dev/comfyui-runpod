@@ -317,6 +317,34 @@ def _relpath_under(root: Path, abs_path: Any) -> Optional[str]:
     return None
 
 
+def _keeper_output_rel(
+    paths: List[str],
+    *,
+    output_root: Path,
+    job: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Pick the final/produce-node video; never prefer a ``_PREVIEW`` sibling."""
+    cleaned = [str(p).strip() for p in paths if str(p).strip()]
+    if not cleaned:
+        return None
+    picked: List[str] = list(cleaned)
+    try:
+        from shape_factory import select_final_output_paths
+
+        selected = select_final_output_paths([Path(p) for p in cleaned], job=job)
+        if selected:
+            picked = [str(p) for p in selected]
+    except Exception:
+        non_preview = [p for p in cleaned if "_preview" not in Path(p).stem.lower()]
+        finals = [p for p in (non_preview or cleaned) if "_final" in Path(p).stem.lower()]
+        picked = finals or non_preview or cleaned
+    for abs_out in picked:
+        rel = _relpath_under(output_root, abs_out)
+        if rel:
+            return rel
+    return None
+
+
 def _file_url(rel: Optional[str]) -> Optional[str]:
     if not rel:
         return None
@@ -1326,32 +1354,24 @@ def _work_product_item_from_job(
                 if s and s not in outputs_abs:
                     outputs_abs.append(s)
 
-    output_rel = None
-    for abs_out in outputs_abs:
-        output_rel = _relpath_under(output_root, abs_out)
-        if output_rel:
-            break
+    output_rel = _keeper_output_rel(outputs_abs, output_root=output_root, job=job)
     # Fall back to output_prefix guess when submit hasn't recorded outputs yet.
     if not output_rel:
         prefix = str(job.get("output_prefix") or "").strip().replace("\\", "/")
         if prefix:
-            for cand in (
+            cands = [
+                output_root / f"{prefix}_FINAL_00001.mp4",
+                output_root / f"{prefix}_00002.mp4",
                 output_root / f"{prefix}_00001.mp4",
-                output_root / f"{prefix}_PREVIEW_00001.mp4",
-            ):
-                if cand.is_file():
-                    output_rel = cand.relative_to(output_root).as_posix()
-                    break
-            if not output_rel:
-                stem = Path(prefix).name
-                parent = (output_root / Path(prefix).parent).resolve()
-                if parent.is_dir():
-                    matches = sorted(parent.glob(f"{stem}*.mp4"))
-                    if matches:
-                        try:
-                            output_rel = matches[0].resolve().relative_to(output_root).as_posix()
-                        except Exception:
-                            output_rel = None
+            ]
+            stem = Path(prefix).name
+            parent = (output_root / Path(prefix).parent).resolve()
+            if parent.is_dir():
+                cands.extend(sorted(parent.glob(f"{stem}*.mp4")))
+            existing = [p for p in cands if p.is_file()]
+            output_rel = _keeper_output_rel(
+                [str(p) for p in existing], output_root=output_root, job=job
+            )
 
     thumb_rel = _thumb_rel_for_video(output_rel)
 

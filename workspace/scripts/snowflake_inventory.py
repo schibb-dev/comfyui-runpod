@@ -2086,10 +2086,23 @@ def apply_review_workflow_edits(workflow: Any, name: str, output_prefix: str, re
             if "videopreview" in widgets:
                 widgets.pop("videopreview", None)
                 changes["stripped_video_previews"] += 1
-            if node.get("mode", 0) not in (2, 4) and widgets.get("save_output") is not False:
-                suffix = "_PREVIEW" if "preview" in str(node.get("title") or "").lower() else "_FINAL"
-                widgets["filename_prefix"] = f"{output_prefix}/{name}{suffix}"
+            title = str(node.get("title") or "")
+            title_l = title.lower()
+            is_preview = any(k in title_l for k in ("preview", "debug", "raw"))
+            already_off = node.get("mode", 0) in (2, 4) or widgets.get("save_output") is False
+            if is_preview or already_off:
+                # Preview/debug/raw combines must never hit disk. Do not emit a _PREVIEW save.
+                if widgets.get("save_output") is not False or node.get("mode", 0) not in (2, 4):
+                    widgets["save_output"] = False
+                    node["mode"] = 2
+                    if title and not title.upper().startswith("DISABLED"):
+                        node["title"] = f"DISABLED OUTPUT: {title}"
+                    changes["disabled_non_final_outputs"] += 1
+            elif node.get("mode", 0) not in (2, 4) and widgets.get("save_output") is not False:
+                widgets["filename_prefix"] = f"{output_prefix}/{name}_FINAL"
                 widgets["save_metadata"] = True
+                widgets["save_output"] = True
+                node["mode"] = 0
                 changes["redirected_active_outputs"] += 1
 
     if relayout:
