@@ -14,7 +14,6 @@ STATE="${STATE:-$REPO/.data/shape_factory/hourly-state.json}"
 SCHEDULE="${SCHEDULE:-$REPO/.data/shape_factory/hourly-schedule.json}"
 JOBS_DIR="${JOBS_DIR:-$REPO/.data/shape_factory/jobs}"
 CHAIN_MANIFEST="${CHAIN_MANIFEST:-$REPO/.data/chains/best-examples.chain.yaml}"
-BINDS_FACIAL="$REPO/.data/pipelines/binds/facial-from-latest-gex2.yaml"
 COMFY="${COMFY:-http://127.0.0.1:8188}"
 ADVANCE_CHAIN="${ADVANCE_CHAIN:-1}"
 DEV_CHAIN="${DEV_CHAIN:-0}"
@@ -176,22 +175,38 @@ HOURLY_JOB_KEY_PREFIX="${HOURLY_JOB_KEY_PREFIX:-hourly}"
 HOURLY_SUFFIX="_$(date -u +%Y%m%d%H%M)"
 
 # Phase 1: GEX2 complete without FACIAL child
-NEED_FACIAL=$(cd "$SCRIPTS" && python3 shape_factory_hourly.py need-facial --data-root "$REPO/.data")
-if [ -n "$NEED_FACIAL" ]; then
-  log "phase=facial — GEX2 complete without FACIAL ($NEED_FACIAL)"
+NEED_FACIAL_JSON=$(cd "$SCRIPTS" && python3 shape_factory_hourly.py need-facial --data-root "$REPO/.data")
+NEED_FACIAL_KEY=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('job_key') or '')" "$NEED_FACIAL_JSON")
+if [ -n "$NEED_FACIAL_KEY" ]; then
+  NEED_FACIAL_VID=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('video') or '')" "$NEED_FACIAL_JSON")
+  NEED_FACIAL_REF=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('source_ref') or '')" "$NEED_FACIAL_JSON")
+  log "phase=facial — GEX2 complete without FACIAL ($NEED_FACIAL_KEY)"
+  BIND_FACIAL=$(mktemp --suffix=.yaml)
+  python3 - "$NEED_FACIAL_VID" "$NEED_FACIAL_REF" "$BIND_FACIAL" <<'PY'
+import sys
+from pathlib import Path
+vid, ref, out = sys.argv[1], sys.argv[2], Path(sys.argv[3])
+def esc(s: str) -> str:
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+lines = ['source_video:', '  from: path', f'  path: "{esc(vid)}"']
+if ref.strip():
+    lines.extend(['source_video_ref:', '  from: path', f'  path: "{esc(ref)}"'])
+out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
   (
     cd "$SCRIPTS"
     python3 shape_factory.py generate \
       --shape "$(shape_for_family FB9_GEX_FACIAL)" \
       --pools "$(pools_for_family FB9_GEX_FACIAL)" \
-      --binds-override "$BINDS_FACIAL" \
+      --binds-override "$BIND_FACIAL" \
       --pick zip --limit 1 --job-suffix "$HOURLY_SUFFIX" \
       --output-prefix-root "$HOURLY_PREFIX_ROOT" \
       --job-key-prefix "$HOURLY_JOB_KEY_PREFIX" \
       "${dev_args[@]}" >> "$LOG" 2>&1
     maybe_submit FB9_GEX_FACIAL "$DEST"
   )
-  python3 - "$STATE_JSON" "$NEED_FACIAL" "$STATE" <<'PY'
+  rm -f "$BIND_FACIAL"
+  python3 - "$STATE_JSON" "$NEED_FACIAL_KEY" "$NEED_FACIAL_VID" "$NEED_FACIAL_REF" "$STATE" <<'PY'
 import json, sys
 from pathlib import Path
 data = json.loads(sys.argv[1])
@@ -199,7 +214,9 @@ data["phase"] = "facial_queued"
 data["last_family"] = "FB9_GEX_FACIAL"
 data["last_pick_mode"] = "chain"
 data["last_gex2_job"] = sys.argv[2]
-Path(sys.argv[3]).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+data["last_gex2_video"] = sys.argv[3]
+data["last_gex2_source_ref"] = sys.argv[4]
+Path(sys.argv[5]).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
   mark_tick
   log "facial step queued dest=$DEST"

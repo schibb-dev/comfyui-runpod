@@ -799,6 +799,174 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
             else:
                 os.environ["HOURLY_INPUT_STILL_CATALOG"] = prev_cat
 
+    def test_faceblast_hourly_prefers_fresh_pool_product(self) -> None:
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        from shape_factory_hourly import plan_hourly_step
+
+        prev = os.environ.get("HOURLY_FRESH_STILL_SHARE")
+        prev_cat = os.environ.get("HOURLY_INPUT_STILL_CATALOG")
+        try:
+            os.environ["HOURLY_FRESH_STILL_SHARE"] = "1.0"
+            os.environ["HOURLY_INPUT_STILL_CATALOG"] = "0"
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                family = "FB9-FaceBlast"
+                (root / "shapes").mkdir()
+                (root / "pools" / family / "prompts").mkdir(parents=True)
+                still = root / "input" / "fresh.jpeg"
+                still.parent.mkdir(parents=True)
+                still.write_bytes(b"img")
+                prompt = root / "pools" / family / "prompts" / "catalog-default.json"
+                prompt.write_text("{}", encoding="utf-8")
+                (root / "shapes" / f"{family}.shape.yaml").write_text(
+                    f"family_slug: {family}\n"
+                    "requires:\n"
+                    "  - slot: source_still\n"
+                    "  - slot: prompt_profile\n",
+                    encoding="utf-8",
+                )
+                (root / "pools" / family / "pools.yaml").write_text(
+                    "pools:\n"
+                    "  source_still:\n"
+                    "    slot: source_still\n"
+                    "    members:\n"
+                    f"      - glob: {still}\n"
+                    "  prompt_profile:\n"
+                    "    slot: prompt_profile\n"
+                    "    members:\n"
+                    f"      - dir: {prompt.parent}\n"
+                    '        ext: [".json"]\n',
+                    encoding="utf-8",
+                )
+                with mock.patch("shape_factory_hourly._is_top_of_hour", return_value=False):
+                    plan = plan_hourly_step(cursor=0, data_root=root, family=family)
+                self.assertTrue(plan.get("ok"), plan)
+                self.assertEqual(plan.get("pick_mode"), "pool_product")
+                self.assertTrue(plan.get("fresh_still_preferred"))
+                self.assertEqual(plan["picks"]["source_still"], str(still.resolve()))
+        finally:
+            if prev is None:
+                os.environ.pop("HOURLY_FRESH_STILL_SHARE", None)
+            else:
+                os.environ["HOURLY_FRESH_STILL_SHARE"] = prev
+            if prev_cat is None:
+                os.environ.pop("HOURLY_INPUT_STILL_CATALOG", None)
+            else:
+                os.environ["HOURLY_INPUT_STILL_CATALOG"] = prev_cat
+
+    def test_pool_product_skips_recently_used_still(self) -> None:
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        from shape_factory_hourly import plan_pool_product_fallback
+
+        prev_cat = os.environ.get("HOURLY_INPUT_STILL_CATALOG")
+        try:
+            os.environ["HOURLY_INPUT_STILL_CATALOG"] = "0"
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                family = "FB9-FaceBlast"
+                (root / "shapes").mkdir()
+                (root / "pools" / family / "prompts").mkdir(parents=True)
+                used = root / "input" / "SSScb9used.jpeg"
+                fresh = root / "input" / "newstill.jpeg"
+                used.parent.mkdir(parents=True)
+                used.write_bytes(b"old")
+                fresh.write_bytes(b"new")
+                prompt = root / "pools" / family / "prompts" / "catalog-default.json"
+                prompt.write_text("{}", encoding="utf-8")
+                (root / "shapes" / f"{family}.shape.yaml").write_text(
+                    f"family_slug: {family}\n"
+                    "requires:\n"
+                    "  - slot: source_still\n"
+                    "  - slot: prompt_profile\n",
+                    encoding="utf-8",
+                )
+                (root / "pools" / family / "pools.yaml").write_text(
+                    "pools:\n"
+                    "  source_still:\n"
+                    "    slot: source_still\n"
+                    "    members:\n"
+                    f"      - glob: {used.parent}/*.jpeg\n"
+                    "  prompt_profile:\n"
+                    "    slot: prompt_profile\n"
+                    "    members:\n"
+                    f"      - dir: {prompt.parent}\n"
+                    '        ext: [".json"]\n',
+                    encoding="utf-8",
+                )
+                recent = {"pp-catalog-default__still-SSScb9used"}
+                with mock.patch("shape_factory_hourly._recent_combo_keys", return_value=recent):
+                    plan = plan_pool_product_fallback(cursor=3, data_root=root, family=family)
+                self.assertTrue(plan.get("ok"), plan)
+                self.assertEqual(Path(plan["picks"]["source_still"]).name, "newstill.jpeg")
+        finally:
+            if prev_cat is None:
+                os.environ.pop("HOURLY_INPUT_STILL_CATALOG", None)
+            else:
+                os.environ["HOURLY_INPUT_STILL_CATALOG"] = prev_cat
+
+    def test_picks_from_job_uses_embedded_prompt_text(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from shape_factory_hourly import _job_is_replayable, _picks_from_job
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            still = root / "input" / "face.jpeg"
+            still.parent.mkdir(parents=True)
+            still.write_bytes(b"img")
+            job = {
+                "job_key": "FB9-FaceBlast__backfill__clip",
+                "origin": "backfill",
+                "family_slug": "FB9-FaceBlast",
+                "bindings": {
+                    "prompt_profile": {
+                        "positive": "a still-started clip",
+                        "negative": "blur",
+                        "recovered": True,
+                    },
+                    "source_still": {"path": str(still), "binding_type": "load_image"},
+                },
+                "submit": {"status": "completed", "outputs": [str(root / "out.mp4")]},
+            }
+            shape = {
+                "family_slug": "FB9-FaceBlast",
+                "requires": [{"slot": "source_still"}, {"slot": "prompt_profile"}],
+            }
+            self.assertTrue(_job_is_replayable(job))
+            picks = _picks_from_job(job, shape=shape, data_root=root)
+            self.assertIsNotNone(picks)
+            assert picks is not None
+            self.assertEqual(picks["source_still"].resolve(), still.resolve())
+            self.assertTrue(picks["prompt_profile"].is_file())
+            self.assertIn("a still-started clip", picks["prompt_profile"].read_text(encoding="utf-8"))
+
+    def test_recent_source_penalty_applies_to_stills(self) -> None:
+        from shape_factory_hourly import _apply_recent_source_penalty, _recent_source_basenames
+
+        recipes = [
+            {
+                "combo_key": "pp-catalog-default__still-SSScb9used",
+                "picks": {"source_still": "/input/SSScb9used.jpeg"},
+            },
+            {
+                "combo_key": "pp-catalog-default__still-newstill",
+                "picks": {"source_still": "/input/newstill.jpeg"},
+            },
+        ]
+        recent = {"pp-catalog-default__still-SSScb9used"}
+        weights = _apply_recent_source_penalty(recipes, [1.0, 1.0], _recent_source_basenames(recent), penalty=0.1)
+        self.assertAlmostEqual(weights[0], 0.1)
+        self.assertAlmostEqual(weights[1], 1.0)
+
     def test_resolve_glob_mtime_desc_keeps_newest_under_limit(self) -> None:
         import os
         import tempfile
@@ -888,6 +1056,7 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
                 d.mkdir()
             vid_g = "/tmp/gex2_out.mp4"
             vid_k = "/tmp/kneel_out.mp4"
+            vid_g_parent = "/tmp/kneel_parent_for_gex2.mp4"
             vid_fb = "/tmp/faceblast_out.mp4"
             vid_bd = "/tmp/bouncedance_final.mp4"
             vid_bd_preview = "/tmp/bouncedance_PREVIEW.mp4"
@@ -897,6 +1066,7 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
                         "job_key": "gex2-a",
                         "status": "complete",
                         "deposit": {"videos": [vid_g]},
+                        "bindings": {"source_video": {"path": vid_g_parent}},
                     }
                 ),
                 encoding="utf-8",
@@ -936,7 +1106,12 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            self.assertEqual(find_gex2_needing_facial(job_dir=root), "gex2-a")
+            hit_facial = find_gex2_needing_facial(job_dir=root)
+            self.assertIsNotNone(hit_facial)
+            assert hit_facial is not None
+            self.assertEqual(hit_facial.get("job_key"), "gex2-a")
+            self.assertEqual(hit_facial.get("video"), vid_g)
+            self.assertEqual(hit_facial.get("source_ref"), vid_g_parent)
             self.assertEqual(find_kneel_needing_gex2(job_dir=root), "kneel-k")
             self.assertEqual(find_kneel_needing_gex(job_dir=root), "kneel-k")
             # BounceDanceA preferred over FaceBlast / Kneel when all need GEX.

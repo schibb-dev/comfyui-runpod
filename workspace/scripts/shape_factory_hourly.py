@@ -151,7 +151,16 @@ def _still_recency_mult(
     return 1.0 + (boost - 1.0) * (1.0 - t)
 
 
-_FRESH_STILL_FAMILIES: Tuple[str, ...] = ("BounceDanceA",)
+# i2v families should sample input/ stills, not clone the last hourly recipe.
+_FRESH_STILL_FAMILIES: Tuple[str, ...] = (
+    "BounceDanceA",
+    "FB9-FaceBlast",
+    "X-KNEEL-FB9",
+    "FB8VA4",
+    "FB8VB2",
+    "FB8VA5-ZOOMOUT",
+    "Breast-shake-FB8VA5",
+)
 
 
 def _prefers_fresh_stills(family: str) -> bool:
@@ -163,6 +172,19 @@ def _prefers_fresh_stills(family: str) -> bool:
         allowed = {p.strip() for p in raw.split(",") if p.strip()}
         return fam in allowed
     return fam in _FRESH_STILL_FAMILIES
+
+
+def _fresh_still_share(family: str) -> float:
+    """Fraction of i2v hourly ticks that sample a new input still via pool_product."""
+    raw = os.environ.get("HOURLY_FRESH_STILL_SHARE", "").strip()
+    if not raw and _prefers_fresh_stills(family):
+        raw = os.environ.get("HOURLY_BOUNCEDANCE_FRESH_STILL_SHARE", "").strip()
+    if not raw:
+        raw = "0.9"
+    try:
+        return max(0.0, min(1.0, float(raw)))
+    except ValueError:
+        return 0.9
 
 
 def _still_popularity_mult(path: str, *, ratings_doc: Optional[dict[str, Any]] = None) -> float:
@@ -643,11 +665,12 @@ def _png_workflow_for_output(output_mp4: Path) -> Optional[dict[str, Any]]:
 
 
 def _job_is_replayable(job: dict[str, Any]) -> bool:
-    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
-    if str(submit.get("status") or "") in {"complete", "queued", "running"}:
+    if _job_submit_status(job) in {"complete", "queued", "running"}:
         return True
     deposit = job.get("deposit") if isinstance(job.get("deposit"), dict) else {}
     if deposit.get("videos"):
+        return True
+    if job.get("origin") == "backfill" and (job.get("outputs") or (job.get("submit") or {}).get("outputs")):
         return True
     return False
 
@@ -766,6 +789,22 @@ def _job_source_video_path(job: dict[str, Any]) -> str:
     return str(picks.get("source_video") or "").strip()
 
 
+def _video_match_keys(path: str) -> Set[str]:
+    """Comparable keys so chain occupancy is not fooled by output/ vs output/output/ spellings."""
+    text = str(path or "").strip().replace("\\", "/")
+    if not text:
+        return set()
+    keys = {text, Path(text).name}
+    collapsed = text.replace("/output/output/", "/output/")
+    keys.add(collapsed)
+    keys.add(Path(collapsed).name)
+    try:
+        keys.add(str(Path(text).expanduser().resolve()))
+    except OSError:
+        pass
+    return {k for k in keys if k}
+
+
 def _picks_from_job(
     job: dict[str, Any],
     *,
@@ -799,10 +838,13 @@ def _picks_from_job(
             if p is not None and p.is_file():
                 picks[slot] = p.resolve()
                 continue
-            wf = _workflow()
-            if wf is None:
-                return None
-            positive, negative = extract_prompt_texts_from_ui_workflow(wf, shape)
+            positive = str(meta.get("positive") or "").strip()
+            negative = str(meta.get("negative") or "")
+            if not positive:
+                wf = _workflow()
+                if wf is None:
+                    return None
+                positive, negative = extract_prompt_texts_from_ui_workflow(wf, shape)
             if not positive.strip():
                 return None
             picks[slot] = _write_replay_prompt_profile(
@@ -1361,6 +1403,7 @@ def collect_replay_recipes(
     shape = load_yaml(shape_path)
 
     by_combo: Dict[str, dict[str, Any]] = {}
+    ingested_job_keys: Set[str] = set()
 
     def add_recipe(recipe: dict[str, Any]) -> None:
         ck = str(recipe.get("combo_key") or "")
@@ -1381,11 +1424,13 @@ def collect_replay_recipes(
             picks = _picks_from_job(job, shape=shape, data_root=data_root)
             if not picks:
                 continue
+            job_key = str(job.get("job_key") or path.stem)
+            ingested_job_keys.add(job_key)
             add_recipe(
                 _recipe_from_picks(
                     family=family,
                     picks=picks,
-                    source=str(job.get("job_key") or path.stem),
+                    source=job_key,
                     output_path=(job.get("deposit") or {}).get("videos", [None])[0]
                     if isinstance(job.get("deposit"), dict)
                     else None,
@@ -1416,10 +1461,8 @@ def collect_replay_recipes(
                     out_path = resolved
 
                 job_key = str(member.get("job_key") or "")
-                if job_key and jobs_root.is_dir():
-                    job_file = jobs_root / f"{job_key}.job.json"
-                    if job_file.is_file():
-                        continue  # already ingested from jobs
+                if job_key and job_key in ingested_job_keys:
+                    continue  # already ingested from jobs
 
                 workflow = _png_workflow_for_output(out_path)
                 if workflow is None:
@@ -1999,7 +2042,8 @@ def _apply_recent_source_penalty(
     out: List[float] = []
     for recipe, weight in zip(recipes, weights):
         picks = recipe.get("picks") if isinstance(recipe.get("picks"), dict) else {}
-        hit = _source_in_recent(str(picks.get("source_video") or ""), recent_sources)
+        src = str(picks.get("source_video") or picks.get("source_still") or "")
+        hit = _source_in_recent(src, recent_sources)
         out.append(float(weight) * (pen if hit else 1.0))
     return out
 
@@ -2267,24 +2311,13 @@ def find_gex2_needing_facial(
     *,
     data_root: Optional[Path] = None,
     job_dir: Optional[Path] = None,
-) -> Optional[str]:
-    """Return job_key of newest complete GEX2 whose deposit has no FACIAL child."""
+) -> Optional[Dict[str, Any]]:
+    """Newest complete GEX2 whose output is not already a FACIAL source_video.
+
+    Returns ``{job_key, video, source_ref}`` (source_ref is the GEX2 parent clip).
+    """
     root = job_dir or _default_job_root(data_root)
-    gex2_done: List[Tuple[str, str]] = []
-    gex2_root = root / "FB9_GEX2"
-    if gex2_root.is_dir():
-        for path in sorted(gex2_root.glob("*.job.json")):
-            try:
-                job = json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            if not _job_is_complete(job):
-                continue
-            vid = _job_chain_output_video(job)
-            if not vid:
-                continue
-            gex2_done.append((str(job.get("job_key") or path.stem), vid))
-    facial_sources: Set[str] = set()
+    facial_keys: Set[str] = set()
     facial_root = root / "FB9_GEX_FACIAL"
     if facial_root.is_dir():
         for path in facial_root.glob("*.job.json"):
@@ -2294,11 +2327,45 @@ def find_gex2_needing_facial(
                 continue
             src = _job_source_video_path(job)
             if src:
-                facial_sources.add(src)
-    for job_key, vid in reversed(gex2_done):
-        if vid not in facial_sources:
-            return job_key
-    return None
+                facial_keys |= _video_match_keys(src)
+
+    cands: List[Tuple[float, str, str, str]] = []
+    gex2_root = root / "FB9_GEX2"
+    if gex2_root.is_dir():
+        for path in gex2_root.glob("*.job.json"):
+            try:
+                job = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not _job_is_complete(job):
+                continue
+            vid = _job_chain_output_video(job)
+            if not vid:
+                continue
+            if facial_keys & _video_match_keys(vid):
+                continue
+            try:
+                mtime = float(path.stat().st_mtime)
+            except OSError:
+                mtime = 0.0
+            cands.append(
+                (
+                    mtime,
+                    str(job.get("job_key") or path.stem),
+                    vid,
+                    _job_source_video_path(job),
+                )
+            )
+    if not cands:
+        return None
+    cands.sort(key=lambda t: (t[0], t[1]), reverse=True)
+    _mtime, job_key, vid, ref = cands[0]
+    return {
+        "job_key": job_key,
+        "video": vid,
+        "source_ref": ref,
+        "consumer_family": "FB9_GEX_FACIAL",
+    }
 
 
 def find_kneel_needing_consumer(
@@ -2505,10 +2572,22 @@ def plan_pool_product_fallback(
         }
 
     rng = random.Random(int(cursor) ^ 0xB00F)
+    recent = _recent_combo_keys(data_root=data_root, family=family)
+    recent_stills = _recent_source_basenames(recent)
     picks: Dict[str, Path] = {}
     for slot, members in sorted(pool_paths.items()):
         if any(_is_input_still(str(p)) for p in members):
-            weights = [_source_promotion_mult(str(p), family=family) for p in members]
+            weights: List[float] = []
+            fresh_flags: List[bool] = []
+            for path in members:
+                w = _source_promotion_mult(str(path), family=family)
+                used = bool(recent_stills) and _source_in_recent(str(path), recent_stills)
+                if used:
+                    w *= 0.02
+                weights.append(w)
+                fresh_flags.append(not used)
+            if any(fresh_flags):
+                weights = [w if fresh else 0.0 for w, fresh in zip(weights, fresh_flags)]
             picked, _ = _weighted_choice(members, weights, rng)  # type: ignore[arg-type]
             picks[slot] = Path(str(picked))
         else:
@@ -2758,11 +2837,9 @@ def plan_hourly_step(
     predicted_share = max(0.0, min(1.0, predicted_share))
     top_of_hour = _is_top_of_hour()
 
-    # BounceDanceA (etc.): prefer brand-new input stills via pool_product before
-    # replaying old still recipes.
+    # i2v families: sample a new input/ still instead of cloning the last hourly.
     if _prefers_fresh_stills(family):
-        fresh_share = float(os.environ.get("HOURLY_BOUNCEDANCE_FRESH_STILL_SHARE", "0.85"))
-        fresh_share = max(0.0, min(1.0, fresh_share))
+        fresh_share = _fresh_still_share(family)
         if random.Random(int(cursor) ^ 0xB0A1).random() < fresh_share:
             fresh = plan_pool_product_fallback(
                 cursor=cursor, data_root=data_root, family=family
@@ -2890,7 +2967,9 @@ def predict_hourly_gex2(
             "family": "FB9_GEX_FACIAL",
             "pick_mode": "chain",
             "step": "chain_facial",
-            "parent_job": need_facial,
+            "parent_job": need_facial.get("job_key"),
+            "source_video": need_facial.get("video"),
+            "source_video_ref": need_facial.get("source_ref"),
             "ok": True,
         }
 
@@ -3312,7 +3391,10 @@ def main() -> int:
     sf.add_argument("--cursor", type=int, default=None)
     sf.add_argument("--state", type=Path, default=None)
 
-    nf = sub.add_parser("need-facial", help="Print GEX2 job_key needing FACIAL child (or empty)")
+    nf = sub.add_parser(
+        "need-facial",
+        help="JSON: GEX2 job needing FACIAL child (or empty object)",
+    )
     nf.add_argument("--data-root", type=Path, default=None)
 
     nk = sub.add_parser(
@@ -3405,9 +3487,8 @@ def main() -> int:
         return 0
 
     if args.cmd == "need-facial":
-        key = find_gex2_needing_facial(data_root=data_root)
-        if key:
-            print(key)
+        hit = find_gex2_needing_facial(data_root=data_root)
+        print(json.dumps(hit or {}, ensure_ascii=False))
         return 0
 
     if args.cmd == "need-gex-from-i2v":
