@@ -3,16 +3,25 @@
 
 from __future__ import annotations
 
+import sys
 import unittest
+from pathlib import Path
 from typing import Any, Dict, List
 from unittest import mock
 
+SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
 from comfy_queue_ledger import (
+    QueueItem,
     _apply_ledger_clear,
     _candidate_ids_from_snapshot,
     _default_state,
     _history_terminal_reason,
     _restore_missing_prompts,
+    backlog_item_should_skip_finished,
+    park_items_to_backlog,
 )
 
 
@@ -179,6 +188,39 @@ class RestoreMissingPromptsTests(unittest.TestCase):
         self.assertEqual(state["backlog"], [])
         self.assertEqual(state["stats"]["skipped_already_done"], 1)
         self.assertTrue(any(e["type"] == "outage_restore_skipped_already_done" for e in events))
+
+
+class ParkBacklogTests(unittest.TestCase):
+    def test_park_copies_live_items_and_is_idempotent(self) -> None:
+        state = _default_state()
+        items = [
+            QueueItem(
+                prompt_id="a",
+                prompt={"1": {"class_type": "LoadImage", "inputs": {}}},
+                extra_data={"client_id": "ui"},
+                outputs_to_execute=["1"],
+            ),
+            QueueItem(prompt_id="b", prompt=None, extra_data=None, outputs_to_execute=None),
+        ]
+        first = park_items_to_backlog(state, items)
+        self.assertEqual(first, {"added": 1, "skipped": 0, "no_prompt": 1})
+        self.assertEqual(len(state["backlog"]), 1)
+        self.assertEqual(state["backlog"][0]["source"], "park")
+        self.assertEqual(state["backlog"][0]["prompt_id"], "a")
+        second = park_items_to_backlog(state, items)
+        self.assertEqual(second["added"], 0)
+        self.assertEqual(second["skipped"], 1)
+        self.assertEqual(len(state["backlog"]), 1)
+
+    def test_parked_interrupted_is_not_skipped(self) -> None:
+        parked = {"prompt_id": "a", "source": "park"}
+        spill = {"prompt_id": "b", "source": "spillover"}
+        self.assertFalse(backlog_item_should_skip_finished(parked, None))
+        self.assertFalse(backlog_item_should_skip_finished(parked, "interrupted"))
+        self.assertFalse(backlog_item_should_skip_finished(parked, "error"))
+        self.assertTrue(backlog_item_should_skip_finished(parked, "success"))
+        self.assertTrue(backlog_item_should_skip_finished(spill, "interrupted"))
+        self.assertTrue(backlog_item_should_skip_finished(spill, "success"))
 
 
 if __name__ == "__main__":

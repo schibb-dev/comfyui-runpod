@@ -651,10 +651,11 @@ const LEDGER_EVENT_LABELS: Record<string, string> = {
   startup_restored: "Startup restore",
   breaker_opened: "Breaker open",
   breaker_closed_auto: "Breaker closed",
-  actions_paused: "Paused",
-  drain_once_ack: "Drain once",
+  queue_parked: "Parked queue",
   refill_restored: "Refill",
   spillover_removed: "Spillover",
+  actions_paused: "Paused",
+  drain_once_ack: "Drain once",
 };
 
 function formatLedgerEventLabel(type?: string): string {
@@ -685,6 +686,9 @@ function formatLedgerEventDetail(ev: QueueLedgerEvent): string {
   const parts: string[] = [];
   const pid = shortPromptId(ev.prompt_id);
   if (pid) parts.push(pid);
+  if (typeof ev.added === "number") parts.push(`+${ev.added}`);
+  if (typeof ev.skipped === "number" && ev.skipped > 0) parts.push(`skipped ${ev.skipped}`);
+  if (typeof ev.no_prompt === "number" && ev.no_prompt > 0) parts.push(`no prompt ${ev.no_prompt}`);
   if (typeof ev.reason === "string" && ev.reason) parts.push(ev.reason);
   if (typeof ev.source === "string" && ev.source) parts.push(`src ${ev.source}`);
   if (typeof ev.mode === "string" && ev.mode) parts.push(`→ ${ev.mode}`);
@@ -730,24 +734,50 @@ function formatLedgerEntryLine(entry: QueueLedgerEntry): string {
   return parts.join(" · ");
 }
 
+function FeederPill({
+  on,
+  onLabel,
+  offLabel,
+  unknownLabel,
+}: {
+  on: boolean | null | undefined;
+  onLabel: string;
+  offLabel: string;
+  unknownLabel: string;
+}) {
+  const cls = on === true ? " queue-ledger__pill--on" : on === false ? " queue-ledger__pill--off" : "";
+  const label = on === true ? onLabel : on === false ? offLabel : unknownLabel;
+  return <span className={`queue-ledger__pill${cls}`}>{label}</span>;
+}
+
 function QueueLedgerPanel({
   status,
   events,
   busy,
   error,
+  notice,
   onAction,
 }: {
   status: QueueLedgerStatus | null;
   events: QueueLedgerEvent[];
   busy: boolean;
   error: string;
+  notice: string;
   onAction: (action: QueueLedgerControlAction) => void;
 }) {
-  const paused = Boolean(status?.paused);
+  const paused = Boolean(status?.paused || status?.ops?.ledger?.paused);
   const breakerOpen = Boolean(status?.breaker?.open);
   const backlog = typeof status?.backlog_count === "number" ? status.backlog_count : 0;
   const knownCount = typeof status?.known_count === "number" ? status.known_count : 0;
   const entries = Array.isArray(status?.entries) ? status.entries : [];
+  const ops = status?.ops;
+  const hourlyOn = ops?.hourly?.enabled;
+  const drainOn = ops?.drain?.active;
+  const watchOn = ops?.watch_queue?.running;
+  const comfyRun = ops?.comfy?.running;
+  const comfyPend = ops?.comfy?.pending;
+  const lastParkAt = ops?.ledger?.last_park_at;
+  const lastParkAdded = ops?.ledger?.last_park?.added;
   const stats = status?.stats;
   const statsParts: string[] = [];
   if (stats) {
@@ -778,9 +808,94 @@ function QueueLedgerPanel({
         </div>
         <div className="queue-ledger__body">
           <p className="queue-ledger__lead">
-            Shadows Comfy&apos;s queue and restores it after restarts. Clear ledger forgets that snapshot — it does not
-            empty Comfy waiting.
+            Shadows Comfy&apos;s queue and can restore it after restarts. Suspend parks live jobs into the backlog,
+            empties Comfy, and stops drain + watch-queue. Clear ledger forgets that snapshot — it does not empty Comfy
+            waiting.
           </p>
+          <div className="queue-ledger__ops" aria-label="Comfy feeders">
+            <div className="queue-ledger__status" aria-live="polite">
+              <FeederPill
+                on={typeof comfyRun === "number" || typeof comfyPend === "number" ? (comfyRun || 0) + (comfyPend || 0) === 0 : null}
+                onLabel={`Comfy idle`}
+                offLabel={`Comfy ${typeof comfyRun === "number" ? comfyRun : "—"} run · ${typeof comfyPend === "number" ? comfyPend : "—"} wait`}
+                unknownLabel="Comfy —"
+              />
+              <FeederPill on={hourlyOn} onLabel="Hourlies on" offLabel="Hourlies off" unknownLabel="Hourlies —" />
+              <FeederPill on={drainOn} onLabel="Drain on" offLabel="Drain off" unknownLabel="Drain —" />
+              <FeederPill on={watchOn} onLabel="Watch-queue on" offLabel="Watch-queue off" unknownLabel="Watch-queue —" />
+            </div>
+            <div className="queue-ledger__actions">
+              <button
+                type="button"
+                disabled={busy}
+                title="Park live jobs, empty Comfy, stop drain and watch-queue"
+                onClick={() => {
+                  if (
+                    !window.confirm(
+                      "Suspend Comfy?\n\nThis parks the live queue into the ledger backlog, interrupts/clears Comfy, and stops pending-drain + watch-queue. Jobs are kept for later. Takes ~30 seconds.",
+                    )
+                  ) {
+                    return;
+                  }
+                  onAction("suspend");
+                }}
+              >
+                {busy ? "Working…" : "Suspend Comfy"}
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                title="Unpause ledger restore and restart drain + watch-queue"
+                onClick={() => {
+                  if (
+                    !window.confirm(
+                      "Resume Comfy?\n\nThis unpauses the ledger and restarts pending-drain + watch-queue. Parked jobs will refill toward 2 waiting slots.",
+                    )
+                  ) {
+                    return;
+                  }
+                  onAction("resume-ops");
+                }}
+              >
+                Resume Comfy
+              </button>
+            </div>
+            <div className="queue-ledger__actions">
+              {hourlyOn ? (
+                <button type="button" disabled={busy} onClick={() => onAction("hourlies-off")}>
+                  Disable hourlies
+                </button>
+              ) : (
+                <button type="button" disabled={busy} onClick={() => onAction("hourlies-on")}>
+                  Enable hourlies
+                </button>
+              )}
+              {drainOn ? (
+                <button type="button" disabled={busy} onClick={() => onAction("drain-off")}>
+                  Stop drain
+                </button>
+              ) : (
+                <button type="button" disabled={busy} onClick={() => onAction("drain-on")}>
+                  Start drain
+                </button>
+              )}
+              {watchOn ? (
+                <button type="button" disabled={busy} onClick={() => onAction("watch-off")}>
+                  Stop watch-queue
+                </button>
+              ) : (
+                <button type="button" disabled={busy} onClick={() => onAction("watch-on")}>
+                  Start watch-queue
+                </button>
+              )}
+            </div>
+            {lastParkAt ? (
+              <p className="queue-ledger__meta">
+                Last park {formatLedgerUpdated(lastParkAt)}
+                {typeof lastParkAdded === "number" ? ` · ${lastParkAdded} jobs` : ""}
+              </p>
+            ) : null}
+          </div>
           <div className="queue-ledger__status" aria-live="polite">
             <span className="queue-ledger__meta mono">mode {status?.mode || "—"}</span>
             <span className="queue-ledger__meta mono">backlog {backlog}</span>
@@ -796,12 +911,12 @@ function QueueLedgerPanel({
           </div>
           <div className="queue-ledger__actions">
             {paused ? (
-              <button type="button" disabled={busy} onClick={() => onAction("resume")}>
-                Resume
+              <button type="button" disabled={busy} title="Allow ledger restore/refill" onClick={() => onAction("resume")}>
+                Resume restore
               </button>
             ) : (
-              <button type="button" disabled={busy} onClick={() => onAction("pause")}>
-                Pause
+              <button type="button" disabled={busy} title="Stop ledger restore/refill (does not empty Comfy)" onClick={() => onAction("pause")}>
+                Pause restore
               </button>
             )}
             <button
@@ -836,6 +951,7 @@ function QueueLedgerPanel({
             </button>
           </div>
           {error ? <p className="queue-ledger__err">{error}</p> : null}
+          {notice ? <p className="queue-ledger__notice">{notice}</p> : null}
           <div className="queue-ledger__entries-head">Contents</div>
           {entries.length === 0 ? (
             <p className="queue-ledger__activity-empty">No mirrored prompts in the ledger.</p>
@@ -897,6 +1013,7 @@ export function ComfyQueueMonitorApp() {
   );
   const [error, setError] = useState("");
   const [ledgerErr, setLedgerErr] = useState("");
+  const [ledgerNotice, setLedgerNotice] = useState("");
   const [loading, setLoading] = useState(() => !initialCache);
   const [refreshing, setRefreshing] = useState(false);
   const [ledgerBusy, setLedgerBusy] = useState(false);
@@ -962,18 +1079,11 @@ export function ComfyQueueMonitorApp() {
   const runLedgerAction = async (action: QueueLedgerControlAction) => {
     setLedgerBusy(true);
     setLedgerErr("");
+    setLedgerNotice("");
     try {
-      await setQueueLedgerControl(action);
-      const [led, ev] = await Promise.all([fetchQueueLedgerStatus(), fetchQueueLedgerEvents(30)]);
-      setLedger(led);
-      if (Array.isArray(ev.events)) setLedgerEvents(ev.events);
-      const prev = getSessionListCache<ComfyQueueCachePayload>(COMFY_QUEUE_CACHE_KEY)?.value;
-      setSessionListCache<ComfyQueueCachePayload>(COMFY_QUEUE_CACHE_KEY, {
-        data: prev?.data ?? data,
-        history: prev?.history ?? history,
-        ledger: led,
-        ledgerEvents: Array.isArray(ev.events) ? ev.events : prev?.ledgerEvents ?? [],
-      });
+      const res = await setQueueLedgerControl(action);
+      if (res.note) setLedgerNotice(res.note);
+      await refresh({ soft: true });
     } catch (e) {
       setLedgerErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -1010,11 +1120,21 @@ export function ComfyQueueMonitorApp() {
     return sortQueueItems(pendingRaw, sortMode === "errors_first" ? "newest" : sortMode);
   }, [pendingRaw, statusFilter, sortMode]);
 
-  const ledgerPaused = Boolean(ledger?.paused);
+  const ledgerPaused = Boolean(ledger?.paused || ledger?.ops?.ledger?.paused);
   const ledgerBacklog = typeof ledger?.backlog_count === "number" ? ledger.backlog_count : 0;
+  const hourlyOn = ledger?.ops?.hourly?.enabled;
+  const drainOn = ledger?.ops?.drain?.active;
+  const watchOn = ledger?.ops?.watch_queue?.running;
   const subtitle = useMemo(() => {
     if (pageTab === "ledger") {
-      return `Ledger — ${ledgerPaused ? "paused" : "live"} · backlog ${ledgerBacklog} · ${ledgerEvents.length} recent`;
+      const bits = [
+        ledgerPaused ? "paused" : "live",
+        `backlog ${ledgerBacklog}`,
+        hourlyOn === false ? "hourlies off" : hourlyOn === true ? "hourlies on" : null,
+        drainOn === false ? "drain off" : drainOn === true ? "drain on" : null,
+        watchOn === false ? "watch off" : watchOn === true ? "watch on" : null,
+      ].filter(Boolean);
+      return `Ledger — ${bits.join(" · ")}`;
     }
     const errBit = historyErrorCount ? ` · ${historyErrorCount} errors` : "";
     return `Comfy ops — running ${runningRaw.length} · waiting ${pendingRaw.length} · history ${history.length}${errBit}`;
@@ -1022,7 +1142,9 @@ export function ComfyQueueMonitorApp() {
     pageTab,
     ledgerPaused,
     ledgerBacklog,
-    ledgerEvents.length,
+    hourlyOn,
+    drainOn,
+    watchOn,
     runningRaw.length,
     pendingRaw.length,
     history.length,
@@ -1267,14 +1389,16 @@ export function ComfyQueueMonitorApp() {
           aria-labelledby="queue-page-tab-ledger"
         >
           <p className="queue-monitor-hint">
-            <strong>Clear ledger</strong> only forgets restore state so a restart won&apos;t put old jobs back. It does
-            not empty Comfy waiting — use Clear waiting on the Queue tab for that.
+            <strong>Suspend Comfy</strong> parks live jobs and empties the GPU queue.{" "}
+            <strong>Clear ledger</strong> only forgets restore state so a restart won&apos;t put old jobs back — it does
+            not empty Comfy waiting.
           </p>
           <QueueLedgerPanel
             status={ledger}
             events={ledgerEvents}
-            busy={ledgerBusy || loading}
+            busy={ledgerBusy}
             error={ledgerErr}
+            notice={ledgerNotice}
             onAction={(a) => void runLedgerAction(a)}
           />
         </div>

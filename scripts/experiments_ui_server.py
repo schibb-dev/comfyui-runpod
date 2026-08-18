@@ -7825,6 +7825,83 @@ def _write_queue_ledger_state(path: Path, obj: Dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def _queue_ops_output_root(cfg: ServerConfig) -> Path:
+    """Host output dir that contains experiments/_status (ledger files)."""
+    return cfg.queue_ledger_state_path.parent.parent.parent
+
+
+def _queue_ops_status(cfg: ServerConfig) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+    from suspend_comfy_queue import collect_ops_status  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    try:
+        return collect_ops_status(
+            server=str(cfg.comfy_server),
+            output_root=_queue_ops_output_root(cfg),
+            data_root=data_root,
+        )
+    except Exception as e:
+        return {"ok": False, "error": "ops_status_failed", "detail": str(e)}
+
+
+_QUEUE_OPS_ACTIONS = (
+    "suspend",
+    "resume-ops",
+    "hourlies-on",
+    "hourlies-off",
+    "drain-on",
+    "drain-off",
+    "watch-on",
+    "watch-off",
+)
+
+
+def _queue_ops_action(cfg: ServerConfig, action: str) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+    from suspend_comfy_queue import (  # type: ignore
+        do_resume,
+        do_suspend,
+        set_drain_timer,
+        set_hourlies_enabled,
+        set_watch_queue,
+    )
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    output_root = _queue_ops_output_root(cfg)
+    if action == "suspend":
+        return do_suspend(
+            server=str(cfg.comfy_server),
+            data_root=data_root,
+            output_root=output_root,
+        )
+    if action == "resume-ops":
+        return do_resume(output_root=output_root, feeders=True)
+    if action == "hourlies-on":
+        out = set_hourlies_enabled(enabled=True, data_root=data_root)
+        out["action"] = action
+        return out
+    if action == "hourlies-off":
+        out = set_hourlies_enabled(enabled=False, data_root=data_root)
+        out["action"] = action
+        return out
+    if action == "drain-on":
+        return {"ok": True, "action": action, "feeders": set_drain_timer(active=True)}
+    if action == "drain-off":
+        return {"ok": True, "action": action, "feeders": set_drain_timer(active=False)}
+    if action == "watch-on":
+        return {"ok": True, "action": action, "feeders": set_watch_queue(active=True)}
+    if action == "watch-off":
+        return {"ok": True, "action": action, "feeders": set_watch_queue(active=False)}
+    return {"ok": False, "error": "bad_action", "action": action}
+
+
 class Handler(BaseHTTPRequestHandler):
     server: "ExperimentsServer"  # type: ignore[assignment]
 
@@ -8273,6 +8350,10 @@ class Handler(BaseHTTPRequestHandler):
                 },
                 "entries": entries,
             }
+            try:
+                out["ops"] = _queue_ops_status(cfg)
+            except Exception as e:
+                out["ops"] = {"ok": False, "error": "ops_status_failed", "detail": str(e)}
             return _json_response(self, 200, out)
 
         if path == "/api/queue/ledger-events":
@@ -10544,6 +10625,21 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, 400, {"error": "missing_action"})
         action = action.strip().lower()
 
+        if action in _QUEUE_OPS_ACTIONS:
+            try:
+                payload = _queue_ops_action(cfg, action)
+            except Exception as e:
+                return _json_response(
+                    self,
+                    500,
+                    {"ok": False, "error": "queue_ops_failed", "action": action, "detail": str(e)},
+                )
+            if not isinstance(payload, dict):
+                payload = {"ok": False, "error": "bad_ops_payload"}
+            payload.setdefault("action", action)
+            code = 200 if payload.get("ok") else 500
+            return _json_response(self, code, payload)
+
         st = _read_queue_ledger_state(cfg.queue_ledger_state_path)
         if not st:
             return _json_response(
@@ -10600,7 +10696,21 @@ class Handler(BaseHTTPRequestHandler):
                 400,
                 {
                     "error": "bad_action",
-                    "expected": ["pause", "resume", "drain-once", "clear", "reset-breaker"],
+                    "expected": [
+                        "pause",
+                        "resume",
+                        "drain-once",
+                        "clear",
+                        "reset-breaker",
+                        "suspend",
+                        "resume-ops",
+                        "hourlies-on",
+                        "hourlies-off",
+                        "drain-on",
+                        "drain-off",
+                        "watch-on",
+                        "watch-off",
+                    ],
                 },
             )
 

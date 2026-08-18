@@ -1556,6 +1556,23 @@ export type QueueLedgerEntry = {
   has_prompt?: boolean;
 };
 
+export type QueueLedgerOpsStatus = {
+  ok?: boolean;
+  comfy?: { ok?: boolean; running?: number | null; pending?: number | null; error?: string };
+  hourly?: { enabled?: boolean | null };
+  drain?: { active?: boolean | null; enabled?: boolean; label?: string };
+  watch_queue?: { running?: boolean; status?: string };
+  ledger?: {
+    paused?: boolean | null;
+    last_park_at?: string | null;
+    last_park?: { added?: number; skipped?: number; no_prompt?: number } | null;
+  };
+  docker_ok?: boolean;
+  systemd_ok?: boolean;
+  error?: string;
+  detail?: string;
+};
+
 export type QueueLedgerStatus = {
   enabled?: boolean;
   state_path?: string;
@@ -1570,11 +1587,25 @@ export type QueueLedgerStatus = {
   stats?: QueueLedgerStats;
   snapshot?: { running?: string[]; pending?: string[] };
   entries?: QueueLedgerEntry[];
+  ops?: QueueLedgerOpsStatus;
   error?: string;
   detail?: string;
 };
 
-export type QueueLedgerControlAction = "pause" | "resume" | "drain-once" | "clear" | "reset-breaker";
+export type QueueLedgerControlAction =
+  | "pause"
+  | "resume"
+  | "drain-once"
+  | "clear"
+  | "reset-breaker"
+  | "suspend"
+  | "resume-ops"
+  | "hourlies-on"
+  | "hourlies-off"
+  | "drain-on"
+  | "drain-off"
+  | "watch-on"
+  | "watch-off";
 
 /** POST /api/queue/ledger-control */
 export type QueueLedgerControlResponse = {

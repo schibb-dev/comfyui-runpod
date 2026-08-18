@@ -469,6 +469,7 @@ def _default_state() -> Dict[str, Any]:
         "paused": False,
         "drain_once_requested_at": 0.0,
         "clear_requested_at": 0.0,
+        "park_requested_at": 0.0,
         "stats": {
             "restored_startup": 0,
             "restored_outage": 0,
@@ -540,31 +541,136 @@ def _delete_pending_prompt(server: str, prompt_id: str, timeout_s: int = 10) -> 
     return True, res
 
 
-def _push_backlog_item(state: Dict[str, Any], prompt_id: str) -> bool:
-    known = state.get("known", {})
-    if not isinstance(known, dict):
-        return False
-    rec = known.get(prompt_id)
-    if not isinstance(rec, dict) or not isinstance(rec.get("prompt"), dict):
+def _append_backlog_item(
+    state: Dict[str, Any],
+    *,
+    prompt_id: str,
+    prompt: Optional[Dict[str, Any]],
+    extra_data: Optional[Dict[str, Any]] = None,
+    outputs_to_execute: Optional[List[Any]] = None,
+    source: str = "spillover",
+) -> bool:
+    pid = str(prompt_id or "").strip()
+    if not pid or not isinstance(prompt, dict):
         return False
     backlog = state.setdefault("backlog", [])
     if not isinstance(backlog, list):
         backlog = []
         state["backlog"] = backlog
     for x in backlog:
-        if isinstance(x, dict) and x.get("prompt_id") == prompt_id:
+        if isinstance(x, dict) and x.get("prompt_id") == pid:
             return False
     backlog.append(
         {
-            "prompt_id": prompt_id,
-            "prompt": rec.get("prompt"),
-            "extra_data": rec.get("extra_data") if isinstance(rec.get("extra_data"), dict) else None,
-            "outputs_to_execute": rec.get("outputs_to_execute") if isinstance(rec.get("outputs_to_execute"), list) else None,
+            "prompt_id": pid,
+            "prompt": prompt,
+            "extra_data": extra_data if isinstance(extra_data, dict) else None,
+            "outputs_to_execute": outputs_to_execute if isinstance(outputs_to_execute, list) else None,
             "enqueued_backlog_ts": _now_ts(),
-            "source": "spillover",
+            "source": str(source or "spillover"),
         }
     )
     return True
+
+
+def _push_backlog_item(state: Dict[str, Any], prompt_id: str, *, source: str = "spillover") -> bool:
+    known = state.get("known", {})
+    if not isinstance(known, dict):
+        return False
+    rec = known.get(prompt_id)
+    if not isinstance(rec, dict) or not isinstance(rec.get("prompt"), dict):
+        return False
+    return _append_backlog_item(
+        state,
+        prompt_id=prompt_id,
+        prompt=rec.get("prompt") if isinstance(rec.get("prompt"), dict) else None,
+        extra_data=rec.get("extra_data") if isinstance(rec.get("extra_data"), dict) else None,
+        outputs_to_execute=rec.get("outputs_to_execute") if isinstance(rec.get("outputs_to_execute"), list) else None,
+        source=source,
+    )
+
+
+def park_items_to_backlog(
+    state: Dict[str, Any],
+    items: List[QueueItem],
+    *,
+    source: str = "park",
+) -> Dict[str, int]:
+    """Copy live queue items into backlog so Comfy can be emptied and restored later."""
+    added = 0
+    skipped = 0
+    no_prompt = 0
+    known = state.setdefault("known", {})
+    if not isinstance(known, dict):
+        known = {}
+        state["known"] = known
+    now = _now_ts()
+    for item in items:
+        pid = str(item.prompt_id or "").strip()
+        if not pid:
+            continue
+        rec = known.get(pid) if isinstance(known.get(pid), dict) else {}
+        prompt = item.prompt if isinstance(item.prompt, dict) else rec.get("prompt")
+        extra = item.extra_data if isinstance(item.extra_data, dict) else rec.get("extra_data")
+        outputs = item.outputs_to_execute if isinstance(item.outputs_to_execute, list) else rec.get("outputs_to_execute")
+        if not isinstance(rec, dict):
+            rec = {}
+        if not isinstance(rec.get("first_seen_ts"), (int, float)):
+            rec["first_seen_ts"] = now
+            rec["first_seen_at"] = _utc_iso(now)
+        rec["last_seen_ts"] = now
+        rec["last_seen_at"] = _utc_iso(now)
+        rec["last_phase"] = rec.get("last_phase") or "pending"
+        if isinstance(prompt, dict):
+            rec["prompt"] = prompt
+        if isinstance(extra, dict):
+            rec["extra_data"] = extra
+        if isinstance(outputs, list):
+            rec["outputs_to_execute"] = outputs
+        known[pid] = rec
+        if not isinstance(prompt, dict):
+            no_prompt += 1
+            continue
+        if _append_backlog_item(
+            state,
+            prompt_id=pid,
+            prompt=prompt,
+            extra_data=extra if isinstance(extra, dict) else None,
+            outputs_to_execute=outputs if isinstance(outputs, list) else None,
+            source=source,
+        ):
+            added += 1
+        else:
+            skipped += 1
+    return {"added": added, "skipped": skipped, "no_prompt": no_prompt}
+
+
+def backlog_item_should_skip_finished(item: Dict[str, Any], done_reason: Optional[str]) -> bool:
+    """
+    History skip: completed work should not be re-queued.
+
+    Operator-parked jobs are meant to run later even if we interrupted them
+    (or they errored) to empty Comfy. Only a successful finish stays skipped.
+    """
+    if not done_reason:
+        return False
+    if str(item.get("source") or "") == "park" and str(done_reason) != "success":
+        return False
+    return True
+
+
+def default_ledger_control_path(state_path: Path) -> Path:
+    return Path(state_path).with_name("comfy_queue_ledger_control.json")
+
+
+def _read_control(path: Path) -> Dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return obj if isinstance(obj, dict) else {}
 
 
 def _breaker_open(state: Dict[str, Any], *, reason: str, open_for_s: float) -> None:
@@ -647,6 +753,11 @@ def main() -> int:
     ap.add_argument("--max-actions-churn", type=int, default=1, help="Max queue actions per cycle in churn mode")
     ap.add_argument("--client-id", default="comfy-queue-ledger", help="client_id for restored prompt submissions")
     ap.add_argument("--state-path", default="", help="Path to ledger state JSON")
+    ap.add_argument(
+        "--control-path",
+        default="",
+        help="Tiny operator control JSON (pause/park) next to state by default",
+    )
     ap.add_argument("--events-path", default="", help="Path to ledger events JSONL")
     ap.add_argument(
         "--model-io-path",
@@ -683,6 +794,7 @@ def main() -> int:
     default_state = repo / "workspace" / "output" / "output" / "experiments" / "_status" / "comfy_queue_ledger_state.json"
     default_events = repo / "workspace" / "output" / "output" / "experiments" / "_status" / "comfy_queue_ledger.jsonl"
     state_path = Path(args.state_path) if args.state_path else default_state
+    control_path = Path(args.control_path) if args.control_path else default_ledger_control_path(state_path)
     events_path = Path(args.events_path) if args.events_path else default_events
     if args.model_io_path:
         model_io_path = Path(args.model_io_path)
@@ -801,9 +913,21 @@ def main() -> int:
         now = _now_ts()
         # Merge operator control keys from disk.
         disk_state = _read_state(state_path)
-        for k in ("paused", "drain_once_requested_at", "clear_requested_at", "breaker", "restore_failures_ts"):
+        for k in (
+            "paused",
+            "drain_once_requested_at",
+            "clear_requested_at",
+            "park_requested_at",
+            "breaker",
+            "restore_failures_ts",
+        ):
             if k in disk_state:
                 state[k] = disk_state[k]
+        control = _read_control(control_path)
+        if control:
+            for k in ("paused", "drain_once_requested_at", "clear_requested_at", "park_requested_at", "breaker"):
+                if k in control:
+                    state[k] = control[k]
         if _breaker_maybe_close(state):
             log_event("breaker_closed_auto")
 
@@ -889,6 +1013,24 @@ def main() -> int:
             if isinstance(item.outputs_to_execute, list):
                 rec["outputs_to_execute"] = item.outputs_to_execute
             known[item.prompt_id] = rec
+
+        if float(state.get("park_requested_at") or 0.0) > 0:
+            counts = park_items_to_backlog(state, running + pending, source="park")
+            state["paused"] = True
+            state["park_requested_at"] = 0.0
+            log_event(
+                "queue_parked",
+                **counts,
+                live_running=len(running_ids),
+                live_pending=len(pending_ids),
+            )
+            ack = dict(control) if isinstance(control, dict) else {}
+            ack["park_requested_at"] = 0.0
+            ack["paused"] = True
+            ack["last_park_at"] = _utc_iso(now)
+            ack["last_park"] = counts
+            _write_json(control_path, ack)
+            _write_json(state_path, state)
 
         prev_snapshot = state.get("last_snapshot") if isinstance(state.get("last_snapshot"), dict) else {}
         prev_running = prev_snapshot.get("running") if isinstance(prev_snapshot.get("running"), list) else []
@@ -1033,7 +1175,7 @@ def main() -> int:
                             backlog.pop(i)
                             continue
                         done_reason, _done_check = _prompt_already_finished(args.server, pid)
-                        if done_reason:
+                        if done_reason and backlog_item_should_skip_finished(item, done_reason):
                             _forget_mirrored_prompt(state, pid)
                             state.setdefault("stats", {})["skipped_already_done"] = int(
                                 state.setdefault("stats", {}).get("skipped_already_done", 0)

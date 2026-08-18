@@ -376,9 +376,29 @@ body {
   border-color: rgba(255, 193, 7, 0.45);
   color: #ffd54f;
 }
+.queue-ledger__pill--on {
+  border-color: rgba(129, 199, 132, 0.5);
+  color: #81c784;
+}
+.queue-ledger__pill--off {
+  border-color: rgba(255, 193, 7, 0.45);
+  color: #ffd54f;
+}
 .queue-ledger__pill--warn {
   border-color: rgba(255, 138, 128, 0.5);
   color: #ff8a80;
+}
+.queue-ledger__ops {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.queue-ledger__notice {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #81c784;
 }
 .queue-ledger__meta {
   color: var(--muted);
