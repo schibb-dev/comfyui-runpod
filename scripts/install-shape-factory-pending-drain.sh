@@ -16,7 +16,7 @@ After=network-online.target
 [Service]
 Type=oneshot
 Environment=REPO=$REPO
-Environment=HOURLY_QUEUE_MAX=2
+Environment=HOURLY_QUEUE_MAX=3
 Environment=DRAIN_LIMIT=2
 ExecStart=$REPO/scripts/shape_factory_pending_drain.sh
 EOF

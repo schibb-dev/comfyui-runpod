@@ -19,7 +19,7 @@ if [ ! -f "$SCHEDULE" ]; then
       --enabled 1 \
       --submit-mode auto \
       --comfy-queue-min 1 \
-      --comfy-queue-max 2 \
+      --comfy-queue-max 3 \
       --pending-queue-max 4 >/dev/null
   )
 fi

@@ -17,11 +17,11 @@ if [ -z "${HOURLY_QUEUE_MAX:-}" ]; then
 from shape_factory_hourly import load_hourly_schedule
 from pathlib import Path
 sch = load_hourly_schedule(path=Path("$SCHEDULE"))
-print(int(sch.get("comfy_queue_max", 2)))
+print(int(sch.get("comfy_queue_max", 3)))
 PY
-  ) || HOURLY_QUEUE_MAX=2
+  ) || HOURLY_QUEUE_MAX=3
 fi
-HOURLY_QUEUE_MAX="${HOURLY_QUEUE_MAX:-2}"
+HOURLY_QUEUE_MAX="${HOURLY_QUEUE_MAX:-3}"
 
 mkdir -p "$(dirname "$LOG")"
 
