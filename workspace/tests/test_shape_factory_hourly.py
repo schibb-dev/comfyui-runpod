@@ -696,12 +696,14 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
         }
         i2v_w = sum(w for n, w in _DEFAULT_SEED_FAMILY_WEIGHTS if n in i2v)
         total_w = sum(w for _n, w in _DEFAULT_SEED_FAMILY_WEIGHTS)
+        weights = dict(_DEFAULT_SEED_FAMILY_WEIGHTS)
         self.assertEqual(total_w, 100)
         self.assertGreaterEqual(i2v_w, 88)
-        starter_w = sum(w for n, w in _DEFAULT_SEED_FAMILY_WEIGHTS if n in {"FB9-FaceBlast", "BounceDanceA"})
-        self.assertGreaterEqual(starter_w, 48)
+        self.assertEqual(max(weights.values()), weights["X-KNEEL-FB9"])
+        self.assertGreaterEqual(weights["X-KNEEL-FB9"], 32)
         picked = {select_seed_family(i) for i in range(80)}
-        self.assertTrue(picked & {"FB9-FaceBlast", "X-KNEEL-FB9", "BounceDanceA", "FB8VA4"})
+        self.assertIn("X-KNEEL-FB9", picked)
+        self.assertTrue(picked & {"FB9-FaceBlast", "BounceDanceA", "FB8VA4"})
         self.assertNotIn("FB9_GEX2", picked)
 
     def test_want_seed_over_chain_respects_share(self) -> None:
@@ -1437,14 +1439,13 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
             self.assertEqual(hit_facial.get("source_ref"), vid_g_parent)
             self.assertEqual(find_kneel_needing_gex2(job_dir=root), "kneel-k")
             self.assertEqual(find_kneel_needing_gex(job_dir=root), "kneel-k")
-            # BounceDanceA preferred over FaceBlast / Kneel when all need GEX.
+            # X-KNEEL preferred over BounceDance / FaceBlast when all need GEX.
             hit = find_i2v_needing_gex(job_dir=root)
             self.assertIsNotNone(hit)
             assert hit is not None
-            self.assertEqual(hit.get("producer_family"), "BounceDanceA")
-            self.assertEqual(hit.get("job_key"), "bounce-1")
-            self.assertEqual(hit.get("video"), vid_bd)
-            self.assertNotEqual(hit.get("video"), vid_bd_preview)
+            self.assertEqual(hit.get("producer_family"), "X-KNEEL-FB9")
+            self.assertEqual(hit.get("job_key"), "kneel-k")
+            self.assertEqual(hit.get("video"), vid_k)
             (facial / "f.job.json").write_text(
                 json.dumps({"bindings": {"source_video": {"path": vid_g}}}),
                 encoding="utf-8",
@@ -1457,24 +1458,27 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
             self.assertIsNone(find_kneel_needing_gex2(job_dir=root))
             # Consumed by GEX2 does not satisfy Kneel→GEX.
             self.assertEqual(find_kneel_needing_gex(job_dir=root), "kneel-k")
-            (gex / "from_bounce.job.json").write_text(
-                json.dumps({"bindings": {"source_video": {"path": vid_bd}}}),
+            (gex / "from_kneel.job.json").write_text(
+                json.dumps({"bindings": {"source_video": {"path": vid_k}}}),
                 encoding="utf-8",
             )
             hit2 = find_i2v_needing_gex(job_dir=root)
             self.assertIsNotNone(hit2)
             assert hit2 is not None
-            self.assertEqual(hit2.get("producer_family"), "FB9-FaceBlast")
-            (gex / "from_faceblast.job.json").write_text(
-                json.dumps({"bindings": {"source_video": {"path": vid_fb}}}),
+            self.assertEqual(hit2.get("producer_family"), "BounceDanceA")
+            self.assertEqual(hit2.get("job_key"), "bounce-1")
+            self.assertEqual(hit2.get("video"), vid_bd)
+            self.assertNotEqual(hit2.get("video"), vid_bd_preview)
+            (gex / "from_bounce.job.json").write_text(
+                json.dumps({"bindings": {"source_video": {"path": vid_bd}}}),
                 encoding="utf-8",
             )
             hit3 = find_i2v_needing_gex(job_dir=root)
             self.assertIsNotNone(hit3)
             assert hit3 is not None
-            self.assertEqual(hit3.get("producer_family"), "X-KNEEL-FB9")
-            (gex / "from_kneel.job.json").write_text(
-                json.dumps({"bindings": {"source_video": {"path": vid_k}}}),
+            self.assertEqual(hit3.get("producer_family"), "FB9-FaceBlast")
+            (gex / "from_faceblast.job.json").write_text(
+                json.dumps({"bindings": {"source_video": {"path": vid_fb}}}),
                 encoding="utf-8",
             )
             self.assertIsNone(find_kneel_needing_gex(job_dir=root))

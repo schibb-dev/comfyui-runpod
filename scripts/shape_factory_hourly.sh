@@ -3,9 +3,10 @@
 # Pending drain (shape_factory_pending_drain) owns pushing pending onto Comfy when
 # this tick leaves jobs pending (Comfy full / submit_mode=pending).
 # Priority when filling: GEX2→FACIAL (recent lookback), then usually i2v→FB9_GEX
-# (FaceBlast/BounceDance/Kneel/…), then seed. HOURLY_SEED_OVER_CHAIN_SHARE
-# (default 0.50) occasionally seeds a new still workflow instead of draining either
-# chain phase — otherwise a large facial backlog starves image-based templates.
+# (Kneel primary, then BounceDance/FaceBlast/…), then seed. Image seeds weight
+# X-KNEEL-FB9 highest. HOURLY_SEED_OVER_CHAIN_SHARE (default 0.50) occasionally
+# seeds a new still workflow instead of draining either chain phase — otherwise a
+# large facial backlog starves image-based templates.
 # HOURLY_FACIAL_LOOKBACK_DAYS (default 14) ignores ancient GEX2 jobs for facial drain.
 # sample_cursor advances on every fill tick (chain or seed) so seed-over re-rolls.
 # After hourly policy changes, dry-run variety with:

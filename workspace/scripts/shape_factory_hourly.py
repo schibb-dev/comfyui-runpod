@@ -2344,15 +2344,16 @@ def plan_hourly_derive(
 
 # Seed families for idle hourly ticks (weights sum to 100 by default).
 # Bias toward still+prompt (i2v) templates so input images get exercised.
+# X-KNEEL-FB9 is the primary image-based seed; FaceBlast/BounceDance remain secondary.
 # FB9_GEX (v2v) remains allowed; FB9_GEX2 is intentionally excluded from seeds.
 _DEFAULT_SEED_FAMILY_WEIGHTS: Tuple[Tuple[str, int], ...] = (
-    ("FB9-FaceBlast", 26),
-    ("BounceDanceA", 26),
-    ("X-KNEEL-FB9", 18),
+    ("X-KNEEL-FB9", 40),
+    ("FB9-FaceBlast", 16),
+    ("BounceDanceA", 16),
     ("FB9_GEX", 5),
     ("FB8VA4", 8),
-    ("FB8VB2", 6),
-    ("FB8VA5-ZOOMOUT", 6),
+    ("FB8VB2", 5),
+    ("FB8VA5-ZOOMOUT", 5),
     ("Breast-shake-FB8VA5", 5),
 )
 
@@ -2546,16 +2547,16 @@ def find_kneel_needing_gex2(
     return find_kneel_needing_consumer("FB9_GEX2", data_root=data_root, job_dir=job_dir)
 
 
-# Image/still (i2v) families that chain into FB9_GEX. BounceDanceA + FaceBlast first
-# so their deposits extend before Kneel / FB8 fillers when several are ready.
+# Image/still (i2v) families that chain into FB9_GEX. X-KNEEL first (primary image
+# seed), then BounceDance / FaceBlast, then FB8 fillers when several are ready.
 _IMAGE_TO_GEX_FAMILIES: Tuple[str, ...] = (
+    "X-KNEEL-FB9",
     "BounceDanceA",
     "FB9-FaceBlast",
     "FB8VA4",
     "FB8VB2",
     "FB8VA5-ZOOMOUT",
     "Breast-shake-FB8VA5",
-    "X-KNEEL-FB9",
 )
 
 
