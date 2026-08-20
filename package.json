@@ -58,8 +58,10 @@
     "ui:build:docker": "docker compose -f docker-compose.yml -f docker-compose.output-sftp.yml exec -T comfyui sh -lc \"cd /workspace/experiments_ui/web && (test -f package-lock.json && npm ci || npm install) && npm run build\"",
 
     "//compat": "Back-compat aliases for older script names.",
-    "comfy:restart": "docker compose -f docker-compose.yml -f docker-compose.output-sftp.yml restart comfyui",
+    "comfy:build": "docker compose build comfyui",
+    "comfy:build:nocache": "docker compose build --no-cache comfyui",
     "comfy:recreate": "docker compose -f docker-compose.yml -f docker-compose.output-sftp.yml up -d --force-recreate comfyui",
+    "comfy:restart": "docker compose -f docker-compose.yml -f docker-compose.output-sftp.yml restart comfyui",
     "ui:dev": "npm run ui:dev:container",
     "ui:build": "npm run ui:build:win",
     "ui:recreate": "npm run ui:recreate:win"
