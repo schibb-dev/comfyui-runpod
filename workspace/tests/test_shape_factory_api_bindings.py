@@ -151,6 +151,77 @@ class ApplyApiSlotBindingsPromptTests(unittest.TestCase):
         fatal = _binding_patch_failures(warnings, shape, job)
         self.assertTrue(any("companion_png_missing_video_slot:source_video" in f for f in fatal))
 
+    def test_optional_missing_vhs_does_not_clobber_primary(self) -> None:
+        """FACIAL-style: convert drops unlinked ref node 386; must not overwrite 377."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            primary = root / "primary.mp4"
+            ref = root / "ref.mp4"
+            primary.write_bytes(b"primary")
+            ref.write_bytes(b"ref")
+            shape = {
+                "requires": [
+                    {
+                        "slot": "source_video",
+                        "binding": {"type": "vhs_load_video_path", "node_id": 377},
+                    },
+                    {
+                        "slot": "source_video_ref",
+                        "optional": True,
+                        "binding": {"type": "vhs_load_video_path", "node_id": 386},
+                    },
+                ]
+            }
+            # Bindings listed ref-first to prove sort/required-first still protects 377.
+            job = {
+                "bindings": {
+                    "source_video_ref": {"path": str(ref)},
+                    "source_video": {"path": str(primary)},
+                }
+            }
+            prompt = {
+                "377": {
+                    "class_type": "VHS_LoadVideoPath",
+                    "inputs": {"video": "old.mp4"},
+                }
+            }
+            warnings = apply_api_slot_bindings(prompt, shape, job, root)
+            self.assertTrue(
+                any("skipped (optional slot 'source_video_ref')" in w for w in warnings),
+                warnings,
+            )
+            self.assertFalse(any("patched unbound" in w for w in warnings), warnings)
+            video = prompt["377"]["inputs"]["video"]
+            self.assertTrue(video.endswith("primary.mp4") or "primary.mp4" in video, video)
+
+    def test_shape_ui_defaults_sets_duration_slider(self) -> None:
+        from shape_factory import apply_shape_ui_defaults_api, apply_shape_ui_defaults_ui
+
+        shape = {
+            "ui_defaults": {
+                "ui_nodes": {
+                    426: {"type": "mxSlider", "widgets_values": [6, 6, 1]},
+                },
+                "api_nodes": {"426": {"inputs": {"Xi": 6, "Xf": 6}}},
+            }
+        }
+        workflow = {
+            "nodes": [
+                {
+                    "id": 426,
+                    "type": "mxSlider",
+                    "title": "Duration",
+                    "widgets_values": [5, 5, 1],
+                }
+            ]
+        }
+        prompt = {"426": {"class_type": "mxSlider", "inputs": {"Xi": 5, "Xf": 5, "isfloatX": 1}}}
+        apply_shape_ui_defaults_ui(workflow, shape)
+        apply_shape_ui_defaults_api(prompt, shape)
+        self.assertEqual(workflow["nodes"][0]["widgets_values"], [6, 6, 1])
+        self.assertEqual(prompt["426"]["inputs"]["Xi"], 6)
+        self.assertEqual(prompt["426"]["inputs"]["Xf"], 6)
+
 
 if __name__ == "__main__":
     unittest.main()

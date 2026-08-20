@@ -1432,14 +1432,30 @@ def apply_slot_binding(
 ) -> list[str]:
     binding = require.get("binding") or {}
     btype = str(binding.get("type") or "")
+    optional = bool(require.get("optional"))
     if btype == "load_image":
-        return apply_load_image(workflow, int(binding["node_id"]), asset_path, data_root)
+        try:
+            return apply_load_image(workflow, int(binding["node_id"]), asset_path, data_root)
+        except RuntimeError as exc:
+            if optional and "not found" in str(exc):
+                return [
+                    f"load_image: node {binding.get('node_id')!r} missing; "
+                    f"skipped (optional slot {require.get('slot')!r})"
+                ]
+            raise
     if btype == "vhs_load_video_path":
-        return apply_vhs_load_video_path(workflow, int(binding["node_id"]), asset_path, data_root)
+        try:
+            return apply_vhs_load_video_path(workflow, int(binding["node_id"]), asset_path, data_root)
+        except RuntimeError as exc:
+            if optional and "not found" in str(exc):
+                return [
+                    f"vhs_load_video_path: node {binding.get('node_id')!r} missing; "
+                    f"skipped (optional slot {require.get('slot')!r})"
+                ]
+            raise
     if btype == "prompt_bundle":
         return apply_prompt_bundle(workflow, binding, asset_path)
     raise RuntimeError(f"unsupported binding type {btype!r} for slot {require.get('slot')!r}")
-
 
 def requires_by_slot(shape: dict[str, Any]) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
@@ -2252,13 +2268,24 @@ def apply_api_slot_bindings(
     warnings: list[str] = []
     req_by_slot = requires_by_slot(shape)
     bindings = job.get("bindings") if isinstance(job.get("bindings"), dict) else {}
+    # Track nodes already painted this pass so required-id fallbacks never clobber
+    # a primary slot (e.g. optional source_video_ref → missing 386 must not overwrite 377).
+    bound_vhs_keys: set[str] = set()
+    bound_image_keys: set[str] = set()
 
-    for slot, meta in bindings.items():
+    def _slot_sort_key(item: tuple[str, Any]) -> tuple[int, str]:
+        slot, _meta = item
+        req = req_by_slot.get(slot) or {}
+        # Required first so optional missing-node skips cannot race a fallback.
+        return (1 if req.get("optional") else 0, slot)
+
+    for slot, meta in sorted(bindings.items(), key=_slot_sort_key):
         req = req_by_slot.get(slot)
         if not req:
             continue
         binding = req.get("binding") or {}
         btype = str(binding.get("type") or "")
+        optional = bool(req.get("optional"))
         raw_path = str(meta.get("path") or "").strip()
         if not raw_path:
             continue
@@ -2267,7 +2294,7 @@ def apply_api_slot_bindings(
         except FileNotFoundError:
             msg = f"missing binding asset for slot {slot!r}: {raw_path}"
             # Required image anchors must not silently drop (fake "success" without identity).
-            if not req.get("optional") and (
+            if not optional and (
                 btype == "load_image" or str(req.get("media") or "").lower() == "image"
             ):
                 raise RuntimeError(msg) from None
@@ -2279,53 +2306,85 @@ def apply_api_slot_bindings(
             if warn:
                 warnings.append(warn)
             node_id = binding.get("node_id")
-            patched = 0
-            for key, node in prompt.items():
-                if not isinstance(node, dict) or node.get("class_type") != "VHS_LoadVideoPath":
-                    continue
-                if node_id is not None and str(key) != str(node_id):
-                    continue
-                node.setdefault("inputs", {})["video"] = rel
-                patched += 1
-            # Companion PNGs from other shapes often use different node ids; fall back
-            # to the first VHS_LoadVideoPath when the shape's id is absent.
-            if patched == 0 and node_id is not None:
-                for _key, node in prompt.items():
-                    if not isinstance(node, dict) or node.get("class_type") != "VHS_LoadVideoPath":
-                        continue
-                    node.setdefault("inputs", {})["video"] = rel
-                    patched += 1
+            target_key: Optional[str] = None
+            if node_id is not None:
+                key = str(node_id)
+                node = prompt.get(key)
+                if isinstance(node, dict) and node.get("class_type") == "VHS_LoadVideoPath":
+                    target_key = key
+                elif optional:
                     warnings.append(
-                        f"vhs_load_video_path: node {node_id!r} missing; patched first VHS_LoadVideoPath"
+                        f"vhs_load_video_path: node {node_id!r} missing from API prompt; "
+                        f"skipped (optional slot {slot!r})"
                     )
-                    break
-            if patched == 0:
+                    continue
+                else:
+                    # Companion PNGs from other shapes often use different node ids;
+                    # fall back to the first unbound VHS_LoadVideoPath only.
+                    for k, cand in prompt.items():
+                        if k in bound_vhs_keys:
+                            continue
+                        if not isinstance(cand, dict) or cand.get("class_type") != "VHS_LoadVideoPath":
+                            continue
+                        target_key = k
+                        warnings.append(
+                            f"vhs_load_video_path: node {node_id!r} missing; "
+                            f"patched unbound VHS_LoadVideoPath {k!r}"
+                        )
+                        break
+            else:
+                for k, cand in prompt.items():
+                    if k in bound_vhs_keys:
+                        continue
+                    if isinstance(cand, dict) and cand.get("class_type") == "VHS_LoadVideoPath":
+                        target_key = k
+                        break
+            if target_key is None:
                 warnings.append(f"no VHS_LoadVideoPath node {node_id!r} in API prompt")
+                continue
+            prompt[target_key].setdefault("inputs", {})["video"] = rel
+            bound_vhs_keys.add(target_key)
         elif btype == "load_image":
             rel, warn = comfy_load_image_relpath(asset_path, data_root)
             if warn:
                 warnings.append(warn)
             node_id = binding.get("node_id")
-            patched = 0
-            for key, node in prompt.items():
-                if not isinstance(node, dict) or node.get("class_type") != "LoadImage":
-                    continue
-                if node_id is not None and str(key) != str(node_id):
-                    continue
-                node.setdefault("inputs", {})["image"] = rel
-                patched += 1
-            if patched == 0 and node_id is not None:
-                for _key, node in prompt.items():
-                    if not isinstance(node, dict) or node.get("class_type") != "LoadImage":
-                        continue
-                    node.setdefault("inputs", {})["image"] = rel
-                    patched += 1
+            target_key = None
+            if node_id is not None:
+                key = str(node_id)
+                node = prompt.get(key)
+                if isinstance(node, dict) and node.get("class_type") == "LoadImage":
+                    target_key = key
+                elif optional:
                     warnings.append(
-                        f"load_image: node {node_id!r} missing; patched first LoadImage"
+                        f"load_image: node {node_id!r} missing from API prompt; "
+                        f"skipped (optional slot {slot!r})"
                     )
-                    break
-            if patched == 0:
+                    continue
+                else:
+                    for k, cand in prompt.items():
+                        if k in bound_image_keys:
+                            continue
+                        if not isinstance(cand, dict) or cand.get("class_type") != "LoadImage":
+                            continue
+                        target_key = k
+                        warnings.append(
+                            f"load_image: node {node_id!r} missing; "
+                            f"patched unbound LoadImage {k!r}"
+                        )
+                        break
+            else:
+                for k, cand in prompt.items():
+                    if k in bound_image_keys:
+                        continue
+                    if isinstance(cand, dict) and cand.get("class_type") == "LoadImage":
+                        target_key = k
+                        break
+            if target_key is None:
                 warnings.append(f"no LoadImage node {node_id!r} in API prompt")
+                continue
+            prompt[target_key].setdefault("inputs", {})["image"] = rel
+            bound_image_keys.add(target_key)
         elif btype == "prompt_bundle":
             profile = json.loads(asset_path.read_text(encoding="utf-8"))
             if not isinstance(profile, dict):
@@ -2401,7 +2460,6 @@ def apply_api_slot_bindings(
                 inputs["save_output"] = False
 
     return warnings
-
 
 def sync_prompt_inputs_from_ui_workflow(workflow: dict[str, Any], prompt: dict[str, Any]) -> list[str]:
     """Reconcile API prompt links from LiteGraph link table (fixes /workflow/convert misroutes)."""
