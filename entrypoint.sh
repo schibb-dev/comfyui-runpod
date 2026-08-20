@@ -14,6 +14,16 @@ COMFYUI_RUN_UID="${COMFYUI_RUN_UID:-1000}"
 COMFYUI_RUN_GID="${COMFYUI_RUN_GID:-1000}"
 COMFYUI_RUN_AS_ROOT="${COMFYUI_RUN_AS_ROOT:-false}"
 
+# ComfyUI-Manager runs prestartup hooks via `python3 -m uv ...` and `uv` defaults
+# to caching under $HOME/.cache (commonly /root/.cache). When ComfyUI runs as a
+# non-root uid (via setpriv), that HOME can remain /root, causing:
+#   "failed to create directory /root/.cache/uv: Permission denied"
+# Force uv cache into the (writeable) workspace cache.
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$WORKSPACE_PATH/.cache}"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$XDG_CACHE_HOME/uv}"
+mkdir -p "$XDG_CACHE_HOME" "$UV_CACHE_DIR"
+chown -R "${COMFYUI_RUN_UID}:${COMFYUI_RUN_GID}" "$XDG_CACHE_HOME" 2>/dev/null || true
+
 run_as_comfy_writer() {
   if [[ "${COMFYUI_RUN_AS_ROOT}" == "true" ]] || [[ "$(id -u)" -ne 0 ]]; then
     "$@"

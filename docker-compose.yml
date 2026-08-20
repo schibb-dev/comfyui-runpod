@@ -82,6 +82,13 @@ services:
       # Log more info to `docker logs` (use DEBUG temporarily if needed)
       - COMFYUI_LOG_STDOUT=true
       - COMFYUI_VERBOSE=INFO
+      # ComfyUI-Manager prestartup runs `python3 -m uv pip freeze` and uv
+      # defaults to caching under $HOME/.cache (often /root/.cache). When
+      # ComfyUI runs as uid 1000, that can cause:
+      #   "failed to create directory /root/.cache/uv: Permission denied"
+      # Force uv caches into a writeable workspace path.
+      - XDG_CACHE_HOME=/workspace/.cache
+      - UV_CACHE_DIR=/workspace/.cache/uv
       # Enable sampler/VHS latent live previews (Work products + Comfy UI). Set none to disable.
       - COMFYUI_PREVIEW_METHOD=${COMFYUI_PREVIEW_METHOD:-auto}
       # Image entrypoint (Jul 2 bake) may ignore COMFYUI_PREVIEW_METHOD; pass CLI flag via EXTRA_ARGS.
