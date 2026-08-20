@@ -7,7 +7,10 @@
 # Usage examples:
 #   ./scripts/wsl_swap_io_telemetry.sh
 #   ./scripts/wsl_swap_io_telemetry.sh --out /tmp/swap_io.jsonl --baseline-interval 15 --stress-interval 2
-#   nohup ./scripts/wsl_swap_io_telemetry.sh --out ./.data/telemetry/swap_io.jsonl >/tmp/swap_io.nohup.log 2>&1 &
+#   ./scripts/wsl_swap_io_telemetry.sh --out ./.data/telemetry/swap_io_telemetry.jsonl >/tmp/swap_io.nohup.log 2>&1 &
+#
+# Daily rotation: --out swap_io_telemetry.jsonl → swap_io_telemetry_YYYYMMDD.jsonl
+# in the same directory (local timezone). Use --no-daily-rotate for a fixed filename.
 #
 # Notes:
 # - Swap deltas come from /proc/vmstat pswpin/pswpout (pages swapped).
@@ -29,10 +32,13 @@ DISK_READ_TRIGGER_MIBPS=200
 DISK_WRITE_TRIGGER_MIBPS=50
 
 OUT=""
+OUT_TEMPLATE=""
+DAILY_ROTATE=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --out) OUT="${2:-}"; shift 2 ;;
+    --out) OUT_TEMPLATE="${2:-}"; shift 2 ;;
+    --no-daily-rotate) DAILY_ROTATE=0; shift ;;
     --baseline-interval) BASELINE_INTERVAL_S="${2:-}"; shift 2 ;;
     --stress-interval) STRESS_INTERVAL_S="${2:-}"; shift 2 ;;
     --hold-stress) HOLD_STRESS_S="${2:-}"; shift 2 ;;
@@ -41,19 +47,73 @@ while [[ $# -gt 0 ]]; do
     --disk-read-trigger-mibps) DISK_READ_TRIGGER_MIBPS="${2:-}"; shift 2 ;;
     --disk-write-trigger-mibps) DISK_WRITE_TRIGGER_MIBPS="${2:-}"; shift 2 ;;
     --help|-h)
-      echo "Usage: $0 [--out FILE] [--baseline-interval N] [--stress-interval N] [--hold-stress N]"
+      echo "Usage: $0 [--out FILE] [--no-daily-rotate] [--baseline-interval N] [--stress-interval N] [--hold-stress N]"
       exit 0
       ;;
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
   esac
 done
 
-if [[ -z "$OUT" ]]; then
-  OUT="/tmp/wsl_swap_io_telemetry_$(date -u +%Y%m%dT%H%M%SZ).jsonl"
-fi
+resolve_out_path() {
+  local day="${1:-$(date +%Y%m%d)}"
+  if [[ -z "$OUT_TEMPLATE" ]]; then
+    echo "/tmp/wsl_swap_io_telemetry_${day}.jsonl"
+    return
+  fi
+  if [[ "$DAILY_ROTATE" -eq 0 ]]; then
+    echo "$OUT_TEMPLATE"
+    return
+  fi
+  local dir base stem
+  dir="$(dirname "$OUT_TEMPLATE")"
+  base="$(basename "$OUT_TEMPLATE")"
+  if [[ "$base" == *.jsonl ]]; then
+    stem="${base%.jsonl}"
+  else
+    stem="$base"
+  fi
+  if [[ "$stem" =~ _[0-9]{8}$ ]]; then
+    echo "$OUT_TEMPLATE"
+    return
+  fi
+  echo "$dir/${stem}_${day}.jsonl"
+}
 
-mkdir -p "$(dirname "$OUT")"
-touch "$OUT"
+migrate_legacy_log() {
+  [[ -z "$OUT_TEMPLATE" || "$DAILY_ROTATE" -eq 0 ]] && return 0
+  local legacy dir base
+  legacy="$OUT_TEMPLATE"
+  [[ -f "$legacy" ]] || return 0
+  dir="$(dirname "$legacy")"
+  base="$(basename "$legacy")"
+  [[ "$base" == "swap_io_telemetry.jsonl" ]] || return 0
+  local dated legacy_day
+  legacy_day="$(date -r "$legacy" +%Y%m%d 2>/dev/null || date +%Y%m%d)"
+  dated="$(resolve_out_path "$legacy_day")"
+  if [[ ! -f "$dated" ]]; then
+    mv "$legacy" "$dated"
+  fi
+}
+
+ensure_out_file() {
+  local new_out prev="$OUT"
+  new_out="$(resolve_out_path)"
+  if [[ "$new_out" == "$OUT" ]]; then
+    return 0
+  fi
+  mkdir -p "$(dirname "$new_out")"
+  touch "$new_out"
+  if [[ -n "$prev" && "$prev" != "$new_out" ]]; then
+    echo "{\"ts\":\"$(date -Is)\",\"mode\":\"baseline\",\"event\":\"rotate\",\"from\":\"$prev\",\"to\":\"$new_out\"}" >>"$new_out"
+  elif [[ ! -s "$new_out" ]]; then
+    echo "{\"ts\":\"$(date -Is)\",\"mode\":\"baseline\",\"event\":\"start\",\"out\":\"$new_out\"}" >>"$new_out"
+  fi
+  OUT="$new_out"
+}
+
+OUT=""
+migrate_legacy_log
+ensure_out_file
 
 page_size_bytes="$(getconf PAGESIZE 2>/dev/null || echo 4096)"
 page_size_mib="$(python3 - <<PY
@@ -131,9 +191,8 @@ last_swap_used_mib="$(read_swap_used_mib)"
 mode="baseline"
 stress_until_epoch=0
 
-echo "{\"ts\":\"$(date -Is)\",\"mode\":\"baseline\",\"event\":\"start\",\"out\":\"$OUT\"}" >>"$OUT"
-
 while true; do
+  ensure_out_file
   now_epoch="$(epoch_now)"
   dt_s=$(( now_epoch - last_epoch ))
   if [[ "$dt_s" -le 0 ]]; then

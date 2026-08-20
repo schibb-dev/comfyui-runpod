@@ -49,7 +49,8 @@ else
 fi
 
 echo ""
-echo "Telemetry log: $OUT_FILE"
+echo "Telemetry log (daily): ${OUT_FILE%.jsonl}_YYYYMMDD.jsonl"
+echo "Today's file:         ${OUT_FILE%.jsonl}_$(date +%Y%m%d).jsonl"
 echo "Stop:    systemctl --user stop wsl-swap-io-telemetry.service"
 echo "Disable: systemctl --user disable --now wsl-swap-io-telemetry.service"
-echo "Tail:    tail -f $OUT_FILE"
+echo "Tail:    tail -f ${OUT_FILE%.jsonl}_$(date +%Y%m%d).jsonl"

@@ -67,7 +67,7 @@
     "telemetry:install": "bash scripts/install-wsl-swap-io-telemetry.sh",
     "telemetry:status": "systemctl --user status wsl-swap-io-telemetry.service --no-pager -l",
     "telemetry:stop": "systemctl --user stop wsl-swap-io-telemetry.service",
-    "telemetry:tail": "tail -f .data/telemetry/swap_io_telemetry.jsonl",
+    "telemetry:tail": "tail -f .data/telemetry/swap_io_telemetry_$(date +%Y%m%d).jsonl",
     "ui:dev": "npm run ui:dev:container",
     "ui:build": "npm run ui:build:win",
     "ui:recreate": "npm run ui:recreate:win"
