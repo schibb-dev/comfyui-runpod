@@ -47,7 +47,12 @@ from comfyui_submit import (
 from comfy_meta_lib import extract_prompt_workflow_from_png_chunks, read_png_text_chunks
 from snowflake_factory import strip_video_previews_and_redirect_outputs
 from snowflake_inventory import is_litegraph_workflow, read_json
-from output_path_lib import flatten_output_prefix, normalize_prompt_output_prefixes
+from output_path_lib import (
+    apply_queue_date_to_prefix,
+    apply_queue_date_to_prompt,
+    flatten_output_prefix,
+    normalize_prompt_output_prefixes,
+)
 from workflow_repair import (
     RepairContext,
     RepairFix,
@@ -558,11 +563,17 @@ def update_job_timings_on_status(
         if outputs and not submit.get("outputs"):
             submit["outputs"] = [str(p) for p in outputs]
             submit["output_discovery"] = submit.get("output_discovery") or "filesystem"
-        probes = probe_job_output_media(job, data_root)
+        workload = timings.setdefault("workload", {})
+        # Hourly status walks hundreds of complete jobs; don't re-ffprobe forever.
+        already = workload.get("output_frame_count")
+        probes_cached = (timings.get("outputs") or {}).get("probes") if isinstance(timings.get("outputs"), dict) else None
+        if isinstance(already, int) and already > 0 and probes_cached:
+            probes = []
+        else:
+            probes = probe_job_output_media(job, data_root)
         if probes:
             timings.setdefault("outputs", {})["probes"] = probes
             fc = probes[0].get("probe", {}).get("frame_count") if probes else None
-            workload = timings.setdefault("workload", {})
             if isinstance(fc, int) and fc > 0:
                 workload["output_frame_count"] = fc
                 cfg = workload.get("frames")
@@ -790,22 +801,6 @@ def cmd_timings(args: argparse.Namespace) -> int:
         print("No completed jobs with execution timings yet.")
         print("Tip: use --dev for fast iteration, then compare prod vs optimized with `timings compare`.")
     return 0
-
-
-def expand_date_tokens(value: str) -> str:
-    now = _dt.datetime.now()
-    fmt_aliases = {
-        "yyyy-MM-dd": "%Y-%m-%d",
-        "yyyyMMdd": "%Y%m%d",
-        "HHmmss": "%H%M%S",
-    }
-
-    def repl(match: re.Match[str]) -> str:
-        token = match.group(1)
-        fmt = fmt_aliases.get(token, token)
-        return now.strftime(fmt)
-
-    return re.sub(r"%date:([^%]+)%", repl, value)
 
 
 def comfy_bind_input_dir() -> Path:
@@ -1590,7 +1585,8 @@ def generate_job_for_picks(
 
     family = str(shape.get("family_slug") or shape_path.stem)
     root_tmpl = str(output_prefix_root or shape.get("output_prefix_root") or "og/%date:yyyy-MM-dd%").strip()
-    prefix_root = flatten_output_prefix(expand_date_tokens(root_tmpl))
+    # Keep %date% tokens until Comfy queue/submit so the folder is the queue day.
+    prefix_root = flatten_output_prefix(root_tmpl)
 
     gen_t0 = time.time()
     workflow = read_json(template_path)
@@ -2447,6 +2443,7 @@ def sanitize_converted_prompt(workflow: dict[str, Any], prompt: dict[str, Any]) 
     if before != after:
         warnings.append("normalized Windows-style model/asset paths to POSIX")
     warnings.extend(normalize_prompt_output_prefixes(prompt))
+    warnings.extend(apply_queue_date_to_prompt(prompt))
     # Text Concatenate → StringConcatenate renames leave text_a/text_b in the API prompt;
     # core StringConcatenate.execute() only accepts string_a/string_b (+ delimiter).
     for nid, node in (prompt or {}).items():
@@ -2469,38 +2466,73 @@ def _vhs_title_is_non_final(title: str) -> bool:
     return any(k in t for k in ("preview", "debug", "raw", "sample frame", "interpoled", "upscaled", "upint"))
 
 
+_IMAGE_SAVE_TYPES = frozenset({"SaveImage", "SaveAnimatedWEBP", "SaveAnimatedPNG"})
+
+
+def _produce_node_ids(shape: dict[str, Any]) -> set[int]:
+    ids: set[int] = set()
+    for prod in shape.get("produces") or []:
+        if not isinstance(prod, dict):
+            continue
+        binding = prod.get("binding") if isinstance(prod.get("binding"), dict) else {}
+        nid = binding.get("node_id")
+        if nid is None:
+            continue
+        try:
+            ids.add(int(nid))
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
 def enforce_no_stored_preview_outputs(
     workflow: dict[str, Any],
     prompt: dict[str, Any],
     *,
     final_node_ids: Optional[set[int]] = None,
 ) -> list[str]:
-    """Force preview/debug/raw VHS combines to ``save_output=False`` (never store on disk)."""
+    """Mute preview/debug/raw VHS and drop SaveImage so they never hit disk."""
     warnings: list[str] = []
     finals = {int(x) for x in (final_node_ids or set()) if str(x).strip() != ""}
     ui_by_id: dict[str, dict[str, Any]] = {}
     for node in workflow.get("nodes") or []:
         if not isinstance(node, dict):
             continue
-        if str(node.get("type") or node.get("class_type") or "") != "VHS_VideoCombine":
+        ntype = str(node.get("type") or node.get("class_type") or "")
+        if ntype not in {"VHS_VideoCombine", *_IMAGE_SAVE_TYPES}:
             continue
         try:
             ui_by_id[str(int(node.get("id")))] = node
         except (TypeError, ValueError):
             continue
 
-    for nid, node in (prompt or {}).items():
-        if not isinstance(node, dict) or str(node.get("class_type") or "") != "VHS_VideoCombine":
+    drop: list[str] = []
+    for nid, node in list((prompt or {}).items()):
+        if not isinstance(node, dict):
             continue
-        inputs = node.setdefault("inputs", {})
-        ui = ui_by_id.get(str(nid))
-        title = str((ui or {}).get("title") or "")
-        mode = int((ui or {}).get("mode") or 0) if ui else 0
+        ctype = str(node.get("class_type") or "")
         try:
             nid_i = int(nid)
         except (TypeError, ValueError):
             nid_i = -1
+        ui = ui_by_id.get(str(nid))
+        title = str((ui or {}).get("title") or "")
 
+        if ctype in _IMAGE_SAVE_TYPES:
+            if finals and nid_i in finals:
+                continue
+            drop.append(str(nid))
+            if ui is not None and ui.get("mode", 0) not in (2, 4):
+                ui["mode"] = 2
+                if title and not title.upper().startswith("DISABLED"):
+                    ui["title"] = f"DISABLED OUTPUT: {title}"
+            warnings.append(f"{ctype} {nid}: dropped preview/sample image save")
+            continue
+
+        if ctype != "VHS_VideoCombine":
+            continue
+        inputs = node.setdefault("inputs", {})
+        mode = int((ui or {}).get("mode") or 0) if ui else 0
         ui_prefix = ""
         if isinstance((ui or {}).get("widgets_values"), dict):
             ui_prefix = str((ui.get("widgets_values") or {}).get("filename_prefix") or "")
@@ -2516,13 +2548,15 @@ def enforce_no_stored_preview_outputs(
         elif _is_preview_or_raw_output_path(api_prefix) or _is_preview_or_raw_output_path(ui_prefix):
             must_mute = True
         elif isinstance((ui or {}).get("widgets_values"), dict):
-            # UI already asked not to save.
             if (ui.get("widgets_values") or {}).get("save_output") is False:
                 must_mute = True
 
         if must_mute and inputs.get("save_output") is not False:
             inputs["save_output"] = False
             warnings.append(f"VHS_VideoCombine {nid}: muted non-final/preview save_output")
+
+    for nid in drop:
+        prompt.pop(nid, None)
     return warnings
 
 
@@ -2542,18 +2576,28 @@ def comfy_node_errors(submit_body: dict[str, Any]) -> dict[str, Any]:
 def ffprobe_video_info(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
+    # ``-count_frames`` decodes the whole file and can take minutes per clip; hourly
+    # status would then block the systemd timer for hours. Prefer container metadata.
+    count_frames = os.environ.get("SHAPE_FACTORY_FFPROBE_COUNT_FRAMES", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    cmd = [
+        "ffprobe",
+        "-v",
+        "quiet",
+        "-print_format",
+        "json",
+        "-show_streams",
+        str(path),
+    ]
+    if count_frames:
+        cmd.insert(-1, "-count_frames")
     try:
         proc = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "quiet",
-                "-print_format",
-                "json",
-                "-show_streams",
-                "-count_frames",
-                str(path),
-            ],
+            cmd,
             capture_output=True,
             text=True,
             timeout=60,
@@ -4091,28 +4135,19 @@ def resolve_prompt_for_job(
     # Fix LoadImage / VHS paths from job bindings before convert (stale generated workflows
     # often still have input/<file> or a dead workspace/input host path).
     warnings.extend(_rebind_job_slots_to_ui_workflow(workflow, shape, job, data_root))
-    # Stale generated workflows keep Windows WAN\ gguf paths and broken easy convertAnything
-    # toInt nodes — repair before /workflow/convert so Comfy never sees them.
     warnings.extend(repair_ui_workflow_for_submit(workflow))
+    final_ids = _produce_node_ids(shape)
+    queued = apply_queue_date_to_prefix(str(job.get("output_prefix") or ""))
+    if queued:
+        job["output_prefix"] = queued
+        strip_video_previews_and_redirect_outputs(
+            workflow, queued, final_node_ids=final_ids or None
+        )
     try:
         prompt_obj = convert_ui_workflow_to_prompt(server, workflow, timeout_s=convert_timeout)
         warnings.extend(sync_prompt_inputs_from_ui_workflow(workflow, prompt_obj))
         warnings.extend(sanitize_converted_prompt(workflow, prompt_obj))
-        # Re-apply bindings on the API prompt so LoadImage uses basename form even if
-        # convert echoed a stale widget value.
         warnings.extend(apply_api_slot_bindings(prompt_obj, shape, job, data_root))
-        final_ids: set[int] = set()
-        for prod in shape.get("produces") or []:
-            if not isinstance(prod, dict):
-                continue
-            binding = prod.get("binding") if isinstance(prod.get("binding"), dict) else {}
-            nid = binding.get("node_id")
-            if nid is None:
-                continue
-            try:
-                final_ids.add(int(nid))
-            except (TypeError, ValueError):
-                continue
         warnings.extend(
             enforce_no_stored_preview_outputs(workflow, prompt_obj, final_node_ids=final_ids or None)
         )
@@ -4138,20 +4173,8 @@ def resolve_prompt_for_job(
     prompt = extract_api_prompt_from_png(seed_png)
     warnings.extend(sanitize_converted_prompt(workflow, prompt))
     warnings.extend(apply_api_slot_bindings(prompt, shape, job, data_root))
-    final_ids_fb: set[int] = set()
-    for prod in shape.get("produces") or []:
-        if not isinstance(prod, dict):
-            continue
-        binding = prod.get("binding") if isinstance(prod.get("binding"), dict) else {}
-        nid = binding.get("node_id")
-        if nid is None:
-            continue
-        try:
-            final_ids_fb.add(int(nid))
-        except (TypeError, ValueError):
-            continue
     warnings.extend(
-        enforce_no_stored_preview_outputs(workflow, prompt, final_node_ids=final_ids_fb or None)
+        enforce_no_stored_preview_outputs(workflow, prompt, final_node_ids=final_ids or None)
     )
     if isinstance(dev_spec, dict):
         apply_dev_tuning_api(prompt, dev_spec)
@@ -4563,6 +4586,11 @@ def submit_job_file(
                 "comfy_pending": pend_n,
             }
 
+    queued_prefix = apply_queue_date_to_prefix(str(job.get("output_prefix") or ""))
+    if queued_prefix and queued_prefix != str(job.get("output_prefix") or "") and not dry_run:
+        job["output_prefix"] = queued_prefix
+        atomic_write_json(job_path, job)
+
     workflow_path = ensure_job_workflow_path(
         job,
         data_root=data_root,
@@ -4631,6 +4659,8 @@ def submit_job_file(
         convert_timeout,
     )
     t_prep1 = time.time()
+    atomic_write_json(workflow_path, workflow)
+    atomic_write_json(job_path, job)
 
     prompt_path = job_path.with_name(job_path.stem.replace(".job", "") + ".prompt.json")
     atomic_write_json(prompt_path, prompt_obj)
@@ -5824,12 +5854,56 @@ def extract_history_outputs_by_node(history: dict[str, Any], data_root: Path) ->
     return by_node
 
 
+_OUTPUT_ROLE_SEQ_RE = re.compile(r"(?i)_(?:FINAL|PREVIEW|RAW|DEBUG)_(\d+)$")
+_OUTPUT_PLAIN_SEQ_RE = re.compile(r"_(\d{5})$")
+_FINAL_SEQ_RE = re.compile(r"(?i)_FINAL_(\d+)$")
+
+
 def _is_preview_or_raw_output_path(path: str | Path) -> bool:
     stem = Path(str(path)).stem.lower()
     return any(
         token in stem
         for token in ("_preview", "-preview", "_debug", "-debug", "_raw", "-raw", "preview_debug")
     )
+
+
+def output_job_stem(name: str) -> str:
+    """Strip ``_FINAL_00024`` / ``_PREVIEW_00001`` / ``_00002`` from an output basename."""
+    stem = Path(str(name or "")).stem
+    stem = _OUTPUT_ROLE_SEQ_RE.sub("", stem)
+    return _OUTPUT_PLAIN_SEQ_RE.sub("", stem)
+
+
+def latest_final_mp4_near(path: str | Path) -> Optional[Path]:
+    """If ``path`` sits next to ``{stem}_FINAL_*.mp4``, return the highest-numbered one."""
+    p = Path(str(path or "")).expanduser()
+    parent = p.parent
+    stem = output_job_stem(p.name)
+    if not stem or not parent.is_dir():
+        return None
+    found: list[tuple[int, float, Path]] = []
+    for cand in parent.glob(f"{stem}_FINAL_*.mp4"):
+        if not cand.is_file():
+            continue
+        m = _FINAL_SEQ_RE.search(cand.stem)
+        n = int(m.group(1)) if m else -1
+        try:
+            mt = cand.stat().st_mtime
+        except OSError:
+            continue
+        found.append((n, mt, cand))
+    if not found:
+        return None
+    found.sort()
+    return found[-1][2]
+
+
+def latest_final_mp4_for_prefix(output_root: Path, output_prefix: str) -> Optional[Path]:
+    prefix = flatten_output_prefix(str(output_prefix or "")).replace("\\", "/").strip().strip("/")
+    if not prefix:
+        return None
+    dummy = Path(output_root) / f"{prefix}_FINAL_00000.mp4"
+    return latest_final_mp4_near(dummy)
 
 
 def select_final_output_paths(
@@ -5873,13 +5947,18 @@ def select_final_output_paths(
                 seen.add(key)
                 picked.append(path)
         if picked:
-            return picked
+            cleaned = picked
 
     explicit_final = [p for p in cleaned if "_final" in p.stem.lower()]
-    if explicit_final:
-        return explicit_final
-    non_preview = [p for p in cleaned if not _is_preview_or_raw_output_path(p)]
-    return non_preview if non_preview else cleaned
+    chosen = explicit_final or [p for p in cleaned if not _is_preview_or_raw_output_path(p)] or cleaned
+    videos = [p for p in chosen if p.suffix.lower() in VIDEO_EXTS]
+    if videos:
+        chosen = videos
+    if chosen:
+        near = latest_final_mp4_near(chosen[0])
+        if near is not None:
+            return [near]
+    return chosen
 
 
 def extract_history_output_paths(

@@ -230,6 +230,50 @@ class NoStoredPreviewOutputsTests(unittest.TestCase):
         paths = [m["path"] for m in index_doc["pools"]["X"]["members"]]
         self.assertEqual(paths, ["/data/other.mp4", "/data/final.mp4"])
 
+    def test_enforce_drops_saveimage_preview(self) -> None:
+        workflow = {
+            "nodes": [
+                {"id": 398, "type": "VHS_VideoCombine", "mode": 0, "title": "OUTPUT: final MP4"},
+                {
+                    "id": 413,
+                    "type": "SaveImage",
+                    "mode": 0,
+                    "title": "sample frame",
+                },
+            ]
+        }
+        prompt = {
+            "398": {
+                "class_type": "VHS_VideoCombine",
+                "inputs": {"save_output": True, "filename_prefix": "og/job"},
+            },
+            "413": {
+                "class_type": "SaveImage",
+                "inputs": {"filename_prefix": "WAN/2026-08-18/still"},
+            },
+        }
+        enforce_no_stored_preview_outputs(workflow, prompt, final_node_ids={398})
+        self.assertNotIn("413", prompt)
+        self.assertTrue(prompt["398"]["inputs"]["save_output"])
+        self.assertEqual(workflow["nodes"][1].get("mode"), 2)
+
+    def test_strip_mutes_saveimage(self) -> None:
+        wf = {
+            "nodes": [
+                {
+                    "id": 398,
+                    "type": "VHS_VideoCombine",
+                    "mode": 0,
+                    "title": "OUTPUT: final MP4",
+                    "widgets_values": {"save_output": True, "filename_prefix": "old"},
+                },
+                {"id": 88, "type": "SaveImage", "mode": 0, "title": "Save IN still"},
+            ]
+        }
+        changes = strip_video_previews_and_redirect_outputs(wf, "og/job", final_node_ids={398})
+        self.assertGreaterEqual(int(changes.get("disabled_non_final_outputs") or 0), 1)
+        self.assertEqual(wf["nodes"][1].get("mode"), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

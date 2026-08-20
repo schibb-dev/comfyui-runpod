@@ -19,7 +19,7 @@ from typing import Any, Dict, Optional
 _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
-from output_path_lib import normalize_prompt_output_prefixes
+from output_path_lib import apply_queue_date_to_prompt, normalize_prompt_output_prefixes
 
 # --- Helpers (minimal copy for standalone use) ---
 
@@ -257,6 +257,7 @@ def submit_run_to_comfyui(
     _prune_dead_nodes(prompt_obj)
     _normalize_prompt_paths_for_linux(prompt_obj)
     normalize_prompt_output_prefixes(prompt_obj)
+    apply_queue_date_to_prompt(prompt_obj)
 
     payload: Dict[str, Any] = {"prompt": prompt_obj, "client_id": client_id}
     workflow_ui = _workflow_ui_for_run_dir(run_dir)
@@ -389,6 +390,7 @@ def submit_prompt_to_comfyui(
     _prune_dead_nodes(prompt)
     _normalize_prompt_paths_for_linux(prompt)
     normalize_prompt_output_prefixes(prompt)
+    apply_queue_date_to_prompt(prompt)
     payload: Dict[str, Any] = {"prompt": prompt, "client_id": client_id}
     if front:
         payload["front"] = True

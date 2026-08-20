@@ -35,7 +35,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
-from output_path_lib import normalize_prompt_output_prefixes
+from output_path_lib import apply_queue_date_to_prompt, normalize_prompt_output_prefixes
 
 
 def _read_json(p: Path) -> Any:
@@ -1138,6 +1138,7 @@ def watch(
                 # model names (e.g. "WAN\\foo.gguf"), but nodes validate against "/"-separated lists.
                 _normalize_prompt_paths_for_linux(prompt_obj)
                 normalize_prompt_output_prefixes(prompt_obj)
+                apply_queue_date_to_prompt(prompt_obj)
                 # Build payload: include extra_pnginfo.workflow so ComfyUI SaveImage nodes embed UI workflow in outputs.
                 payload: Dict[str, Any] = {"prompt": prompt_obj, "client_id": _client_id(r.exp_id)}
                 workflow_ui = _workflow_ui_for_run(r)

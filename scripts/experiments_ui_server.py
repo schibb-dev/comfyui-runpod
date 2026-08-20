@@ -6953,16 +6953,78 @@ def _extract_outputs_from_history(history_obj: Any) -> List[Dict[str, Any]]:
     return out
 
 
+_OUTPUT_ROLE_SEQ_RE = re.compile(r"(?i)_(?:FINAL|PREVIEW|RAW|DEBUG)_\d+$")
+_OUTPUT_PLAIN_SEQ_RE = re.compile(r"_\d{5}$")
+_FINAL_SEQ_RE = re.compile(r"(?i)_FINAL_(\d+)$")
+
+
+def _output_job_stem(name: str) -> str:
+    """Strip ``_FINAL_00024`` / ``_PREVIEW_00001`` / ``_00002`` from an output basename."""
+    stem = Path(str(name or "")).stem
+    stem = _OUTPUT_ROLE_SEQ_RE.sub("", stem)
+    return _OUTPUT_PLAIN_SEQ_RE.sub("", stem)
+
+
+def _latest_final_mp4_near(path: Path) -> Optional[Path]:
+    """If ``path`` sits next to ``{stem}_FINAL_*.mp4``, return the highest-numbered one."""
+    parent = path.parent
+    stem = _output_job_stem(path.name)
+    if not stem:
+        return None
+    try:
+        if not parent.is_dir():
+            return None
+    except OSError:
+        return None
+    found: List[Tuple[int, Path]] = []
+    try:
+        candidates = list(parent.glob(f"{stem}_FINAL_*.mp4"))
+    except OSError:
+        return None
+    for cand in candidates:
+        try:
+            if not cand.is_file():
+                continue
+        except OSError:
+            continue
+        m = _FINAL_SEQ_RE.search(cand.stem)
+        n = int(m.group(1)) if m else -1
+        found.append((n, cand))
+    if not found:
+        return None
+    found.sort(key=lambda t: t[0])
+    return found[-1][1]
+
+
+def _history_media_probe(cfg: "ServerConfig", norm: str) -> Optional[Path]:
+    """Path under output_root for sibling lookup, even if the named file was deleted."""
+    joined = _safe_join(cfg.output_root, norm)
+    if joined is not None:
+        return joined
+    try:
+        cand = cfg.output_root.joinpath(*norm.split("/"))
+        root_resolved = cfg.output_root.resolve()
+        parent = cand.parent.resolve()
+        if root_resolved == parent or root_resolved in parent.parents:
+            return cand
+    except Exception:
+        return None
+    return None
+
+
 def _pick_primary_media(outputs: List[Dict[str, Any]]) -> Tuple[Optional[str], Optional[str]]:
     """Prefer durable ``output`` library files over Comfy ``temp`` intermediates."""
 
     def score(o: Dict[str, Any]) -> tuple:
         rel = str(o.get("relpath") or "")
+        name = Path(rel).name.upper()
         typ = str(o.get("type") or "").lower()
         # Higher is better.
         durable = 2 if typ == "output" else (1 if typ in {"input", ""} else 0)
         under_lib = 1 if any(p in rel.replace("\\", "/") for p in ("/og/", "/wip/", "og/", "wip/")) else 0
-        return (durable, under_lib)
+        ephemeral = 1 if _discovery_is_ephemeral_work_artifact(name) else 0
+        final = 1 if "_FINAL_" in name else 0
+        return (final, 1 - ephemeral, durable, under_lib)
 
     vids = [o for o in outputs if isinstance(o.get("relpath"), str) and str(o["relpath"]).lower().endswith(".mp4")]
     imgs = [
@@ -6970,12 +7032,43 @@ def _pick_primary_media(outputs: List[Dict[str, Any]]) -> Tuple[Optional[str], O
         for o in outputs
         if isinstance(o.get("relpath"), str)
         and str(o["relpath"]).lower().endswith((".png", ".webp", ".jpg", ".jpeg"))
+        and not _discovery_is_ephemeral_work_artifact(str(o.get("relpath") or ""))
     ]
     vids.sort(key=score, reverse=True)
     imgs.sort(key=score, reverse=True)
-    vid = str(vids[0]["relpath"]) if vids else None
+    keepers = [o for o in vids if not _discovery_is_ephemeral_work_artifact(str(o.get("relpath") or ""))]
+    chosen_vids = keepers or vids
+    vid = str(chosen_vids[0]["relpath"]) if chosen_vids else None
     img = str(imgs[0]["relpath"]) if imgs else None
     return vid, img
+
+
+def _rewrite_history_media_rel(cfg: "ServerConfig", rel: Optional[str]) -> Optional[str]:
+    """If Comfy history named a deleted ``_PREVIEW_`` / ``_00001`` file, point at the FINAL sibling."""
+    if not isinstance(rel, str) or not rel.strip():
+        return None
+    norm = _normalize_rel_posix(rel)
+    if not norm:
+        return None
+    full = _discovery_resolve_media_file(cfg, norm)
+    ephemeral = _discovery_is_ephemeral_work_artifact(Path(norm).name)
+    if full is not None and not ephemeral:
+        return norm
+    probe = full if full is not None else _history_media_probe(cfg, norm)
+    if probe is not None:
+        try:
+            near = _latest_final_mp4_near(probe)
+        except Exception:
+            near = None
+        if near is not None and near.is_file():
+            try:
+                return str(near.resolve().relative_to(cfg.output_root.resolve())).replace("\\", "/")
+            except Exception:
+                pass
+    alt = re.sub(r"(?i)_PREVIEW_", "_FINAL_", norm)
+    if alt != norm and _discovery_resolve_media_file(cfg, alt):
+        return alt
+    return None if (full is None or ephemeral) else norm
 
 
 def _history_queue_index(record: Any) -> int:
@@ -7217,6 +7310,9 @@ def _queue_item_job_key(workflow_name: Optional[str]) -> Optional[str]:
         return None
     if name.startswith("client:") or name.startswith("graph ("):
         return None
+    stem = _output_job_stem(name)
+    if "__" in stem or stem.startswith("hourly"):
+        return stem
     if "__" in name or name.startswith("hourly"):
         return name
     return None
@@ -8115,6 +8211,8 @@ class Handler(BaseHTTPRequestHandler):
                 for pid, record in ordered[:limit]:
                     outs = _extract_outputs_from_history(record)
                     pv, pi = _pick_primary_media(outs)
+                    pv = _rewrite_history_media_rel(cfg, pv)
+                    pi = _rewrite_history_media_rel(cfg, pi)
                     prompt_obj = _history_prompt_obj(record)
                     raw_prompt = record.get("prompt") if isinstance(record, dict) else None
                     media = _queue_resolve_input_media(cfg, prompt_obj)
@@ -8158,7 +8256,9 @@ class Handler(BaseHTTPRequestHandler):
                         output_thumb = primary_image_url or media.get("input_thumb_url")
                     # Prefer a human title from the durable output basename when workflow is anonymous.
                     # Resolve job_key from the raw workflow name before title rewrite (basename is not a job_key).
-                    job_key = _queue_item_job_key(workflow_name)
+                    job_key = _queue_item_job_key(workflow_name) or _queue_item_job_key(
+                        Path(str(pv or pi or "")).name
+                    )
                     title = workflow_name
                     if not title or str(title).startswith("graph (") or str(title).startswith("client:"):
                         for cand in (pv, pi, media.get("input_media_relpath")):

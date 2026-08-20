@@ -37,6 +37,16 @@ STRAY_REL_ROOTS = tuple(f"output/{name}" for name in LIBRARY_DIRS) + (
 
 _WIN_ABS_PATH_RE = re.compile(r"^[a-zA-Z]:[\\/]")
 _WIN_UNC_PATH_RE = re.compile(r"^\\\\")
+_DATE_TOKEN_RE = re.compile(r"%date:([^%]+)%")
+_LIB_DATE_DIR_RE = re.compile(
+    r"^(?P<head>(?:og|wip|experiments))/\d{4}-\d{2}-\d{2}(?=/|$)"
+)
+_DATE_FMT_ALIASES = {
+    "yyyy-MM-dd": "%Y-%m-%d",
+    "yyyyMMdd": "%Y%m%d",
+    "HHmmss": "%H%M%S",
+    "hhmmss": "%H%M%S",
+}
 
 
 def flatten_output_prefix(value: str) -> str:
@@ -55,6 +65,34 @@ def flatten_output_prefix(value: str) -> str:
     return s
 
 
+def expand_date_tokens(value: str, *, now: Optional[datetime] = None) -> str:
+    """Expand Comfy ``%date:yyyy-MM-dd%`` tokens. Uses local time, like Comfy/VHS."""
+    when = now if now is not None else datetime.now()
+
+    def repl(match: re.Match[str]) -> str:
+        token = match.group(1)
+        fmt = _DATE_FMT_ALIASES.get(token, token)
+        try:
+            return when.strftime(fmt)
+        except ValueError:
+            return match.group(0)
+
+    return _DATE_TOKEN_RE.sub(repl, str(value or ""))
+
+
+def apply_queue_date_to_prefix(value: str, *, now: Optional[datetime] = None) -> str:
+    """Stamp library date folders to the Comfy queue/submit day.
+
+    Expands leftover ``%date%`` tokens, then rewrites ``og/YYYY-MM-DD`` (also wip/
+    experiments) so a restored prompt does not keep writing into the generate-day
+    folder.
+    """
+    when = now if now is not None else datetime.now()
+    s = flatten_output_prefix(expand_date_tokens(value, now=when))
+    today = when.strftime("%Y-%m-%d")
+    return _LIB_DATE_DIR_RE.sub(lambda m: f"{m.group('head')}/{today}", s, count=1)
+
+
 def normalize_prompt_output_prefixes(prompt_obj: Dict[str, Any]) -> List[str]:
     """Rewrite ``filename_prefix`` inputs in-place; return human-readable change lines."""
     changes: List[str] = []
@@ -68,6 +106,30 @@ def normalize_prompt_output_prefixes(prompt_obj: Dict[str, Any]) -> List[str]:
         if not isinstance(raw, str):
             continue
         new = flatten_output_prefix(raw)
+        if new != raw:
+            inputs["filename_prefix"] = new
+            changes.append(f"{nid}.filename_prefix: {raw!r} -> {new!r}")
+    return changes
+
+
+def apply_queue_date_to_prompt(
+    prompt_obj: Dict[str, Any],
+    *,
+    now: Optional[datetime] = None,
+) -> List[str]:
+    """Stamp ``filename_prefix`` library dates to the Comfy queue day."""
+    changes: List[str] = []
+    when = now if now is not None else datetime.now()
+    for nid, node in prompt_obj.items():
+        if not isinstance(node, dict):
+            continue
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict):
+            continue
+        raw = inputs.get("filename_prefix")
+        if not isinstance(raw, str):
+            continue
+        new = apply_queue_date_to_prefix(raw, now=when)
         if new != raw:
             inputs["filename_prefix"] = new
             changes.append(f"{nid}.filename_prefix: {raw!r} -> {new!r}")

@@ -188,6 +188,43 @@ class TestWorkProducts(unittest.TestCase):
             )
             self.assertEqual(item.get("output_relpath"), "og/2026-08-16/hourly/job_FINAL_00001.mp4")
 
+    def test_keeper_upgrades_plain_suffix_to_latest_final_on_disk(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td) / "output"
+            hourly = out / "og" / "2026-08-16" / "hourly"
+            hourly.mkdir(parents=True)
+            plain = hourly / "job_00002.mp4"
+            preview_png = hourly / "job_PREVIEW_00023.png"
+            old_final = hourly / "job_FINAL_00001.mp4"
+            latest = hourly / "job_FINAL_00024.mp4"
+            plain.write_bytes(b"p")
+            preview_png.write_bytes(b"i")
+            old_final.write_bytes(b"o")
+            latest.write_bytes(b"f")
+            from shape_factory_work_products import _work_product_item_from_job
+
+            jobs = Path(td) / "data" / "shape_factory" / "jobs" / "BounceDanceA"
+            jobs.mkdir(parents=True)
+            job = {
+                "family_slug": "BounceDanceA",
+                "job_key": "job",
+                "output_prefix": "og/2026-08-16/hourly/job",
+                "submit": {
+                    "status": "complete",
+                    "outputs": [str(plain)],
+                    "outputs_by_node": {"398": [str(plain)]},
+                },
+            }
+            item = _work_product_item_from_job(
+                jobs / "job.job.json",
+                job,
+                data_root=Path(td) / "data",
+                output_root=out,
+            )
+            self.assertEqual(item.get("output_relpath"), "og/2026-08-16/hourly/job_FINAL_00024.mp4")
+            self.assertNotIn("PREVIEW", str(item.get("output_relpath") or ""))
+            self.assertNotIn("PREVIEW", str(item.get("output_thumb_url") or ""))
+
     def test_list_recent_sorts_by_created_at_not_mtime(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
