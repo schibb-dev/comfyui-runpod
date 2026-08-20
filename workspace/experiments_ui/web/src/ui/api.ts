@@ -42,6 +42,11 @@ import type {
   ShapeFactoryDeriveResponse,
   ShapeFactoryUnqueueRequest,
   ShapeFactoryUnqueueResponse,
+  ShapeFactoryBeginEditRequest,
+  ShapeFactoryBeginEditResponse,
+  ShapeFactoryFinishEditRequest,
+  ShapeFactoryFinishEditResponse,
+  ShapeFactoryJobEditSnapshot,
   ShapeFactoryDiscardRequest,
   ShapeFactoryDiscardResponse,
   ShapeFactoryUpdatePendingTrimRequest,
@@ -970,6 +975,68 @@ export async function discardShapeFactoryJob(req: ShapeFactoryDiscardRequest): P
   }
   return j;
 }
+
+export async function beginShapeFactoryEdit(
+  req: ShapeFactoryBeginEditRequest,
+): Promise<ShapeFactoryBeginEditResponse> {
+  const r = await fetch("/api/shape-factory/begin-edit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryBeginEditResponse;
+  if (!r.ok || !j.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST /api/shape-factory/begin-edit failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function finishShapeFactoryEdit(
+  req: ShapeFactoryFinishEditRequest,
+): Promise<ShapeFactoryFinishEditResponse> {
+  const r = await fetch("/api/shape-factory/finish-edit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryFinishEditResponse;
+  if (!r.ok || !j.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST /api/shape-factory/finish-edit failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function fetchShapeFactoryJobEdit(opts: {
+  jobKey?: string;
+  jobPath?: string;
+}): Promise<ShapeFactoryJobEditSnapshot> {
+  const sp = new URLSearchParams();
+  if (opts.jobKey) sp.set("job_key", opts.jobKey);
+  if (opts.jobPath) sp.set("job_path", opts.jobPath);
+  const r = await fetch(`/api/shape-factory/job-edit?${sp.toString()}`);
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryJobEditSnapshot;
+  if (!r.ok || !j.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET /api/shape-factory/job-edit failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export type {
+  ShapeFactoryBeginEditRequest,
+  ShapeFactoryBeginEditResponse,
+  ShapeFactoryFinishEditRequest,
+  ShapeFactoryFinishEditResponse,
+  ShapeFactoryJobEditSnapshot,
+};
 
 export async function updatePendingShapeFactoryTrim(
   req: ShapeFactoryUpdatePendingTrimRequest,

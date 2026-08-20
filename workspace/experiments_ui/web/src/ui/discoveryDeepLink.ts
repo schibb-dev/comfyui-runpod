@@ -69,6 +69,7 @@ export function submitHref(opts?: {
   identity?: string | null;
   when?: "now" | "later" | null;
   fromJob?: string | null;
+  editJob?: string | null;
   step?: string | null;
   origin?: string | null;
 }): string {
@@ -88,6 +89,10 @@ export function submitHref(opts?: {
   if (identity) sp.set("identity", identity);
   if (opts?.when === "now" || opts?.when === "later") sp.set("when", opts.when);
   if (fromJob) sp.set("from_job", fromJob);
+  if (opts?.editJob) {
+    const editJob = String(opts.editJob).trim();
+    if (editJob) sp.set("edit_job", editJob);
+  }
   if (step) sp.set("step", step);
   if (origin) sp.set("origin", origin);
   const qs = sp.toString();
@@ -104,6 +109,8 @@ export type SubmitDeepLink = {
   identity: string | null;
   when: "now" | "later" | null;
   fromJob: string | null;
+  /** Edit an existing pending/queued job in place (not advance). */
+  editJob: string | null;
   step: string | null;
   origin: string | null;
 };
@@ -115,6 +122,7 @@ export function parseSubmitDeepLink(search: string = window.location.search): Su
   const family = (sp.get("family") || "").trim() || null;
   const identity = (sp.get("identity") || "").trim() || null;
   const fromJob = (sp.get("from_job") || "").trim() || null;
+  const editJob = (sp.get("edit_job") || "").trim() || null;
   const step = (sp.get("step") || "").trim() || null;
   const origin = (sp.get("origin") || "").trim() || null;
   const whenRaw = (sp.get("when") || "").trim().toLowerCase();
@@ -134,24 +142,28 @@ export function parseSubmitDeepLink(search: string = window.location.search): Su
     identity,
     when,
     fromJob,
+    editJob,
     step,
     origin,
   };
 }
 
 /** Intent-modal: compose only when a door handed off a subject. */
-export function hasSubmitIntent(intent: Pick<SubmitDeepLink, "mediaRelpath" | "clipId" | "fromJob">): boolean {
+export function hasSubmitIntent(
+  intent: Pick<SubmitDeepLink, "mediaRelpath" | "clipId" | "fromJob" | "editJob">,
+): boolean {
   return Boolean(
     String(intent.mediaRelpath || "").trim() ||
       String(intent.clipId || "").trim() ||
-      String(intent.fromJob || "").trim(),
+      String(intent.fromJob || "").trim() ||
+      String(intent.editJob || "").trim(),
   );
 }
 
 /** Map `origin` query to a Back link (door surface). */
 export function submitOriginHref(
   origin: string | null | undefined,
-  opts?: { mediaRelpath?: string | null; clipId?: string | null; fromJob?: string | null },
+  opts?: { mediaRelpath?: string | null; clipId?: string | null; fromJob?: string | null; editJob?: string | null },
 ): { href: string; label: string } | null {
   const o = String(origin || "")
     .trim()
@@ -159,7 +171,7 @@ export function submitOriginHref(
   if (!o) return null;
   const media = String(opts?.mediaRelpath || "").trim() || null;
   const clipId = String(opts?.clipId || "").trim() || null;
-  const fromJob = String(opts?.fromJob || "").trim() || null;
+  const fromJob = String(opts?.fromJob || opts?.editJob || "").trim() || null;
   if (o === "library" || o === "discovery") {
     return { href: discoveryLibraryHref(media), label: "Back to Library" };
   }
@@ -171,6 +183,9 @@ export function submitOriginHref(
   }
   if (o === "workbench" || o === "work-products" || o === "work_products") {
     return { href: workbenchHref({ jobKey: fromJob }), label: "Back to Workbench" };
+  }
+  if (o === "queue" || o === "comfy-queue" || o === "comfy_queue") {
+    return { href: "/queue", label: "Back to Queue" };
   }
   if (o === "factory" || o === "factory-map" || o === "factory_map") {
     return { href: "/discovery/factory-map", label: "Back to Factory" };

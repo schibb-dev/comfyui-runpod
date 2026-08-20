@@ -11,7 +11,7 @@ import {
   setQueueLedgerControl,
 } from "./api";
 import { ComfyLiveMetricsBar, ComfyLivePreview } from "./ComfyLivePreview";
-import { discoveryLibraryHref, workbenchHref } from "./discoveryDeepLink";
+import { discoveryLibraryHref, submitHref, workbenchHref } from "./discoveryDeepLink";
 import { PageHeader } from "./PageHeader";
 import { PipelineMediaPlayer, vhsWindowFromKeyParams } from "./PipelineMediaPlayer";
 import { PipelineFilterRow, PipelineList, PipelineScreen, PipelineScroll } from "./PipelineScreen";
@@ -275,7 +275,9 @@ function QueuePipelineRow({
   const isError = statusVisual === "error" || statusVisual === "interrupted";
   return (
     <article
-      className={`pipeline-row${live ? " pipeline-row--live" : ""}${isError ? " pipeline-row--error" : ""}`}
+      className={`pipeline-row pipeline-row--status-${statusVisual}${
+        live ? " pipeline-row--live" : ""
+      }${isError ? " pipeline-row--error" : ""}`}
     >
       <header className={`pipeline-row__head${liveMetrics ? " pipeline-row__head--live-metrics" : ""}`}>
         <div className="pipeline-row__head-main">
@@ -332,6 +334,10 @@ function QueueItemRow({
   const videoUrl = queueVideoUrl(item);
   const jobKey = String(item.job_key || "").trim() || null;
   const workbenchUrl = workbenchHref({ jobKey, promptId: pid || null });
+  const editUrl =
+    kind === "pending" && jobKey
+      ? submitHref({ editJob: jobKey, origin: "queue" })
+      : null;
   const title = item.workflow_name || basename(item.input_media_relpath) || shortId(pid, 16);
   const trim = vhsWindowFromKeyParams(item.key_params);
   const detailParts = [
@@ -366,8 +372,8 @@ function QueueItemRow({
   return (
     <QueuePipelineRow
       title={title}
-      statusLabel={kind === "running" ? "running" : item.external ? "external" : "pending"}
-      statusVisual={kind === "running" ? "running" : "pending"}
+      statusLabel={kind === "running" ? "running" : item.external ? "external" : "queued"}
+      statusVisual={kind === "running" ? "running" : "queued"}
       promptId={pid}
       media={media}
       detail={detailParts.join(" · ")}
@@ -423,6 +429,15 @@ function QueueItemRow({
           >
             Workbench
           </a>
+          {editUrl ? (
+            <a
+              className="pipeline-row__link"
+              href={editUrl}
+              title="Edit this factory job in Submit (removes from Comfy waiting queue while editing)"
+            >
+              Edit
+            </a>
+          ) : null}
         </>
       }
     />

@@ -2133,12 +2133,17 @@ def record_submit_failure(
 
 
 def job_pending_submit(job: dict[str, Any]) -> bool:
+    """True when pending-drain / ``--pending-only`` may push this job to Comfy."""
     if job_already_submitted(job) or job_abandoned(job):
+        return False
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    status = str(submit.get("status") or "").strip().lower()
+    # Hold out of drain while the Submit edit modal owns the job.
+    if status == "editing":
         return False
     if job_submit_failed(job):
         return submit_attempt_count(job) < submit_max_attempts()
     return True
-
 
 def png_path_for_binding(asset_path: Path) -> Path:
     if asset_path.suffix.lower() in VIDEO_EXTS:
@@ -4526,6 +4531,7 @@ def submit_job_file(
     job = json.loads(job_path.read_text(encoding="utf-8"))
     if hostify_job_paths(job):
         atomic_write_json(job_path, job)
+
     # Cap retries: error jobs that hit max attempts become abandoned.
     submit_block = job.get("submit") if isinstance(job.get("submit"), dict) else {}
     if str(submit_block.get("status") or "") == "error" and job_retries_exhausted(job):
@@ -4541,6 +4547,17 @@ def submit_job_file(
 
     if pending_only and job_already_submitted(job):
         return {"ok": True, "skipped": True, "reason": "already_submitted", "job_key": job_key, "job_path": str(job_path)}
+
+    if pending_only and not job_pending_submit(job) and not force:
+        submit_st = str((job.get("submit") or {}).get("status") or "").strip().lower()
+        reason = "editing" if submit_st == "editing" else "not_pending"
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": reason,
+            "job_key": job_key,
+            "job_path": str(job_path),
+        }
 
     if job_abandoned(job) and not force:
         return {
@@ -5075,9 +5092,338 @@ def unqueue_to_pending(
 
 # Soft-archive / discard from the active job set (not queued/running on Comfy).
 _ARCHIVEABLE_TERMINAL_STATUSES = frozenset({"error", "failed", "interrupted"})
-_DISCARDABLE_STATUSES = frozenset({"", "pending", "draft", "deposited", "abandoned"}) | _ARCHIVEABLE_TERMINAL_STATUSES
-_PENDING_EDITABLE_STATUSES = frozenset({"", "pending", "draft", "deposited", "error", "abandoned"})
+_DISCARDABLE_STATUSES = frozenset({"", "pending", "draft", "deposited", "abandoned", "editing"}) | _ARCHIVEABLE_TERMINAL_STATUSES
+_PENDING_EDITABLE_STATUSES = frozenset({"", "pending", "draft", "deposited", "error", "abandoned", "editing"})
+_BEGIN_EDIT_OK_STATUSES = frozenset({"", "pending", "draft", "deposited", "editing", "queued", "submitted", "error"})
 
+
+def _resolve_job_file_and_doc(
+    *,
+    data_root: Path,
+    job_key: Optional[str] = None,
+    job_path: Optional[Path] = None,
+) -> tuple[Optional[Path], Optional[dict[str, Any]]]:
+    job_file: Optional[Path] = None
+    job: Optional[dict[str, Any]] = None
+    if job_path is not None:
+        jp = Path(job_path).expanduser()
+        if jp.is_file():
+            try:
+                loaded = json.loads(jp.read_text(encoding="utf-8"))
+            except Exception:
+                loaded = None
+            if isinstance(loaded, dict):
+                job_file, job = jp, loaded
+    if job is None and job_key:
+        job_file, job = find_job_by_key(data_root, str(job_key))
+    return job_file, job
+
+def begin_job_edit(
+    *,
+    data_root: Path,
+    server: str = "",
+    job_key: Optional[str] = None,
+    job_path: Optional[Path] = None,
+    timeout_s: int = 15,
+) -> dict[str, Any]:
+    """
+    Take exclusive edit lock on a pre-run factory job (``submit.status=editing``).
+
+    Waiting-queue jobs are removed from Comfy first (same path as unqueue).
+    Running jobs are refused. Pending drain skips ``editing``.
+    """
+    data_root = Path(data_root).expanduser().resolve()
+    job_file, job = _resolve_job_file_and_doc(data_root=data_root, job_key=job_key, job_path=job_path)
+    if job is None or job_file is None:
+        return {"ok": False, "error": "job_not_found", "job_key": job_key}
+
+    if hostify_job_paths(job):
+        atomic_write_json(job_file, job)
+
+    submit = job.setdefault("submit", {})
+    if not isinstance(submit, dict):
+        submit = {}
+        job["submit"] = submit
+    key = str(job.get("job_key") or job_file.stem.replace(".job", ""))
+    status = str(submit.get("status") or "").strip().lower()
+    pid = str(submit.get("prompt_id") or "").strip()
+
+    if status in {"complete", "completed", "running"}:
+        return {
+            "ok": False,
+            "error": "not_editable",
+            "job_key": key,
+            "status": status,
+            "prompt_id": pid or None,
+            "detail": "Only pending/queued (pre-run) jobs can enter edit mode.",
+        }
+    if status and status not in _BEGIN_EDIT_OK_STATUSES:
+        return {
+            "ok": False,
+            "error": "not_editable",
+            "job_key": key,
+            "status": status,
+            "prompt_id": pid or None,
+            "detail": "Only pending/queued (pre-run) jobs can enter edit mode.",
+        }
+
+    comfy_deleted = False
+    comfy_delete_error: Optional[str] = None
+    previous_prompt_id: Optional[str] = None
+    server_s = str(server or "").rstrip("/")
+
+    if pid and server_s:
+        try:
+            running_ids, pending_ids = queue_prompt_id_buckets(server_s, timeout_s=timeout_s)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": "comfy_unreachable",
+                "job_key": key,
+                "prompt_id": pid,
+                "detail": str(exc),
+            }
+        if pid in running_ids:
+            return {
+                "ok": False,
+                "error": "still_running",
+                "job_key": key,
+                "prompt_id": pid,
+                "status": "running",
+                "detail": "Prompt is running on Comfy; cannot edit.",
+            }
+        if pid in pending_ids:
+            try:
+                _http_json(
+                    "POST",
+                    f"{server_s}/queue",
+                    {"delete": [pid]},
+                    timeout_s=min(15, int(timeout_s) or 15),
+                )
+                comfy_deleted = True
+            except Exception as exc:
+                comfy_delete_error = str(exc)
+        else:
+            comfy_deleted = True
+        previous_prompt_id = pid
+        submit["previous_prompt_id"] = pid
+        submit["unqueued_at"] = utc_now()
+        submit.pop("prompt_id", None)
+        for k in (
+            "error",
+            "error_node",
+            "error_type",
+            "comfy_error",
+            "node_errors",
+            "interrupted_reason",
+            "interrupted_at",
+        ):
+            submit.pop(k, None)
+        _neutralize_submit_sidecar(job, previous_prompt_id=pid)
+    elif pid and not server_s:
+        previous_prompt_id = pid
+        submit["previous_prompt_id"] = pid
+        submit.pop("prompt_id", None)
+
+    from_status = status or ("queued" if previous_prompt_id else "pending")
+    if status != "editing":
+        submit["editing_from_status"] = from_status
+        submit["editing_started_at"] = utc_now()
+    submit["status"] = "editing"
+    atomic_write_json(job_file, job)
+
+    out: dict[str, Any] = {
+        "ok": True,
+        "job_key": key,
+        "job_path": str(job_file),
+        "status": "editing",
+        "editing_from_status": submit.get("editing_from_status"),
+        "editing_started_at": submit.get("editing_started_at"),
+        "comfy_deleted": comfy_deleted,
+        "previous_prompt_id": previous_prompt_id,
+    }
+    if comfy_delete_error:
+        out["comfy_delete_error"] = comfy_delete_error
+    return out
+
+def finish_job_edit(
+    *,
+    data_root: Path,
+    action: str,
+    server: str = "",
+    job_key: Optional[str] = None,
+    job_path: Optional[Path] = None,
+    front: bool = False,
+    dry_run: bool = False,
+    convert_timeout: int = 90,
+    timeout: int = 120,
+) -> dict[str, Any]:
+    """
+    Release the edit lock.
+
+    ``later`` / ``cancel`` → ``pending`` (drain may pick up).
+    ``now`` → submit this job to Comfy (same job_key; not an advance child).
+    """
+    data_root = Path(data_root).expanduser().resolve()
+    act = str(action or "").strip().lower()
+    if act not in {"later", "cancel", "now"}:
+        return {"ok": False, "error": "bad_action", "detail": "action must be later|cancel|now"}
+
+    job_file, job = _resolve_job_file_and_doc(data_root=data_root, job_key=job_key, job_path=job_path)
+    if job is None or job_file is None:
+        return {"ok": False, "error": "job_not_found", "job_key": job_key}
+
+    submit = job.setdefault("submit", {})
+    if not isinstance(submit, dict):
+        submit = {}
+        job["submit"] = submit
+    key = str(job.get("job_key") or job_file.stem.replace(".job", ""))
+    status = str(submit.get("status") or "").strip().lower()
+
+    if status == "editing" or status in {"", "pending"}:
+        pass  # editable / releasable
+    else:
+        return {
+            "ok": False,
+            "error": "not_editing",
+            "job_key": key,
+            "status": status or "unknown",
+            "detail": "Job is not in editing mode.",
+        }
+
+    if act in {"later", "cancel"}:
+        submit["status"] = "pending"
+        submit["editing_finished_at"] = utc_now()
+        submit["editing_finish_action"] = act
+        atomic_write_json(job_file, job)
+        return {
+            "ok": True,
+            "job_key": key,
+            "job_path": str(job_file),
+            "status": "pending",
+            "action": act,
+        }
+
+    submit["status"] = "pending"
+    submit["editing_finished_at"] = utc_now()
+    submit["editing_finish_action"] = "now"
+    atomic_write_json(job_file, job)
+
+    server_s = str(server or "").rstrip("/") or "http://127.0.0.1:8188"
+    try:
+        result = submit_job_file(
+            job_file,
+            server=server_s,
+            data_root=data_root,
+            dry_run=bool(dry_run),
+            force=False,
+            pending_only=False,
+            front=bool(front),
+            timeout=int(timeout),
+            convert_timeout=int(convert_timeout),
+        )
+    except Exception as exc:
+        try:
+            job2 = json.loads(job_file.read_text(encoding="utf-8"))
+            record_submit_failure(job2, error=str(exc), server=server_s)
+            atomic_write_json(job_file, job2)
+        except Exception:
+            pass
+        return {
+            "ok": False,
+            "error": "submit_failed",
+            "job_key": key,
+            "job_path": str(job_file),
+            "detail": str(exc),
+            "action": "now",
+        }
+
+    out: dict[str, Any] = {
+        "ok": bool(result.get("ok", True)) and not result.get("skipped"),
+        "job_key": key,
+        "job_path": str(job_file),
+        "action": "now",
+        "submit": result,
+    }
+    if result.get("skipped"):
+        out["ok"] = False
+        out["error"] = str(result.get("reason") or "submit_skipped")
+        out["status"] = "pending"
+    else:
+        out["status"] = "queued" if result.get("prompt_id") else "pending"
+        out["prompt_id"] = result.get("prompt_id")
+    return out
+
+def job_edit_snapshot(
+    *,
+    data_root: Path,
+    output_root: Optional[Path] = None,
+    job_key: Optional[str] = None,
+    job_path: Optional[Path] = None,
+) -> dict[str, Any]:
+    """Lightweight payload for the Submit edit-in-place UI."""
+    data_root = Path(data_root).expanduser().resolve()
+    job_file, job = _resolve_job_file_and_doc(data_root=data_root, job_key=job_key, job_path=job_path)
+    if job is None or job_file is None:
+        return {"ok": False, "error": "job_not_found", "job_key": job_key}
+
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    key = str(job.get("job_key") or job_file.stem.replace(".job", ""))
+    bindings_in = job.get("bindings") if isinstance(job.get("bindings"), dict) else {}
+    out_root = Path(output_root).expanduser().resolve() if output_root else (data_root / "output")
+    for cand in (
+        Path("/home/yuji/comfyui-runpod-data/output"),
+        Path("/workspace/output"),
+        out_root,
+    ):
+        if cand.is_dir():
+            out_root = cand.resolve()
+            break
+
+    bindings_out: dict[str, Any] = {}
+    try:
+        from shape_factory_work_products import _binding_entry_from_meta
+
+        for slot, meta in bindings_in.items():
+            if not isinstance(meta, dict):
+                continue
+            if meta.get("path"):
+                bindings_out[str(slot)] = _binding_entry_from_meta(
+                    str(slot), meta, data_root=data_root, output_root=out_root
+                )
+            else:
+                bindings_out[str(slot)] = dict(meta)
+    except Exception:
+        for slot, meta in bindings_in.items():
+            if isinstance(meta, dict):
+                bindings_out[str(slot)] = dict(meta)
+
+    source = None
+    for slot in ("source_video", "source_still", "identity_still", "identity_anchor"):
+        row = bindings_out.get(slot)
+        if isinstance(row, dict) and (row.get("url") or row.get("relpath") or row.get("path")):
+            source = {"slot": slot, **row}
+            break
+
+    vhs = job.get("vhs_window") if isinstance(job.get("vhs_window"), dict) else {}
+    return {
+        "ok": True,
+        "job_key": key,
+        "job_path": str(job_file),
+        "family_slug": job.get("family_slug"),
+        "shape_path": job.get("shape_path"),
+        "status": str(submit.get("status") or "pending"),
+        "prompt_id": submit.get("prompt_id"),
+        "editing_from_status": submit.get("editing_from_status"),
+        "editing_started_at": submit.get("editing_started_at"),
+        "vhs_window": vhs or None,
+        "source_clip_id": job.get("source_clip_id"),
+        "bindings": bindings_out,
+        "source": source,
+        "output_prefix": job.get("output_prefix"),
+        "created_at": job.get("created_at"),
+        "construction": job.get("construction") if isinstance(job.get("construction"), dict) else None,
+    }
 
 def update_pending_job_vhs_window(
     *,

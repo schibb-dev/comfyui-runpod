@@ -2349,6 +2349,75 @@ def _shape_factory_update_pending_trim_payload(cfg: ServerConfig, body: Dict[str
     )
 
 
+def _shape_factory_begin_edit_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /api/shape-factory/begin-edit — unqueue if needed; lock job as editing."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory import begin_job_edit  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    job_key = str(body.get("job_key") or "").strip() or None
+    job_path_raw = str(body.get("job_path") or "").strip() or None
+    if not job_key and not job_path_raw:
+        raise ValueError("missing_job_key")
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    return begin_job_edit(
+        data_root=data_root,
+        server=str(cfg.comfy_server),
+        job_key=job_key,
+        job_path=Path(job_path_raw) if job_path_raw else None,
+    )
+
+
+def _shape_factory_finish_edit_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /api/shape-factory/finish-edit — release editing lock (later|cancel|now)."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory import finish_job_edit  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    job_key = str(body.get("job_key") or "").strip() or None
+    job_path_raw = str(body.get("job_path") or "").strip() or None
+    if not job_key and not job_path_raw:
+        raise ValueError("missing_job_key")
+    action = str(body.get("action") or "").strip().lower()
+    if action not in {"later", "cancel", "now"}:
+        raise ValueError("bad_action")
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    return finish_job_edit(
+        data_root=data_root,
+        action=action,
+        server=str(cfg.comfy_server),
+        job_key=job_key,
+        job_path=Path(job_path_raw) if job_path_raw else None,
+        front=bool(body.get("front") or False),
+        dry_run=bool(body.get("dry_run") or False),
+    )
+
+
+def _shape_factory_job_edit_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
+    """GET /api/shape-factory/job-edit?job_key=… — snapshot for Submit edit mode."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory import job_edit_snapshot  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    job_key = str((q.get("job_key") or [""])[0] or "").strip() or None
+    job_path_raw = str((q.get("job_path") or [""])[0] or "").strip() or None
+    if not job_key and not job_path_raw:
+        raise ValueError("missing_job_key")
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    return job_edit_snapshot(
+        data_root=data_root,
+        output_root=Path(cfg.output_root).expanduser().resolve(),
+        job_key=job_key,
+        job_path=Path(job_path_raw) if job_path_raw else None,
+    )
+
+
 def _clips_registry_path(cfg: "ServerConfig") -> Path:
     d = _workspace_scripts_dir()
     if d.is_dir() and str(d) not in sys.path:
@@ -8332,6 +8401,18 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return _json_response(self, 500, {"ok": False, "error": "work_products_failed", "detail": str(e)})
 
+        if path == "/api/shape-factory/job-edit":
+            try:
+                payload = _shape_factory_job_edit_payload(cfg, q)
+                if payload.get("error") == "job_not_found":
+                    return _json_response(self, 404, payload)
+                code = 200 if payload.get("ok") else 400
+                return _json_response(self, code, payload)
+            except ValueError as e:
+                return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+            except Exception as e:
+                return _json_response(self, 500, {"ok": False, "error": "job_edit_failed", "detail": str(e)})
+
         if path == "/api/shape-factory/clips/library":
             try:
                 payload = _shape_factory_clips_library_payload(cfg, q)
@@ -8630,6 +8711,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_shape_factory_derive_post()
         if path == "/api/shape-factory/unqueue":
             return self._handle_shape_factory_unqueue_post()
+        if path == "/api/shape-factory/begin-edit":
+            return self._handle_shape_factory_begin_edit_post()
+        if path == "/api/shape-factory/finish-edit":
+            return self._handle_shape_factory_finish_edit_post()
         if path == "/api/shape-factory/discard":
             return self._handle_shape_factory_discard_post()
         if path == "/api/shape-factory/update-pending-trim":
@@ -8747,6 +8832,46 @@ class Handler(BaseHTTPRequestHandler):
         if payload.get("error") == "still_running":
             return _json_response(self, 409, payload)
         code = 200 if payload.get("ok", True) else 502
+        return _json_response(self, code, payload)
+
+    def _handle_shape_factory_begin_edit_post(self) -> None:
+        """POST /api/shape-factory/begin-edit — lock job as editing (unqueue waiting Comfy prompt)."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _shape_factory_begin_edit_payload(cfg, body if isinstance(body, dict) else {})
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "shape_factory_begin_edit_failed", "detail": str(e)})
+        if payload.get("error") in {"still_running", "not_editable"}:
+            return _json_response(self, 409, payload)
+        if payload.get("error") == "comfy_unreachable":
+            return _json_response(self, 502, payload)
+        if payload.get("error") == "job_not_found":
+            return _json_response(self, 404, payload)
+        code = 200 if payload.get("ok", True) else 400
+        return _json_response(self, code, payload)
+
+    def _handle_shape_factory_finish_edit_post(self) -> None:
+        """POST /api/shape-factory/finish-edit — release editing (later|cancel|now)."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _shape_factory_finish_edit_payload(cfg, body if isinstance(body, dict) else {})
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "shape_factory_finish_edit_failed", "detail": str(e)})
+        if payload.get("error") in {"not_editing", "still_running", "bad_action"}:
+            return _json_response(self, 409 if payload.get("error") != "bad_action" else 400, payload)
+        if payload.get("error") == "job_not_found":
+            return _json_response(self, 404, payload)
+        code = 200 if payload.get("ok", True) else 400
         return _json_response(self, code, payload)
 
     def _handle_shape_factory_discard_post(self) -> None:

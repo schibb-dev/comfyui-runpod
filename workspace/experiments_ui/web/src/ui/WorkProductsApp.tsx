@@ -1,6 +1,6 @@
 import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { discardShapeFactoryJob, fetchShapeFactoryJsonPeek, fetchShapeFactoryWorkProducts, replayShapeFactory, unqueueShapeFactory, updatePendingShapeFactoryTrim } from "./api";
+import { discardShapeFactoryJob, fetchShapeFactoryJsonPeek, fetchShapeFactoryWorkProducts, finishShapeFactoryEdit, replayShapeFactory, unqueueShapeFactory, updatePendingShapeFactoryTrim } from "./api";
 import type { ShapeFactoryClip } from "./api";
 import { ClipBookmarksRail } from "./ClipBookmarksRail";
 import { ComfyLiveMetricsBar, ComfyLivePreview } from "./ComfyLivePreview";
@@ -302,11 +302,11 @@ function persistSectionOpen(map: Record<string, boolean>) {
 
 function isInFlightStatus(status?: string | null): boolean {
   const s = (status || "").toLowerCase();
-  return !s || s === "queued" || s === "pending" || s === "running" || s === "submitted";
+  return !s || s === "queued" || s === "pending" || s === "editing" || s === "running" || s === "submitted";
 }
 
 /**
- * Trim in/out is editable while the job is still ours (pending / not on Comfy).
+ * Trim in/out is editable while the job is still ours (pending / editing / not on Comfy).
  * Edits patch that job's VHS window before submit. Locked once Comfy has
  * accepted it (queued or running). Completed cards keep next-action trim
  * editable for Extend / Vary / Derive / Re-run planning (sidecar only).
@@ -316,11 +316,22 @@ function isJobTrimEditable(item: WorkProductItem): boolean {
   const s = workProductStatusKey(item);
   // Explicitly on Comfy's waiting or running list — baked prompt, no edits.
   if (s === "queued" || s === "running") return false;
-  // Still pre-Comfy: pending/draft/deposited, or any status without a prompt_id.
-  if (s === "pending" || s === "draft" || s === "deposited") return true;
+  // Still pre-Comfy: pending/editing/draft/deposited, or any status without a prompt_id.
+  if (s === "pending" || s === "editing" || s === "draft" || s === "deposited") return true;
   if (!String(item.prompt_id || "").trim()) return true;
   // Has a prompt_id under another in-flight label (e.g. submitted) — treat as locked.
   return false;
+}
+
+/** Open Submit edit-in-place for a pre-run factory job. */
+function canEditJobViaSubmit(item: WorkProductItem): boolean {
+  if (isNonFactoryWorkProduct(item)) return false;
+  if (!String(item.job_key || "").trim()) return false;
+  if (item.output_url) return false;
+  const s = workProductStatusKey(item);
+  if (s === "running" || s === "complete" || s === "completed") return false;
+  if (s === "error" || s === "failed" || s === "interrupted" || s === "abandoned") return false;
+  return s === "pending" || s === "editing" || s === "queued" || s === "submitted" || !String(item.prompt_id || "").trim();
 }
 
 /** Pending factory jobs: trim edits rewrite the job workflow (not just the sidecar). */
@@ -503,7 +514,8 @@ function filterWorkProductsByName(items: WorkProductItem[], query: string): Work
 function statusFilterVisual(status: string): string {
   const s = status.toLowerCase();
   if (s === "running") return "running";
-  if (s === "queued") return "queued";
+  if (s === "queued" || s === "submitted") return "queued";
+  if (s === "editing") return "editing";
   if (s === "error" || s === "failed") return "error";
   if (s === "interrupted") return "interrupted";
   if (s === "complete" || s === "deposited") return "ok";
@@ -601,9 +613,13 @@ function badgeClass(kind?: string | null): string {
   if (k === "extend") return "work-product-badge--extend";
   if (k === "replay") return "work-product-badge--replay";
   if (k === "front" || k === "now") return "work-product-badge--front";
+  if (k === "running") return "work-product-badge--running";
+  if (k === "queued" || k === "submitted") return "work-product-badge--queued";
+  if (k === "editing") return "work-product-badge--editing";
   if (k === "complete" || k === "deposited") return "work-product-badge--ok";
-  if (k === "queued" || k === "pending" || k === "normal" || k === "later") return "work-product-badge--pending";
-  if (k === "interrupted" || k === "unknown" || k === "abandoned") return "work-product-badge--pending";
+  if (k === "pending" || k === "draft" || k === "normal" || k === "later") return "work-product-badge--pending";
+  if (k === "interrupted") return "work-product-badge--interrupted";
+  if (k === "unknown" || k === "abandoned") return "work-product-badge--muted";
   if (k === "failed" || k === "error") return "work-product-badge--bad";
   return "";
 }
@@ -873,6 +889,8 @@ function WorkProductViewer({
       apply: (s: InputTrimState) => void,
       key: string,
       durationHint: number,
+      /** When false, leave marks unset (full file) unless a saved sidecar exists. */
+      seedFromDefaults: boolean,
     ) => {
       let markIn: number | null = null;
       let markOut: number | null = null;
@@ -887,18 +905,32 @@ function WorkProductViewer({
       }
       if (cancelled) return;
       if (!dirty) {
-        const seeded = vhsDefaultsToMarks(defaults, durationHint || 1, fps);
-        markIn = durationHint > 0 ? seeded.markIn : null;
-        markOut = durationHint > 0 ? seeded.markOut : null;
-        apply({
-          markIn,
-          markOut,
-          dirty: false,
-          duration: durationHint,
-          fps,
-          warning: durationHint > 0 ? seeded.warning : null,
-          clampedDefault: durationHint > 0 ? seeded.clamped : false,
-        });
+        const nontrivial =
+          Number(defaults.skip_first_frames || 0) > 0 || Number(defaults.frame_load_cap || 0) > 0;
+        if (seedFromDefaults && nontrivial && durationHint > 0) {
+          const seeded = vhsDefaultsToMarks(defaults, durationHint, fps);
+          apply({
+            markIn: seeded.markIn,
+            markOut: seeded.markOut,
+            dirty: false,
+            duration: durationHint,
+            fps,
+            warning: seeded.warning,
+            clampedDefault: seeded.clamped,
+          });
+        } else {
+          // New generations / full-file jobs: do not paint catalog template fossils
+          // (e.g. FB9_GEX skip=85) as if this media were already trimmed.
+          apply({
+            markIn: null,
+            markOut: null,
+            dirty: false,
+            duration: durationHint,
+            fps,
+            warning: null,
+            clampedDefault: false,
+          });
+        }
       } else {
         apply({
           markIn,
@@ -911,15 +943,16 @@ function WorkProductViewer({
         });
       }
     };
-    // Output trim seeds from target-family defaults (next Extend input).
-    void boot(outputRel, outputDefaults, onOutputTrimChange, `wp-out:${item.job_key}`, Number(item.media_meta?.duration) || 0);
-    // Source trim seeds from what THIS job actually applied (else family defaults).
+    // Output: show saved sidecar only — never seed extend-family template skip/cap.
+    void boot(outputRel, outputDefaults, onOutputTrimChange, `wp-out:${item.job_key}`, Number(item.media_meta?.duration) || 0, false);
+    // Source: seed only from this job's applied window when nontrivial.
     void boot(
       queuedSourceRel || sourceRel,
       sourceDefaults,
       onSourceTrimChange,
       `wp-src:${item.job_key}`,
       0,
+      true,
     );
     return () => {
       cancelled = true;
@@ -939,7 +972,7 @@ function WorkProductViewer({
 
   const onMeta = (
     el: HTMLVideoElement,
-    defaults: { skip_first_frames: number; frame_load_cap: number },
+    _defaults: { skip_first_frames: number; frame_load_cap: number },
     current: InputTrimState,
     apply: (s: InputTrimState) => void,
     rel: string | null,
@@ -947,20 +980,11 @@ function WorkProductViewer({
   ) => {
     const duration = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : current.duration;
     if (!(duration > 0)) return;
-    if (current.dirty) {
-      if (Math.abs(current.duration - duration) > 0.05) apply({ ...current, duration });
-      return;
+    // Only refresh duration from the element. Do not invent trim marks from family
+    // template defaults when the user has not set / saved a window.
+    if (Math.abs(current.duration - duration) > 0.05) {
+      apply({ ...current, duration });
     }
-    const seeded = vhsDefaultsToMarks(defaults, duration, fps);
-    apply({
-      markIn: seeded.markIn,
-      markOut: seeded.markOut,
-      dirty: false,
-      duration,
-      fps,
-      warning: seeded.warning,
-      clampedDefault: seeded.clamped,
-    });
     void rel;
     void legacyKey;
   };
@@ -1032,15 +1056,14 @@ function WorkProductViewer({
               }}
               onModeChange={setOutputMode}
               onClear={() => {
-                const seeded = vhsDefaultsToMarks(outputDefaults, outputTrim.duration || 1, fps);
                 const next: InputTrimState = {
-                  markIn: outputTrim.duration > 0 ? seeded.markIn : null,
-                  markOut: outputTrim.duration > 0 ? seeded.markOut : null,
+                  markIn: null,
+                  markOut: null,
                   dirty: false,
                   duration: outputTrim.duration,
                   fps,
-                  warning: outputTrim.duration > 0 ? seeded.warning : null,
-                  clampedDefault: outputTrim.duration > 0 ? seeded.clamped : false,
+                  warning: null,
+                  clampedDefault: false,
                 };
                 onOutputTrimChange(next);
                 void persistDiscoveryTrimAsync({
@@ -1132,15 +1155,14 @@ function WorkProductViewer({
               onModeChange={setSourceMode}
               onClear={() => {
                 if (!trimEditable) return;
-                const seeded = vhsDefaultsToMarks(sourceDefaults, sourceTrim.duration || 1, fps);
                 const next: InputTrimState = {
-                  markIn: sourceTrim.duration > 0 ? seeded.markIn : null,
-                  markOut: sourceTrim.duration > 0 ? seeded.markOut : null,
+                  markIn: null,
+                  markOut: null,
                   dirty: false,
                   duration: sourceTrim.duration,
                   fps,
-                  warning: sourceTrim.duration > 0 ? seeded.warning : null,
-                  clampedDefault: sourceTrim.duration > 0 ? seeded.clamped : false,
+                  warning: null,
+                  clampedDefault: false,
                 };
                 onSourceTrimChange(next);
                 void persistDiscoveryTrimAsync({
@@ -1247,15 +1269,14 @@ function WorkProductViewer({
                 onModeChange={setSourceMode}
                 onClear={() => {
                   if (!trimEditable) return;
-                  const seeded = vhsDefaultsToMarks(sourceDefaults, sourceTrim.duration || 1, fps);
                   const next: InputTrimState = {
-                    markIn: sourceTrim.duration > 0 ? seeded.markIn : null,
-                    markOut: sourceTrim.duration > 0 ? seeded.markOut : null,
+                    markIn: null,
+                    markOut: null,
                     dirty: false,
                     duration: sourceTrim.duration,
                     fps,
-                    warning: sourceTrim.duration > 0 ? seeded.warning : null,
-                    clampedDefault: sourceTrim.duration > 0 ? seeded.clamped : false,
+                    warning: null,
+                    clampedDefault: false,
                   };
                   onSourceTrimChange(next);
                   void persistDiscoveryTrimAsync({
@@ -2523,6 +2544,16 @@ function WorkProductQuickQueue({
 
   const canRerun = Boolean(jobKey) && !busy;
   const canUnqueue = canUnqueueWorkProduct(item) && !busy;
+  const canEditSubmit = canEditJobViaSubmit(item) && !busy;
+  const isEditing = workProductStatusKey(item) === "editing";
+  const editSubmitUrl = canEditSubmit
+    ? submitHref({
+        editJob: jobKey,
+        origin: "workbench",
+        family: item.family_slug || null,
+        mediaRelpath: String(item.bindings?.source_video?.relpath || item.bindings?.source_still?.relpath || "").trim() || null,
+      })
+    : null;
   const canArchive = canArchiveTerminalWorkProduct(item) && !busy;
   const canDelete = canDeleteWorkProduct(item) && !busy;
   const deleteIsPendingOnly = canDiscardPendingWorkProduct(item);
@@ -2792,6 +2823,46 @@ function WorkProductQuickQueue({
         >
           Later
         </button>
+        {canEditSubmit && editSubmitUrl ? (
+          <>
+            <span className="work-product-quick-queue__sep" aria-hidden="true" />
+            <a
+              className="drt-btn work-product-quick-queue__edit"
+              href={editSubmitUrl}
+              title="Edit this run in Submit (unqueues if waiting on Comfy; holds pending-drain)"
+            >
+              Edit
+            </a>
+          </>
+        ) : null}
+        {isEditing ? (
+          <>
+            <span className="work-product-quick-queue__sep" aria-hidden="true" />
+            <button
+              type="button"
+              className="drt-btn work-product-quick-queue__release"
+              disabled={busy}
+              title="Release editing lock back to pending so drain can pick it up"
+              onClick={() => {
+                void (async () => {
+                  setBusy(true);
+                  setMsg(null);
+                  try {
+                    await finishShapeFactoryEdit({ job_key: jobKey, action: "later" });
+                    setMsg("Released → pending");
+                    onCommitted?.();
+                  } catch (e) {
+                    setMsg(e instanceof Error ? e.message : String(e));
+                  } finally {
+                    setBusy(false);
+                  }
+                })();
+              }}
+            >
+              Release
+            </button>
+          </>
+        ) : null}
         {canUnqueue ? (
           <>
             <span className="work-product-quick-queue__sep" aria-hidden="true" />
@@ -3057,16 +3128,17 @@ function WorkProductRow({
   const thumbBadgeClass = thumbMeta ? `work-product-badge--live-${thumbMeta.visual}` : "";
   const successors = extendFamilyDefaults || {};
   const extendFamily = smartExtendFamily(item, successors);
-  const varyFamily = smartVaryFamily(item);
   const outputDefaults = familyVhsDefaults(families, extendFamily || String(item.family_slug || ""));
   const applied = item.applied_vhs;
+  // Display/source seeding uses what THIS job applied — never catalog template fossils
+  // (FB9_GEX skip=85 etc.) as a stand-in for "unset".
   const sourceDefaults =
     applied && (applied.skip_first_frames != null || applied.frame_load_cap != null)
       ? {
           skip_first_frames: Math.max(0, Math.floor(Number(applied.skip_first_frames ?? 0) || 0)),
           frame_load_cap: Math.max(0, Math.floor(Number(applied.frame_load_cap ?? 0) || 0)),
         }
-      : familyVhsDefaults(families, varyFamily || String(item.family_slug || ""));
+      : { skip_first_frames: 0, frame_load_cap: 0 };
   const [outputTrim, setOutputTrim] = useState<InputTrimState>(() => emptyTrimState(parseFps(item.media_meta?.fps)));
   const [sourceTrim, setSourceTrim] = useState<InputTrimState>(() => emptyTrimState(parseFps(item.media_meta?.fps)));
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
@@ -3076,9 +3148,9 @@ function WorkProductRow({
       id={`workbench-job-${String(item.job_key || "").replace(/[^\w.-]+/g, "_")}`}
       data-job-key={item.job_key || undefined}
       data-prompt-id={item.prompt_id || undefined}
-      className={`work-product-row work-product-row--${layout}${
-        isLivePreviewItem(item) ? " work-product-row--live" : ""
-      }`}
+      className={`work-product-row work-product-row--${layout} work-product-row--status-${statusFilterVisual(
+        item.status || "pending",
+      )}${isLivePreviewItem(item) ? " work-product-row--live" : ""}`}
     >
       <header
         className={`work-product-row__head${

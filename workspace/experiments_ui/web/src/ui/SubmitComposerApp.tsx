@@ -1,11 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  beginShapeFactoryEdit,
   composeSubmitAdvance,
+  fetchShapeFactoryJobEdit,
+  finishShapeFactoryEdit,
   listShapeFactoryClipsLibrary,
   mintIdentityStill,
+  updatePendingShapeFactoryTrim,
   type IdentityStillCandidate,
   type IdentityStillMintTarget,
   type ShapeFactoryClip,
+  type ShapeFactoryJobEditSnapshot,
 } from "./api";
 import { ClipBookmarksRail } from "./ClipBookmarksRail";
 import {
@@ -90,6 +95,321 @@ function familyShapeId(families: WorkProductFamilyOption[], slug: string): strin
   const hit = families.find((f) => f.slug === slug);
   const sid = String(hit?.shape_id || "").trim();
   return sid || null;
+}
+
+/** Edit an existing pending/queued factory job in place (not advance). */
+function SubmitEditJobApp({
+  editJob,
+  origin,
+}: {
+  editJob: string;
+  origin: string | null;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [bootError, setBootError] = useState<string | null>(null);
+  const [snap, setSnap] = useState<ShapeFactoryJobEditSnapshot | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [markIn, setMarkIn] = useState<number | null>(null);
+  const [markOut, setMarkOut] = useState<number | null>(null);
+  const [clipId, setClipId] = useState("");
+  const [activeClip, setActiveClip] = useState<ShapeFactoryClip | null>(null);
+  const [videoDuration, setVideoDuration] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [trimMode, setTrimMode] = useState<VideoTrimPlaybackMode>("repeat");
+  const [finished, setFinished] = useState(false);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const releasedRef = useRef(false);
+
+  const mediaRelpath = String(snap?.source?.relpath || "").trim();
+  const playUrl = mediaRelpath ? filesUrl(mediaRelpath) : snap?.source?.url || null;
+  const posterUrl = mediaRelpath ? thumbUrlForMedia(mediaRelpath) : snap?.source?.thumb_url || null;
+  const isVideo = Boolean(playUrl && /\.(mp4|webm|mov|mkv)(\?|$)/i.test(playUrl));
+  const duration =
+    videoDuration > 0 ? videoDuration : Math.max(markOut ?? 0, markIn ?? 0, 0);
+  const fps = 18;
+
+  const originBack = useMemo(
+    () =>
+      submitOriginHref(origin, {
+        mediaRelpath: mediaRelpath || null,
+        editJob,
+        fromJob: editJob,
+      }) || { href: workbenchHref({ jobKey: editJob }), label: "Back to Workbench" },
+    [editJob, mediaRelpath, origin],
+  );
+
+  const releaseEdit = useCallback(
+    async (action: "later" | "cancel" | "now", opts?: { front?: boolean; navigate?: boolean }) => {
+      if (releasedRef.current && action !== "now") return;
+      setBusy(true);
+      setMsg(null);
+      try {
+        const res = await finishShapeFactoryEdit({
+          job_key: editJob,
+          action,
+          front: opts?.front,
+        });
+        releasedRef.current = true;
+        setFinished(true);
+        setMsg(
+          action === "now"
+            ? `Queued · ${res.prompt_id || res.job_key || editJob}`
+            : action === "later"
+              ? "Saved for later (pending)"
+              : "Edit cancelled (pending)",
+        );
+        if (opts?.navigate !== false) {
+          window.setTimeout(() => {
+            window.location.href = originBack.href;
+          }, action === "now" ? 600 : 200);
+        }
+      } catch (e) {
+        setMsg(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [editJob, originBack.href],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setBusy(true);
+      setBootError(null);
+      try {
+        await beginShapeFactoryEdit({ job_key: editJob });
+        const doc = await fetchShapeFactoryJobEdit({ jobKey: editJob });
+        if (cancelled) return;
+        setSnap(doc);
+        const win = doc.vhs_window || {};
+        const mi = win.mark_in != null ? Number(win.mark_in) : null;
+        const mo = win.mark_out != null ? Number(win.mark_out) : null;
+        setMarkIn(Number.isFinite(mi as number) ? (mi as number) : null);
+        setMarkOut(Number.isFinite(mo as number) ? (mo as number) : null);
+        const cid = String(doc.source_clip_id || win.clip_id || "").trim();
+        if (cid) setClipId(cid);
+      } catch (e) {
+        if (!cancelled) setBootError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (!cancelled) setBusy(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [editJob]);
+
+  useEffect(() => {
+    const onUnload = () => {
+      if (releasedRef.current || finished) return;
+      try {
+        const body = JSON.stringify({ job_key: editJob, action: "cancel" });
+        navigator.sendBeacon?.(
+          "/api/shape-factory/finish-edit",
+          new Blob([body], { type: "application/json" }),
+        );
+      } catch {
+        /* ignore */
+      }
+    };
+    window.addEventListener("pagehide", onUnload);
+    return () => window.removeEventListener("pagehide", onUnload);
+  }, [editJob, finished]);
+
+  useTrimPlaybackEnforcement(videoRef, {
+    mediaKey: mediaRelpath || editJob,
+    markIn,
+    markOut,
+    mode: trimMode,
+    enabled: Boolean(isVideo && playUrl),
+  });
+
+  const persistTrim = (nextIn: number | null, nextOut: number | null) => {
+    if (!(duration > 0)) return;
+    const win = marksToVhsWindow(nextIn, nextOut, duration, fps, null);
+    void updatePendingShapeFactoryTrim({
+      job_key: editJob,
+      skip_first_frames: win.skip_first_frames,
+      frame_load_cap: win.frame_load_cap,
+      mark_in: nextIn,
+      mark_out: nextOut,
+    }).catch((err) => {
+      console.warn("update-pending-trim failed", err);
+    });
+  };
+
+  if (bootError) {
+    return (
+      <div className="submit-composer">
+        <PageHeader
+          title="Edit job"
+          subtitle={editJob}
+          actions={
+            <a className="drt-btn" href={originBack.href}>
+              {originBack.label}
+            </a>
+          }
+        />
+        <p className="work-product-viewer__trim-warn">{bootError}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="submit-composer">
+      <PageHeader
+        title="Edit job"
+        subtitle={`${snap?.family_slug || "…"} · ${editJob}`}
+        actions={
+          <a
+            className="drt-btn"
+            href={originBack.href}
+            onClick={(e) => {
+              if (releasedRef.current || finished) return;
+              e.preventDefault();
+              void releaseEdit("cancel");
+            }}
+          >
+            {originBack.label}
+          </a>
+        }
+      />
+
+      <div className="work-product-row work-product-row--split submit-composer__stage" aria-label="Edit job">
+        <div className="work-product-row__head">
+          <div className="work-product-row__head-main">
+            <div className="work-product-row__title">
+              <span className="work-product-badge work-product-badge--pending">editing</span>
+              <strong>{snap?.family_slug || "job"}</strong>
+            </div>
+            <code className="work-product-row__key">{editJob}</code>
+          </div>
+        </div>
+
+        <div className="work-product-row__body">
+          <div className="work-product-viewer">
+            <div className="work-product-viewer__main">
+              {isVideo && playUrl ? (
+                <video
+                  ref={videoRef}
+                  className="work-product-viewer__video"
+                  src={playUrl}
+                  poster={posterUrl || undefined}
+                  controls
+                  playsInline
+                  muted
+                  preload="metadata"
+                  onLoadedMetadata={(e) => {
+                    const d = e.currentTarget.duration;
+                    if (Number.isFinite(d) && d > 0) setVideoDuration(d);
+                    setCurrentTime(e.currentTarget.currentTime || 0);
+                  }}
+                  onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime || 0)}
+                />
+              ) : playUrl ? (
+                <img className="work-product-viewer__video" src={playUrl} alt="" />
+              ) : (
+                <div className="work-product-viewer__empty">
+                  {busy ? "Loading…" : "No source media on this job"}
+                </div>
+              )}
+            </div>
+            {isVideo && playUrl ? (
+              <VideoTrimControls
+                className="work-product-viewer__trim"
+                videoRef={videoRef}
+                currentTime={currentTime}
+                duration={duration}
+                markIn={markIn}
+                markOut={markOut}
+                mode={trimMode}
+                mediaSyncKey={mediaRelpath || editJob}
+                onSeek={(t) => {
+                  const v = videoRef.current;
+                  if (v) v.currentTime = t;
+                  setCurrentTime(t);
+                }}
+                onSyncTime={setCurrentTime}
+                onMarkInChange={(v) => {
+                  setMarkIn(v);
+                  persistTrim(v, markOut);
+                }}
+                onMarkOutChange={(v) => {
+                  setMarkOut(v);
+                  persistTrim(markIn, v);
+                }}
+                onModeChange={setTrimMode}
+                onClear={() => {
+                  setMarkIn(null);
+                  setMarkOut(null);
+                  persistTrim(null, null);
+                }}
+              />
+            ) : null}
+            {mediaRelpath ? (
+              <ClipBookmarksRail
+                mediaRelpath={mediaRelpath}
+                markIn={markIn}
+                markOut={markOut}
+                duration={duration}
+                trimEditable
+                origin="submit"
+                selectedClipId={clipId || null}
+                onSelectClip={(clip) => {
+                  setActiveClip(clip);
+                  setClipId(clip?.clip_id || "");
+                }}
+                onApplyClip={(mi, mo, clip) => {
+                  setMarkIn(mi);
+                  setMarkOut(mo);
+                  if (clip) {
+                    setActiveClip(clip);
+                    setClipId(clip.clip_id);
+                  }
+                  persistTrim(mi, mo);
+                }}
+              />
+            ) : null}
+          </div>
+
+          <div className="work-product-quick-queue">
+            <p className="factory-muted">
+              Editing this run in place. Pending drain will not queue it until you finish.
+              {activeClip ? ` · clip ${activeClip.clip_id}` : ""}
+            </p>
+            <div className="work-product-quick-queue__actions" role="group" aria-label="Finish edit">
+              <button
+                type="button"
+                className="drt-btn"
+                disabled={busy || finished}
+                onClick={() => void releaseEdit("now")}
+              >
+                Queue now
+              </button>
+              <button
+                type="button"
+                className="drt-btn"
+                disabled={busy || finished}
+                onClick={() => void releaseEdit("later")}
+              >
+                Save for later
+              </button>
+              <button
+                type="button"
+                className="drt-btn"
+                disabled={busy || finished}
+                onClick={() => void releaseEdit("cancel")}
+              >
+                Cancel
+              </button>
+            </div>
+            {msg ? <p className="factory-muted">{msg}</p> : null}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 type ConstructionReady = {
@@ -222,6 +542,14 @@ function SubmitConstructionPreview({
 }
 
 export function SubmitComposerApp() {
+  const intent = useMemo(() => parseSubmitDeepLink(), []);
+  if (intent.editJob) {
+    return <SubmitEditJobApp editJob={intent.editJob} origin={intent.origin} />;
+  }
+  return <SubmitAdvanceComposerApp />;
+}
+
+function SubmitAdvanceComposerApp() {
   const intent = useMemo(() => parseSubmitDeepLink(), []);
   const initialRoutes = useMemo(() => stepToRouteFlags(intent.step), [intent.step]);
   const cachedFamiliesBoot = useMemo(() => peekFamiliesBootstrap(), []);
@@ -672,6 +1000,7 @@ export function SubmitComposerApp() {
     mediaRelpath: mediaRelpath || intent.mediaRelpath,
     clipId: clipId || intent.clipId,
     fromJob: intent.fromJob,
+    editJob: intent.editJob,
   });
   const originBack = useMemo(
     () =>
@@ -679,8 +1008,9 @@ export function SubmitComposerApp() {
         mediaRelpath: mediaRelpath || intent.mediaRelpath,
         clipId: clipId || activeClip?.clip_id || intent.clipId,
         fromJob: intent.fromJob,
+        editJob: intent.editJob,
       }),
-    [activeClip?.clip_id, clipId, intent.clipId, intent.fromJob, intent.mediaRelpath, intent.origin, mediaRelpath],
+    [activeClip?.clip_id, clipId, intent.clipId, intent.editJob, intent.fromJob, intent.mediaRelpath, intent.origin, mediaRelpath],
   );
 
   const constructionPreview = useMemo(() => {

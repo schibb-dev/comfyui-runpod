@@ -1343,6 +1343,80 @@ export type ShapeFactoryUnqueueResponse = {
   comfy_delete_error?: string;
 };
 
+/** POST /api/shape-factory/begin-edit — lock job as editing; unqueue if waiting. */
+export type ShapeFactoryBeginEditRequest = {
+  job_key?: string;
+  job_path?: string;
+};
+
+export type ShapeFactoryBeginEditResponse = {
+  ok: boolean;
+  job_key?: string;
+  job_path?: string;
+  status?: string;
+  editing_from_status?: string;
+  editing_started_at?: string;
+  comfy_deleted?: boolean;
+  previous_prompt_id?: string | null;
+  error?: string;
+  detail?: string;
+  comfy_delete_error?: string;
+};
+
+/** POST /api/shape-factory/finish-edit — release editing (later|cancel|now). */
+export type ShapeFactoryFinishEditRequest = {
+  job_key?: string;
+  job_path?: string;
+  action: "later" | "cancel" | "now";
+  front?: boolean;
+};
+
+export type ShapeFactoryFinishEditResponse = {
+  ok: boolean;
+  job_key?: string;
+  job_path?: string;
+  status?: string;
+  action?: string;
+  prompt_id?: string;
+  error?: string;
+  detail?: string;
+  submit?: Record<string, unknown>;
+};
+
+/** GET /api/shape-factory/job-edit — snapshot for Submit edit-in-place mode. */
+export type ShapeFactoryJobEditSnapshot = {
+  ok: boolean;
+  job_key?: string;
+  job_path?: string;
+  family_slug?: string;
+  shape_path?: string;
+  status?: string;
+  prompt_id?: string | null;
+  editing_from_status?: string;
+  editing_started_at?: string;
+  vhs_window?: {
+    skip_first_frames?: number;
+    frame_load_cap?: number;
+    mark_in?: number;
+    mark_out?: number;
+    clip_id?: string;
+  } | null;
+  source_clip_id?: string | null;
+  bindings?: Record<string, { path?: string; relpath?: string; url?: string; thumb_url?: string; slot?: string }>;
+  source?: {
+    slot?: string;
+    path?: string;
+    relpath?: string;
+    url?: string;
+    thumb_url?: string;
+  } | null;
+  output_prefix?: string;
+  created_at?: string;
+  construction?: Record<string, unknown> | null;
+  error?: string;
+  detail?: string;
+};
+
 /** POST /api/shape-factory/discard — archive or expunge a pending/terminal factory job. */
 export type ShapeFactoryDiscardRequest = {
   job_key?: string;

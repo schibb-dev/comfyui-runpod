@@ -279,9 +279,45 @@ body {
   color: #ff8a80;
   font-weight: 650;
 }
-.pipeline-row--error {
+.pipeline-row--error,
+.pipeline-row--status-error {
   border-color: rgba(255, 90, 122, 0.45);
   background: color-mix(in srgb, rgba(180, 50, 70, 0.16) 70%, transparent);
+}
+
+.pipeline-row--status-running {
+  border-color: rgba(90, 162, 255, 0.38);
+  background: color-mix(in srgb, rgba(70, 130, 220, 0.14) 72%, rgba(18, 26, 51, 0.72));
+}
+
+.pipeline-row--status-queued {
+  border-color: rgba(46, 125, 79, 0.4);
+  background: color-mix(in srgb, rgba(46, 125, 79, 0.12) 72%, rgba(18, 26, 51, 0.72));
+}
+
+.pipeline-row--status-pending {
+  border-color: rgba(180, 160, 60, 0.36);
+  background: color-mix(in srgb, rgba(180, 160, 60, 0.1) 72%, rgba(18, 26, 51, 0.72));
+}
+
+.pipeline-row--status-interrupted {
+  border-color: rgba(255, 160, 80, 0.42);
+  background: color-mix(in srgb, rgba(160, 90, 40, 0.14) 72%, rgba(18, 26, 51, 0.72));
+}
+
+.pipeline-row--status-ok {
+  border-color: rgba(90, 180, 120, 0.32);
+  background: color-mix(in srgb, rgba(46, 125, 79, 0.08) 72%, rgba(18, 26, 51, 0.72));
+}
+
+.pipeline-row--status-muted {
+  border-color: rgba(140, 150, 165, 0.32);
+  background: color-mix(in srgb, rgba(90, 95, 105, 0.14) 72%, rgba(18, 26, 51, 0.72));
+}
+
+.pipeline-row--status-editing {
+  border-color: rgba(160, 120, 255, 0.4);
+  background: color-mix(in srgb, rgba(140, 100, 230, 0.12) 72%, rgba(18, 26, 51, 0.72));
 }
 .queue-status-badge--loud {
   font-weight: 750;
@@ -12292,6 +12328,12 @@ tr.disabled:hover td {
   color: #d4c45a;
 }
 
+.work-products-status-toggle.is-on.work-products-status-toggle--editing {
+  border-color: rgba(160, 120, 255, 0.55);
+  background: rgba(140, 100, 230, 0.2);
+  color: #ce93d8;
+}
+
 .work-products-status-toggle.is-on.work-products-status-toggle--error {
   border-color: rgba(255, 90, 122, 0.5);
   background: rgba(180, 50, 70, 0.22);
@@ -12358,6 +12400,46 @@ tr.disabled:hover td {
   border-radius: var(--radius);
   background: rgba(18, 26, 51, 0.72);
   overflow: hidden;
+}
+
+.work-product-row--status-running {
+  border-color: rgba(90, 162, 255, 0.38);
+  background: color-mix(in srgb, rgba(70, 130, 220, 0.14) 72%, rgba(18, 26, 51, 0.72));
+}
+
+.work-product-row--status-queued {
+  border-color: rgba(46, 125, 79, 0.4);
+  background: color-mix(in srgb, rgba(46, 125, 79, 0.12) 72%, rgba(18, 26, 51, 0.72));
+}
+
+.work-product-row--status-pending {
+  border-color: rgba(180, 160, 60, 0.36);
+  background: color-mix(in srgb, rgba(180, 160, 60, 0.1) 72%, rgba(18, 26, 51, 0.72));
+}
+
+.work-product-row--status-editing {
+  border-color: rgba(160, 120, 255, 0.4);
+  background: color-mix(in srgb, rgba(140, 100, 230, 0.12) 72%, rgba(18, 26, 51, 0.72));
+}
+
+.work-product-row--status-error {
+  border-color: rgba(255, 90, 122, 0.42);
+  background: color-mix(in srgb, rgba(180, 50, 70, 0.14) 72%, rgba(18, 26, 51, 0.72));
+}
+
+.work-product-row--status-interrupted {
+  border-color: rgba(255, 160, 80, 0.42);
+  background: color-mix(in srgb, rgba(160, 90, 40, 0.14) 72%, rgba(18, 26, 51, 0.72));
+}
+
+.work-product-row--status-ok {
+  border-color: rgba(90, 180, 120, 0.28);
+  background: color-mix(in srgb, rgba(46, 125, 79, 0.07) 72%, rgba(18, 26, 51, 0.72));
+}
+
+.work-product-row--status-muted {
+  border-color: rgba(140, 150, 165, 0.3);
+  background: color-mix(in srgb, rgba(90, 95, 105, 0.12) 72%, rgba(18, 26, 51, 0.72));
 }
 
 .work-product-row--live {
@@ -13196,9 +13278,39 @@ tr.disabled:hover td {
   color: var(--good);
 }
 
+.work-product-badge--running {
+  border-color: rgba(90, 162, 255, 0.5);
+  background: rgba(70, 130, 220, 0.14);
+  color: #9ec5ff;
+}
+
+.work-product-badge--queued {
+  border-color: rgba(46, 125, 79, 0.5);
+  background: rgba(46, 125, 79, 0.14);
+  color: #81c784;
+}
+
+.work-product-badge--editing {
+  border-color: rgba(160, 120, 255, 0.5);
+  background: rgba(140, 100, 230, 0.14);
+  color: #ce93d8;
+}
+
 .work-product-badge--pending {
   border-color: rgba(255, 209, 102, 0.35);
   color: var(--warn);
+}
+
+.work-product-badge--interrupted {
+  border-color: rgba(255, 160, 80, 0.5);
+  background: rgba(160, 90, 40, 0.14);
+  color: #ffb378;
+}
+
+.work-product-badge--muted {
+  border-color: rgba(140, 150, 165, 0.4);
+  background: rgba(90, 95, 105, 0.16);
+  color: #b0b8c4;
 }
 
 .work-product-badge--bad {
