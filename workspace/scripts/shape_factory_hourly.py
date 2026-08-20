@@ -125,6 +125,36 @@ def _still_added_ts(path: str) -> Optional[float]:
         return None
 
 
+def _still_age_days(path: str, *, now_ts: Optional[float] = None) -> Optional[float]:
+    added = _still_added_ts(path)
+    if added is None:
+        return None
+    now = float(now_ts) if now_ts is not None else time.time()
+    return max(0.0, (now - added) / 86400.0)
+
+
+def _weekly_still_window_days() -> float:
+    return max(0.1, float(os.environ.get("HOURLY_RECENT_STILL_DAYS", "7")))
+
+
+def _still_within_days(path: str, window_days: float, *, now_ts: Optional[float] = None) -> bool:
+    age = _still_age_days(path, now_ts=now_ts)
+    if age is None:
+        return False
+    return age <= window_days
+
+
+def _weekly_still_pick_share() -> float:
+    """Fraction of pool_product still picks restricted to HOURLY_RECENT_STILL_DAYS window."""
+    raw = os.environ.get("HOURLY_WEEKLY_STILL_SHARE", "").strip()
+    if not raw:
+        raw = os.environ.get("HOURLY_FRESH_STILL_SHARE", "0.90")
+    try:
+        return max(0.0, min(1.0, float(raw)))
+    except ValueError:
+        return 0.90
+
+
 def _still_recency_mult(
     path: str,
     *,
@@ -134,12 +164,15 @@ def _still_recency_mult(
     """Boost recently added Comfy input stills (linear decay over HOURLY_RECENT_STILL_DAYS)."""
     if not _is_input_still(path):
         return 1.0
-    boost = max(1.0, float(os.environ.get("HOURLY_RECENT_STILL_BOOST", "4.0")))
-    window_days = max(0.1, float(os.environ.get("HOURLY_RECENT_STILL_DAYS", "14")))
-    # BounceDance (and friends) should chew through new inbox drops, not old stills.
+    boost = max(1.0, float(os.environ.get("HOURLY_RECENT_STILL_BOOST", "6.0")))
+    window_days = _weekly_still_window_days()
+    # i2v families chew through new inbox drops within the weekly window.
     if _prefers_fresh_stills(family):
-        boost = max(boost, float(os.environ.get("HOURLY_BOUNCEDANCE_RECENT_STILL_BOOST", "10.0")))
-        window_days = max(window_days, float(os.environ.get("HOURLY_BOUNCEDANCE_RECENT_STILL_DAYS", "21")))
+        boost = max(boost, float(os.environ.get("HOURLY_BOUNCEDANCE_RECENT_STILL_BOOST", "13.0")))
+        window_days = max(
+            window_days,
+            float(os.environ.get("HOURLY_BOUNCEDANCE_RECENT_STILL_DAYS", str(_weekly_still_window_days()))),
+        )
     now = float(now_ts) if now_ts is not None else time.time()
     added = _still_added_ts(path)
     if added is None:
@@ -180,11 +213,71 @@ def _fresh_still_share(family: str) -> float:
     if not raw and _prefers_fresh_stills(family):
         raw = os.environ.get("HOURLY_BOUNCEDANCE_FRESH_STILL_SHARE", "").strip()
     if not raw:
-        raw = "0.9"
+        raw = "0.90"
     try:
         return max(0.0, min(1.0, float(raw)))
     except ValueError:
-        return 0.9
+        return 0.90
+
+
+def _seed_over_chain_share() -> float:
+    """Fraction of idle ticks that seed a new i2v still instead of draining chain phases.
+
+    Applies to both GEX2→FACIAL and i2v→GEX drains so a large facial backlog cannot
+    starve image-based seed families.
+    """
+    raw = os.environ.get("HOURLY_SEED_OVER_CHAIN_SHARE", "0.50").strip()
+    try:
+        return max(0.0, min(1.0, float(raw)))
+    except ValueError:
+        return 0.50
+
+
+def want_seed_over_chain(cursor: int = 0) -> bool:
+    """Sometimes start a new still workflow even when a chain drain is waiting."""
+    share = _seed_over_chain_share()
+    if share <= 0.0:
+        return False
+    return random.Random(int(cursor) ^ 0x51ED).random() < share
+
+
+def _facial_lookback_days() -> Optional[float]:
+    """Only chain facial from GEX2 jobs/outputs within this many days (None = no limit)."""
+    raw = os.environ.get("HOURLY_FACIAL_LOOKBACK_DAYS", "14").strip()
+    if not raw:
+        return 14.0
+    low = raw.lower()
+    if low in {"0", "none", "off", "unlimited", "-1"}:
+        return None
+    try:
+        days = float(raw)
+    except ValueError:
+        return 14.0
+    if days <= 0.0:
+        return None
+    return days
+
+
+def _job_event_ts(job: dict[str, Any], *, video_path: str = "") -> float:
+    """Best-effort timestamp for when a job actually ran (not job-file mtime).
+
+    Maintenance deposit/status rewrites touch ``*.job.json`` mtimes, so facial
+    lookback must use created/completed stamps or the output video mtime.
+    """
+    for key in ("completed_at", "created_at", "updated_at", "deposited_at"):
+        raw = str(job.get(key) or "").strip()
+        if not raw:
+            continue
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            continue
+    if video_path:
+        try:
+            return float(Path(video_path).stat().st_mtime)
+        except OSError:
+            pass
+    return 0.0
 
 
 def _still_popularity_mult(path: str, *, ratings_doc: Optional[dict[str, Any]] = None) -> float:
@@ -195,7 +288,7 @@ def _still_popularity_mult(path: str, *, ratings_doc: Optional[dict[str, Any]] =
     if boost <= 1.0:
         return 1.0
     # Leave brand-new stills to recency; popularity is for established keepers.
-    window_days = max(0.1, float(os.environ.get("HOURLY_RECENT_STILL_DAYS", "14")))
+    window_days = _weekly_still_window_days()
     added = _still_added_ts(path)
     if added is not None:
         age_days = max(0.0, (time.time() - added) / 86400.0)
@@ -2253,13 +2346,13 @@ def plan_hourly_derive(
 # Bias toward still+prompt (i2v) templates so input images get exercised.
 # FB9_GEX (v2v) remains allowed; FB9_GEX2 is intentionally excluded from seeds.
 _DEFAULT_SEED_FAMILY_WEIGHTS: Tuple[Tuple[str, int], ...] = (
-    ("FB9-FaceBlast", 22),
-    ("BounceDanceA", 20),
+    ("FB9-FaceBlast", 26),
+    ("BounceDanceA", 26),
     ("X-KNEEL-FB9", 18),
-    ("FB9_GEX", 15),
+    ("FB9_GEX", 5),
     ("FB8VA4", 8),
-    ("FB8VB2", 7),
-    ("FB8VA5-ZOOMOUT", 5),
+    ("FB8VB2", 6),
+    ("FB8VA5-ZOOMOUT", 6),
     ("Breast-shake-FB8VA5", 5),
 )
 
@@ -2307,15 +2400,14 @@ def _default_job_root(data_root: Optional[Path] = None) -> Path:
     return _default_job_dir(data_root)
 
 
-def find_gex2_needing_facial(
+def list_gex2_needing_facial(
     *,
     data_root: Optional[Path] = None,
     job_dir: Optional[Path] = None,
-) -> Optional[Dict[str, Any]]:
-    """Newest complete GEX2 whose output is not already a FACIAL source_video.
-
-    Returns ``{job_key, video, source_ref}`` (source_ref is the GEX2 parent clip).
-    """
+    now_ts: Optional[float] = None,
+    lookback_days: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """Complete GEX2 jobs whose outputs are not yet FACIAL sources (newest first)."""
     root = job_dir or _default_job_root(data_root)
     facial_keys: Set[str] = set()
     facial_root = root / "FB9_GEX_FACIAL"
@@ -2328,6 +2420,10 @@ def find_gex2_needing_facial(
             src = _job_source_video_path(job)
             if src:
                 facial_keys |= _video_match_keys(src)
+
+    if lookback_days is None:
+        lookback_days = _facial_lookback_days()
+    now = float(now_ts if now_ts is not None else time.time())
 
     cands: List[Tuple[float, str, str, str]] = []
     gex2_root = root / "FB9_GEX2"
@@ -2344,28 +2440,53 @@ def find_gex2_needing_facial(
                 continue
             if facial_keys & _video_match_keys(vid):
                 continue
-            try:
-                mtime = float(path.stat().st_mtime)
-            except OSError:
-                mtime = 0.0
+            event_ts = _job_event_ts(job, video_path=vid)
+            if lookback_days is not None and event_ts > 0.0:
+                age_days = max(0.0, (now - event_ts) / 86400.0)
+                if age_days > float(lookback_days):
+                    continue
             cands.append(
                 (
-                    mtime,
+                    event_ts,
                     str(job.get("job_key") or path.stem),
                     vid,
                     _job_source_video_path(job),
                 )
             )
-    if not cands:
-        return None
     cands.sort(key=lambda t: (t[0], t[1]), reverse=True)
-    _mtime, job_key, vid, ref = cands[0]
-    return {
-        "job_key": job_key,
-        "video": vid,
-        "source_ref": ref,
-        "consumer_family": "FB9_GEX_FACIAL",
-    }
+    return [
+        {
+            "job_key": job_key,
+            "video": vid,
+            "source_ref": ref,
+            "consumer_family": "FB9_GEX_FACIAL",
+        }
+        for _mtime, job_key, vid, ref in cands
+    ]
+
+
+def find_gex2_needing_facial(
+    *,
+    data_root: Optional[Path] = None,
+    job_dir: Optional[Path] = None,
+    now_ts: Optional[float] = None,
+    lookback_days: Optional[float] = None,
+) -> Optional[Dict[str, Any]]:
+    """Newest complete GEX2 whose output is not already a FACIAL source_video.
+
+    Returns ``{job_key, video, source_ref}`` (source_ref is the GEX2 parent clip).
+
+    By default only considers GEX2 jobs within ``HOURLY_FACIAL_LOOKBACK_DAYS``
+    (created/completed/output age — not job-file mtime, which maintenance rewrites).
+    Set that env to ``0``/``none`` to drain the full historical backlog.
+    """
+    cands = list_gex2_needing_facial(
+        data_root=data_root,
+        job_dir=job_dir,
+        now_ts=now_ts,
+        lookback_days=lookback_days,
+    )
+    return cands[0] if cands else None
 
 
 def find_kneel_needing_consumer(
@@ -2448,17 +2569,15 @@ def _image_to_gex_families() -> List[str]:
     return out or list(_IMAGE_TO_GEX_FAMILIES)
 
 
-def find_i2v_needing_gex(
+def list_i2v_needing_gex(
     *,
     data_root: Optional[Path] = None,
     job_dir: Optional[Path] = None,
-) -> Optional[Dict[str, Any]]:
+) -> List[Dict[str, Any]]:
     """
-    Newest complete i2v/still-family deposit not yet used as an FB9_GEX source_video.
+    Complete i2v/still-family deposits not yet used as FB9_GEX source_video.
 
-    Prefers non-Kneel producers when several are ready (see ``_IMAGE_TO_GEX_FAMILIES`` order),
-    then newest job within that preference band.
-    Returns ``{producer_family, job_key, video}`` or None.
+    Ordered like ``find_i2v_needing_gex``: preferred producer families first, newest within band.
     """
     root = job_dir or _default_job_root(data_root)
     gex_sources: Set[str] = set()
@@ -2473,7 +2592,6 @@ def find_i2v_needing_gex(
             if src:
                 gex_sources.add(src)
 
-    # Collect candidates: (pref_rank, sort_key, family, job_key, video)
     cands: List[Tuple[int, str, str, str, str]] = []
     families = _image_to_gex_families()
     for pref, fam in enumerate(families):
@@ -2490,12 +2608,10 @@ def find_i2v_needing_gex(
             vid = _job_chain_output_video(job)
             if not vid:
                 continue
-            # Skip if any sibling output (including old preview) was already extended.
             raw_vids = _job_deposit_videos_raw(job) or [vid]
             if any(v in gex_sources for v in raw_vids):
                 continue
             job_key = str(job.get("job_key") or path.stem)
-            # Prefer newer files; path name is a stable tie-break.
             try:
                 mtime = f"{path.stat().st_mtime:020.6f}"
             except OSError:
@@ -2503,20 +2619,313 @@ def find_i2v_needing_gex(
             cands.append((pref, mtime, fam, job_key, vid))
 
     if not cands:
-        return None
-    # Lowest pref_rank first (FaceBlast before Kneel), then newest mtime.
+        return []
     cands.sort(key=lambda t: (t[0], t[1]), reverse=False)
-    # Within same pref, want newest — re-sort with mtime descending inside pref bands.
-    best_pref = cands[0][0]
-    band = [c for c in cands if c[0] == best_pref]
-    band.sort(key=lambda t: t[1], reverse=True)
-    _pref, _mt, fam, job_key, vid = band[0]
+    # Expand preference bands newest-first so simulation can pop in drain order.
+    out: List[Dict[str, Any]] = []
+    seen_prefs = sorted({c[0] for c in cands})
+    for pref in seen_prefs:
+        band = [c for c in cands if c[0] == pref]
+        band.sort(key=lambda t: t[1], reverse=True)
+        for _pref, _mt, fam, job_key, vid in band:
+            out.append(
+                {
+                    "producer_family": fam,
+                    "job_key": job_key,
+                    "video": vid,
+                    "consumer_family": "FB9_GEX",
+                }
+            )
+    return out
+
+
+def find_i2v_needing_gex(
+    *,
+    data_root: Optional[Path] = None,
+    job_dir: Optional[Path] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Newest complete i2v/still-family deposit not yet used as an FB9_GEX source_video.
+
+    Prefers non-Kneel producers when several are ready (see ``_IMAGE_TO_GEX_FAMILIES`` order),
+    then newest job within that preference band.
+    Returns ``{producer_family, job_key, video}`` or None.
+    """
+    cands = list_i2v_needing_gex(data_root=data_root, job_dir=job_dir)
+    return cands[0] if cands else None
+
+
+def _path_basename(path: Any) -> str:
+    text = str(path or "").strip()
+    if not text:
+        return ""
+    return Path(text).name
+
+
+def _pick_input_summary(pick: Dict[str, Any]) -> str:
+    still = _path_basename(pick.get("source_still") or pick.get("identity_anchor"))
+    video = _path_basename(pick.get("source_video"))
+    if still and video:
+        return f"still={still} video={video}"
+    if still:
+        return f"still={still}"
+    if video:
+        return f"video={video}"
+    return "(no media input)"
+
+
+def summarize_hourly_picks(picks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Aggregate workflow / input variety for a simulated hourly sequence."""
+    from collections import Counter
+
+    by_family: Counter[str] = Counter()
+    by_step: Counter[str] = Counter()
+    by_mode: Counter[str] = Counter()
+    stills: Counter[str] = Counter()
+    videos: Counter[str] = Counter()
+    image_families = set(_FRESH_STILL_FAMILIES) | set(_IMAGE_TO_GEX_FAMILIES)
+    image_based = 0
+    chain = 0
+    seed = 0
+    for p in picks:
+        fam = str(p.get("family") or "?")
+        step = str(p.get("step") or p.get("pick_mode") or "?")
+        mode = str(p.get("pick_mode") or "?")
+        by_family[fam] += 1
+        by_step[step] += 1
+        by_mode[mode] += 1
+        still = _path_basename(p.get("source_still") or p.get("identity_anchor"))
+        video = _path_basename(p.get("source_video"))
+        if still:
+            stills[still] += 1
+        if video:
+            videos[video] += 1
+        if str(p.get("pick_mode") or "") == "chain" or step.startswith("chain_"):
+            chain += 1
+        else:
+            seed += 1
+        if fam in image_families or still:
+            image_based += 1
+    n = max(1, len(picks))
     return {
-        "producer_family": fam,
-        "job_key": job_key,
-        "video": vid,
-        "consumer_family": "FB9_GEX",
+        "count": len(picks),
+        "by_family": dict(by_family.most_common()),
+        "by_step": dict(by_step.most_common()),
+        "by_pick_mode": dict(by_mode.most_common()),
+        "chain_count": chain,
+        "seed_count": seed,
+        "image_based_count": image_based,
+        "image_based_share": round(image_based / n, 3),
+        "unique_source_stills": len(stills),
+        "unique_source_videos": len(videos),
+        "repeated_stills": {k: v for k, v in stills.items() if v > 1},
+        "repeated_videos": {k: v for k, v in videos.most_common(12) if v > 1},
+        "top_stills": dict(stills.most_common(8)),
+        "top_videos": dict(videos.most_common(8)),
     }
+
+
+def simulate_hourly_picks(
+    count: int = 32,
+    *,
+    hourly_state: Optional[Dict[str, Any]] = None,
+    data_root: Optional[Path] = None,
+    job_dir: Optional[Path] = None,
+    advance_cursor_every_tick: bool = True,
+) -> Dict[str, Any]:
+    """
+    Dry-run the next ``count`` hourly fill decisions (no generate/submit).
+
+    Mirrors ``predict_hourly_gex2`` + shell cursor policy: each tick re-rolls
+    seed-over-chain, drains facial then i2v→GEX when not seeding, otherwise
+    plans a seed family step. Consumes chain backlog in-memory so later picks
+    see the effect of earlier chain drains.
+    """
+    data_root = (data_root or _default_data_root()).resolve()
+    job_root = job_dir or _default_job_root(data_root)
+    state = dict(hourly_state or {})
+    cursor = int(state.get("sample_cursor") or 0)
+    facial_q = list_gex2_needing_facial(data_root=data_root, job_dir=job_root)
+    i2v_q = list_i2v_needing_gex(data_root=data_root, job_dir=job_root)
+    facial_start = len(facial_q)
+    i2v_start = len(i2v_q)
+
+    picks: List[Dict[str, Any]] = []
+    for i in range(max(0, int(count))):
+        seed_over = want_seed_over_chain(cursor)
+        pick: Dict[str, Any] = {
+            "index": i + 1,
+            "cursor": cursor,
+            "seed_over_chain": seed_over,
+            "ok": True,
+        }
+        if facial_q and not seed_over:
+            hit = facial_q.pop(0)
+            pick.update(
+                {
+                    "family": "FB9_GEX_FACIAL",
+                    "pick_mode": "chain",
+                    "step": "chain_facial",
+                    "parent_job": hit.get("job_key"),
+                    "source_video": hit.get("video"),
+                    "source_video_ref": hit.get("source_ref"),
+                    "source_still": None,
+                }
+            )
+        elif i2v_q and not seed_over:
+            hit = i2v_q.pop(0)
+            pick.update(
+                {
+                    "family": "FB9_GEX",
+                    "pick_mode": "chain",
+                    "step": "chain_gex_from_i2v",
+                    "parent_job": hit.get("job_key"),
+                    "producer_family": hit.get("producer_family"),
+                    "source_video": hit.get("video"),
+                    "source_still": None,
+                }
+            )
+        else:
+            family = select_seed_family(cursor)
+            plan = plan_hourly_step(cursor=cursor, data_root=data_root, job_dir=job_root, family=family)
+            if plan.get("family"):
+                family = str(plan.get("family"))
+            preview = (plan.get("bindings_preview") or {}) if isinstance(plan.get("bindings_preview"), dict) else {}
+            picks_map = plan.get("picks") if isinstance(plan.get("picks"), dict) else {}
+            still = (
+                preview.get("source_still")
+                or picks_map.get("source_still")
+                or plan.get("source_still")
+                or plan.get("identity_anchor")
+            )
+            video = preview.get("source_video") or picks_map.get("source_video") or plan.get("source_video")
+            prompt = preview.get("prompt_profile") or picks_map.get("prompt_profile")
+            pick.update(
+                {
+                    "family": family,
+                    "pick_mode": plan.get("pick_mode"),
+                    "step": plan.get("step") or plan.get("pick_mode"),
+                    "ok": bool(plan.get("ok")),
+                    "error": plan.get("error"),
+                    "source_still": still,
+                    "source_video": video,
+                    "prompt_profile": prompt,
+                    "combo_key": plan.get("combo_key"),
+                    "rating_kind": plan.get("rating_kind"),
+                    "upgraded_from": plan.get("upgraded_from"),
+                    "identity_anchor": plan.get("identity_anchor"),
+                }
+            )
+        pick["input"] = _pick_input_summary(pick)
+        picks.append(pick)
+        if advance_cursor_every_tick:
+            cursor += 1
+        elif str(pick.get("pick_mode") or "") != "chain":
+            cursor += 1
+
+    summary = summarize_hourly_picks(picks)
+    return {
+        "ok": True,
+        "count": len(picks),
+        "picks": picks,
+        "summary": {
+            **summary,
+            "start_cursor": int(state.get("sample_cursor") or 0),
+            "end_cursor": cursor,
+            "facial_backlog_start": facial_start,
+            "i2v_backlog_start": i2v_start,
+            "facial_backlog_remaining": len(facial_q),
+            "i2v_backlog_remaining": len(i2v_q),
+        },
+        "policy": {
+            "seed_over_chain_share": _seed_over_chain_share(),
+            "facial_lookback_days": _facial_lookback_days(),
+            "advance_cursor_every_tick": advance_cursor_every_tick,
+        },
+    }
+
+
+def format_hourly_picks_table(result: Dict[str, Any]) -> str:
+    """Human-readable table + summary for ``simulate_hourly_picks``."""
+    lines: List[str] = []
+    picks = result.get("picks") if isinstance(result.get("picks"), list) else []
+    lines.append(f"{'#':>3}  {'cursor':>6}  {'family':<22}  {'step':<20}  input")
+    lines.append("-" * 110)
+    for p in picks:
+        if not isinstance(p, dict):
+            continue
+        lines.append(
+            f"{int(p.get('index') or 0):3d}  {int(p.get('cursor') or 0):6d}  "
+            f"{str(p.get('family') or '?'):<22}  {str(p.get('step') or p.get('pick_mode') or '?'):<20}  "
+            f"{p.get('input') or _pick_input_summary(p)}"
+        )
+    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+    policy = result.get("policy") if isinstance(result.get("policy"), dict) else {}
+    lines.append("")
+    lines.append("Summary")
+    lines.append(f"  families: {summary.get('by_family')}")
+    lines.append(f"  steps: {summary.get('by_step')}")
+    lines.append(
+        f"  seed={summary.get('seed_count')} chain={summary.get('chain_count')} "
+        f"image_based={summary.get('image_based_count')} "
+        f"({float(summary.get('image_based_share') or 0.0):.0%})"
+    )
+    lines.append(
+        f"  unique stills={summary.get('unique_source_stills')} "
+        f"unique videos={summary.get('unique_source_videos')}"
+    )
+    if summary.get("repeated_stills"):
+        lines.append(f"  repeated stills: {summary.get('repeated_stills')}")
+    if summary.get("repeated_videos"):
+        lines.append(f"  repeated videos (top): {summary.get('repeated_videos')}")
+    lines.append(
+        f"  policy: seed_over={policy.get('seed_over_chain_share')} "
+        f"facial_lookback_days={policy.get('facial_lookback_days')} "
+        f"advance_cursor_every_tick={policy.get('advance_cursor_every_tick')}"
+    )
+    lines.append(
+        f"  backlog: facial {summary.get('facial_backlog_start')}→{summary.get('facial_backlog_remaining')} "
+        f"i2v→gex {summary.get('i2v_backlog_start')}→{summary.get('i2v_backlog_remaining')}"
+    )
+    return "\n".join(lines)
+
+
+def _pick_input_still_from_members(
+    members: List[Path],
+    *,
+    rng: random.Random,
+    family: str,
+    recent_stills: set[str],
+) -> Tuple[Path, Dict[str, Any]]:
+    """Weighted still pick; ~90% of draws restrict to HOURLY_RECENT_STILL_DAYS (default 7)."""
+    window_days = _weekly_still_window_days()
+    weekly_share = _weekly_still_pick_share()
+    prefer_weekly = rng.random() < weekly_share
+    weekly_members = [p for p in members if _still_within_days(str(p), window_days)]
+    pool = weekly_members if (prefer_weekly and weekly_members) else list(members)
+    old_w = max(0.0, float(os.environ.get("HOURLY_OLD_STILL_WEIGHT", "0.12")))
+
+    weights: List[float] = []
+    fresh_flags: List[bool] = []
+    for path in pool:
+        w = _source_promotion_mult(str(path), family=family)
+        if not _still_within_days(str(path), window_days):
+            w *= old_w
+        used = bool(recent_stills) and _source_in_recent(str(path), recent_stills)
+        if used:
+            w *= 0.02
+        weights.append(w)
+        fresh_flags.append(not used)
+    if any(fresh_flags):
+        weights = [w if fresh else 0.0 for w, fresh in zip(weights, fresh_flags)]
+    picked, _ = _weighted_choice(pool, weights, rng)  # type: ignore[arg-type]
+    picked_path = Path(str(picked))
+    meta = {
+        "weekly_still_window_days": window_days,
+        "weekly_still_preferred": prefer_weekly and bool(weekly_members),
+        "weekly_still_picked": _still_within_days(str(picked_path), window_days),
+    }
+    return picked_path, meta
 
 
 def plan_pool_product_fallback(
@@ -2575,21 +2984,14 @@ def plan_pool_product_fallback(
     recent = _recent_combo_keys(data_root=data_root, family=family)
     recent_stills = _recent_source_basenames(recent)
     picks: Dict[str, Path] = {}
+    still_meta: Dict[str, Any] = {}
     for slot, members in sorted(pool_paths.items()):
         if any(_is_input_still(str(p)) for p in members):
-            weights: List[float] = []
-            fresh_flags: List[bool] = []
-            for path in members:
-                w = _source_promotion_mult(str(path), family=family)
-                used = bool(recent_stills) and _source_in_recent(str(path), recent_stills)
-                if used:
-                    w *= 0.02
-                weights.append(w)
-                fresh_flags.append(not used)
-            if any(fresh_flags):
-                weights = [w if fresh else 0.0 for w, fresh in zip(weights, fresh_flags)]
-            picked, _ = _weighted_choice(members, weights, rng)  # type: ignore[arg-type]
-            picks[slot] = Path(str(picked))
+            picked, meta = _pick_input_still_from_members(
+                members, rng=rng, family=family, recent_stills=recent_stills
+            )
+            picks[slot] = picked
+            still_meta = meta
         else:
             picks[slot] = members[rng.randrange(len(members))]
 
@@ -2613,6 +3015,7 @@ def plan_pool_product_fallback(
         "recipe_count": 0,
         "pool_slots": {slot: len(members) for slot, members in pool_paths.items()},
         "next_cursor": int(cursor) + 1,
+        **still_meta,
     }
 
 
@@ -2959,8 +3362,10 @@ def predict_hourly_gex2(
     data_root = (data_root or _default_data_root()).resolve()
     job_root = _default_job_root(data_root)
 
+    seed_over = want_seed_over_chain(cursor)
+
     need_facial = find_gex2_needing_facial(data_root=data_root, job_dir=job_root)
-    if need_facial:
+    if need_facial and not seed_over:
         return {
             "cursor": cursor,
             "phase_if_idle": "facial",
@@ -2974,7 +3379,7 @@ def predict_hourly_gex2(
         }
 
     need_i2v = find_i2v_needing_gex(data_root=data_root, job_dir=job_root)
-    if need_i2v:
+    if need_i2v and not seed_over:
         return {
             "cursor": cursor,
             "phase_if_idle": "gex_from_i2v",
@@ -3109,7 +3514,7 @@ DEFAULT_HOURLY_SCHEDULE: Dict[str, Any] = {
     "enabled": True,
     "submit_mode": "auto",
     "comfy_queue_min": 1,
-    "comfy_queue_max": 2,
+    "comfy_queue_max": 3,
     "pending_queue_max": 4,
     "last_tick_at": None,
     "updated_at": None,
@@ -3265,7 +3670,7 @@ def queue_advance_decision(
     *,
     pending: int,
     queue_min: int = 1,
-    queue_max: int = 2,
+    queue_max: int = 3,
     factory_pending: int = 0,
     pending_queue_max: int = 4,
     submit_mode: str = "auto",
@@ -3383,6 +3788,20 @@ def main() -> int:
     s.add_argument("--data-root", type=Path, default=None)
     s.add_argument("--family", default="FB9_GEX2")
 
+    sim = sub.add_parser(
+        "simulate-picks",
+        help="Dry-run the next N hourly fills (workflow + source inputs) and print variety summary",
+    )
+    sim.add_argument("--count", type=int, default=32, help="How many future ticks to simulate (default 32)")
+    sim.add_argument("--state", type=Path, default=None, help="hourly-state.json (default under data-root)")
+    sim.add_argument("--data-root", type=Path, default=None)
+    sim.add_argument("--json", action="store_true", help="Emit full JSON instead of a table")
+    sim.add_argument(
+        "--no-advance-chain-cursor",
+        action="store_true",
+        help="Legacy: only advance sample_cursor on seed ticks (not recommended)",
+    )
+
     l = sub.add_parser("list-recipes", help="List replay recipe count for a family")
     l.add_argument("--data-root", type=Path, default=None)
     l.add_argument("--family", default="FB9_GEX2")
@@ -3485,6 +3904,29 @@ def main() -> int:
         fam = select_seed_family(int(cursor))
         print(json.dumps({"cursor": int(cursor), "family": fam}, indent=2))
         return 0
+
+    if args.cmd == "simulate-picks":
+        root = data_root or _default_data_root()
+        state_path = args.state
+        if state_path is None:
+            state_path = root / "shape_factory" / "hourly-state.json"
+        state: Dict[str, Any] = {}
+        if state_path.is_file():
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+            except Exception:
+                state = {}
+        result = simulate_hourly_picks(
+            int(args.count),
+            hourly_state=state,
+            data_root=root,
+            advance_cursor_every_tick=not bool(args.no_advance_chain_cursor),
+        )
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        else:
+            print(format_hourly_picks_table(result))
+        return 0 if result.get("ok") else 1
 
     if args.cmd == "need-facial":
         hit = find_gex2_needing_facial(data_root=data_root)

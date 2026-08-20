@@ -696,10 +696,242 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
         }
         i2v_w = sum(w for n, w in _DEFAULT_SEED_FAMILY_WEIGHTS if n in i2v)
         total_w = sum(w for _n, w in _DEFAULT_SEED_FAMILY_WEIGHTS)
-        self.assertGreater(i2v_w, total_w // 2)
+        self.assertEqual(total_w, 100)
+        self.assertGreaterEqual(i2v_w, 88)
+        starter_w = sum(w for n, w in _DEFAULT_SEED_FAMILY_WEIGHTS if n in {"FB9-FaceBlast", "BounceDanceA"})
+        self.assertGreaterEqual(starter_w, 48)
         picked = {select_seed_family(i) for i in range(80)}
         self.assertTrue(picked & {"FB9-FaceBlast", "X-KNEEL-FB9", "BounceDanceA", "FB8VA4"})
         self.assertNotIn("FB9_GEX2", picked)
+
+    def test_want_seed_over_chain_respects_share(self) -> None:
+        import os
+
+        from shape_factory_hourly import want_seed_over_chain
+
+        prev = os.environ.get("HOURLY_SEED_OVER_CHAIN_SHARE")
+        try:
+            os.environ["HOURLY_SEED_OVER_CHAIN_SHARE"] = "0"
+            self.assertFalse(want_seed_over_chain(0))
+            self.assertFalse(want_seed_over_chain(99))
+            os.environ["HOURLY_SEED_OVER_CHAIN_SHARE"] = "1"
+            self.assertTrue(want_seed_over_chain(0))
+            self.assertTrue(want_seed_over_chain(99))
+            os.environ["HOURLY_SEED_OVER_CHAIN_SHARE"] = "0.25"
+            hits = sum(1 for i in range(80) if want_seed_over_chain(i))
+            self.assertGreater(hits, 5)
+            self.assertLess(hits, 50)
+            os.environ["HOURLY_SEED_OVER_CHAIN_SHARE"] = "0.50"
+            hits50 = sum(1 for i in range(80) if want_seed_over_chain(i))
+            self.assertGreater(hits50, 20)
+            self.assertLess(hits50, 60)
+        finally:
+            if prev is None:
+                os.environ.pop("HOURLY_SEED_OVER_CHAIN_SHARE", None)
+            else:
+                os.environ["HOURLY_SEED_OVER_CHAIN_SHARE"] = prev
+
+    def test_facial_lookback_skips_ancient_gex2(self) -> None:
+        import os
+        import tempfile
+        from datetime import datetime, timedelta, timezone
+
+        from shape_factory_hourly import find_gex2_needing_facial
+
+        prev = os.environ.get("HOURLY_FACIAL_LOOKBACK_DAYS")
+        try:
+            os.environ["HOURLY_FACIAL_LOOKBACK_DAYS"] = "14"
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                gex2 = root / "FB9_GEX2"
+                facial = root / "FB9_GEX_FACIAL"
+                gex2.mkdir()
+                facial.mkdir()
+                now = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
+                old = (now - timedelta(days=40)).isoformat()
+                recent = (now - timedelta(days=3)).isoformat()
+                (gex2 / "old.job.json").write_text(
+                    json.dumps(
+                        {
+                            "job_key": "gex2-old",
+                            "status": "complete",
+                            "created_at": old,
+                            "deposit": {"videos": ["/tmp/gex2_old.mp4"]},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                self.assertIsNone(
+                    find_gex2_needing_facial(job_dir=root, now_ts=now.timestamp())
+                )
+                (gex2 / "new.job.json").write_text(
+                    json.dumps(
+                        {
+                            "job_key": "gex2-new",
+                            "status": "complete",
+                            "created_at": recent,
+                            "deposit": {"videos": ["/tmp/gex2_new.mp4"]},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                hit = find_gex2_needing_facial(job_dir=root, now_ts=now.timestamp())
+                self.assertIsNotNone(hit)
+                assert hit is not None
+                self.assertEqual(hit.get("job_key"), "gex2-new")
+                os.environ["HOURLY_FACIAL_LOOKBACK_DAYS"] = "none"
+                hit_all = find_gex2_needing_facial(job_dir=root, now_ts=now.timestamp())
+                self.assertIsNotNone(hit_all)
+                assert hit_all is not None
+                # Newest by event ts wins when unlimited.
+                self.assertEqual(hit_all.get("job_key"), "gex2-new")
+        finally:
+            if prev is None:
+                os.environ.pop("HOURLY_FACIAL_LOOKBACK_DAYS", None)
+            else:
+                os.environ["HOURLY_FACIAL_LOOKBACK_DAYS"] = prev
+
+    def test_predict_skips_facial_when_seed_over_chain(self) -> None:
+        import os
+        import tempfile
+        from unittest.mock import patch
+
+        from shape_factory_hourly import predict_hourly_gex2, select_seed_family
+
+        prev = os.environ.get("HOURLY_SEED_OVER_CHAIN_SHARE")
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                jobs = root / "shape_factory" / "jobs"
+                gex2 = jobs / "FB9_GEX2"
+                facial = jobs / "FB9_GEX_FACIAL"
+                for d in (gex2, facial):
+                    d.mkdir(parents=True)
+                (gex2 / "a.job.json").write_text(
+                    json.dumps(
+                        {
+                            "job_key": "gex2-a",
+                            "status": "complete",
+                            "created_at": "2026-08-18T00:00:00+00:00",
+                            "deposit": {"videos": ["/tmp/gex2_out.mp4"]},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                state = {"sample_cursor": 7, "phase": "idle"}
+                os.environ["HOURLY_SEED_OVER_CHAIN_SHARE"] = "0"
+                with patch(
+                    "shape_factory_hourly._default_job_root",
+                    return_value=jobs,
+                ), patch(
+                    "shape_factory_hourly.plan_hourly_step",
+                    return_value={
+                        "ok": True,
+                        "pick_mode": "pool_product",
+                        "step": "pool_product",
+                        "bindings_preview": {"source_still": "/tmp/still.jpeg"},
+                    },
+                ):
+                    blocked = predict_hourly_gex2(state, data_root=root)
+                    self.assertEqual(blocked.get("family"), "FB9_GEX_FACIAL")
+                    self.assertEqual(blocked.get("step"), "chain_facial")
+
+                    os.environ["HOURLY_SEED_OVER_CHAIN_SHARE"] = "1"
+                    seeded = predict_hourly_gex2(state, data_root=root)
+                    self.assertEqual(seeded.get("family"), select_seed_family(7))
+                    self.assertEqual(seeded.get("step"), "pool_product")
+                    self.assertEqual(seeded.get("source_still"), "/tmp/still.jpeg")
+        finally:
+            if prev is None:
+                os.environ.pop("HOURLY_SEED_OVER_CHAIN_SHARE", None)
+            else:
+                os.environ["HOURLY_SEED_OVER_CHAIN_SHARE"] = prev
+
+    def test_simulate_hourly_picks_reports_variety(self) -> None:
+        import os
+        import tempfile
+        from unittest.mock import patch
+
+        from shape_factory_hourly import format_hourly_picks_table, simulate_hourly_picks
+
+        prev = os.environ.get("HOURLY_SEED_OVER_CHAIN_SHARE")
+        prev_lb = os.environ.get("HOURLY_FACIAL_LOOKBACK_DAYS")
+        try:
+            os.environ["HOURLY_SEED_OVER_CHAIN_SHARE"] = "0.5"
+            os.environ["HOURLY_FACIAL_LOOKBACK_DAYS"] = "14"
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                jobs = root / "shape_factory" / "jobs"
+                gex2 = jobs / "FB9_GEX2"
+                facial = jobs / "FB9_GEX_FACIAL"
+                bounce = jobs / "BounceDanceA"
+                for d in (gex2, facial, bounce):
+                    d.mkdir(parents=True)
+                for i in range(3):
+                    (gex2 / f"g{i}.job.json").write_text(
+                        json.dumps(
+                            {
+                                "job_key": f"gex2-{i}",
+                                "status": "complete",
+                                "created_at": "2026-08-18T00:00:00+00:00",
+                                "deposit": {"videos": [f"/tmp/gex2_{i}.mp4"]},
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                (bounce / "b.job.json").write_text(
+                    json.dumps(
+                        {
+                            "job_key": "bounce-1",
+                            "status": "complete",
+                            "deposit": {"videos": ["/tmp/bounce.mp4"]},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+                def _fake_plan(*, cursor: int = 0, family: str = "", **_kwargs):
+                    return {
+                        "ok": True,
+                        "pick_mode": "pool_product",
+                        "step": "pool_product",
+                        "family": family,
+                        "bindings_preview": {
+                            "source_still": f"/tmp/still-{family}-{cursor}.jpeg",
+                            "prompt_profile": f"/tmp/prompt-{family}.json",
+                        },
+                        "combo_key": f"still-{family}-{cursor}",
+                    }
+
+                with patch("shape_factory_hourly.plan_hourly_step", side_effect=_fake_plan), patch(
+                    "shape_factory_hourly._default_job_root",
+                    return_value=jobs,
+                ):
+                    result = simulate_hourly_picks(
+                        16,
+                        hourly_state={"sample_cursor": 100},
+                        data_root=root,
+                    )
+                self.assertTrue(result.get("ok"))
+                self.assertEqual(result["count"], 16)
+                summary = result["summary"]
+                self.assertEqual(summary["facial_backlog_start"], 3)
+                self.assertGreaterEqual(summary["seed_count"], 4)
+                self.assertGreaterEqual(summary["image_based_count"], 4)
+                families = set(summary["by_family"])
+                self.assertTrue(families & {"FB9_GEX_FACIAL", "FB9_GEX", "FB9-FaceBlast", "BounceDanceA", "X-KNEEL-FB9"})
+                table = format_hourly_picks_table(result)
+                self.assertIn("Summary", table)
+                self.assertIn("FB9", table)
+        finally:
+            if prev is None:
+                os.environ.pop("HOURLY_SEED_OVER_CHAIN_SHARE", None)
+            else:
+                os.environ["HOURLY_SEED_OVER_CHAIN_SHARE"] = prev
+            if prev_lb is None:
+                os.environ.pop("HOURLY_FACIAL_LOOKBACK_DAYS", None)
+            else:
+                os.environ["HOURLY_FACIAL_LOOKBACK_DAYS"] = prev_lb
 
     def test_still_recency_mult_boosts_fresh_input_images(self) -> None:
         import os
@@ -727,10 +959,13 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
                 self.assertGreater(_still_recency_mult(str(fresh), now_ts=now), 3.0)
                 self.assertEqual(_still_recency_mult(str(stale), now_ts=now), 1.0)
                 self.assertEqual(_still_recency_mult("/tmp/og/clip.mp4", now_ts=now), 1.0)
-                # BounceDance uses a stronger fresh-still boost.
+                # i2v starters use a stronger fresh-still boost than v2v / untagged.
                 bounce = _still_recency_mult(str(fresh), now_ts=now, family="BounceDanceA")
-                plain = _still_recency_mult(str(fresh), now_ts=now, family="FB9-FaceBlast")
-                self.assertGreater(bounce, plain)
+                faceblast = _still_recency_mult(str(fresh), now_ts=now, family="FB9-FaceBlast")
+                generic = _still_recency_mult(str(fresh), now_ts=now, family="FB9_GEX")
+                self.assertGreater(bounce, generic)
+                self.assertGreater(faceblast, generic)
+                self.assertEqual(bounce, faceblast)
         finally:
             if prev_b is None:
                 os.environ.pop("HOURLY_RECENT_STILL_BOOST", None)
@@ -911,6 +1146,94 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
                 os.environ.pop("HOURLY_INPUT_STILL_CATALOG", None)
             else:
                 os.environ["HOURLY_INPUT_STILL_CATALOG"] = prev_cat
+
+    def test_pool_product_prefers_weekly_still(self) -> None:
+        import os
+        import tempfile
+        import time
+        from pathlib import Path
+
+        from shape_factory_hourly import plan_pool_product_fallback
+
+        prev_cat = os.environ.get("HOURLY_INPUT_STILL_CATALOG")
+        prev_share = os.environ.get("HOURLY_WEEKLY_STILL_SHARE")
+        prev_days = os.environ.get("HOURLY_RECENT_STILL_DAYS")
+        try:
+            os.environ["HOURLY_INPUT_STILL_CATALOG"] = "0"
+            os.environ["HOURLY_WEEKLY_STILL_SHARE"] = "1.0"
+            os.environ["HOURLY_RECENT_STILL_DAYS"] = "7"
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                family = "BounceDanceA"
+                (root / "shapes").mkdir()
+                (root / "pools" / family / "prompts").mkdir(parents=True)
+                old = root / "input" / "SSSold.jpeg"
+                recent = root / "input" / "SSSnew.jpeg"
+                old.parent.mkdir(parents=True)
+                old.write_bytes(b"old")
+                recent.write_bytes(b"new")
+                now = time.time()
+                os.utime(old, (now - 14 * 86400, now - 14 * 86400))
+                os.utime(recent, (now - 86400, now - 86400))
+                prompt = root / "pools" / family / "prompts" / "catalog-default.json"
+                prompt.write_text("{}", encoding="utf-8")
+                (root / "shapes" / f"{family}.shape.yaml").write_text(
+                    f"family_slug: {family}\n"
+                    "requires:\n"
+                    "  - slot: source_still\n"
+                    "  - slot: prompt_profile\n",
+                    encoding="utf-8",
+                )
+                (root / "pools" / family / "pools.yaml").write_text(
+                    "pools:\n"
+                    "  source_still:\n"
+                    "    slot: source_still\n"
+                    "    members:\n"
+                    f"      - glob: {old.parent}/*.jpeg\n"
+                    "  prompt_profile:\n"
+                    "    slot: prompt_profile\n"
+                    "    members:\n"
+                    f"      - dir: {prompt.parent}\n"
+                    '        ext: [".json"]\n',
+                    encoding="utf-8",
+                )
+                plan = plan_pool_product_fallback(cursor=11, data_root=root, family=family)
+                self.assertTrue(plan.get("ok"), plan)
+                self.assertEqual(Path(plan["picks"]["source_still"]).name, "SSSnew.jpeg")
+                self.assertTrue(plan.get("weekly_still_preferred"))
+                self.assertTrue(plan.get("weekly_still_picked"))
+        finally:
+            for key, prev in (
+                ("HOURLY_INPUT_STILL_CATALOG", prev_cat),
+                ("HOURLY_WEEKLY_STILL_SHARE", prev_share),
+                ("HOURLY_RECENT_STILL_DAYS", prev_days),
+            ):
+                if prev is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = prev
+
+    def test_fresh_still_share_defaults_to_ninety_percent(self) -> None:
+        import os
+
+        from shape_factory_hourly import _fresh_still_share, _weekly_still_pick_share
+
+        prev_f = os.environ.get("HOURLY_FRESH_STILL_SHARE")
+        prev_w = os.environ.get("HOURLY_WEEKLY_STILL_SHARE")
+        try:
+            os.environ.pop("HOURLY_FRESH_STILL_SHARE", None)
+            os.environ.pop("HOURLY_WEEKLY_STILL_SHARE", None)
+            self.assertAlmostEqual(_fresh_still_share("BounceDanceA"), 0.90)
+            self.assertAlmostEqual(_weekly_still_pick_share(), 0.90)
+        finally:
+            if prev_f is None:
+                os.environ.pop("HOURLY_FRESH_STILL_SHARE", None)
+            else:
+                os.environ["HOURLY_FRESH_STILL_SHARE"] = prev_f
+            if prev_w is None:
+                os.environ.pop("HOURLY_WEEKLY_STILL_SHARE", None)
+            else:
+                os.environ["HOURLY_WEEKLY_STILL_SHARE"] = prev_w
 
     def test_picks_from_job_uses_embedded_prompt_text(self) -> None:
         import tempfile

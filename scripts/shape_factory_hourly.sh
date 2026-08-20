@@ -2,7 +2,15 @@
 # Shape-factory maintenance + optional fill, gated by hourly-schedule.json.
 # Pending drain (shape_factory_pending_drain) owns pushing pending onto Comfy when
 # this tick leaves jobs pending (Comfy full / submit_mode=pending).
-# Priority when filling: GEX2→FACIAL (drain), i2v→FB9_GEX (FaceBlast/BounceDance/Kneel/…), then seed.
+# Priority when filling: GEX2→FACIAL (recent lookback), then usually i2v→FB9_GEX
+# (FaceBlast/BounceDance/Kneel/…), then seed. HOURLY_SEED_OVER_CHAIN_SHARE
+# (default 0.50) occasionally seeds a new still workflow instead of draining either
+# chain phase — otherwise a large facial backlog starves image-based templates.
+# HOURLY_FACIAL_LOOKBACK_DAYS (default 14) ignores ancient GEX2 jobs for facial drain.
+# sample_cursor advances on every fill tick (chain or seed) so seed-over re-rolls.
+# After hourly policy changes, dry-run variety with:
+#   python3 workspace/scripts/shape_factory_hourly.py simulate-picks --count 32
+# i2v hourlies target ~90% fresh input stills from the last week (see HOURLY_* below).
 # Kneel→GEX2 is disabled — hourlies do not seed or chain into FB9_GEX2.
 # Install timer: bash scripts/install-shape-factory-hourly.sh
 set -euo pipefail
@@ -18,7 +26,17 @@ COMFY="${COMFY:-http://127.0.0.1:8188}"
 ADVANCE_CHAIN="${ADVANCE_CHAIN:-1}"
 DEV_CHAIN="${DEV_CHAIN:-0}"
 HOURLY_PREDICTED_SHARE="${HOURLY_PREDICTED_SHARE:-0.35}"
-export HOURLY_PREDICTED_SHARE
+HOURLY_FRESH_STILL_SHARE="${HOURLY_FRESH_STILL_SHARE:-0.90}"
+HOURLY_RECENT_STILL_DAYS="${HOURLY_RECENT_STILL_DAYS:-7}"
+HOURLY_SEED_OVER_CHAIN_SHARE="${HOURLY_SEED_OVER_CHAIN_SHARE:-0.50}"
+HOURLY_FACIAL_LOOKBACK_DAYS="${HOURLY_FACIAL_LOOKBACK_DAYS:-14}"
+# Status walks every complete job with ffprobe; skip by default so fills stay on cadence.
+HOURLY_SKIP_STATUS="${HOURLY_SKIP_STATUS:-1}"
+HOURLY_MAINT_TIMEOUT_SEC="${HOURLY_MAINT_TIMEOUT_SEC:-90}"
+HOURLY_STATUS_TIMEOUT_SEC="${HOURLY_STATUS_TIMEOUT_SEC:-60}"
+export HOURLY_PREDICTED_SHARE HOURLY_FRESH_STILL_SHARE HOURLY_RECENT_STILL_DAYS
+export HOURLY_SEED_OVER_CHAIN_SHARE HOURLY_FACIAL_LOOKBACK_DAYS
+export HOURLY_SKIP_STATUS HOURLY_MAINT_TIMEOUT_SEC HOURLY_STATUS_TIMEOUT_SEC
 
 # Families maintained every tick (deposit / submit / status).
 MAINT_FAMILIES=(FB9_GEX2 FB9_GEX2_identity_anchor FB9_GEX_FACIAL FB9_GEX X-KNEEL-FB9 FB9-FaceBlast BounceDanceA FB8VA4 FB8VB2 FB8VA5-ZOOMOUT Breast-shake-FB8VA5)
@@ -96,6 +114,29 @@ maybe_submit() {
   fi
 }
 
+run_maintenance() {
+  # Deposit/status after fill (or when skipping fill). Timeouts keep one hung family
+  # from blocking the systemd oneshot for hours.
+  local slots="${1:-0}"
+  log "maintenance start submit_slots=$slots skip_status=$HOURLY_SKIP_STATUS timeout=${HOURLY_MAINT_TIMEOUT_SEC}s"
+  (
+    cd "$SCRIPTS"
+    for fam in "${MAINT_FAMILIES[@]}"; do
+      timeout "${HOURLY_MAINT_TIMEOUT_SEC}" python3 shape_factory.py deposit --quiet --family "$fam" >> "$LOG" 2>&1 || true
+      if [ "$slots" -gt 0 ]; then
+        timeout "${HOURLY_MAINT_TIMEOUT_SEC}" python3 shape_factory.py submit --pending-only --quiet --family "$fam" --limit "$slots" >> "$LOG" 2>&1 || true
+        read -r RUN PEND < <(queue_counts) || true
+        slots=$(policy_field "$(queue_policy "${PEND:-0}" 0)" submit_slots)
+        slots=${slots:-0}
+      fi
+      if [ "$HOURLY_SKIP_STATUS" != "1" ]; then
+        timeout "${HOURLY_STATUS_TIMEOUT_SEC}" python3 shape_factory.py status --quiet --family "$fam" >> "$LOG" 2>&1 || true
+      fi
+    done
+  )
+  log "maintenance done"
+}
+
 log "=== hourly tick ==="
 
 SCHEDULE_JSON=$(load_schedule)
@@ -122,47 +163,32 @@ STATE_JSON=$(read_state)
 PHASE=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('phase','idle'))" "$STATE_JSON")
 CURSOR=$(python3 -c "import json,sys; print(int(json.loads(sys.argv[1]).get('sample_cursor',0)))" "$STATE_JSON")
 
-read -r RUN PEND < <(queue_counts)
-# Maintenance may still push existing pending; factory_pending=0 here so
-# submit_slots only reflect Comfy waiting room (drain owns priority).
-SUBMIT_SLOTS=$(policy_field "$(queue_policy "$PEND" 0)" submit_slots)
-SUBMIT_SLOTS=${SUBMIT_SLOTS:-0}
-
 INBOX_JSON=$(cd "$SCRIPTS" && python3 ingest_windows_input_inbox.py --ensure --apply --inbox "${WINDOWS_INPUT_INBOX:-/mnt/e/comfyui-runpod-inbox}" --dest "${COMFYUI_BIND_INPUT_DIR:-/home/yuji/comfyui-runpod-data/input}" 2>>"$LOG" || true)
 log "windows-inbox ${INBOX_JSON:-failed}"
 STILL_SCAN=$(cd "$SCRIPTS" && python3 shape_factory_hourly.py input-stills-scan --data-root "$REPO/.data" 2>>"$LOG" || true)
 log "input-stills-scan ${STILL_SCAN:-failed}"
 
-(
-  cd "$SCRIPTS"
-  for fam in "${MAINT_FAMILIES[@]}"; do
-    python3 shape_factory.py deposit --quiet --family "$fam" >> "$LOG" 2>&1 || true
-    if [ "$SUBMIT_SLOTS" -gt 0 ]; then
-      python3 shape_factory.py submit --pending-only --quiet --family "$fam" --limit "$SUBMIT_SLOTS" >> "$LOG" 2>&1 || true
-      read -r RUN PEND < <(queue_counts)
-      SUBMIT_SLOTS=$(policy_field "$(queue_policy "$PEND" 0)" submit_slots)
-      SUBMIT_SLOTS=${SUBMIT_SLOTS:-0}
-    fi
-    python3 shape_factory.py status --quiet --family "$fam" >> "$LOG" 2>&1 || true
-  done
-)
-
+# Fill first so heavy deposit/status cannot starve image-based seeds for hours.
 read -r RUN PEND < <(queue_counts)
 FACTORY_PENDING=$(factory_pending_count)
 POLICY_JSON=$(queue_policy "$PEND" "$FACTORY_PENDING")
 ADVANCE=$(policy_field "$POLICY_JSON" advance)
 REASON=$(policy_field "$POLICY_JSON" reason)
 DEST=$(policy_field "$POLICY_JSON" destination)
+SUBMIT_SLOTS=$(policy_field "$POLICY_JSON" submit_slots)
+SUBMIT_SLOTS=${SUBMIT_SLOTS:-0}
 log "comfy queue running=$RUN waiting=$PEND factory_pending=$FACTORY_PENDING min=$HOURLY_QUEUE_MIN max=$HOURLY_QUEUE_MAX pending_max=$HOURLY_PENDING_MAX mode=$HOURLY_SUBMIT_MODE advance=$ADVANCE dest=$DEST ($REASON)"
 
 if [ "$ADVANCE" != "True" ]; then
   log "skip hourly fill (phase=$PHASE reason=$REASON)"
+  run_maintenance "$SUBMIT_SLOTS"
   mark_tick
   exit 0
 fi
 
 if [ "$ADVANCE_CHAIN" != "1" ]; then
   log "ADVANCE_CHAIN=0 — maintenance only"
+  run_maintenance "$SUBMIT_SLOTS"
   mark_tick
   exit 0
 fi
@@ -174,9 +200,16 @@ HOURLY_PREFIX_ROOT="${HOURLY_PREFIX_ROOT:-og/%date:yyyy-MM-dd%/hourly}"
 HOURLY_JOB_KEY_PREFIX="${HOURLY_JOB_KEY_PREFIX:-hourly}"
 HOURLY_SUFFIX="_$(date -u +%Y%m%d%H%M)"
 
-# Phase 1: GEX2 complete without FACIAL child
+# Phase 1: recent GEX2 complete without FACIAL child
 NEED_FACIAL_JSON=$(cd "$SCRIPTS" && python3 shape_factory_hourly.py need-facial --data-root "$REPO/.data")
 NEED_FACIAL_KEY=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('job_key') or '')" "$NEED_FACIAL_JSON")
+if [ -n "$NEED_FACIAL_KEY" ]; then
+  SEED_OVER=$(cd "$SCRIPTS" && python3 -c "from shape_factory_hourly import want_seed_over_chain; import sys; print('1' if want_seed_over_chain(int(sys.argv[1])) else '0')" "$CURSOR")
+  if [ "$SEED_OVER" = "1" ]; then
+    log "phase=seed — skip facial this tick (HOURLY_SEED_OVER_CHAIN_SHARE) pending=$NEED_FACIAL_KEY"
+    NEED_FACIAL_KEY=""
+  fi
+fi
 if [ -n "$NEED_FACIAL_KEY" ]; then
   NEED_FACIAL_VID=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('video') or '')" "$NEED_FACIAL_JSON")
   NEED_FACIAL_REF=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('source_ref') or '')" "$NEED_FACIAL_JSON")
@@ -206,26 +239,38 @@ PY
     maybe_submit FB9_GEX_FACIAL "$DEST"
   )
   rm -f "$BIND_FACIAL"
-  python3 - "$STATE_JSON" "$NEED_FACIAL_KEY" "$NEED_FACIAL_VID" "$NEED_FACIAL_REF" "$STATE" <<'PY'
+  python3 - "$STATE_JSON" "$NEED_FACIAL_KEY" "$NEED_FACIAL_VID" "$NEED_FACIAL_REF" "$STATE" "$CURSOR" <<'PY'
 import json, sys
 from pathlib import Path
 data = json.loads(sys.argv[1])
+cursor = int(sys.argv[6])
 data["phase"] = "facial_queued"
 data["last_family"] = "FB9_GEX_FACIAL"
 data["last_pick_mode"] = "chain"
+data["last_step"] = "chain_facial"
 data["last_gex2_job"] = sys.argv[2]
 data["last_gex2_video"] = sys.argv[3]
 data["last_gex2_source_ref"] = sys.argv[4]
+# Advance cursor on chain ticks so HOURLY_SEED_OVER_CHAIN_SHARE re-rolls next hour.
+data["sample_cursor"] = cursor + 1
 Path(sys.argv[5]).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
   mark_tick
-  log "facial step queued dest=$DEST"
+  log "facial step queued dest=$DEST (next cursor=$((CURSOR + 1)))"
+  run_maintenance 0
   exit 0
 fi
 
 # Phase 2: i2v/still-family complete without FB9_GEX child (FaceBlast, BounceDanceA, Kneel, …)
 NEED_I2V_JSON=$(cd "$SCRIPTS" && python3 shape_factory_hourly.py need-gex-from-i2v --data-root "$REPO/.data")
 NEED_I2V_KEY=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('job_key') or '')" "$NEED_I2V_JSON")
+if [ -n "$NEED_I2V_KEY" ]; then
+  SEED_OVER=$(cd "$SCRIPTS" && python3 -c "from shape_factory_hourly import want_seed_over_chain; import sys; print('1' if want_seed_over_chain(int(sys.argv[1])) else '0')" "$CURSOR")
+  if [ "$SEED_OVER" = "1" ]; then
+    log "phase=seed — skip gex_from_i2v this tick (HOURLY_SEED_OVER_CHAIN_SHARE) pending=$NEED_I2V_KEY"
+    NEED_I2V_KEY=""
+  fi
+fi
 if [ -n "$NEED_I2V_KEY" ]; then
   NEED_I2V_FAM=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('producer_family') or '')" "$NEED_I2V_JSON")
   NEED_I2V_VID=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('video') or '')" "$NEED_I2V_JSON")
@@ -252,20 +297,24 @@ PY
     maybe_submit FB9_GEX "$DEST"
   )
   rm -f "$BIND_I2V"
-  python3 - "$STATE_JSON" "$NEED_I2V_KEY" "$NEED_I2V_FAM" "$NEED_I2V_VID" "$STATE" <<'PY'
+  python3 - "$STATE_JSON" "$NEED_I2V_KEY" "$NEED_I2V_FAM" "$NEED_I2V_VID" "$STATE" "$CURSOR" <<'PY'
 import json, sys
 from pathlib import Path
 data = json.loads(sys.argv[1])
+cursor = int(sys.argv[6])
 data["phase"] = "gex_from_i2v_queued"
 data["last_family"] = "FB9_GEX"
 data["last_pick_mode"] = "chain"
+data["last_step"] = "chain_gex_from_i2v"
 data["last_i2v_job"] = sys.argv[2]
 data["last_i2v_producer"] = sys.argv[3]
 data["last_i2v_video"] = sys.argv[4]
+data["sample_cursor"] = cursor + 1
 Path(sys.argv[5]).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
   mark_tick
-  log "gex-from-i2v step queued producer=$NEED_I2V_FAM dest=$DEST"
+  log "gex-from-i2v step queued producer=$NEED_I2V_FAM dest=$DEST (next cursor=$((CURSOR + 1)))"
+  run_maintenance 0
   exit 0
 fi
 
@@ -278,6 +327,7 @@ if [ "$PLAN_OK" != "True" ]; then
   PLAN_ERR=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('error',''))" "$PLAN_JSON")
   log "seed skipped family=$FAMILY (${PLAN_ERR:-no plan})"
   mark_tick
+  run_maintenance "$SUBMIT_SLOTS"
   exit 0
 fi
 
@@ -364,3 +414,5 @@ if [ "$GEN_RC" != "0" ]; then
 else
   log "seed queued family=$FAMILY pick_mode=$PICK_MODE rating_kind=${RATING_KIND:-?} dest=$DEST (next cursor=$NEXT_CURSOR)"
 fi
+run_maintenance 0
+exit 0
