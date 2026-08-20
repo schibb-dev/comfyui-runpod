@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  fetchDiscoveryAssetRatings,
   fetchDiscoveryRatingSampler,
   fetchDispositionCatalog,
   fetchDispositionSuggest,
@@ -12,6 +11,16 @@ import {
   setAssetRating,
   toggleAssetDisposition,
 } from "./api";
+import {
+  patchCachedAppetite,
+  patchCachedDisposition,
+  patchCachedQuality,
+  peekAssetRatings,
+  prefetchAssetRatings,
+  ratingsSeedFromCandidate,
+  rememberAssetRatings,
+  revalidateAssetRatings,
+} from "./assetRatingsCache";
 import { cachedEnsureThumbUrl, enqueueEnsureThumb } from "./ensureThumbQueue";
 import { AppetiteBar, APPETITE_FACET_CYCLE, APPETITE_KEYMAP } from "./AppetiteBar";
 import { DispositionBar, DispositionReasonsPanel, DispositionRouter } from "./DispositionBar";
@@ -238,6 +247,46 @@ function applyTriageFromRatings(
   setTriagePassCount(r.triage_pass_count ?? 0);
 }
 
+function applyJudgmentFromRatings(
+  r: DiscoveryAssetRatingsResponse,
+  candidate: DiscoveryRatingSamplerCandidate,
+  setters: {
+    setExplicitRating: (n: number | null) => void;
+    setDerivedRating: (n: number | null) => void;
+    setDerivedSourceLabel: (s: string | null) => void;
+    setQualityAxes: (a: QualityAxesMap) => void;
+    setAppetite: (a: Appetite | null) => void;
+    setAppetiteFacet: (f: AppetiteFacet) => void;
+    setDispositionMarkers: (m: string[]) => void;
+    setDispositionUpdatedAt: (t: string | null) => void;
+    setDispositionLastOutcome: (o: DispositionOutcome | null) => void;
+    setReasonDetail: (d: Record<string, DispositionReasonDetail>) => void;
+    setLastTriagedAt: (t: string | null) => void;
+    setTriagePassCount: (n: number) => void;
+  },
+  markBatchRated: (relpath: string, axes: QualityAxesMap, app: Appetite | null | undefined) => void,
+) {
+  applyQualityFromRatings(
+    r,
+    setters.setExplicitRating,
+    setters.setDerivedRating,
+    setters.setDerivedSourceLabel,
+    setters.setQualityAxes,
+  );
+  setters.setAppetite(r.appetite ?? candidate.appetite ?? null);
+  if (r.appetite_facet) setters.setAppetiteFacet(r.appetite_facet);
+  else if (candidate.appetite_facet) setters.setAppetiteFacet(candidate.appetite_facet);
+  applyDispositionFromRatings(
+    r,
+    setters.setDispositionMarkers,
+    setters.setDispositionUpdatedAt,
+    setters.setDispositionLastOutcome,
+    setters.setReasonDetail,
+  );
+  applyTriageFromRatings(r, setters.setLastTriagedAt, setters.setTriagePassCount);
+  markBatchRated(candidate.relpath, axesFromRatings(r), (r.appetite as Appetite | null) ?? candidate.appetite ?? null);
+}
+
 function applyDispositionFromRatings(
   r: DiscoveryAssetRatingsResponse,
   setMarkers: (m: string[]) => void,
@@ -249,6 +298,79 @@ function applyDispositionFromRatings(
   setUpdatedAt(r.disposition_updated_at ?? null);
   setLastOutcome(r.disposition_last_outcome ?? null);
   setReasonDetail?.(r.disposition_reason_detail ?? {});
+}
+
+function reasonIdsForProcess(reasons: DispositionCatalogMarker[], process: string): string[] {
+  const proc = process.trim();
+  return reasons.filter((r) => String(r.process || "").trim() === proc).map((r) => r.id);
+}
+
+/** Mirror server toggle rules so disposition tiles update before the POST returns. */
+function optimisticDispositionToggle(
+  markers: string[],
+  reasonDetail: Record<string, DispositionReasonDetail>,
+  entries: DispositionCatalogMarker[],
+  reasons: DispositionCatalogMarker[],
+  markerId: string,
+  on: boolean,
+  extra?: { note?: string; modifiers?: string[] },
+): { markers: string[]; reasonDetail: Record<string, DispositionReasonDetail> } {
+  const entryIds = new Set(entries.map((e) => e.id));
+  const spec = entries.find((e) => e.id === markerId) ?? reasons.find((r) => r.id === markerId);
+  if (!spec) return { markers: [...markers], reasonDetail: { ...reasonDetail } };
+
+  const nextMarkers = new Set(markers);
+  const nextDetail: Record<string, DispositionReasonDetail> = { ...reasonDetail };
+  const kind = spec.kind;
+
+  if (on) {
+    if (kind === "entry") {
+      for (const id of entryIds) nextMarkers.delete(id);
+      if (markerId !== "refine") {
+        for (const rid of reasonIdsForProcess(reasons, "refine")) {
+          nextMarkers.delete(rid);
+          delete nextDetail[rid];
+        }
+      }
+      nextMarkers.add(markerId);
+    } else if (kind === "reason") {
+      const process = String(spec.process || "").trim();
+      if (process && entryIds.has(process)) {
+        for (const id of entryIds) nextMarkers.delete(id);
+        nextMarkers.add(process);
+      }
+      nextMarkers.add(markerId);
+      const detail: DispositionReasonDetail = {};
+      if (extra?.modifiers !== undefined) {
+        if (extra.modifiers.length) detail.modifiers = extra.modifiers;
+      } else {
+        const prev = nextDetail[markerId];
+        if (prev?.modifiers?.length) detail.modifiers = [...prev.modifiers];
+      }
+      const note = (extra?.note || nextDetail[markerId]?.note || "").trim();
+      if (note) detail.note = note;
+      nextDetail[markerId] = detail;
+    } else {
+      nextMarkers.add(markerId);
+    }
+  } else {
+    nextMarkers.delete(markerId);
+    if (kind === "reason") {
+      delete nextDetail[markerId];
+    } else if (kind === "entry") {
+      const process = String(spec.process || markerId).trim();
+      for (const rid of reasonIdsForProcess(reasons, process)) {
+        nextMarkers.delete(rid);
+        delete nextDetail[rid];
+      }
+    }
+  }
+
+  for (const rid of Object.keys(nextDetail)) {
+    if (!nextMarkers.has(rid)) delete nextDetail[rid];
+  }
+
+  return { markers: [...nextMarkers].sort(), reasonDetail: nextDetail };
 }
 
 function entryLabelForMarker(markers: string[], catalog: DispositionCatalogMarker[]): string | null {
@@ -510,7 +632,8 @@ export function DiscoveryRatingQueueApp() {
   const [derivedRating, setDerivedRating] = useState<number | null>(null);
   const [derivedSourceLabel, setDerivedSourceLabel] = useState<string | null>(null);
   const [checkMsg, setCheckMsg] = useState("");
-  const [rateBusy, setRateBusy] = useState(false);
+  const rateSeqRef = useRef(0);
+  const dispositionToggleSeqRef = useRef(0);
   const [queueLimit, setQueueLimit] = useState(loadQueueLimit);
   const [appetite, setAppetite] = useState<Appetite | null>(null);
   const [appetiteFacet, setAppetiteFacet] = useState<AppetiteFacet>(loadStickyFacet);
@@ -576,6 +699,7 @@ export function DiscoveryRatingQueueApp() {
       setSession(data);
       setBatchRated({});
       setIndex(0);
+      prefetchAssetRatings((data.candidates ?? []).map((c) => c.relpath));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -783,18 +907,6 @@ export function DiscoveryRatingQueueApp() {
       return (i + 1) % n;
     });
     setCheckMsg("");
-    setExplicitRating(null);
-    setQualityAxes(emptyQualityAxes());
-    setDerivedRating(null);
-    setDerivedSourceLabel(null);
-    setAppetite(null);
-    setDispositionMarkers([]);
-    setDispositionUpdatedAt(null);
-    setDispositionLastOutcome(null);
-    setDispositionLastAction("");
-    setLastStepId(null);
-    setLastTriagedAt(null);
-    setTriagePassCount(0);
   }, [candidates.length]);
 
   const goPrev = useCallback(() => {
@@ -804,18 +916,6 @@ export function DiscoveryRatingQueueApp() {
       return (i - 1 + n) % n;
     });
     setCheckMsg("");
-    setExplicitRating(null);
-    setQualityAxes(emptyQualityAxes());
-    setDerivedRating(null);
-    setDerivedSourceLabel(null);
-    setAppetite(null);
-    setDispositionMarkers([]);
-    setDispositionUpdatedAt(null);
-    setDispositionLastOutcome(null);
-    setDispositionLastAction("");
-    setLastStepId(null);
-    setLastTriagedAt(null);
-    setTriagePassCount(0);
   }, [candidates.length]);
 
   const skipCurrent = useCallback(() => {
@@ -846,12 +946,16 @@ export function DiscoveryRatingQueueApp() {
   const setAppetiteCurrent = useCallback(
     async (state: Appetite, facet: AppetiteFacet) => {
       if (!current || appetiteBusy) return;
+      const prevAppetite = appetite;
+      const prevFacet = appetiteFacet;
+      setAppetite(state);
+      setAppetiteFacet(facet);
+      markBatchRated(current.relpath, qualityAxes, state);
+      patchCachedAppetite(current.relpath, state, facet);
       setAppetiteBusy(true);
       setCheckMsg("");
       try {
         const res = await setAssetAppetite({ relpath: current.relpath, appetite: state, facet });
-        setAppetite(state);
-        markBatchRated(current.relpath, qualityAxes, state);
         if (state === "fast_track") {
           const q = res.saved?.queued;
           if (q?.ok) {
@@ -863,12 +967,16 @@ export function DiscoveryRatingQueueApp() {
           setCheckMsg(`Appetite: ${state} · ${facet}`);
         }
       } catch (e) {
+        setAppetite(prevAppetite);
+        setAppetiteFacet(prevFacet);
+        markBatchRated(current.relpath, qualityAxes, prevAppetite);
+        patchCachedAppetite(current.relpath, prevAppetite, prevFacet);
         setCheckMsg(e instanceof Error ? e.message : String(e));
       } finally {
         setAppetiteBusy(false);
       }
     },
-    [current, appetiteBusy, qualityAxes, markBatchRated],
+    [current, appetiteBusy, appetite, appetiteFacet, qualityAxes, markBatchRated],
   );
 
   const formatDispositionResult = (stepId: string, result: Record<string, unknown> | undefined): string => {
@@ -903,9 +1011,28 @@ export function DiscoveryRatingQueueApp() {
       on: boolean,
       extra?: { note?: string; modifiers?: string[] },
     ) => {
-      if (!current || dispositionBusy) return;
-      setDispositionBusy(true);
+      if (!current) return;
+      const seq = ++dispositionToggleSeqRef.current;
       setCheckMsg("");
+
+      const prevMarkers = dispositionMarkers;
+      const prevDetail = reasonDetail;
+      const prevUpdatedAt = dispositionUpdatedAt;
+      const prevPromotions = promotions;
+
+      const optimistic = optimisticDispositionToggle(
+        dispositionMarkers,
+        reasonDetail,
+        catalogEntries,
+        catalogReasons,
+        markerId,
+        on,
+        extra,
+      );
+      setDispositionMarkers(optimistic.markers);
+      setReasonDetail(optimistic.reasonDetail);
+      patchCachedDisposition(current.relpath, optimistic.markers, optimistic.reasonDetail);
+
       try {
         const q =
           explicitRating != null
@@ -923,9 +1050,19 @@ export function DiscoveryRatingQueueApp() {
           appetite,
           facet: appetiteFacet,
         });
-        setDispositionMarkers(res.saved?.markers ?? []);
+        if (seq !== dispositionToggleSeqRef.current) return;
+
+        if (res.saved?.markers) setDispositionMarkers(res.saved.markers);
         setReasonDetail(res.saved?.reason_detail ?? {});
         if (res.promotions) setPromotions(res.promotions);
+        if (res.saved?.updated_at) setDispositionUpdatedAt(String(res.saved.updated_at));
+        patchCachedDisposition(
+          current.relpath,
+          res.saved?.markers ?? optimistic.markers,
+          res.saved?.reason_detail ?? optimistic.reasonDetail,
+          res.saved?.updated_at ?? null,
+        );
+
         const label =
           catalogEntries.find((e) => e.id === markerId)?.label ??
           catalogReasons.find((e) => e.id === markerId)?.label ??
@@ -933,25 +1070,36 @@ export function DiscoveryRatingQueueApp() {
         const msg = on ? `Saved disposition: ${label}` : `Cleared: ${label}`;
         setDispositionLastAction(msg);
         setCheckMsg(msg);
-        const ratings = await fetchDiscoveryAssetRatings(current.relpath);
-        applyDispositionFromRatings(
-          ratings,
-          setDispositionMarkers,
-          setDispositionUpdatedAt,
-          setDispositionLastOutcome,
-          setReasonDetail,
-        );
-        applyTriageFromRatings(ratings, setLastTriagedAt, setTriagePassCount);
-        if (res.saved?.updated_at) setDispositionUpdatedAt(String(res.saved.updated_at));
+
+        void revalidateAssetRatings(current.relpath)
+          .then((ratings) => {
+            if (seq !== dispositionToggleSeqRef.current) return;
+            rememberAssetRatings(current.relpath, ratings);
+            applyDispositionFromRatings(
+              ratings,
+              setDispositionMarkers,
+              setDispositionUpdatedAt,
+              setDispositionLastOutcome,
+              setReasonDetail,
+            );
+            applyTriageFromRatings(ratings, setLastTriagedAt, setTriagePassCount);
+          })
+          .catch(() => {});
       } catch (e) {
+        if (seq !== dispositionToggleSeqRef.current) return;
+        setDispositionMarkers(prevMarkers);
+        setReasonDetail(prevDetail);
+        setDispositionUpdatedAt(prevUpdatedAt);
+        setPromotions(prevPromotions);
         setCheckMsg(e instanceof Error ? e.message : String(e));
-      } finally {
-        setDispositionBusy(false);
       }
     },
     [
       current,
-      dispositionBusy,
+      dispositionMarkers,
+      reasonDetail,
+      dispositionUpdatedAt,
+      promotions,
       appetite,
       appetiteFacet,
       explicitRating,
@@ -1008,18 +1156,22 @@ export function DiscoveryRatingQueueApp() {
             parts.push(`${stepLabel}: ${e instanceof Error ? e.message : String(e)}`);
           }
         }
-        const ratings = await fetchDiscoveryAssetRatings(current.relpath);
-        applyDispositionFromRatings(
-          ratings,
-          setDispositionMarkers,
-          setDispositionUpdatedAt,
-          setDispositionLastOutcome,
-          setReasonDetail,
-        );
-        applyTriageFromRatings(ratings, setLastTriagedAt, setTriagePassCount);
         const msg = parts.join(" · ");
         setDispositionLastAction(msg);
         setCheckMsg(msg);
+        void revalidateAssetRatings(current.relpath)
+          .then((ratings) => {
+            rememberAssetRatings(current.relpath, ratings);
+            applyDispositionFromRatings(
+              ratings,
+              setDispositionMarkers,
+              setDispositionUpdatedAt,
+              setDispositionLastOutcome,
+              setReasonDetail,
+            );
+            applyTriageFromRatings(ratings, setLastTriagedAt, setTriagePassCount);
+          })
+          .catch(() => {});
       } catch (e) {
         setLastStepId(null);
         setCheckMsg(e instanceof Error ? e.message : String(e));
@@ -1055,15 +1207,19 @@ export function DiscoveryRatingQueueApp() {
           const m = (inner.toggled as { markers?: string[] }).markers;
           if (m) setDispositionMarkers(m);
         }
-        const ratings = await fetchDiscoveryAssetRatings(current.relpath);
-        applyDispositionFromRatings(
-          ratings,
-          setDispositionMarkers,
-          setDispositionUpdatedAt,
-          setDispositionLastOutcome,
-          setReasonDetail,
-        );
-        applyTriageFromRatings(ratings, setLastTriagedAt, setTriagePassCount);
+        void revalidateAssetRatings(current.relpath)
+          .then((ratings) => {
+            rememberAssetRatings(current.relpath, ratings);
+            applyDispositionFromRatings(
+              ratings,
+              setDispositionMarkers,
+              setDispositionUpdatedAt,
+              setDispositionLastOutcome,
+              setReasonDetail,
+            );
+            applyTriageFromRatings(ratings, setLastTriagedAt, setTriagePassCount);
+          })
+          .catch(() => {});
       } catch (e) {
         setLastStepId(null);
         setCheckMsg(e instanceof Error ? e.message : String(e));
@@ -1097,81 +1253,142 @@ export function DiscoveryRatingQueueApp() {
 
   const rateCurrent = useCallback(
     async (stars: number, axis: QualityAxis = activeQualityAxis) => {
-      if (!current || rateBusy) return;
-      setRateBusy(true);
+      if (!current) return;
+      const seq = ++rateSeqRef.current;
       setCheckMsg("");
+
+      const prevAxes = qualityAxes;
+      const prevExplicit = explicitRating;
+      const prevDerived = derivedRating;
+      const prevDerivedLabel = derivedSourceLabel;
+
+      let nextAxes: QualityAxesMap = { ...qualityAxes };
+      if (stars > 0) nextAxes[axis] = stars;
+      else delete nextAxes[axis];
+      setQualityAxes(nextAxes);
+      setExplicitRating(aggregateFromAxes(nextAxes));
+      setDerivedRating(null);
+      setDerivedSourceLabel(null);
+      markBatchRated(current.relpath, nextAxes, appetite);
+      patchCachedQuality(current.relpath, nextAxes, aggregateFromAxes(nextAxes));
+
       try {
         const res = await setAssetRating({ relpath: current.relpath, stars, axis });
-        const nextAxes: QualityAxesMap = { ...qualityAxes };
-        if (stars > 0) nextAxes[axis] = stars;
-        else delete nextAxes[axis];
+        if (seq !== rateSeqRef.current) return;
+
         if (res.saved?.axes && typeof res.saved.axes === "object") {
+          nextAxes = { ...nextAxes };
           for (const a of QUALITY_AXES) {
             const n = res.saved.axes[a];
             if (typeof n === "number" && n >= 1) nextAxes[a] = n;
             else delete nextAxes[a];
           }
+          setQualityAxes(nextAxes);
         }
-        setQualityAxes(nextAxes);
-        const agg =
-          typeof res.saved?.explicit === "number"
-            ? res.saved.explicit
-            : aggregateFromAxes(nextAxes);
-        setExplicitRating(agg);
-        setDerivedRating(null);
-        setDerivedSourceLabel(null);
+        setExplicitRating(
+          typeof res.saved?.explicit === "number" ? res.saved.explicit : aggregateFromAxes(nextAxes),
+        );
         markBatchRated(current.relpath, nextAxes, appetite);
+        patchCachedQuality(
+          current.relpath,
+          nextAxes,
+          typeof res.saved?.explicit === "number" ? res.saved.explicit : aggregateFromAxes(nextAxes),
+        );
+
         const label = QUALITY_AXIS_LABELS[axis];
-        if (stars > 0) {
-          setCheckMsg(`Saved ${label} ${stars}★`);
-        } else {
-          setCheckMsg(`Cleared ${label}`);
-        }
+        setCheckMsg(stars > 0 ? `Saved ${label} ${stars}★` : `Cleared ${label}`);
       } catch (e) {
+        if (seq !== rateSeqRef.current) return;
+        setQualityAxes(prevAxes);
+        setExplicitRating(prevExplicit);
+        setDerivedRating(prevDerived);
+        setDerivedSourceLabel(prevDerivedLabel);
+        markBatchRated(current.relpath, prevAxes, appetite);
         setCheckMsg(e instanceof Error ? e.message : String(e));
-      } finally {
-        setRateBusy(false);
       }
     },
-    [current, rateBusy, appetite, markBatchRated, activeQualityAxis, qualityAxes],
+    [
+      current,
+      appetite,
+      markBatchRated,
+      activeQualityAxis,
+      qualityAxes,
+      explicitRating,
+      derivedRating,
+      derivedSourceLabel,
+    ],
   );
 
   useEffect(() => {
     if (!current) return;
+    const rel = current.relpath;
     setVideoAspect(null);
-    setExplicitRating(null);
-    setQualityAxes(emptyQualityAxes());
-    setDerivedRating(null);
-    setDerivedSourceLabel(null);
     setCheckMsg("");
-    setDispositionMarkers(current.disposition_markers ?? []);
-    setReasonDetail({});
-    setDispositionUpdatedAt(null);
-    setDispositionLastOutcome(null);
     setDispositionLastAction("");
     setLastStepId(null);
-    setLastTriagedAt(current.last_triaged_at ?? null);
-    setTriagePassCount(current.triage_pass_count ?? 0);
-    setAppetite(current.appetite ?? null);
-    if (current.appetite_facet) setAppetiteFacet(current.appetite_facet);
-    void fetchDiscoveryAssetRatings(current.relpath)
+
+    const cached = peekAssetRatings(rel);
+    const seed = cached ?? ratingsSeedFromCandidate(current);
+    applyJudgmentFromRatings(
+      seed,
+      current,
+      {
+        setExplicitRating,
+        setDerivedRating,
+        setDerivedSourceLabel,
+        setQualityAxes,
+        setAppetite,
+        setAppetiteFacet,
+        setDispositionMarkers,
+        setDispositionUpdatedAt,
+        setDispositionLastOutcome,
+        setReasonDetail,
+        setLastTriagedAt,
+        setTriagePassCount,
+      },
+      markBatchRated,
+    );
+
+    let cancelled = false;
+    void revalidateAssetRatings(rel)
       .then((r) => {
-        applyQualityFromRatings(r, setExplicitRating, setDerivedRating, setDerivedSourceLabel, setQualityAxes);
-        if (r.appetite) setAppetite(r.appetite);
-        if (r.appetite_facet) setAppetiteFacet(r.appetite_facet);
-        applyDispositionFromRatings(
+        if (cancelled) return;
+        rememberAssetRatings(rel, r);
+        applyJudgmentFromRatings(
           r,
-          setDispositionMarkers,
-          setDispositionUpdatedAt,
-          setDispositionLastOutcome,
-          setReasonDetail,
+          current,
+          {
+            setExplicitRating,
+            setDerivedRating,
+            setDerivedSourceLabel,
+            setQualityAxes,
+            setAppetite,
+            setAppetiteFacet,
+            setDispositionMarkers,
+            setDispositionUpdatedAt,
+            setDispositionLastOutcome,
+            setReasonDetail,
+            setLastTriagedAt,
+            setTriagePassCount,
+          },
+          markBatchRated,
         );
-        applyTriageFromRatings(r, setLastTriagedAt, setTriagePassCount);
-        const axes = axesFromRatings(r);
-        markBatchRated(current.relpath, axes, (r.appetite as Appetite | null) ?? null);
       })
       .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
   }, [current?.relpath, markBatchRated]);
+
+  useEffect(() => {
+    if (!candidates.length) return;
+    const n = candidates.length;
+    const rels = [index, index + 1, index - 1, index + 2, index + 3]
+      .map((i) => candidates[((i % n) + n) % n]?.relpath)
+      .filter((r): r is string => Boolean(r));
+    prefetchAssetRatings(rels);
+  }, [index, candidates]);
 
   useEffect(() => {
     if (!current) return;
@@ -1509,7 +1726,6 @@ export function DiscoveryRatingQueueApp() {
                                         ? " drq-star-btn--derived"
                                         : "")
                                     }
-                                    disabled={rateBusy}
                                     onClick={() => {
                                       setActiveQualityAxis(axis);
                                       void rateCurrent(n, axis);
@@ -1526,7 +1742,7 @@ export function DiscoveryRatingQueueApp() {
                                 <button
                                   type="button"
                                   className="drt-btn drq-clear-btn"
-                                  disabled={rateBusy || value == null}
+                                  disabled={value == null}
                                   onClick={() => {
                                     setActiveQualityAxis(axis);
                                     void rateCurrent(0, axis);
@@ -1604,7 +1820,6 @@ export function DiscoveryRatingQueueApp() {
                         entries={catalogEntries}
                         markers={dispositionMarkers}
                         promotions={promotions}
-                        busy={dispositionBusy || appetiteBusy || rateBusy || triageBusy}
                         onToggle={(id, on) => void toggleDispositionMarker(id, on)}
                         onEditCatalog={() => setCatalogEditorOpen(true)}
                       />
@@ -1613,7 +1828,6 @@ export function DiscoveryRatingQueueApp() {
                         activeEntries={dispositionMarkers.filter((m) => catalogEntries.some((e) => e.id === m))}
                         markers={dispositionMarkers}
                         reasonDetail={reasonDetail}
-                        busy={dispositionBusy || appetiteBusy || rateBusy || triageBusy}
                         onToggleReason={({ markerId, on, modifiers, note }) =>
                           void toggleDispositionMarker(markerId, on, { modifiers, note })
                         }
@@ -1622,7 +1836,7 @@ export function DiscoveryRatingQueueApp() {
                         steps={catalogSteps}
                         activeEntries={dispositionMarkers.filter((m) => catalogEntries.some((e) => e.id === m))}
                         lastStepId={lastStepId}
-                        busy={dispositionBusy}
+                        busy={dispositionBusy || triageBusy}
                         onRunStep={(id) => void runDispositionStepCurrent(id)}
                         onCommitAdvanceRoutes={(opts) => void commitAdvanceRoutes(opts)}
                       />

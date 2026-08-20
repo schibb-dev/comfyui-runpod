@@ -1,5 +1,12 @@
-import React, { useCallback, useEffect, useState } from "react";
-import { fetchDiscoveryAssetRatings, setAssetAppetite, setAssetRating } from "./api";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { setAssetAppetite, setAssetRating } from "./api";
+import {
+  patchCachedAppetite,
+  patchCachedQuality,
+  peekAssetRatings,
+  revalidateAssetRatings,
+  rememberAssetRatings,
+} from "./assetRatingsCache";
 import { AppetiteBar } from "./AppetiteBar";
 import type {
   Appetite,
@@ -25,6 +32,12 @@ function axesFromRatings(r: DiscoveryAssetRatingsResponse): QualityAxesMap {
   return out;
 }
 
+function aggregateFromAxes(axes: QualityAxesMap): number | null {
+  const vals = QUALITY_AXES.map((a) => axes[a]).filter((n): n is number => typeof n === "number" && n >= 1);
+  if (!vals.length) return null;
+  return Math.round(vals.reduce((s, n) => s + n, 0) / vals.length);
+}
+
 export function AssetJudgmentEditor({
   relpath,
   seed,
@@ -44,7 +57,7 @@ export function AssetJudgmentEditor({
   const [derivedSourceLabel, setDerivedSourceLabel] = useState<string | null>(null);
   const [appetite, setAppetite] = useState<Appetite | null>(null);
   const [appetiteFacet, setAppetiteFacet] = useState<AppetiteFacet>("both");
-  const [rateBusy, setRateBusy] = useState(false);
+  const rateSeqRef = useRef(0);
   const [appetiteBusy, setAppetiteBusy] = useState(false);
   const [msg, setMsg] = useState("");
 
@@ -76,30 +89,41 @@ export function AssetJudgmentEditor({
   }, []);
 
   useEffect(() => {
-    setExplicitRating(null);
-    setQualityAxes({});
-    setDerivedRating(null);
-    setDerivedSourceLabel(null);
-    setAppetite(null);
     setMsg("");
     if (!relpath) return;
+    const cached = peekAssetRatings(relpath);
+    if (cached) applySeed(cached);
+    else if (seed) applySeed(seed);
+    else {
+      setExplicitRating(null);
+      setQualityAxes({});
+      setDerivedRating(null);
+      setDerivedSourceLabel(null);
+      setAppetite(null);
+    }
     let cancelled = false;
-    void fetchDiscoveryAssetRatings(relpath)
+    void revalidateAssetRatings(relpath)
       .then((r) => {
-        if (!cancelled) applySeed(r);
+        if (!cancelled) {
+          rememberAssetRatings(relpath, r);
+          applySeed(r);
+        }
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [relpath, applySeed]);
+  }, [relpath, applySeed, seed]);
 
   useEffect(() => {
+    if (!seed || !relpath) return;
     applySeed(seed);
-  }, [seed, applySeed]);
+    rememberAssetRatings(relpath, seed);
+  }, [seed, applySeed, relpath]);
 
   const refreshAfterSave = useCallback(async () => {
-    const ratings = await fetchDiscoveryAssetRatings(relpath);
+    const ratings = await revalidateAssetRatings(relpath);
+    rememberAssetRatings(relpath, ratings);
     applySeed(ratings);
     onSaved?.(ratings);
     return ratings;
@@ -107,35 +131,76 @@ export function AssetJudgmentEditor({
 
   const rate = useCallback(
     async (stars: number, axis: QualityAxis = activeQualityAxis) => {
-      if (!relpath || rateBusy) return;
-      setRateBusy(true);
+      if (!relpath) return;
+      const seq = ++rateSeqRef.current;
       setMsg("");
+
+      const prevAxes = qualityAxes;
+      const prevExplicit = explicitRating;
+      const prevDerived = derivedRating;
+      const prevDerivedLabel = derivedSourceLabel;
+
+      let nextAxes: QualityAxesMap = { ...qualityAxes };
+      if (stars > 0) nextAxes[axis] = stars;
+      else delete nextAxes[axis];
+      setQualityAxes(nextAxes);
+      setExplicitRating(aggregateFromAxes(nextAxes));
+      setDerivedRating(null);
+      setDerivedSourceLabel(null);
+      patchCachedQuality(relpath, nextAxes, aggregateFromAxes(nextAxes));
+
       try {
-        await setAssetRating({ relpath, stars, axis });
-        const label = QUALITY_AXIS_LABELS[axis];
-        if (stars > 0) {
-          setMsg(`Saved ${label} ${stars}★`);
-        } else {
-          setMsg(`Cleared ${label}`);
+        const res = await setAssetRating({ relpath, stars, axis });
+        if (seq !== rateSeqRef.current) return;
+
+        if (res.saved?.axes && typeof res.saved.axes === "object") {
+          nextAxes = { ...nextAxes };
+          for (const a of QUALITY_AXES) {
+            const n = res.saved.axes[a];
+            if (typeof n === "number" && n >= 1) nextAxes[a] = n;
+            else delete nextAxes[a];
+          }
+          setQualityAxes(nextAxes);
         }
-        await refreshAfterSave();
+        setExplicitRating(
+          typeof res.saved?.explicit === "number" ? res.saved.explicit : aggregateFromAxes(nextAxes),
+        );
+
+        const label = QUALITY_AXIS_LABELS[axis];
+        setMsg(stars > 0 ? `Saved ${label} ${stars}★` : `Cleared ${label}`);
+        void refreshAfterSave();
       } catch (e) {
+        if (seq !== rateSeqRef.current) return;
+        setQualityAxes(prevAxes);
+        setExplicitRating(prevExplicit);
+        setDerivedRating(prevDerived);
+        setDerivedSourceLabel(prevDerivedLabel);
         setMsg(e instanceof Error ? e.message : String(e));
-      } finally {
-        setRateBusy(false);
       }
     },
-    [relpath, rateBusy, refreshAfterSave, activeQualityAxis],
+    [
+      relpath,
+      refreshAfterSave,
+      activeQualityAxis,
+      qualityAxes,
+      explicitRating,
+      derivedRating,
+      derivedSourceLabel,
+    ],
   );
 
   const setAppetiteState = useCallback(
     async (state: Appetite, facet: AppetiteFacet) => {
       if (!relpath || appetiteBusy) return;
+      const prevAppetite = appetite;
+      const prevFacet = appetiteFacet;
+      setAppetite(state);
+      setAppetiteFacet(facet);
+      patchCachedAppetite(relpath, state, facet);
       setAppetiteBusy(true);
       setMsg("");
       try {
         const res = await setAssetAppetite({ relpath, appetite: state, facet });
-        setAppetite(state);
         if (state === "fast_track") {
           const q = res.saved?.queued;
           setMsg(
@@ -148,20 +213,22 @@ export function AssetJudgmentEditor({
         } else {
           setMsg(`Appetite: ${state} · ${facet}`);
         }
-        await refreshAfterSave();
+        void refreshAfterSave();
       } catch (e) {
+        setAppetite(prevAppetite);
+        setAppetiteFacet(prevFacet);
+        patchCachedAppetite(relpath, prevAppetite, prevFacet);
         setMsg(e instanceof Error ? e.message : String(e));
       } finally {
         setAppetiteBusy(false);
       }
     },
-    [relpath, appetiteBusy, refreshAfterSave],
+    [relpath, appetiteBusy, appetite, appetiteFacet, refreshAfterSave],
   );
 
   if (!relpath) return null;
 
   const showingDerived = Object.keys(qualityAxes).length === 0 && explicitRating == null && derivedRating != null;
-  const busy = rateBusy || appetiteBusy;
 
   const axesBars = (
     <div className="drq-quality-axes">
@@ -189,7 +256,7 @@ export function AssetJudgmentEditor({
                       ? " drq-star-btn--derived"
                       : "")
                   }
-                  disabled={busy}
+
                   onClick={() => {
                     setActiveQualityAxis(axis);
                     void rate(n, axis);
@@ -212,7 +279,7 @@ export function AssetJudgmentEditor({
               <button
                 type="button"
                 className="drt-btn drq-clear-btn"
-                disabled={busy || value == null}
+                disabled={value == null}
                 onClick={() => {
                   setActiveQualityAxis(axis);
                   void rate(0, axis);
@@ -255,7 +322,7 @@ export function AssetJudgmentEditor({
             embedded
             appetite={appetite}
             facet={appetiteFacet}
-            busy={busy}
+            busy={appetiteBusy}
             onSet={(state, facet) => void setAppetiteState(state, facet)}
             onFacetChange={setAppetiteFacet}
           />
@@ -271,7 +338,7 @@ export function AssetJudgmentEditor({
       <AppetiteBar
         appetite={appetite}
         facet={appetiteFacet}
-        busy={busy}
+        busy={appetiteBusy}
         onSet={(state, facet) => void setAppetiteState(state, facet)}
         onFacetChange={setAppetiteFacet}
       />
