@@ -123,6 +123,26 @@ def deep_merge_dict(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, An
     return out
 
 
+def shape_ui_defaults(shape: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Optional production widget defaults from the shape (not a ``_dev`` profile)."""
+    raw = shape.get("ui_defaults")
+    return raw if isinstance(raw, dict) else None
+
+
+def apply_shape_ui_defaults_ui(workflow: dict[str, Any], shape: dict[str, Any]) -> dict[str, Any]:
+    defaults = shape_ui_defaults(shape)
+    if not defaults:
+        return {}
+    return apply_dev_tuning_ui(workflow, defaults)
+
+
+def apply_shape_ui_defaults_api(prompt: dict[str, Any], shape: dict[str, Any]) -> dict[str, Any]:
+    defaults = shape_ui_defaults(shape)
+    if not defaults:
+        return {}
+    return apply_dev_tuning_api(prompt, defaults)
+
+
 def resolve_dev_tuning(
     *,
     dev: bool,
@@ -1457,6 +1477,7 @@ def apply_slot_binding(
         return apply_prompt_bundle(workflow, binding, asset_path)
     raise RuntimeError(f"unsupported binding type {btype!r} for slot {require.get('slot')!r}")
 
+
 def requires_by_slot(shape: dict[str, Any]) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     for req in shape.get("requires") or []:
@@ -1611,6 +1632,7 @@ def generate_job_for_picks(
     sanitize_linked_text_widget_defaults(workflow)
     # Catalog templates bake authoring-clip skip/cap; rebound sources must not inherit them.
     zero_vhs_load_window_on_workflow(workflow)
+    apply_shape_ui_defaults_ui(workflow, shape)
 
     warnings: list[str] = []
     bindings_meta: dict[str, Any] = {}
@@ -2161,6 +2183,7 @@ def job_pending_submit(job: dict[str, Any]) -> bool:
         return submit_attempt_count(job) < submit_max_attempts()
     return True
 
+
 def png_path_for_binding(asset_path: Path) -> Path:
     if asset_path.suffix.lower() in VIDEO_EXTS:
         return asset_path.with_suffix(".png")
@@ -2460,6 +2483,7 @@ def apply_api_slot_bindings(
                 inputs["save_output"] = False
 
     return warnings
+
 
 def sync_prompt_inputs_from_ui_workflow(workflow: dict[str, Any], prompt: dict[str, Any]) -> list[str]:
     """Reconcile API prompt links from LiteGraph link table (fixes /workflow/convert misroutes)."""
@@ -4198,6 +4222,7 @@ def resolve_prompt_for_job(
     # Fix LoadImage / VHS paths from job bindings before convert (stale generated workflows
     # often still have input/<file> or a dead workspace/input host path).
     warnings.extend(_rebind_job_slots_to_ui_workflow(workflow, shape, job, data_root))
+    apply_shape_ui_defaults_ui(workflow, shape)
     warnings.extend(repair_ui_workflow_for_submit(workflow))
     final_ids = _produce_node_ids(shape)
     queued = apply_queue_date_to_prefix(str(job.get("output_prefix") or ""))
@@ -4211,6 +4236,7 @@ def resolve_prompt_for_job(
         warnings.extend(sync_prompt_inputs_from_ui_workflow(workflow, prompt_obj))
         warnings.extend(sanitize_converted_prompt(workflow, prompt_obj))
         warnings.extend(apply_api_slot_bindings(prompt_obj, shape, job, data_root))
+        apply_shape_ui_defaults_api(prompt_obj, shape)
         warnings.extend(
             enforce_no_stored_preview_outputs(workflow, prompt_obj, final_node_ids=final_ids or None)
         )
@@ -4236,6 +4262,7 @@ def resolve_prompt_for_job(
     prompt = extract_api_prompt_from_png(seed_png)
     warnings.extend(sanitize_converted_prompt(workflow, prompt))
     warnings.extend(apply_api_slot_bindings(prompt, shape, job, data_root))
+    apply_shape_ui_defaults_api(prompt, shape)
     warnings.extend(
         enforce_no_stored_preview_outputs(workflow, prompt, final_node_ids=final_ids or None)
     )
@@ -4500,6 +4527,8 @@ def rebuild_job_workflow(
             continue
         warnings.extend(apply_slot_binding(workflow, req, path, data_root))
 
+    apply_shape_ui_defaults_ui(workflow, shape)
+
     dev_block = job.get("dev_tuning") if isinstance(job.get("dev_tuning"), dict) else {}
     dev_spec = dev_block.get("spec") if isinstance(dev_block.get("spec"), dict) else dev_block
     if isinstance(dev_spec, dict) and dev_spec:
@@ -4589,7 +4618,6 @@ def submit_job_file(
     job = json.loads(job_path.read_text(encoding="utf-8"))
     if hostify_job_paths(job):
         atomic_write_json(job_path, job)
-
     # Cap retries: error jobs that hit max attempts become abandoned.
     submit_block = job.get("submit") if isinstance(job.get("submit"), dict) else {}
     if str(submit_block.get("status") or "") == "error" and job_retries_exhausted(job):
@@ -5176,6 +5204,7 @@ def _resolve_job_file_and_doc(
         job_file, job = find_job_by_key(data_root, str(job_key))
     return job_file, job
 
+
 def begin_job_edit(
     *,
     data_root: Path,
@@ -5304,6 +5333,7 @@ def begin_job_edit(
         out["comfy_delete_error"] = comfy_delete_error
     return out
 
+
 def finish_job_edit(
     *,
     data_root: Path,
@@ -5412,6 +5442,7 @@ def finish_job_edit(
         out["prompt_id"] = result.get("prompt_id")
     return out
 
+
 def job_edit_snapshot(
     *,
     data_root: Path,
@@ -5482,6 +5513,7 @@ def job_edit_snapshot(
         "created_at": job.get("created_at"),
         "construction": job.get("construction") if isinstance(job.get("construction"), dict) else None,
     }
+
 
 def update_pending_job_vhs_window(
     *,

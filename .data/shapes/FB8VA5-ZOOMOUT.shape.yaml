@@ -37,3 +37,17 @@ deposits:
 output_prefix_root: og/%date:yyyy-MM-dd%/FB8VA5-ZOOMOUT_shape
 
 rules: []
+
+# Production Duration mxSlider (node 426): 6 seconds.
+ui_defaults:
+  profile_id: duration-6s
+  ui_nodes:
+    426:
+      type: mxSlider
+      title: Duration
+      widgets_values: [6, 6, 1]
+  api_nodes:
+    "426":
+      inputs:
+        Xi: 6
+        Xf: 6
