@@ -3,7 +3,7 @@
 set -euo pipefail
 
 USER_SYSTEMD="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-for u in comfyui-runpod-keep.timer comfyui-runpod-keep.service comfyui-runpod-vite.service comfyui-runpod-docker.service; do
+for u in wsl-swap-io-telemetry.service comfyui-runpod-keep.timer comfyui-runpod-keep.service comfyui-runpod-vite.service comfyui-runpod-docker.service; do
   systemctl --user disable --now "$u" 2>/dev/null || true
   rm -f "$USER_SYSTEMD/$u"
 done

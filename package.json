@@ -62,6 +62,12 @@
     "comfy:build:nocache": "docker compose build --no-cache comfyui",
     "comfy:recreate": "docker compose -f docker-compose.yml -f docker-compose.output-sftp.yml up -d --force-recreate comfyui",
     "comfy:restart": "docker compose -f docker-compose.yml -f docker-compose.output-sftp.yml restart comfyui",
+
+    "//telemetry": "WSL swap + disk I/O sampling for Claude/Comfy perf correlation.",
+    "telemetry:install": "bash scripts/install-wsl-swap-io-telemetry.sh",
+    "telemetry:status": "systemctl --user status wsl-swap-io-telemetry.service --no-pager -l",
+    "telemetry:stop": "systemctl --user stop wsl-swap-io-telemetry.service",
+    "telemetry:tail": "tail -f .data/telemetry/swap_io_telemetry.jsonl",
     "ui:dev": "npm run ui:dev:container",
     "ui:build": "npm run ui:build:win",
     "ui:recreate": "npm run ui:recreate:win"
