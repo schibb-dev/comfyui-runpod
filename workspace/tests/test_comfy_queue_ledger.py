@@ -20,6 +20,7 @@ from comfy_queue_ledger import (
     _default_state,
     _history_terminal_reason,
     _restore_missing_prompts,
+    _submit_prompt,
     backlog_item_should_skip_finished,
     park_items_to_backlog,
 )
@@ -221,6 +222,37 @@ class ParkBacklogTests(unittest.TestCase):
         self.assertTrue(backlog_item_should_skip_finished(parked, "success"))
         self.assertTrue(backlog_item_should_skip_finished(spill, "interrupted"))
         self.assertTrue(backlog_item_should_skip_finished(spill, "success"))
+
+
+class SubmitPromptDateStampTests(unittest.TestCase):
+    def test_submit_stamps_queue_day_without_mutating_snapshot(self) -> None:
+        original_prefix = "og/1999-01-01/hourly/hourly__still-001302_202608162207"
+        original = {
+            "398": {
+                "class_type": "VHS_VideoCombine",
+                "inputs": {"filename_prefix": original_prefix},
+            }
+        }
+        captured: List[Dict[str, Any]] = []
+
+        def fake_http(method, url, payload=None, timeout_s=30):
+            captured.append(payload)
+            return {"prompt_id": "new-1"}
+
+        with mock.patch("comfy_queue_ledger._http_json", side_effect=fake_http):
+            ok, res = _submit_prompt(
+                "http://x",
+                prompt=original,
+                client_id="ledger",
+            )
+        self.assertTrue(ok)
+        self.assertEqual(res["prompt_id"], "new-1")
+        self.assertEqual(original["398"]["inputs"]["filename_prefix"], original_prefix)
+        posted = captured[0]["prompt"]["398"]["inputs"]["filename_prefix"]
+        self.assertNotEqual(posted, original_prefix)
+        self.assertTrue(posted.startswith("og/"))
+        self.assertIn("/hourly/hourly__still-001302_202608162207", posted)
+        self.assertNotIn("1999-01-01", posted)
 
 
 if __name__ == "__main__":

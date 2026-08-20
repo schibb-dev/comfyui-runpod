@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from comfy_model_io_logs import ModelIoFollower, fetch_comfy_log_entries
+from output_path_lib import apply_queue_date_to_prompt
 
 
 def _utc_iso(ts: Optional[float] = None) -> str:
@@ -517,7 +518,9 @@ def _submit_prompt(
     extra_data: Optional[Dict[str, Any]] = None,
     outputs_to_execute: Optional[List[Any]] = None,
 ) -> Tuple[bool, Dict[str, Any]]:
-    payload: Dict[str, Any] = {"prompt": prompt, "client_id": client_id}
+    stamped = json.loads(json.dumps(prompt))
+    apply_queue_date_to_prompt(stamped)
+    payload: Dict[str, Any] = {"prompt": stamped, "client_id": client_id}
     if isinstance(extra_data, dict):
         payload["extra_data"] = extra_data
     if isinstance(outputs_to_execute, list):

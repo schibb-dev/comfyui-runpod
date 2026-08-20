@@ -431,11 +431,7 @@ function QueueItemRow({
 
 function HistoryItemRow({ item }: { item: ComfyHistoryItem }) {
   const thumb = historyThumb(item);
-  const videoUrl =
-    item.primary_video_url ||
-    (item.primary_video_relpath
-      ? "/files/" + encodeURIComponent(item.primary_video_relpath.replace(/\\/g, "/"))
-      : null);
+  const videoUrl = item.primary_video_url || null;
   const title =
     item.workflow_name ||
     basename(item.primary_video_relpath) ||
