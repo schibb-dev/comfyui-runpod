@@ -1,4 +1,5 @@
 import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createPortal } from "react-dom";
 import { discardShapeFactoryJob, fetchShapeFactoryJsonPeek, fetchShapeFactoryWorkProducts, finishShapeFactoryEdit, replayShapeFactory, unqueueShapeFactory, updatePendingShapeFactoryTrim } from "./api";
 import type { ShapeFactoryClip } from "./api";
@@ -21,8 +22,8 @@ import {
 } from "./workProductTrim";
 import { useTrimPlaybackEnforcement, type TrimPlaybackMode } from "./useTrimPlayback";
 import { discoveryLibraryHref, parseWorkbenchDeepLink, submitHref } from "./discoveryDeepLink";
-import { getSessionListCache, setSessionListCache } from "./sessionListCache";
 import { rememberFamiliesFromWorkProducts } from "./shapeFactorySessionCache";
+import { queryKeys } from "./queryKeys";
 import type {
   ShapeFactoryMapQueueOverrides,
   WorkItem,
@@ -45,36 +46,6 @@ const HOURLY_ONLY_KEY = "work-products-hourly-only";
 const STATUS_FILTER_OFF_KEY = "work-products-status-filter-off";
 const MARKER_FILTER_OFF_KEY = "work-products-marker-filter-off";
 const JSON_CACHE = new Map<string, { text: string; basename?: string; truncated?: boolean; error?: string }>();
-
-type WorkProductsCachePayload = {
-  items: WorkProductItem[];
-  families: WorkProductFamilyOption[];
-  extend_family_defaults: Record<string, string>;
-};
-
-function workProductsCacheKey(limit: number, hourlyOnly: boolean): string {
-  return `work-products:${limit}:${hourlyOnly ? 1 : 0}`;
-}
-
-function applyWorkProductsCachePayload(
-  payload: WorkProductsCachePayload,
-  setters: {
-    setItems: (items: WorkProductItem[]) => void;
-    setFamilies: (families: WorkProductFamilyOption[]) => void;
-    setExtendFamilyDefaults: React.Dispatch<React.SetStateAction<Record<string, string>>>;
-  },
-): void {
-  setters.setItems(payload.items);
-  setters.setFamilies(payload.families);
-  setters.setExtendFamilyDefaults((prev) => {
-    const next = payload.extend_family_defaults || {};
-    try {
-      return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
-    } catch {
-      return next;
-    }
-  });
-}
 
 type WorkProductSort = "created_desc" | "created_asc" | "family_asc" | "family_desc" | "status" | "pick_mode";
 
@@ -898,6 +869,14 @@ function WorkProductViewer({
   const trimEditable = isJobTrimEditable(item);
   const pendingJobTrim = canUpdatePendingJobTrim(item);
   const pendingTrimTimerRef = useRef<number | null>(null);
+  const queryClient = useQueryClient();
+  const pendingTrimMutation = useMutation({
+    mutationFn: updatePendingShapeFactoryTrim,
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.shapeFactory.workProductsRoot,
+      }),
+  });
 
   useEffect(() => {
     return () => {
@@ -918,7 +897,7 @@ function WorkProductViewer({
     if (pendingTrimTimerRef.current != null) window.clearTimeout(pendingTrimTimerRef.current);
     pendingTrimTimerRef.current = window.setTimeout(() => {
       pendingTrimTimerRef.current = null;
-      void updatePendingShapeFactoryTrim({
+      void pendingTrimMutation.mutateAsync({
         job_key: String(item.job_key || "").trim() || undefined,
         job_path: String(item.job_path || "").trim() || undefined,
         skip_first_frames: win.skip_first_frames,
@@ -2601,6 +2580,21 @@ function WorkProductQuickQueue({
   const jobKey = String(item.job_key || "").trim();
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const invalidateWorkbench = () =>
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.shapeFactory.workProductsRoot,
+    });
+  const invalidateQueue = () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.queue.snapshot }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.queue.history }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.queue.ledgerRoot }),
+    ]);
+  const unqueueMutation = useMutation({ mutationFn: unqueueShapeFactory });
+  const discardMutation = useMutation({ mutationFn: discardShapeFactoryJob });
+  const finishEditMutation = useMutation({ mutationFn: finishShapeFactoryEdit });
+  const replayMutation = useMutation({ mutationFn: replayShapeFactory });
   const [rerunTrimMode, setRerunTrimMode] = useState<"job" | "edited">(() =>
     sourceTrim.dirty || sourceTrim.clampedDefault ? "edited" : "job",
   );
@@ -2610,9 +2604,15 @@ function WorkProductQuickQueue({
     if (sourceTrim.dirty || sourceTrim.clampedDefault) setRerunTrimMode("edited");
   }, [sourceTrim.dirty, sourceTrim.clampedDefault]);
 
-  const canRerun = Boolean(jobKey) && !busy;
-  const canUnqueue = canUnqueueWorkProduct(item) && !busy;
-  const canEditSubmit = canEditJobViaSubmit(item) && !busy;
+  const mutationsBusy =
+    unqueueMutation.isPending ||
+    discardMutation.isPending ||
+    finishEditMutation.isPending ||
+    replayMutation.isPending;
+  const isBusy = busy || mutationsBusy;
+  const canRerun = Boolean(jobKey) && !isBusy;
+  const canUnqueue = canUnqueueWorkProduct(item) && !isBusy;
+  const canEditSubmit = canEditJobViaSubmit(item) && !isBusy;
   const isEditing = workProductStatusKey(item) === "editing";
   const editSubmitUrl = canEditSubmit
     ? submitHref({
@@ -2622,8 +2622,8 @@ function WorkProductQuickQueue({
         mediaRelpath: String(item.bindings?.source_video?.relpath || item.bindings?.source_still?.relpath || "").trim() || null,
       })
     : null;
-  const canArchive = canArchiveTerminalWorkProduct(item) && !busy;
-  const canDelete = canDeleteWorkProduct(item) && !busy;
+  const canArchive = canArchiveTerminalWorkProduct(item) && !isBusy;
+  const canDelete = canDeleteWorkProduct(item) && !isBusy;
   const deleteIsPendingOnly = canDiscardPendingWorkProduct(item);
   const nonFactory = isNonFactoryWorkProduct(item);
   const submitUrl = workbenchAdvanceSubmitHref(item, {
@@ -2634,7 +2634,7 @@ function WorkProductQuickQueue({
 
   const unqueue = async () => {
     const pid = String(item.prompt_id || "").trim();
-    if (!pid || busy) return;
+    if (!pid || isBusy) return;
     if (nonFactory) {
       const ok = window.confirm(
         "Remove from Comfy queue?\n\n" +
@@ -2646,7 +2646,7 @@ function WorkProductQuickQueue({
     setBusy(true);
     setMsg(null);
     try {
-      const res = await unqueueShapeFactory({
+      const res = await unqueueMutation.mutateAsync({
         prompt_id: pid,
         job_key: nonFactory ? undefined : jobKey || undefined,
         job_path: nonFactory ? undefined : String(item.job_path || "").trim() || undefined,
@@ -2659,6 +2659,8 @@ function WorkProductQuickQueue({
       } else {
         setMsg("Removed from Comfy queue (no factory job)");
       }
+      await invalidateWorkbench();
+      await invalidateQueue();
       onCommitted?.();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));
@@ -2668,7 +2670,7 @@ function WorkProductQuickQueue({
   };
 
   const discard = async () => {
-    if (!canDelete || busy) return;
+    if (!canDelete || isBusy) return;
     const historyStub = isHistoryFailureStub(item);
     const kind = historyStub ? "history failure" : deleteIsPendingOnly ? "pending job" : "failed job";
     const ok = window.confirm(
@@ -2684,7 +2686,7 @@ function WorkProductQuickQueue({
     setBusy(true);
     setMsg(null);
     try {
-      const res = await discardShapeFactoryJob({
+      const res = await discardMutation.mutateAsync({
         job_key: jobKey || undefined,
         job_path: String(item.job_path || "").trim() || undefined,
         prompt_id: String(item.prompt_id || "").trim() || undefined,
@@ -2699,6 +2701,7 @@ function WorkProductQuickQueue({
           ? `Dismissed history failure${res.job_key ? ` · ${res.job_key}` : ""}`
           : `Deleted${res.job_key ? ` · ${res.job_key}` : ""}`,
       );
+      await invalidateWorkbench();
       onCommitted?.();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));
@@ -2708,7 +2711,7 @@ function WorkProductQuickQueue({
   };
 
   const archive = async () => {
-    if (!canArchive || busy) return;
+    if (!canArchive || isBusy) return;
     const ok = window.confirm(
       "Archive this failed job?\n\n" +
         "Removes it from Workbench. The job + sidecars are renamed to .discarded on disk " +
@@ -2719,7 +2722,7 @@ function WorkProductQuickQueue({
     setBusy(true);
     setMsg(null);
     try {
-      const res = await discardShapeFactoryJob({
+      const res = await discardMutation.mutateAsync({
         job_key: jobKey || undefined,
         job_path: String(item.job_path || "").trim() || undefined,
         prompt_id: String(item.prompt_id || "").trim() || undefined,
@@ -2734,6 +2737,7 @@ function WorkProductQuickQueue({
           ? `Dismissed history failure${res.job_key ? ` · ${res.job_key}` : ""}`
           : `Archived failure${res.job_key ? ` · ${res.job_key}` : ""}`,
       );
+      await invalidateWorkbench();
       onCommitted?.();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));
@@ -2743,7 +2747,7 @@ function WorkProductQuickQueue({
   };
 
   const rerun = async (when: "now" | "later") => {
-    if (!jobKey || busy) return;
+    if (!jobKey || isBusy) return;
     setBusy(true);
     setMsg("");
     try {
@@ -2758,7 +2762,7 @@ function WorkProductQuickQueue({
         overrides = fromTrim.overrides;
         warning = fromTrim.warning;
       }
-      const res = await replayShapeFactory({
+      const res = await replayMutation.mutateAsync({
         job_key: jobKey,
         family_slug: String(item.family_slug || "").trim() || undefined,
         extend: false,
@@ -2791,6 +2795,8 @@ function WorkProductQuickQueue({
           .filter(Boolean)
           .join(" · "),
       );
+      await invalidateWorkbench();
+      await invalidateQueue();
       onCommitted?.();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));
@@ -2840,7 +2846,7 @@ function WorkProductQuickQueue({
             <button
               type="button"
               className={rerunTrimMode === "job" ? "seg-btn active" : "seg-btn"}
-              disabled={busy}
+              disabled={isBusy}
               title="Keep the Use window baked into this job"
               onClick={() => setRerunTrimMode("job")}
             >
@@ -2849,7 +2855,7 @@ function WorkProductQuickQueue({
             <button
               type="button"
               className={rerunTrimMode === "edited" ? "seg-btn active" : "seg-btn"}
-              disabled={busy}
+              disabled={isBusy}
               title="Use the source marks currently on this card"
               onClick={() => setRerunTrimMode("edited")}
             >
@@ -2863,7 +2869,7 @@ function WorkProductQuickQueue({
             <button
               type="button"
               className={rerunSeedMode === "same" ? "seg-btn active" : "seg-btn"}
-              disabled={busy}
+              disabled={isBusy}
               title="Hold this job’s noise seed (exact retry when trim also matches)"
               onClick={() => setRerunSeedMode("same")}
             >
@@ -2872,7 +2878,7 @@ function WorkProductQuickQueue({
             <button
               type="button"
               className={rerunSeedMode === "new" ? "seg-btn active" : "seg-btn"}
-              disabled={busy}
+              disabled={isBusy}
               title="Draw a new noise seed; keep other bindings"
               onClick={() => setRerunSeedMode("new")}
             >
@@ -2916,14 +2922,14 @@ function WorkProductQuickQueue({
             <button
               type="button"
               className="drt-btn work-product-quick-queue__release"
-              disabled={busy}
+              disabled={isBusy}
               title="Release editing lock back to pending so drain can pick it up"
               onClick={() => {
                 void (async () => {
                   setBusy(true);
                   setMsg(null);
                   try {
-                    await finishShapeFactoryEdit({
+                    await finishEditMutation.mutateAsync({
                       job_key: jobKey,
                       action: "later",
                       actor: "operator",
@@ -2931,6 +2937,7 @@ function WorkProductQuickQueue({
                       source_surface: "workbench",
                     });
                     setMsg("Released → pending");
+                    await invalidateWorkbench();
                     onCommitted?.();
                   } catch (e) {
                     setMsg(e instanceof Error ? e.message : String(e));
@@ -3329,24 +3336,12 @@ function WorkProductRow({
 
 export function WorkProductsApp() {
   const deepLink = useMemo(() => parseWorkbenchDeepLink(), []);
+  const queryClient = useQueryClient();
   const [layout, setLayout] = useState<RowLayout>(() => loadLayout());
   const [sort, setSort] = useState<WorkProductSort>(() => loadSort());
   const [nameQuery, setNameQuery] = useState(() => deepLink.filter || "");
   const initialLimit = deepLink.filter ? 80 : 50;
   const initialHourlyOnly = deepLink.filter ? false : loadHourlyOnly();
-  const initialCache = getSessionListCache<WorkProductsCachePayload>(
-    workProductsCacheKey(initialLimit, initialHourlyOnly),
-  );
-  const [items, setItems] = useState<WorkProductItem[]>(() => initialCache?.value.items ?? []);
-  const [families, setFamilies] = useState<WorkProductFamilyOption[]>(
-    () => initialCache?.value.families ?? [],
-  );
-  const [extendFamilyDefaults, setExtendFamilyDefaults] = useState<Record<string, string>>(
-    () => initialCache?.value.extend_family_defaults ?? {},
-  );
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(() => !initialCache);
-  const [refreshing, setRefreshing] = useState(false);
   const [limit, setLimit] = useState(() => initialLimit);
   const [hourlyOnly, setHourlyOnly] = useState(() => initialHourlyOnly);
   const [statusOff, setStatusOff] = useState<Set<string>>(() => loadStatusFilterOff());
@@ -3354,9 +3349,32 @@ export function WorkProductsApp() {
   const [clearFailedBusy, setClearFailedBusy] = useState(false);
   const [clearFailedMsg, setClearFailedMsg] = useState<string | null>(null);
   const deepLinkScrolled = useRef(false);
-  const itemsLenRef = useRef(items.length);
-  itemsLenRef.current = items.length;
-  const refreshGenRef = useRef(0);
+  const bulkDiscardMutation = useMutation({ mutationFn: discardShapeFactoryJob });
+  const queryState = useQuery({
+    queryKey: queryKeys.shapeFactory.workProducts({ limit, hourlyOnly, family: null }),
+    queryFn: () => fetchShapeFactoryWorkProducts({ limit, hourlyOnly }),
+    staleTime: 30_000,
+    placeholderData: (prev) => prev,
+    refetchInterval: (query) => {
+      const rows = (query.state.data?.items || []) as WorkProductItem[];
+      return rows.some((it) => isLivePreviewItem(it)) ? 8000 : false;
+    },
+    refetchIntervalInBackground: false,
+  });
+  const items = queryState.data?.items || [];
+  const families = queryState.data?.families || [];
+  const extendFamilyDefaults = queryState.data?.extend_family_defaults || {};
+  const loading = queryState.isLoading;
+  const refreshing = queryState.isFetching && !queryState.isLoading;
+  const error = queryState.error instanceof Error ? queryState.error.message : null;
+
+  useEffect(() => {
+    if (!queryState.data) return;
+    rememberFamiliesFromWorkProducts({
+      families: queryState.data.families || [],
+      extend_family_defaults: queryState.data.extend_family_defaults || {},
+    });
+  }, [queryState.data]);
 
   const statusCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -3459,42 +3477,7 @@ export function WorkProductsApp() {
     setMarkerOff(next);
   };
 
-  const refresh = (opts?: { quiet?: boolean }) => {
-    const cacheKey = workProductsCacheKey(limit, hourlyOnly);
-    const soft =
-      opts?.quiet === true ||
-      itemsLenRef.current > 0 ||
-      Boolean(getSessionListCache<WorkProductsCachePayload>(cacheKey));
-    const gen = ++refreshGenRef.current;
-    if (soft) setRefreshing(true);
-    else setLoading(true);
-    void fetchShapeFactoryWorkProducts({ limit, hourlyOnly })
-      .then((res) => {
-        if (gen !== refreshGenRef.current) return;
-        const payload: WorkProductsCachePayload = {
-          items: res.items || [],
-          families: res.families || [],
-          extend_family_defaults: res.extend_family_defaults || {},
-        };
-        setSessionListCache(cacheKey, payload);
-        rememberFamiliesFromWorkProducts(payload);
-        applyWorkProductsCachePayload(payload, {
-          setItems,
-          setFamilies,
-          setExtendFamilyDefaults,
-        });
-        setError(null);
-      })
-      .catch((e) => {
-        if (gen !== refreshGenRef.current) return;
-        setError(e instanceof Error ? e.message : String(e));
-      })
-      .finally(() => {
-        if (gen !== refreshGenRef.current) return;
-        if (soft) setRefreshing(false);
-        else setLoading(false);
-      });
-  };
+  const refresh = () => queryState.refetch();
 
   const clearFailedVisible = async () => {
     const targets = failedVisible;
@@ -3513,7 +3496,7 @@ export function WorkProductsApp() {
     const errors: string[] = [];
     for (const it of targets) {
       try {
-        await discardShapeFactoryJob({
+        await bulkDiscardMutation.mutateAsync({
           job_key: String(it.job_key || "").trim() || undefined,
           job_path: String(it.job_path || "").trim() || undefined,
           prompt_id: String(it.prompt_id || "").trim() || undefined,
@@ -3536,68 +3519,8 @@ export function WorkProductsApp() {
         ? `Deleted ${deleted}/${targets.length} · ${errors.length} failed`
         : `Deleted ${deleted} failed job${deleted === 1 ? "" : "s"}`,
     );
-    refresh({ quiet: true });
+    await queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductsRoot });
   };
-
-  useEffect(() => {
-    let cancelled = false;
-    const cacheKey = workProductsCacheKey(limit, hourlyOnly);
-    const cached = getSessionListCache<WorkProductsCachePayload>(cacheKey);
-    const gen = ++refreshGenRef.current;
-    if (cached) {
-      applyWorkProductsCachePayload(cached.value, {
-        setItems,
-        setFamilies,
-        setExtendFamilyDefaults,
-      });
-      rememberFamiliesFromWorkProducts(cached.value);
-      setLoading(false);
-      setRefreshing(true);
-    } else {
-      setLoading(true);
-      setRefreshing(false);
-    }
-    setError(null);
-    void (async () => {
-      try {
-        const res = await fetchShapeFactoryWorkProducts({ limit, hourlyOnly });
-        if (cancelled || gen !== refreshGenRef.current) return;
-        const payload: WorkProductsCachePayload = {
-          items: res.items || [],
-          families: res.families || [],
-          extend_family_defaults: res.extend_family_defaults || {},
-        };
-        setSessionListCache(cacheKey, payload);
-        rememberFamiliesFromWorkProducts(payload);
-        applyWorkProductsCachePayload(payload, {
-          setItems,
-          setFamilies,
-          setExtendFamilyDefaults,
-        });
-      } catch (e) {
-        if (cancelled || gen !== refreshGenRef.current) return;
-        setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        if (cancelled || gen !== refreshGenRef.current) return;
-        setLoading(false);
-        setRefreshing(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [limit, hourlyOnly]);
-
-  // Quiet refresh so in-flight jobs swap to the finished file when ready.
-  useEffect(() => {
-    const needs = items.some((it) => isLivePreviewItem(it));
-    if (!needs) return;
-    const id = window.setInterval(() => {
-      if (document.visibilityState === "hidden") return;
-      refresh({ quiet: true });
-    }, 8000);
-    return () => window.clearInterval(id);
-  }, [items, limit, hourlyOnly]);
 
   return (
     <PipelineScreen className="work-products">
@@ -3687,7 +3610,7 @@ export function WorkProductsApp() {
             ) : null}
             <button
               type="button"
-              onClick={() => refresh({ quiet: itemsLenRef.current > 0 })}
+              onClick={() => void refresh()}
               disabled={loading && !items.length}
             >
               {refreshing ? "Updating…" : "Refresh"}
@@ -3824,7 +3747,9 @@ export function WorkProductsApp() {
               layout={layout}
               families={families}
               extendFamilyDefaults={extendFamilyDefaults}
-              onCommitted={() => refresh({ quiet: true })}
+              onCommitted={() => {
+                void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductsRoot });
+              }}
             />
           ))}
         </div>

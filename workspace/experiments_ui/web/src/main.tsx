@@ -1,5 +1,6 @@
 import React, { Suspense, lazy } from "react";
 import { createRoot } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AppShell } from "./ui/AppShell";
 import { resolveRouteId, type AppRouteId } from "./ui/routes";
 import "./ui/styles.css";
@@ -27,6 +28,17 @@ const VisionTagJudgeApp = lazy(() =>
 const pathname = window.location.pathname || "/";
 const active = resolveRouteId(pathname);
 const RootView = pathname.startsWith("/vision/tag-judge") ? VisionTagJudgeApp : SCREENS[active];
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 30_000,
+      gcTime: 10 * 60_000,
+      retry: 1,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: "always",
+    },
+  },
+});
 
 class ScreenErrorBoundary extends React.Component<{ children: React.ReactNode }, { error: Error | null }> {
   state: { error: Error | null } = { error: null };
@@ -55,18 +67,20 @@ class ScreenErrorBoundary extends React.Component<{ children: React.ReactNode },
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <AppShell active={active}>
-      <ScreenErrorBoundary>
-        <Suspense
-          fallback={
-            <div className="panel" style={{ margin: 16, padding: 16, color: "var(--muted, #aab2c5)" }}>
-              Loading…
-            </div>
-          }
-        >
-          <RootView />
-        </Suspense>
-      </ScreenErrorBoundary>
-    </AppShell>
+    <QueryClientProvider client={queryClient}>
+      <AppShell active={active}>
+        <ScreenErrorBoundary>
+          <Suspense
+            fallback={
+              <div className="panel" style={{ margin: 16, padding: 16, color: "var(--muted, #aab2c5)" }}>
+                Loading…
+              </div>
+            }
+          >
+            <RootView />
+          </Suspense>
+        </ScreenErrorBoundary>
+      </AppShell>
+    </QueryClientProvider>
   </React.StrictMode>,
 );
