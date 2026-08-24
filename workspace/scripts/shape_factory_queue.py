@@ -64,6 +64,14 @@ def _video_source_slot(shape: Dict[str, Any], bindings: Dict[str, str]) -> Optio
     return None
 
 
+def _bindings_declared_by_shape(shape: Dict[str, Any], bindings: Dict[str, str]) -> Dict[str, str]:
+    """Keep only slots the target shape declares (drop i2v ``source_still`` on v2v extend)."""
+    known = set(requires_by_slot(shape))
+    if not known:
+        return dict(bindings)
+    return {k: v for k, v in bindings.items() if k in known}
+
+
 def _image_source_slots(shape: Dict[str, Any]) -> list[str]:
     """Required (non-optional) image / load_image slots — e.g. identity_anchor, source_still."""
     out: list[str] = []
@@ -1364,6 +1372,7 @@ def queue_shape_factory_combo(
 
     shape = load_yaml(shape_path)
     req_by_slot = requires_by_slot(shape)
+    bindings = _bindings_declared_by_shape(shape, bindings)
 
     picks: Dict[str, Path] = {}
     slot_paths: Dict[str, str] = {}
@@ -1371,6 +1380,8 @@ def queue_shape_factory_combo(
         slot_name = str(slot or "").strip()
         path_str = str(raw_path or "").strip()
         if not slot_name or not path_str:
+            continue
+        if slot_name not in req_by_slot:
             continue
         resolved = resolve_existing_path(
             path_str,
@@ -1812,6 +1823,8 @@ def replay_from_request_body(
         construction = dict(construction)
         construction["identity_anchor"] = identity_meta.get("path")
         construction["identity_evidence"] = identity_meta.get("evidence")
+
+    bindings = _bindings_declared_by_shape(shape, bindings)
 
     # Resolve VHS input window (explicit overrides → sidecar; never template skip).
     video_slot_for_trim = _video_source_slot(shape, bindings)

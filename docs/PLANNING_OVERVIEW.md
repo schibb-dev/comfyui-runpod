@@ -93,8 +93,9 @@ Each program has: **intent**, **today**, **next** (actionable), **later**, **key
 
 | | |
 |--|--|
-| **Today** | `watch_queue.py`, ops containers, ledger, `status.json`, Experiments UI `/api/queue` |
+| **Today** | `watch_queue.py`, ops containers, ledger, `status.json`, Experiments UI `/api/queue`; hourly timer + `hourly-schedule.json` (interval / queue caps only); chain cadences & seed weights mostly **code + `HOURLY_*` env** |
 | **Next** | Ops hygiene (disable duplicate Windows tasks if Docker ops on); ledger tuning only if pain |
+| **Next (plan)** | **Hourly policy as managed data** — lift drain cadences / seed families / lookbacks into `.data` config + Home UI (see `.data/WORKFLOW_FACTORY_NEXT.md`) |
 | **Later** | Tighter integration with durable `run` rows (P2) |
 | **Docs** | [`SCHEDULED_AND_CONTAINER_JOBS_RUNDOWN.md`](./SCHEDULED_AND_CONTAINER_JOBS_RUNDOWN.md) |
 | **Not now** | Multi-step orchestration execution |
@@ -158,14 +159,14 @@ Each program has: **intent**, **today**, **next** (actionable), **later**, **key
 
 ### P8 — Image content sorter (parallel CLIP path)
 
-**Intent:** **Still-image** libraries sorted by visual similarity (WIP dumps, general sets) — separate from **video slices**.
+**Intent:** **Still-image** libraries sorted/searchable for human curation — separate from **video slices**; feed factory seeds.
 
 | | |
 |--|--|
-| **Today** | `workflows/image_sorting_tools/` developed |
-| **Next** | Use when still sort pain ≠ video Discovery pain |
-| **Later** | Optional merge with P1 embeddings policy |
-| **Docs** | `PROJECT_ORGANIZATION_PROPOSAL.md` Project C; `IMAGE_SORTER_GUIDE.md` |
+| **Today** | `workflows/image_sorting_tools/` developed; Discovery path search + `asset_tags` bootstrap; no dedicated input-still browser |
+| **Next (plan)** | **Input still browser + collections-as-pools** — tag-assisted browse/sort; named collections → factory pool members (stills first). See factory next-steps note in `.data/WORKFLOW_FACTORY_NEXT.md` |
+| **Later** | Optional merge with P1 embeddings; extend collections/tags to Work Products video |
+| **Docs** | `PROJECT_ORGANIZATION_PROPOSAL.md` Project C; `IMAGE_SORTER_GUIDE.md`; P1 tag sequence |
 
 ---
 
@@ -212,6 +213,8 @@ Avoid parallel spikes across programs. Locked sequence for P1 vision:
 _Use this section during mental exploration. Promote bullets into a program’s **Next** when they stabilize._
 
 - **V1 retrospective (2026-07-16): Keep time slices.** Offline 2s windows + whole-video A/B and the Vision slices review UI were enough to keep span-aware captions/tags on the path (index span rows later; V2 should enqueue the same portable scripts). Separately, blind tag judgment (48 samples) pinned **PromptGen-large** as the V3a day-one tagger; **base∪large** (or an informed union: large always, add base-only when ★/prior-good and not FP-blocked) stays deferred. Artifacts: `_status/vision_tag_judgments.ndjson`, `vision_v3a_tag_pin.json`.
+- **Input still collections → factory pools (2026-08-20):** Want a browse UI over input stills (better organization long-term) where tagging helps search/sort; humans assemble **collections** that become pool sources for factory/hourly/Submit. Stills first; Work Products video tagging/collections later. Promote to a dedicated plan doc when spike-ready (ties P8 + P1 V3a + existing `.data/pools/*/pools.yaml`).
+- **Hourly policy → managed config (2026-08-20):** Facial/i2v drain every-N, seed weights, lookbacks, boosts, etc. are first-order operator concerns but live in code/env today. Promote into `hourly-schedule.json` (or sibling policy file) + Home controls; code reads config as source of truth.
 
 ---
 ## Doc index (quick links)

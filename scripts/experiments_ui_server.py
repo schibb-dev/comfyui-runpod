@@ -2234,21 +2234,28 @@ def _shape_factory_unqueue_payload(cfg: ServerConfig, body: Dict[str, Any]) -> D
     d = _workspace_scripts_dir()
     if d.is_dir() and str(d) not in sys.path:
         sys.path.insert(0, str(d))
-    from shape_factory import unqueue_to_pending  # type: ignore
+    from shape_factory_creation_control import mutate_job  # type: ignore
     from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
 
     prompt_id = str(body.get("prompt_id") or "").strip()
-    if not prompt_id:
+    if not prompt_id and not str(body.get("job_key") or "").strip():
         raise ValueError("missing_prompt_id")
     job_key = str(body.get("job_key") or "").strip() or None
     job_path_raw = str(body.get("job_path") or "").strip() or None
+    reason = str(body.get("reason") or "user_unqueue").strip() or "user_unqueue"
+    actor = str(body.get("actor") or "operator").strip() or "operator"
+    source_surface = str(body.get("source_surface") or "workbench").strip() or "workbench"
     data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
-    return unqueue_to_pending(
-        prompt_id=prompt_id,
+    return mutate_job(
+        action="unqueue_to_pending",
+        prompt_id=prompt_id or None,
         server=str(cfg.comfy_server),
         data_root=data_root,
         job_key=job_key,
         job_path=Path(job_path_raw) if job_path_raw else None,
+        reason=reason,
+        actor=actor,
+        source_surface=source_surface,
     )
 
 
@@ -2257,7 +2264,7 @@ def _shape_factory_discard_payload(cfg: ServerConfig, body: Dict[str, Any]) -> D
     d = _workspace_scripts_dir()
     if d.is_dir() and str(d) not in sys.path:
         sys.path.insert(0, str(d))
-    from shape_factory import discard_pending_job  # type: ignore
+    from shape_factory_creation_control import mutate_job  # type: ignore
     from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
     from shape_factory_work_products import dismiss_history_work_product  # type: ignore
 
@@ -2268,6 +2275,8 @@ def _shape_factory_discard_payload(cfg: ServerConfig, body: Dict[str, Any]) -> D
     if not job_key and not job_path_raw and not prompt_id:
         raise ValueError("missing_job_key")
     reason = str(body.get("reason") or "user_removed").strip() or "user_removed"
+    actor = str(body.get("actor") or "operator").strip() or "operator"
+    source_surface = str(body.get("source_surface") or "workbench").strip() or "workbench"
     expunge_raw = body.get("expunge")
     expunge = True if expunge_raw is None else bool(expunge_raw) and str(expunge_raw).lower() not in {"0", "false", "no"}
     data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
@@ -2286,12 +2295,15 @@ def _shape_factory_discard_payload(cfg: ServerConfig, body: Dict[str, Any]) -> D
     if history_stub and not job_path_raw:
         return _dismiss()
 
-    result = discard_pending_job(
+    result = mutate_job(
+        action="discard",
         data_root=data_root,
         job_key=job_key,
         job_path=Path(job_path_raw) if job_path_raw else None,
         server=str(cfg.comfy_server),
         reason=reason,
+        actor=actor,
+        source_surface=source_surface,
         expunge=expunge,
     )
     if (
@@ -2309,7 +2321,7 @@ def _shape_factory_update_pending_trim_payload(cfg: ServerConfig, body: Dict[str
     d = _workspace_scripts_dir()
     if d.is_dir() and str(d) not in sys.path:
         sys.path.insert(0, str(d))
-    from shape_factory import update_pending_job_vhs_window  # type: ignore
+    from shape_factory_creation_control import mutate_job  # type: ignore
     from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
 
     job_key = str(body.get("job_key") or "").strip() or None
@@ -2328,6 +2340,9 @@ def _shape_factory_update_pending_trim_payload(cfg: ServerConfig, body: Dict[str
         raise ValueError("bad_frame_load_cap") from e
     mark_in = body.get("mark_in")
     mark_out = body.get("mark_out")
+    actor = str(body.get("actor") or "operator").strip() or "operator"
+    reason = str(body.get("reason") or "trim_adjustment").strip() or "trim_adjustment"
+    source_surface = str(body.get("source_surface") or "submit_edit").strip() or "submit_edit"
     try:
         mark_in_f = float(mark_in) if mark_in is not None and mark_in != "" else None
     except (TypeError, ValueError) as e:
@@ -2337,7 +2352,8 @@ def _shape_factory_update_pending_trim_payload(cfg: ServerConfig, body: Dict[str
     except (TypeError, ValueError) as e:
         raise ValueError("bad_mark_out") from e
     data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
-    return update_pending_job_vhs_window(
+    return mutate_job(
+        action="update_trim",
         data_root=data_root,
         job_key=job_key,
         job_path=Path(job_path_raw) if job_path_raw else None,
@@ -2346,6 +2362,9 @@ def _shape_factory_update_pending_trim_payload(cfg: ServerConfig, body: Dict[str
         mark_in=mark_in_f,
         mark_out=mark_out_f,
         server=str(cfg.comfy_server),
+        actor=actor,
+        reason=reason,
+        source_surface=source_surface,
     )
 
 
@@ -2354,19 +2373,26 @@ def _shape_factory_begin_edit_payload(cfg: ServerConfig, body: Dict[str, Any]) -
     d = _workspace_scripts_dir()
     if d.is_dir() and str(d) not in sys.path:
         sys.path.insert(0, str(d))
-    from shape_factory import begin_job_edit  # type: ignore
+    from shape_factory_creation_control import mutate_job  # type: ignore
     from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
 
     job_key = str(body.get("job_key") or "").strip() or None
     job_path_raw = str(body.get("job_path") or "").strip() or None
+    actor = str(body.get("actor") or "operator").strip() or "operator"
+    reason = str(body.get("reason") or "begin_edit").strip() or "begin_edit"
+    source_surface = str(body.get("source_surface") or "submit_edit").strip() or "submit_edit"
     if not job_key and not job_path_raw:
         raise ValueError("missing_job_key")
     data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
-    return begin_job_edit(
+    return mutate_job(
+        action="begin_edit",
         data_root=data_root,
         server=str(cfg.comfy_server),
         job_key=job_key,
         job_path=Path(job_path_raw) if job_path_raw else None,
+        actor=actor,
+        reason=reason,
+        source_surface=source_surface,
     )
 
 
@@ -2375,7 +2401,7 @@ def _shape_factory_finish_edit_payload(cfg: ServerConfig, body: Dict[str, Any]) 
     d = _workspace_scripts_dir()
     if d.is_dir() and str(d) not in sys.path:
         sys.path.insert(0, str(d))
-    from shape_factory import finish_job_edit  # type: ignore
+    from shape_factory_creation_control import mutate_job  # type: ignore
     from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
 
     job_key = str(body.get("job_key") or "").strip() or None
@@ -2385,15 +2411,22 @@ def _shape_factory_finish_edit_payload(cfg: ServerConfig, body: Dict[str, Any]) 
     action = str(body.get("action") or "").strip().lower()
     if action not in {"later", "cancel", "now"}:
         raise ValueError("bad_action")
+    actor = str(body.get("actor") or "operator").strip() or "operator"
+    reason = str(body.get("reason") or f"finish_edit:{action}").strip() or f"finish_edit:{action}"
+    source_surface = str(body.get("source_surface") or "submit_edit").strip() or "submit_edit"
     data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
-    return finish_job_edit(
+    return mutate_job(
+        action="finish_edit",
         data_root=data_root,
-        action=action,
+        finish_action=action,
         server=str(cfg.comfy_server),
         job_key=job_key,
         job_path=Path(job_path_raw) if job_path_raw else None,
         front=bool(body.get("front") or False),
         dry_run=bool(body.get("dry_run") or False),
+        actor=actor,
+        reason=reason,
+        source_surface=source_surface,
     )
 
 
@@ -2564,7 +2597,14 @@ def _shape_factory_clips_list_payload(cfg: "ServerConfig", q: Dict[str, List[str
             )
             parent = parent_id or ""
         if not parent:
-            raise ValueError("missing_parent")
+            # Stills live under input/, not output/; clip bookmarks are video-only.
+            return {
+                "ok": True,
+                "parent_content_id": None,
+                "default_clip_id": None,
+                "clips": [],
+                "media_relpath": media_rel or None,
+            }
 
         # Bridge sidecar presets once when listing by media.
         if abs_path is not None and abs_path.is_file():

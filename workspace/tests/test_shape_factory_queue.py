@@ -589,6 +589,75 @@ class ShapeFactoryQueueTests(unittest.TestCase):
         self.assertEqual(Path(bindings["identity_anchor"]).resolve(), still.resolve())
         self.assertEqual((meta or {}).get("evidence"), "job_binding")
 
+    def test_extend_drops_parent_source_still_on_v2v_shape(self) -> None:
+        from shape_factory_queue import _bindings_declared_by_shape, replay_from_request_body
+
+        shape = {
+            "requires": [
+                {"slot": "source_video", "media": "video"},
+                {"slot": "prompt_profile", "binding": {"type": "prompt_bundle"}},
+            ]
+        }
+        filtered = _bindings_declared_by_shape(
+            shape,
+            {
+                "source_still": "/input/face.jpeg",
+                "prompt_profile": "/data/prompts/a.json",
+                "source_video": "/data/output/og/clip.mp4",
+            },
+        )
+        self.assertNotIn("source_still", filtered)
+        self.assertIn("source_video", filtered)
+        self.assertIn("prompt_profile", filtered)
+
+        job = {
+            "job_key": "hourly__pp-catalog-default__still-d49897c79c8b__000",
+            "family_slug": "X-KNEEL-FB9",
+            "bindings": {
+                "prompt_profile": {"path": "/data/prompts/a.json"},
+                "source_still": {"path": "/input/face.jpeg"},
+            },
+            "submit": {"outputs": ["/data/output/og/kneel_out.mp4"], "status": "complete"},
+        }
+        captured: dict = {}
+
+        def fake_queue(**kwargs):
+            captured.update(kwargs)
+            return {"ok": True, "job_key": "ext", "pick_mode": kwargs.get("pick_mode")}
+
+        with mock.patch("shape_factory_queue._find_job_doc", return_value=(job, Path("x.job.json"))), mock.patch(
+            "shape_factory_queue.load_yaml", return_value=shape
+        ), mock.patch(
+            "shape_factory_queue.resolve_or_recover_prompt_profile_binding",
+            side_effect=lambda bindings, **_k: (bindings, None),
+        ), mock.patch(
+            "shape_factory_queue._resolve_shape_path", return_value=Path("shape.yaml")
+        ), mock.patch(
+            "shape_factory_queue.queue_shape_factory_combo", side_effect=fake_queue
+        ), mock.patch(
+            "shape_factory_queue.resolve_vhs_window_overrides",
+            side_effect=lambda **kw: (kw.get("parameters") or {}, False),
+        ), mock.patch(
+            "shape_factory_queue.vhs_loader_defaults_for_shape",
+            return_value={"skip_first_frames": 0, "frame_load_cap": 0},
+        ):
+            out = replay_from_request_body(
+                {
+                    "job_key": job["job_key"],
+                    "family_slug": "FB9_GEX",
+                    "extend": True,
+                    "dry_run": True,
+                },
+                repo_root=REPO_ROOT,
+                workspace_root=REPO_ROOT / "workspace",
+                output_root=Path("/tmp"),
+                comfy_server="http://127.0.0.1:8188",
+            )
+        self.assertTrue(out.get("ok"), out)
+        self.assertEqual(captured.get("pick_mode"), "extend")
+        self.assertNotIn("source_still", captured.get("bindings") or {})
+        self.assertEqual((captured.get("bindings") or {}).get("source_video"), "/data/output/og/kneel_out.mp4")
+
     def test_extend_missing_identity_still_raises(self) -> None:
         from shape_factory_queue import _resolve_identity_still_for_shape
 

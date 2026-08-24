@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from shape_factory_flow import flow_phase, normalize_flow_status, remediation_actions
+
 # Plan fields worth keeping on the job for construction debugging.
 CONSTRUCTION_PLAN_KEYS: tuple[str, ...] = (
     "step",
@@ -143,16 +145,16 @@ def list_shape_families(
 
 
 def is_extend_family_option(row: Dict[str, Any]) -> bool:
-    """Mirror Submit UI: video Extend targets (V2V / facial / source), not I2V/still/identity."""
+    """Mirror Submit UI: video Extend targets (V2V / facial / identity-anchor), not I2V/still."""
     slug = str(row.get("slug") or "").strip()
-    if not slug or "identity" in slug.lower():
+    if not slug:
         return False
     sid = str(row.get("shape_id") or "").strip().lower()
     if not sid:
         return True
     if "i2v" in sid or "still" in sid:
         return False
-    return "v2v" in sid or "facial" in sid or "source" in sid
+    return "v2v" in sid or "facial" in sid or "source" in sid or "identity_anchor" in sid
 
 
 def _shapes_pipelines_fingerprint(data_root: Path) -> str:
@@ -1533,6 +1535,10 @@ def _work_product_item_from_job(
         "graph_hash": job.get("graph_hash"),
         "output_prefix": job.get("output_prefix"),
         "status": status,
+        "flow_state": normalize_flow_status(status),
+        "flow_phase": flow_phase(status),
+        "remediation_actions": list(remediation_actions(status, prompt_id=submit.get("prompt_id"))),
+        "flow_events": submit.get("flow_events") if isinstance(submit.get("flow_events"), list) else [],
         "prompt_id": submit.get("prompt_id"),
         "submitted_at": submit.get("submitted_at"),
         "deposited_at": deposit.get("deposited_at"),

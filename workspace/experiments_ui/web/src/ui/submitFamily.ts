@@ -4,17 +4,16 @@ import type { WorkProductFamilyOption } from "./types";
 
 export const PREFERRED_EXTEND_FAMILIES = ["FB9_GEX2", "FB9_GEX_FACIAL", "FB9_GEX"] as const;
 
-/** Slug-only gate (identity plates are not plain Extend targets). */
+/** Slug-only gate (I2V/still families are not video Extend targets). */
 export function isExtendFamilySlug(slug: string): boolean {
   const s = String(slug || "").trim();
-  if (!s) return false;
-  if (/identity/i.test(s)) return false;
-  return true;
+  return Boolean(s);
 }
 
 /**
  * Families that can run Extend on a video Use (need a source_video / V2V contract).
  * I2V / still-only shapes belong in still doors, not video Extend.
+ * GEX2 identity-anchor is a V2V extend with an extra still slot — keep it listed.
  */
 export function isExtendFamilyOption(f: WorkProductFamilyOption): boolean {
   const slug = String(f.slug || "").trim();
@@ -22,7 +21,12 @@ export function isExtendFamilyOption(f: WorkProductFamilyOption): boolean {
   const sid = String(f.shape_id || "").toLowerCase();
   if (!sid) return true;
   if (sid.includes("i2v") || sid.includes("still")) return false;
-  return sid.includes("v2v") || sid.includes("facial") || sid.includes("source");
+  return (
+    sid.includes("v2v") ||
+    sid.includes("facial") ||
+    sid.includes("source") ||
+    sid.includes("identity_anchor")
+  );
 }
 
 export function pickDefaultExtendFamily(

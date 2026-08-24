@@ -245,6 +245,20 @@ class ShapeFactorySubmitRebuildTests(unittest.TestCase):
         )
         self.assertEqual(resolved, still.resolve())
 
+    def test_comfy_workspace_relpath_collapses_nested_output(self) -> None:
+        from shape_factory import comfy_workspace_relpath
+
+        with tempfile.TemporaryDirectory() as td:
+            data_root = Path(td)
+            clip = data_root / "output" / "og" / "2026-04-03" / "clip.mp4"
+            nested = data_root / "output" / "output" / "og" / "2026-04-03" / "clip.mp4"
+            rel, warn = comfy_workspace_relpath(nested, data_root)
+            self.assertIsNone(warn)
+            self.assertEqual(rel, "output/og/2026-04-03/clip.mp4")
+            rel2, warn2 = comfy_workspace_relpath(clip, data_root)
+            self.assertIsNone(warn2)
+            self.assertEqual(rel2, "output/og/2026-04-03/clip.mp4")
+
     def test_comfy_load_image_relpath_uses_basename_not_input_prefix(self) -> None:
         from shape_factory import comfy_load_image_relpath, comfy_workspace_relpath
 

@@ -13333,6 +13333,73 @@ tr.disabled:hover td {
   overflow-y: auto;
 }
 
+.work-product-flow {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.work-product-flow__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.work-product-flow__count {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.work-product-flow__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+
+.work-product-flow__item {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.work-product-flow__title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.work-product-flow__action {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.work-product-flow__meta {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.work-product-flow__time {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.work-product-flow__reason {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
 .work-product-badge--front {
   background: rgba(72, 148, 220, 0.22);
   border-color: rgba(72, 148, 220, 0.45);

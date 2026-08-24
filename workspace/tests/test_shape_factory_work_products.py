@@ -134,6 +134,15 @@ class TestWorkProducts(unittest.TestCase):
                     "status": "complete",
                     "prompt_id": "pid-1",
                     "outputs": [str(video)],
+                    "flow_events": [
+                        {
+                            "at": "2026-07-13T12:01:00+00:00",
+                            "action": "finish_edit",
+                            "actor": "operator",
+                            "source_surface": "submit_edit",
+                            "ok": True,
+                        }
+                    ],
                 },
             }
             (jobs / "hourly__demo.job.json").write_text(json.dumps(job) + "\n", encoding="utf-8")
@@ -154,6 +163,8 @@ class TestWorkProducts(unittest.TestCase):
             binding = next(r for r in item["details"] if r["label"].startswith("Binding · prompt_profile"))
             self.assertIn("role=C", binding["value"])
             self.assertIn("prompt", binding["value"].lower())
+            self.assertEqual(item.get("flow_phase"), "terminal")
+            self.assertEqual(len(item.get("flow_events") or []), 1)
 
     def test_keeper_output_prefers_final_not_preview(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -441,7 +452,8 @@ class TestWorkProducts(unittest.TestCase):
                 encoding="utf-8",
             )
             (shapes / "FB9_GEX2_identity_anchor.shape.yaml").write_text(
-                "family_slug: FB9_GEX2_identity_anchor\nshape_id: identity_anchor\n",
+                "family_slug: FB9_GEX2_identity_anchor\n"
+                "shape_id: wan-v2v-source+prompt+identity_anchor\n",
                 encoding="utf-8",
             )
             pipes = data / "pipelines"
@@ -468,10 +480,18 @@ class TestWorkProducts(unittest.TestCase):
             self.assertEqual(all_slugs, {"FB9_GEX2", "X-KNEEL-FB9", "FB9_GEX2_identity_anchor"})
             self.assertIn("FB9_GEX2", extend_slugs)
             self.assertNotIn("X-KNEEL-FB9", extend_slugs)
-            self.assertNotIn("FB9_GEX2_identity_anchor", extend_slugs)
+            self.assertIn("FB9_GEX2_identity_anchor", extend_slugs)
             self.assertEqual(payload["extend_family_defaults"], {"X-KNEEL-FB9": "FB9_GEX2"})
             self.assertTrue(is_extend_family_option({"slug": "FB9_GEX2", "shape_id": "wan_v2v_gex2"}))
             self.assertFalse(is_extend_family_option({"slug": "X-KNEEL-FB9", "shape_id": "wan_i2v_kneel"}))
+            self.assertTrue(
+                is_extend_family_option(
+                    {
+                        "slug": "FB9_GEX2_identity_anchor",
+                        "shape_id": "wan-v2v-source+prompt+identity_anchor",
+                    }
+                )
+            )
 
     def test_attach_live_comfy_queue_synthesizes_missing_job(self):
         payload = {

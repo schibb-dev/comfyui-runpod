@@ -57,7 +57,7 @@ function HourlyScheduleControls({
     (sch?.submit_mode as HourlySubmitMode) || "auto",
   );
   const [comfyMax, setComfyMax] = useState(sch?.comfy_queue_max ?? 3);
-  const [pendingMax, setPendingMax] = useState(sch?.pending_queue_max ?? 4);
+  const [pendingMax, setPendingMax] = useState(sch?.pending_queue_max ?? 10);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -67,7 +67,7 @@ function HourlyScheduleControls({
     setEnabled(sch.enabled !== false);
     setMode((sch.submit_mode as HourlySubmitMode) || "auto");
     setComfyMax(sch.comfy_queue_max ?? 3);
-    setPendingMax(sch.pending_queue_max ?? 4);
+    setPendingMax(sch.pending_queue_max ?? 10);
   }, [sch]);
 
   const apply = async () => {

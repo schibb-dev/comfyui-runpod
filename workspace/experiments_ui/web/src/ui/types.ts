@@ -1327,6 +1327,9 @@ export type ShapeFactoryUnqueueRequest = {
   prompt_id: string;
   job_key?: string;
   job_path?: string;
+  actor?: string;
+  reason?: string;
+  source_surface?: string;
 };
 
 export type ShapeFactoryUnqueueResponse = {
@@ -1347,6 +1350,9 @@ export type ShapeFactoryUnqueueResponse = {
 export type ShapeFactoryBeginEditRequest = {
   job_key?: string;
   job_path?: string;
+  actor?: string;
+  reason?: string;
+  source_surface?: string;
 };
 
 export type ShapeFactoryBeginEditResponse = {
@@ -1369,6 +1375,9 @@ export type ShapeFactoryFinishEditRequest = {
   job_path?: string;
   action: "later" | "cancel" | "now";
   front?: boolean;
+  actor?: string;
+  reason?: string;
+  source_surface?: string;
 };
 
 export type ShapeFactoryFinishEditResponse = {
@@ -1427,6 +1436,8 @@ export type ShapeFactoryDiscardRequest = {
   reason?: string;
   /** When true, permanently delete job + sidecars. When false, rename to `.discarded` (archive). */
   expunge?: boolean;
+  actor?: string;
+  source_surface?: string;
 };
 
 export type ShapeFactoryDiscardResponse = {
@@ -1455,6 +1466,9 @@ export type ShapeFactoryUpdatePendingTrimRequest = {
   frame_load_cap: number;
   mark_in?: number | null;
   mark_out?: number | null;
+  actor?: string;
+  reason?: string;
+  source_surface?: string;
 };
 
 export type ShapeFactoryUpdatePendingTrimResponse = {
@@ -1909,6 +1923,17 @@ export type WorkProductItem = {
   graph_hash?: string | null;
   output_prefix?: string | null;
   status?: string;
+  flow_state?: string;
+  flow_phase?: string;
+  remediation_actions?: string[];
+  flow_events?: Array<{
+    at?: string | null;
+    action?: string | null;
+    actor?: string | null;
+    source_surface?: string | null;
+    reason?: string | null;
+    ok?: boolean;
+  }>;
   /** Short Comfy/UI error (OOM, VHS load failure, interrupt reason, …). */
   error?: string | null;
   error_node?: string | null;

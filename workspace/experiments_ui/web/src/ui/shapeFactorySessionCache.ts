@@ -147,6 +147,12 @@ export async function loadClipsForMedia(
   if (!opts?.force && hit && fresh(hit.fetchedAt, CLIPS_TTL_MS)) {
     return hit.value;
   }
+  const still = /\.(jpe?g|png|webp|gif|avif|bmp)(\?|$)/i.test(mediaRelpath);
+  if (still) {
+    const empty: ShapeFactoryClipsListResponse = { ok: true, clips: [] };
+    putClipsForMedia(mediaRelpath, empty);
+    return empty;
+  }
   const res = await listShapeFactoryClips({ mediaRelpath });
   putClipsForMedia(mediaRelpath, res);
   return res;

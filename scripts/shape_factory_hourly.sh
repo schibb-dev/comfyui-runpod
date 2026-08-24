@@ -2,13 +2,13 @@
 # Shape-factory maintenance + optional fill, gated by hourly-schedule.json.
 # Pending drain (shape_factory_pending_drain) owns pushing pending onto Comfy when
 # this tick leaves jobs pending (Comfy full / submit_mode=pending).
-# Priority when filling: GEX2→FACIAL (recent lookback), then usually i2v→FB9_GEX
-# (Kneel primary, then BounceDance/FaceBlast/…), then seed. Image seeds weight
-# X-KNEEL-FB9 highest. HOURLY_SEED_OVER_CHAIN_SHARE (default 0.50) occasionally
-# seeds a new still workflow instead of draining either chain phase — otherwise a
-# large facial backlog starves image-based templates.
-# HOURLY_FACIAL_LOOKBACK_DAYS (default 14) ignores ancient GEX2 jobs for facial drain.
-# sample_cursor advances on every fill tick (chain or seed) so seed-over re-rolls.
+# Priority when filling: occasionally GEX2→FACIAL (HOURLY_FACIAL_DRAIN_EVERY, default
+# every 6th cursor), then i2v→FB9_GEX on a steadier cadence (HOURLY_I2V_GEX_DRAIN_EVERY,
+# default every 3rd cursor — Kneel/BounceDance/FaceBlast/…), else seed.
+# Image seeds weight X-KNEEL-FB9 highest. HOURLY_SEED_OVER_CHAIN_SHARE (default 0.50)
+# can still skip facial on a facial-cadence tick. HOURLY_FACIAL_LOOKBACK_DAYS (default 14)
+# ignores ancient GEX2 jobs for facial drain.
+# sample_cursor advances on every fill tick (chain or seed) so cadences re-roll.
 # After hourly policy changes, dry-run variety with:
 #   python3 workspace/scripts/shape_factory_hourly.py simulate-picks --count 32
 # i2v hourlies target ~90% fresh input stills from the last week (see HOURLY_* below).
@@ -31,12 +31,17 @@ HOURLY_FRESH_STILL_SHARE="${HOURLY_FRESH_STILL_SHARE:-0.90}"
 HOURLY_RECENT_STILL_DAYS="${HOURLY_RECENT_STILL_DAYS:-7}"
 HOURLY_SEED_OVER_CHAIN_SHARE="${HOURLY_SEED_OVER_CHAIN_SHARE:-0.50}"
 HOURLY_FACIAL_LOOKBACK_DAYS="${HOURLY_FACIAL_LOOKBACK_DAYS:-14}"
+# Drain at most one GEX2→FACIAL job every N sample_cursor values (default 6).
+HOURLY_FACIAL_DRAIN_EVERY="${HOURLY_FACIAL_DRAIN_EVERY:-6}"
+# Drain at most one i2v/still → FB9_GEX job every N sample_cursor values (default 3).
+HOURLY_I2V_GEX_DRAIN_EVERY="${HOURLY_I2V_GEX_DRAIN_EVERY:-3}"
 # Status walks every complete job with ffprobe; skip by default so fills stay on cadence.
 HOURLY_SKIP_STATUS="${HOURLY_SKIP_STATUS:-1}"
 HOURLY_MAINT_TIMEOUT_SEC="${HOURLY_MAINT_TIMEOUT_SEC:-90}"
 HOURLY_STATUS_TIMEOUT_SEC="${HOURLY_STATUS_TIMEOUT_SEC:-60}"
 export HOURLY_PREDICTED_SHARE HOURLY_FRESH_STILL_SHARE HOURLY_RECENT_STILL_DAYS
-export HOURLY_SEED_OVER_CHAIN_SHARE HOURLY_FACIAL_LOOKBACK_DAYS
+export HOURLY_SEED_OVER_CHAIN_SHARE HOURLY_FACIAL_LOOKBACK_DAYS HOURLY_FACIAL_DRAIN_EVERY
+export HOURLY_I2V_GEX_DRAIN_EVERY
 export HOURLY_SKIP_STATUS HOURLY_MAINT_TIMEOUT_SEC HOURLY_STATUS_TIMEOUT_SEC
 
 # Families maintained every tick (deposit / submit / status).
@@ -201,14 +206,20 @@ HOURLY_PREFIX_ROOT="${HOURLY_PREFIX_ROOT:-og/%date:yyyy-MM-dd%/hourly}"
 HOURLY_JOB_KEY_PREFIX="${HOURLY_JOB_KEY_PREFIX:-hourly}"
 HOURLY_SUFFIX="_$(date -u +%Y%m%d%H%M)"
 
-# Phase 1: recent GEX2 complete without FACIAL child
+# Phase 1: recent GEX2 complete without FACIAL child (throttled)
 NEED_FACIAL_JSON=$(cd "$SCRIPTS" && python3 shape_factory_hourly.py need-facial --data-root "$REPO/.data")
 NEED_FACIAL_KEY=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('job_key') or '')" "$NEED_FACIAL_JSON")
 if [ -n "$NEED_FACIAL_KEY" ]; then
-  SEED_OVER=$(cd "$SCRIPTS" && python3 -c "from shape_factory_hourly import want_seed_over_chain; import sys; print('1' if want_seed_over_chain(int(sys.argv[1])) else '0')" "$CURSOR")
-  if [ "$SEED_OVER" = "1" ]; then
-    log "phase=seed — skip facial this tick (HOURLY_SEED_OVER_CHAIN_SHARE) pending=$NEED_FACIAL_KEY"
+  FACIAL_OK=$(cd "$SCRIPTS" && python3 -c "from shape_factory_hourly import want_facial_chain; import sys; print('1' if want_facial_chain(int(sys.argv[1])) else '0')" "$CURSOR")
+  if [ "$FACIAL_OK" != "1" ]; then
+    log "phase=skip_facial — not this cursor (HOURLY_FACIAL_DRAIN_EVERY=$HOURLY_FACIAL_DRAIN_EVERY) pending=$NEED_FACIAL_KEY"
     NEED_FACIAL_KEY=""
+  else
+    SEED_OVER=$(cd "$SCRIPTS" && python3 -c "from shape_factory_hourly import want_seed_over_chain; import sys; print('1' if want_seed_over_chain(int(sys.argv[1])) else '0')" "$CURSOR")
+    if [ "$SEED_OVER" = "1" ]; then
+      log "phase=seed — skip facial this tick (HOURLY_SEED_OVER_CHAIN_SHARE) pending=$NEED_FACIAL_KEY"
+      NEED_FACIAL_KEY=""
+    fi
   fi
 fi
 if [ -n "$NEED_FACIAL_KEY" ]; then
@@ -266,9 +277,9 @@ fi
 NEED_I2V_JSON=$(cd "$SCRIPTS" && python3 shape_factory_hourly.py need-gex-from-i2v --data-root "$REPO/.data")
 NEED_I2V_KEY=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('job_key') or '')" "$NEED_I2V_JSON")
 if [ -n "$NEED_I2V_KEY" ]; then
-  SEED_OVER=$(cd "$SCRIPTS" && python3 -c "from shape_factory_hourly import want_seed_over_chain; import sys; print('1' if want_seed_over_chain(int(sys.argv[1])) else '0')" "$CURSOR")
-  if [ "$SEED_OVER" = "1" ]; then
-    log "phase=seed — skip gex_from_i2v this tick (HOURLY_SEED_OVER_CHAIN_SHARE) pending=$NEED_I2V_KEY"
+  I2V_OK=$(cd "$SCRIPTS" && python3 -c "from shape_factory_hourly import want_i2v_gex_chain; import sys; print('1' if want_i2v_gex_chain(int(sys.argv[1])) else '0')" "$CURSOR")
+  if [ "$I2V_OK" != "1" ]; then
+    log "phase=skip_gex_from_i2v — not this cursor (HOURLY_I2V_GEX_DRAIN_EVERY=$HOURLY_I2V_GEX_DRAIN_EVERY) pending=$NEED_I2V_KEY"
     NEED_I2V_KEY=""
   fi
 fi
@@ -378,9 +389,12 @@ fi
 GEN_RC=0
 (
   cd "$SCRIPTS"
-  python3 shape_factory.py generate \
+  python3 shape_factory_creation_control.py create-generate \
     --shape "$(shape_for_family "$FAMILY")" \
     --pools "$(pools_for_family "$FAMILY")" \
+    --data-root "$REPO/.data" \
+    --workflow-dir "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/shape_factory" \
+    --job-dir "$REPO/.data/shape_factory/jobs" \
     --pick "$PICK_MODE" --limit 1 --picks-json "$PLAN_FILE" --job-suffix "$HOURLY_SUFFIX" \
     --output-prefix-root "$HOURLY_PREFIX_ROOT" \
     --job-key-prefix "$HOURLY_JOB_KEY_PREFIX" \

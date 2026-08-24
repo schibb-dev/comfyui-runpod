@@ -73,6 +73,13 @@ from shape_factory_source_facets import add_source_facets_subparser
 from shape_factory_job_output_index import add_job_output_index_subparser
 from shape_factory_seed_sources import add_seed_sources_subparser
 from shape_factory_backfill import add_backfill_subparser
+from shape_factory_flow import (
+    status_allows_begin_edit,
+    status_allows_finish_edit,
+    status_is_discardable,
+    status_is_on_comfy,
+    status_is_pending_editable,
+)
 
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm"}
 
@@ -906,13 +913,35 @@ def _resolve_load_image_stage_root(data_root: Path) -> Path:
     return (data_root.expanduser().resolve() / "input")
 
 
+def _collapse_nested_output_abspath(text: str) -> str:
+    """``…/output/output/og/…`` → ``…/output/og/…`` (legacy nested bind spelling)."""
+    s = str(text or "").replace("\\", "/")
+    while "/output/output/" in s:
+        s = s.replace("/output/output/", "/output/", 1)
+    return s
+
+
+def _comfy_relpath_under_output(rel: str) -> str:
+    """Relative path under the output bind → Comfy ``output/…`` (never ``output/output/…``)."""
+    rel = str(rel or "").replace("\\", "/").strip("/")
+    prefixed = rel if rel.startswith("output/") else f"output/{rel}"
+    flat = flatten_output_prefix(prefixed)
+    if flat.startswith("output/"):
+        return flat
+    return f"output/{flat}"
+
+
 def comfy_workspace_relpath(path: Path, data_root: Path) -> tuple[str, Optional[str]]:
     """Map host bind paths to ComfyUI-facing paths (input/…, output/…).
 
     Prefer this for VHS / workspace-style loaders. LoadImage must use
     ``comfy_load_image_relpath`` (Comfy resolves inside ``/ComfyUI/input``).
     """
-    path = path.expanduser().resolve()
+    path = Path(_collapse_nested_output_abspath(str(path.expanduser())))
+    try:
+        path = path.resolve()
+    except Exception:
+        pass
     data_root = data_root.expanduser().resolve()
     input_roots = (
         data_root / "input",
@@ -932,11 +961,10 @@ def comfy_workspace_relpath(path: Path, data_root: Path) -> tuple[str, Optional[
                 pass
     try:
         if path.is_relative_to(output_root):
-            return f"output/{path.relative_to(output_root).as_posix()}", None
+            return _comfy_relpath_under_output(path.relative_to(output_root).as_posix()), None
     except AttributeError:
         try:
-            rel_out = path.relative_to(output_root)
-            return f"output/{rel_out.as_posix()}", None
+            return _comfy_relpath_under_output(path.relative_to(output_root).as_posix()), None
         except Exception:
             pass
     return path.name, f"path outside data root {data_root}; using basename only"
@@ -1639,7 +1667,9 @@ def generate_job_for_picks(
     for slot, path in sorted(picks.items()):
         req = req_by_slot.get(slot)
         if req is None:
-            raise RuntimeError(f"unknown slot pick {slot!r}")
+            # Parent i2v jobs carry source_still; v2v extend targets do not declare it.
+            warnings.append(f"ignored unknown slot pick {slot!r}")
+            continue
         warnings.extend(apply_slot_binding(workflow, req, path, data_root))
         bindings_meta[slot] = {
             "role": req.get("role"),
@@ -5178,9 +5208,6 @@ def unqueue_to_pending(
 
 # Soft-archive / discard from the active job set (not queued/running on Comfy).
 _ARCHIVEABLE_TERMINAL_STATUSES = frozenset({"error", "failed", "interrupted"})
-_DISCARDABLE_STATUSES = frozenset({"", "pending", "draft", "deposited", "abandoned", "editing"}) | _ARCHIVEABLE_TERMINAL_STATUSES
-_PENDING_EDITABLE_STATUSES = frozenset({"", "pending", "draft", "deposited", "error", "abandoned", "editing"})
-_BEGIN_EDIT_OK_STATUSES = frozenset({"", "pending", "draft", "deposited", "editing", "queued", "submitted", "error"})
 
 
 def _resolve_job_file_and_doc(
@@ -5244,7 +5271,7 @@ def begin_job_edit(
             "prompt_id": pid or None,
             "detail": "Only pending/queued (pre-run) jobs can enter edit mode.",
         }
-    if status and status not in _BEGIN_EDIT_OK_STATUSES:
+    if not status_allows_begin_edit(status):
         return {
             "ok": False,
             "error": "not_editable",
@@ -5368,7 +5395,7 @@ def finish_job_edit(
     key = str(job.get("job_key") or job_file.stem.replace(".job", ""))
     status = str(submit.get("status") or "").strip().lower()
 
-    if status == "editing" or status in {"", "pending"}:
+    if status_allows_finish_edit(status):
         pass  # editable / releasable
     else:
         return {
@@ -5559,7 +5586,7 @@ def update_pending_job_vhs_window(
     pid = str(submit.get("prompt_id") or "").strip()
     key = str(job.get("job_key") or job_file.stem.replace(".job", ""))
 
-    if status in {"queued", "running", "submitted"} or (pid and status not in _PENDING_EDITABLE_STATUSES):
+    if status_is_on_comfy(status, pid) or not status_is_pending_editable(status):
         return {
             "ok": False,
             "error": "not_pending",
@@ -5954,7 +5981,7 @@ def discard_pending_job(
     pid = str(submit.get("prompt_id") or "").strip()
     key = str(job.get("job_key") or job_file.stem.replace(".job", ""))
 
-    if status in {"queued", "running", "submitted"} or (pid and status not in _DISCARDABLE_STATUSES):
+    if status_is_on_comfy(status, pid) or not status_is_discardable(status):
         return {
             "ok": False,
             "error": "not_pending",

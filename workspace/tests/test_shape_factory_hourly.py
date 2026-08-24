@@ -689,7 +689,6 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
             "FB9-FaceBlast",
             "X-KNEEL-FB9",
             "BounceDanceA",
-            "FB8VA4",
             "FB8VB2",
             "FB8VA5-ZOOMOUT",
             "Breast-shake-FB8VA5",
@@ -701,10 +700,12 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
         self.assertGreaterEqual(i2v_w, 88)
         self.assertEqual(max(weights.values()), weights["X-KNEEL-FB9"])
         self.assertGreaterEqual(weights["X-KNEEL-FB9"], 32)
+        self.assertNotIn("FB8VA4", weights)
         picked = {select_seed_family(i) for i in range(80)}
         self.assertIn("X-KNEEL-FB9", picked)
-        self.assertTrue(picked & {"FB9-FaceBlast", "BounceDanceA", "FB8VA4"})
+        self.assertTrue(picked & {"FB9-FaceBlast", "BounceDanceA", "FB8VB2"})
         self.assertNotIn("FB9_GEX2", picked)
+        self.assertNotIn("FB8VA4", picked)
 
     def test_want_seed_over_chain_respects_share(self) -> None:
         import os
@@ -801,6 +802,7 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
         from shape_factory_hourly import predict_hourly_gex2, select_seed_family
 
         prev = os.environ.get("HOURLY_SEED_OVER_CHAIN_SHARE")
+        prev_every = os.environ.get("HOURLY_FACIAL_DRAIN_EVERY")
         try:
             with tempfile.TemporaryDirectory() as td:
                 root = Path(td)
@@ -820,8 +822,9 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
                     ),
                     encoding="utf-8",
                 )
-                state = {"sample_cursor": 7, "phase": "idle"}
+                state = {"sample_cursor": 6, "phase": "idle"}
                 os.environ["HOURLY_SEED_OVER_CHAIN_SHARE"] = "0"
+                os.environ["HOURLY_FACIAL_DRAIN_EVERY"] = "6"
                 with patch(
                     "shape_factory_hourly._default_job_root",
                     return_value=jobs,
@@ -838,9 +841,13 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
                     self.assertEqual(blocked.get("family"), "FB9_GEX_FACIAL")
                     self.assertEqual(blocked.get("step"), "chain_facial")
 
+                    # Off-cadence cursor skips facial even when seed-over is off.
+                    off = predict_hourly_gex2({**state, "sample_cursor": 7}, data_root=root)
+                    self.assertNotEqual(off.get("step"), "chain_facial")
+
                     os.environ["HOURLY_SEED_OVER_CHAIN_SHARE"] = "1"
                     seeded = predict_hourly_gex2(state, data_root=root)
-                    self.assertEqual(seeded.get("family"), select_seed_family(7))
+                    self.assertEqual(seeded.get("family"), select_seed_family(6))
                     self.assertEqual(seeded.get("step"), "pool_product")
                     self.assertEqual(seeded.get("source_still"), "/tmp/still.jpeg")
         finally:
@@ -848,6 +855,44 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
                 os.environ.pop("HOURLY_SEED_OVER_CHAIN_SHARE", None)
             else:
                 os.environ["HOURLY_SEED_OVER_CHAIN_SHARE"] = prev
+            if prev_every is None:
+                os.environ.pop("HOURLY_FACIAL_DRAIN_EVERY", None)
+            else:
+                os.environ["HOURLY_FACIAL_DRAIN_EVERY"] = prev_every
+
+    def test_want_facial_chain_every_n(self) -> None:
+        import os
+
+        from shape_factory_hourly import want_facial_chain, want_i2v_gex_chain
+
+        prev_f = os.environ.get("HOURLY_FACIAL_DRAIN_EVERY")
+        prev_i = os.environ.get("HOURLY_I2V_GEX_DRAIN_EVERY")
+        try:
+            os.environ["HOURLY_FACIAL_DRAIN_EVERY"] = "6"
+            self.assertTrue(want_facial_chain(0))
+            self.assertTrue(want_facial_chain(6))
+            self.assertTrue(want_facial_chain(12))
+            self.assertFalse(want_facial_chain(1))
+            self.assertFalse(want_facial_chain(7))
+            os.environ["HOURLY_FACIAL_DRAIN_EVERY"] = "1"
+            self.assertTrue(want_facial_chain(7))
+
+            os.environ["HOURLY_I2V_GEX_DRAIN_EVERY"] = "3"
+            self.assertTrue(want_i2v_gex_chain(0))
+            self.assertTrue(want_i2v_gex_chain(3))
+            self.assertTrue(want_i2v_gex_chain(6))
+            self.assertFalse(want_i2v_gex_chain(1))
+            self.assertFalse(want_i2v_gex_chain(2))
+            self.assertFalse(want_i2v_gex_chain(4))
+        finally:
+            if prev_f is None:
+                os.environ.pop("HOURLY_FACIAL_DRAIN_EVERY", None)
+            else:
+                os.environ["HOURLY_FACIAL_DRAIN_EVERY"] = prev_f
+            if prev_i is None:
+                os.environ.pop("HOURLY_I2V_GEX_DRAIN_EVERY", None)
+            else:
+                os.environ["HOURLY_I2V_GEX_DRAIN_EVERY"] = prev_i
 
     def test_simulate_hourly_picks_reports_variety(self) -> None:
         import os

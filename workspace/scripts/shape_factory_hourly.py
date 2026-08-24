@@ -189,7 +189,7 @@ _FRESH_STILL_FAMILIES: Tuple[str, ...] = (
     "BounceDanceA",
     "FB9-FaceBlast",
     "X-KNEEL-FB9",
-    "FB8VA4",
+    # FB8VA4 quarantined 2026-08-21
     "FB8VB2",
     "FB8VA5-ZOOMOUT",
     "Breast-shake-FB8VA5",
@@ -221,10 +221,9 @@ def _fresh_still_share(family: str) -> float:
 
 
 def _seed_over_chain_share() -> float:
-    """Fraction of idle ticks that seed a new i2v still instead of draining chain phases.
+    """Fraction of ticks that skip GEX2→FACIAL even on a facial-cadence cursor.
 
-    Applies to both GEX2→FACIAL and i2v→GEX drains so a large facial backlog cannot
-    starve image-based seed families.
+    Image→GEX drains use ``HOURLY_I2V_GEX_DRAIN_EVERY`` instead (promoted cadence).
     """
     raw = os.environ.get("HOURLY_SEED_OVER_CHAIN_SHARE", "0.50").strip()
     try:
@@ -234,11 +233,47 @@ def _seed_over_chain_share() -> float:
 
 
 def want_seed_over_chain(cursor: int = 0) -> bool:
-    """Sometimes start a new still workflow even when a chain drain is waiting."""
+    """Sometimes skip facial drain on an otherwise facial-eligible cursor."""
     share = _seed_over_chain_share()
     if share <= 0.0:
         return False
     return random.Random(int(cursor) ^ 0x51ED).random() < share
+
+
+def _facial_drain_every() -> int:
+    """Run GEX2→FACIAL at most once every N hourly cursors (1 = every facial-eligible tick)."""
+    raw = os.environ.get("HOURLY_FACIAL_DRAIN_EVERY", "6").strip()
+    try:
+        n = int(float(raw))
+    except ValueError:
+        return 6
+    return max(1, n)
+
+
+def want_facial_chain(cursor: int = 0) -> bool:
+    """True on every Nth sample_cursor so a large facial backlog drains only occasionally."""
+    every = _facial_drain_every()
+    if every <= 1:
+        return True
+    return int(cursor) % int(every) == 0
+
+
+def _i2v_gex_drain_every() -> int:
+    """Run i2v/still → FB9_GEX at most once every N hourly cursors (default 3)."""
+    raw = os.environ.get("HOURLY_I2V_GEX_DRAIN_EVERY", "3").strip()
+    try:
+        n = int(float(raw))
+    except ValueError:
+        return 3
+    return max(1, n)
+
+
+def want_i2v_gex_chain(cursor: int = 0) -> bool:
+    """True on every Nth sample_cursor so Kneel/FaceBlast/… → GEX drains on a steady cadence."""
+    every = _i2v_gex_drain_every()
+    if every <= 1:
+        return True
+    return int(cursor) % int(every) == 0
 
 
 def _facial_lookback_days() -> Optional[float]:
@@ -2351,10 +2386,10 @@ _DEFAULT_SEED_FAMILY_WEIGHTS: Tuple[Tuple[str, int], ...] = (
     ("FB9-FaceBlast", 16),
     ("BounceDanceA", 16),
     ("FB9_GEX", 5),
-    ("FB8VA4", 8),
-    ("FB8VB2", 5),
-    ("FB8VA5-ZOOMOUT", 5),
-    ("Breast-shake-FB8VA5", 5),
+    # FB8VA4 quarantined 2026-08-21 — weight redistributed to other FB8 stills.
+    ("FB8VB2", 8),
+    ("FB8VA5-ZOOMOUT", 8),
+    ("Breast-shake-FB8VA5", 7),
 )
 
 
@@ -2553,7 +2588,7 @@ _IMAGE_TO_GEX_FAMILIES: Tuple[str, ...] = (
     "X-KNEEL-FB9",
     "BounceDanceA",
     "FB9-FaceBlast",
-    "FB8VA4",
+    # FB8VA4 quarantined 2026-08-21
     "FB8VB2",
     "FB8VA5-ZOOMOUT",
     "Breast-shake-FB8VA5",
@@ -2760,7 +2795,7 @@ def simulate_hourly_picks(
             "seed_over_chain": seed_over,
             "ok": True,
         }
-        if facial_q and not seed_over:
+        if facial_q and want_facial_chain(cursor) and not seed_over:
             hit = facial_q.pop(0)
             pick.update(
                 {
@@ -2773,7 +2808,7 @@ def simulate_hourly_picks(
                     "source_still": None,
                 }
             )
-        elif i2v_q and not seed_over:
+        elif i2v_q and want_i2v_gex_chain(cursor):
             hit = i2v_q.pop(0)
             pick.update(
                 {
@@ -3366,7 +3401,7 @@ def predict_hourly_gex2(
     seed_over = want_seed_over_chain(cursor)
 
     need_facial = find_gex2_needing_facial(data_root=data_root, job_dir=job_root)
-    if need_facial and not seed_over:
+    if need_facial and want_facial_chain(cursor) and not seed_over:
         return {
             "cursor": cursor,
             "phase_if_idle": "facial",
@@ -3380,7 +3415,7 @@ def predict_hourly_gex2(
         }
 
     need_i2v = find_i2v_needing_gex(data_root=data_root, job_dir=job_root)
-    if need_i2v and not seed_over:
+    if need_i2v and want_i2v_gex_chain(cursor):
         return {
             "cursor": cursor,
             "phase_if_idle": "gex_from_i2v",
@@ -3516,7 +3551,7 @@ DEFAULT_HOURLY_SCHEDULE: Dict[str, Any] = {
     "submit_mode": "auto",
     "comfy_queue_min": 1,
     "comfy_queue_max": 3,
-    "pending_queue_max": 4,
+    "pending_queue_max": 10,
     "last_tick_at": None,
     "updated_at": None,
 }
@@ -3673,7 +3708,7 @@ def queue_advance_decision(
     queue_min: int = 1,
     queue_max: int = 3,
     factory_pending: int = 0,
-    pending_queue_max: int = 4,
+    pending_queue_max: int = 10,
     submit_mode: str = "auto",
 ) -> Dict[str, Any]:
     """

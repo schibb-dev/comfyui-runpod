@@ -148,6 +148,9 @@ function SubmitEditJobApp({
           job_key: editJob,
           action,
           front: opts?.front,
+          actor: "operator",
+          reason: `finish_edit:${action}`,
+          source_surface: "submit_edit",
         });
         releasedRef.current = true;
         setFinished(true);
@@ -178,7 +181,12 @@ function SubmitEditJobApp({
       setBusy(true);
       setBootError(null);
       try {
-        await beginShapeFactoryEdit({ job_key: editJob });
+        await beginShapeFactoryEdit({
+          job_key: editJob,
+          actor: "operator",
+          reason: "begin_edit",
+          source_surface: "submit_edit",
+        });
         const doc = await fetchShapeFactoryJobEdit({ jobKey: editJob });
         if (cancelled) return;
         setSnap(doc);
@@ -204,7 +212,13 @@ function SubmitEditJobApp({
     const onUnload = () => {
       if (releasedRef.current || finished) return;
       try {
-        const body = JSON.stringify({ job_key: editJob, action: "cancel" });
+        const body = JSON.stringify({
+          job_key: editJob,
+          action: "cancel",
+          actor: "operator",
+          reason: "finish_edit:cancel",
+          source_surface: "submit_edit",
+        });
         navigator.sendBeacon?.(
           "/api/shape-factory/finish-edit",
           new Blob([body], { type: "application/json" }),
@@ -234,6 +248,9 @@ function SubmitEditJobApp({
       frame_load_cap: win.frame_load_cap,
       mark_in: nextIn,
       mark_out: nextOut,
+      actor: "operator",
+      reason: "trim_adjustment",
+      source_surface: "submit_edit",
     }).catch((err) => {
       console.warn("update-pending-trim failed", err);
     });
@@ -347,7 +364,7 @@ function SubmitEditJobApp({
                 }}
               />
             ) : null}
-            {mediaRelpath ? (
+            {isVideo && mediaRelpath ? (
               <ClipBookmarksRail
                 mediaRelpath={mediaRelpath}
                 markIn={markIn}

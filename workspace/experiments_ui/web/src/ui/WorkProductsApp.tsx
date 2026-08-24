@@ -487,13 +487,13 @@ function sortWorkProducts(items: WorkProductItem[], sort: WorkProductSort): Work
 
 function workProductNameHaystack(item: WorkProductItem): string {
   const parts: string[] = [
-    item.family_slug,
-    item.job_key,
-    item.status,
-    item.prompt_id,
-    item.output_relpath,
-    item.parent_output_relpath,
-    item.parent_output,
+    item.family_slug || "",
+    item.job_key || "",
+    item.status || "",
+    item.prompt_id || "",
+    item.output_relpath || "",
+    item.parent_output_relpath || "",
+    item.parent_output || "",
   ];
   const bindings = item.bindings;
   if (bindings && typeof bindings === "object") {
@@ -560,6 +560,71 @@ function formatWhen(iso?: string | null): string {
   } catch {
     return iso;
   }
+}
+
+function formatRelativeAge(iso?: string | null): string {
+  if (!iso) return "unknown";
+  try {
+    const t = new Date(iso).getTime();
+    if (!Number.isFinite(t)) return "unknown";
+    const delta = Date.now() - t;
+    if (!Number.isFinite(delta)) return "unknown";
+    const absMs = Math.abs(delta);
+    const dir = delta >= 0 ? "ago" : "from now";
+    const sec = Math.round(absMs / 1000);
+    if (sec < 60) return `${sec}s ${dir}`;
+    const min = Math.round(sec / 60);
+    if (min < 60) return `${min}m ${dir}`;
+    const hr = Math.round(min / 60);
+    if (hr < 48) return `${hr}h ${dir}`;
+    const day = Math.round(hr / 24);
+    return `${day}d ${dir}`;
+  } catch {
+    return "unknown";
+  }
+}
+
+function FlowEventTimeline({ item }: { item: WorkProductItem }) {
+  const events = Array.isArray(item.flow_events) ? item.flow_events : [];
+  if (!events.length) return null;
+  const recent = events.slice(-6).reverse();
+  return (
+    <section className="work-product-flow" aria-label="Remediation timeline">
+      <header className="work-product-flow__head">
+        <span className="work-product-quick-queue__label">Remediation timeline</span>
+        <span className="work-product-flow__count">{events.length} event{events.length === 1 ? "" : "s"}</span>
+      </header>
+      <ul className="work-product-flow__list">
+        {recent.map((ev, idx) => {
+          const action = String(ev?.action || "action").trim();
+          const actor = String(ev?.actor || "operator").trim();
+          const source = String(ev?.source_surface || "api").trim();
+          const reason = String(ev?.reason || "").trim();
+          const at = String(ev?.at || "").trim();
+          const ok = ev?.ok === false ? "failed" : "ok";
+          const when = formatWhen(at || null);
+          const age = formatRelativeAge(at || null);
+          return (
+            <li key={`${at}:${action}:${idx}`} className="work-product-flow__item">
+              <div className="work-product-flow__title">
+                <span className={`work-product-badge ${ok === "failed" ? "work-product-badge--bad" : "work-product-badge--ok"}`}>
+                  {ok}
+                </span>
+                <span className="work-product-flow__action">{action}</span>
+                <span className="work-product-flow__meta">
+                  by {actor} @ {source}
+                </span>
+              </div>
+              <div className="work-product-flow__time" title={when}>
+                {age}
+              </div>
+              {reason ? <div className="work-product-flow__reason">{reason}</div> : null}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
 }
 
 function formatDurationSec(sec?: number | null): string {
@@ -860,6 +925,9 @@ function WorkProductViewer({
         frame_load_cap: win.frame_load_cap,
         mark_in: state.markIn,
         mark_out: state.markOut,
+        actor: "operator",
+        reason: "trim_adjustment",
+        source_surface: "workbench",
       }).catch((err) => {
         console.warn("update-pending-trim failed", err);
       });
@@ -2582,6 +2650,9 @@ function WorkProductQuickQueue({
         prompt_id: pid,
         job_key: nonFactory ? undefined : jobKey || undefined,
         job_path: nonFactory ? undefined : String(item.job_path || "").trim() || undefined,
+        actor: "operator",
+        reason: nonFactory ? "user_unqueue_non_factory" : "user_unqueue",
+        source_surface: "workbench",
       });
       if (res.factory_job) {
         setMsg(`Unqueued → pending${res.job_key ? ` · ${res.job_key}` : ""}`);
@@ -2620,6 +2691,8 @@ function WorkProductQuickQueue({
         history_from_comfy: isHistoryFailureStub(item) || Boolean(item.history_from_comfy),
         reason: deleteIsPendingOnly ? "user_expunged" : "user_expunged_failure",
         expunge: true,
+        actor: "operator",
+        source_surface: "workbench",
       });
       setMsg(
         res.history_stub || res.dismissed
@@ -2653,6 +2726,8 @@ function WorkProductQuickQueue({
         history_from_comfy: isHistoryFailureStub(item) || Boolean(item.history_from_comfy),
         reason: "user_archived_failure",
         expunge: false,
+        actor: "operator",
+        source_surface: "workbench",
       });
       setMsg(
         res.history_stub || res.dismissed
@@ -2724,7 +2799,7 @@ function WorkProductQuickQueue({
     }
   };
 
-  const openBadge = (wi: WorkItem | null, label: string) =>
+  const openBadge = (wi: WorkItem | null | undefined, label: string) =>
     wi ? (
       <span
         className={`work-product-badge ${badgePriorityClass(wi.priority)}`}
@@ -2848,7 +2923,13 @@ function WorkProductQuickQueue({
                   setBusy(true);
                   setMsg(null);
                   try {
-                    await finishShapeFactoryEdit({ job_key: jobKey, action: "later" });
+                    await finishShapeFactoryEdit({
+                      job_key: jobKey,
+                      action: "later",
+                      actor: "operator",
+                      reason: "finish_edit:later",
+                      source_surface: "workbench",
+                    });
                     setMsg("Released → pending");
                     onCommitted?.();
                   } catch (e) {
@@ -3018,12 +3099,18 @@ function WorkProductDetails({
             {item.status}
           </span>
         ) : null}
+        {item.flow_phase && item.flow_phase !== item.status ? (
+          <span className="work-product-badge" title="Normalized flow phase">
+            phase:{item.flow_phase}
+          </span>
+        ) : null}
       </div>
       {item.error ? (
         <div className="work-product-details__error" title={item.error}>
           {item.error}
         </div>
       ) : null}
+      <FlowEventTimeline item={item} />
       <WorkProductQuickQueue
         item={item}
         families={families}
@@ -3433,6 +3520,8 @@ export function WorkProductsApp() {
           history_from_comfy: isHistoryFailureStub(it) || Boolean(it.history_from_comfy),
           reason: "user_bulk_expunged_failure",
           expunge: true,
+          actor: "operator",
+          source_surface: "workbench",
         });
         deleted += 1;
       } catch (e) {
