@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createPortal } from "react-dom";
 import { fetchShapeFactoryMap, fetchShapeFactoryQuarantine, queueShapeFactoryCombo, recoverAssets, releaseShapeFactoryQuarantine, replayShapeFactory } from "./api";
 import { AssetInspector, type InspectorAsset } from "./AssetInspector";
@@ -32,6 +33,7 @@ import {
   type FactoryMapActivity,
   type FactoryMapIndexContext,
 } from "./factoryMapSummaries";
+import { queryKeys } from "./queryKeys";
 import type {
   ShapeFactoryMapFamily,
   ShapeFactoryMapJob,
@@ -402,6 +404,25 @@ function DetailPanel({
   const [runBaseline, setRunBaseline] = useState<FutureRunDraft | null>(null);
   const [recoverBusy, setRecoverBusy] = useState(false);
   const [recoverMsg, setRecoverMsg] = useState("");
+  const queryClient = useQueryClient();
+  const queueMutation = useMutation({
+    mutationFn: queueShapeFactoryCombo,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.mapRoot });
+    },
+  });
+  const replayMutation = useMutation({
+    mutationFn: replayShapeFactory,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.mapRoot });
+    },
+  });
+  const recoverMutation = useMutation({
+    mutationFn: recoverAssets,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.mapRoot });
+    },
+  });
 
   const missingSourceName = useMemo(() => {
     if (selectedPair?.gap !== "source" || selectedPair?.phase === "future") return "";
@@ -420,7 +441,7 @@ function DetailPanel({
     setRecoverBusy(true);
     setRecoverMsg("");
     try {
-      const res = await recoverAssets({ names: [missingSourceName] });
+      const res = await recoverMutation.mutateAsync({ names: [missingSourceName] });
       const r = res.results?.[0];
       if (r?.ok) {
         setRecoverMsg(`Recovered (${r.method})`);
@@ -433,7 +454,7 @@ function DetailPanel({
     } finally {
       setRecoverBusy(false);
     }
-  }, [missingSourceName, onQueued]);
+  }, [missingSourceName, onQueued, recoverMutation]);
 
   const canQueue =
     selectedPair?.phase === "future" &&
@@ -454,7 +475,7 @@ function DetailPanel({
       setReplayBusy(extend ? "extend" : "replay");
       setReplayMsg("");
       try {
-        const res = await replayShapeFactory({ job_key: replayJobKey, extend });
+        const res = await replayMutation.mutateAsync({ job_key: replayJobKey, extend });
         setReplayMsg(res.prompt_id ? `Queued · prompt ${res.prompt_id}` : res.job_key ? `Job ${res.job_key}` : "Queued");
         onQueued?.();
       } catch (e) {
@@ -463,7 +484,7 @@ function DetailPanel({
         setReplayBusy("");
       }
     },
-    [replayJobKey, onQueued],
+    [replayJobKey, onQueued, replayMutation],
   );
 
   useEffect(() => {
@@ -492,7 +513,7 @@ function DetailPanel({
       }
       const overrides =
         runDraft && runBaseline ? buildQueueOverrides(runDraft, runBaseline) : undefined;
-      const res = await queueShapeFactoryCombo({
+      const res = await queueMutation.mutateAsync({
         family_slug: familySlug,
         combo_key: selectedPair.comboKey,
         bindings: bindingPaths,
@@ -511,7 +532,7 @@ function DetailPanel({
     } finally {
       setQueueBusy(false);
     }
-  }, [canQueue, familySlug, onQueued, runBaseline, runDraft, selectedPair?.bindings, selectedPair?.comboKey]);
+  }, [canQueue, familySlug, onQueued, queueMutation, runBaseline, runDraft, selectedPair?.bindings, selectedPair?.comboKey]);
 
   if (!job && !selectedPair) {
     return (
@@ -1337,30 +1358,25 @@ function FamilyIndexCard({
 }
 
 function QuarantineWorkflowsPanel() {
-  const [entries, setEntries] = useState<ShapeFactoryQuarantineEntry[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const [notes, setNotes] = useState<Record<string, string>>({});
-  const [busyKey, setBusyKey] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
-
-  const reload = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetchShapeFactoryQuarantine({ status: "quarantined" });
-      setEntries(res.entries || []);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setEntries([]);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void reload();
-  }, [reload]);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const quarantineQuery = useQuery({
+    queryKey: queryKeys.shapeFactory.quarantine({ status: "quarantined" }),
+    queryFn: () => fetchShapeFactoryQuarantine({ status: "quarantined" }),
+    staleTime: 60_000,
+  });
+  const releaseMutation = useMutation({
+    mutationFn: releaseShapeFactoryQuarantine,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.quarantineRoot });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.mapRoot });
+    },
+  });
+  const entries = quarantineQuery.data?.entries || [];
+  const loading = quarantineQuery.isLoading;
+  const error = quarantineQuery.error instanceof Error ? quarantineQuery.error.message : null;
 
   const onRelease = async (entry: ShapeFactoryQuarantineEntry) => {
     const key = entry.workflow_path || entry.workflow_name || "";
@@ -1368,7 +1384,7 @@ function QuarantineWorkflowsPanel() {
     setBusyKey(key);
     setMsg(null);
     try {
-      await releaseShapeFactoryQuarantine({
+      await releaseMutation.mutateAsync({
         workflow_path: entry.workflow_path,
         workflow_name: entry.workflow_name,
         note: (notes[key] || "").trim() || "released from factory map",
@@ -1379,7 +1395,6 @@ function QuarantineWorkflowsPanel() {
         delete next[key];
         return next;
       });
-      await reload();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));
     } finally {
@@ -1732,12 +1747,18 @@ function FactoryMapFamilyView({
   );
   const [recoverAllBusy, setRecoverAllBusy] = useState(false);
   const [recoverAllMsg, setRecoverAllMsg] = useState("");
+  const recoverAllMutation = useMutation({
+    mutationFn: recoverAssets,
+    onSuccess: async () => {
+      onReload();
+    },
+  });
 
   const handleRecoverAll = useCallback(async () => {
     setRecoverAllBusy(true);
     setRecoverAllMsg("");
     try {
-      const res = await recoverAssets({ family: family.family_slug });
+      const res = await recoverAllMutation.mutateAsync({ family: family.family_slug });
       setRecoverAllMsg(
         res.total ? `Recovered ${res.recovered}/${res.total}` : "Nothing to recover",
       );
@@ -1747,7 +1768,7 @@ function FactoryMapFamilyView({
     } finally {
       setRecoverAllBusy(false);
     }
-  }, [family.family_slug, onReload]);
+  }, [family.family_slug, onReload, recoverAllMutation]);
 
   const depositPool = (family.deposit_pools || [])[0];
   const pairGapSummary = useMemo(() => summarizePairGaps(pairs), [pairs]);
@@ -1928,10 +1949,8 @@ function FactoryMapFamilyView({
 }
 
 export function DiscoveryFactoryMapApp() {
+  const queryClient = useQueryClient();
   const [route, setRoute] = useState<FactoryMapRoute>(() => parseFactoryMapRoute());
-  const [data, setData] = useState<ShapeFactoryMapResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
 
   useEffect(() => {
     const onPop = () => setRoute(parseFactoryMapRoute());
@@ -1939,34 +1958,31 @@ export function DiscoveryFactoryMapApp() {
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
-  const reload = useCallback(async () => {
-    setError("");
-    try {
-      const next = await fetchShapeFactoryMap({
-        members_limit: route.view === "family" ? 24 : 8,
+  const membersLimit = route.view === "family" ? 24 : 8;
+  const mapQuery = useQuery({
+    queryKey: queryKeys.shapeFactory.map({ membersLimit, jobsLimit: 120 }),
+    queryFn: () =>
+      fetchShapeFactoryMap({
+        members_limit: membersLimit,
         jobs_limit: 120,
-      });
-      setData(next);
-      if (!next.ok) {
-        setError(next.error || "Map unavailable");
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [route]);
-
-  useEffect(() => {
-    void reload();
-  }, [reload]);
-
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      void reload();
-    }, POLL_MS);
-    return () => window.clearInterval(id);
-  }, [reload]);
+      }),
+    staleTime: 30_000,
+    refetchInterval: POLL_MS,
+    refetchIntervalInBackground: false,
+    placeholderData: (prev) => prev,
+  });
+  const data = mapQuery.data || null;
+  const loading = mapQuery.isFetching;
+  const error =
+    mapQuery.error instanceof Error
+      ? mapQuery.error.message
+      : data && !data.ok
+        ? data.error || "Map unavailable"
+        : "";
+  const reload = useCallback(() => mapQuery.refetch(), [mapQuery]);
+  const invalidateMap = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.mapRoot });
+  }, [queryClient]);
 
   const families = data?.families || [];
   const pipelines = data?.pipelines || [];
@@ -2006,7 +2022,7 @@ export function DiscoveryFactoryMapApp() {
               </div>
             )
           ) : activeFamily ? (
-            <FactoryMapFamilyView data={data} family={activeFamily} families={families} onReload={() => void reload()} />
+            <FactoryMapFamilyView data={data} family={activeFamily} families={families} onReload={invalidateMap} />
           ) : (
             <div className="sfmap-not-found">
               <p>
