@@ -10638,11 +10638,26 @@ tr.disabled:hover td {
   word-break: break-all;
   line-height: 1.35;
 }
+.drq-toast-slot {
+  /* Always reserve one toast line so status changes don't reflow the stack. */
+  min-height: calc(12px * 1.35 + 16px + 2px);
+}
 .drq-toast {
+  box-sizing: border-box;
   font-size: 12px;
+  line-height: 1.35;
+  min-height: calc(12px * 1.35 + 16px + 2px);
   padding: 8px 10px;
   border-radius: 8px;
   border: 1px solid rgba(255, 255, 255, 0.1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.drq-toast--empty {
+  visibility: hidden;
+  border-color: transparent;
+  background: transparent;
 }
 .drq-toast--ok {
   color: #9ee6b8;

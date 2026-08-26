@@ -452,15 +452,22 @@ function ScoreMeter({ score, label }: { score: number; label: string }) {
 }
 
 function StatusToast({ message }: { message: string }) {
-  if (!message) return null;
-  const kind = /fail|error|no xmp/i.test(message)
-    ? "warn"
-    : /saved|found|fast-track|appetite|disposition|queued|trash|archived|routed|replay|extend/i.test(message)
-      ? "ok"
-      : "info";
+  const kind = !message
+    ? "empty"
+    : /fail|error|no xmp/i.test(message)
+      ? "warn"
+      : /saved|found|fast-track|appetite|disposition|queued|trash|archived|routed|replay|extend/i.test(message)
+        ? "ok"
+        : "info";
   return (
-    <div className={"drq-toast drq-toast--" + kind} role="status" aria-live="polite">
-      {message}
+    <div className="drq-toast-slot" aria-live="polite">
+      <div
+        className={"drq-toast drq-toast--" + kind}
+        role="status"
+        title={message || undefined}
+      >
+        {message || "\u00a0"}
+      </div>
     </div>
   );
 }
