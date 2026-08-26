@@ -565,6 +565,14 @@ def update_job_timings_on_status(
         if isinstance(submitted_ts, (int, float)):
             queue["wait_sec"] = round(max(0.0, now - float(submitted_ts)), 3)
 
+    if status == "running":
+        try:
+            from shape_factory_owned_prompt import freeze_owned_prompt
+
+            freeze_owned_prompt(job)
+        except Exception:
+            pass
+
     if isinstance(history, dict):
         prompt_graph = _history_prompt_graph(history)
         hist_times = parse_history_execution_timings(history)
@@ -1839,6 +1847,29 @@ def generate_job_for_picks(
         sync_job_dev_tuning_from_vhs_window(job_meta)
     job_path = job_dir / family / f"{job_key}.job.json"
     job_path.parent.mkdir(parents=True, exist_ok=True)
+    # V1 owned prompt: fork catalog/scratch text onto the job so catalog mutations
+    # cannot change what this run uses. Prefer preserving a frozen prior copy.
+    try:
+        from shape_factory_owned_prompt import (
+            fork_owned_prompt_from_profile_file,
+            get_owned_prompt,
+            is_owned_prompt_frozen,
+        )
+
+        prev_owned = None
+        if job_path.is_file():
+            try:
+                prev_doc = json.loads(job_path.read_text(encoding="utf-8"))
+                if isinstance(prev_doc, dict):
+                    prev_owned = get_owned_prompt(prev_doc)
+            except Exception:
+                prev_owned = None
+        if prev_owned is not None and is_owned_prompt_frozen({"prompt": prev_owned}):
+            job_meta["prompt"] = prev_owned
+        elif "prompt_profile" in picks:
+            job_meta["prompt"] = fork_owned_prompt_from_profile_file(picks["prompt_profile"])
+    except Exception as exc:
+        warnings.append(f"owned_prompt_fork_failed: {exc}")
     gen_t1 = time.time()
     prev_timings: dict[str, Any] = {}
     if job_path.is_file():
@@ -2389,21 +2420,42 @@ def apply_api_slot_bindings(
         btype = str(binding.get("type") or "")
         optional = bool(req.get("optional"))
         raw_path = str(meta.get("path") or "").strip()
-        if not raw_path:
+        asset_path: Optional[Path] = None
+        if raw_path:
+            try:
+                asset_path = resolve_job_asset_path(raw_path, data_root=data_root)
+            except FileNotFoundError:
+                # Owned prompt can still paint without the catalog file on disk.
+                if btype == "prompt_bundle":
+                    from shape_factory_owned_prompt import get_owned_prompt
+
+                    if get_owned_prompt(job) is None:
+                        msg = f"missing binding asset for slot {slot!r}: {raw_path}"
+                        if not optional and (
+                            btype == "load_image" or str(req.get("media") or "").lower() == "image"
+                        ):
+                            raise RuntimeError(msg) from None
+                        warnings.append(msg)
+                        continue
+                else:
+                    msg = f"missing binding asset for slot {slot!r}: {raw_path}"
+                    # Required image anchors must not silently drop (fake "success" without identity).
+                    if not optional and (
+                        btype == "load_image" or str(req.get("media") or "").lower() == "image"
+                    ):
+                        raise RuntimeError(msg) from None
+                    warnings.append(msg)
+                    continue
+        elif btype != "prompt_bundle":
             continue
-        try:
-            asset_path = resolve_job_asset_path(raw_path, data_root=data_root)
-        except FileNotFoundError:
-            msg = f"missing binding asset for slot {slot!r}: {raw_path}"
-            # Required image anchors must not silently drop (fake "success" without identity).
-            if not optional and (
-                btype == "load_image" or str(req.get("media") or "").lower() == "image"
-            ):
-                raise RuntimeError(msg) from None
-            warnings.append(msg)
-            continue
+        else:
+            from shape_factory_owned_prompt import get_owned_prompt
+
+            if get_owned_prompt(job) is None:
+                continue
 
         if btype == "vhs_load_video_path":
+            assert asset_path is not None
             rel, warn = comfy_workspace_relpath(asset_path, data_root)
             if warn:
                 warnings.append(warn)
@@ -2488,7 +2540,9 @@ def apply_api_slot_bindings(
             prompt[target_key].setdefault("inputs", {})["image"] = rel
             bound_image_keys.add(target_key)
         elif btype == "prompt_bundle":
-            profile = json.loads(asset_path.read_text(encoding="utf-8"))
+            from shape_factory_owned_prompt import profile_dict_for_apply
+
+            profile = profile_dict_for_apply(job, asset_path=asset_path, data_root=data_root)
             if not isinstance(profile, dict):
                 raise RuntimeError(f"prompt profile is not JSON object: {asset_path}")
             pos = str(profile.get("positive") or "")
@@ -2527,7 +2581,7 @@ def apply_api_slot_bindings(
                     if ct in {"Text Multiline", "PrimitiveStringMultiline"}:
                         inputs["text"] = pos
             if not pos and not neg:
-                warnings.append(f"empty prompt profile: {asset_path.name}")
+                warnings.append(f"empty prompt profile: {getattr(asset_path, 'name', 'owned')}")
 
     prefix = str(job.get("output_prefix") or "").rstrip("/")
     prefix = flatten_output_prefix(prefix)
@@ -5468,6 +5522,19 @@ def begin_job_edit(
             "prompt_id": pid or None,
             "detail": "Only pending/queued (pre-run) jobs can enter edit mode.",
         }
+    try:
+        from shape_factory_owned_prompt import is_owned_prompt_frozen
+
+        if is_owned_prompt_frozen(job):
+            return {
+                "ok": False,
+                "error": "prompt_frozen",
+                "job_key": key,
+                "status": status,
+                "detail": "Owned prompt is frozen (execution started); cannot edit.",
+            }
+    except Exception:
+        pass
     if not status_allows_begin_edit(status):
         return {
             "ok": False,

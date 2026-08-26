@@ -8305,20 +8305,52 @@ def _queue_enrich_from_job(
             if slot == "prompt_profile":
                 glance["prompt_profile"] = name
                 try:
-                    from shape_factory_work_products import _prompt_excerpt  # type: ignore
-
-                    prompt_profile = _prompt_excerpt(
-                        raw,
-                        data_root=data_root,
-                        output_root=output_root,
-                        workspace_root=workspace_root,
+                    from shape_factory_owned_prompt import (  # type: ignore
+                        ensure_owned_prompt_from_bindings,
+                        get_owned_prompt,
+                        owned_prompt_to_excerpt,
                     )
+
+                    owned = get_owned_prompt(job) or ensure_owned_prompt_from_bindings(
+                        job, data_root=data_root
+                    )
+                    if owned is not None:
+                        prompt_profile = owned_prompt_to_excerpt(owned)
+                        label = str(owned.get("label") or "").strip()
+                        if label:
+                            glance["prompt_profile"] = label
+                        elif owned.get("source_profile"):
+                            glance["prompt_profile"] = Path(str(owned["source_profile"])).name
+                    else:
+                        from shape_factory_work_products import _prompt_excerpt  # type: ignore
+
+                        prompt_profile = _prompt_excerpt(
+                            raw,
+                            data_root=data_root,
+                            output_root=output_root,
+                            workspace_root=workspace_root,
+                        )
                 except Exception:
                     prompt_profile = {"path": raw, "basename": name}
             elif slot in ("source_video", "source_still") and "source_name" not in glance:
                 glance["source_name"] = name
             elif slot == "identity_anchor":
                 glance["identity_name"] = name
+        # Jobs with owned prompt but missing binding path still surface prompt.
+        if prompt_profile is None:
+            try:
+                from shape_factory_owned_prompt import get_owned_prompt, owned_prompt_to_excerpt  # type: ignore
+
+                owned = get_owned_prompt(job)
+                if owned is not None:
+                    prompt_profile = owned_prompt_to_excerpt(owned)
+                    glance["prompt_profile"] = str(
+                        owned.get("label")
+                        or Path(str(owned.get("source_profile") or "")).name
+                        or "owned-prompt"
+                    )
+            except Exception:
+                pass
         source_slot = str(construction.get("source_slot") or "").strip()
         if source_slot in ("source_still", "source_image") or "source_still" in binds or "source_image" in binds:
             glance["workflow_kind"] = "image"
@@ -10028,6 +10060,21 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, 404, payload)
         code = 200 if payload.get("ok", True) else 400
         return _json_response(self, code, payload)
+
+    def _handle_shape_factory_markers_post(self) -> None:
+        """POST /api/shape-factory/markers — { content_id, key, value, source?, force? }."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _shape_factory_markers_set_payload(cfg, body if isinstance(body, dict) else {})
+            code = 200 if payload.get("ok") else 409
+            return _json_response(self, code, payload)
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "markers_set_failed", "detail": str(e)})
 
     def _handle_shape_factory_update_pending_trim_post(self) -> None:
         """POST /api/shape-factory/update-pending-trim — patch VHS window on a pending job."""

@@ -1379,15 +1379,30 @@ def _work_product_item_from_job(
 
     bindings_out = _bindings_from_job(job, data_root=data_root, output_root=output_root)
     prompt_profile = None
-    for slot, entry in bindings_out.items():
-        if slot == "prompt_profile":
-            prompt_profile = _prompt_excerpt(
-                entry.get("path"),
-                data_root=data_root,
-                output_root=output_root,
-                workspace_root=output_root.parent,
-            )
-            break
+    try:
+        from shape_factory_owned_prompt import (
+            ensure_owned_prompt_from_bindings,
+            get_owned_prompt,
+            owned_prompt_to_excerpt,
+        )
+
+        owned = get_owned_prompt(job) or ensure_owned_prompt_from_bindings(
+            job, data_root=data_root
+        )
+        if owned is not None:
+            prompt_profile = owned_prompt_to_excerpt(owned)
+    except Exception:
+        prompt_profile = None
+    if prompt_profile is None:
+        for slot, entry in bindings_out.items():
+            if slot == "prompt_profile":
+                prompt_profile = _prompt_excerpt(
+                    entry.get("path"),
+                    data_root=data_root,
+                    output_root=output_root,
+                    workspace_root=output_root.parent,
+                )
+                break
 
     construction = _synthesize_construction(job)
     status = str(
