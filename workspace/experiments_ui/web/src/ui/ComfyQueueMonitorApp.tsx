@@ -651,7 +651,8 @@ function HistoryItemRow({ item }: { item: ComfyHistoryItem }) {
     shortId(item.prompt_id, 16);
   const libraryRel = historyAssetRelpath(item);
   const workbenchUrl = workbenchHref({ jobKey, promptId: pid || null });
-  const trim = queueTrimFromItem(item);
+  // Done plays the *output* clip — full timeline (0→end). Source Use-window marks
+  // belong on queued/running input preview only; still show Trim in glance for history.
   const trimBadge = queueTrimBadge(item);
   const glanceRows = queueGlanceRows(
     {
@@ -686,10 +687,6 @@ function HistoryItemRow({ item }: { item: ComfyHistoryItem }) {
           mediaKey={`queue-hist:${item.prompt_id || libraryRel || title}`}
           alt={title}
           readOnly
-          vhsWindow={trim.window}
-          fpsHint={trim.fpsHint}
-          markIn={trim.markIn}
-          markOut={trim.markOut}
         />
       }
       kindBadge={queueWorkflowKindBadge(item)}
