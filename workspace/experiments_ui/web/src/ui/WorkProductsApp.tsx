@@ -45,8 +45,10 @@ const SECTION_OPEN_KEY = "work-products-section-open";
 const HOURLY_ONLY_KEY = "work-products-hourly-only";
 const STATUS_FILTER_OFF_KEY = "work-products-status-filter-off";
 const MARKER_FILTER_OFF_KEY = "work-products-marker-filter-off";
+const DECODE_VAE_FILTER_KEY = "work-products-decode-vae-filter";
 
 type WorkProductSort = "created_desc" | "created_asc" | "family_asc" | "family_desc" | "status" | "pick_mode";
+type DecodeVaeFilter = "all" | "tiled" | "plain";
 
 /** Display order for status filter toggles (unknown statuses sort after these). */
 const STATUS_FILTER_ORDER = [
@@ -244,6 +246,39 @@ function filterWorkProductsByStatus(items: WorkProductItem[], statusOff: Set<str
 function filterWorkProductsByMarker(items: WorkProductItem[], markerOff: Set<string>): WorkProductItem[] {
   if (!markerOff.size) return items;
   return items.filter((it) => !markerOff.has(workProductMarkerKey(it)));
+}
+
+function loadDecodeVaeFilter(): DecodeVaeFilter {
+  try {
+    const v = localStorage.getItem(DECODE_VAE_FILTER_KEY);
+    if (v === "all" || v === "tiled" || v === "plain") return v;
+  } catch {
+    /* ignore */
+  }
+  return "all";
+}
+
+function persistDecodeVaeFilter(v: DecodeVaeFilter) {
+  try {
+    localStorage.setItem(DECODE_VAE_FILTER_KEY, v);
+  } catch {
+    /* ignore */
+  }
+}
+
+function workProductDecodeVae(item: WorkProductItem): string | null {
+  const raw = item.markers?.["decode.vae"];
+  if (raw == null) return null;
+  const v = String(raw).toLowerCase().trim();
+  return v || null;
+}
+
+function filterWorkProductsByDecodeVae(
+  items: WorkProductItem[],
+  filter: DecodeVaeFilter,
+): WorkProductItem[] {
+  if (filter === "all") return items;
+  return items.filter((it) => workProductDecodeVae(it) === filter);
 }
 
 function loadSectionOpen(): Record<string, boolean> {
@@ -2680,6 +2715,22 @@ function WorkProductDetails({
         ) : null}
         {item.disposition_entry ? <span className="work-product-badge">{item.disposition_entry}</span> : null}
         {(() => {
+          const markers = item.markers || {};
+          const keys = Object.keys(markers).sort();
+          if (!keys.length) return null;
+          return keys.map((k) => (
+            <span
+              key={`wp-marker-${k}`}
+              className={`work-product-badge${
+                k === "decode.vae" ? " work-product-badge--decode-vae" : ""
+              }`}
+              title={`Marker ${k}=${markers[k]}`}
+            >
+              {k === "decode.vae" ? `vae:${markers[k]}` : `${k}:${markers[k]}`}
+            </span>
+          ));
+        })()}
+        {(() => {
           const timing = timingHeadline(item);
           if (!timing) return null;
           return (
@@ -2954,6 +3005,7 @@ export function WorkProductsApp() {
   const [hourlyOnly, setHourlyOnly] = useState(() => initialHourlyOnly);
   const [statusOff, setStatusOff] = useState<Set<string>>(() => loadStatusFilterOff());
   const [markerOff, setMarkerOff] = useState<Set<string>>(() => loadMarkerFilterOff());
+  const [decodeVaeFilter, setDecodeVaeFilter] = useState<DecodeVaeFilter>(() => loadDecodeVaeFilter());
   const [clearFailedBusy, setClearFailedBusy] = useState(false);
   const [clearFailedMsg, setClearFailedMsg] = useState<string | null>(null);
   const deepLinkScrolled = useRef(false);
@@ -3017,13 +3069,16 @@ export function WorkProductsApp() {
   const visibleItems = useMemo(
     () =>
       sortWorkProducts(
-        filterWorkProductsByMarker(
-          filterWorkProductsByStatus(filterWorkProductsByName(items, nameQuery), statusOff),
-          markerOff,
+        filterWorkProductsByDecodeVae(
+          filterWorkProductsByMarker(
+            filterWorkProductsByStatus(filterWorkProductsByName(items, nameQuery), statusOff),
+            markerOff,
+          ),
+          decodeVaeFilter,
         ),
         sort,
       ),
-    [items, nameQuery, sort, statusOff, markerOff],
+    [items, nameQuery, sort, statusOff, markerOff, decodeVaeFilter],
   );
 
   const failedVisible = useMemo(
@@ -3297,6 +3352,40 @@ export function WorkProductsApp() {
             </div>
           </>
         ) : null}
+        <span className="work-products-status-filters__sep" aria-hidden="true" />
+        <div className="work-products-status-filters__group" role="group" aria-label="Filter by VAE decode">
+          {(["all", "tiled", "plain"] as DecodeVaeFilter[]).map((opt) => {
+            const on = decodeVaeFilter === opt;
+            const count =
+              opt === "all"
+                ? items.length
+                : items.filter((it) => workProductDecodeVae(it) === opt).length;
+            return (
+              <button
+                key={`decode-vae-${opt}`}
+                type="button"
+                className={`work-products-status-toggle work-products-status-toggle--decode-vae${
+                  on ? " is-on" : " is-off"
+                }`}
+                aria-pressed={on}
+                title={
+                  opt === "all"
+                    ? "Show all decode modes"
+                    : `Show only decode.vae=${opt} (${count})`
+                }
+                onClick={() => {
+                  setDecodeVaeFilter(opt);
+                  persistDecodeVaeFilter(opt);
+                }}
+              >
+                <span className="work-products-status-toggle__label">
+                  {opt === "all" ? "vae:all" : `vae:${opt}`}
+                </span>
+                <span className="work-products-status-toggle__count">{count}</span>
+              </button>
+            );
+          })}
+        </div>
         {availableStatuses.length ? (
           <>
             <span className="work-products-status-filters__sep" aria-hidden="true" />

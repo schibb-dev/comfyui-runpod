@@ -108,10 +108,10 @@ Each program has: **intent**, **today**, **next** (actionable), **later**, **key
 
 | | |
 |--|--|
-| **Today** | Discovery player, Comfy quick edits, embed-api-prompt, queue submit |
+| **Today** | Discovery player, Comfy quick edits, embed-api-prompt, queue submit; Workbench **work-product markers** (`decode.vae`, …) — [`WORK_PRODUCT_MARKERS.md`](./WORK_PRODUCT_MARKERS.md) |
 | **Next (MVP)** | **Resubmit / replay / extend** — liberal template pairing, fail-fast, logging (`WORKSPACE_PROJECTS_RUNDOWN` §4.1) |
 | **Later** | WIP tune launcher; **load workflow on Comfy canvas** from Discovery; seed surfing; intermediate editor |
-| **Docs** | [`WORKSPACE_PROJECTS_RUNDOWN.md`](./WORKSPACE_PROJECTS_RUNDOWN.md) §4.1; `workspace/experiments_ui/docs/FEATURE_WIP_TUNE_LAUNCHER.md`; [`PROJECT_ORGANIZATION_PROPOSAL.md`](./PROJECT_ORGANIZATION_PROPOSAL.md) §9–10 |
+| **Docs** | [`WORKSPACE_PROJECTS_RUNDOWN.md`](./WORKSPACE_PROJECTS_RUNDOWN.md) §4.1; `workspace/experiments_ui/docs/FEATURE_WIP_TUNE_LAUNCHER.md`; [`PROJECT_ORGANIZATION_PROPOSAL.md`](./PROJECT_ORGANIZATION_PROPOSAL.md) §9–10; [`WORK_PRODUCT_MARKERS.md`](./WORK_PRODUCT_MARKERS.md) |
 | **Not now** | Full workflow compatibility matrix |
 
 ---

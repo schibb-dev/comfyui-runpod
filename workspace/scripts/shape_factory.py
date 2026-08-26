@@ -69,6 +69,7 @@ from shape_factory_ratings import add_ratings_subparser
 from shape_factory_heuristics import add_heuristics_subparser
 from shape_factory_rating_sampler import add_rating_sampler_subparser
 from shape_factory_tags import add_tags_subparser
+from shape_factory_markers import add_markers_subparser
 from shape_factory_source_facets import add_source_facets_subparser
 from shape_factory_job_output_index import add_job_output_index_subparser
 from shape_factory_seed_sources import add_seed_sources_subparser
@@ -7699,6 +7700,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_heuristics_subparser(sub)
     add_rating_sampler_subparser(sub)
     add_tags_subparser(sub)
+    add_markers_subparser(sub)
     add_source_facets_subparser(sub)
     add_job_output_index_subparser(sub)
     add_seed_sources_subparser(sub)

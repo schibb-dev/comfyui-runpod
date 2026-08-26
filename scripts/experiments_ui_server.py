@@ -3520,7 +3520,80 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
         payload["history_attach_error"] = history_obj.get("detail") or history_obj.get("error")
     if reconcile is not None:
         payload["comfy_reconcile"] = reconcile
+    # Re-attach after live/history rows so synthetic items also get markers when resolvable.
+    try:
+        from shape_factory_markers import attach_markers_to_work_products  # type: ignore
+
+        items = payload.get("items") if isinstance(payload.get("items"), list) else []
+        attach_markers_to_work_products(items, output_root=cfg.output_root)
+    except Exception:
+        pass
     return payload
+
+
+def _shape_factory_markers_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
+    """GET /api/shape-factory/markers?content_id=… | ?key=&value="""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_markers import (  # type: ignore
+        connect,
+        list_for,
+        markers_path_for_output_root,
+        query_by_key,
+    )
+
+    db = markers_path_for_output_root(cfg.output_root)
+    content_id = str((q.get("content_id") or [""])[0]).strip()
+    key = str((q.get("key") or [""])[0]).strip()
+    value = str((q.get("value") or [""])[0]).strip() or None
+    if content_id:
+        if not db.is_file():
+            return {"ok": True, "content_id": content_id, "markers": {}, "rows": []}
+        con = connect(db)
+        try:
+            rows = list_for(con, content_id)
+            return {
+                "ok": True,
+                "content_id": content_id,
+                "markers": {k: v["value"] for k, v in rows.items()},
+                "rows": list(rows.values()),
+            }
+        finally:
+            con.close()
+    if not key:
+        raise ValueError("content_id or key required")
+    if not db.is_file():
+        return {"ok": True, "key": key, "value": value, "count": 0, "rows": []}
+    con = connect(db)
+    try:
+        rows = query_by_key(con, key, value=value)
+        return {"ok": True, "key": key, "value": value, "count": len(rows), "rows": rows}
+    finally:
+        con.close()
+
+
+def _shape_factory_markers_set_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /api/shape-factory/markers — set one marker (default source=human)."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_markers import connect, markers_path_for_output_root, set_marker  # type: ignore
+
+    content_id = str(body.get("content_id") or "").strip()
+    key = str(body.get("key") or "").strip()
+    value = body.get("value")
+    source = str(body.get("source") or "human").strip() or "human"
+    force = bool(body.get("force"))
+    if not content_id or not key:
+        raise ValueError("content_id and key required")
+    db = markers_path_for_output_root(cfg.output_root)
+    con = connect(db)
+    try:
+        saved = set_marker(con, content_id, key, value, source=source, force=force)
+    finally:
+        con.close()
+    return {"ok": not saved.get("blocked"), "saved": saved}
 
 
 def _shape_factory_quarantine_path() -> Path:
@@ -9309,6 +9382,15 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return _json_response(self, 500, {"ok": False, "error": "work_products_failed", "detail": str(e)})
 
+        if path == "/api/shape-factory/markers":
+            try:
+                payload = _shape_factory_markers_payload(cfg, q)
+                return _json_response(self, 200, payload)
+            except ValueError as e:
+                return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+            except Exception as e:
+                return _json_response(self, 500, {"ok": False, "error": "markers_failed", "detail": str(e)})
+
         if path == "/api/shape-factory/job-edit":
             try:
                 payload = _shape_factory_job_edit_payload(cfg, q)
@@ -9663,6 +9745,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_shape_factory_finish_edit_post()
         if path == "/api/shape-factory/discard":
             return self._handle_shape_factory_discard_post()
+        if path == "/api/shape-factory/markers":
+            return self._handle_shape_factory_markers_post()
         if path == "/api/shape-factory/update-pending-trim":
             return self._handle_shape_factory_update_pending_trim_post()
         if path == "/api/shape-factory/update-pending-binding":

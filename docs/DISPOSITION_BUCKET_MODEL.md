@@ -58,6 +58,8 @@ Four related concepts; do not conflate them.
 | **Disposition** | What work is committed next? | `disposition_index.json` | No |
 | **Triage** | Have I finished review for this pass? | `triage_index.json` | Recorded on **dismiss batch** (only if disposition set) |
 
+**Markers ≠ disposition.** Arbitrary/programmatic facts (`decode.vae`, notes) live in [`WORK_PRODUCT_MARKERS.md`](./WORK_PRODUCT_MARKERS.md) — filterable provenance, not committed next work.
+
 **Triage ≠ disposition.** Finishing a batch with **no disposition** on a clip is normal — it means “no committed editing work right now,” not “undecided forever.”
 
 ```mermaid

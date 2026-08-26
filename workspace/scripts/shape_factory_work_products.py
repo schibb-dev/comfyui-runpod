@@ -1648,6 +1648,15 @@ def list_recent_work_products(
     )
     extend_family_defaults = list_extend_family_defaults(data_root)
 
+    try:
+        from shape_factory_markers import attach_markers_to_work_products
+
+        attach_markers_to_work_products(items, output_root=output_root)
+    except Exception:
+        for it in items:
+            if isinstance(it, dict):
+                it.setdefault("markers", {})
+
     return {
         "ok": True,
         "schema_version": "comfyui-runpod.work-products.v0",

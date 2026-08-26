@@ -2023,6 +2023,10 @@ export type WorkProductItem = {
   output_relpath?: string | null;
   output_url?: string | null;
   output_thumb_url?: string | null;
+  /** Content-addressed id when resolved via asset registry. */
+  content_id?: string | null;
+  /** Work-product markers (decode.vae, notes, …) — not disposition pick-mode. */
+  markers?: Record<string, string>;
   bindings?: Record<string, WorkProductBinding>;
   prompt_profile?: WorkProductPromptProfile | null;
   shape_profile?: WorkProductShapeProfile | null;
