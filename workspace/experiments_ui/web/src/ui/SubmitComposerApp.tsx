@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   beginShapeFactoryEdit,
   composeSubmitAdvance,
@@ -90,6 +91,100 @@ function basenamePath(path: string): string {
   const norm = String(path || "").replace(/\\/g, "/");
   const parts = norm.split("/").filter(Boolean);
   return parts[parts.length - 1] || norm || "—";
+}
+
+type IdentityStillPeek = {
+  src: string;
+  left: number;
+  top: number;
+  place: "above" | "below";
+};
+
+function IdentityStillThumbButton({
+  candidate,
+  selected,
+  disabled,
+  onSelect,
+}: {
+  candidate: IdentityStillCandidate;
+  selected: boolean;
+  disabled?: boolean;
+  onSelect: () => void;
+}) {
+  const [peek, setPeek] = useState<IdentityStillPeek | null>(null);
+  const [dims, setDims] = useState<{ w: number; h: number } | null>(null);
+  const thumb = candidate.thumb_url || candidate.url;
+  const full = candidate.url || candidate.thumb_url || null;
+
+  const showPeek = (el: HTMLElement) => {
+    if (!full) return;
+    const r = el.getBoundingClientRect();
+    const place: "above" | "below" = r.top < 360 ? "below" : "above";
+    const left = Math.min(Math.max(r.left + r.width / 2, 168), window.innerWidth - 168);
+    setDims(null);
+    setPeek({
+      src: full,
+      left,
+      top: place === "above" ? r.top - 8 : r.bottom + 8,
+      place,
+    });
+  };
+
+  const hidePeek = () => {
+    setPeek(null);
+    setDims(null);
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        role="option"
+        aria-selected={selected}
+        className={`work-product-identity-still__thumb${selected ? " is-selected" : ""}`}
+        disabled={disabled}
+        title={candidate.label || candidate.evidence || "still"}
+        onClick={onSelect}
+        onMouseEnter={(e) => showPeek(e.currentTarget)}
+        onMouseLeave={hidePeek}
+        onFocus={(e) => showPeek(e.currentTarget)}
+        onBlur={hidePeek}
+      >
+        {thumb ? <img src={thumb} alt="" loading="lazy" /> : <span>{(candidate.evidence || "?").slice(0, 3)}</span>}
+        <span className="work-product-identity-still__ev">{candidate.evidence || ""}</span>
+      </button>
+      {peek
+        ? createPortal(
+            <div
+              className={`work-product-identity-still__popover work-product-identity-still__popover--${peek.place}`}
+              style={{ left: peek.left, top: peek.top }}
+              role="presentation"
+            >
+              <img
+                src={peek.src}
+                alt=""
+                ref={(img) => {
+                  if (!img || !img.complete) return;
+                  const w = img.naturalWidth;
+                  const h = img.naturalHeight;
+                  if (w > 0 && h > 0) setDims((prev) => (prev?.w === w && prev?.h === h ? prev : { w, h }));
+                }}
+                onLoad={(e) => {
+                  const img = e.currentTarget;
+                  const w = img.naturalWidth;
+                  const h = img.naturalHeight;
+                  if (w > 0 && h > 0) setDims({ w, h });
+                }}
+              />
+              <div className="work-product-identity-still__popover-meta">
+                {dims ? `${dims.w}×${dims.h}` : "…"}
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  );
 }
 
 function familyShapeId(families: WorkProductFamilyOption[], slug: string): string | null {
@@ -1554,24 +1649,17 @@ function SubmitAdvanceComposerApp() {
                       <div className="work-product-identity-still__strip" role="listbox">
                         {identityCandidates.slice(0, 8).map((c) => {
                           const selected = identitySelectedId === c.id || identitySelectedPath === c.path;
-                          const thumb = c.thumb_url || c.url;
                           return (
-                            <button
+                            <IdentityStillThumbButton
                               key={c.id || c.path}
-                              type="button"
-                              role="option"
-                              aria-selected={selected}
-                              className={`work-product-identity-still__thumb${selected ? " is-selected" : ""}`}
+                              candidate={c}
+                              selected={selected}
                               disabled={busy}
-                              title={c.label || c.evidence || "still"}
-                              onClick={() => {
+                              onSelect={() => {
                                 setIdentitySelectedPath(c.path);
                                 setIdentitySelectedId(c.id);
                               }}
-                            >
-                              {thumb ? <img src={thumb} alt="" loading="lazy" /> : <span>{(c.evidence || "?").slice(0, 3)}</span>}
-                              <span className="work-product-identity-still__ev">{c.evidence || ""}</span>
-                            </button>
+                            />
                           );
                         })}
                       </div>

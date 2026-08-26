@@ -13933,6 +13933,43 @@ tr.disabled:hover td {
   object-fit: cover;
 }
 
+.work-product-identity-still__popover {
+  position: fixed;
+  z-index: 12000;
+  pointer-events: none;
+  transform: translate(-50%, -100%);
+  padding: 4px;
+  border-radius: 8px;
+  background: rgba(12, 16, 28, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.5);
+}
+
+.work-product-identity-still__popover--below {
+  transform: translate(-50%, 0);
+}
+
+.work-product-identity-still__popover img {
+  display: block;
+  max-width: min(320px, 70vw);
+  max-height: min(320px, 50vh);
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border-radius: 4px;
+  background: #000;
+}
+
+.work-product-identity-still__popover-meta {
+  margin-top: 4px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  color: rgba(220, 228, 240, 0.9);
+  text-align: center;
+  letter-spacing: 0.02em;
+}
+
 .work-product-identity-still__thumb.is-selected {
   border-color: var(--accent, #6cb6ff);
 }
