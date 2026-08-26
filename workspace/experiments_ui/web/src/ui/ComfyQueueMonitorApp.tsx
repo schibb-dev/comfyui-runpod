@@ -17,15 +17,18 @@ import { discoveryLibraryHref, submitHref, workbenchHref } from "./discoveryDeep
 import { PageHeader } from "./PageHeader";
 import { PipelineMediaPlayer, vhsWindowFromKeyParams } from "./PipelineMediaPlayer";
 import { PipelineFilterRow, PipelineList, PipelineScreen, PipelineScroll } from "./PipelineScreen";
+import { PromptPeekButton } from "./PromptPeek";
 import { queryKeys } from "./queryKeys";
 import type {
   ComfyHistoryItem,
   ComfyLogEntry,
   QueueComfyItem,
+  QueueJobGlance,
   QueueLedgerControlAction,
   QueueLedgerEvent,
   QueueLedgerEntry,
   QueueLedgerStatus,
+  WorkProductPromptProfile,
 } from "./types";
 
 function basename(rel?: string | null): string {
@@ -39,52 +42,177 @@ function shortId(pid?: string | null, n = 10): string {
   return s.length <= n ? s : `${s.slice(0, n)}…`;
 }
 
-function formatKeyParams(params?: Record<string, unknown> | null): string {
-  if (!params || typeof params !== "object") return "";
-  const order = [
-    "seed",
-    "noise_seed",
-    "steps",
-    "cfg",
-    "sampler_name",
-    "scheduler",
-    "denoise",
-    "model",
-    "skip_first_frames",
-    "frame_load_cap",
-  ];
-  const parts: string[] = [];
-  const seen = new Set<string>();
-  const skipRaw = params.skip_first_frames;
-  const capRaw = params.frame_load_cap;
-  const skipN = skipRaw == null || skipRaw === "" ? null : Number(skipRaw);
-  const capN = capRaw == null || capRaw === "" ? null : Number(capRaw);
-  const trimNontrivial =
-    (skipN != null && Number.isFinite(skipN) && skipN > 0) ||
-    (capN != null && Number.isFinite(capN) && capN > 0);
-  for (const k of order) {
-    if (!(k in params)) continue;
-    seen.add(k);
-    const v = params[k];
-    if (v == null || v === "") continue;
-    if (k === "skip_first_frames" || k === "frame_load_cap") {
-      if (!trimNontrivial) continue;
-      if (k === "skip_first_frames") {
-        parts.push(`skip=${String(v)}`);
-        continue;
-      }
-      if (capN == null || !Number.isFinite(capN) || capN <= 0) continue;
-      parts.push(`cap=${String(v)}`);
-      continue;
+function formatVideoClock(sec: number): string {
+  if (!Number.isFinite(sec) || sec < 0) return "0:00";
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function queueTrimBadge(item: {
+  key_params?: Record<string, unknown> | null;
+  vhs_window?: {
+    skip_first_frames?: number;
+    frame_load_cap?: number;
+    mark_in?: number;
+    mark_out?: number;
+  } | null;
+}): { text: string; title: string } | null {
+  const win = item.vhs_window || {};
+  const kp = item.key_params || {};
+  const skip = Number(win.skip_first_frames ?? kp.skip_first_frames ?? 0) || 0;
+  const cap = Number(win.frame_load_cap ?? kp.frame_load_cap ?? 0) || 0;
+  const markIn = win.mark_in != null ? Number(win.mark_in) : null;
+  const markOut = win.mark_out != null ? Number(win.mark_out) : null;
+  if (skip > 0 || cap > 0) {
+    const text = cap > 0 ? `skip ${skip} · cap ${cap}` : `skip ${skip}`;
+    return { text, title: "VHS loader window applied on this job (source input)" };
+  }
+  if (
+    markIn != null &&
+    markOut != null &&
+    Number.isFinite(markIn) &&
+    Number.isFinite(markOut) &&
+    markOut > markIn + 0.05
+  ) {
+    return {
+      text: `${formatVideoClock(markIn)}–${formatVideoClock(markOut)}`,
+      title: "Use window (mark in/out) from factory job",
+    };
+  }
+  return null;
+}
+
+type QueueGlanceRow = {
+  key: string;
+  label: string;
+  value: string;
+  title?: string;
+  prompt?: WorkProductPromptProfile | null;
+};
+
+function queueGlanceRows(
+  item: {
+    glance?: QueueJobGlance | null;
+    input_media_relpath?: string | null;
+    job_key?: string | null;
+    external?: boolean;
+    prompt_profile?: WorkProductPromptProfile | null;
+  },
+  opts?: { trimBadge?: { text: string; title: string } | null },
+): QueueGlanceRow[] {
+  const g = item.glance || {};
+  const rows: QueueGlanceRow[] = [];
+  const push = (key: string, label: string, value: string | null | undefined, title?: string) => {
+    const v = String(value || "").trim();
+    if (!v) return;
+    rows.push({ key, label, value: v, title });
+  };
+
+  if (g.is_hourly) push("hourly", "Kind", "Hourly", "Hourly planner job");
+  push("family", "Family", g.family_slug || null, g.shape_id ? `shape ${g.shape_id}` : "Family");
+  if (g.pick_mode || g.step) {
+    const bits = [g.pick_mode, g.step && g.step !== g.pick_mode ? g.step : null].filter(Boolean);
+    push("mode", "Mode", bits.join(" · "), g.step ? `step ${g.step}` : "Pick mode");
+  }
+  if (g.noise_seed != null && Number.isFinite(Number(g.noise_seed))) {
+    push(
+      "seed",
+      "Seed",
+      g.seed_mode ? `${Number(g.noise_seed)} · ${g.seed_mode}` : String(Number(g.noise_seed)),
+      g.seed_mode ? `Noise seed · mode ${g.seed_mode}` : "Noise seed",
+    );
+  }
+  if (opts?.trimBadge) {
+    push("trim", "Trim", opts.trimBadge.text, opts.trimBadge.title);
+  }
+  {
+    const samplerBits = [g.sampler_name, g.scheduler].filter(Boolean).map(String);
+    const extras = [
+      g.cfg != null && String(g.cfg).trim() !== "" ? `cfg ${g.cfg}` : null,
+      g.steps != null && String(g.steps).trim() !== "" ? `steps ${g.steps}` : null,
+      g.denoise != null && String(g.denoise).trim() !== "" && Number(g.denoise) !== 1
+        ? `denoise ${g.denoise}`
+        : null,
+    ].filter(Boolean);
+    if (samplerBits.length || extras.length) {
+      push("sampler", "Sampler", [...samplerBits, ...extras].join(" · "));
     }
-    parts.push(`${k}=${String(v)}`);
   }
-  for (const [k, v] of Object.entries(params)) {
-    if (seen.has(k) || v == null || v === "") continue;
-    parts.push(`${k}=${String(v)}`);
-    if (parts.length >= 8) break;
+  {
+    const promptLabel =
+      String(g.prompt_profile || item.prompt_profile?.basename || item.prompt_profile?.label || "").trim() ||
+      null;
+    const profile = item.prompt_profile;
+    if (promptLabel && profile && !profile.missing) {
+      rows.push({
+        key: "prompt",
+        label: "Prompt",
+        value: promptLabel,
+        title: profile.path || "Prompt profile",
+        prompt: profile,
+      });
+    } else {
+      push("prompt", "Prompt", promptLabel, "Prompt profile");
+    }
   }
-  return parts.join(" · ");
+  const source = g.source_name || (item.input_media_relpath ? basename(item.input_media_relpath) : "");
+  push("source", "Source", source || null);
+  push("identity", "Identity", g.identity_name || null);
+  if (item.external) push("origin", "Origin", "external", "Not mapped to an experiments run");
+  const jobKey = String(item.job_key || "").trim();
+  if (jobKey) push("job", "Job", jobKey);
+
+  return rows;
+}
+
+function queueWorkflowKindBadge(item: {
+  glance?: QueueJobGlance | null;
+  input_media_kind?: string | null;
+  input_media_relpath?: string | null;
+}): { label: "Image" | "Extend"; title: string; className: string } | null {
+  const fromGlance = String(item.glance?.workflow_kind || "").trim().toLowerCase();
+  if (fromGlance === "image") {
+    return { label: "Image", title: "Still-source / image workflow", className: "pipeline-row__kind-badge--image" };
+  }
+  if (fromGlance === "extend") {
+    return { label: "Extend", title: "Video-source extend workflow", className: "pipeline-row__kind-badge--extend" };
+  }
+  const kind = String(item.input_media_kind || "").toLowerCase();
+  if (kind === "image") {
+    return { label: "Image", title: "Still-source / image workflow", className: "pipeline-row__kind-badge--image" };
+  }
+  if (kind === "video") {
+    return { label: "Extend", title: "Video-source extend workflow", className: "pipeline-row__kind-badge--extend" };
+  }
+  const rel = String(item.input_media_relpath || item.glance?.source_name || "").toLowerCase();
+  if (/\.(png|jpe?g|webp|gif)(\?|$)/i.test(rel)) {
+    return { label: "Image", title: "Still-source / image workflow", className: "pipeline-row__kind-badge--image" };
+  }
+  if (/\.(mp4|webm|mov|mkv)(\?|$)/i.test(rel)) {
+    return { label: "Extend", title: "Video-source extend workflow", className: "pipeline-row__kind-badge--extend" };
+  }
+  return null;
+}
+
+function queueTrimFromItem(item: {
+  key_params?: Record<string, unknown> | null;
+  vhs_window?: {
+    skip_first_frames?: number;
+    frame_load_cap?: number;
+    mark_in?: number;
+    mark_out?: number;
+  } | null;
+}) {
+  const merged: Record<string, unknown> = { ...(item.key_params || {}) };
+  const win = item.vhs_window;
+  if (win) {
+    if (win.skip_first_frames != null) merged.skip_first_frames = win.skip_first_frames;
+    if (win.frame_load_cap != null) merged.frame_load_cap = win.frame_load_cap;
+    if (win.mark_in != null) merged.mark_in = win.mark_in;
+    if (win.mark_out != null) merged.mark_out = win.mark_out;
+  }
+  return vhsWindowFromKeyParams(merged);
 }
 
 function formatQueueWhen(iso?: string | null): string {
@@ -243,7 +371,8 @@ function QueuePipelineRow({
   statusVisual,
   promptId,
   media,
-  detail,
+  kindBadge,
+  glanceRows,
   queuedAt,
   changedAt,
   errorMessage,
@@ -256,7 +385,8 @@ function QueuePipelineRow({
   statusVisual: string;
   promptId?: string | null;
   media: React.ReactNode;
-  detail: string;
+  kindBadge?: { label: string; title: string; className: string } | null;
+  glanceRows?: QueueGlanceRow[];
   queuedAt?: string | null;
   changedAt?: string | null;
   errorMessage?: string | null;
@@ -284,7 +414,9 @@ function QueuePipelineRow({
                 <span className="work-products-status-toggle__label">{statusLabel}</span>
               </span>
             </span>
-            <span className="pipeline-row__title-text">{title}</span>
+            <span className="pipeline-row__title-text" title={title}>
+              {title}
+            </span>
           </div>
         </div>
         {liveMetrics}
@@ -303,14 +435,38 @@ function QueuePipelineRow({
       <div className="pipeline-row__body pipeline-row__body--player">
         <div className="pipeline-row__media pipeline-row__media--player">{media}</div>
         <div className="pipeline-row__details">
+          {kindBadge ? (
+            <div className="pipeline-row__kind">
+              <span className={`pipeline-row__kind-badge ${kindBadge.className}`} title={kindBadge.title}>
+                {kindBadge.label}
+              </span>
+            </div>
+          ) : null}
           {errorMessage ? <p className="pipeline-row__error-line">{errorMessage}</p> : null}
-          {detail ? <p className="pipeline-row__detail-line">{detail}</p> : null}
+          {glanceRows && glanceRows.length ? (
+            <dl className="pipeline-row__glance" aria-label="Job summary">
+              {glanceRows.map((row) => (
+                <div key={row.key} className="pipeline-row__glance-row">
+                  <dt>{row.label}</dt>
+                  <dd
+                    className={row.prompt ? "pipeline-row__glance-value--prompt" : "mono"}
+                    title={row.prompt ? undefined : row.title || row.value}
+                  >
+                    {row.prompt ? <PromptPeekButton prompt={row.prompt} label={row.value} /> : row.value}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          ) : null}
           <div className="pipeline-row__actions">{actions}</div>
         </div>
       </div>
     </article>
   );
 }
+
+/** Live Comfy rows: running or waiting. API cancel still uses Comfy's "pending" for waiting. */
+type QueueLiveKind = "running" | "waiting";
 
 function QueueItemRow({
   item,
@@ -320,7 +476,7 @@ function QueueItemRow({
   onRefresh,
 }: {
   item: QueueComfyItem;
-  kind: "running" | "pending";
+  kind: QueueLiveKind;
   movingPromptId?: string | null;
   onMovePrompt?: (item: QueueComfyItem, to: "front" | "back") => Promise<void>;
   onRefresh: () => void;
@@ -331,18 +487,30 @@ function QueueItemRow({
   const videoUrl = queueVideoUrl(item);
   const jobKey = String(item.job_key || "").trim() || null;
   const workbenchUrl = workbenchHref({ jobKey, promptId: pid || null });
+  // Waiting on Comfy (== queued factory jobs), not factory "pending" (not submitted yet).
   const editUrl =
-    kind === "pending" && jobKey
+    kind === "waiting" && jobKey
       ? submitHref({ editJob: jobKey, origin: "queue" })
       : null;
-  const title = item.workflow_name || basename(item.input_media_relpath) || shortId(pid, 16);
-  const trim = vhsWindowFromKeyParams(item.key_params);
-  const detailParts = [
-    item.input_media_relpath ? basename(item.input_media_relpath) : null,
-    !item.external && item.exp_id ? `${item.exp_id}/${item.run_id ?? ""}` : null,
-    item.external ? "external" : null,
-    formatKeyParams(item.key_params),
-  ].filter(Boolean);
+  const cancelKind = kind === "waiting" ? "pending" : "running";
+  const family = String(item.glance?.family_slug || "").trim();
+  const title =
+    family ||
+    basename(item.input_media_relpath) ||
+    item.workflow_name ||
+    shortId(pid, 16);
+  const trim = queueTrimFromItem(item);
+  const trimBadge = queueTrimBadge(item);
+  const glanceRows = queueGlanceRows(
+    {
+      glance: item.glance,
+      input_media_relpath: item.input_media_relpath,
+      job_key: jobKey,
+      external: item.external,
+      prompt_profile: item.prompt_profile,
+    },
+    { trimBadge },
+  );
 
   const sourcePlayer = (
     <PipelineMediaPlayer
@@ -353,6 +521,8 @@ function QueueItemRow({
       readOnly
       vhsWindow={trim.window}
       fpsHint={trim.fpsHint}
+      markIn={trim.markIn}
+      markOut={trim.markOut}
     />
   );
 
@@ -373,7 +543,8 @@ function QueueItemRow({
       statusVisual={kind === "running" ? "running" : "queued"}
       promptId={pid}
       media={media}
-      detail={detailParts.join(" · ")}
+      kindBadge={queueWorkflowKindBadge(item)}
+      glanceRows={glanceRows}
       queuedAt={item.queued_at}
       changedAt={item.changed_at}
       live={kind === "running"}
@@ -383,11 +554,11 @@ function QueueItemRow({
           <button
             type="button"
             disabled={!pid || moveBusy}
-            title={kind === "running" ? "Interrupt current ComfyUI execution" : "Remove from pending queue"}
+            title={kind === "running" ? "Interrupt current ComfyUI execution" : "Remove from Comfy waiting queue"}
             onClick={() => {
               void (async () => {
                 if (!pid) return;
-                await comfyCancel({ prompt_id: pid, kind });
+                await comfyCancel({ prompt_id: pid, kind: cancelKind });
                 onRefresh();
               })();
             }}
@@ -414,7 +585,7 @@ function QueueItemRow({
           >
             Save
           </button>
-          {kind === "pending" && pid ? (
+          {kind === "waiting" && pid ? (
             <>
               <button
                 type="button"
@@ -453,9 +624,9 @@ function QueueItemRow({
           </a>
           {editUrl ? (
             <a
-              className="pipeline-row__link"
+              className="drt-btn"
               href={editUrl}
-              title="Edit this factory job in Submit (removes from Comfy waiting queue while editing)"
+              title="Edit this run in Submit (unqueues if waiting on Comfy; holds pending-drain)"
             >
               Edit
             </a>
@@ -469,20 +640,28 @@ function QueueItemRow({
 function HistoryItemRow({ item }: { item: ComfyHistoryItem }) {
   const thumb = historyThumb(item);
   const videoUrl = item.primary_video_url || null;
+  const jobKey = String(item.job_key || "").trim() || null;
+  const pid = String(item.prompt_id || "").trim();
+  const family = String(item.glance?.family_slug || "").trim();
   const title =
+    family ||
     item.workflow_name ||
     basename(item.primary_video_relpath) ||
     basename(item.primary_image_relpath) ||
     shortId(item.prompt_id, 16);
   const libraryRel = historyAssetRelpath(item);
-  const jobKey = String(item.job_key || "").trim() || null;
-  const pid = String(item.prompt_id || "").trim();
   const workbenchUrl = workbenchHref({ jobKey, promptId: pid || null });
-  const detailParts = [
-    item.input_media_relpath ? `in ${basename(item.input_media_relpath)}` : null,
-    item.error_node ? `node ${item.error_node}` : null,
-    formatKeyParams(item.key_params),
-  ].filter(Boolean);
+  const trim = queueTrimFromItem(item);
+  const trimBadge = queueTrimBadge(item);
+  const glanceRows = queueGlanceRows(
+    {
+      glance: item.glance,
+      input_media_relpath: item.input_media_relpath,
+      job_key: jobKey,
+      prompt_profile: item.prompt_profile,
+    },
+    { trimBadge },
+  );
   const statusVisual = historyStatusVisual(item.status);
   const statusLabel =
     statusVisual === "error"
@@ -507,9 +686,14 @@ function HistoryItemRow({ item }: { item: ComfyHistoryItem }) {
           mediaKey={`queue-hist:${item.prompt_id || libraryRel || title}`}
           alt={title}
           readOnly
+          vhsWindow={trim.window}
+          fpsHint={trim.fpsHint}
+          markIn={trim.markIn}
+          markOut={trim.markOut}
         />
       }
-      detail={detailParts.join(" · ")}
+      kindBadge={queueWorkflowKindBadge(item)}
+      glanceRows={glanceRows}
       queuedAt={item.queued_at}
       changedAt={item.changed_at}
       errorMessage={errLine}
@@ -1406,7 +1590,7 @@ export function ComfyQueueMonitorApp() {
                         <QueueItemRow
                           key={`${item.prompt_id ?? "pend"}:${i}`}
                           item={item}
-                          kind="pending"
+                          kind="waiting"
                           movingPromptId={movingPromptId}
                           onMovePrompt={movePendingPrompt}
                           onRefresh={() => void invalidateQueue()}

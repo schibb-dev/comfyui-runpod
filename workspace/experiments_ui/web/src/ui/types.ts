@@ -73,6 +73,26 @@ export type MultiRunsResponse = {
   runs: RunsItem[];
 };
 
+export type QueueJobGlance = {
+  family_slug?: string | null;
+  shape_id?: string | null;
+  pick_mode?: string | null;
+  step?: string | null;
+  seed_mode?: string | null;
+  noise_seed?: number | null;
+  is_hourly?: boolean;
+  prompt_profile?: string | null;
+  source_name?: string | null;
+  identity_name?: string | null;
+  sampler_name?: string | null;
+  scheduler?: string | null;
+  cfg?: number | string | null;
+  steps?: number | string | null;
+  denoise?: number | string | null;
+  /** Still-source vs video-extend workflow (for media overlay badge). */
+  workflow_kind?: "image" | "extend" | null;
+};
+
 export type QueueComfyItem = {
   prompt_id?: string | null;
   raw?: unknown;
@@ -92,6 +112,17 @@ export type QueueComfyItem = {
   input_media_kind?: "image" | "video" | null;
   input_thumb_url?: string | null;
   key_params?: Record<string, unknown>;
+  /** Factory Use / VHS window (skip/cap + optional mark_in/out seconds). */
+  vhs_window?: {
+    skip_first_frames?: number;
+    frame_load_cap?: number;
+    mark_in?: number;
+    mark_out?: number;
+  } | null;
+  /** At-a-glance factory / graph fields for Queue chips. */
+  glance?: QueueJobGlance | null;
+  /** Decoded prompt profile for Workbench-style prompt peek. */
+  prompt_profile?: WorkProductPromptProfile | null;
 };
 
 export type QueueResponse = {
@@ -117,6 +148,15 @@ export type ComfyHistoryItem = {
   job_key?: string | null;
   queue_index?: number | null;
   key_params?: Record<string, unknown>;
+  vhs_window?: {
+    skip_first_frames?: number;
+    frame_load_cap?: number;
+    mark_in?: number;
+    mark_out?: number;
+  } | null;
+  glance?: QueueJobGlance | null;
+  /** Decoded prompt profile for Workbench-style prompt peek. */
+  prompt_profile?: WorkProductPromptProfile | null;
   primary_video_relpath?: string | null;
   primary_image_relpath?: string | null;
   primary_video_url?: string | null;

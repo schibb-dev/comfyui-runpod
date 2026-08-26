@@ -8059,6 +8059,184 @@ def _extract_key_params_from_prompt(prompt_obj: Any) -> Dict[str, Any]:
     return out
 
 
+def _queue_trim_nontrivial(skip: Any, cap: Any) -> bool:
+    try:
+        s = int(skip) if skip is not None and skip != "" else 0
+    except (TypeError, ValueError):
+        s = 0
+    try:
+        c = int(cap) if cap is not None and cap != "" else 0
+    except (TypeError, ValueError):
+        c = 0
+    return s > 0 or c > 0
+
+
+def _queue_slim_vhs_window(win: Any) -> Optional[Dict[str, Any]]:
+    """Normalize job/prompt VHS + Use marks for Queue UI."""
+    if not isinstance(win, dict):
+        return None
+    out: Dict[str, Any] = {}
+    for key in ("skip_first_frames", "frame_load_cap"):
+        raw = win.get(key)
+        if raw is None or raw == "":
+            continue
+        try:
+            out[key] = max(0, int(raw))
+        except (TypeError, ValueError):
+            pass
+    for key in ("mark_in", "mark_out"):
+        raw = win.get(key)
+        if raw is None or raw == "":
+            continue
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(val) and val >= 0:
+            out[key] = val
+    if not out:
+        return None
+    return out
+
+
+def _queue_enrich_from_job(
+    *,
+    job_key: Optional[str],
+    key_params: Dict[str, Any],
+    output_root: Optional[Path] = None,
+    workspace_root: Optional[Path] = None,
+) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]], Dict[str, Any], Optional[Dict[str, Any]]]:
+    """
+    Merge factory job metadata into a Comfy queue row.
+
+    Returns ``(key_params, vhs_window, glance, prompt_profile)``.
+    """
+    params = dict(key_params) if isinstance(key_params, dict) else {}
+    glance: Dict[str, Any] = {}
+    prompt_profile: Optional[Dict[str, Any]] = None
+    key = str(job_key or "").strip()
+    job: Optional[Dict[str, Any]] = None
+    data_root: Optional[Path] = None
+    if key:
+        try:
+            from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+            from shape_factory import find_job_by_key  # type: ignore
+
+            data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+            _path, job = find_job_by_key(data_root, key)
+        except Exception:
+            job = None
+
+    win = job.get("vhs_window") if isinstance(job, dict) else None
+    slim_job = _queue_slim_vhs_window(win)
+    graph_nontrivial = _queue_trim_nontrivial(params.get("skip_first_frames"), params.get("frame_load_cap"))
+    if slim_job and not graph_nontrivial:
+        if "skip_first_frames" in slim_job:
+            params["skip_first_frames"] = slim_job["skip_first_frames"]
+        if "frame_load_cap" in slim_job:
+            params["frame_load_cap"] = slim_job["frame_load_cap"]
+    slim = _queue_slim_vhs_window(
+        {
+            "skip_first_frames": params.get("skip_first_frames"),
+            "frame_load_cap": params.get("frame_load_cap"),
+            "mark_in": (slim_job or {}).get("mark_in"),
+            "mark_out": (slim_job or {}).get("mark_out"),
+        }
+    )
+
+    if isinstance(job, dict):
+        fam = str(job.get("family_slug") or "").strip()
+        if fam:
+            glance["family_slug"] = fam
+        shape_id = str(job.get("shape_id") or "").strip()
+        if shape_id:
+            glance["shape_id"] = shape_id
+        construction = job.get("construction") if isinstance(job.get("construction"), dict) else {}
+        pick = str(job.get("pick_mode") or construction.get("pick_mode") or "").strip()
+        if pick:
+            glance["pick_mode"] = pick
+        step = str(construction.get("step") or "").strip()
+        if step:
+            glance["step"] = step
+        seed_mode = str(construction.get("seed_mode") or "").strip()
+        if seed_mode:
+            glance["seed_mode"] = seed_mode
+        noise = construction.get("noise_seed")
+        if noise is None:
+            noise = params.get("noise_seed", params.get("seed"))
+        try:
+            if noise is not None and str(noise).strip() != "":
+                glance["noise_seed"] = int(noise)
+        except (TypeError, ValueError):
+            pass
+        if key.startswith("hourly") or fam.startswith("hourly"):
+            glance["is_hourly"] = True
+        try:
+            from shape_factory_work_products import job_is_hourly_product  # type: ignore
+
+            if job_is_hourly_product(job, None):
+                glance["is_hourly"] = True
+        except Exception:
+            pass
+        binds = job.get("bindings") if isinstance(job.get("bindings"), dict) else {}
+        for slot in ("prompt_profile", "source_video", "source_still", "identity_anchor"):
+            meta = binds.get(slot) if isinstance(binds, dict) else None
+            if not isinstance(meta, dict):
+                continue
+            raw = str(meta.get("relpath") or meta.get("path") or "").strip()
+            if not raw:
+                continue
+            name = Path(raw.replace("\\", "/")).name
+            if slot == "prompt_profile":
+                glance["prompt_profile"] = name
+                try:
+                    from shape_factory_work_products import _prompt_excerpt  # type: ignore
+
+                    prompt_profile = _prompt_excerpt(
+                        raw,
+                        data_root=data_root,
+                        output_root=output_root,
+                        workspace_root=workspace_root,
+                    )
+                except Exception:
+                    prompt_profile = {"path": raw, "basename": name}
+            elif slot in ("source_video", "source_still") and "source_name" not in glance:
+                glance["source_name"] = name
+            elif slot == "identity_anchor":
+                glance["identity_name"] = name
+        source_slot = str(construction.get("source_slot") or "").strip()
+        if source_slot in ("source_still", "source_image") or "source_still" in binds or "source_image" in binds:
+            glance["workflow_kind"] = "image"
+        elif source_slot == "source_video" or "source_video" in binds:
+            glance["workflow_kind"] = "extend"
+
+    # Graph seed fallback when no job file.
+    if "noise_seed" not in glance:
+        for k in ("noise_seed", "seed"):
+            raw = params.get(k)
+            try:
+                if raw is not None and str(raw).strip() != "":
+                    glance["noise_seed"] = int(raw)
+                    break
+            except (TypeError, ValueError):
+                continue
+    for k in ("sampler_name", "scheduler", "cfg", "steps", "denoise"):
+        if k in params and params[k] is not None and str(params[k]).strip() != "":
+            glance[k] = params[k]
+
+    return params, slim, glance, prompt_profile
+
+
+def _queue_enrich_trim_from_job(
+    *,
+    job_key: Optional[str],
+    key_params: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    """Back-compat wrapper — prefer ``_queue_enrich_from_job``."""
+    params, slim, _glance, _prompt = _queue_enrich_from_job(job_key=job_key, key_params=key_params)
+    return params, slim
+
+
 def _guess_workflow_name(prompt_obj: Any, raw_item: Any) -> Optional[str]:
     if isinstance(raw_item, list) and len(raw_item) >= 4 and isinstance(raw_item[3], dict):
         meta = raw_item[3]
@@ -8933,7 +9111,14 @@ class Handler(BaseHTTPRequestHandler):
                         mapped = prompt_to_run.get(pid) if isinstance(pid, str) and pid else None
                         media = _queue_resolve_input_media(cfg, prompt_obj)
                         workflow_name = _guess_workflow_name(prompt_obj, it)
+                        job_key = _queue_item_job_key(workflow_name)
                         key_params = _extract_key_params_from_prompt(prompt_obj)
+                        key_params, vhs_window, glance, prompt_profile = _queue_enrich_from_job(
+                            job_key=job_key,
+                            key_params=key_params,
+                            output_root=cfg.output_root,
+                            workspace_root=cfg.workspace_root,
+                        )
                         known_rec = ledger_known.get(pid) if isinstance(pid, str) else None
                         known_rec = known_rec if isinstance(known_rec, dict) else {}
                         queued_at = known_rec.get("first_seen_at") if isinstance(known_rec.get("first_seen_at"), str) else None
@@ -8946,7 +9131,7 @@ class Handler(BaseHTTPRequestHandler):
                                 "exp_id": mapped.get("exp_id") if isinstance(mapped, dict) else None,
                                 "run_id": mapped.get("run_id") if isinstance(mapped, dict) else None,
                                 "workflow_name": workflow_name,
-                                "job_key": _queue_item_job_key(workflow_name),
+                                "job_key": job_key,
                                 "queue_index": queue_index,
                                 "queued_at": queued_at,
                                 "changed_at": changed_at,
@@ -8955,6 +9140,9 @@ class Handler(BaseHTTPRequestHandler):
                                 "input_media_kind": media.get("input_media_kind"),
                                 "input_thumb_url": media.get("input_thumb_url"),
                                 "key_params": key_params,
+                                "vhs_window": vhs_window,
+                                "glance": glance,
+                                "prompt_profile": prompt_profile,
                             }
                         )
 
@@ -9039,6 +9227,12 @@ class Handler(BaseHTTPRequestHandler):
                     job_key = _queue_item_job_key(workflow_name) or _queue_item_job_key(
                         Path(str(pv or pi or "")).name
                     )
+                    key_params, vhs_window, glance, prompt_profile = _queue_enrich_from_job(
+                        job_key=job_key,
+                        key_params=key_params,
+                        output_root=cfg.output_root,
+                        workspace_root=cfg.workspace_root,
+                    )
                     title = workflow_name
                     if not title or str(title).startswith("graph (") or str(title).startswith("client:"):
                         for cand in (pv, pi, media.get("input_media_relpath")):
@@ -9058,6 +9252,9 @@ class Handler(BaseHTTPRequestHandler):
                             "workflow_name": title,
                             "job_key": job_key,
                             "key_params": key_params,
+                            "vhs_window": vhs_window,
+                            "glance": glance,
+                            "prompt_profile": prompt_profile,
                             "queue_index": _history_queue_index(record),
                             "primary_video_relpath": pv,
                             "primary_image_relpath": pi,

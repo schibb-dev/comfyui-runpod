@@ -6,7 +6,8 @@ import { parseFps, vhsDefaultsToMarks, type VhsDefaults } from "./workProductTri
 /**
  * Workbench-style media preview for pipeline lists (Queue, etc.).
  * When VHS skip/cap are provided, playback is clamped to that window and a
- * readonly trim scrubber is shown (marks are not editable).
+ * readonly trim scrubber is shown (marks are not editable). Explicit markIn/markOut
+ * (from factory vhs_window) are used when skip/cap are unset/zero.
  */
 export function PipelineMediaPlayer({
   videoUrl,
@@ -16,6 +17,8 @@ export function PipelineMediaPlayer({
   className,
   vhsWindow,
   fpsHint,
+  markIn: markInProp,
+  markOut: markOutProp,
 }: {
   videoUrl?: string | null;
   thumbUrl?: string | null;
@@ -28,6 +31,9 @@ export function PipelineMediaPlayer({
   vhsWindow?: VhsDefaults | null;
   /** Optional fps override (e.g. force_rate from the prompt). */
   fpsHint?: number | null;
+  /** Optional Use marks in seconds (factory vhs_window). */
+  markIn?: number | null;
+  markOut?: number | null;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [duration, setDuration] = useState(0);
@@ -38,14 +44,28 @@ export function PipelineMediaPlayer({
 
   const skip = Math.max(0, Math.floor(Number(vhsWindow?.skip_first_frames ?? 0) || 0));
   const cap = Math.max(0, Math.floor(Number(vhsWindow?.frame_load_cap ?? 0) || 0));
-  const hasTrimIntent = skip > 0 || cap > 0;
+  const hasVhsIntent = skip > 0 || cap > 0;
+  const explicitMarkIn =
+    markInProp != null && Number.isFinite(markInProp) ? Math.max(0, markInProp) : null;
+  const explicitMarkOut =
+    markOutProp != null && Number.isFinite(markOutProp) ? Math.max(0, markOutProp) : null;
+  const hasExplicitMarks =
+    explicitMarkIn != null && explicitMarkOut != null && explicitMarkOut > explicitMarkIn + 0.05;
+  const hasTrimIntent = hasVhsIntent || hasExplicitMarks;
 
   const marks = useMemo(() => {
     if (!hasTrimIntent || !(duration > 0)) {
       return { markIn: null as number | null, markOut: null as number | null, warning: null as string | null };
     }
-    return vhsDefaultsToMarks({ skip_first_frames: skip, frame_load_cap: cap }, duration, fps);
-  }, [hasTrimIntent, skip, cap, duration, fps]);
+    if (hasVhsIntent) {
+      return vhsDefaultsToMarks({ skip_first_frames: skip, frame_load_cap: cap }, duration, fps);
+    }
+    return {
+      markIn: explicitMarkIn,
+      markOut: Math.min(duration, explicitMarkOut!),
+      warning: null as string | null,
+    };
+  }, [hasTrimIntent, hasVhsIntent, skip, cap, duration, fps, explicitMarkIn, explicitMarkOut]);
 
   useTrimPlaybackEnforcement(videoRef, {
     mediaKey: syncKey,
@@ -133,11 +153,18 @@ export function PipelineMediaPlayer({
   );
 }
 
-/** Pull VHS window (+ optional force_rate) from queue/history key_params. */
+/** Pull VHS window (+ optional force_rate / Use marks) from queue/history key_params or vhs_window. */
 export function vhsWindowFromKeyParams(
   params?: Record<string, unknown> | null,
-): { window: VhsDefaults | null; fpsHint: number | null } {
-  if (!params || typeof params !== "object") return { window: null, fpsHint: null };
+): {
+  window: VhsDefaults | null;
+  fpsHint: number | null;
+  markIn: number | null;
+  markOut: number | null;
+} {
+  if (!params || typeof params !== "object") {
+    return { window: null, fpsHint: null, markIn: null, markOut: null };
+  }
   const skipRaw = params.skip_first_frames;
   const capRaw = params.frame_load_cap;
   const skip = skipRaw == null || skipRaw === "" ? 0 : Math.max(0, Math.floor(Number(skipRaw) || 0));
@@ -145,6 +172,12 @@ export function vhsWindowFromKeyParams(
   const force = params.force_rate;
   const fpsHint =
     force == null || force === "" || Number(force) <= 0 ? null : parseFps(force, 18);
-  if (skip <= 0 && cap <= 0) return { window: null, fpsHint };
-  return { window: { skip_first_frames: skip, frame_load_cap: cap }, fpsHint };
+  const miRaw = params.mark_in;
+  const moRaw = params.mark_out;
+  const markIn =
+    miRaw == null || miRaw === "" || !Number.isFinite(Number(miRaw)) ? null : Math.max(0, Number(miRaw));
+  const markOut =
+    moRaw == null || moRaw === "" || !Number.isFinite(Number(moRaw)) ? null : Math.max(0, Number(moRaw));
+  const window = skip <= 0 && cap <= 0 ? null : { skip_first_frames: skip, frame_load_cap: cap };
+  return { window, fpsHint, markIn, markOut };
 }
