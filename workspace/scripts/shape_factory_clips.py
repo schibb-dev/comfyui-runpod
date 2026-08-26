@@ -22,6 +22,10 @@ import asset_registry as areg
 
 CLIP_ID_PREFIX = "clip_"
 MIN_CLIP_GAP_S = 1e-3
+NEAR_DUP_EPS_S = 0.05
+# Whole-file gate: in near 0 and out near duration, or span covers almost all of the asset.
+WHOLE_EDGE_EPS_S = 0.25
+WHOLE_MIN_COVERAGE = 0.98
 
 
 def _utc_now() -> str:
@@ -147,6 +151,57 @@ def clamp_marks(
     if tout <= tin:
         tout = tin + MIN_CLIP_GAP_S
     return tin, tout
+
+
+def marks_near_existing(
+    mark_in_s: float,
+    mark_out_s: float,
+    existing: Sequence[Dict[str, Any]],
+    *,
+    eps_s: float = NEAR_DUP_EPS_S,
+) -> bool:
+    """True if any clip matches in/out within ``eps_s`` (default 50ms)."""
+    tin = float(mark_in_s)
+    tout = float(mark_out_s)
+    eps = max(0.0, float(eps_s))
+    for e in existing:
+        try:
+            if abs(float(e["mark_in_s"]) - tin) < eps and abs(float(e["mark_out_s"]) - tout) < eps:
+                return True
+        except (TypeError, ValueError, KeyError):
+            continue
+    return False
+
+
+def is_whole_asset_window(
+    mark_in_s: float,
+    mark_out_s: float,
+    duration_s: Optional[float],
+    *,
+    edge_eps_s: float = WHOLE_EDGE_EPS_S,
+    min_coverage: float = WHOLE_MIN_COVERAGE,
+) -> bool:
+    """
+    True when the window is (nearly) the entire parent asset.
+
+    Mining must not mint these — absence of a clip already means whole-file Use.
+    """
+    tin = max(0.0, float(mark_in_s))
+    tout = float(mark_out_s)
+    if tout <= tin:
+        return False
+    dur = float(duration_s) if duration_s is not None and float(duration_s) > 0 else 0.0
+    if dur <= 0:
+        # No probe: treat explicit 0→0-ish or non-positive span only; otherwise allow.
+        return False
+    edge = max(0.0, float(edge_eps_s))
+    if tin <= edge and tout >= dur - edge:
+        return True
+    span = tout - tin
+    cov = max(0.0, min(1.0, float(min_coverage)))
+    if span >= dur * cov and tin <= edge:
+        return True
+    return False
 
 
 def _row_to_clip(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
@@ -1504,11 +1559,7 @@ def import_trims_presets_as_clips(
             if tout - tin < MIN_CLIP_GAP_S:
                 continue
             tin, tout = clamp_marks(tin, tout, duration_s=duration_s)
-            if any(
-                abs(float(e["mark_in_s"]) - tin) < 0.05
-                and abs(float(e["mark_out_s"]) - tout) < 0.05
-                for e in existing + created
-            ):
+            if marks_near_existing(tin, tout, existing + created):
                 continue
             label = str(p.get("label") or "Clip").strip() or "Clip"
             clip = create_clip(
@@ -1624,6 +1675,293 @@ def backfill_clips_from_trims_sidecars(
 # Family/template-style skips baked into many GEX/GEX2 graphs — not editorial clips
 # when paired with frame_load_cap == 0.
 _TEMPLATE_SKIP_DEFAULTS = frozenset({47, 57, 85})
+
+
+def _job_source_video_raw(job: Dict[str, Any]) -> str:
+    bindings = job.get("bindings") if isinstance(job.get("bindings"), dict) else {}
+    for key in ("source_video", "source_video_ref", "video"):
+        spec = bindings.get(key)
+        if isinstance(spec, dict):
+            raw = str(spec.get("path") or spec.get("relpath") or "").strip()
+            if raw:
+                return raw
+        elif isinstance(spec, str) and spec.strip():
+            return spec.strip()
+    picks = job.get("picks") if isinstance(job.get("picks"), dict) else {}
+    for key in ("source_video", "source_video_ref"):
+        raw = str(picks.get(key) or "").strip()
+        if raw:
+            return raw
+    return ""
+
+
+def _marks_from_job_vhs_window(
+    win: Dict[str, Any],
+    *,
+    fps: float,
+    duration_s: float,
+) -> Optional[Tuple[float, float, str]]:
+    """
+    Return (mark_in, mark_out, how) from a job vhs_window, or None if empty/unusable.
+    """
+    if win.get("mark_in") is not None or win.get("mark_out") is not None:
+        try:
+            tin = float(win["mark_in"] if win.get("mark_in") is not None else 0.0)
+        except (TypeError, ValueError):
+            tin = 0.0
+        try:
+            tout = float(
+                win["mark_out"]
+                if win.get("mark_out") is not None
+                else (duration_s if duration_s > 0 else tin)
+            )
+        except (TypeError, ValueError):
+            return None
+        tin, tout = clamp_marks(tin, tout, duration_s=duration_s or None)
+        return tin, tout, "marks"
+    try:
+        skip = int(win.get("skip_first_frames") or 0)
+    except (TypeError, ValueError):
+        skip = 0
+    try:
+        cap = int(win.get("frame_load_cap") or 0)
+    except (TypeError, ValueError):
+        cap = 0
+    if skip <= 0 and cap <= 0:
+        return None
+    rate = float(fps) if fps > 0 else 18.0
+    tin = max(0.0, skip / rate)
+    if cap > 0:
+        tout = tin + (cap / rate)
+    elif duration_s > 0:
+        tout = duration_s
+    else:
+        return None
+    tin, tout = clamp_marks(tin, tout, duration_s=duration_s or None)
+    return tin, tout, f"skip{skip}_cap{cap}"
+
+
+def mine_clips_from_jobs(
+    *,
+    jobs_root: Path,
+    output_root: Path,
+    data_root: Optional[Path] = None,
+    registry_path: Optional[Path] = None,
+    apply: bool = False,
+    include_template_skips: bool = False,
+    limit: int = 0,
+) -> Dict[str, Any]:
+    """
+    Utility: recover Clip bookmarks from historical factory job Use windows.
+
+    **Not** an online factory path — one-shot / occasional ops. Dry-run unless
+    ``apply=True``.
+
+    Hard skips:
+    - whole-asset windows (0→end / ~full coverage) — absence of a clip means full file
+    - near-duplicate of an existing clip on the same parent (~50ms)
+    - non-editorial bare template skips (unless ``include_template_skips``)
+
+    Does **not** auto-★ or set default (operator curates after mining).
+    """
+    from shape_factory_queue import _probe_media_frame_meta, hostify_media_abs
+
+    jobs = Path(jobs_root).expanduser().resolve()
+    out = Path(output_root).expanduser().resolve()
+    data = Path(data_root).expanduser().resolve() if data_root else out.parent
+    og = out / "og" if (out / "og").is_dir() else out
+    reg = Path(registry_path).expanduser().resolve() if registry_path else areg.default_registry_path(og)
+    lim = max(0, int(limit or 0))
+
+    summary: Dict[str, Any] = {
+        "ok": True,
+        "utility": "mine_clips_from_jobs",
+        "apply": bool(apply),
+        "jobs_root": str(jobs),
+        "output_root": str(out),
+        "registry": str(reg),
+        "jobs_scanned": 0,
+        "windows_seen": 0,
+        "skipped_no_window": 0,
+        "skipped_unresolved_source": 0,
+        "skipped_whole": 0,
+        "skipped_dup": 0,
+        "skipped_template": 0,
+        "skipped_non_editorial": 0,
+        "clips_created": 0,
+        "candidates": [],
+        "errors": [],
+    }
+    if not jobs.is_dir():
+        summary["ok"] = False
+        summary["errors"].append({"detail": f"jobs_root_missing:{jobs}"})
+        return summary
+
+    con = connect_clips(reg)
+    media_cache: Dict[str, Dict[str, Any]] = {}
+    # Dedup creates within this run: parent -> list of (tin,tout) pending/created
+    pending_by_parent: Dict[str, List[Dict[str, Any]]] = {}
+
+    try:
+        paths = sorted(jobs.rglob("*.job.json"))
+        for jp in paths:
+            if lim and summary["windows_seen"] >= lim and not apply:
+                # Still allow apply to process all; limit only caps candidate list size in dry-run display
+                pass
+            try:
+                job = json.loads(jp.read_text(encoding="utf-8", errors="replace"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(job, dict):
+                continue
+            summary["jobs_scanned"] += 1
+            win = job.get("vhs_window") if isinstance(job.get("vhs_window"), dict) else {}
+            if not win:
+                summary["skipped_no_window"] += 1
+                continue
+
+            raw_src = _job_source_video_raw(job)
+            if not raw_src:
+                summary["skipped_unresolved_source"] += 1
+                continue
+
+            cache_key = raw_src.replace("\\", "/")
+            if cache_key not in media_cache:
+                media = hostify_media_abs(Path(raw_src)) if raw_src else None
+                if media is None or not media.is_file():
+                    media = _resolve_workflow_video_path(raw_src, output_root=out, data_root=data)
+                entry: Dict[str, Any] = {"media": media, "meta": {}, "rel": None, "parent": None}
+                if media is not None and media.is_file():
+                    try:
+                        rel = str(media.resolve().relative_to(out)).replace("\\", "/")
+                    except ValueError:
+                        try:
+                            rel = str(media.resolve().relative_to(data)).replace("\\", "/")
+                        except ValueError:
+                            rel = media.name
+                    entry["rel"] = rel
+                    entry["meta"] = _probe_media_frame_meta(media) or {}
+                media_cache[cache_key] = entry
+            entry = media_cache[cache_key]
+            media = entry.get("media")
+            if media is None or not Path(media).is_file():
+                summary["skipped_unresolved_source"] += 1
+                continue
+
+            meta = entry.get("meta") or {}
+            fps = float(meta.get("fps") or 18.0)
+            if fps <= 0:
+                fps = 18.0
+            duration = float(meta.get("duration") or 0.0)
+            frame_count = 0
+            try:
+                frame_count = int(meta.get("frame_count") or 0)
+            except (TypeError, ValueError):
+                frame_count = 0
+            if duration <= 0 and frame_count > 0:
+                duration = frame_count / fps
+
+            # Template / editorial gate on skip/cap form.
+            try:
+                skip_i = int(win.get("skip_first_frames") or 0)
+            except (TypeError, ValueError):
+                skip_i = 0
+            try:
+                cap_i = int(win.get("frame_load_cap") or 0)
+            except (TypeError, ValueError):
+                cap_i = 0
+            has_marks = win.get("mark_in") is not None or win.get("mark_out") is not None
+            if not has_marks:
+                if skip_i <= 0 and cap_i <= 0:
+                    summary["skipped_no_window"] += 1
+                    continue
+                if not is_editorial_vhs_window(
+                    skip_i, cap_i, include_template_skips=include_template_skips
+                ):
+                    if skip_i in _TEMPLATE_SKIP_DEFAULTS and cap_i <= 0:
+                        summary["skipped_template"] += 1
+                    else:
+                        summary["skipped_non_editorial"] += 1
+                    continue
+
+            parsed = _marks_from_job_vhs_window(win, fps=fps, duration_s=duration)
+            if parsed is None:
+                summary["skipped_no_window"] += 1
+                continue
+            tin, tout, how = parsed
+            summary["windows_seen"] += 1
+
+            if is_whole_asset_window(tin, tout, duration):
+                summary["skipped_whole"] += 1
+                continue
+
+            # Resolve parent content_id (read-only on dry-run; register only on apply).
+            parent = entry.get("parent")
+            rel = entry.get("rel") or Path(media).name
+            if not parent:
+                existing_asset = areg.by_relpath(con, rel)
+                if existing_asset and existing_asset.get("content_id"):
+                    parent = str(existing_asset["content_id"])
+                elif apply:
+                    parent = areg.register(con, Path(media), relpath=rel, kind="video", with_dims=False)
+                else:
+                    parent = f"dry:{rel}"
+                entry["parent"] = parent
+            if not parent:
+                summary["skipped_unresolved_source"] += 1
+                continue
+
+            existing_clips = (
+                list_clips_for_parent(con, parent)
+                if not str(parent).startswith("dry:")
+                else []
+            )
+            session = pending_by_parent.setdefault(str(parent), [])
+            if marks_near_existing(tin, tout, existing_clips + session):
+                summary["skipped_dup"] += 1
+                continue
+
+            cand = {
+                "job_key": str(job.get("job_key") or jp.stem.replace(".job", "")),
+                "family_slug": str(job.get("family_slug") or jp.parent.name or ""),
+                "media_relpath": rel,
+                "mark_in_s": round(tin, 4),
+                "mark_out_s": round(tout, 4),
+                "duration_s": round(duration, 4) if duration else None,
+                "how": how,
+                "source": str(win.get("source") or ""),
+            }
+            if not lim or len(summary["candidates"]) < lim:
+                summary["candidates"].append(cand)
+
+            session.append({"mark_in_s": tin, "mark_out_s": tout})
+
+            if not apply or str(parent).startswith("dry:"):
+                continue
+
+            label = f"job {how}"
+            notes = f"mined_from_job:{cand['job_key']}"
+            try:
+                create_clip(
+                    con,
+                    parent_content_id=str(parent),
+                    mark_in_s=tin,
+                    mark_out_s=tout,
+                    label=label,
+                    origin="job_mine",
+                    notes=notes,
+                    duration_s=duration or None,
+                )
+                summary["clips_created"] += 1
+            except Exception as exc:  # noqa: BLE001
+                summary["errors"].append({"job": cand["job_key"], "detail": str(exc)})
+                summary["ok"] = False
+    finally:
+        con.close()
+
+    summary["candidates_n"] = len(summary["candidates"])
+    summary["would_create"] = summary["clips_created"] if apply else summary["candidates_n"]
+    return summary
 
 
 def _vhs_window_from_widgets(widgets: Any) -> Optional[Tuple[str, int, int]]:

@@ -93,6 +93,8 @@ Cleanup UIs can filter **unused** (+ unstarred / retired) without guessing which
 
 **Shipped (prefs):** `asset_clip_stars` multi-★ set (schema v5); legacy `default_clip_id` migrates into ★ and remains an alias. Automation uses `pick_seed_clip` (★ recency-weighted → usable-trim sidecar → full). See [HOURLY_CLIP_GUIDANCE_PLAN.md](./HOURLY_CLIP_GUIDANCE_PLAN.md).
 
+**Utility (not online path):** `shape_factory.py mine-clips-from-jobs` recovers bookmarks from historical job `vhs_window` Use marks — skips whole-file windows and near-dups; dry-run unless `--apply`; does not auto-★.
+
 ---
 
 ## 6. Longevity: soft-delete and restore

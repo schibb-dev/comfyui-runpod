@@ -487,6 +487,112 @@ class TestShapeFactoryClips(unittest.TestCase):
             self.assertIsNone(get_clip(con, unused_clip["clip_id"]))
             con.close()
 
+    def test_whole_window_and_near_dup_helpers(self) -> None:
+        from shape_factory_clips import is_whole_asset_window, marks_near_existing
+
+        self.assertTrue(is_whole_asset_window(0.0, 10.0, 10.0))
+        self.assertTrue(is_whole_asset_window(0.1, 9.95, 10.0))
+        self.assertFalse(is_whole_asset_window(1.0, 3.0, 10.0))
+        self.assertFalse(is_whole_asset_window(0.0, 5.0, 10.0))
+
+        existing = [{"mark_in_s": 1.0, "mark_out_s": 2.0}]
+        self.assertTrue(marks_near_existing(1.0, 2.0, existing))
+        self.assertTrue(marks_near_existing(1.02, 2.01, existing))
+        self.assertFalse(marks_near_existing(1.0, 3.0, existing))
+
+    def test_mine_clips_from_jobs_skips_whole_and_dup(self) -> None:
+        import json
+        from unittest import mock
+
+        import asset_registry as areg
+        from shape_factory_clips import (
+            connect_clips,
+            create_clip,
+            list_clips_for_parent,
+            mine_clips_from_jobs,
+        )
+
+        with _tmpdir() as td:
+            root = Path(td)
+            out = root / "output"
+            out.mkdir()
+            media = out / "src.mp4"
+            media.write_bytes(b"\x00\x00")
+            jobs = root / "jobs" / "FB9"
+            jobs.mkdir(parents=True)
+            reg = root / "asset_registry.sqlite"
+
+            def _job(key: str, win: dict) -> None:
+                doc = {
+                    "job_key": key,
+                    "family_slug": "FB9",
+                    "bindings": {"source_video": {"path": str(media)}},
+                    "vhs_window": win,
+                }
+                (jobs / f"{key}.job.json").write_text(json.dumps(doc), encoding="utf-8")
+
+            _job("whole", {"mark_in": 0.0, "mark_out": 10.0})
+            _job("partial_dup", {"mark_in": 1.0, "mark_out": 3.0})
+            _job("empty", {"skip_first_frames": 0, "frame_load_cap": 0})
+            _job("fresh", {"mark_in": 4.0, "mark_out": 6.0})
+
+            con = connect_clips(reg)
+            parent = areg.register(con, media, relpath="src.mp4", kind="video", with_dims=False)
+            create_clip(
+                con,
+                parent_content_id=parent,
+                mark_in_s=1.0,
+                mark_out_s=3.0,
+                label="Already",
+                origin="test",
+                duration_s=10.0,
+            )
+            con.close()
+
+            probe = {"fps": 10.0, "duration": 10.0, "frame_count": 100}
+            with mock.patch("shape_factory_queue._probe_media_frame_meta", return_value=probe):
+                with mock.patch("shape_factory_queue.hostify_media_abs", return_value=media):
+                    dry = mine_clips_from_jobs(
+                        jobs_root=root / "jobs",
+                        output_root=out,
+                        registry_path=reg,
+                        apply=False,
+                        limit=50,
+                    )
+            self.assertTrue(dry["ok"])
+            self.assertGreaterEqual(dry["skipped_whole"], 1)
+            self.assertGreaterEqual(dry["skipped_dup"], 1)
+            self.assertEqual(dry["would_create"], 1)
+            self.assertAlmostEqual(dry["candidates"][0]["mark_in_s"], 4.0, places=2)
+
+            with mock.patch("shape_factory_queue._probe_media_frame_meta", return_value=probe):
+                with mock.patch("shape_factory_queue.hostify_media_abs", return_value=media):
+                    applied = mine_clips_from_jobs(
+                        jobs_root=root / "jobs",
+                        output_root=out,
+                        registry_path=reg,
+                        apply=True,
+                        limit=50,
+                    )
+            self.assertTrue(applied["ok"])
+            self.assertEqual(applied["clips_created"], 1)
+            con = connect_clips(reg)
+            clips = list_clips_for_parent(con, parent)
+            self.assertTrue(any(abs(c["mark_in_s"] - 4.0) < 0.05 for c in clips))
+            con.close()
+            # Re-apply is idempotent (dup skip). Close first so SQLite isn't locked.
+            with mock.patch("shape_factory_queue._probe_media_frame_meta", return_value=probe):
+                with mock.patch("shape_factory_queue.hostify_media_abs", return_value=media):
+                    again = mine_clips_from_jobs(
+                        jobs_root=root / "jobs",
+                        output_root=out,
+                        registry_path=reg,
+                        apply=True,
+                        limit=50,
+                    )
+            self.assertEqual(again["clips_created"], 0)
+            self.assertGreaterEqual(again["skipped_dup"], 1)
+
     def test_multi_star_pick_prefers_newer_and_skips_unstarred(self) -> None:
         import random
 

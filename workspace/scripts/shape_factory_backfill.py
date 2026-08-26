@@ -520,6 +520,54 @@ def add_backfill_subparser(sub: argparse._SubParsersAction) -> None:
 
     add_backfill_clips_workflows_subparser(sub)
 
+    pm = sub.add_parser(
+        "mine-clips-from-jobs",
+        help=(
+            "Utility: mine Clip bookmarks from factory job vhs_window Use marks "
+            "(skips whole-file + near-dups; dry-run unless --apply)"
+        ),
+    )
+    pm.add_argument(
+        "--jobs-root",
+        default="/home/yuji/src/comfyui-runpod/.data/shape_factory/jobs",
+    )
+    pm.add_argument("--output-root", default="/home/yuji/comfyui-runpod-data/output")
+    pm.add_argument(
+        "--data-root",
+        default="/home/yuji/comfyui-runpod-data",
+        help="Comfy data root for resolving source paths",
+    )
+    pm.add_argument("--registry", default=None, help="asset_registry.sqlite (default: output/_status/)")
+    pm.add_argument(
+        "--limit",
+        type=int,
+        default=200,
+        help="Max candidates to include in the JSON summary (0 = unlimited)",
+    )
+    pm.add_argument(
+        "--include-template-skips",
+        action="store_true",
+        help="Also keep bare template skips (47/57/85 with cap=0)",
+    )
+    pm.add_argument("--apply", action="store_true", help="Write clips (default: dry-run)")
+    pm.set_defaults(func=cmd_mine_clips_from_jobs)
+
+
+def cmd_mine_clips_from_jobs(args: argparse.Namespace) -> int:
+    from shape_factory_clips import mine_clips_from_jobs
+
+    summary = mine_clips_from_jobs(
+        jobs_root=Path(args.jobs_root).expanduser(),
+        output_root=Path(args.output_root).expanduser(),
+        data_root=Path(args.data_root).expanduser() if args.data_root else None,
+        registry_path=Path(args.registry).expanduser() if args.registry else None,
+        apply=bool(args.apply),
+        include_template_skips=bool(args.include_template_skips),
+        limit=int(args.limit or 0),
+    )
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    return 0 if summary.get("ok") else 1
+
 
 def cmd_backfill_clips(args: argparse.Namespace) -> int:
     from shape_factory_clips import backfill_clips_from_trims_sidecars
