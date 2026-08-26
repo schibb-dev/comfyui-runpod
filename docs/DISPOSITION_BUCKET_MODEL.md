@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-07
 
-A skimmable map of the day-to-day process for reviewing clips, committing work intent, and feeding the factory — not a schema dump or API reference. Umbrella picture and fragment inventory: [CORPUS_LIFECYCLE.md](./CORPUS_LIFECYCLE.md). For ratings implementation detail see [RATINGS_V1_PLAN.md](./RATINGS_V1_PLAN.md).
+A skimmable map of the day-to-day process for reviewing clips, committing work intent, and feeding the factory — not a schema dump or API reference. Umbrella picture and fragment inventory: [CORPUS_LIFECYCLE.md](./CORPUS_LIFECYCLE.md). For ratings implementation detail see [RATINGS_V1_PLAN.md](./RATINGS_V1_PLAN.md). Clip / usable trim / starring / soft-delete: [CLIP_SELECTION_MODEL.md](./CLIP_SELECTION_MODEL.md).
 
 ---
 
@@ -26,9 +26,9 @@ For factory and hourly work, treat three layers distinctly:
 
 **Phase 1 (shipped):** Discovery Library is the home for browsing/creating clips and **Queue from clip** (family + identity + now/later). Workbench chips can **Use for Extend** with the same overrides. Resolve order remains use → source_clip → default_clip → sibling → full.
 
-**Phase 2 (planned):** Hourly / pools prefer an asset’s default clip when binding `source_video`.
+**Phase 2 (planned → this seam):** Hourly / pools bind Use via the clip model (★ lottery + newer bias), not a separate “prefer default” flag — see [HOURLY_CLIP_GUIDANCE_PLAN.md](./HOURLY_CLIP_GUIDANCE_PLAN.md).
 
-**Phase 3 (partial):** `/discovery/clips` is the clip-centric browse page and can **edit** clips (label, notes, in/out, default, delete) as well as preview and queue — not only scrubber side-effects on the parent asset.
+**Phase 3 (partial):** `/discovery/clips` is the clip-centric browse page and can **edit** clips (label, notes, in/out, default, retire/restore) as well as preview and queue — not only scrubber side-effects on the parent asset. Soft-delete model: [CLIP_SELECTION_MODEL.md](./CLIP_SELECTION_MODEL.md).
 
 ---
 
@@ -444,12 +444,14 @@ sequenceDiagram
 | **Priority** | Scheduling hint (Queue now = front / urgent) — not a pool |
 | **Batch dismiss** | End review batch; commit triage for disposed clips only |
 
-**Asset / Clip / Use (north star).** Operators should browse and queue from **clips** in Discovery (Phase 1: clip rail + Queue from clip; Phase 3: `/discovery/clips` edit + browse), not from whole-file scrubber side-effects. Resolve order on the factory side is already use → source_clip → default_clip → sibling → full. Phase 2 will bias hourly / pools toward asset default clips; clip-centric ratings remain later.
+**Asset / Clip / Use (north star).** Operators should browse and queue from **clips** in Discovery (Phase 1: clip rail + Queue from clip; Phase 3: `/discovery/clips` edit + browse), not from whole-file scrubber side-effects. Resolve order on the factory side is already use → source_clip → default_clip → sibling → sidecar → full. Hourly guidance (★ + newer) is sequenced in [HOURLY_CLIP_GUIDANCE_PLAN.md](./HOURLY_CLIP_GUIDANCE_PLAN.md); clip-centric ratings remain later.
 
 ---
 
 ## See also
 
+- [HOURLY_CLIP_GUIDANCE_PLAN.md](./HOURLY_CLIP_GUIDANCE_PLAN.md) — ★ + newer clips guide hourlies (Disposition Phase 2 seam)
+- [CLIP_SELECTION_MODEL.md](./CLIP_SELECTION_MODEL.md) — Asset / Clip / Use, starring, usable trim, soft-delete
 - [RATINGS_V1_PLAN.md](./RATINGS_V1_PLAN.md) — implementation plan, APIs, indexes
 - [BUCKET_MODEL_PHASE2_PLAN.md](./BUCKET_MODEL_PHASE2_PLAN.md) — work items, pool pages, multi-route Advance (planned)
 - [DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md](./DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md) — browse and similarity

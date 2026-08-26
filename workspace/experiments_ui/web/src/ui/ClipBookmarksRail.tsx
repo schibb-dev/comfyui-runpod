@@ -11,6 +11,26 @@ export function formatClipTimecode(sec: number): string {
   return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
 }
 
+const MARK_EPS = 1e-3;
+const MIN_SPAN = 0.05;
+
+function marksEqual(a: number, b: number): boolean {
+  return Math.abs(a - b) < MARK_EPS;
+}
+
+/** Null in → 0; null out → duration (full-video ends). */
+export function resolveClipMarks(
+  markIn: number | null,
+  markOut: number | null,
+  duration: number,
+): { markIn: number; markOut: number } | null {
+  if (!(duration > 0) || !Number.isFinite(duration)) return null;
+  const tin = Math.max(0, markIn == null || !Number.isFinite(markIn) ? 0 : markIn);
+  const tout = Math.min(duration, markOut == null || !Number.isFinite(markOut) ? duration : markOut);
+  if (!(tout > tin + MIN_SPAN)) return null;
+  return { markIn: tin, markOut: tout };
+}
+
 export type ClipBookmarksRailProps = {
   mediaRelpath: string | null;
   duration: number;
@@ -86,15 +106,20 @@ export function ClipBookmarksRail({
 
   if (!mediaRelpath) return null;
 
-  const canSave =
-    trimEditable &&
-    markIn != null &&
-    markOut != null &&
-    Number.isFinite(markIn) &&
-    Number.isFinite(markOut) &&
-    markOut > markIn + 0.05;
-
+  const resolved = resolveClipMarks(markIn, markOut, duration);
+  const canSave = Boolean(trimEditable && resolved);
   const selected = selectedClipId ? clips.find((c) => c.clip_id === selectedClipId) || null : null;
+  const selectedDirty = Boolean(
+    selected &&
+      resolved &&
+      (!marksEqual(resolved.markIn, selected.mark_in_s) || !marksEqual(resolved.markOut, selected.mark_out_s)),
+  );
+  const identicalToSelected = Boolean(
+    selected &&
+      resolved &&
+      marksEqual(resolved.markIn, selected.mark_in_s) &&
+      marksEqual(resolved.markOut, selected.mark_out_s),
+  );
 
   return (
     <div
@@ -134,17 +159,56 @@ export function ClipBookmarksRail({
       </div>
       {showActions ? (
         <div className="work-product-viewer__clips-actions">
+          {selected ? (
+            <button
+              type="button"
+              disabled={!canSave || !selectedDirty || busy}
+              title={
+                selectedDirty
+                  ? "Update this clip (either in or out may change)"
+                  : "Change in and/or out to update this clip"
+              }
+              onClick={() => {
+                if (!canSave || !selectedDirty || !resolved || !selected) return;
+                setBusy(true);
+                void mutateShapeFactoryClip({
+                  op: "update",
+                  clip_id: selected.clip_id,
+                  mark_in: resolved.markIn,
+                  mark_out: resolved.markOut,
+                })
+                  .then((res) => {
+                    void reload({ force: true });
+                    if (res.clip) {
+                      onSelectClip?.(res.clip);
+                      onApplyClip(res.clip.mark_in_s, res.clip.mark_out_s, res.clip);
+                    }
+                  })
+                  .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
+                  .finally(() => setBusy(false));
+              }}
+            >
+              Update clip
+            </button>
+          ) : null}
           <button
             type="button"
-            disabled={!canSave || busy}
+            disabled={!canSave || identicalToSelected || busy}
+            title={
+              identicalToSelected
+                ? "Window matches the selected clip — update it, or change marks"
+                : markIn == null || markOut == null
+                  ? "Missing end defaults to start of file / end of file"
+                  : "Save current window as a new clip bookmark"
+            }
             onClick={() => {
-              if (!canSave || markIn == null || markOut == null) return;
+              if (!canSave || !resolved || identicalToSelected) return;
               setBusy(true);
               void mutateShapeFactoryClip({
                 op: "create",
                 media_relpath: mediaRelpath,
-                mark_in: markIn,
-                mark_out: markOut,
+                mark_in: resolved.markIn,
+                mark_out: resolved.markOut,
                 label: "Clip",
                 origin,
               })
@@ -161,14 +225,15 @@ export function ClipBookmarksRail({
           <button
             type="button"
             disabled={!canSave || busy}
+            title="Save current window and make it the default for this source"
             onClick={() => {
-              if (!canSave || markIn == null || markOut == null) return;
+              if (!canSave || !resolved) return;
               setBusy(true);
               void mutateShapeFactoryClip({
                 op: "create",
                 media_relpath: mediaRelpath,
-                mark_in: markIn,
-                mark_out: markOut,
+                mark_in: resolved.markIn,
+                mark_out: resolved.markOut,
                 label: "Default",
                 origin,
                 set_default: true,

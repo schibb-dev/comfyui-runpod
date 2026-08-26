@@ -405,15 +405,83 @@ def _apply_source_promotion(
     weight_meta: Optional[List[dict[str, Any]]] = None,
     *,
     family: str = "",
+    data_root: Optional[Path] = None,
 ) -> List[float]:
     """Amplify Kneel / 2025-era / fresh-still recipes in weighted selection."""
     out: List[float] = []
-    for i, (recipe, weight) in enumerate(zip(recipes, weights)):
-        mult = _recipe_promotion_mult(recipe, family=family)
-        out.append(float(weight) * mult)
-        if weight_meta is not None and i < len(weight_meta) and isinstance(weight_meta[i], dict) and mult != 1.0:
-            weight_meta[i] = dict(weight_meta[i])
-            weight_meta[i]["source_promotion_mult"] = round(mult, 3)
+    star_cache: Dict[str, float] = {}
+    clips_con = None
+    areg_con = None
+    try:
+        if data_root is not None:
+            try:
+                from shape_factory import default_asset_registry_path
+                from shape_factory_clips import connect_clips, starred_seed_boost_for_parent
+                import asset_registry as areg
+
+                reg = default_asset_registry_path(Path(data_root))
+                clips_con = connect_clips(reg)
+                areg_con = areg.connect(reg)
+            except Exception:
+                clips_con = None
+                areg_con = None
+
+        for i, (recipe, weight) in enumerate(zip(recipes, weights)):
+            mult = _recipe_promotion_mult(recipe, family=family)
+            star_mult = 1.0
+            if clips_con is not None and areg_con is not None:
+                src = _recipe_source_path(recipe)
+                if src:
+                    if src not in star_cache:
+                        parent = None
+                        try:
+                            p = Path(src)
+                            rel = ""
+                            try:
+                                out_root = Path(data_root).resolve() / "output"  # type: ignore[arg-type]
+                                if p.is_file():
+                                    rel = str(p.resolve().relative_to(out_root)).replace("\\", "/")
+                            except Exception:
+                                rel = p.name if p.name else str(src).replace("\\", "/")
+                            row = areg_con.execute(
+                                "SELECT content_id FROM assets WHERE replace(IFNULL(current_relpath,''), char(92), '/') = ? LIMIT 1",
+                                (rel,),
+                            ).fetchone()
+                            if row and row["content_id"]:
+                                parent = str(row["content_id"])
+                            elif p.is_file():
+                                parent = areg.register(
+                                    areg_con, p, relpath=rel or p.name, kind="video", with_dims=False
+                                )
+                        except Exception:
+                            parent = None
+                        try:
+                            star_cache[src] = float(
+                                starred_seed_boost_for_parent(clips_con, parent)
+                            )
+                        except Exception:
+                            star_cache[src] = 1.0
+                    star_mult = float(star_cache.get(src) or 1.0)
+            combined = float(weight) * mult * star_mult
+            out.append(combined)
+            if weight_meta is not None and i < len(weight_meta) and isinstance(weight_meta[i], dict):
+                if mult != 1.0 or star_mult != 1.0:
+                    weight_meta[i] = dict(weight_meta[i])
+                    if mult != 1.0:
+                        weight_meta[i]["source_promotion_mult"] = round(mult, 3)
+                    if star_mult != 1.0:
+                        weight_meta[i]["starred_clip_mult"] = round(star_mult, 3)
+    finally:
+        if clips_con is not None:
+            try:
+                clips_con.close()
+            except Exception:
+                pass
+        if areg_con is not None:
+            try:
+                areg_con.close()
+            except Exception:
+                pass
     return out
 
 
@@ -1664,7 +1732,9 @@ def plan_hourly_replay(
     )
     weights = _apply_recent_combo_penalty(recipes, weights, recent)
     weights = _apply_recent_source_penalty(recipes, weights, recent_sources)
-    weights = _apply_source_promotion(recipes, weights, weight_meta, family=family)
+    weights = _apply_source_promotion(
+        recipes, weights, weight_meta, family=family, data_root=data_root
+    )
     weights = _apply_archive_age_spread(recipes, weights, weight_meta)
 
     eligible_recipes: List[dict[str, Any]] = []

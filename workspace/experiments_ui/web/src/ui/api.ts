@@ -1235,7 +1235,12 @@ export type ShapeFactoryClip = {
   asset_ext?: string | null;
   asset_mtime?: number | null;
   is_default?: boolean;
+  is_starred?: boolean;
   duration_s?: number;
+  deleted_at?: string | null;
+  deleted?: boolean;
+  used?: boolean;
+  use_count?: number;
 };
 
 export type ShapeFactoryClipsListResponse = {
@@ -1355,6 +1360,11 @@ export async function listShapeFactoryClipsLibrary(opts?: {
   q?: string | null;
   defaultsOnly?: boolean;
   mediaRelpath?: string | null;
+  includeDeleted?: boolean;
+  deletedOnly?: boolean;
+  unusedOnly?: boolean;
+  usedOnly?: boolean;
+  starredOnly?: boolean;
 }): Promise<ShapeFactoryClipsLibraryResponse> {
   const sp = new URLSearchParams();
   if (opts?.limit != null) sp.set("limit", String(opts.limit));
@@ -1363,6 +1373,11 @@ export async function listShapeFactoryClipsLibrary(opts?: {
   if (opts?.q?.trim()) sp.set("q", opts.q.trim());
   if (opts?.defaultsOnly) sp.set("defaults_only", "1");
   if (opts?.mediaRelpath?.trim()) sp.set("media_relpath", opts.mediaRelpath.trim().replace(/\\/g, "/"));
+  if (opts?.includeDeleted) sp.set("include_deleted", "1");
+  if (opts?.deletedOnly) sp.set("deleted_only", "1");
+  if (opts?.unusedOnly) sp.set("unused_only", "1");
+  if (opts?.usedOnly) sp.set("used_only", "1");
+  if (opts?.starredOnly) sp.set("starred_only", "1");
   const qs = sp.toString();
   const r = await fetch(`/api/shape-factory/clips/library${qs ? `?${qs}` : ""}`);
   const j = (await r.json().catch(() => ({}))) as ShapeFactoryClipsLibraryResponse;

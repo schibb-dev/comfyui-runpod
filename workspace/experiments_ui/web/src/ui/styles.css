@@ -15773,6 +15773,30 @@ tr.disabled:hover td {
   color: color-mix(in srgb, goldenrod 85%, currentColor);
 }
 
+.clips-lib-badge--starred {
+  border-color: color-mix(in srgb, #daa 55%, transparent);
+  color: color-mix(in srgb, #ec8 90%, currentColor);
+}
+
+.clips-lib-badge--retired {
+  border-color: color-mix(in srgb, #888 55%, transparent);
+  color: color-mix(in srgb, #aaa 90%, currentColor);
+}
+
+.clips-lib-badge--used {
+  border-color: color-mix(in srgb, #6a9 55%, transparent);
+  color: color-mix(in srgb, #8cb 90%, currentColor);
+}
+
+.clips-lib-badge--unused {
+  border-color: color-mix(in srgb, #a86 45%, transparent);
+  color: color-mix(in srgb, #c96 85%, currentColor);
+}
+
+.clips-lib-card--retired {
+  opacity: 0.72;
+}
+
 .clips-lib-detail {
   min-width: 0;
   min-height: 0;

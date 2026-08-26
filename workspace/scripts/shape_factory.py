@@ -6146,6 +6146,8 @@ def seed_job_use_window_from_clips(
         job["source_clip_id"] = str(use["clip_id"])
     if use.get("message"):
         vhs_window["message"] = str(use["message"])
+    if isinstance(use.get("pick"), dict):
+        vhs_window["pick"] = use["pick"]
     job["vhs_window"] = vhs_window
     sync_job_dev_tuning_from_vhs_window(job)
     return use

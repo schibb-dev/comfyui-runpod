@@ -207,6 +207,9 @@ export function ClipsLibraryApp() {
   const [q, setQ] = useState(deep.q || "");
   const [origin, setOrigin] = useState<string>(deep.origin || "");
   const [defaultsOnly, setDefaultsOnly] = useState(false);
+  const [showRetired, setShowRetired] = useState(false);
+  const [usageFilter, setUsageFilter] = useState<"all" | "unused" | "used">("all");
+  const [starredOnly, setStarredOnly] = useState(false);
   const [browseView, setBrowseView] = useState<ClipsBrowseView>(() =>
     loadClipsBrowseView(deep.view || (deep.mediaRelpath ? "by_source" : null)),
   );
@@ -305,6 +308,10 @@ export function ClipsLibraryApp() {
         q: q || null,
         defaultsOnly,
         mediaRelpath: activeMedia,
+        deletedOnly: showRetired,
+        unusedOnly: usageFilter === "unused",
+        usedOnly: usageFilter === "used",
+        starredOnly,
       });
       const rows = res.clips || [];
       setClips(rows);
@@ -333,7 +340,7 @@ export function ClipsLibraryApp() {
     } finally {
       setLoading(false);
     }
-  }, [origin, q, defaultsOnly, browseView, mediaFilter, derivedClipFilter]);
+  }, [origin, q, defaultsOnly, showRetired, usageFilter, starredOnly, browseView, mediaFilter, derivedClipFilter]);
 
   useEffect(() => {
     void reload();
@@ -623,8 +630,17 @@ export function ClipsLibraryApp() {
           clip_id: makeDefault ? selected.clip_id : null,
         });
         patchDefaultsForParent(mediaRelpath, makeDefault ? selected.clip_id : null);
+        setClips((prev) =>
+          prev.map((c) =>
+            c.clip_id === selected.clip_id
+              ? { ...c, is_default: makeDefault, is_starred: makeDefault ? true : c.is_starred }
+              : makeDefault
+                ? { ...c, is_default: false }
+                : c,
+          ),
+        );
         setSiblingsEpoch((n) => n + 1);
-        setEditMsg(makeDefault ? "Set as default" : "Cleared default");
+        setEditMsg(makeDefault ? "Set as default (also starred)" : "Cleared default");
       } catch (e) {
         setEditError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -634,9 +650,56 @@ export function ClipsLibraryApp() {
     [mediaRelpath, patchDefaultsForParent, selected],
   );
 
+  const toggleStar = useCallback(
+    async (makeStarred: boolean) => {
+      if (!selected) return;
+      setEditBusy(true);
+      setEditError(null);
+      setEditMsg(null);
+      try {
+        const res = await mutateShapeFactoryClip({
+          op: makeStarred ? "star" : "unstar",
+          clip_id: selected.clip_id,
+        });
+        const next = (res.clip || null) as ShapeFactoryClip | null;
+        setClips((prev) =>
+          prev.map((c) => {
+            if (c.clip_id !== selected.clip_id) return c;
+            return {
+              ...c,
+              ...(next || {}),
+              is_starred: makeStarred,
+              is_default: next?.is_default ?? c.is_default,
+            };
+          }),
+        );
+        if (starredOnly && !makeStarred) {
+          const deletedId = selected.clip_id;
+          const idx = clips.findIndex((c) => c.clip_id === deletedId);
+          const neighbor = clips[idx + 1] || clips[idx - 1] || null;
+          setClips((prev) => prev.filter((c) => c.clip_id !== deletedId));
+          setTotal((t) => Math.max(0, t - 1));
+          setSelectedId(neighbor?.clip_id || null);
+        }
+        setSiblingsEpoch((n) => n + 1);
+        setEditMsg(makeStarred ? "Starred for hourly lottery" : "Unstarred");
+      } catch (e) {
+        setEditError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setEditBusy(false);
+      }
+    },
+    [clips, selected, starredOnly],
+  );
+
   const deleteSelected = useCallback(async () => {
     if (!selected) return;
-    if (!window.confirm(`Delete clip “${selected.label || "Clip"}”?`)) return;
+    if (
+      !window.confirm(
+        `Retire clip “${selected.label || "Clip"}”? It will be hidden from defaults and lists, but you can restore it later.`,
+      )
+    )
+      return;
     setEditBusy(true);
     setEditError(null);
     setEditMsg(null);
@@ -651,13 +714,42 @@ export function ClipsLibraryApp() {
       draftClipIdRef.current = null;
       setSelectedId(neighbor?.clip_id || null);
       setSiblingsEpoch((n) => n + 1);
-      setEditMsg("Deleted");
+      setEditMsg("Retired — switch to Retired to restore");
     } catch (e) {
       setEditError(e instanceof Error ? e.message : String(e));
     } finally {
       setEditBusy(false);
     }
   }, [clips, selected]);
+
+  const restoreSelected = useCallback(async () => {
+    if (!selected) return;
+    setEditBusy(true);
+    setEditError(null);
+    setEditMsg(null);
+    try {
+      const res = await mutateShapeFactoryClip({ op: "restore", clip_id: selected.clip_id });
+      const restored = (res.clip || null) as ShapeFactoryClip | null;
+      const restoredId = selected.clip_id;
+      if (showRetired) {
+        const idx = clips.findIndex((c) => c.clip_id === restoredId);
+        const neighbor = clips[idx + 1] || clips[idx - 1] || null;
+        setClips((prev) => prev.filter((c) => c.clip_id !== restoredId));
+        setTotal((t) => Math.max(0, t - 1));
+        setSelectedId(neighbor?.clip_id || null);
+      } else if (restored) {
+        setClips((prev) =>
+          prev.map((c) => (c.clip_id === restoredId ? { ...c, ...restored, deleted: false, deleted_at: null } : c)),
+        );
+      }
+      setSiblingsEpoch((n) => n + 1);
+      setEditMsg("Restored");
+    } catch (e) {
+      setEditError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setEditBusy(false);
+    }
+  }, [clips, selected, showRetired]);
 
   const displayTitle = draft?.label || selected?.label || "Untitled clip";
   const derivedOutRel = selectedDerived?.output_relpath || null;
@@ -705,8 +797,38 @@ export function ClipsLibraryApp() {
                   type="checkbox"
                   checked={defaultsOnly}
                   onChange={(e) => setDefaultsOnly(e.target.checked)}
+                  disabled={showRetired}
                 />
                 Defaults only
+              </label>
+              <label className="clips-lib-defaults">
+                <input
+                  type="checkbox"
+                  checked={starredOnly}
+                  onChange={(e) => setStarredOnly(e.target.checked)}
+                  disabled={showRetired}
+                />
+                Starred only
+              </label>
+              <label className="clips-lib-defaults">
+                <input
+                  type="checkbox"
+                  checked={showRetired}
+                  onChange={(e) => setShowRetired(e.target.checked)}
+                />
+                Retired
+              </label>
+              <label className="clips-lib-filter">
+                Usage
+                <select
+                  value={usageFilter}
+                  onChange={(e) => setUsageFilter(e.target.value as "all" | "unused" | "used")}
+                  aria-label="Filter by job usage"
+                >
+                  <option value="all">All</option>
+                  <option value="unused">Unused</option>
+                  <option value="used">Used</option>
+                </select>
               </label>
               <div className="segmented clips-lib-view-switch" role="radiogroup" aria-label="Browse by">
                 <button
@@ -889,16 +1011,23 @@ export function ClipsLibraryApp() {
             ) : (
               <>
                 {!loading && clips.length === 0 ? (
-                  <p className="factory-muted clips-lib-empty">No clips match these filters.</p>
+                  <p className="factory-muted clips-lib-empty">
+                    {showRetired ? "No retired clips." : "No clips match these filters."}
+                  </p>
                 ) : null}
                 {clips.map((c) => {
                   const active = c.clip_id === selectedId;
                   const span = Math.max(0, c.mark_out_s - c.mark_in_s);
+                  const retired = Boolean(c.deleted || c.deleted_at);
                   return (
                     <button
                       key={c.clip_id}
                       type="button"
-                      className={"clips-lib-card" + (active ? " clips-lib-card--active" : "")}
+                      className={
+                        "clips-lib-card" +
+                        (active ? " clips-lib-card--active" : "") +
+                        (retired ? " clips-lib-card--retired" : "")
+                      }
                       onClick={() => selectClipId(c.clip_id)}
                     >
                       <div className="clips-lib-card__thumb">
@@ -910,6 +1039,22 @@ export function ClipsLibraryApp() {
                           {c.is_default ? (
                             <span className="clips-lib-badge clips-lib-badge--default">default</span>
                           ) : null}
+                          {c.is_starred ? (
+                            <span className="clips-lib-badge clips-lib-badge--starred">starred</span>
+                          ) : null}
+                          {retired ? (
+                            <span className="clips-lib-badge clips-lib-badge--retired">retired</span>
+                          ) : null}
+                          {c.used ? (
+                            <span
+                              className="clips-lib-badge clips-lib-badge--used"
+                              title={`${c.use_count ?? 1} job(s) reference this clip`}
+                            >
+                              used{typeof c.use_count === "number" && c.use_count > 0 ? ` · ${c.use_count}` : ""}
+                            </span>
+                          ) : (
+                            <span className="clips-lib-badge clips-lib-badge--unused">unused</span>
+                          )}
                           {active && dirty ? (
                             <span className="clips-lib-badge clips-lib-badge--dirty">unsaved</span>
                           ) : null}
@@ -1042,6 +1187,11 @@ export function ClipsLibraryApp() {
                       {" · "}
                       {originLabel(selected.origin)}
                       {selected.is_default ? " · default" : ""}
+                      {selected.is_starred ? " · starred" : ""}
+                      {selected.deleted || selected.deleted_at ? " · retired" : ""}
+                      {selected.used
+                        ? ` · used${typeof selected.use_count === "number" ? ` (${selected.use_count})` : ""}`
+                        : " · unused"}
                       {detailLayout === "split" && selected.media_basename
                         ? ` · ${selected.media_basename}`
                         : ""}
@@ -1242,11 +1392,32 @@ export function ClipsLibraryApp() {
                         >
                           Save as new
                         </button>
+                        {selected.is_starred ? (
+                          <button
+                            type="button"
+                            className="drt-btn"
+                            disabled={editBusy || Boolean(selected.deleted || selected.deleted_at)}
+                            onClick={() => void toggleStar(false)}
+                            title="Remove from hourly lottery"
+                          >
+                            Unstar
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="drt-btn"
+                            disabled={editBusy || Boolean(selected.deleted || selected.deleted_at)}
+                            onClick={() => void toggleStar(true)}
+                            title="Add to hourly lottery (prefer newer among ★)"
+                          >
+                            Star
+                          </button>
+                        )}
                         {selected.is_default ? (
                           <button
                             type="button"
                             className="drt-btn"
-                            disabled={editBusy}
+                            disabled={editBusy || Boolean(selected.deleted || selected.deleted_at)}
                             onClick={() => void setDefault(false)}
                           >
                             Clear default
@@ -1255,20 +1426,33 @@ export function ClipsLibraryApp() {
                           <button
                             type="button"
                             className="drt-btn"
-                            disabled={editBusy}
+                            disabled={editBusy || Boolean(selected.deleted || selected.deleted_at)}
                             onClick={() => void setDefault(true)}
                           >
                             Set default
                           </button>
                         )}
-                        <button
-                          type="button"
-                          className="drt-btn clips-lib-editor__delete"
-                          disabled={editBusy}
-                          onClick={() => void deleteSelected()}
-                        >
-                          Delete
-                        </button>
+                        {selected.deleted || selected.deleted_at ? (
+                          <button
+                            type="button"
+                            className="drt-btn"
+                            disabled={editBusy}
+                            onClick={() => void restoreSelected()}
+                            title="Clear retirement and show this clip in the active library again"
+                          >
+                            Restore
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="drt-btn clips-lib-editor__delete"
+                            disabled={editBusy}
+                            onClick={() => void deleteSelected()}
+                            title="Retire this clip (soft-delete). You can restore it later."
+                          >
+                            Retire
+                          </button>
+                        )}
                       </div>
                       {editError ? <p className="drt-err clips-lib-editor__status">{editError}</p> : null}
                       {editMsg && !editError ? (

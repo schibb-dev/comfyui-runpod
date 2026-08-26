@@ -101,7 +101,7 @@ class TestShapeFactoryClips(unittest.TestCase):
                 media_meta=media,
                 con=con,
             )
-            self.assertEqual(defaulted["source"], "default_clip")
+            self.assertEqual(defaulted["source"], "starred")
             self.assertEqual(defaulted["clip_id"], clip["clip_id"])
             self.assertEqual(defaulted["skip_first_frames"], 10)
 
@@ -158,7 +158,7 @@ class TestShapeFactoryClips(unittest.TestCase):
                 media_abs=media_path,
                 con=None,
             )
-            self.assertEqual(from_sidecar["source"], "sidecar")
+            self.assertEqual(from_sidecar["source"], "usable_trim")
             self.assertEqual(from_sidecar["skip_first_frames"], 10)
             self.assertEqual(from_sidecar["frame_load_cap"], 20)
             self.assertEqual(from_sidecar["mark_in"], 1.0)
@@ -195,7 +195,7 @@ class TestShapeFactoryClips(unittest.TestCase):
                 media_abs=media_path,
                 con=con,
             )
-            self.assertEqual(defaulted["source"], "default_clip")
+            self.assertEqual(defaulted["source"], "starred")
             self.assertEqual(defaulted["clip_id"], clip["clip_id"])
             self.assertEqual(defaulted["skip_first_frames"], 20)
             self.assertEqual(defaulted["frame_load_cap"], 20)
@@ -356,6 +356,214 @@ class TestShapeFactoryClips(unittest.TestCase):
             self.assertEqual(row["source_clip_id"], clip["clip_id"])
             self.assertEqual(row["output_relpath"], f"{prefix}_00001.mp4")
             self.assertEqual(row["clip_label"], "Seed")
+            con.close()
+
+    def test_soft_delete_restore_hides_from_lists(self) -> None:
+        from shape_factory_clips import (
+            connect_clips,
+            create_clip,
+            delete_clip,
+            get_clip,
+            get_default_clip_id,
+            list_clips_for_parent,
+            list_clips_library,
+            restore_clip,
+            set_default_clip,
+            soft_delete_clip,
+        )
+
+        with _tmpdir() as td:
+            reg = Path(td) / "asset_registry.sqlite"
+            con = connect_clips(reg)
+            parent = "c" * 64
+            clip = create_clip(
+                con,
+                parent_content_id=parent,
+                mark_in_s=1.0,
+                mark_out_s=4.0,
+                label="KeepMe",
+                origin="test",
+                duration_s=10.0,
+            )
+            cid = clip["clip_id"]
+            set_default_clip(con, parent, cid)
+            self.assertEqual(get_default_clip_id(con, parent), cid)
+
+            retired = soft_delete_clip(con, cid)
+            assert retired is not None
+            self.assertTrue(retired["deleted"])
+            self.assertTrue(retired["deleted_at"])
+            self.assertIsNone(get_default_clip_id(con, parent))
+            self.assertEqual(list_clips_for_parent(con, parent), [])
+            self.assertEqual(len(list_clips_for_parent(con, parent, include_deleted=True)), 1)
+
+            lib = list_clips_library(con, limit=50)
+            self.assertEqual(lib["total"], 0)
+            lib_ret = list_clips_library(con, limit=50, deleted_only=True)
+            self.assertEqual(lib_ret["total"], 1)
+            self.assertEqual(lib_ret["clips"][0]["clip_id"], cid)
+
+            # Explicit get still works (history / restore)
+            still = get_clip(con, cid)
+            assert still is not None
+            self.assertTrue(still["deleted"])
+
+            restored = restore_clip(con, cid)
+            assert restored is not None
+            self.assertFalse(restored["deleted"])
+            self.assertIsNone(restored["deleted_at"])
+            self.assertEqual(len(list_clips_for_parent(con, parent)), 1)
+
+            # Default delete_clip is soft
+            self.assertTrue(delete_clip(con, cid))
+            self.assertTrue(get_clip(con, cid)["deleted"])  # type: ignore[index]
+            con.close()
+
+    def test_used_unused_library_and_hard_delete_guard(self) -> None:
+        import json
+
+        from shape_factory_clips import (
+            collect_used_clip_ids,
+            connect_clips,
+            create_clip,
+            delete_clip,
+            get_clip,
+            list_clips_library,
+        )
+
+        with _tmpdir() as td:
+            root = Path(td)
+            reg = root / "asset_registry.sqlite"
+            jobs = root / "jobs" / "FB9"
+            jobs.mkdir(parents=True)
+            con = connect_clips(reg)
+            parent = "d" * 64
+            used_clip = create_clip(
+                con,
+                parent_content_id=parent,
+                mark_in_s=0.0,
+                mark_out_s=2.0,
+                label="Used",
+                origin="test",
+                duration_s=10.0,
+            )
+            unused_clip = create_clip(
+                con,
+                parent_content_id=parent,
+                mark_in_s=3.0,
+                mark_out_s=5.0,
+                label="Unused",
+                origin="test",
+                duration_s=10.0,
+            )
+            job = {
+                "job_key": "demo_use",
+                "source_clip_id": used_clip["clip_id"],
+                "created_at": "2026-08-09T00:00:00Z",
+            }
+            (jobs / "demo_use.job.json").write_text(json.dumps(job), encoding="utf-8")
+
+            counts = collect_used_clip_ids(root / "jobs")
+            self.assertEqual(counts.get(used_clip["clip_id"]), 1)
+            self.assertNotIn(unused_clip["clip_id"], counts)
+
+            lib = list_clips_library(con, jobs_root=root / "jobs", limit=50)
+            by_id = {c["clip_id"]: c for c in lib["clips"]}
+            self.assertTrue(by_id[used_clip["clip_id"]]["used"])
+            self.assertEqual(by_id[used_clip["clip_id"]]["use_count"], 1)
+            self.assertFalse(by_id[unused_clip["clip_id"]]["used"])
+
+            unused_lib = list_clips_library(con, jobs_root=root / "jobs", unused_only=True, limit=50)
+            self.assertEqual([c["clip_id"] for c in unused_lib["clips"]], [unused_clip["clip_id"]])
+            used_lib = list_clips_library(con, jobs_root=root / "jobs", used_only=True, limit=50)
+            self.assertEqual([c["clip_id"] for c in used_lib["clips"]], [used_clip["clip_id"]])
+
+            with self.assertRaises(ValueError) as ctx:
+                delete_clip(con, used_clip["clip_id"], hard=True, jobs_root=root / "jobs")
+            self.assertIn("clip_in_use", str(ctx.exception))
+            self.assertIsNotNone(get_clip(con, used_clip["clip_id"]))
+
+            self.assertTrue(delete_clip(con, unused_clip["clip_id"], hard=True, jobs_root=root / "jobs"))
+            self.assertIsNone(get_clip(con, unused_clip["clip_id"]))
+            con.close()
+
+    def test_multi_star_pick_prefers_newer_and_skips_unstarred(self) -> None:
+        import random
+
+        from shape_factory_clips import (
+            connect_clips,
+            create_clip,
+            list_starred_clip_ids,
+            pick_seed_clip,
+            resolve_job_use_window,
+            star_clip,
+            unstar_clip,
+        )
+
+        with _tmpdir() as td:
+            reg = Path(td) / "asset_registry.sqlite"
+            con = connect_clips(reg)
+            parent = "e" * 64
+            old = create_clip(
+                con,
+                parent_content_id=parent,
+                mark_in_s=0.0,
+                mark_out_s=1.0,
+                label="Old",
+                origin="test",
+                duration_s=10.0,
+            )
+            new = create_clip(
+                con,
+                parent_content_id=parent,
+                mark_in_s=2.0,
+                mark_out_s=3.0,
+                label="New",
+                origin="test",
+                duration_s=10.0,
+            )
+            orphan = create_clip(
+                con,
+                parent_content_id=parent,
+                mark_in_s=4.0,
+                mark_out_s=5.0,
+                label="Orphan",
+                origin="test",
+                duration_s=10.0,
+            )
+            star_clip(con, old["clip_id"])
+            star_clip(con, new["clip_id"])
+            # Bump new clip updated_at so deterministic newest wins.
+            con.execute(
+                "UPDATE clips SET updated_at=? WHERE clip_id=?",
+                ("2099-01-01T00:00:00Z", new["clip_id"]),
+            )
+            con.commit()
+            self.assertEqual(set(list_starred_clip_ids(con, parent)), {old["clip_id"], new["clip_id"]})
+
+            media = {"fps": 10.0, "frame_count": 100, "duration": 10.0}
+            picked = pick_seed_clip(con, parent, media_meta=media, rng=None)
+            self.assertEqual(picked["source"], "starred")
+            self.assertEqual(picked["clip_id"], new["clip_id"])
+
+            # Unstarred orphan must not be auto-selected.
+            for _ in range(20):
+                use = resolve_job_use_window(
+                    job={"job_key": f"j{_}"},
+                    parent_content_id=parent,
+                    media_meta=media,
+                    con=con,
+                    rng=random.Random(_),
+                )
+                self.assertEqual(use["source"], "starred")
+                self.assertIn(use["clip_id"], {old["clip_id"], new["clip_id"]})
+                self.assertNotEqual(use["clip_id"], orphan["clip_id"])
+
+            unstar_clip(con, old["clip_id"])
+            unstar_clip(con, new["clip_id"])
+            none = pick_seed_clip(con, parent, media_meta=media, rng=None)
+            self.assertEqual(none["source"], "full")
+            self.assertIsNone(none.get("clip_id"))
             con.close()
 
 

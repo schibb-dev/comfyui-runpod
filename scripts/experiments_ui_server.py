@@ -2597,6 +2597,7 @@ def _shape_factory_clips_library_payload(cfg: "ServerConfig", q: Dict[str, List[
     if d.is_dir() and str(d) not in sys.path:
         sys.path.insert(0, str(d))
     from shape_factory_clips import connect_clips, list_clips_library  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
 
     def _int(name: str, default: int) -> int:
         raw = (q.get(name) or [""])[0].strip()
@@ -2611,6 +2612,11 @@ def _shape_factory_clips_library_payload(cfg: "ServerConfig", q: Dict[str, List[
     query = (q.get("q") or [""])[0].strip() or None
     media_relpath = (q.get("media_relpath") or q.get("media") or [""])[0].strip() or None
     defaults_only = (q.get("defaults_only") or [""])[0].strip().lower() in ("1", "true", "yes")
+    include_deleted = (q.get("include_deleted") or [""])[0].strip().lower() in ("1", "true", "yes")
+    deleted_only = (q.get("deleted_only") or [""])[0].strip().lower() in ("1", "true", "yes")
+    starred_only = (q.get("starred_only") or [""])[0].strip().lower() in ("1", "true", "yes")
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    jobs_root = Path(data_root) / "shape_factory" / "jobs"
     reg = _clips_registry_path(cfg)
     con = connect_clips(reg)
     try:
@@ -2622,6 +2628,12 @@ def _shape_factory_clips_library_payload(cfg: "ServerConfig", q: Dict[str, List[
             q=query,
             defaults_only=defaults_only,
             media_relpath=media_relpath,
+            include_deleted=include_deleted,
+            deleted_only=deleted_only,
+            jobs_root=jobs_root,
+            unused_only=unused_only,
+            used_only=used_only,
+            starred_only=starred_only,
         )
     finally:
         con.close()
@@ -2729,7 +2741,7 @@ def _shape_factory_clips_list_payload(cfg: "ServerConfig", q: Dict[str, List[str
 def _shape_factory_clips_mutate_payload(cfg: "ServerConfig", body: Dict[str, Any]) -> Dict[str, Any]:
     """
     POST /api/shape-factory/clips
-      { op: create|update|delete|set_default, ... }
+      { op: create|update|delete|restore|set_default, ... }
     """
     d = _workspace_scripts_dir()
     if d.is_dir() and str(d) not in sys.path:
@@ -2739,9 +2751,13 @@ def _shape_factory_clips_mutate_payload(cfg: "ServerConfig", body: Dict[str, Any
         create_clip,
         delete_clip,
         get_clip,
+        restore_clip,
         set_default_clip,
+        star_clip,
+        unstar_clip,
         update_clip,
     )
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
 
     op = str(body.get("op") or "create").strip().lower()
     reg = _clips_registry_path(cfg)
@@ -2800,8 +2816,22 @@ def _shape_factory_clips_mutate_payload(cfg: "ServerConfig", body: Dict[str, Any
             cid = str(body.get("clip_id") or "").strip()
             if not cid:
                 raise ValueError("missing_clip_id")
-            ok = delete_clip(con, cid)
-            return {"ok": ok, "clip_id": cid}
+            hard = bool(body.get("hard"))
+            jobs_root = None
+            if hard:
+                data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+                jobs_root = Path(data_root) / "shape_factory" / "jobs"
+            ok = delete_clip(con, cid, hard=hard, jobs_root=jobs_root)
+            clip = get_clip(con, cid) if ok and not hard else None
+            return {"ok": ok, "clip_id": cid, "deleted": True, "hard": hard, "clip": clip}
+        if op == "restore":
+            cid = str(body.get("clip_id") or "").strip()
+            if not cid:
+                raise ValueError("missing_clip_id")
+            clip = restore_clip(con, cid)
+            if clip is None:
+                raise KeyError(f"clip_not_found:{cid}")
+            return {"ok": True, "clip": clip, "restored": True}
         if op == "set_default":
             parent = str(body.get("parent_content_id") or "").strip()
             media_rel = str(body.get("media_relpath") or "").strip()
@@ -2814,6 +2844,18 @@ def _shape_factory_clips_mutate_payload(cfg: "ServerConfig", body: Dict[str, Any
             cid = str(raw_cid).strip() if raw_cid is not None and str(raw_cid).strip() else None
             default_id = set_default_clip(con, parent, cid)
             return {"ok": True, "parent_content_id": parent, "default_clip_id": default_id}
+        if op == "star":
+            cid = str(body.get("clip_id") or "").strip()
+            if not cid:
+                raise ValueError("missing_clip_id")
+            clip = star_clip(con, cid)
+            return {"ok": True, "clip": clip, "starred": True}
+        if op == "unstar":
+            cid = str(body.get("clip_id") or "").strip()
+            if not cid:
+                raise ValueError("missing_clip_id")
+            clip = unstar_clip(con, cid)
+            return {"ok": True, "clip": clip, "starred": False}
         raise ValueError(f"bad_op:{op}")
     finally:
         con.close()

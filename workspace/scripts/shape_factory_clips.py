@@ -10,11 +10,13 @@ absence of a clip preference means the whole parent asset.
 from __future__ import annotations
 
 import json
+import math
+import random
 import sqlite3
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import asset_registry as areg
 
@@ -38,17 +40,9 @@ def ensure_clip_schema(con: sqlite3.Connection) -> None:
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()
     }
-    if "clips" in tables and "asset_clip_prefs" in tables:
-        row = con.execute(
-            "SELECT value FROM meta WHERE key='schema_version'"
-        ).fetchone()
-        try:
-            ver = int(row["value"]) if row else 0
-        except (TypeError, ValueError, KeyError):
-            ver = 0
-        if ver >= 3:
-            return
-    dirty = "clips" not in tables or "asset_clip_prefs" not in tables
+    dirty = False
+    if "clips" not in tables or "asset_clip_prefs" not in tables:
+        dirty = True
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS clips (
@@ -78,6 +72,39 @@ def ensure_clip_schema(con: sqlite3.Connection) -> None:
         )
         """
     )
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS asset_clip_stars (
+            parent_content_id TEXT NOT NULL,
+            clip_id TEXT NOT NULL,
+            starred_at TEXT NOT NULL,
+            PRIMARY KEY (parent_content_id, clip_id)
+        )
+        """
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_clip_stars_clip ON asset_clip_stars(clip_id)"
+    )
+    cols = {r[1] for r in con.execute("PRAGMA table_info(clips)")}
+    if "deleted_at" not in cols:
+        con.execute("ALTER TABLE clips ADD COLUMN deleted_at TEXT")
+        dirty = True
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_clips_parent_alive "
+        "ON clips(parent_content_id, deleted_at)"
+    )
+    # Migrate legacy default_clip_id → starred set (idempotent).
+    migrated = con.execute(
+        """
+        INSERT OR IGNORE INTO asset_clip_stars(parent_content_id, clip_id, starred_at)
+        SELECT p.parent_content_id, p.default_clip_id, ?
+        FROM asset_clip_prefs p
+        WHERE p.default_clip_id IS NOT NULL AND TRIM(p.default_clip_id) != ''
+        """,
+        (_utc_now(),),
+    )
+    if int(migrated.rowcount or 0) > 0:
+        dirty = True
     row = con.execute(
         "SELECT value FROM meta WHERE key='schema_version'"
     ).fetchone()
@@ -85,10 +112,10 @@ def ensure_clip_schema(con: sqlite3.Connection) -> None:
         ver = int(row["value"]) if row else 0
     except (TypeError, ValueError, KeyError):
         ver = 0
-    if ver < 3:
+    if ver < 5:
         con.execute(
             "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
-            ("3",),
+            ("5",),
         )
         dirty = True
     if dirty:
@@ -131,7 +158,16 @@ def _row_to_clip(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
     d["label"] = (str(d.get("label") or "").strip() or None)
     d["origin"] = (str(d.get("origin") or "").strip() or None)
     d["notes"] = (str(d.get("notes") or "").strip() or None)
+    deleted_at = d.get("deleted_at")
+    d["deleted_at"] = (str(deleted_at).strip() if deleted_at else None) or None
+    d["deleted"] = bool(d["deleted_at"])
     return d
+
+
+def clip_is_deleted(clip: Optional[Dict[str, Any]]) -> bool:
+    if not clip:
+        return True
+    return bool(clip.get("deleted") or clip.get("deleted_at"))
 
 
 def get_clip(con: sqlite3.Connection, clip_id: str) -> Optional[Dict[str, Any]]:
@@ -145,22 +181,39 @@ def get_clip(con: sqlite3.Connection, clip_id: str) -> Optional[Dict[str, Any]]:
 def list_clips_for_parent(
     con: sqlite3.Connection,
     parent_content_id: str,
+    *,
+    include_deleted: bool = False,
 ) -> List[Dict[str, Any]]:
     pid = str(parent_content_id or "").strip()
     if not pid:
         return []
-    rows = con.execute(
-        """
-        SELECT * FROM clips
-        WHERE parent_content_id=?
-        ORDER BY mark_in_s ASC, created_at ASC
-        """,
-        (pid,),
-    ).fetchall()
+    if include_deleted:
+        rows = con.execute(
+            """
+            SELECT * FROM clips
+            WHERE parent_content_id=?
+            ORDER BY mark_in_s ASC, created_at ASC
+            """,
+            (pid,),
+        ).fetchall()
+    else:
+        rows = con.execute(
+            """
+            SELECT * FROM clips
+            WHERE parent_content_id=?
+              AND (deleted_at IS NULL OR TRIM(deleted_at) = '')
+            ORDER BY mark_in_s ASC, created_at ASC
+            """,
+            (pid,),
+        ).fetchall()
     out: List[Dict[str, Any]] = []
+    starred_ids: set = set()
+    if pid:
+        starred_ids = set(list_starred_clip_ids(con, pid))
     for r in rows:
         d = _row_to_clip(r)
         if d:
+            d["is_starred"] = str(d.get("clip_id") or "") in starred_ids
             out.append(d)
     return out
 
@@ -174,6 +227,12 @@ def list_clips_library(
     q: Optional[str] = None,
     defaults_only: bool = False,
     media_relpath: Optional[str] = None,
+    include_deleted: bool = False,
+    deleted_only: bool = False,
+    jobs_root: Optional[Path] = None,
+    unused_only: bool = False,
+    used_only: bool = False,
+    starred_only: bool = False,
 ) -> Dict[str, Any]:
     """Browse clips across parents, joined to asset current_relpath when known."""
     lim = max(1, min(int(limit or 100), 500))
@@ -185,9 +244,15 @@ def list_clips_library(
     q_f = q_raw.lower() if q_raw else None
     like = f"%{q_f}%" if q_f else None
     media_f = str(media_relpath or "").strip().replace("\\", "/") or None
+    if unused_only and used_only:
+        unused_only = False  # prefer used_only when both set
 
     where = ["1=1"]
     params: List[Any] = []
+    if deleted_only:
+        where.append("(c.deleted_at IS NOT NULL AND TRIM(c.deleted_at) != '')")
+    elif not include_deleted:
+        where.append("(c.deleted_at IS NULL OR TRIM(c.deleted_at) = '')")
     if origin_empty:
         where.append("(c.origin IS NULL OR TRIM(c.origin) = '')")
     elif origin_f:
@@ -205,6 +270,11 @@ def list_clips_library(
         params.extend([like, like, like, like])
     if defaults_only:
         where.append("p.default_clip_id = c.clip_id")
+    if starred_only:
+        where.append(
+            "EXISTS (SELECT 1 FROM asset_clip_stars s "
+            "WHERE s.clip_id = c.clip_id AND s.parent_content_id = c.parent_content_id)"
+        )
     if media_f:
         # char(92) = backslash — normalize Windows-style paths in SQL.
         where.append("replace(IFNULL(a.current_relpath,''), char(92), '/') = ?")
@@ -216,12 +286,12 @@ def list_clips_library(
         LEFT JOIN assets a ON a.content_id = c.parent_content_id
         LEFT JOIN asset_clip_prefs p ON p.parent_content_id = c.parent_content_id
     """
-    total = int(
-        con.execute(
-            f"SELECT COUNT(*) AS n {from_sql} WHERE {where_sql}",
-            tuple(params),
-        ).fetchone()["n"]
-    )
+    # Usage filters need annotate-then-slice; otherwise SQL paginates.
+    filter_by_usage = bool(unused_only or used_only)
+    usage_counts = collect_used_clip_ids(jobs_root) if (jobs_root or filter_by_usage) else {}
+    sql_lim = 50_000 if filter_by_usage else lim
+    sql_off = 0 if filter_by_usage else off
+
     rows = con.execute(
         f"""
         SELECT
@@ -230,13 +300,17 @@ def list_clips_library(
             a.kind AS asset_kind,
             a.ext AS asset_ext,
             a.mtime AS asset_mtime,
-            CASE WHEN p.default_clip_id = c.clip_id THEN 1 ELSE 0 END AS is_default
+            CASE WHEN p.default_clip_id = c.clip_id THEN 1 ELSE 0 END AS is_default,
+            CASE WHEN EXISTS (
+                SELECT 1 FROM asset_clip_stars s
+                WHERE s.clip_id = c.clip_id AND s.parent_content_id = c.parent_content_id
+            ) THEN 1 ELSE 0 END AS is_starred
         {from_sql}
         WHERE {where_sql}
         ORDER BY c.updated_at DESC, c.created_at DESC
         LIMIT ? OFFSET ?
         """,
-        tuple(params + [lim, off]),
+        tuple(params + [sql_lim, sql_off]),
     ).fetchall()
 
     clips: List[Dict[str, Any]] = []
@@ -254,16 +328,41 @@ def list_clips_library(
         except (TypeError, ValueError):
             d["asset_mtime"] = None
         d["is_default"] = bool(int(r["is_default"] or 0))
+        d["is_starred"] = bool(int(r["is_starred"] or 0))
         d["duration_s"] = max(0.0, float(d["mark_out_s"]) - float(d["mark_in_s"]))
         if rel:
             d["media_url"] = "/files/" + rel.replace("\\", "/")
         else:
             d["media_url"] = None
+        n = int(usage_counts.get(str(d.get("clip_id") or ""), 0))
+        d["use_count"] = n
+        d["used"] = n > 0
         clips.append(d)
 
+    if unused_only:
+        clips = [c for c in clips if not c.get("used")]
+    elif used_only:
+        clips = [c for c in clips if c.get("used")]
+
+    if filter_by_usage:
+        total = len(clips)
+        clips = clips[off : off + lim]
+    else:
+        total = int(
+            con.execute(
+                f"SELECT COUNT(*) AS n {from_sql} WHERE {where_sql}",
+                tuple(params),
+            ).fetchone()["n"]
+        )
+
     origin_counts: Dict[str, int] = {}
+    origin_where = "WHERE (deleted_at IS NULL OR TRIM(deleted_at) = '')"
+    if deleted_only:
+        origin_where = "WHERE (deleted_at IS NOT NULL AND TRIM(deleted_at) != '')"
+    elif include_deleted:
+        origin_where = ""
     for r in con.execute(
-        "SELECT IFNULL(origin, '') AS origin, COUNT(*) AS n FROM clips GROUP BY IFNULL(origin, '')"
+        f"SELECT IFNULL(origin, '') AS origin, COUNT(*) AS n FROM clips {origin_where} GROUP BY IFNULL(origin, '')"
     ).fetchall():
         key = str(r["origin"] or "").strip() or "(none)"
         origin_counts[key] = int(r["n"])
@@ -271,6 +370,10 @@ def list_clips_library(
     # Parent index for "by source" browse — same filters except media_relpath.
     parent_where = ["1=1"]
     parent_params: List[Any] = []
+    if deleted_only:
+        parent_where.append("(c.deleted_at IS NOT NULL AND TRIM(c.deleted_at) != '')")
+    elif not include_deleted:
+        parent_where.append("(c.deleted_at IS NULL OR TRIM(c.deleted_at) = '')")
     if origin_empty:
         parent_where.append("(c.origin IS NULL OR TRIM(c.origin) = '')")
     elif origin_f:
@@ -328,11 +431,17 @@ def list_clips_library(
         "offset": off,
         "origin_counts": origin_counts,
         "parents": parents,
+        "used_clip_ids": len(usage_counts),
         "filters": {
             "origin": "(none)" if origin_empty else origin_f,
             "q": q_raw or None,
             "defaults_only": bool(defaults_only),
             "media_relpath": media_f,
+            "include_deleted": bool(include_deleted),
+            "deleted_only": bool(deleted_only),
+            "unused_only": bool(unused_only),
+            "used_only": bool(used_only),
+            "starred_only": bool(starred_only),
         },
     }
 
@@ -418,15 +527,75 @@ def update_clip(
     return clip
 
 
-def delete_clip(con: sqlite3.Connection, clip_id: str) -> bool:
+def soft_delete_clip(con: sqlite3.Connection, clip_id: str) -> Optional[Dict[str, Any]]:
+    """Retire a clip (tombstone). Keeps clip_id/marks for history + restore."""
     cid = str(clip_id or "").strip()
     if not cid:
-        return False
-    # Clear default prefs pointing at this clip.
+        return None
+    existing = get_clip(con, cid)
+    if existing is None:
+        return None
+    if clip_is_deleted(existing):
+        return existing
+    now = _utc_now()
     con.execute(
         "UPDATE asset_clip_prefs SET default_clip_id=NULL WHERE default_clip_id=?",
         (cid,),
     )
+    con.execute("DELETE FROM asset_clip_stars WHERE clip_id=?", (cid,))
+    con.execute(
+        "UPDATE clips SET deleted_at=?, updated_at=? WHERE clip_id=?",
+        (now, now, cid),
+    )
+    con.commit()
+    return get_clip(con, cid)
+
+
+def restore_clip(con: sqlite3.Connection, clip_id: str) -> Optional[Dict[str, Any]]:
+    """Undo soft-delete; same clip_id and marks/ratings identity."""
+    cid = str(clip_id or "").strip()
+    if not cid:
+        return None
+    existing = get_clip(con, cid)
+    if existing is None:
+        return None
+    if not clip_is_deleted(existing):
+        return existing
+    now = _utc_now()
+    con.execute(
+        "UPDATE clips SET deleted_at=NULL, updated_at=? WHERE clip_id=?",
+        (now, cid),
+    )
+    con.commit()
+    return get_clip(con, cid)
+
+
+def delete_clip(
+    con: sqlite3.Connection,
+    clip_id: str,
+    *,
+    hard: bool = False,
+    jobs_root: Optional[Path] = None,
+) -> bool:
+    """
+    Soft-delete by default (tombstone). Pass ``hard=True`` to purge unused junk.
+
+    Hard delete refuses when ``jobs_root`` is given and any job references the clip.
+    """
+    cid = str(clip_id or "").strip()
+    if not cid:
+        return False
+    if not hard:
+        return soft_delete_clip(con, cid) is not None
+    if jobs_root is not None:
+        n = int(collect_used_clip_ids(jobs_root).get(cid, 0))
+        if n > 0:
+            raise ValueError(f"clip_in_use:{cid}:{n}")
+    con.execute(
+        "UPDATE asset_clip_prefs SET default_clip_id=NULL WHERE default_clip_id=?",
+        (cid,),
+    )
+    con.execute("DELETE FROM asset_clip_stars WHERE clip_id=?", (cid,))
     cur = con.execute("DELETE FROM clips WHERE clip_id=?", (cid,))
     con.commit()
     return int(cur.rowcount or 0) > 0
@@ -448,8 +617,9 @@ def get_default_clip_id(
     cid = str(row["default_clip_id"] or "").strip()
     if not cid:
         return None
-    # Drop stale defaults.
-    if get_clip(con, cid) is None:
+    # Drop stale / retired defaults.
+    clip = get_clip(con, cid)
+    if clip is None or clip_is_deleted(clip):
         con.execute(
             "UPDATE asset_clip_prefs SET default_clip_id=NULL WHERE parent_content_id=?",
             (pid,),
@@ -464,7 +634,11 @@ def set_default_clip(
     parent_content_id: str,
     clip_id: Optional[str],
 ) -> Optional[str]:
-    """Set or clear the editorial default clip for a parent asset. Returns new default id."""
+    """
+    Set or clear the editorial default clip for a parent asset.
+
+    Legacy alias for preference: setting a default also ★s it. Returns new default id.
+    """
     parent = str(parent_content_id or "").strip()
     if not parent:
         raise ValueError("missing_parent_content_id")
@@ -475,6 +649,8 @@ def set_default_clip(
             raise KeyError(f"clip_not_found:{cid}")
         if str(clip["parent_content_id"]) != parent:
             raise ValueError("clip_parent_mismatch")
+        if clip_is_deleted(clip):
+            raise ValueError("clip_deleted")
     con.execute(
         """
         INSERT INTO asset_clip_prefs(parent_content_id, default_clip_id)
@@ -483,8 +659,118 @@ def set_default_clip(
         """,
         (parent, cid),
     )
+    if cid:
+        con.execute(
+            """
+            INSERT OR IGNORE INTO asset_clip_stars(parent_content_id, clip_id, starred_at)
+            VALUES(?,?,?)
+            """,
+            (parent, cid, _utc_now()),
+        )
     con.commit()
     return cid
+
+
+def list_starred_clip_ids(
+    con: sqlite3.Connection,
+    parent_content_id: str,
+) -> List[str]:
+    pid = str(parent_content_id or "").strip()
+    if not pid:
+        return []
+    rows = con.execute(
+        """
+        SELECT s.clip_id
+        FROM asset_clip_stars s
+        JOIN clips c ON c.clip_id = s.clip_id
+        WHERE s.parent_content_id=?
+          AND (c.deleted_at IS NULL OR TRIM(c.deleted_at) = '')
+        ORDER BY IFNULL(c.updated_at, c.created_at) DESC, s.starred_at DESC
+        """,
+        (pid,),
+    ).fetchall()
+    return [str(r["clip_id"]) for r in rows if str(r["clip_id"] or "").strip()]
+
+
+def list_starred_clips(
+    con: sqlite3.Connection,
+    parent_content_id: str,
+) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for cid in list_starred_clip_ids(con, parent_content_id):
+        clip = get_clip(con, cid)
+        if clip and not clip_is_deleted(clip):
+            out.append(clip)
+    return out
+
+
+def clip_is_starred(con: sqlite3.Connection, clip_id: str) -> bool:
+    cid = str(clip_id or "").strip()
+    if not cid:
+        return False
+    row = con.execute(
+        "SELECT 1 AS ok FROM asset_clip_stars WHERE clip_id=? LIMIT 1",
+        (cid,),
+    ).fetchone()
+    return bool(row)
+
+
+def star_clip(con: sqlite3.Connection, clip_id: str) -> Dict[str, Any]:
+    cid = str(clip_id or "").strip()
+    clip = get_clip(con, cid)
+    if clip is None:
+        raise KeyError(f"clip_not_found:{cid}")
+    if clip_is_deleted(clip):
+        raise ValueError("clip_deleted")
+    parent = str(clip["parent_content_id"])
+    con.execute(
+        """
+        INSERT OR IGNORE INTO asset_clip_stars(parent_content_id, clip_id, starred_at)
+        VALUES(?,?,?)
+        """,
+        (parent, cid, _utc_now()),
+    )
+    # Legacy: first star on a parent becomes default when none set.
+    if get_default_clip_id(con, parent) is None:
+        con.execute(
+            """
+            INSERT INTO asset_clip_prefs(parent_content_id, default_clip_id)
+            VALUES(?,?)
+            ON CONFLICT(parent_content_id) DO UPDATE SET default_clip_id=excluded.default_clip_id
+            """,
+            (parent, cid),
+        )
+    con.commit()
+    out = dict(clip)
+    out["is_starred"] = True
+    out["is_default"] = get_default_clip_id(con, parent) == cid
+    return out
+
+
+def unstar_clip(con: sqlite3.Connection, clip_id: str) -> Dict[str, Any]:
+    cid = str(clip_id or "").strip()
+    clip = get_clip(con, cid)
+    if clip is None:
+        raise KeyError(f"clip_not_found:{cid}")
+    parent = str(clip["parent_content_id"])
+    con.execute("DELETE FROM asset_clip_stars WHERE clip_id=?", (cid,))
+    if get_default_clip_id(con, parent) == cid:
+        # Prefer another star as legacy default; else clear.
+        others = list_starred_clip_ids(con, parent)
+        new_default = others[0] if others else None
+        con.execute(
+            """
+            INSERT INTO asset_clip_prefs(parent_content_id, default_clip_id)
+            VALUES(?,?)
+            ON CONFLICT(parent_content_id) DO UPDATE SET default_clip_id=excluded.default_clip_id
+            """,
+            (parent, new_default),
+        )
+    con.commit()
+    out = dict(clip)
+    out["is_starred"] = False
+    out["is_default"] = get_default_clip_id(con, parent) == cid
+    return out
 
 
 def marks_to_vhs_window(
@@ -507,6 +793,250 @@ def marks_to_vhs_window(
     )
 
 
+def _parse_clip_ts(raw: Any) -> float:
+    s = str(raw or "").strip()
+    if not s:
+        return 0.0
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        return datetime.fromisoformat(s).timestamp()
+    except Exception:
+        return 0.0
+
+
+def clip_recency_weight(
+    clip: Dict[str, Any],
+    *,
+    now_ts: Optional[float] = None,
+    half_life_days: float = 14.0,
+) -> float:
+    """Exponential decay on updated_at (fallback created_at). Newer → higher weight."""
+    now = float(now_ts if now_ts is not None else datetime.now(timezone.utc).timestamp())
+    ts = _parse_clip_ts(clip.get("updated_at")) or _parse_clip_ts(clip.get("created_at"))
+    age_days = max(0.0, (now - ts) / 86400.0) if ts > 0 else 365.0
+    hl = max(0.1, float(half_life_days))
+    return max(1e-6, math.pow(0.5, age_days / hl))
+
+
+def _weighted_choice(items: Sequence[Dict[str, Any]], weights: Sequence[float], rng: random.Random) -> Dict[str, Any]:
+    total = sum(float(w) for w in weights)
+    if total <= 0 or not items:
+        return items[0]
+    r = rng.random() * total
+    acc = 0.0
+    for item, w in zip(items, weights):
+        acc += float(w)
+        if r <= acc:
+            return item
+    return items[-1]
+
+
+def _use_dict_from_marks(
+    *,
+    source: str,
+    clip_id: Optional[str],
+    tin: float,
+    tout: float,
+    duration: float,
+    fps: float,
+    frame_count: int,
+    message: Optional[str] = None,
+    pick_meta: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    vhs = marks_to_vhs_window(
+        mark_in_s=tin,
+        mark_out_s=tout,
+        duration_s=duration,
+        fps=fps,
+        frame_count=frame_count or None,
+    )
+    skip = int(vhs["skip_first_frames"])
+    cap = int(vhs["frame_load_cap"])
+    if frame_count > 0 and skip >= frame_count:
+        out = {
+            "source": "full",
+            "clip_id": None,
+            "mark_in": 0.0,
+            "mark_out": duration if duration > 0 else 0.0,
+            "skip_first_frames": 0,
+            "frame_load_cap": 0,
+            "fps": fps,
+            "frame_count": frame_count,
+            "duration": duration,
+            "message": message or "clip window empty on this media; fell back to full",
+        }
+        if pick_meta:
+            out["pick"] = pick_meta
+        return out
+    out = {
+        "source": source,
+        "clip_id": clip_id,
+        "mark_in": tin,
+        "mark_out": tout,
+        "skip_first_frames": skip,
+        "frame_load_cap": cap,
+        "fps": fps,
+        "frame_count": frame_count,
+        "duration": duration,
+    }
+    if message:
+        out["message"] = message
+    if pick_meta:
+        out["pick"] = pick_meta
+    return out
+
+
+def pick_seed_clip(
+    con: Optional[sqlite3.Connection],
+    parent_content_id: Optional[str],
+    *,
+    media_meta: Optional[Dict[str, Any]] = None,
+    media_abs: Optional[Path] = None,
+    rng: Optional[random.Random] = None,
+    half_life_days: float = 14.0,
+) -> Dict[str, Any]:
+    """
+    Automation seed for a parent: starred (recency-weighted) → usable-trim sidecar → full.
+
+    Unstarred bookmarks are never chosen here (human Queue-from-clip only).
+    """
+    meta = dict(media_meta or {})
+    fps = float(meta.get("fps") or 18.0)
+    if fps <= 0:
+        fps = 18.0
+    duration = float(meta.get("duration") or 0.0)
+    try:
+        frame_count = int(meta.get("frame_count") or 0)
+    except (TypeError, ValueError):
+        frame_count = 0
+    if duration <= 0 and frame_count > 0 and fps > 0:
+        duration = frame_count / fps
+    if frame_count <= 0 and duration > 0 and fps > 0:
+        frame_count = max(1, int(round(duration * fps)))
+
+    parent = str(parent_content_id or "").strip() or None
+    starred: List[Dict[str, Any]] = []
+    if con is not None and parent:
+        starred = list_starred_clips(con, parent)
+        # Legacy: default with no star row (pre-migrate race) still counts as one unit.
+        if not starred:
+            default_id = get_default_clip_id(con, parent)
+            if default_id:
+                clip = get_clip(con, default_id)
+                if clip and not clip_is_deleted(clip):
+                    starred = [clip]
+
+    if starred:
+        now_ts = datetime.now(timezone.utc).timestamp()
+        weights = [clip_recency_weight(c, now_ts=now_ts, half_life_days=half_life_days) for c in starred]
+        if rng is None:
+            # Deterministic: newest updated_at.
+            pick = max(
+                starred,
+                key=lambda c: (
+                    str(c.get("updated_at") or ""),
+                    str(c.get("created_at") or ""),
+                    str(c.get("clip_id") or ""),
+                ),
+            )
+            pick_mode = "newest"
+        else:
+            pick = _weighted_choice(starred, weights, rng)
+            pick_mode = "weighted"
+        tin, tout = clamp_marks(
+            float(pick["mark_in_s"]),
+            float(pick["mark_out_s"]),
+            duration_s=duration or None,
+        )
+        cid = str(pick["clip_id"])
+        return _use_dict_from_marks(
+            source="starred",
+            clip_id=cid,
+            tin=tin,
+            tout=tout,
+            duration=duration,
+            fps=fps,
+            frame_count=frame_count,
+            pick_meta={
+                "mode": pick_mode,
+                "starred_n": len(starred),
+                "half_life_days": float(half_life_days),
+                "weight": clip_recency_weight(pick, now_ts=now_ts, half_life_days=half_life_days),
+            },
+        )
+
+    # Usable trim proxy today: work-products .trims.json sidecar (H5 asset trim later).
+    if media_abs is not None:
+        try:
+            from shape_factory_queue import _load_work_products_trim_seconds, hostify_media_abs
+
+            media_resolved = hostify_media_abs(Path(media_abs))
+            marks = (
+                _load_work_products_trim_seconds(media_resolved)
+                if media_resolved is not None and media_resolved.is_file()
+                else None
+            )
+        except Exception:
+            marks = None
+        if marks is not None:
+            tin, tout = clamp_marks(float(marks[0]), float(marks[1]), duration_s=duration or None)
+            return _use_dict_from_marks(
+                source="usable_trim",
+                clip_id=None,
+                tin=tin,
+                tout=tout,
+                duration=duration,
+                fps=fps,
+                frame_count=frame_count,
+                pick_meta={"mode": "sidecar"},
+            )
+
+    return {
+        "source": "full",
+        "clip_id": None,
+        "mark_in": 0.0,
+        "mark_out": duration if duration > 0 else 0.0,
+        "skip_first_frames": 0,
+        "frame_load_cap": 0,
+        "fps": fps,
+        "frame_count": frame_count,
+        "duration": duration,
+        "pick": {"mode": "full", "starred_n": 0},
+    }
+
+
+def starred_seed_boost_for_parent(
+    con: Optional[sqlite3.Connection],
+    parent_content_id: Optional[str],
+    *,
+    half_life_days: float = 14.0,
+) -> float:
+    """
+    Hourly recipe weight multiplier for a parent asset.
+
+    1.0 when no ★; otherwise 1.75–3.0 scaled by newest star recency (newer → higher).
+    """
+    if con is None:
+        return 1.0
+    parent = str(parent_content_id or "").strip()
+    if not parent:
+        return 1.0
+    starred = list_starred_clips(con, parent)
+    if not starred:
+        default_id = get_default_clip_id(con, parent)
+        if default_id:
+            clip = get_clip(con, default_id)
+            if clip and not clip_is_deleted(clip):
+                starred = [clip]
+    if not starred:
+        return 1.0
+    now_ts = datetime.now(timezone.utc).timestamp()
+    best = max(clip_recency_weight(c, now_ts=now_ts, half_life_days=half_life_days) for c in starred)
+    # Map weight in (0,1] → boost in [1.75, 3.0]
+    return 1.75 + 1.25 * min(1.0, float(best))
+
+
 def _job_source_clip_id(job: Dict[str, Any]) -> Optional[str]:
     cid = str(job.get("source_clip_id") or "").strip()
     if cid:
@@ -514,6 +1044,46 @@ def _job_source_clip_id(job: Dict[str, Any]) -> Optional[str]:
     win = job.get("vhs_window") if isinstance(job.get("vhs_window"), dict) else {}
     cid = str(win.get("clip_id") or "").strip()
     return cid or None
+
+
+def collect_used_clip_ids(jobs_root: Optional[Path]) -> Dict[str, int]:
+    """
+    Map clip_id → job count for seeds referenced in ``*.job.json``.
+
+    A clip is **used** when count > 0 (``source_clip_id`` or ``vhs_window.clip_id``).
+    Cheap scan: string gate then parse; no output-path resolution.
+    """
+    counts: Dict[str, int] = {}
+    if jobs_root is None:
+        return counts
+    root = Path(jobs_root).expanduser()
+    if not root.is_dir():
+        return counts
+    for path in root.rglob("*.job.json"):
+        try:
+            raw = path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        if "clip_" not in raw and "source_clip_id" not in raw:
+            continue
+        try:
+            job = json.loads(raw)
+        except Exception:
+            continue
+        if not isinstance(job, dict):
+            continue
+        cid = _job_source_clip_id(job)
+        if not cid:
+            continue
+        counts[cid] = int(counts.get(cid, 0)) + 1
+    return counts
+
+
+def clip_is_used(jobs_root: Optional[Path], clip_id: str) -> bool:
+    cid = str(clip_id or "").strip()
+    if not cid:
+        return False
+    return int(collect_used_clip_ids(jobs_root).get(cid, 0)) > 0
 
 
 def _output_relpath_for_job(job: Dict[str, Any], *, output_root: Path) -> Optional[str]:
@@ -735,12 +1305,13 @@ def resolve_job_use_window(
     media_abs: Optional[Path] = None,
     con: Optional[sqlite3.Connection] = None,
     registry_path: Optional[Path] = None,
+    rng: Optional[random.Random] = None,
 ) -> Dict[str, Any]:
     """
     Resolve this run's use window.
 
-    Order: explicit job vhs_window → source_clip_id → parent default_clip →
-    sibling clip → work-products ``.trims.json`` sidecar → full file.
+    Order: explicit job vhs_window → source_clip_id → starred (recency) /
+    usable-trim sidecar → full file. Unstarred bookmarks are not auto-picked.
     Never reads catalog template skip/cap.
     """
     meta = dict(media_meta or {})
@@ -857,114 +1428,38 @@ def resolve_job_use_window(
             if isinstance(src, dict):
                 parent = str(src.get("content_id") or "").strip() or None
 
-        clip: Optional[Dict[str, Any]] = None
-        seed_source = "full"
         if con is not None and clip_id:
             clip = get_clip(con, clip_id)
             if clip:
-                seed_source = "clip"
-        if clip is None and con is not None and parent:
-            default_id = get_default_clip_id(con, parent)
-            if default_id:
-                clip = get_clip(con, default_id)
-                if clip:
-                    clip_id = default_id
-                    seed_source = "default_clip"
-            if clip is None:
-                siblings = list_clips_for_parent(con, parent)
-                if siblings:
-                    clip = siblings[0]
-                    clip_id = str(clip["clip_id"])
-                    seed_source = "clip"
-
-        if clip is not None:
-            tin, tout = clamp_marks(
-                float(clip["mark_in_s"]),
-                float(clip["mark_out_s"]),
-                duration_s=duration or None,
-            )
-            vhs = marks_to_vhs_window(
-                mark_in_s=tin,
-                mark_out_s=tout,
-                duration_s=duration,
-                fps=fps,
-                frame_count=frame_count or None,
-            )
-            skip = int(vhs["skip_first_frames"])
-            cap = int(vhs["frame_load_cap"])
-            if frame_count > 0 and skip >= frame_count:
-                return {
-                    "source": "full",
-                    "clip_id": None,
-                    "mark_in": 0.0,
-                    "mark_out": duration if duration > 0 else 0.0,
-                    "skip_first_frames": 0,
-                    "frame_load_cap": 0,
-                    "fps": fps,
-                    "frame_count": frame_count,
-                    "duration": duration,
-                    "message": f"clip window empty on this media; fell back to full",
-                }
-            return {
-                "source": seed_source,
-                "clip_id": clip_id,
-                "mark_in": tin,
-                "mark_out": tout,
-                "skip_first_frames": skip,
-                "frame_load_cap": cap,
-                "fps": fps,
-                "frame_count": frame_count,
-                "duration": duration,
-            }
-
-        # Work-products trim sidecar (Workbench marks) before full-file default.
-        if media_abs is not None:
-            try:
-                from shape_factory_queue import _load_work_products_trim_seconds, hostify_media_abs
-
-                media_resolved = hostify_media_abs(Path(media_abs))
-                marks = (
-                    _load_work_products_trim_seconds(media_resolved)
-                    if media_resolved is not None and media_resolved.is_file()
-                    else None
+                # Explicit source_clip_id may still resolve a soft-deleted tombstone (job history).
+                tin, tout = clamp_marks(
+                    float(clip["mark_in_s"]),
+                    float(clip["mark_out_s"]),
+                    duration_s=duration or None,
                 )
-            except Exception:
-                marks = None
-            if marks is not None:
-                tin, tout = clamp_marks(float(marks[0]), float(marks[1]), duration_s=duration or None)
-                vhs = marks_to_vhs_window(
-                    mark_in_s=tin,
-                    mark_out_s=tout,
-                    duration_s=duration,
+                return _use_dict_from_marks(
+                    source="clip",
+                    clip_id=clip_id,
+                    tin=tin,
+                    tout=tout,
+                    duration=duration,
                     fps=fps,
-                    frame_count=frame_count or None,
+                    frame_count=frame_count,
                 )
-                skip = int(vhs["skip_first_frames"])
-                cap = int(vhs["frame_load_cap"])
-                if not (frame_count > 0 and skip >= frame_count):
-                    return {
-                        "source": "sidecar",
-                        "clip_id": None,
-                        "mark_in": tin,
-                        "mark_out": tout,
-                        "skip_first_frames": skip,
-                        "frame_load_cap": cap,
-                        "fps": fps,
-                        "frame_count": frame_count,
-                        "duration": duration,
-                    }
 
-        return {
-            "source": "full",
-            "clip_id": None,
-            "mark_in": 0.0,
-            "mark_out": duration if duration > 0 else 0.0,
-            "skip_first_frames": 0,
-            "frame_load_cap": 0,
-            "fps": fps,
-            "frame_count": frame_count,
-            "duration": duration,
-        }
+        pick_rng = rng
+        if pick_rng is None:
+            jk = str(job.get("job_key") or "").strip()
+            if jk:
+                pick_rng = random.Random(jk)
+
+        return pick_seed_clip(
+            con,
+            parent,
+            media_meta={"fps": fps, "duration": duration, "frame_count": frame_count},
+            media_abs=media_abs,
+            rng=pick_rng,
+        )
     finally:
         if own_con and con is not None:
             con.close()

@@ -42,6 +42,8 @@ This page mirrors the planning-relevant sections of the repo-root [DOCUMENTATION
 | [DISCOVERY_INDEX_WATCHER_PLAN.md](DISCOVERY_INDEX_WATCHER_PLAN.md) | Discovery FS watcher + enrichment jobs (V2). |
 | [RATINGS_V1_PLAN.md](RATINGS_V1_PLAN.md) | Ratings, disposition, triage. |
 | [DISPOSITION_BUCKET_MODEL.md](DISPOSITION_BUCKET_MODEL.md) | Bucket model reference (diagram-first). |
+| [CLIP_SELECTION_MODEL.md](CLIP_SELECTION_MODEL.md) | Asset / Clip / Use, starring, soft-delete. |
+| [HOURLY_CLIP_GUIDANCE_PLAN.md](HOURLY_CLIP_GUIDANCE_PLAN.md) | Sequence: ★ + newer clips guide hourlies. |
 | [BUCKET_MODEL_PHASE2_PLAN.md](BUCKET_MODEL_PHASE2_PLAN.md) | Work items, pool pages, multi-route Advance. |
 | [ASSET_LIFECYCLE_PLAN.md](ASSET_LIFECYCLE_PLAN.md) | Asset lifecycle phase 2. |
 | [WORKFLOW_REPAIR_PLAN.md](WORKFLOW_REPAIR_PLAN.md) | Workflow repair tiers. |
