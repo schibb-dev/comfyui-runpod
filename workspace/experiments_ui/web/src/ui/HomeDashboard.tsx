@@ -41,7 +41,7 @@ function formatDue(iso?: string | null): string {
   }
 }
 
-const INTERVAL_PRESETS = [15, 30, 45, 60, 90, 120];
+const INTERVAL_PRESETS = [15, 20, 30, 45, 60, 90, 120];
 
 function HourlyScheduleControls({
   initial,
@@ -51,7 +51,7 @@ function HourlyScheduleControls({
   onSaved: (s: HourlyScheduleStatus) => void;
 }) {
   const sch = initial?.schedule;
-  const [interval, setIntervalMin] = useState(sch?.interval_minutes ?? 30);
+  const [interval, setIntervalMin] = useState(sch?.interval_minutes ?? 20);
   const [enabled, setEnabled] = useState(sch?.enabled !== false);
   const [mode, setMode] = useState<HourlySubmitMode>(
     (sch?.submit_mode as HourlySubmitMode) || "auto",
@@ -63,7 +63,7 @@ function HourlyScheduleControls({
 
   useEffect(() => {
     if (!sch) return;
-    setIntervalMin(sch.interval_minutes ?? 30);
+    setIntervalMin(sch.interval_minutes ?? 20);
     setEnabled(sch.enabled !== false);
     setMode((sch.submit_mode as HourlySubmitMode) || "auto");
     setComfyMax(sch.comfy_queue_max ?? 3);

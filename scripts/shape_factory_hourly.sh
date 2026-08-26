@@ -204,7 +204,50 @@ if [ "$DEV_CHAIN" = "1" ]; then dev_args+=(--dev); fi
 # Distinct path + name stem so timer ticks are easy to find while debugging.
 HOURLY_PREFIX_ROOT="${HOURLY_PREFIX_ROOT:-og/%date:yyyy-MM-dd%/hourly}"
 HOURLY_JOB_KEY_PREFIX="${HOURLY_JOB_KEY_PREFIX:-hourly}"
-HOURLY_SUFFIX="_$(date -u +%Y%m%d%H%M)"
+
+# Repeat fills until Comfy waiting >= comfy_queue_min (or we cannot submit to Comfy).
+FILLS=0
+MAX_FILLS="${HOURLY_MAX_FILLS_PER_TICK:-}"
+if [ -z "$MAX_FILLS" ]; then
+  MAX_FILLS=$HOURLY_QUEUE_MAX
+fi
+if [ "$MAX_FILLS" -lt "$HOURLY_QUEUE_MIN" ]; then
+  MAX_FILLS=$HOURLY_QUEUE_MIN
+fi
+log "fill loop start waiting=$PEND min=$HOURLY_QUEUE_MIN max_fills=$MAX_FILLS"
+
+while true; do
+  read -r RUN PEND < <(queue_counts) || true
+  PEND=${PEND:-0}
+  FACTORY_PENDING=$(factory_pending_count)
+  POLICY_JSON=$(queue_policy "$PEND" "$FACTORY_PENDING")
+  ADVANCE=$(policy_field "$POLICY_JSON" advance)
+  REASON=$(policy_field "$POLICY_JSON" reason)
+  DEST=$(policy_field "$POLICY_JSON" destination)
+  SUBMIT_SLOTS=$(policy_field "$POLICY_JSON" submit_slots)
+  SUBMIT_SLOTS=${SUBMIT_SLOTS:-0}
+
+  if [ "$PEND" -ge "$HOURLY_QUEUE_MIN" ]; then
+    log "fill loop done — waiting=$PEND >= min=$HOURLY_QUEUE_MIN fills=$FILLS"
+    break
+  fi
+  if [ "$ADVANCE" != "True" ]; then
+    log "fill loop stop — advance=false reason=$REASON waiting=$PEND fills=$FILLS"
+    break
+  fi
+  if [ "$DEST" != "comfy" ] && [ "$FILLS" -gt 0 ]; then
+    log "fill loop stop — dest=$DEST (cannot raise Comfy waiting; still $PEND < min=$HOURLY_QUEUE_MIN) fills=$FILLS"
+    break
+  fi
+  if [ "$FILLS" -ge "$MAX_FILLS" ]; then
+    log "fill loop stop — hit max_fills=$MAX_FILLS waiting=$PEND min=$HOURLY_QUEUE_MIN"
+    break
+  fi
+
+  STATE_JSON=$(read_state)
+  CURSOR=$(python3 -c "import json,sys; print(int(json.loads(sys.argv[1]).get('sample_cursor',0)))" "$STATE_JSON")
+  HOURLY_SUFFIX="_$(date -u +%Y%m%d%H%M%S)_f${FILLS}"
+  log "fill iter=$((FILLS + 1)) waiting=$PEND min=$HOURLY_QUEUE_MIN dest=$DEST cursor=$CURSOR"
 
 # Phase 1: recent GEX2 complete without FACIAL child (throttled)
 NEED_FACIAL_JSON=$(cd "$SCRIPTS" && python3 shape_factory_hourly.py need-facial --data-root "$REPO/.data")
@@ -267,10 +310,9 @@ data["last_gex2_source_ref"] = sys.argv[4]
 data["sample_cursor"] = cursor + 1
 Path(sys.argv[5]).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
-  mark_tick
-  log "facial step queued dest=$DEST (next cursor=$((CURSOR + 1)))"
-  run_maintenance 0
-  exit 0
+  FILLS=$((FILLS + 1))
+  log "facial step queued dest=$DEST (next cursor=$((CURSOR + 1))) fills=$FILLS"
+  continue
 fi
 
 # Phase 2: i2v/still-family complete without FB9_GEX child (FaceBlast, BounceDanceA, Kneel, …)
@@ -324,10 +366,9 @@ data["last_i2v_video"] = sys.argv[4]
 data["sample_cursor"] = cursor + 1
 Path(sys.argv[5]).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
-  mark_tick
-  log "gex-from-i2v step queued producer=$NEED_I2V_FAM dest=$DEST (next cursor=$((CURSOR + 1)))"
-  run_maintenance 0
-  exit 0
+  FILLS=$((FILLS + 1))
+  log "gex-from-i2v step queued producer=$NEED_I2V_FAM dest=$DEST (next cursor=$((CURSOR + 1))) fills=$FILLS"
+  continue
 fi
 
 # Phase 3: weighted seed family (replay / derive / pool_product)
@@ -337,10 +378,8 @@ PLAN_JSON=$(cd "$SCRIPTS" && python3 shape_factory_hourly.py plan-step --state "
 PLAN_OK=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('ok'))" "$PLAN_JSON")
 if [ "$PLAN_OK" != "True" ]; then
   PLAN_ERR=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('error',''))" "$PLAN_JSON")
-  log "seed skipped family=$FAMILY (${PLAN_ERR:-no plan})"
-  mark_tick
-  run_maintenance "$SUBMIT_SLOTS"
-  exit 0
+  log "seed skipped family=$FAMILY (${PLAN_ERR:-no plan}) — stopping fill loop fills=$FILLS"
+  break
 fi
 
 # Prefer identity-anchor plate when the plan upgraded Extend (family may change).
@@ -423,11 +462,20 @@ data["last_step"] = sys.argv[10]
 data["last_disposition_entry"] = sys.argv[11] if len(sys.argv) > 11 else ""
 Path(sys.argv[2]).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
-mark_tick
+FILLS=$((FILLS + 1))
 if [ "$GEN_RC" != "0" ]; then
-  log "seed generate failed family=$FAMILY rc=$GEN_RC — advanced cursor to $NEXT_CURSOR anyway"
+  log "seed generate failed family=$FAMILY rc=$GEN_RC — advanced cursor to $NEXT_CURSOR anyway fills=$FILLS"
 else
-  log "seed queued family=$FAMILY pick_mode=$PICK_MODE rating_kind=${RATING_KIND:-?} dest=$DEST (next cursor=$NEXT_CURSOR)"
+  log "seed queued family=$FAMILY pick_mode=$PICK_MODE rating_kind=${RATING_KIND:-?} dest=$DEST (next cursor=$NEXT_CURSOR) fills=$FILLS"
 fi
-run_maintenance 0
+# If first fill spilled to factory pending (comfy already at max), don't spin.
+if [ "$DEST" != "comfy" ]; then
+  log "fill loop stop after pending spill fills=$FILLS"
+  break
+fi
+done
+
+mark_tick
+log "fill loop finished fills=$FILLS"
+run_maintenance "$SUBMIT_SLOTS"
 exit 0

@@ -231,6 +231,8 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
             # Non-preset snaps to nearest.
             snapped = save_hourly_schedule({"interval_minutes": 33}, path=path)
             self.assertEqual(snapped["interval_minutes"], 30)
+            twenty = save_hourly_schedule({"interval_minutes": 20}, path=path)
+            self.assertEqual(twenty["interval_minutes"], 20)
 
     def test_score_recipe_marks_predicted_rating_kind(self) -> None:
         from shape_factory_heuristics import score_recipe

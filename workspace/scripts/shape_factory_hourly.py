@@ -3613,10 +3613,10 @@ def pending_product_combos(
     return pending
 
 
-HOURLY_INTERVAL_PRESETS = (15, 30, 45, 60, 90, 120)
+HOURLY_INTERVAL_PRESETS = (15, 20, 30, 45, 60, 90, 120)
 HOURLY_SUBMIT_MODES = ("auto", "comfy", "pending")
 DEFAULT_HOURLY_SCHEDULE: Dict[str, Any] = {
-    "interval_minutes": 30,
+    "interval_minutes": 20,
     "enabled": True,
     "submit_mode": "auto",
     "comfy_queue_min": 1,

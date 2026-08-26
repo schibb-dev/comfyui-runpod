@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install user systemd timer: shape-factory hourly maintenance + chain advance.
 # Wakes every 5 minutes; real fills are gated by .data/shape_factory/hourly-schedule.json
-# (default interval 30m). Re-run after edits to refresh the unit files.
+# (default interval 20m). Re-run after edits to refresh the unit files.
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 USER_SYSTEMD="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
@@ -9,13 +9,13 @@ SCHEDULE="${SCHEDULE:-$REPO/.data/shape_factory/hourly-schedule.json}"
 mkdir -p "$USER_SYSTEMD" "$(dirname "$SCHEDULE")"
 chmod +x "$REPO/scripts/shape_factory_hourly.sh"
 
-# Seed schedule if missing (30m / auto / comfy max 2 / pending max 4).
+# Seed schedule if missing (20m / auto / comfy max 3 / pending max 4).
 if [ ! -f "$SCHEDULE" ]; then
   (
     cd "$REPO/workspace/scripts"
     python3 shape_factory_hourly.py schedule-set \
       --schedule "$SCHEDULE" \
-      --minutes 30 \
+      --minutes 20 \
       --enabled 1 \
       --submit-mode auto \
       --comfy-queue-min 1 \
