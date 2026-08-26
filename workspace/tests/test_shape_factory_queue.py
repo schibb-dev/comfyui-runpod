@@ -13,6 +13,95 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class ShapeFactoryQueueTests(unittest.TestCase):
+    def test_queue_shape_factory_combo_uses_curated_source_still_fallback(self) -> None:
+        from shape_factory_queue import queue_shape_factory_combo
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            data_root = root / ".data"
+            workspace_root = root / "workspace"
+            output_root = workspace_root / "output"
+            (data_root / "shapes").mkdir(parents=True)
+            (data_root / "pools" / "FAM").mkdir(parents=True)
+            (data_root / "shape_factory" / "jobs").mkdir(parents=True)
+            (workspace_root / "comfyui_user" / "default" / "workflows" / "generated" / "shape_factory").mkdir(parents=True)
+            output_root.mkdir(parents=True)
+
+            still = root / "input_still.png"
+            still.write_bytes(b"x")
+            template = root / "template.json"
+            template.write_text(
+                json.dumps({"version": 1, "nodes": [{"id": 1, "type": "LoadImage", "widgets_values": ["x.png", "image"]}], "links": []}),
+                encoding="utf-8",
+            )
+            shape = data_root / "shapes" / "FAM.shape.yaml"
+            shape.write_text(
+                "\n".join(
+                    [
+                        "shape_id: FAM",
+                        "family_slug: FAM",
+                        f"template: {template}",
+                        "requires:",
+                        "  - slot: source_still",
+                        "    media: image",
+                        "    binding:",
+                        "      type: load_image",
+                        "      node_id: 1",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            pools = data_root / "pools" / "FAM" / "pools.yaml"
+            pools.write_text(
+                "\n".join(
+                    [
+                        f"shape: {shape}",
+                        "pools:",
+                        "  source_still:",
+                        "    slot: source_still",
+                        "    members:",
+                        f"      - dir: {root}",
+                        "        ext: [.png]",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            fake_job = data_root / "shape_factory" / "jobs" / "FAM" / "smoke.job.json"
+            fake_job.parent.mkdir(parents=True, exist_ok=True)
+            fake_job.write_text("{}", encoding="utf-8")
+            fake_wf = workspace_root / "comfyui_user" / "default" / "workflows" / "generated" / "shape_factory" / "smoke.json"
+            fake_wf.write_text("{}", encoding="utf-8")
+
+            def _fake_generate(**kwargs):
+                picks = kwargs.get("picks") or {}
+                assert "source_still" in picks
+                return {
+                    "job_key": "smoke",
+                    "job_path": fake_job,
+                    "workflow_path": fake_wf,
+                }
+
+            with mock.patch("shape_factory_queue.generate_job_for_picks", side_effect=_fake_generate), mock.patch(
+                "shape_factory_queue.submit_job_file",
+                return_value={"ok": True, "dry_run": True, "prompt_id": "p1"},
+            ), mock.patch(
+                "shape_factory_queue.load_effective_quarantine_registry",
+                return_value=({}, {}),
+            ), mock.patch("shape_factory_queue.assert_workflows_not_quarantined", return_value=None):
+                out = queue_shape_factory_combo(
+                    family_slug="FAM",
+                    bindings={"placeholder": str(still)},
+                    data_root=data_root,
+                    workspace_root=workspace_root,
+                    output_root=output_root,
+                    comfy_server="http://127.0.0.1:8188",
+                    dry_run=True,
+                )
+        self.assertTrue(out.get("ok"))
+        self.assertEqual(out.get("family_slug"), "FAM")
+
     def test_queue_from_request_body_dry_run(self) -> None:
         from shape_factory_queue import queue_from_request_body
 
@@ -658,6 +747,107 @@ class ShapeFactoryQueueTests(unittest.TestCase):
         self.assertNotIn("source_still", captured.get("bindings") or {})
         self.assertEqual((captured.get("bindings") or {}).get("source_video"), "/data/output/og/kneel_out.mp4")
 
+    def test_cross_family_prompt_profile_remap_prefers_matching_label(self) -> None:
+        from shape_factory_queue import _remap_prompt_profile_binding_for_family
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pools_dir = root / "pools" / "FB9_GEX_FACIAL"
+            prompts_dir = pools_dir / "prompts"
+            prompts_dir.mkdir(parents=True, exist_ok=True)
+            target_a = prompts_dir / "catalog-default.json"
+            target_b = prompts_dir / "alt.json"
+            target_a.write_text(json.dumps({"label": "catalog-default", "positive": "x", "negative": ""}))
+            target_b.write_text(json.dumps({"label": "other", "positive": "y", "negative": ""}))
+            (pools_dir / "pools.yaml").write_text(
+                "schema_version: comfyui-runpod.pools.v0\n"
+                "pools:\n"
+                "  prompt_profile:\n"
+                "    slot: prompt_profile\n"
+                "    members:\n"
+                f"      - {target_a}\n"
+                f"      - {target_b}\n",
+                encoding="utf-8",
+            )
+            source = root / "pools" / "X-KNEEL-FB9" / "prompts"
+            source.mkdir(parents=True, exist_ok=True)
+            source_prompt = source / "catalog-default.json"
+            source_prompt.write_text(json.dumps({"label": "catalog-default", "positive": "seed", "negative": ""}))
+
+            mapped, meta = _remap_prompt_profile_binding_for_family(
+                {"prompt_profile": str(source_prompt)},
+                data_root=root,
+                family_slug="FB9_GEX_FACIAL",
+            )
+
+            self.assertEqual(Path(mapped["prompt_profile"]).resolve(), target_a.resolve())
+            self.assertIsNotNone(meta)
+            assert meta is not None
+            self.assertEqual(meta.get("reason"), "cross_family_prompt_profile_remap")
+
+    def test_replay_cross_family_remaps_non_explicit_prompt_profile(self) -> None:
+        from shape_factory_queue import replay_from_request_body
+
+        job = {
+            "job_key": "seed_job",
+            "family_slug": "X-KNEEL-FB9",
+            "bindings": {
+                "prompt_profile": {"path": "/data/pools/X-KNEEL-FB9/prompts/catalog-default.json"},
+                "source_video": {"path": "/data/seed.mp4"},
+            },
+            "submit": {"outputs": ["/data/output/og/seed.mp4"], "status": "complete"},
+        }
+        captured: dict = {}
+
+        def fake_queue(**kwargs):
+            captured.update(kwargs)
+            return {"ok": True, "job_key": "derived", "pick_mode": kwargs.get("pick_mode")}
+
+        with mock.patch("shape_factory_queue._find_job_doc", return_value=(job, Path("x.job.json"))), mock.patch(
+            "shape_factory_queue.load_yaml",
+            return_value={
+                "requires": [
+                    {"slot": "source_video", "media": "video"},
+                    {"slot": "prompt_profile", "binding": {"type": "prompt_bundle"}},
+                ]
+            },
+        ), mock.patch("shape_factory_queue._resolve_shape_path", return_value=Path("shape.yaml")), mock.patch(
+            "shape_factory_queue.resolve_or_recover_prompt_profile_binding",
+            side_effect=lambda bindings, **_k: (bindings, None),
+        ), mock.patch(
+            "shape_factory_queue._remap_prompt_profile_binding_for_family",
+            return_value=(
+                {
+                    "prompt_profile": "/data/pools/FB9_GEX_FACIAL/prompts/catalog-default.json",
+                    "source_video": "/data/seed.mp4",
+                },
+                {
+                    "from": "/data/pools/X-KNEEL-FB9/prompts/catalog-default.json",
+                    "to": "/data/pools/FB9_GEX_FACIAL/prompts/catalog-default.json",
+                    "reason": "cross_family_prompt_profile_remap",
+                },
+            ),
+        ), mock.patch("shape_factory_queue.queue_shape_factory_combo", side_effect=fake_queue), mock.patch(
+            "shape_factory_queue.resolve_vhs_window_overrides",
+            side_effect=lambda **kw: (kw.get("parameters") or {}, False),
+        ), mock.patch(
+            "shape_factory_queue.vhs_loader_defaults_for_shape",
+            return_value={"skip_first_frames": 0, "frame_load_cap": 0},
+        ):
+            out = replay_from_request_body(
+                {"job_key": "seed_job", "family_slug": "FB9_GEX_FACIAL", "extend": False, "dry_run": True},
+                repo_root=REPO_ROOT,
+                workspace_root=REPO_ROOT / "workspace",
+                output_root=Path("/tmp"),
+                comfy_server="http://127.0.0.1:8188",
+            )
+        self.assertTrue(out.get("ok"), out)
+        self.assertEqual(
+            (captured.get("bindings") or {}).get("prompt_profile"),
+            "/data/pools/FB9_GEX_FACIAL/prompts/catalog-default.json",
+        )
+        self.assertIn("prompt_profile_remapped", out)
+
     def test_extend_missing_identity_still_raises(self) -> None:
         from shape_factory_queue import _resolve_identity_still_for_shape
 
@@ -799,6 +989,22 @@ class ShapeFactoryQueueTests(unittest.TestCase):
                     comfy_server="http://127.0.0.1:8188",
                 )
         self.assertIn("derive_no_distinct_combo", str(ctx.exception))
+
+    def test_all_pool_members_for_source_still_applies_curation_merge(self) -> None:
+        from shape_factory_queue import _all_pool_members_for_slot
+
+        pools_doc = {
+            "shape": "/tmp/FAM.shape.yaml",
+            "pools": {"source_still": {"slot": "source_still", "members": [{"glob": "/tmp/*.png"}]}},
+        }
+        base = [Path("/tmp/a.png")]
+        merged = [Path("/tmp/a.png"), Path("/tmp/b.png")]
+        with mock.patch("shape_factory_queue.resolve_pool_members", return_value=base), mock.patch(
+            "shape_factory_input_curation.merged_source_stills",
+            return_value={"members": merged},
+        ):
+            out = _all_pool_members_for_slot(pools_doc, "source_still")
+        self.assertEqual(out, merged)
 
 
 class ShapeFactoryReplaySeedTests(unittest.TestCase):

@@ -41,6 +41,7 @@ export function pickDefaultExtendFamily(
 
   const hint = String(hintFamily || "").trim();
   if (hint && extendDefaults[hint] && has(extendDefaults[hint])) return extendDefaults[hint];
+  if (extendDefaults["*"] && has(extendDefaults["*"])) return extendDefaults["*"];
   if (hint && has(hint) && isExtendFamilySlug(hint)) return hint;
 
   const base =

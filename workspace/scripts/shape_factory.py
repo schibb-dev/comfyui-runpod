@@ -73,6 +73,7 @@ from shape_factory_source_facets import add_source_facets_subparser
 from shape_factory_job_output_index import add_job_output_index_subparser
 from shape_factory_seed_sources import add_seed_sources_subparser
 from shape_factory_backfill import add_backfill_subparser
+from shape_factory_hygiene import add_hygiene_subparser
 from shape_factory_flow import (
     status_allows_begin_edit,
     status_allows_finish_edit,
@@ -80,6 +81,7 @@ from shape_factory_flow import (
     status_is_on_comfy,
     status_is_pending_editable,
 )
+from shape_factory_host_telemetry import capture_host_snapshot, summarize_cpu_window
 
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm"}
 
@@ -547,6 +549,13 @@ def update_job_timings_on_status(
         job["submit"] = submit
     queue = timings.setdefault("queue", {})
     execution = timings.setdefault("execution", {})
+    _attach_host_snapshot(
+        timings,
+        status=status,
+        now_ts=now,
+        queue=queue if isinstance(queue, dict) else {},
+        execution=execution if isinstance(execution, dict) else {},
+    )
 
     if status == "running" and not queue.get("running_first_seen_ts"):
         queue["running_first_seen_ts"] = now
@@ -556,6 +565,7 @@ def update_job_timings_on_status(
             queue["wait_sec"] = round(max(0.0, now - float(submitted_ts)), 3)
 
     if isinstance(history, dict):
+        prompt_graph = _history_prompt_graph(history)
         hist_times = parse_history_execution_timings(history)
         if hist_times:
             # Always prefer history terminal window (success/error/interrupted).
@@ -571,10 +581,15 @@ def update_job_timings_on_status(
                 )
                 execution["source"] = "history.messages"
         node_times = parse_history_node_timings(history)
+        node_times = annotate_node_timings_with_prompt(node_times, prompt_graph)
         if node_times:
             execution["nodes"] = node_times.get("nodes")
             execution["nodes_tracked_sec"] = node_times.get("tracked_sec")
             execution["nodes_source"] = node_times.get("source")
+            if isinstance(node_times.get("class_type_totals"), dict):
+                execution["node_class_type_totals"] = node_times.get("class_type_totals")
+            if isinstance(node_times.get("workflow_part_totals"), dict):
+                execution["workflow_part_totals"] = node_times.get("workflow_part_totals")
         by_node = extract_history_outputs_by_node(history, data_root)
         if by_node:
             submit["outputs_by_node"] = {
@@ -1881,6 +1896,10 @@ def cmd_generate(args: argparse.Namespace) -> int:
     )
 
     req_by_slot = requires_by_slot(shape)
+    try:
+        from shape_factory_input_curation import merged_source_stills  # type: ignore
+    except Exception:
+        merged_source_stills = None  # type: ignore
     pool_paths: dict[str, list[Path]] = {}
     for _name, pool_def in (pools_doc.get("pools") or {}).items():
         if not isinstance(pool_def, dict):
@@ -1891,6 +1910,15 @@ def cmd_generate(args: argparse.Namespace) -> int:
             print(f"warning: pool slot {slot!r} not in shape requires", file=sys.stderr)
             continue
         members = resolve_pool_members(pool_def)
+        if slot == "source_still" and merged_source_stills is not None:
+            merged = merged_source_stills(
+                family_slug=str(shape.get("family_slug") or shape_path.stem),
+                base_members=members,
+                data_root=data_root,
+                workspace_root=default_workspace_root(),
+                output_root=default_output_root(),
+            )
+            members = list(merged.get("members") or members)
         if not members:
             if req.get("optional"):
                 print(f"warning: optional pool {slot!r} has no members; skipping slot", file=sys.stderr)
@@ -1997,10 +2025,30 @@ def cmd_generate(args: argparse.Namespace) -> int:
 
 
 def atomic_write_json(path: Path, value: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    payload = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    last_exc: Optional[Exception] = None
+    # Best-effort hardening for rare races where job folders are moved/removed
+    # between tmp write and rename (seen on begin-edit under concurrent churn).
+    for attempt in range(3):
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{attempt}")
+            tmp.write_text(payload, encoding="utf-8")
+            tmp.replace(path)
+            return
+        except FileNotFoundError as exc:
+            last_exc = exc
+            # Recreate parent and retry with a fresh temp name.
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+            time.sleep(0.02 * (attempt + 1))
+        except Exception as exc:
+            last_exc = exc
+            break
+    if last_exc is not None:
+        raise last_exc
 
 
 def iter_job_paths(args: argparse.Namespace, *, apply_limit: bool = True) -> list[Path]:
@@ -2797,6 +2845,154 @@ def parse_history_node_timings(history: dict[str, Any]) -> dict[str, Any]:
         return {}
     total = round(sum(node_total.values()), 3)
     return {"nodes": nodes, "tracked_sec": total, "source": "history.messages"}
+
+
+def _history_prompt_graph(history: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Best-effort Comfy API prompt graph from ``/history/<prompt_id>`` record."""
+    prompt = history.get("prompt")
+    if isinstance(prompt, dict):
+        return prompt
+    if isinstance(prompt, (list, tuple)):
+        # Comfy history commonly stores ``[queue_idx, prompt_id, prompt_dict, extra_data, ...]``.
+        if len(prompt) >= 3 and isinstance(prompt[2], dict):
+            return prompt[2]
+        for part in prompt:
+            if isinstance(part, dict) and part:
+                # First dict-shaped payload fallback.
+                return part
+    return None
+
+
+def _workflow_part_bucket(class_type: str) -> str:
+    ct = str(class_type or "").strip()
+    low = ct.lower()
+    if not ct:
+        return "unknown"
+    if "loadvideo" in low or low.startswith("loadimage") or low.startswith("vhs_load"):
+        return "input_load"
+    if "clipvision" in low or "imagescale" in low or "imagecrop" in low:
+        return "image_conditioning"
+    if "textencode" in low or "cliptext" in low:
+        return "prompt_encode"
+    if "ksampler" in low or "sampler" in low or "scheduler" in low:
+        return "sampling"
+    if "vae" in low and ("decode" in low or "encode" in low):
+        return "vae"
+    if "videocombine" in low or low.startswith("save"):
+        return "output_write"
+    if "wan" in low or "model" in low:
+        return "model_ops"
+    return "other"
+
+
+def annotate_node_timings_with_prompt(
+    node_times: dict[str, Any],
+    prompt_graph: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    """Attach class-type and workflow-part rollups to per-node timing."""
+    if not isinstance(node_times, dict):
+        return {}
+    nodes = node_times.get("nodes")
+    if not isinstance(nodes, dict) or not nodes:
+        return node_times
+    if not isinstance(prompt_graph, dict) or not prompt_graph:
+        return node_times
+
+    class_totals: dict[str, float] = {}
+    bucket_totals: dict[str, float] = {}
+    for node_id, rec in nodes.items():
+        if not isinstance(rec, dict):
+            continue
+        node = prompt_graph.get(str(node_id)) if isinstance(prompt_graph.get(str(node_id)), dict) else {}
+        class_type = str((node or {}).get("class_type") or "").strip()
+        if class_type:
+            rec["class_type"] = class_type
+        sec = rec.get("sec")
+        if not isinstance(sec, (int, float)):
+            continue
+        if class_type:
+            class_totals[class_type] = class_totals.get(class_type, 0.0) + float(sec)
+        bucket = _workflow_part_bucket(class_type)
+        bucket_totals[bucket] = bucket_totals.get(bucket, 0.0) + float(sec)
+
+    if class_totals:
+        node_times["class_type_totals"] = {
+            k: {"sec": round(v, 3)}
+            for k, v in sorted(class_totals.items(), key=lambda kv: kv[1], reverse=True)
+        }
+    if bucket_totals:
+        node_times["workflow_part_totals"] = {
+            k: {"sec": round(v, 3)}
+            for k, v in sorted(bucket_totals.items(), key=lambda kv: kv[1], reverse=True)
+        }
+    return node_times
+
+
+def _attach_host_snapshot(
+    timings: dict[str, Any],
+    *,
+    status: str,
+    now_ts: float,
+    queue: dict[str, Any],
+    execution: dict[str, Any],
+) -> None:
+    host = timings.setdefault("host", {})
+    if not isinstance(host, dict):
+        host = {}
+        timings["host"] = host
+    snaps = host.get("snapshots")
+    if not isinstance(snaps, list):
+        snaps = []
+        host["snapshots"] = snaps
+    snap = capture_host_snapshot(now_ts)
+    snap["status"] = str(status or "")
+    snaps.append(snap)
+    if len(snaps) > 24:
+        del snaps[:-24]
+
+    phases = host.get("phase_snapshots")
+    if not isinstance(phases, dict):
+        phases = {}
+        host["phase_snapshots"] = phases
+    phases["latest"] = snap
+    if status == "running":
+        phases.setdefault("running_first_seen", snap)
+    if status in {"complete", "error", "interrupted"}:
+        phases["terminal"] = snap
+
+    # Summarize host behavior over this job's active window when possible.
+    start = phases.get("running_first_seen") if isinstance(phases.get("running_first_seen"), dict) else None
+    end = phases.get("terminal") if isinstance(phases.get("terminal"), dict) else snap
+    if not isinstance(start, dict) or not isinstance(end, dict):
+        return
+    start_ts = start.get("ts")
+    end_ts = end.get("ts")
+    if not isinstance(start_ts, (int, float)) or not isinstance(end_ts, (int, float)):
+        return
+    if float(end_ts) <= float(start_ts):
+        return
+    cpu = summarize_cpu_window(
+        start.get("cpu") if isinstance(start.get("cpu"), dict) else {},
+        end.get("cpu") if isinstance(end.get("cpu"), dict) else {},
+    )
+    vm_start = start.get("vmstat") if isinstance(start.get("vmstat"), dict) else {}
+    vm_end = end.get("vmstat") if isinstance(end.get("vmstat"), dict) else {}
+    vm_delta: dict[str, int] = {}
+    for key in ("pgmajfault", "pswpin", "pswpout"):
+        a = vm_start.get(key)
+        b = vm_end.get(key)
+        if isinstance(a, int) and isinstance(b, int):
+            vm_delta[key] = max(0, int(b) - int(a))
+    host["window"] = {
+        "start_ts": float(start_ts),
+        "end_ts": float(end_ts),
+        "sec": round(float(end_ts) - float(start_ts), 3),
+        "cpu_pct": cpu,
+        "vm_delta": vm_delta,
+        "mem_kb_start": start.get("mem_kb") if isinstance(start.get("mem_kb"), dict) else {},
+        "mem_kb_end": end.get("mem_kb") if isinstance(end.get("mem_kb"), dict) else {},
+        "pressure_end": end.get("pressure") if isinstance(end.get("pressure"), dict) else {},
+    }
 
 
 from comfy_model_io_logs import (  # noqa: E402
@@ -5713,6 +5909,130 @@ def update_pending_job_vhs_window(
     }
 
 
+def update_pending_job_binding_path(
+    *,
+    data_root: Path,
+    slot: str,
+    binding_path: str,
+    job_key: Optional[str] = None,
+    job_path: Optional[Path] = None,
+    server: str = "",
+) -> dict[str, Any]:
+    """
+    Patch one slot binding path on a pre-Comfy factory job.
+
+    This unlocks still/image edit-in-place flows where VHS trim is not applicable
+    (e.g. swapping ``source_still`` or ``prompt_profile`` on pending/editing jobs).
+    """
+    data_root = Path(data_root).expanduser().resolve()
+    job_file: Optional[Path] = None
+    job: Optional[dict[str, Any]] = None
+
+    if job_path is not None:
+        jp = Path(job_path).expanduser()
+        if jp.is_file():
+            try:
+                loaded = json.loads(jp.read_text(encoding="utf-8"))
+            except Exception:
+                loaded = None
+            if isinstance(loaded, dict):
+                job_file, job = jp, loaded
+    if job is None and job_key:
+        job_file, job = find_job_by_key(data_root, str(job_key))
+    if job is None or job_file is None:
+        return {"ok": False, "error": "job_not_found", "job_key": job_key}
+
+    if hostify_job_paths(job):
+        atomic_write_json(job_file, job)
+
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    status = str(submit.get("status") or "").strip().lower()
+    pid = str(submit.get("prompt_id") or "").strip()
+    key = str(job.get("job_key") or job_file.stem.replace(".job", ""))
+
+    if status_is_on_comfy(status, pid) or not status_is_pending_editable(status):
+        return {
+            "ok": False,
+            "error": "not_pending",
+            "job_key": key,
+            "status": status or "unknown",
+            "prompt_id": pid or None,
+            "detail": "Unqueue first — only pending/editing (pre-Comfy) jobs can be binding-edited.",
+        }
+
+    if pid and server:
+        try:
+            running_ids, pending_ids = queue_prompt_id_buckets(str(server).rstrip("/"), timeout_s=10)
+        except Exception:
+            running_ids, pending_ids = set(), set()
+        if pid in running_ids or pid in pending_ids:
+            return {
+                "ok": False,
+                "error": "still_on_comfy",
+                "job_key": key,
+                "prompt_id": pid,
+                "detail": "Prompt is still on Comfy; Unqueue first.",
+            }
+
+    slot_s = str(slot or "").strip()
+    if not slot_s:
+        return {"ok": False, "error": "missing_slot", "job_key": key}
+    raw_path = str(binding_path or "").strip()
+    if not raw_path:
+        return {"ok": False, "error": "missing_binding_path", "job_key": key, "slot": slot_s}
+
+    bindings = job.get("bindings") if isinstance(job.get("bindings"), dict) else {}
+    if not isinstance(bindings.get(slot_s), dict):
+        return {
+            "ok": False,
+            "error": "unknown_binding_slot",
+            "job_key": key,
+            "slot": slot_s,
+            "known_slots": sorted(str(s) for s in bindings.keys()),
+        }
+
+    try:
+        asset_path = resolve_job_asset_path(raw_path, data_root=data_root)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": "binding_asset_missing",
+            "job_key": key,
+            "slot": slot_s,
+            "detail": str(exc),
+        }
+
+    meta = bindings.get(slot_s) if isinstance(bindings.get(slot_s), dict) else {}
+    meta["path"] = str(asset_path)
+    bindings[slot_s] = meta
+    job["bindings"] = bindings
+
+    # Ensure submit rebuild uses fresh prompt from the updated bindings.
+    prompt_candidates = [job_file.with_name(job_file.stem.replace(".job", "") + ".prompt.json")]
+    submit_prompt = str(submit.get("prompt_path") or "").strip()
+    if submit_prompt:
+        prompt_candidates.append(Path(submit_prompt).expanduser())
+    prompt_cleared = False
+    for p in prompt_candidates:
+        try:
+            if p.is_file():
+                p.unlink()
+                prompt_cleared = True
+        except Exception:
+            continue
+
+    atomic_write_json(job_file, job)
+    return {
+        "ok": True,
+        "job_key": key,
+        "job_path": str(job_file),
+        "slot": slot_s,
+        "path": str(asset_path),
+        "prompt_cleared": prompt_cleared,
+        "status": status or "pending",
+    }
+
+
 def zero_vhs_load_window_on_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
     """Clear fossilized catalog skip/cap on VHS_LoadVideoPath nodes (full-file default)."""
     return apply_dev_tuning_ui(
@@ -7383,6 +7703,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_job_output_index_subparser(sub)
     add_seed_sources_subparser(sub)
     add_backfill_subparser(sub)
+    add_hygiene_subparser(sub)
 
     return parser
 

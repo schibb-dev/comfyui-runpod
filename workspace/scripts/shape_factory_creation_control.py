@@ -79,6 +79,8 @@ def mutate_job(
     frame_load_cap: Optional[int] = None,
     mark_in: Optional[float] = None,
     mark_out: Optional[float] = None,
+    slot: Optional[str] = None,
+    binding_path: Optional[str] = None,
 ) -> dict[str, Any]:
     """Mutate/edit an existing flow job using one canonical control entrypoint."""
     import shape_factory as sf
@@ -143,6 +145,27 @@ def mutate_job(
             frame_load_cap=int(frame_load_cap or 0),
             mark_in=mark_in,
             mark_out=mark_out,
+            server=server,
+            job_key=job_key,
+            job_path=job_path,
+        )
+        out["control"] = control
+        _append_control_event(
+            data_root=root,
+            action=act,
+            job_key=job_key or str(out.get("job_key") or "").strip() or None,
+            job_path=job_path,
+            actor=actor,
+            source_surface=source_surface,
+            reason=reason,
+            ok=bool(out.get("ok")),
+        )
+        return out
+    if act == "update_binding":
+        out = sf.update_pending_job_binding_path(
+            data_root=root,
+            slot=str(slot or ""),
+            binding_path=str(binding_path or ""),
             server=server,
             job_key=job_key,
             job_path=job_path,

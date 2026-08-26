@@ -47,6 +47,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+_HERE = Path(__file__).resolve()
+for _cand in (_HERE.parent, _HERE.parents[1] / "workspace" / "scripts"):
+    try:
+        if _cand.is_dir() and str(_cand) not in sys.path:
+            sys.path.insert(0, str(_cand))
+    except Exception:
+        continue
+from http_retry import http_json_with_retry, http_text_with_retry, urlopen_read_with_retry
+
 
 def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
@@ -58,17 +67,60 @@ def _http_json(
     body: Optional[Dict[str, Any]] = None,
     *,
     timeout_s: int = 10,
+    retry_attempts: Optional[int] = None,
+    retry_backoff_s: float = 0.25,
 ) -> Any:
-    method = (method or "GET").upper().strip()
+    return http_json_with_retry(
+        method=method,
+        url=url,
+        payload=body,
+        timeout_s=timeout_s,
+        retry_attempts=retry_attempts,
+        retry_backoff_s=retry_backoff_s,
+    )
+
+
+def _http_text(
+    url: str,
+    *,
+    timeout_s: int = 10,
+    accept: str = "text/plain, */*",
+    retry_attempts: int = 3,
+    retry_backoff_s: float = 0.25,
+) -> str:
+    return http_text_with_retry(
+        url=url,
+        timeout_s=timeout_s,
+        retry_attempts=retry_attempts,
+        retry_backoff_s=retry_backoff_s,
+        accept=accept,
+    )
+
+
+def _http_void(
+    method: str,
+    url: str,
+    body: Optional[Dict[str, Any]] = None,
+    *,
+    timeout_s: int = 10,
+    retry_attempts: Optional[int] = None,
+    retry_backoff_s: float = 0.25,
+) -> None:
+    """HTTP call where response body shape is irrelevant."""
     data = None
-    headers = {"Accept": "application/json"}
+    headers: Dict[str, str] = {}
     if body is not None:
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-        raw = resp.read()
-    return json.loads(raw.decode("utf-8", "replace"))
+    urlopen_read_with_retry(
+        method=method,
+        url=url,
+        data=data,
+        headers=headers,
+        timeout_s=timeout_s,
+        retry_attempts=retry_attempts,
+        retry_backoff_s=retry_backoff_s,
+    )
 
 
 def _comfy_submit_prompt(
@@ -1903,10 +1955,7 @@ def _hourly_schedule_payload(cfg: ServerConfig) -> Dict[str, Any]:
     waiting = None
     running = None
     try:
-        import urllib.request
-
-        with urllib.request.urlopen(f"{str(cfg.comfy_server).rstrip('/')}/queue", timeout=4) as resp:
-            q = json.loads(resp.read().decode("utf-8"))
+        q = _http_json("GET", f"{str(cfg.comfy_server).rstrip('/')}/queue", timeout_s=4)
         waiting = len(q.get("queue_pending") or [])
         running = len(q.get("queue_running") or [])
     except Exception:
@@ -2313,6 +2362,14 @@ def _shape_factory_discard_payload(cfg: ServerConfig, body: Dict[str, Any]) -> D
         and (prompt_id or job_key)
     ):
         return _dismiss()
+    # Hard-delete should also suppress recent Comfy history stubs for the same
+    # prompt/job key, otherwise the row may reappear from /history synthesis.
+    if isinstance(result, dict) and result.get("ok") and expunge and (prompt_id or job_key):
+        dismissed = _dismiss()
+        if isinstance(dismissed, dict) and dismissed.get("ok"):
+            result = dict(result)
+            result["history_dismissed"] = bool(dismissed.get("dismissed"))
+            result["dismissals_path"] = dismissed.get("dismissals_path")
     return result
 
 
@@ -2362,6 +2419,42 @@ def _shape_factory_update_pending_trim_payload(cfg: ServerConfig, body: Dict[str
         mark_in=mark_in_f,
         mark_out=mark_out_f,
         server=str(cfg.comfy_server),
+        actor=actor,
+        reason=reason,
+        source_surface=source_surface,
+    )
+
+
+def _shape_factory_update_pending_binding_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /api/shape-factory/update-pending-binding — patch one binding on a pending/editing job."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_creation_control import mutate_job  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    job_key = str(body.get("job_key") or "").strip() or None
+    job_path_raw = str(body.get("job_path") or "").strip() or None
+    slot = str(body.get("slot") or "").strip()
+    binding_path = str(body.get("path") or body.get("binding_path") or "").strip()
+    if not job_key and not job_path_raw:
+        raise ValueError("missing_job_key")
+    if not slot:
+        raise ValueError("missing_slot")
+    if not binding_path:
+        raise ValueError("missing_binding_path")
+    actor = str(body.get("actor") or "operator").strip() or "operator"
+    reason = str(body.get("reason") or "binding_adjustment").strip() or "binding_adjustment"
+    source_surface = str(body.get("source_surface") or "submit_edit").strip() or "submit_edit"
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    return mutate_job(
+        action="update_binding",
+        data_root=data_root,
+        job_key=job_key,
+        job_path=Path(job_path_raw) if job_path_raw else None,
+        server=str(cfg.comfy_server),
+        slot=slot,
+        binding_path=binding_path,
         actor=actor,
         reason=reason,
         source_surface=source_surface,
@@ -2753,11 +2846,589 @@ def _shape_factory_families_payload(cfg: ServerConfig) -> Dict[str, Any]:
     from shape_factory_work_products import list_submit_family_sets  # type: ignore
 
     data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
-    return list_submit_family_sets(
+    payload = list_submit_family_sets(
         data_root,
         workspace_root=cfg.workspace_root,
         output_root=cfg.output_root,
     )
+    promo_path = _shape_factory_template_promotions_path(cfg, data_root)
+    legacy_path = _shape_factory_template_promotions_legacy_path(data_root)
+    reg = _shape_factory_template_promotions_load(promo_path, fallback_paths=[legacy_path])
+    payload = _shape_factory_apply_promotions_to_family_sets(payload, reg.get("entries"))
+    payload["template_promotions"] = {
+        "effective": _shape_factory_template_promotions_effective(reg.get("entries")),
+        "path": str(promo_path),
+    }
+    return payload
+
+
+def _shape_factory_template_promotions_legacy_path(data_root: Path) -> Path:
+    return data_root / "_status" / "template_promotions.json"
+
+
+def _shape_factory_template_promotions_path(cfg: ServerConfig, data_root: Path) -> Path:
+    # Prefer queue-ledger status dir: writable in runpod containers where /.data may be RO.
+    status_dir = Path(cfg.queue_ledger_state_path).expanduser().resolve().parent
+    return status_dir / "template_promotions.json"
+
+
+def _shape_factory_template_promotions_load(path: Path, *, fallback_paths: Optional[List[Path]] = None) -> Dict[str, Any]:
+    candidates = [path]
+    for p in fallback_paths or []:
+        if p not in candidates:
+            candidates.append(p)
+    raw: Any = {}
+    for cand in candidates:
+        try:
+            raw = _read_json(cand)
+            break
+        except Exception:
+            raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    entries = raw.get("entries")
+    if not isinstance(entries, list):
+        entries = []
+    out: List[Dict[str, Any]] = []
+    for ent in entries:
+        if not isinstance(ent, dict):
+            continue
+        slug = str(ent.get("family_slug") or "").strip()
+        if not slug:
+            continue
+        intent = str(ent.get("intent") or "extend").strip().lower() or "extend"
+        if intent not in {"extend", "vary", "derive"}:
+            continue
+        scope = str(ent.get("scope") or ent.get("mode") or "long_term").strip().lower()
+        if scope in {"permanent", "longterm"}:
+            scope = "long_term"
+        if scope not in {"temporary", "long_term"}:
+            scope = "long_term"
+        rec: Dict[str, Any] = {
+            "family_slug": slug,
+            "intent": intent,
+            "scope": scope,
+            "note": str(ent.get("note") or "").strip() or None,
+            "actor": str(ent.get("actor") or "").strip() or None,
+            "created_at": str(ent.get("created_at") or "").strip() or None,
+            "starts_at": str(ent.get("starts_at") or "").strip() or None,
+            "expires_at": str(ent.get("expires_at") or "").strip() or None,
+        }
+        out.append(rec)
+    return {"schema_version": "v1", "entries": out}
+
+
+def _shape_factory_template_promotions_save(path: Path, reg: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": "v1",
+        "entries": reg.get("entries") if isinstance(reg.get("entries"), list) else [],
+        "updated_at": _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _shape_factory_parse_iso_utc(iso: Optional[str]) -> Optional[_dt.datetime]:
+    s = str(iso or "").strip()
+    if not s:
+        return None
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = _dt.datetime.fromisoformat(s)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=_dt.timezone.utc)
+    return dt.astimezone(_dt.timezone.utc)
+
+
+def _shape_factory_template_promotions_active(entries: Any, now: Optional[_dt.datetime] = None) -> List[Dict[str, Any]]:
+    now_utc = now or _dt.datetime.now(_dt.timezone.utc)
+    out: List[Dict[str, Any]] = []
+    if not isinstance(entries, list):
+        return out
+    for ent in entries:
+        if not isinstance(ent, dict):
+            continue
+        starts = _shape_factory_parse_iso_utc(ent.get("starts_at"))
+        expires = _shape_factory_parse_iso_utc(ent.get("expires_at"))
+        if starts and starts > now_utc:
+            continue
+        if expires and expires <= now_utc:
+            continue
+        out.append(ent)
+    return out
+
+
+def _shape_factory_template_promotions_effective(entries: Any) -> Dict[str, Dict[str, Any]]:
+    active = _shape_factory_template_promotions_active(entries)
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for ent in active:
+        slug = str(ent.get("family_slug") or "").strip()
+        if not slug:
+            continue
+        grouped.setdefault(slug, []).append(ent)
+    out: Dict[str, Dict[str, Any]] = {}
+    for slug, rows in grouped.items():
+        rows_sorted = sorted(
+            rows,
+            key=lambda r: (
+                1 if str(r.get("scope") or "") == "temporary" else 0,
+                str(r.get("created_at") or ""),
+            ),
+            reverse=True,
+        )
+        best = rows_sorted[0] if rows_sorted else {}
+        intents = sorted({str(r.get("intent") or "").strip() for r in rows if str(r.get("intent") or "").strip()})
+        out[slug] = {
+            "scope": best.get("scope") or "long_term",
+            "intents": intents,
+            "expires_at": best.get("expires_at"),
+            "note": best.get("note"),
+        }
+    return out
+
+
+def _shape_factory_apply_promotions_to_family_sets(payload: Dict[str, Any], entries: Any) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return payload
+    active = _shape_factory_template_promotions_active(entries)
+    effective = _shape_factory_template_promotions_effective(entries)
+    promoted_by_intent: Dict[str, List[str]] = {"extend": [], "vary": [], "derive": []}
+    for ent in sorted(
+        active,
+        key=lambda r: (
+            1 if str(r.get("scope") or "") == "temporary" else 0,
+            str(r.get("created_at") or ""),
+        ),
+        reverse=True,
+    ):
+        slug = str(ent.get("family_slug") or "").strip()
+        intent = str(ent.get("intent") or "").strip().lower()
+        if not slug or intent not in promoted_by_intent:
+            continue
+        if slug not in promoted_by_intent[intent]:
+            promoted_by_intent[intent].append(slug)
+
+    def _decorate(rows_in: Any) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        if not isinstance(rows_in, list):
+            return rows
+        for raw in rows_in:
+            if not isinstance(raw, dict):
+                continue
+            row = dict(raw)
+            slug = str(row.get("slug") or "").strip()
+            if slug and slug in effective:
+                row["promotion"] = dict(effective[slug])
+            rows.append(row)
+        return rows
+
+    def _sort_rows(rows: List[Dict[str, Any]], intent: str) -> List[Dict[str, Any]]:
+        rank: Dict[str, int] = {slug: i for i, slug in enumerate(promoted_by_intent.get(intent, []))}
+        return sorted(
+            rows,
+            key=lambda r: (
+                rank.get(str(r.get("slug") or "").strip(), 10_000),
+                str(r.get("slug") or ""),
+            ),
+        )
+
+    families = _decorate(payload.get("families"))
+    payload["families"] = families
+    sets = payload.get("sets")
+    if not isinstance(sets, dict):
+        sets = {}
+    for intent in ("extend", "vary", "derive"):
+        decorated = _decorate(sets.get(intent) if isinstance(sets, dict) else None)
+        sets[intent] = _sort_rows(decorated or list(families), intent)
+    payload["sets"] = sets
+    payload["extend_families"] = sets.get("extend", families)
+    payload["vary_families"] = sets.get("vary", families)
+    payload["derive_families"] = sets.get("derive", families)
+    defaults = payload.get("extend_family_defaults")
+    defaults = dict(defaults) if isinstance(defaults, dict) else {}
+    if promoted_by_intent.get("extend"):
+        defaults["*"] = promoted_by_intent["extend"][0]
+    payload["extend_family_defaults"] = defaults
+    return payload
+
+
+def _shape_factory_template_promotions_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    include_expired = str((q.get("include_expired") or ["0"])[0]).strip().lower() in {"1", "true", "yes"}
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    path = _shape_factory_template_promotions_path(cfg, data_root)
+    legacy_path = _shape_factory_template_promotions_legacy_path(data_root)
+    reg = _shape_factory_template_promotions_load(path, fallback_paths=[legacy_path])
+    entries = reg.get("entries")
+    active = _shape_factory_template_promotions_active(entries)
+    return {
+        "ok": True,
+        "path": str(path),
+        "schema_version": "v1",
+        "entries": entries if include_expired else active,
+        "active_entries": active,
+        "effective": _shape_factory_template_promotions_effective(entries),
+    }
+
+
+def _shape_factory_input_curation_paths(cfg: ServerConfig, data_root: Path) -> Dict[str, Path]:
+    primary_root = data_root / "shape_factory"
+    fallback_root = _output_status_dir(cfg.output_root) / "shape_factory"
+    return {
+        "collections_primary": primary_root / "input_collections.json",
+        "bindings_primary": primary_root / "input_collection_bindings.json",
+        "collections_fallback": fallback_root / "input_collections.json",
+        "bindings_fallback": fallback_root / "input_collection_bindings.json",
+    }
+
+
+def _shape_factory_input_curation_state_payload(cfg: ServerConfig) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_input_curation import load_bindings, load_collections  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    paths = _shape_factory_input_curation_paths(cfg, data_root)
+    collections = load_collections(data_root, fallback_paths=[paths["collections_fallback"]])
+    bindings = load_bindings(data_root, fallback_paths=[paths["bindings_fallback"]])
+    return {
+        "ok": True,
+        "schema_version": "v1",
+        "data_root": str(data_root),
+        "paths": {k: str(v) for k, v in paths.items()},
+        "collections": collections.get("collections") or [],
+        "bindings": (bindings.get("families") or {}) if isinstance(bindings.get("families"), dict) else {},
+        "updated_at": max(
+            str(collections.get("updated_at") or ""),
+            str(bindings.get("updated_at") or ""),
+        )
+        or None,
+    }
+
+
+def _shape_factory_input_curation_stills_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_input_curation import list_catalog_stills  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    limit = 200
+    offset = 0
+    for raw in q.get("limit", []):
+        n = _safe_int(raw)
+        if n is not None:
+            limit = max(1, min(2000, int(n)))
+            break
+    for raw in q.get("offset", []):
+        n = _safe_int(raw)
+        if n is not None:
+            offset = max(0, int(n))
+            break
+    qtext = str((q.get("q") or [""])[0] or "").strip()
+    scan = str((q.get("scan") or ["0"])[0]).strip().lower() in {"1", "true", "yes"}
+    payload = list_catalog_stills(data_root=data_root, q=qtext, limit=limit, offset=offset, scan=scan)
+    payload["data_root"] = str(data_root)
+    return payload
+
+
+def _shape_factory_input_curation_collections_mutate_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_input_curation import (  # type: ignore
+        choose_writable_path,
+        load_collections,
+        save_collections,
+    )
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    paths = _shape_factory_input_curation_paths(cfg, data_root)
+    write_path = choose_writable_path(paths["collections_primary"], [paths["collections_fallback"]])
+    doc = load_collections(data_root, fallback_paths=[paths["collections_fallback"]])
+    op = str(body.get("op") or "").strip().lower()
+    collection_id = str(body.get("collection_id") or body.get("id") or "").strip()
+    now = _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    rows = doc.get("collections") if isinstance(doc.get("collections"), list) else []
+    by_id = {
+        str(row.get("id") or "").strip(): row
+        for row in rows
+        if isinstance(row, dict) and str(row.get("id") or "").strip()
+    }
+
+    if op == "create":
+        name = str(body.get("name") or "").strip()
+        if not name:
+            raise ValueError("missing_name")
+        if not collection_id:
+            collection_id = _slug(name).lower() or f"collection-{len(by_id)+1}"
+        if collection_id in by_id:
+            raise ValueError("collection_exists")
+        rec = {
+            "id": collection_id,
+            "name": name,
+            "description": str(body.get("description") or "").strip() or None,
+            "created_at": now,
+            "updated_at": now,
+            "items": [],
+        }
+        rows.append(rec)
+        doc["collections"] = rows
+    elif op == "rename":
+        if not collection_id or collection_id not in by_id:
+            raise ValueError("collection_not_found")
+        name = str(body.get("name") or "").strip()
+        if not name:
+            raise ValueError("missing_name")
+        by_id[collection_id]["name"] = name
+        by_id[collection_id]["updated_at"] = now
+    elif op == "delete":
+        if not collection_id:
+            raise ValueError("missing_collection_id")
+        rows = [row for row in rows if not (isinstance(row, dict) and str(row.get("id") or "").strip() == collection_id)]
+        doc["collections"] = rows
+    elif op == "add_item":
+        if not collection_id or collection_id not in by_id:
+            raise ValueError("collection_not_found")
+        path = str(body.get("path") or "").strip()
+        if not path:
+            raise ValueError("missing_path")
+        items = by_id[collection_id].get("items") if isinstance(by_id[collection_id].get("items"), list) else []
+        if not any(isinstance(it, dict) and str(it.get("path") or "").strip() == path for it in items):
+            items.append(
+                {
+                    "path": path,
+                    "added_at": now,
+                    "note": str(body.get("note") or "").strip() or None,
+                }
+            )
+            by_id[collection_id]["updated_at"] = now
+        by_id[collection_id]["items"] = items
+    elif op == "remove_item":
+        if not collection_id or collection_id not in by_id:
+            raise ValueError("collection_not_found")
+        path = str(body.get("path") or "").strip()
+        if not path:
+            raise ValueError("missing_path")
+        items = by_id[collection_id].get("items") if isinstance(by_id[collection_id].get("items"), list) else []
+        by_id[collection_id]["items"] = [
+            it for it in items if not (isinstance(it, dict) and str(it.get("path") or "").strip() == path)
+        ]
+        by_id[collection_id]["updated_at"] = now
+    else:
+        raise ValueError("bad_op")
+
+    saved = save_collections(write_path, doc)
+    return {
+        "ok": True,
+        "path": str(write_path),
+        "collections": saved.get("collections") or [],
+        "updated_at": saved.get("updated_at"),
+    }
+
+
+def _shape_factory_input_curation_bindings_mutate_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_input_curation import (  # type: ignore
+        choose_writable_path,
+        load_bindings,
+        save_bindings,
+    )
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    paths = _shape_factory_input_curation_paths(cfg, data_root)
+    write_path = choose_writable_path(paths["bindings_primary"], [paths["bindings_fallback"]])
+    doc = load_bindings(data_root, fallback_paths=[paths["bindings_fallback"]])
+    families = doc.get("families") if isinstance(doc.get("families"), dict) else {}
+    doc["families"] = families
+    op = str(body.get("op") or "").strip().lower()
+    family_slug = str(body.get("family_slug") or "").strip()
+    collection_id = str(body.get("collection_id") or "").strip()
+    if not family_slug:
+        raise ValueError("missing_family_slug")
+    current = [str(v) for v in (families.get(family_slug) or []) if str(v).strip()]
+    if op == "attach":
+        if not collection_id:
+            raise ValueError("missing_collection_id")
+        if collection_id not in current:
+            current.append(collection_id)
+    elif op == "detach":
+        if not collection_id:
+            raise ValueError("missing_collection_id")
+        current = [v for v in current if v != collection_id]
+    elif op == "set":
+        raw = body.get("collection_ids") if isinstance(body.get("collection_ids"), list) else []
+        current = [str(v).strip() for v in raw if str(v).strip()]
+    else:
+        raise ValueError("bad_op")
+    families[family_slug] = current
+    saved = save_bindings(write_path, doc)
+    return {
+        "ok": True,
+        "path": str(write_path),
+        "family_slug": family_slug,
+        "collection_ids": current,
+        "bindings": saved.get("families") if isinstance(saved.get("families"), dict) else {},
+        "updated_at": saved.get("updated_at"),
+    }
+
+
+def _shape_factory_input_curation_effective_sources_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory import load_yaml, resolve_pool_members  # type: ignore
+    from shape_factory_input_curation import merged_source_stills  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    family_slug = str((q.get("family_slug") or [""])[0] or "").strip()
+    if not family_slug:
+        raise ValueError("missing_family_slug")
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    shape_path = data_root / "shapes" / f"{family_slug}.shape.yaml"
+    pools_path = data_root / "pools" / family_slug / "pools.yaml"
+    if not shape_path.is_file():
+        raise FileNotFoundError(f"shape missing: {shape_path}")
+    if not pools_path.is_file():
+        raise FileNotFoundError(f"pools missing: {pools_path}")
+
+    shape = load_yaml(shape_path)
+    reqs = shape.get("requires") if isinstance(shape.get("requires"), list) else []
+    source_required = any(
+        isinstance(req, dict) and str(req.get("slot") or "").strip() == "source_still" for req in reqs
+    )
+    pools_doc = load_yaml(pools_path)
+    pools = pools_doc.get("pools") if isinstance(pools_doc.get("pools"), dict) else {}
+    pool_def = pools.get("source_still")
+    if not isinstance(pool_def, dict):
+        for _name, cand in pools.items():
+            if isinstance(cand, dict) and str(cand.get("slot") or "").strip() == "source_still":
+                pool_def = cand
+                break
+    base_members = resolve_pool_members(pool_def) if isinstance(pool_def, dict) else []
+    merged = merged_source_stills(
+        family_slug=family_slug,
+        base_members=base_members,
+        data_root=data_root,
+        workspace_root=cfg.workspace_root,
+        output_root=cfg.output_root,
+    )
+    members = [str(p) for p in (merged.get("members") or [])]
+    lim = 200
+    for raw in q.get("limit", []):
+        n = _safe_int(raw)
+        if n is not None:
+            lim = max(1, min(2000, int(n)))
+            break
+    return {
+        "ok": True,
+        "family_slug": family_slug,
+        "source_still_required": source_required,
+        "pool_count": len(base_members),
+        "effective_count": len(members),
+        "added_count": int(merged.get("added_count") or 0),
+        "deduped_count": int(merged.get("deduped_count") or 0),
+        "missing_count": int(merged.get("missing_count") or 0),
+        "attached_collection_ids": merged.get("attached_collection_ids") or [],
+        "items": [{"path": p, "basename": Path(p).name} for p in members[:lim]],
+    }
+
+
+def _shape_factory_template_promotions_set_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    family_slug = str(body.get("family_slug") or "").strip()
+    if not family_slug:
+        raise ValueError("family_slug is required")
+    intents_raw = body.get("intents")
+    if isinstance(intents_raw, list):
+        intents = [str(x).strip().lower() for x in intents_raw if str(x).strip()]
+    else:
+        single = str(body.get("intent") or "extend").strip().lower()
+        intents = [single] if single else ["extend"]
+    intents = [x for x in intents if x in {"extend", "vary", "derive"}]
+    if not intents:
+        raise ValueError("at least one valid intent is required (extend|vary|derive)")
+    scope = str(body.get("scope") or body.get("mode") or "long_term").strip().lower()
+    if scope in {"permanent", "longterm"}:
+        scope = "long_term"
+    if scope not in {"temporary", "long_term"}:
+        raise ValueError("scope must be temporary or long_term")
+    enabled = bool(body.get("enabled", True))
+    actor = str(body.get("actor") or "operator").strip() or "operator"
+    note = str(body.get("note") or "").strip()
+    now = _dt.datetime.now(_dt.timezone.utc)
+    now_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    path = _shape_factory_template_promotions_path(cfg, data_root)
+    legacy_path = _shape_factory_template_promotions_legacy_path(data_root)
+    reg = _shape_factory_template_promotions_load(path, fallback_paths=[legacy_path])
+    entries = reg.get("entries")
+    if not isinstance(entries, list):
+        entries = []
+    kept: List[Dict[str, Any]] = []
+    for ent in entries:
+        if not isinstance(ent, dict):
+            continue
+        same_slug = str(ent.get("family_slug") or "").strip() == family_slug
+        same_scope = str(ent.get("scope") or "").strip() == scope
+        same_intent = str(ent.get("intent") or "").strip() in intents
+        if same_slug and same_scope and same_intent:
+            continue
+        kept.append(ent)
+    entries = kept
+
+    if enabled:
+        starts_at = now_iso
+        expires_at = None
+        if scope == "temporary":
+            ttl_hours = body.get("ttl_hours")
+            if ttl_hours is None or ttl_hours == "":
+                ttl = 6.0
+            else:
+                ttl = float(ttl_hours)
+            ttl = max(0.25, min(ttl, 24.0 * 14.0))
+            expires_at = (now + _dt.timedelta(hours=ttl)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for intent in intents:
+            entries.append(
+                {
+                    "family_slug": family_slug,
+                    "intent": intent,
+                    "scope": scope,
+                    "note": note or None,
+                    "actor": actor,
+                    "created_at": now_iso,
+                    "starts_at": starts_at,
+                    "expires_at": expires_at,
+                }
+            )
+
+    reg["entries"] = entries
+    _shape_factory_template_promotions_save(path, reg)
+    return {
+        "ok": True,
+        "path": str(path),
+        "entries": _shape_factory_template_promotions_active(entries),
+        "effective": _shape_factory_template_promotions_effective(entries),
+    }
 
 
 def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
@@ -8512,6 +9183,42 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return _json_response(self, 500, {"ok": False, "error": "quarantine_list_failed", "detail": str(e)})
 
+        if path == "/api/shape-factory/template-promotions":
+            try:
+                payload = _shape_factory_template_promotions_payload(cfg, q)
+                return _json_response(self, 200, payload)
+            except Exception as e:
+                return _json_response(
+                    self, 500, {"ok": False, "error": "template_promotions_list_failed", "detail": str(e)}
+                )
+
+        if path == "/api/shape-factory/input-curation/stills":
+            try:
+                payload = _shape_factory_input_curation_stills_payload(cfg, q)
+                return _json_response(self, 200, payload)
+            except Exception as e:
+                return _json_response(self, 500, {"ok": False, "error": "input_curation_stills_failed", "detail": str(e)})
+
+        if path == "/api/shape-factory/input-curation/state":
+            try:
+                payload = _shape_factory_input_curation_state_payload(cfg)
+                return _json_response(self, 200, payload)
+            except Exception as e:
+                return _json_response(self, 500, {"ok": False, "error": "input_curation_state_failed", "detail": str(e)})
+
+        if path == "/api/shape-factory/input-curation/effective-sources":
+            try:
+                payload = _shape_factory_input_curation_effective_sources_payload(cfg, q)
+                return _json_response(self, 200, payload)
+            except ValueError as e:
+                return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+            except FileNotFoundError as e:
+                return _json_response(self, 404, {"ok": False, "error": "not_found", "detail": str(e)})
+            except Exception as e:
+                return _json_response(
+                    self, 500, {"ok": False, "error": "input_curation_effective_sources_failed", "detail": str(e)}
+                )
+
         if path == "/api/vision/slice-captions":
             try:
                 payload = _vision_slice_captions_payload(cfg)
@@ -8699,6 +9406,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_requeue_run()
         if path == "/api/queue/submit-prompt":
             return self._handle_queue_submit_prompt()
+        if path == "/api/queue/move-prompt":
+            return self._handle_queue_move_prompt()
         if path == "/api/queue/comfy-cancel":
             return self._handle_comfy_cancel()
         if path == "/api/queue/comfy-clear":
@@ -8759,10 +9468,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_shape_factory_discard_post()
         if path == "/api/shape-factory/update-pending-trim":
             return self._handle_shape_factory_update_pending_trim_post()
+        if path == "/api/shape-factory/update-pending-binding":
+            return self._handle_shape_factory_update_pending_binding_post()
         if path == "/api/shape-factory/clips":
             return self._handle_shape_factory_clips_post()
         if path == "/api/shape-factory/quarantine/release":
             return self._handle_shape_factory_quarantine_release_post()
+        if path == "/api/shape-factory/template-promotions/set":
+            return self._handle_shape_factory_template_promotions_set_post()
+        if path == "/api/shape-factory/input-curation/collections":
+            return self._handle_shape_factory_input_curation_collections_post()
+        if path == "/api/shape-factory/input-curation/bindings":
+            return self._handle_shape_factory_input_curation_bindings_post()
         if path == "/api/shape-factory/hourly-schedule":
             return self._handle_shape_factory_hourly_schedule_post()
         if path == "/api/vision/tag-judgment":
@@ -8798,6 +9515,62 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, 404, {"ok": False, "error": "not_found", "detail": str(e)})
         except Exception as e:
             return _json_response(self, 500, {"ok": False, "error": "quarantine_release_failed", "detail": str(e)})
+        return _json_response(self, 200, payload)
+
+    def _handle_shape_factory_template_promotions_set_post(self) -> None:
+        """POST /api/shape-factory/template-promotions/set — temporary or long-term template promotion."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        if not isinstance(body, dict):
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": "JSON object required"})
+        try:
+            payload = _shape_factory_template_promotions_set_payload(cfg, body)
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except Exception as e:
+            return _json_response(
+                self,
+                500,
+                {"ok": False, "error": "template_promotions_set_failed", "detail": str(e)},
+            )
+        return _json_response(self, 200, payload)
+
+    def _handle_shape_factory_input_curation_collections_post(self) -> None:
+        """POST /api/shape-factory/input-curation/collections — CRUD collections and items."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        if not isinstance(body, dict):
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": "JSON object required"})
+        try:
+            payload = _shape_factory_input_curation_collections_mutate_payload(cfg, body)
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except Exception as e:
+            return _json_response(
+                self,
+                500,
+                {"ok": False, "error": "input_curation_collections_failed", "detail": str(e)},
+            )
+        return _json_response(self, 200, payload)
+
+    def _handle_shape_factory_input_curation_bindings_post(self) -> None:
+        """POST /api/shape-factory/input-curation/bindings — attach/detach collections per family."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        if not isinstance(body, dict):
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": "JSON object required"})
+        try:
+            payload = _shape_factory_input_curation_bindings_mutate_payload(cfg, body)
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "input_curation_bindings_failed", "detail": str(e)})
         return _json_response(self, 200, payload)
 
     def _handle_vision_tag_judgment_post(self) -> None:
@@ -8946,6 +9719,27 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return _json_response(
                 self, 500, {"ok": False, "error": "shape_factory_update_pending_trim_failed", "detail": str(e)}
+            )
+        if payload.get("error") in {"not_pending", "still_on_comfy"}:
+            return _json_response(self, 409, payload)
+        if payload.get("error") == "job_not_found":
+            return _json_response(self, 404, payload)
+        code = 200 if payload.get("ok", True) else 400
+        return _json_response(self, code, payload)
+
+    def _handle_shape_factory_update_pending_binding_post(self) -> None:
+        """POST /api/shape-factory/update-pending-binding — patch one binding on a pending/editing job."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _shape_factory_update_pending_binding_payload(cfg, body)
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except Exception as e:
+            return _json_response(
+                self, 500, {"ok": False, "error": "shape_factory_update_pending_binding_failed", "detail": str(e)}
             )
         if payload.get("error") in {"not_pending", "still_on_comfy"}:
             return _json_response(self, 409, payload)
@@ -10006,9 +10800,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             # Fallback: plain text blob from /internal/logs
             try:
-                req = urllib.request.Request(f"{comfy}/internal/logs", headers={"Accept": "text/plain, */*"})
-                with urllib.request.urlopen(req, timeout=8) as resp:
-                    text = resp.read().decode("utf-8", "replace")
+                text = _http_text(f"{comfy}/internal/logs", timeout_s=8)
                 lines = text.splitlines()
                 if len(lines) > tail:
                     lines = lines[-tail:]
@@ -10802,6 +11594,168 @@ class Handler(BaseHTTPRequestHandler):
 
         return _json_response(self, 200, {"ok": True, "front": front, "client_id": client_id, "submit": submit})
 
+    def _handle_queue_move_prompt(self) -> None:
+        """
+        POST /api/queue/move-prompt
+        Body: { "prompt_id": str, "to": "front"|"back", "client_id"?: str }
+
+        Best-effort safe move for waiting prompts:
+        1) capture prompt graph from current pending queue row,
+        2) delete prompt from pending queue,
+        3) verify it did not transition to running during move,
+        4) re-submit graph to requested position.
+        """
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        prompt_id = body.get("prompt_id")
+        if not isinstance(prompt_id, str) or not prompt_id.strip():
+            return _json_response(self, 400, {"ok": False, "error": "missing_prompt_id"})
+        prompt_id = prompt_id.strip()
+        to_raw = str(body.get("to") or "").strip().lower()
+        if to_raw not in {"front", "back"}:
+            return _json_response(self, 400, {"ok": False, "error": "bad_to", "expected": ["front", "back"]})
+        front = to_raw == "front"
+        raw_cid = body.get("client_id")
+        if raw_cid is not None and not isinstance(raw_cid, str):
+            return _json_response(self, 400, {"ok": False, "error": "bad_client_id"})
+        client_id = (raw_cid.strip() if isinstance(raw_cid, str) else "") or "experiments-ui"
+
+        comfy = str(cfg.comfy_server).rstrip("/")
+
+        def _queue_lists() -> Tuple[List[Any], List[Any]]:
+            qobj = _http_json("GET", f"{comfy}/queue", timeout_s=10)
+            if not isinstance(qobj, dict):
+                return [], []
+            pending = qobj.get("queue_pending")
+            running = qobj.get("queue_running")
+            return (pending if isinstance(pending, list) else [], running if isinstance(running, list) else [])
+
+        def _extract_prompt_obj(items: List[Any], pid: str) -> Optional[Dict[str, Any]]:
+            for it in items:
+                if not (isinstance(it, list) and len(it) >= 2 and isinstance(it[1], str) and it[1].strip() == pid):
+                    continue
+                if len(it) >= 3 and isinstance(it[2], dict):
+                    return it[2]
+            return None
+
+        def _has_pid(items: List[Any], pid: str) -> bool:
+            for it in items:
+                if isinstance(it, list) and len(it) >= 2 and isinstance(it[1], str) and it[1].strip() == pid:
+                    return True
+            return False
+
+        try:
+            pending_0, running_0 = _queue_lists()
+        except Exception as e:
+            return _json_response(
+                self,
+                502,
+                {"ok": False, "error": "comfy_queue_fetch_failed", "detail": str(e), "server": comfy},
+            )
+        if _has_pid(running_0, prompt_id):
+            return _json_response(
+                self,
+                409,
+                {"ok": False, "error": "prompt_already_running", "prompt_id": prompt_id, "detail": "Prompt already started running; cannot reorder pending queue item."},
+            )
+        prompt_obj = _extract_prompt_obj(pending_0, prompt_id)
+        if not isinstance(prompt_obj, dict):
+            return _json_response(
+                self,
+                409,
+                {
+                    "ok": False,
+                    "error": "prompt_not_pending_or_missing_graph",
+                    "prompt_id": prompt_id,
+                    "detail": "Prompt is not in pending queue (or no prompt graph available). Refresh queue and retry.",
+                },
+            )
+
+        try:
+            _http_void("POST", f"{comfy}/queue", {"delete": [prompt_id]}, timeout_s=10, retry_attempts=2)
+        except Exception as e:
+            return _json_response(self, 502, {"ok": False, "error": "comfy_cancel_failed", "detail": str(e), "server": comfy})
+
+        try:
+            pending_1, running_1 = _queue_lists()
+        except Exception as e:
+            return _json_response(
+                self,
+                502,
+                {"ok": False, "error": "comfy_queue_refetch_failed", "detail": str(e), "server": comfy},
+            )
+        if _has_pid(running_1, prompt_id):
+            return _json_response(
+                self,
+                409,
+                {
+                    "ok": False,
+                    "error": "prompt_became_running",
+                    "prompt_id": prompt_id,
+                    "detail": "Prompt moved from waiting to running while attempting reorder; left untouched.",
+                },
+            )
+        if _has_pid(pending_1, prompt_id):
+            # Fallback: one extra delete attempt in case of timing lag.
+            try:
+                _http_void("POST", f"{comfy}/queue", {"delete": [prompt_id]}, timeout_s=10, retry_attempts=2)
+            except Exception:
+                pass
+            try:
+                pending_2, running_2 = _queue_lists()
+            except Exception:
+                pending_2, running_2 = pending_1, running_1
+            if _has_pid(running_2, prompt_id):
+                return _json_response(
+                    self,
+                    409,
+                    {
+                        "ok": False,
+                        "error": "prompt_became_running",
+                        "prompt_id": prompt_id,
+                        "detail": "Prompt started running during reorder fallback; skipped re-submit to avoid duplicate run.",
+                    },
+                )
+            if _has_pid(pending_2, prompt_id):
+                return _json_response(
+                    self,
+                    409,
+                    {
+                        "ok": False,
+                        "error": "prompt_still_pending_after_delete",
+                        "prompt_id": prompt_id,
+                        "detail": "Prompt did not leave pending queue; skipping re-submit to avoid duplicates.",
+                    },
+                )
+
+        try:
+            submit = _comfy_submit_prompt(cfg.comfy_server, prompt_obj, front=front, client_id=client_id)
+        except Exception as e:
+            # Fallback: try to restore to back if the intended submit failed.
+            restored = False
+            try:
+                _comfy_submit_prompt(cfg.comfy_server, prompt_obj, front=False, client_id=client_id)
+                restored = True
+            except Exception:
+                restored = False
+            detail = f"{e}; restored_to_back={str(restored).lower()}"
+            return _json_response(
+                self,
+                502,
+                {
+                    "ok": False,
+                    "error": "comfy_submit_failed",
+                    "prompt_id": prompt_id,
+                    "to": to_raw,
+                    "detail": detail,
+                    "server": comfy,
+                },
+            )
+
+        return _json_response(self, 200, {"ok": True, "prompt_id": prompt_id, "to": to_raw, "moved": True, "submit": submit})
+
     def _handle_comfy_cancel(self) -> None:
         cfg = self.server.cfg
         body = self._read_request_json()
@@ -10818,9 +11772,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if kind == "running":
                 # ComfyUI interrupt cancels current execution (not a specific prompt_id).
-                res = _http_json("POST", f"{comfy}/interrupt", None, timeout_s=10)
+                _http_void("POST", f"{comfy}/interrupt", None, timeout_s=10, retry_attempts=2)
+                res = {"ok": True}
                 return _json_response(self, 200, {"ok": True, "kind": kind, "prompt_id": prompt_id, "result": res})
-            res = _http_json("POST", f"{comfy}/queue", {"delete": [prompt_id.strip()]}, timeout_s=10)
+            _http_void("POST", f"{comfy}/queue", {"delete": [prompt_id.strip()]}, timeout_s=10, retry_attempts=2)
+            res = {"ok": True}
             return _json_response(self, 200, {"ok": True, "kind": kind, "prompt_id": prompt_id, "result": res})
         except Exception as e:
             return _json_response(self, 502, {"error": "comfy_cancel_failed", "detail": str(e), "server": comfy})
@@ -10829,7 +11785,8 @@ class Handler(BaseHTTPRequestHandler):
         cfg = self.server.cfg
         comfy = str(cfg.comfy_server).rstrip("/")
         try:
-            res = _http_json("POST", f"{comfy}/queue", {"clear": True}, timeout_s=10)
+            _http_void("POST", f"{comfy}/queue", {"clear": True}, timeout_s=10, retry_attempts=2)
+            res = {"ok": True}
             return _json_response(self, 200, {"ok": True, "result": res})
         except Exception as e:
             return _json_response(self, 502, {"error": "comfy_clear_failed", "detail": str(e), "server": comfy})

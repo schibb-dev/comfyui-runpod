@@ -116,3 +116,9 @@ export function routeLabel(id: AppRouteId): string {
 export function routeHint(id: AppRouteId): string | undefined {
   return ROUTES_BY_ID[id]?.hint;
 }
+
+export function canHandleClientPath(pathname: string): boolean {
+  const p = pathname || "/";
+  if (p === "/") return true;
+  return MATCHERS.some((m) => m.id !== "home" && m.test(p));
+}

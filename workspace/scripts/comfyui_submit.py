@@ -10,8 +10,6 @@ from __future__ import annotations
 import json
 import re
 import sys
-import time
-import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -19,6 +17,7 @@ from typing import Any, Dict, Optional
 _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
+from http_retry import http_json_with_retry
 from output_path_lib import apply_queue_date_to_prompt, normalize_prompt_output_prefixes
 
 # --- Helpers (minimal copy for standalone use) ---
@@ -53,17 +52,7 @@ def _write_json(p: Path, obj: Any, *, indent: int = 2) -> None:
 
 
 def _http_json(method: str, url: str, payload: Optional[Dict[str, Any]] = None, timeout_s: int = 30) -> Any:
-    data = None
-    headers = {"Content-Type": "application/json"}
-    if payload is not None:
-        data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-        raw = resp.read()
-    text = raw.decode("utf-8", "replace").strip()
-    if not text:
-        return {}
-    return json.loads(text)
+    return http_json_with_retry(method=method, url=url, payload=payload, timeout_s=timeout_s)
 
 
 def _utc_iso(ts: float) -> str:

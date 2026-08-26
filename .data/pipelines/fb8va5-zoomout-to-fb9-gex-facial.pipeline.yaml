@@ -1,0 +1,25 @@
+schema_version: comfyui-runpod.pipeline.v0
+pipeline_id: fb8va5-zoomout-to-fb9-gex-facial
+description: FB8VA5-ZOOMOUT deposit X -> FB9_GEX_FACIAL variant
+
+steps:
+  - id: fb8va5-zoomout
+    shape: /home/yuji/src/comfyui-runpod/.data/shapes/FB8VA5-ZOOMOUT.shape.yaml
+    pools: /home/yuji/src/comfyui-runpod/.data/pools/FB8VA5-ZOOMOUT/pools.yaml
+    pick: zip
+    deposits:
+      final_video: pool:FB8VA5-ZOOMOUT_X_og
+
+  - id: fb9-gex-facial
+    shape: /home/yuji/src/comfyui-runpod/.data/shapes/FB9_GEX_FACIAL.shape.yaml
+    pools: /home/yuji/src/comfyui-runpod/.data/pools/FB9_GEX_FACIAL/pools.yaml
+    pick: zip
+    binds_override:
+      source_video:
+        from: pool
+        pool: FB8VA5-ZOOMOUT_X_og
+        pick: last
+    deposits:
+      final_video: pool:FB9_GEX_FACIAL_X_og
+
+rules: []

@@ -59,6 +59,7 @@ Locked decisions (2026-07-03): install `/workflow/convert`, JSON pool index, pip
   - `shape_factory repair rules` / `repair run` — inspect or run loop standalone
 - [x] `generate` / `submit` / `pipeline run` block quarantined shape templates (override: `--ignore-quarantine`)
 - [x] Reports under `.data/shape_factory/validation/*.validate.json`
+- [ ] **UI-managed quarantine status** — expose quarantine as a first-class, operator-managed status surface (view active registry path/overlay, release/re-quarantine actions, reason history, and stale-overlay warning when UI/API path diverges from local CLI path)
 - [x] Catalog scan (2026-07-03): **14/20** pass `--comfy-check` after repair passes (was 11/20)
   - **4** missing `GetNode` (Comfy subgraph nodes — not in `/object_info`)
   - **1** missing input asset (`141756_OG`)

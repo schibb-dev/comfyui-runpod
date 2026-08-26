@@ -1371,6 +1371,7 @@ def queue_shape_factory_combo(
         raise FileNotFoundError(f"pools.yaml not found: {pools_path}")
 
     shape = load_yaml(shape_path)
+    pools_doc = load_yaml(pools_path)
     req_by_slot = requires_by_slot(shape)
     bindings = _bindings_declared_by_shape(shape, bindings)
 
@@ -1391,6 +1392,13 @@ def queue_shape_factory_combo(
         )
         picks[slot_name] = resolved
         slot_paths[slot_name] = str(resolved)
+
+    source_req = req_by_slot.get("source_still") if isinstance(req_by_slot, dict) else None
+    if isinstance(source_req, dict) and not source_req.get("optional") and "source_still" not in picks:
+        fallback = _first_pool_member_for_slot(pools_doc, "source_still")
+        if fallback is not None:
+            picks["source_still"] = fallback
+            slot_paths["source_still"] = str(fallback)
 
     missing = [s for s, req in req_by_slot.items() if s not in picks and not req.get("optional")]
     if missing:
@@ -1545,6 +1553,11 @@ def queue_from_request_body(
 
 
 def _first_pool_member_for_slot(pools_doc: Dict[str, Any], slot: str) -> Optional[Path]:
+    members = _all_pool_members_for_slot(pools_doc, slot)
+    return members[0] if members else None
+
+
+def _all_pool_members_for_slot(pools_doc: Dict[str, Any], slot: str) -> list[Path]:
     pools = pools_doc.get("pools") if isinstance(pools_doc.get("pools"), dict) else {}
     pool_def = pools.get(slot)
     if not isinstance(pool_def, dict):
@@ -1553,9 +1566,135 @@ def _first_pool_member_for_slot(pools_doc: Dict[str, Any], slot: str) -> Optiona
                 pool_def = cand
                 break
     if not isinstance(pool_def, dict):
-        return None
+        return []
     members = resolve_pool_members(pool_def)
-    return members[0] if members else None
+    if slot != "source_still":
+        return members
+    shape_raw = pools_doc.get("shape")
+    family_slug = ""
+    if isinstance(shape_raw, str) and shape_raw.strip():
+        family_slug = Path(shape_raw).stem
+    if not family_slug:
+        family_slug = str(pools_doc.get("family_slug") or "").strip()
+    if not family_slug:
+        return members
+    try:
+        from shape_factory_input_curation import merged_source_stills  # type: ignore
+    except Exception:
+        return members
+    try:
+        merged = merged_source_stills(
+            family_slug=family_slug,
+            base_members=members,
+            data_root=DEFAULT_DATA_ROOT,
+        )
+        return list(merged.get("members") or members)
+    except Exception:
+        return members
+
+
+def _prompt_label_from_profile(path: Path) -> str:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    if not isinstance(raw, dict):
+        return ""
+    return str(raw.get("label") or "").strip()
+
+
+def _pool_def_for_slot(pools_doc: Dict[str, Any], slot: str) -> Optional[Dict[str, Any]]:
+    pools = pools_doc.get("pools") if isinstance(pools_doc.get("pools"), dict) else {}
+    pool_def = pools.get(slot)
+    if isinstance(pool_def, dict):
+        return pool_def
+    for _name, cand in pools.items():
+        if isinstance(cand, dict) and str(cand.get("slot") or "").strip() == slot:
+            return cand
+    return None
+
+
+def _hostify_pool_dir(dir_text: str, *, data_root: Path) -> Path:
+    raw = str(dir_text or "").strip().replace("\\", "/")
+    if raw.startswith("/workspace/.data/"):
+        rel = raw[len("/workspace/.data/") :]
+        return data_root / rel
+    if raw.startswith("/workspace/output/"):
+        # Prompt pools are expected under data_root; keep this as a best-effort
+        # remap for uncommon layouts.
+        return data_root / raw[len("/workspace/output/") :]
+    return Path(raw).expanduser()
+
+
+def _remap_prompt_profile_binding_for_family(
+    bindings: Dict[str, str],
+    *,
+    data_root: Path,
+    family_slug: str,
+) -> Tuple[Dict[str, str], Optional[Dict[str, str]]]:
+    """
+    Re-home prompt_profile to a target family's pool when a cross-family rewire
+    carried a parent-family prompt path.
+    """
+    current = str(bindings.get("prompt_profile") or "").strip()
+    if not current:
+        return dict(bindings), None
+
+    pools_path = data_root / "pools" / family_slug / "pools.yaml"
+    if not pools_path.is_file():
+        return dict(bindings), None
+    try:
+        pools_doc = load_yaml(pools_path)
+    except Exception:
+        return dict(bindings), None
+    candidates = _all_pool_members_for_slot(pools_doc, "prompt_profile")
+    if not candidates:
+        pool_def = _pool_def_for_slot(pools_doc, "prompt_profile")
+        members = pool_def.get("members") if isinstance(pool_def, dict) and isinstance(pool_def.get("members"), list) else []
+        for member in members:
+            if isinstance(member, dict):
+                dir_raw = str(member.get("dir") or "").strip()
+                if dir_raw:
+                    host_dir = _hostify_pool_dir(dir_raw, data_root=data_root)
+                    if host_dir.is_dir():
+                        candidates.extend(sorted(host_dir.glob("*.json")))
+    if not candidates:
+        prompts_dir = data_root / "pools" / family_slug / "prompts"
+        if prompts_dir.is_dir():
+            candidates = sorted(prompts_dir.glob("*.json"))
+    if not candidates:
+        return dict(bindings), None
+
+    current_norm = str(Path(current).expanduser()).replace("\\", "/")
+    candidate_norms = {str(Path(c).expanduser()).replace("\\", "/") for c in candidates}
+    if current_norm in candidate_norms:
+        return dict(bindings), None
+
+    source = Path(current).expanduser()
+    source_label = _prompt_label_from_profile(source) if source.is_file() else ""
+    source_name = source.name
+
+    chosen: Optional[Path] = None
+    if source_label:
+        for cand in candidates:
+            if _prompt_label_from_profile(cand) == source_label:
+                chosen = cand
+                break
+    if chosen is None and source_name:
+        for cand in candidates:
+            if cand.name == source_name:
+                chosen = cand
+                break
+    if chosen is None:
+        chosen = candidates[0]
+
+    next_bindings = dict(bindings)
+    next_bindings["prompt_profile"] = str(chosen.resolve())
+    return next_bindings, {
+        "from": current,
+        "to": str(chosen.resolve()),
+        "reason": "cross_family_prompt_profile_remap",
+    }
 
 
 def queue_from_source_media(
@@ -1694,6 +1833,10 @@ def replay_from_request_body(
     bindings: Dict[str, str] = {}
     output_abs = ""
 
+    request_bindings = body.get("bindings") if isinstance(body.get("bindings"), dict) else {}
+    explicit_prompt_binding = "prompt_profile" in request_bindings
+    prompt_remap_meta: Optional[Dict[str, str]] = None
+
     if job_key:
         found = _find_job_doc(data_root, job_key)
         if not found:
@@ -1743,6 +1886,15 @@ def replay_from_request_body(
         family_slug=family_slug,
     )
     shape = load_yaml(shape_path)
+    source_family = str(job.get("family_slug") or "").strip() if isinstance(job, dict) else ""
+    is_cross_family = bool(source_family and source_family != family_slug)
+    if is_cross_family and not explicit_prompt_binding:
+        bindings, prompt_remap_meta = _remap_prompt_profile_binding_for_family(
+            bindings,
+            data_root=data_root,
+            family_slug=family_slug,
+        )
+
     recovered_prompt: Optional[str] = None
     if "prompt_profile" in bindings or any(
         isinstance(r, dict) and str((r.get("binding") or {}).get("type") or "") == "prompt_bundle"
@@ -1877,6 +2029,8 @@ def replay_from_request_body(
             result["identity_anchor"] = identity_meta
         if recovered_prompt:
             result["prompt_profile_recovered"] = recovered_prompt
+        if prompt_remap_meta:
+            result["prompt_profile_remapped"] = prompt_remap_meta
         if trim_clamped:
             result["trim_clamped"] = trim_clamped
     return result
@@ -1992,6 +2146,14 @@ def derive_from_request_body(
     bindings = {str(slot): str(path) for slot, path in rewired["picks"].items() if str(path).strip()}
     if not bindings:
         raise ValueError("derive produced empty bindings")
+    source_family = str(job.get("family_slug") or "").strip()
+    prompt_remap_meta: Optional[Dict[str, str]] = None
+    if source_family and source_family != family_slug:
+        bindings, prompt_remap_meta = _remap_prompt_profile_binding_for_family(
+            bindings,
+            data_root=data_root,
+            family_slug=family_slug,
+        )
 
     pick_mode = str(action or "derive").strip() or "derive"
     if pick_mode not in {"derive", "extend"}:
@@ -2070,6 +2232,8 @@ def derive_from_request_body(
         result["derive_action"] = pick_mode
         result["appetite_facet"] = facet
         result["construction"] = construction
+        if prompt_remap_meta:
+            result["prompt_profile_remapped"] = prompt_remap_meta
         if trim_clamped:
             result["trim_clamped"] = trim_clamped
     return result

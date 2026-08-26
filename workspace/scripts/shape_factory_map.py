@@ -18,6 +18,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from http_retry import http_json_with_retry
 
 try:
     import yaml
@@ -1053,10 +1054,7 @@ def _job_summary(
 def _fetch_comfy_queue(comfy_server: str, *, timeout_s: int = 8) -> Dict[str, Any]:
     url = str(comfy_server).rstrip("/") + "/queue"
     try:
-        req = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
-        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-            raw = resp.read()
-        obj = json.loads(raw.decode("utf-8", "replace"))
+        obj = http_json_with_retry(method="GET", url=url, timeout_s=timeout_s)
         if not isinstance(obj, dict):
             return {"ok": False, "error": "comfy_queue_non_object"}
         running = obj.get("queue_running") if isinstance(obj.get("queue_running"), list) else []

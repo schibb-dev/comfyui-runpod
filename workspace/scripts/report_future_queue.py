@@ -17,9 +17,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from http_retry import http_json_with_retry
 
 STOPPED_SENTINEL = "experiment_stopped"
 
@@ -29,11 +29,8 @@ def _read_json(path: Path) -> Any:
 
 
 def _http_json(method: str, url: str, data: Any = None, timeout_s: int = 10) -> Any:
-    req = urllib.request.Request(url, data=json.dumps(data).encode("utf-8") if data else None, method=method)
-    if data:
-        req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, timeout=timeout_s) as r:
-        return json.loads(r.read().decode("utf-8"))
+    payload = data if isinstance(data, dict) else None
+    return http_json_with_retry(method=method, url=url, payload=payload, timeout_s=timeout_s)
 
 
 def _is_repo_root(p: Path) -> bool:

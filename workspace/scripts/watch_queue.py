@@ -26,7 +26,6 @@ import random
 import re
 import sys
 import time
-import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +35,7 @@ _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 from output_path_lib import apply_queue_date_to_prompt, normalize_prompt_output_prefixes
+from http_retry import http_json_with_retry
 
 
 def _read_json(p: Path) -> Any:
@@ -227,15 +227,23 @@ def _metrics_path(run_dir: Path) -> Path:
     return run_dir / "metrics.json"
 
 
-def _http_json(method: str, url: str, payload: Optional[Dict[str, Any]] = None, timeout_s: int = 30) -> Any:
-    data = None
-    headers = {"Content-Type": "application/json"}
-    if payload is not None:
-        data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-        raw = resp.read()
-    return json.loads(raw.decode("utf-8", "replace"))
+def _http_json(
+    method: str,
+    url: str,
+    payload: Optional[Dict[str, Any]] = None,
+    timeout_s: int = 30,
+    *,
+    retry_attempts: Optional[int] = None,
+    retry_backoff_s: float = 0.25,
+) -> Any:
+    return http_json_with_retry(
+        method=method,
+        url=url,
+        payload=payload,
+        timeout_s=timeout_s,
+        retry_attempts=retry_attempts,
+        retry_backoff_s=retry_backoff_s,
+    )
 
 
 def _read_prompt_id_from_submit(submit_path: Path) -> Optional[str]:

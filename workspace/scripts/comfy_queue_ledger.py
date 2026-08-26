@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from comfy_model_io_logs import ModelIoFollower, fetch_comfy_log_entries
+from http_retry import http_json_with_retry
 from output_path_lib import apply_queue_date_to_prompt
 
 
@@ -67,16 +68,23 @@ def _resolve_repo_root() -> Path:
     raise RuntimeError(f"Could not locate repo root from {here}")
 
 
-def _http_json(method: str, url: str, body: Optional[Dict[str, Any]] = None, timeout_s: int = 10) -> Any:
-    data = None
-    headers = {"Accept": "application/json"}
-    if body is not None:
-        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(url, data=data, headers=headers, method=method.upper().strip())
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-        raw = resp.read()
-    return json.loads(raw.decode("utf-8", "replace"))
+def _http_json(
+    method: str,
+    url: str,
+    body: Optional[Dict[str, Any]] = None,
+    timeout_s: int = 10,
+    *,
+    retry_attempts: Optional[int] = None,
+    retry_backoff_s: float = 0.25,
+) -> Any:
+    return http_json_with_retry(
+        method=method,
+        url=url,
+        payload=body,
+        timeout_s=timeout_s,
+        retry_attempts=retry_attempts,
+        retry_backoff_s=retry_backoff_s,
+    )
 
 
 def _now_ts() -> float:

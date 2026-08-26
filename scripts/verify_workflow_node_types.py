@@ -15,10 +15,17 @@ import argparse
 import json
 import os
 import sys
-import urllib.error
-import urllib.request
 from pathlib import Path
-from typing import Any, Dict, Set
+from typing import Any, Dict, Optional, Set
+
+_HERE = Path(__file__).resolve()
+for _cand in (_HERE.parent, _HERE.parents[1] / "workspace" / "scripts"):
+    try:
+        if _cand.is_dir() and str(_cand) not in sys.path:
+            sys.path.insert(0, str(_cand))
+    except Exception:
+        continue
+from http_retry import http_json_with_retry
 
 
 def collect_types(workflow: Dict[str, Any]) -> Set[str]:
@@ -34,9 +41,8 @@ def collect_types(workflow: Dict[str, Any]) -> Set[str]:
 
 def fetch_object_info(server: str) -> Dict[str, Any]:
     url = server.rstrip("/") + "/object_info"
-    req = urllib.request.Request(url, method="GET")
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    out = http_json_with_retry(method="GET", url=url, timeout_s=60)
+    return out if isinstance(out, dict) else {}
 
 
 def main() -> int:
@@ -54,7 +60,7 @@ def main() -> int:
     else:
         try:
             obj_info = fetch_object_info(args.server)
-        except urllib.error.URLError as e:
+        except Exception as e:
             print(f"Failed to fetch {args.server}/object_info: {e}", file=sys.stderr)
             return 2
 

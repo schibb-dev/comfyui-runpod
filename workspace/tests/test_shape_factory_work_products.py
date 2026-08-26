@@ -708,6 +708,32 @@ class TestWorkProducts(unittest.TestCase):
         keys = [it.get("job_key") for it in out["items"]]
         self.assertEqual(keys.count(key), 1)
 
+    def test_attach_live_dedupes_multiple_prompts_for_same_job_key(self):
+        key = "FB9_GEX2__prompt_profile-abc__source_video-x__000_e_ui1"
+        payload = {
+            "ok": True,
+            "limit": 10,
+            "families": [{"slug": "FB9_GEX2"}],
+            "items": [
+                {
+                    "job_key": key,
+                    "prompt_id": "old-pid",
+                    "status": "submitted",
+                    "family_slug": "FB9_GEX2",
+                }
+            ],
+        }
+        extra = {"workflow_name": key, "name": key}
+        out = attach_live_comfy_queue(
+            payload,
+            queue_running=[],
+            queue_pending=[[1, "new-pid-1", {}, extra], [2, "new-pid-2", {}, extra]],
+        )
+        rows = [it for it in out["items"] if it.get("job_key") == key]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].get("prompt_id"), "new-pid-1")
+        self.assertTrue(rows[0].get("live_from_comfy"))
+
     def test_reconcile_inflight_persists_queued_vs_running(self):
         from shape_factory_work_products import reconcile_inflight_jobs_with_comfy
 

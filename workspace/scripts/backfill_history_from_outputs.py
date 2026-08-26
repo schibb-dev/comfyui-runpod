@@ -20,6 +20,7 @@ import time
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from http_retry import http_json_with_retry
 
 
 MEDIA_EXTS = {".mp4", ".png", ".webp", ".jpg", ".jpeg"}
@@ -86,8 +87,7 @@ def _prompt_id_from_submit(submit_path: Path) -> Optional[str]:
 
 def _queue_prompt_ids(server: str) -> Tuple[set[str], set[str]]:
     server = server.rstrip("/")
-    raw = urllib.request.urlopen(f"{server}/queue", timeout=10).read().decode("utf-8", "replace")
-    q = json.loads(raw)
+    q = http_json_with_retry(method="GET", url=f"{server}/queue", timeout_s=10)
     pending: set[str] = set()
     running: set[str] = set()
     if isinstance(q, dict):
@@ -107,8 +107,7 @@ def _history_by_prompt_id(server: str, prompt_id: str) -> Optional[Dict[str, Any
     """
     server = server.rstrip("/")
     try:
-        raw = urllib.request.urlopen(f"{server}/history/{prompt_id}", timeout=10).read().decode("utf-8", "replace")
-        obj = json.loads(raw)
+        obj = http_json_with_retry(method="GET", url=f"{server}/history/{prompt_id}", timeout_s=10)
     except Exception:
         return None
     if isinstance(obj, dict) and obj:

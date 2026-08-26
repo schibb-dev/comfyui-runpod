@@ -2159,6 +2159,8 @@ def attach_live_comfy_queue(
     data_r = Path(data_root).resolve() if data_root else None
     live_items: List[Dict[str, Any]] = []
     used_indices: set[int] = set()
+    emitted_live_job_keys: set[str] = set()
+    emitted_live_prompt_ids: set[str] = set()
 
     def _promote_on_page_row(idx: int, *, status: str, prompt_id: str, ent: Dict[str, Any]) -> Dict[str, Any]:
         used_indices.add(idx)
@@ -2207,15 +2209,27 @@ def attach_live_comfy_queue(
         pid = ent["prompt_id"]
         status = ent["status"]
         ent_job_key = str(ent.get("job_key") or "").strip()
+        if pid in emitted_live_prompt_ids:
+            continue
+        if ent_job_key and ent_job_key in emitted_live_job_keys:
+            continue
 
         if pid in by_pid and by_pid[pid] not in used_indices:
-            live_items.append(_promote_on_page_row(by_pid[pid], status=status, prompt_id=pid, ent=ent))
+            row = _promote_on_page_row(by_pid[pid], status=status, prompt_id=pid, ent=ent)
+            live_items.append(row)
+            emitted_live_prompt_ids.add(pid)
+            row_job_key = str(row.get("job_key") or "").strip()
+            if row_job_key:
+                emitted_live_job_keys.add(row_job_key)
             continue
 
         if ent_job_key and ent_job_key in by_job_key and by_job_key[ent_job_key] not in used_indices:
-            live_items.append(
-                _promote_on_page_row(by_job_key[ent_job_key], status=status, prompt_id=pid, ent=ent)
-            )
+            row = _promote_on_page_row(by_job_key[ent_job_key], status=status, prompt_id=pid, ent=ent)
+            live_items.append(row)
+            emitted_live_prompt_ids.add(pid)
+            row_job_key = str(row.get("job_key") or "").strip()
+            if row_job_key:
+                emitted_live_job_keys.add(row_job_key)
             continue
 
         found_path, found_job = (None, None)
@@ -2259,17 +2273,24 @@ def attach_live_comfy_queue(
                 }
                 row["details"] = _detail_rows(row)
             live_items.append(row)
+            emitted_live_prompt_ids.add(pid)
+            row_job_key = str(row.get("job_key") or "").strip()
+            if row_job_key:
+                emitted_live_job_keys.add(row_job_key)
             continue
 
-        live_items.append(
-            _synthetic_live_work_product(
-                prompt_id=pid,
-                status=status,
-                prompt=ent.get("prompt"),
-                family_slugs=family_slugs,
-                output_root=out_root,
-            )
+        row = _synthetic_live_work_product(
+            prompt_id=pid,
+            status=status,
+            prompt=ent.get("prompt"),
+            family_slugs=family_slugs,
+            output_root=out_root,
         )
+        live_items.append(row)
+        emitted_live_prompt_ids.add(pid)
+        row_job_key = str(row.get("job_key") or "").strip()
+        if row_job_key:
+            emitted_live_job_keys.add(row_job_key)
 
     rest = [it for i, it in enumerate(items) if i not in used_indices]
     merged = live_items + rest

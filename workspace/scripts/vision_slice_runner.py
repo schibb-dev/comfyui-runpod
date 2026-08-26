@@ -16,13 +16,12 @@ import json
 import mimetypes
 import shutil
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional, Protocol, runtime_checkable
+from http_retry import http_json_with_retry, urlopen_read_with_retry
 
 DEFAULT_COMFY_MODEL = "microsoft/Florence-2-base"
 DEFAULT_COMFY_TASK = "caption"
@@ -80,17 +79,7 @@ def _http_json(
     *,
     timeout_s: float = 60,
 ) -> Any:
-    data = None
-    headers = {"Content-Type": "application/json"}
-    if payload is not None:
-        data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-        raw = resp.read()
-    text = raw.decode("utf-8", "replace").strip()
-    if not text:
-        return {}
-    return json.loads(text)
+    return http_json_with_retry(method=method, url=url, payload=payload, timeout_s=timeout_s)
 
 
 def _http_upload_image(
@@ -133,14 +122,16 @@ def _http_upload_image(
     body.extend(b"\r\n")
     body.extend(f"--{boundary}--\r\n".encode())
 
-    req = urllib.request.Request(
-        f"{server}/upload/image",
+    raw = urlopen_read_with_retry(
+        method="POST",
+        url=f"{server}/upload/image",
         data=bytes(body),
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-        method="POST",
+        timeout_s=timeout_s,
+        retry_attempts=2,
+        retry_backoff_s=0.35,
     )
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-        return json.loads(resp.read().decode("utf-8", "replace"))
+    return json.loads(raw.decode("utf-8", "replace"))
 
 
 def build_florence_caption_prompt(

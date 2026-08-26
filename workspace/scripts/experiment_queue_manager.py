@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import json
 import os
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from comfyui_submit import submit_run_to_comfyui
 from experiment_run_queue_rules import order_runs
+from http_retry import http_json_with_retry
 
 STOPPED_SENTINEL = "experiment_stopped"
 ERQ_SCHEMA = 1
@@ -47,13 +47,7 @@ def _prompt_id_from_submit(submit_path: Path) -> Optional[str]:
 def fetch_queue_prompt_ids(server: str, timeout_s: int = 10) -> Optional[Set[str]]:
     """Return set of prompt_ids in ComfyUI queue (running + pending), or None on error."""
     try:
-        req = urllib.request.Request(
-            f"{server.rstrip('/')}/queue",
-            headers={"Accept": "application/json"},
-            method="GET",
-        )
-        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-            obj = json.loads(resp.read().decode("utf-8", "replace"))
+        obj = http_json_with_retry(method="GET", url=f"{server.rstrip('/')}/queue", timeout_s=timeout_s)
     except Exception:
         return None
     if not isinstance(obj, dict):

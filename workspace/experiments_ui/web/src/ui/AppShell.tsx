@@ -8,9 +8,30 @@ import {
 } from "./routes";
 
 function NavLink({ route, active }: { route: AppRoute; active: boolean }) {
+  const onClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    if (
+      e.defaultPrevented ||
+      e.button !== 0 ||
+      e.metaKey ||
+      e.altKey ||
+      e.ctrlKey ||
+      e.shiftKey
+    ) {
+      return;
+    }
+    const url = new URL(route.path, window.location.origin);
+    if (url.origin !== window.location.origin) return;
+    e.preventDefault();
+    const next = `${url.pathname}${url.search}${url.hash}`;
+    const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (next === current) return;
+    window.history.pushState({}, "", next);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  };
   return (
     <a
       href={route.path}
+      onClick={onClick}
       className={`app-nav__link${active ? " app-nav__link--active" : ""}`}
       aria-current={active ? "page" : undefined}
       title={route.hint}

@@ -1,7 +1,21 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useIsFetching, useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createPortal } from "react-dom";
-import { fetchShapeFactoryMap, fetchShapeFactoryQuarantine, queueShapeFactoryCombo, recoverAssets, releaseShapeFactoryQuarantine, replayShapeFactory } from "./api";
+import {
+  fetchShapeFactoryMap,
+  fetchShapeFactoryInputCurationEffectiveSources,
+  fetchShapeFactoryInputCurationState,
+  fetchShapeFactoryInputCurationStills,
+  fetchShapeFactoryQuarantine,
+  fetchShapeFactoryTemplatePromotions,
+  mutateShapeFactoryInputBindings,
+  mutateShapeFactoryInputCollection,
+  queueShapeFactoryCombo,
+  recoverAssets,
+  releaseShapeFactoryQuarantine,
+  replayShapeFactory,
+  setShapeFactoryTemplatePromotion,
+} from "./api";
 import { AssetInspector, type InspectorAsset } from "./AssetInspector";
 import { buildQueueOverrides, FutureRunEditor } from "./factoryMapFutureRunEditor";
 import { discoveryLibraryHref } from "./discoveryDeepLink";
@@ -43,6 +57,7 @@ import type {
   ShapeFactoryMapResponse,
   ShapeFactoryQuarantineEntry,
   FutureRunDraft,
+  InputCurationCollection,
 } from "./types";
 
 const POLL_MS = 30_000;
@@ -62,6 +77,33 @@ function statusClass(status?: string): string {
   return "sfmap-status";
 }
 
+function formatStatusTimestamp(ms?: number): string {
+  if (!ms || !Number.isFinite(ms)) return "—";
+  try {
+    return new Date(ms).toLocaleTimeString(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  } catch {
+    return "—";
+  }
+}
+
+function formatPromotionCountdown(expiresAt?: string | null): string {
+  const iso = String(expiresAt || "").trim();
+  if (!iso) return "";
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return "";
+  const ms = t - Date.now();
+  if (ms <= 0) return "expired";
+  const totalMins = Math.round(ms / 60000);
+  if (totalMins < 60) return `${totalMins}m left`;
+  const h = Math.floor(totalMins / 60);
+  const m = totalMins % 60;
+  return m > 0 ? `${h}h ${m}m left` : `${h}h left`;
+}
+
 function jobCountsForFamily(jobs: ShapeFactoryMapJob[], familySlug: string): Record<string, number> {
   const counts: Record<string, number> = {};
   for (const j of jobs) {
@@ -75,11 +117,15 @@ function jobCountsForFamily(jobs: ShapeFactoryMapJob[], familySlug: string): Rec
 function FactoryMapShell({
   route,
   loading,
+  refreshing,
+  statusLine,
   onRefresh,
   children,
 }: {
   route: FactoryMapRoute;
   loading: boolean;
+  refreshing: boolean;
+  statusLine: string;
   onRefresh: () => void;
   children: React.ReactNode;
 }) {
@@ -110,10 +156,13 @@ function FactoryMapShell({
               </nav>
             ) : null}
           </div>
-          <button type="button" disabled={loading} onClick={onRefresh}>
-            {loading ? "Loading…" : "Refresh"}
+          <button type="button" disabled={loading || refreshing} onClick={onRefresh}>
+            {loading ? "Loading…" : refreshing ? "Updating…" : "Refresh"}
           </button>
         </header>
+        <div className="sfmap-cache-status" role="status" aria-live="polite">
+          {statusLine}
+        </div>
         {children}
       </div>
     </div>
@@ -1303,57 +1352,99 @@ function FamilyIndexCard({
   family,
   jobCounts,
   activity,
+  promotion,
+  busy,
+  onQuickTemporary,
+  onQuickToday,
+  onQuickLongTerm,
+  onOpenPromotionEditor,
 }: {
   family: ShapeFactoryMapFamily;
   jobCounts: Record<string, number>;
   activity?: FactoryMapActivity | null;
+  promotion?: { scope?: string; expires_at?: string | null; intents?: string[]; note?: string | null } | null;
+  busy?: boolean;
+  onQuickTemporary?: (familySlug: string) => void;
+  onQuickToday?: (familySlug: string) => void;
+  onQuickLongTerm?: (familySlug: string) => void;
+  onOpenPromotionEditor?: (familySlug: string) => void;
 }) {
   const shape = family.shape || {};
   const deposit = (family.deposit_pools || [])[0];
   const totalJobs = Object.values(jobCounts).reduce((a, b) => a + b, 0);
   const inflight = (jobCounts.running || 0) + (jobCounts.queued || 0);
 
+  const promoScope = String(promotion?.scope || "").trim();
+  const promoBadge = promoScope === "temporary" ? "TEMP" : promoScope === "long_term" ? "DEFAULT" : "";
+  const promoHint =
+    promoScope === "temporary" && promotion?.expires_at
+      ? `temporary until ${formatIsoDateTime(promotion.expires_at)}`
+      : promoScope === "long_term"
+        ? "long-term default"
+        : "";
+
   return (
-    <a
-      href={factoryMapFamilyHref(family.family_slug)}
-      className={"sfmap-family-index-card" + (activity?.active ? " sfmap-family-index-card--active" : "")}
-    >
-      <div className="sfmap-family-index-card__head">
-        <h2 className="sfmap-family-index-card__title">{family.family_slug}</h2>
-        <span className="sfmap-family-index-card__head-end">
-          {activity?.active ? (
-            <span className="sfmap-activity-badge sfmap-activity-badge--compact" title={activity.detail}>
-              {activity.label}
-            </span>
-          ) : null}
-          <span className="sfmap-family-index-card__cta">Open →</span>
-        </span>
-      </div>
-      <div className="sfmap-family-index-card__meta">
-        <span>{shape.shape_id || "shape"}</span>
-        <span className="mono">graph {shortHash(shape.graph_hash)}</span>
-      </div>
-      {deposit ? (
-        <div className="sfmap-family-index-card__pool">
-          Deposits to <strong>{deposit.pool_id}</strong>
-          {deposit.member_count != null ? ` · ${deposit.member_count} members` : null}
+    <div className="sfmap-family-index-card-wrap">
+      <a
+        href={factoryMapFamilyHref(family.family_slug)}
+        className={"sfmap-family-index-card" + (activity?.active ? " sfmap-family-index-card--active" : "")}
+      >
+        <div className="sfmap-family-index-card__head">
+          <h2 className="sfmap-family-index-card__title">{family.family_slug}</h2>
+          <span className="sfmap-family-index-card__head-end">
+            {promoBadge ? (
+              <span className={`sfmap-promo-badge sfmap-promo-badge--${promoScope || "none"}`} title={promoHint}>
+                {promoBadge}
+              </span>
+            ) : null}
+            {activity?.active ? (
+              <span className="sfmap-activity-badge sfmap-activity-badge--compact" title={activity.detail}>
+                {activity.label}
+              </span>
+            ) : null}
+            <span className="sfmap-family-index-card__cta">Open →</span>
+          </span>
         </div>
-      ) : null}
-      {(family.input_pools || []).some((p) => p.feeds_from?.length) ? (
-        <div className="sfmap-family-index-card__pool factory-muted">
-          Pulls from{" "}
-          {(family.input_pools || [])
-            .flatMap((p) => (p.feeds_from || []).map((f) => f.pool_id))
-            .filter(Boolean)
-            .join(", ")}
+        <div className="sfmap-family-index-card__meta">
+          <span>{shape.shape_id || "shape"}</span>
+          <span className="mono">graph {shortHash(shape.graph_hash)}</span>
         </div>
-      ) : null}
-      <div className="sfmap-family-index-card__stats">
-        <span>{totalJobs} jobs</span>
-        {inflight > 0 ? <span>{inflight} in flight</span> : null}
-        {(jobCounts.pending || 0) > 0 ? <span>{jobCounts.pending} pending submit</span> : null}
+        {deposit ? (
+          <div className="sfmap-family-index-card__pool">
+            Deposits to <strong>{deposit.pool_id}</strong>
+            {deposit.member_count != null ? ` · ${deposit.member_count} members` : null}
+          </div>
+        ) : null}
+        {(family.input_pools || []).some((p) => p.feeds_from?.length) ? (
+          <div className="sfmap-family-index-card__pool factory-muted">
+            Pulls from{" "}
+            {(family.input_pools || [])
+              .flatMap((p) => (p.feeds_from || []).map((f) => f.pool_id))
+              .filter(Boolean)
+              .join(", ")}
+          </div>
+        ) : null}
+        <div className="sfmap-family-index-card__stats">
+          <span>{totalJobs} jobs</span>
+          {inflight > 0 ? <span>{inflight} in flight</span> : null}
+          {(jobCounts.pending || 0) > 0 ? <span>{jobCounts.pending} pending submit</span> : null}
+        </div>
+      </a>
+      <div className="sfmap-promo-actions" role="group" aria-label={`Template promotion controls for ${family.family_slug}`}>
+        <button type="button" className="btn" disabled={busy} title="Temporary promotion for 2 hours" onClick={() => onQuickTemporary?.(family.family_slug)}>
+          2h
+        </button>
+        <button type="button" className="btn" disabled={busy} title="Temporary promotion until local midnight" onClick={() => onQuickToday?.(family.family_slug)}>
+          Today
+        </button>
+        <button type="button" className="btn" disabled={busy} title="Set long-term default promotion" onClick={() => onQuickLongTerm?.(family.family_slug)}>
+          Default
+        </button>
+        <button type="button" className="btn" disabled={busy} onClick={() => onOpenPromotionEditor?.(family.family_slug)}>
+          Promote…
+        </button>
       </div>
-    </a>
+    </div>
   );
 }
 
@@ -1465,14 +1556,348 @@ function QuarantineWorkflowsPanel() {
   );
 }
 
+function PromotionScoreboard({
+  entries,
+}: {
+  entries: Array<{
+    family_slug: string;
+    intent: string;
+    scope: string;
+    expires_at?: string | null;
+    note?: string | null;
+  }>;
+}) {
+  const rows = entries.slice().sort((a, b) => {
+    const sa = a.scope === "temporary" ? 0 : 1;
+    const sb = b.scope === "temporary" ? 0 : 1;
+    if (sa !== sb) return sa - sb;
+    return a.family_slug.localeCompare(b.family_slug);
+  });
+  const summaryLine = rows.length
+    ? `${rows.length} active promotion${rows.length === 1 ? "" : "s"}`
+    : "no active promotions";
+  return (
+    <FactoryMapAccordionSection
+      sectionId="sfmap-promotions-scoreboard"
+      title="Promoted templates"
+      summaryLine={summaryLine}
+      activities={rows.length ? [{ active: true, label: `${rows.length} active` }] : undefined}
+      defaultOpen={rows.length > 0}
+      hint="Temporary promotions override long-term defaults while active."
+    >
+      {rows.length === 0 ? (
+        <p className="factory-muted">No promoted templates right now.</p>
+      ) : (
+        <ul className="sfmap-promo-scoreboard">
+          {rows.map((row, idx) => (
+            <li key={`${row.family_slug}:${row.intent}:${row.scope}:${idx}`} className="sfmap-promo-scoreboard__row">
+              <span className="mono">{row.family_slug}</span>
+              <span className={`sfmap-promo-badge sfmap-promo-badge--${row.scope || "none"}`}>
+                {row.scope === "temporary" ? "TEMP" : "DEFAULT"}
+              </span>
+              <span className="factory-muted">{row.intent}</span>
+              {row.scope === "temporary" && row.expires_at ? (
+                <span className="factory-muted" title={formatIsoDateTime(row.expires_at)}>
+                  {formatPromotionCountdown(row.expires_at)}
+                </span>
+              ) : null}
+              {row.note ? <span className="factory-muted">{row.note}</span> : null}
+            </li>
+          ))}
+        </ul>
+      )}
+    </FactoryMapAccordionSection>
+  );
+}
+
+function InputCurationPanel({ families }: { families: ShapeFactoryMapFamily[] }) {
+  const queryClient = useQueryClient();
+  const [stillQ, setStillQ] = useState("");
+  const [selectedCollectionId, setSelectedCollectionId] = useState("");
+  const [newCollectionName, setNewCollectionName] = useState("");
+  const [selectedFamilySlug, setSelectedFamilySlug] = useState("");
+  const [msg, setMsg] = useState("");
+
+  const sourceStillFamilies = useMemo(
+    () =>
+      families
+        .filter((fam) =>
+          (fam.shape?.requires || []).some((req) => String(req?.slot || "").trim() === "source_still"),
+        )
+        .map((fam) => fam.family_slug)
+        .filter(Boolean)
+        .sort(),
+    [families],
+  );
+
+  useEffect(() => {
+    if (!selectedFamilySlug && sourceStillFamilies.length > 0) setSelectedFamilySlug(sourceStillFamilies[0]);
+  }, [selectedFamilySlug, sourceStillFamilies]);
+
+  const stateQuery = useQuery({
+    queryKey: queryKeys.shapeFactory.inputCurationState,
+    queryFn: () => fetchShapeFactoryInputCurationState(),
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
+  });
+  const stillsQuery = useQuery({
+    queryKey: queryKeys.shapeFactory.inputCurationStills({ q: stillQ, limit: 120, offset: 0 }),
+    queryFn: () => fetchShapeFactoryInputCurationStills({ q: stillQ, limit: 120 }),
+    staleTime: 20_000,
+    refetchOnWindowFocus: false,
+  });
+  const effectiveSourcesQuery = useQuery({
+    queryKey: queryKeys.shapeFactory.inputCurationEffectiveSources(selectedFamilySlug || ""),
+    queryFn: () => fetchShapeFactoryInputCurationEffectiveSources(selectedFamilySlug),
+    enabled: Boolean(selectedFamilySlug),
+    staleTime: 10_000,
+    refetchOnWindowFocus: false,
+  });
+
+  const invalidateAll = useCallback(async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.inputCurationRoot }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.mapRoot }),
+    ]);
+  }, [queryClient]);
+
+  const mutateCollection = useMutation({
+    mutationFn: mutateShapeFactoryInputCollection,
+    onSuccess: () => void invalidateAll(),
+  });
+  const mutateBindings = useMutation({
+    mutationFn: mutateShapeFactoryInputBindings,
+    onSuccess: () => void invalidateAll(),
+  });
+
+  const collections = (stateQuery.data?.collections || []) as InputCurationCollection[];
+  const bindings = stateQuery.data?.bindings || {};
+  const selectedCollection =
+    collections.find((c) => c.id === selectedCollectionId) || (collections.length ? collections[0] : null);
+  const selectedCollectionItems = selectedCollection?.items || [];
+  const attachedForFamily = selectedFamilySlug ? bindings[selectedFamilySlug] || [] : [];
+  const summaryLine = `${collections.length} collections · ${sourceStillFamilies.length} source_still families`;
+
+  useEffect(() => {
+    if (!selectedCollectionId && collections.length > 0) setSelectedCollectionId(collections[0].id);
+  }, [selectedCollectionId, collections]);
+
+  const onRescan = useCallback(async () => {
+    try {
+      await fetchShapeFactoryInputCurationStills({ q: stillQ, limit: 120, scan: true });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.inputCurationStills({ q: stillQ, limit: 120, offset: 0 }) });
+      setMsg("Still catalog rescanned.");
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    }
+  }, [queryClient, stillQ]);
+
+  return (
+    <FactoryMapAccordionSection
+      sectionId="sfmap-input-curation"
+      title="Input curation"
+      summaryLine={summaryLine}
+      defaultOpen={false}
+      hint="Collections attach per family; source selection merges pool stills with attached collections and de-dupes by path/content id."
+    >
+      {msg ? <p className="factory-muted">{msg}</p> : null}
+      <div className="sfmap-curation-grid">
+        <div>
+          <h4>Still catalog</h4>
+          <div className="sfmap-curation-row">
+            <input value={stillQ} onChange={(e) => setStillQ(e.target.value)} placeholder="Search still path…" />
+            <button type="button" className="btn" onClick={() => void onRescan()}>
+              Rescan
+            </button>
+          </div>
+          {stillsQuery.isLoading ? <p className="factory-muted">Loading still catalog…</p> : null}
+          {stillsQuery.error instanceof Error ? <p className="factory-error">{stillsQuery.error.message}</p> : null}
+          <ul className="sfmap-curation-list">
+            {(stillsQuery.data?.items || []).slice(0, 40).map((it) => (
+              <li key={it.path}>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!selectedCollection || mutateCollection.isPending}
+                  onClick={() =>
+                    void mutateCollection
+                      .mutateAsync({
+                        op: "add_item",
+                        collection_id: selectedCollection?.id,
+                        path: it.path,
+                      })
+                      .then(() => setMsg(`Added to ${selectedCollection?.name || "collection"}`))
+                      .catch((e) => setMsg(e instanceof Error ? e.message : String(e)))
+                  }
+                >
+                  + Add
+                </button>
+                <span className="mono">{it.basename || it.path}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <div>
+          <h4>Collections</h4>
+          <div className="sfmap-curation-row">
+            <input
+              value={newCollectionName}
+              onChange={(e) => setNewCollectionName(e.target.value)}
+              placeholder="New collection name"
+            />
+            <button
+              type="button"
+              className="btn"
+              disabled={!newCollectionName.trim() || mutateCollection.isPending}
+              onClick={() =>
+                void mutateCollection
+                  .mutateAsync({ op: "create", name: newCollectionName.trim() })
+                  .then(() => {
+                    setMsg(`Created collection ${newCollectionName.trim()}`);
+                    setNewCollectionName("");
+                  })
+                  .catch((e) => setMsg(e instanceof Error ? e.message : String(e)))
+              }
+            >
+              Create
+            </button>
+          </div>
+          <ul className="sfmap-curation-list">
+            {collections.map((c) => (
+              <li key={c.id}>
+                <button type="button" className="btn" onClick={() => setSelectedCollectionId(c.id)}>
+                  {selectedCollectionId === c.id ? "Selected" : "Select"}
+                </button>
+                <span className="mono">{c.name}</span>
+                <span className="factory-muted">({(c.items || []).length})</span>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={mutateCollection.isPending}
+                  onClick={() =>
+                    void mutateCollection
+                      .mutateAsync({ op: "delete", collection_id: c.id })
+                      .then(() => setMsg(`Deleted ${c.name}`))
+                      .catch((e) => setMsg(e instanceof Error ? e.message : String(e)))
+                  }
+                >
+                  Delete
+                </button>
+              </li>
+            ))}
+          </ul>
+          {selectedCollection ? (
+            <>
+              <p className="factory-muted">
+                {selectedCollection.name} items: {(selectedCollection.items || []).length}
+              </p>
+              <ul className="sfmap-curation-list">
+                {selectedCollectionItems.slice(0, 30).map((it) => (
+                  <li key={it.path}>
+                    <span className="mono">{it.path}</span>
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={mutateCollection.isPending}
+                      onClick={() =>
+                        void mutateCollection
+                          .mutateAsync({
+                            op: "remove_item",
+                            collection_id: selectedCollection.id,
+                            path: it.path,
+                          })
+                          .then(() => setMsg(`Removed item from ${selectedCollection.name}`))
+                          .catch((e) => setMsg(e instanceof Error ? e.message : String(e)))
+                      }
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+        </div>
+
+        <div>
+          <h4>Family attachments</h4>
+          <div className="sfmap-curation-row">
+            <select value={selectedFamilySlug} onChange={(e) => setSelectedFamilySlug(e.target.value)}>
+              {sourceStillFamilies.map((slug) => (
+                <option key={slug} value={slug}>
+                  {slug}
+                </option>
+              ))}
+            </select>
+          </div>
+          <ul className="sfmap-curation-list">
+            {collections.map((c) => {
+              const attached = attachedForFamily.includes(c.id);
+              return (
+                <li key={`${selectedFamilySlug}:${c.id}`}>
+                  <span className="mono">{c.name}</span>
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={!selectedFamilySlug || mutateBindings.isPending}
+                    onClick={() =>
+                      void mutateBindings
+                        .mutateAsync({
+                          op: attached ? "detach" : "attach",
+                          family_slug: selectedFamilySlug,
+                          collection_id: c.id,
+                        })
+                        .then(() => setMsg(`${attached ? "Detached" : "Attached"} ${c.name}`))
+                        .catch((e) => setMsg(e instanceof Error ? e.message : String(e)))
+                    }
+                  >
+                    {attached ? "Detach" : "Attach"}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+          {effectiveSourcesQuery.data ? (
+            <div className="factory-muted">
+              Effective sources: {effectiveSourcesQuery.data.effective_count || 0} (pool{" "}
+              {effectiveSourcesQuery.data.pool_count || 0} + added {effectiveSourcesQuery.data.added_count || 0})
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </FactoryMapAccordionSection>
+  );
+}
+
 function FactoryMapIndexView({
   data,
   families,
   pipelines,
+  promotionsByFamily,
+  promotionEntries,
+  promotionsBusy,
+  onQuickTemporary,
+  onQuickToday,
+  onQuickLongTerm,
+  onOpenPromotionEditor,
 }: {
   data: ShapeFactoryMapResponse;
   families: ShapeFactoryMapFamily[];
   pipelines: ShapeFactoryMapPipeline[];
+  promotionsByFamily?: Record<string, { scope?: string; expires_at?: string | null; intents?: string[]; note?: string | null }>;
+  promotionEntries?: Array<{
+    family_slug: string;
+    intent: string;
+    scope: string;
+    expires_at?: string | null;
+    note?: string | null;
+  }>;
+  promotionsBusy?: boolean;
+  onQuickTemporary?: (familySlug: string) => void;
+  onQuickToday?: (familySlug: string) => void;
+  onQuickLongTerm?: (familySlug: string) => void;
+  onOpenPromotionEditor?: (familySlug: string) => void;
 }) {
   const summary = data.jobs?.summary || {};
   const queue = data.queue;
@@ -1558,7 +1983,8 @@ function FactoryMapIndexView({
         </div>
       ) : null}
 
-      <QuarantineWorkflowsPanel />
+      <PromotionScoreboard entries={promotionEntries || []} />
+      <InputCurationPanel families={families} />
 
       <FactoryMapAccordionSection
         sectionId="sfmap-families"
@@ -1575,6 +2001,12 @@ function FactoryMapIndexView({
               family={family}
               jobCounts={jobCountsByFamily[family.family_slug || ""] || {}}
               activity={getFamilyActivity(family, indexCtx)}
+              promotion={promotionsByFamily?.[family.family_slug] || null}
+              busy={promotionsBusy}
+              onQuickTemporary={onQuickTemporary}
+              onQuickToday={onQuickToday}
+              onQuickLongTerm={onQuickLongTerm}
+              onOpenPromotionEditor={onOpenPromotionEditor}
             />
           ))}
         </div>
@@ -1601,6 +2033,8 @@ function FactoryMapIndexView({
           </div>
         </FactoryMapAccordionSection>
       ) : null}
+
+      <QuarantineWorkflowsPanel />
     </>
   );
 }
@@ -1950,6 +2384,8 @@ function FactoryMapFamilyView({
 
 export function DiscoveryFactoryMapApp() {
   const queryClient = useQueryClient();
+  const shapeFactoryFetchCount = useIsFetching({ queryKey: queryKeys.shapeFactory.root });
+  const shapeFactoryMutationCount = useIsMutating();
   const [route, setRoute] = useState<FactoryMapRoute>(() => parseFactoryMapRoute());
 
   useEffect(() => {
@@ -1971,8 +2407,22 @@ export function DiscoveryFactoryMapApp() {
     refetchIntervalInBackground: false,
     placeholderData: (prev) => prev,
   });
+  const promotionsQuery = useQuery({
+    queryKey: queryKeys.shapeFactory.promotions({ includeExpired: false }),
+    queryFn: () => fetchShapeFactoryTemplatePromotions(),
+    staleTime: 30_000,
+    placeholderData: (prev) => prev,
+  });
+  const setPromotionMutation = useMutation({
+    mutationFn: setShapeFactoryTemplatePromotion,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.promotionsRoot });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.mapRoot });
+    },
+  });
   const data = mapQuery.data || null;
-  const loading = mapQuery.isFetching;
+  const loading = mapQuery.isLoading && !data;
+  const refreshing = mapQuery.isFetching && !loading;
   const error =
     mapQuery.error instanceof Error
       ? mapQuery.error.message
@@ -1990,19 +2440,202 @@ export function DiscoveryFactoryMapApp() {
     route.view === "family" ? families.find((f) => f.family_slug === route.familySlug) : undefined;
   const activePipeline =
     route.view === "pipeline" ? pipelines.find((p) => p.pipeline_id === route.pipelineId) : undefined;
+  const promotionsByFamily =
+    (promotionsQuery.data?.effective as
+      | Record<string, { scope?: string; expires_at?: string | null; intents?: string[]; note?: string | null }>
+      | undefined) || {};
+  const promotionEntries = Array.isArray(promotionsQuery.data?.active_entries)
+    ? (promotionsQuery.data?.active_entries as Array<{
+        family_slug: string;
+        intent: string;
+        scope: string;
+        expires_at?: string | null;
+        note?: string | null;
+      }>)
+    : [];
+  const promotionBusy = setPromotionMutation.isPending;
+  const applyQuickPromotion = useCallback(
+    async (familySlug: string, scope: "temporary" | "long_term", ttlHours?: number) => {
+      try {
+        await setPromotionMutation.mutateAsync({
+          family_slug: familySlug,
+          intents: ["extend"],
+          scope,
+          ttl_hours: scope === "temporary" ? ttlHours : undefined,
+          note:
+            scope === "temporary"
+              ? "quick temporary promotion from factory map"
+              : "quick long-term promotion from factory map",
+          actor: "operator",
+        });
+        const suffix = scope === "temporary" ? (ttlHours ? `${Math.round(ttlHours * 100) / 100}h` : "temporary") : "long-term";
+        setPromotionToast({ kind: "ok", text: `Promoted ${familySlug} (${suffix})` });
+      } catch (e) {
+        setPromotionToast({ kind: "err", text: e instanceof Error ? e.message : String(e) });
+      }
+    },
+    [setPromotionMutation],
+  );
+  const onQuickTemporary = useCallback(
+    (familySlug: string) => {
+      void applyQuickPromotion(familySlug, "temporary", 2);
+    },
+    [applyQuickPromotion],
+  );
+  const onQuickToday = useCallback(
+    (familySlug: string) => {
+      const now = new Date();
+      const midnight = new Date(now);
+      midnight.setHours(24, 0, 0, 0);
+      const ttl = Math.max(0.25, (midnight.getTime() - now.getTime()) / 3_600_000);
+      void applyQuickPromotion(familySlug, "temporary", ttl);
+    },
+    [applyQuickPromotion],
+  );
+  const onQuickLongTerm = useCallback(
+    (familySlug: string) => {
+      void applyQuickPromotion(familySlug, "long_term");
+    },
+    [applyQuickPromotion],
+  );
+  const [promotionEditorFamily, setPromotionEditorFamily] = useState<string>("");
+  const [promotionEditorScope, setPromotionEditorScope] = useState<"temporary" | "long_term">("temporary");
+  const [promotionEditorIntents, setPromotionEditorIntents] = useState<Array<"extend" | "vary" | "derive">>(["extend"]);
+  const [promotionEditorTtl, setPromotionEditorTtl] = useState<number>(2);
+  const [promotionEditorNote, setPromotionEditorNote] = useState<string>("");
+  const [promotionEditorMsg, setPromotionEditorMsg] = useState<string>("");
+  const [promotionToast, setPromotionToast] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const promotionEditorOpen = Boolean(promotionEditorFamily);
+  useEffect(() => {
+    if (!promotionToast) return;
+    const t = window.setTimeout(() => setPromotionToast(null), 4200);
+    return () => window.clearTimeout(t);
+  }, [promotionToast]);
+  const openPromotionEditor = useCallback(
+    (familySlug: string) => {
+      const current = promotionsByFamily[familySlug];
+      const intents = (current?.intents || []).filter((v): v is "extend" | "vary" | "derive" =>
+        v === "extend" || v === "vary" || v === "derive",
+      );
+      setPromotionEditorFamily(familySlug);
+      setPromotionEditorScope(current?.scope === "long_term" ? "long_term" : "temporary");
+      setPromotionEditorIntents(intents.length ? intents : ["extend"]);
+      setPromotionEditorTtl(2);
+      setPromotionEditorNote(String(current?.note || ""));
+      setPromotionEditorMsg("");
+    },
+    [promotionsByFamily],
+  );
+  const closePromotionEditor = useCallback(() => {
+    setPromotionEditorFamily("");
+    setPromotionEditorMsg("");
+  }, []);
+  const applyPromotionEditor = useCallback(async () => {
+    if (!promotionEditorFamily || !promotionEditorIntents.length) {
+      setPromotionEditorMsg("Select at least one intent.");
+      return;
+    }
+    setPromotionEditorMsg("");
+    try {
+      await setPromotionMutation.mutateAsync({
+        family_slug: promotionEditorFamily,
+        intents: promotionEditorIntents,
+        scope: promotionEditorScope,
+        ttl_hours: promotionEditorScope === "temporary" ? promotionEditorTtl : undefined,
+        note: promotionEditorNote.trim() || undefined,
+        actor: "operator",
+      });
+      setPromotionEditorMsg("Saved.");
+      setPromotionToast({
+        kind: "ok",
+        text: `Saved ${promotionEditorFamily} (${promotionEditorScope === "temporary" ? "temporary" : "long-term"})`,
+      });
+      closePromotionEditor();
+    } catch (e) {
+      setPromotionEditorMsg(e instanceof Error ? e.message : String(e));
+      setPromotionToast({ kind: "err", text: e instanceof Error ? e.message : String(e) });
+    }
+  }, [
+    closePromotionEditor,
+    promotionEditorFamily,
+    promotionEditorIntents,
+    promotionEditorNote,
+    promotionEditorScope,
+    promotionEditorTtl,
+    setPromotionMutation,
+  ]);
+  const clearPromotionEditor = useCallback(async () => {
+    if (!promotionEditorFamily || !promotionEditorIntents.length) return;
+    setPromotionEditorMsg("");
+    try {
+      for (const scope of ["temporary", "long_term"] as const) {
+        await setPromotionMutation.mutateAsync({
+          family_slug: promotionEditorFamily,
+          intents: promotionEditorIntents,
+          scope,
+          enabled: false,
+          actor: "operator",
+        });
+      }
+      setPromotionEditorMsg("Cleared.");
+      setPromotionToast({ kind: "ok", text: `Cleared promotions for ${promotionEditorFamily}` });
+      closePromotionEditor();
+    } catch (e) {
+      setPromotionEditorMsg(e instanceof Error ? e.message : String(e));
+      setPromotionToast({ kind: "err", text: e instanceof Error ? e.message : String(e) });
+    }
+  }, [closePromotionEditor, promotionEditorFamily, promotionEditorIntents, setPromotionMutation]);
+  const statusLine = useMemo(() => {
+    if (loading) return "Loading factory map cache…";
+    const details: string[] = [];
+    if (shapeFactoryFetchCount > 0) {
+      details.push(
+        `${shapeFactoryFetchCount} background fetch${shapeFactoryFetchCount === 1 ? "" : "es"}`,
+      );
+    }
+    if (shapeFactoryMutationCount > 0) {
+      details.push(
+        `${shapeFactoryMutationCount} write${shapeFactoryMutationCount === 1 ? "" : "s"} in flight`,
+      );
+    }
+    if (details.length > 0) return `Syncing: ${details.join(" · ")}`;
+    return `Cache warm · last sync ${formatStatusTimestamp(mapQuery.dataUpdatedAt)}`;
+  }, [loading, mapQuery.dataUpdatedAt, shapeFactoryFetchCount, shapeFactoryMutationCount]);
 
   return (
-    <FactoryMapShell route={route} loading={loading} onRefresh={() => void reload()}>
+    <FactoryMapShell
+      route={route}
+      loading={loading}
+      refreshing={refreshing}
+      statusLine={statusLine}
+      onRefresh={() => void reload()}
+    >
       {error ? (
         <div className="factory-error" role="alert">
           {error}
+        </div>
+      ) : null}
+      {promotionToast ? (
+        <div className={promotionToast.kind === "ok" ? "sfmap-promo-toast sfmap-promo-toast--ok" : "sfmap-promo-toast sfmap-promo-toast--err"}>
+          {promotionToast.text}
         </div>
       ) : null}
 
       <div className="discovery-factory-map-scroll">
         {data?.ok ? (
           route.view === "index" ? (
-            <FactoryMapIndexView data={data} families={families} pipelines={pipelines} />
+            <FactoryMapIndexView
+              data={data}
+              families={families}
+              pipelines={pipelines}
+              promotionsByFamily={promotionsByFamily}
+              promotionEntries={promotionEntries}
+              promotionsBusy={promotionBusy}
+              onQuickTemporary={onQuickTemporary}
+              onQuickToday={onQuickToday}
+              onQuickLongTerm={onQuickLongTerm}
+              onOpenPromotionEditor={openPromotionEditor}
+            />
           ) : route.view === "pipeline" ? (
             activePipeline ? (
               <FactoryMapPipelineView
@@ -2039,6 +2672,82 @@ export function DiscoveryFactoryMapApp() {
           <div className="factory-muted">Loading factory map…</div>
         ) : null}
       </div>
+      {promotionEditorOpen ? (
+        <div className="sfmap-promo-modal-backdrop" role="dialog" aria-modal="true" aria-label="Promotion editor">
+          <div className="sfmap-promo-modal">
+            <h3>Promote {promotionEditorFamily}</h3>
+            <div className="sfmap-promo-modal__row">
+              <label>
+                <input
+                  type="radio"
+                  name="promo-scope"
+                  checked={promotionEditorScope === "temporary"}
+                  onChange={() => setPromotionEditorScope("temporary")}
+                />{" "}
+                Temporary
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  name="promo-scope"
+                  checked={promotionEditorScope === "long_term"}
+                  onChange={() => setPromotionEditorScope("long_term")}
+                />{" "}
+                Long-term
+              </label>
+            </div>
+            <div className="sfmap-promo-modal__row">
+              <span className="factory-muted">Intents</span>
+              {(["extend", "vary", "derive"] as const).map((intent) => (
+                <label key={intent}>
+                  <input
+                    type="checkbox"
+                    checked={promotionEditorIntents.includes(intent)}
+                    onChange={(e) => {
+                      setPromotionEditorIntents((prev) => {
+                        const next = e.target.checked ? [...prev, intent] : prev.filter((v) => v !== intent);
+                        return Array.from(new Set(next));
+                      });
+                    }}
+                  />{" "}
+                  {intent}
+                </label>
+              ))}
+            </div>
+            {promotionEditorScope === "temporary" ? (
+              <div className="sfmap-promo-modal__row">
+                <span className="factory-muted">Duration</span>
+                <select value={String(promotionEditorTtl)} onChange={(e) => setPromotionEditorTtl(Number(e.target.value) || 2)}>
+                  <option value="2">2h</option>
+                  <option value="6">6h</option>
+                  <option value="12">12h</option>
+                  <option value="24">24h</option>
+                </select>
+              </div>
+            ) : null}
+            <div className="sfmap-promo-modal__row">
+              <input
+                type="text"
+                placeholder="Note (optional)"
+                value={promotionEditorNote}
+                onChange={(e) => setPromotionEditorNote(e.target.value)}
+              />
+            </div>
+            {promotionEditorMsg ? <p className="factory-muted">{promotionEditorMsg}</p> : null}
+            <div className="sfmap-promo-modal__actions">
+              <button type="button" className="btn" disabled={promotionBusy} onClick={() => void applyPromotionEditor()}>
+                {promotionBusy ? "Saving…" : "Save promotion"}
+              </button>
+              <button type="button" className="btn" disabled={promotionBusy} onClick={() => void clearPromotionEditor()}>
+                Clear selected intents
+              </button>
+              <button type="button" className="btn" onClick={closePromotionEditor}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </FactoryMapShell>
   );
 }

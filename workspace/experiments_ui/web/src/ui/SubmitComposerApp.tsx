@@ -6,6 +6,7 @@ import {
   finishShapeFactoryEdit,
   listShapeFactoryClipsLibrary,
   mintIdentityStill,
+  updatePendingShapeFactoryBinding,
   updatePendingShapeFactoryTrim,
   type IdentityStillCandidate,
   type IdentityStillMintTarget,
@@ -117,6 +118,8 @@ function SubmitEditJobApp({
   const [currentTime, setCurrentTime] = useState(0);
   const [trimMode, setTrimMode] = useState<VideoTrimPlaybackMode>("repeat");
   const [finished, setFinished] = useState(false);
+  const [sourcePathDraft, setSourcePathDraft] = useState("");
+  const [promptProfileDraft, setPromptProfileDraft] = useState("");
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const releasedRef = useRef(false);
 
@@ -175,6 +178,12 @@ function SubmitEditJobApp({
     [editJob, originBack.href],
   );
 
+  const refreshSnapshot = useCallback(async () => {
+    const doc = await fetchShapeFactoryJobEdit({ jobKey: editJob });
+    setSnap(doc);
+    return doc;
+  }, [editJob]);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -187,9 +196,8 @@ function SubmitEditJobApp({
           reason: "begin_edit",
           source_surface: "submit_edit",
         });
-        const doc = await fetchShapeFactoryJobEdit({ jobKey: editJob });
+        const doc = await refreshSnapshot();
         if (cancelled) return;
-        setSnap(doc);
         const win = doc.vhs_window || {};
         const mi = win.mark_in != null ? Number(win.mark_in) : null;
         const mo = win.mark_out != null ? Number(win.mark_out) : null;
@@ -206,7 +214,25 @@ function SubmitEditJobApp({
     return () => {
       cancelled = true;
     };
-  }, [editJob]);
+  }, [editJob, refreshSnapshot]);
+
+  useEffect(() => {
+    const sourceSlot = String(snap?.source?.slot || "").trim();
+    const sourceBinding =
+      sourceSlot && snap?.bindings && typeof snap.bindings === "object"
+        ? (snap.bindings[sourceSlot] as { path?: string; relpath?: string } | undefined)
+        : undefined;
+    const sourceSeed = String(
+      sourceBinding?.relpath || sourceBinding?.path || snap?.source?.relpath || snap?.source?.path || "",
+    ).trim();
+    setSourcePathDraft(sourceSeed);
+    const promptSeed = String(
+      (snap?.bindings?.prompt_profile as { relpath?: string; path?: string } | undefined)?.relpath ||
+        (snap?.bindings?.prompt_profile as { relpath?: string; path?: string } | undefined)?.path ||
+        "",
+    ).trim();
+    setPromptProfileDraft(promptSeed);
+  }, [snap?.job_key, snap?.source?.slot, snap?.source?.path, snap?.source?.relpath, snap?.bindings]);
 
   useEffect(() => {
     const onUnload = () => {
@@ -254,6 +280,29 @@ function SubmitEditJobApp({
     }).catch((err) => {
       console.warn("update-pending-trim failed", err);
     });
+  };
+
+  const applyBindingEdit = async (slot: "source_still" | "source_video" | "prompt_profile", value: string) => {
+    const trimmed = String(value || "").trim();
+    if (!trimmed || busy || finished) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      await updatePendingShapeFactoryBinding({
+        job_key: editJob,
+        slot,
+        path: trimmed,
+        actor: "operator",
+        reason: `binding_adjustment:${slot}`,
+        source_surface: "submit_edit",
+      });
+      await refreshSnapshot();
+      setMsg(`Updated ${slot}`);
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
   };
 
   if (bootError) {
@@ -395,6 +444,52 @@ function SubmitEditJobApp({
               Editing this run in place. Pending drain will not queue it until you finish.
               {activeClip ? ` · clip ${activeClip.clip_id}` : ""}
             </p>
+            <div className="submit-composer__edit-bindings">
+              {snap?.source?.slot === "source_still" || snap?.source?.slot === "source_video" ? (
+                <label className="submit-composer__edit-binding">
+                  <span>Source ({snap?.source?.slot})</span>
+                  <div className="submit-composer__edit-binding-row">
+                    <input
+                      type="text"
+                      value={sourcePathDraft}
+                      disabled={busy || finished}
+                      onChange={(e) => setSourcePathDraft(e.target.value)}
+                      placeholder={snap?.source?.path || "input/foo.jpeg"}
+                    />
+                    <button
+                      type="button"
+                      className="drt-btn"
+                      disabled={busy || finished || !sourcePathDraft.trim()}
+                      onClick={() => void applyBindingEdit(snap?.source?.slot as "source_still" | "source_video", sourcePathDraft)}
+                    >
+                      Apply
+                    </button>
+                  </div>
+                </label>
+              ) : null}
+              {snap?.bindings?.prompt_profile ? (
+                <label className="submit-composer__edit-binding">
+                  <span>Prompt profile</span>
+                  <div className="submit-composer__edit-binding-row">
+                    <input
+                      type="text"
+                      value={promptProfileDraft}
+                      disabled={busy || finished}
+                      onChange={(e) => setPromptProfileDraft(e.target.value)}
+                      placeholder="input/prompt-profiles/..."
+                    />
+                    <button
+                      type="button"
+                      className="drt-btn"
+                      disabled={busy || finished || !promptProfileDraft.trim()}
+                      onClick={() => void applyBindingEdit("prompt_profile", promptProfileDraft)}
+                    >
+                      Apply
+                    </button>
+                  </div>
+                </label>
+              ) : null}
+            </div>
             <div className="work-product-quick-queue__actions" role="group" aria-label="Finish edit">
               <button
                 type="button"
@@ -1004,11 +1099,16 @@ function SubmitAdvanceComposerApp() {
         onChange={(e) => onChange(e.target.value)}
       >
         {opts.length === 0 ? <option value="">Loading…</option> : null}
-        {opts.map((f) => (
-          <option key={f.slug} value={f.slug}>
-            {f.slug}
-          </option>
-        ))}
+        {opts.map((f) => {
+          const promoScope = String(f.promotion?.scope || "").trim();
+          const promoSuffix = promoScope === "temporary" ? " [TEMP]" : promoScope === "long_term" ? " [DEFAULT]" : "";
+          return (
+            <option key={f.slug} value={f.slug}>
+              {f.slug}
+              {promoSuffix}
+            </option>
+          );
+        })}
       </select>
     </label>
   );

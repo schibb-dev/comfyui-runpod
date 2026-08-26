@@ -40,3 +40,17 @@ output_prefix_root: og/%date:yyyy-MM-dd%/FB9_GEX2_shape
 # Fast iteration: shape_factory generate --dev (see .data/shapes/dev-fast.yaml)
 
 rules: []
+
+# Production default: reduce generation steps for this family.
+ui_defaults:
+  profile_id: steps-25
+  ui_nodes:
+    82:
+      type: mxSlider
+      title: Steps
+      widgets_values: [25, 25, 0]
+  api_nodes:
+    "82":
+      inputs:
+        Xi: 25
+        Xf: 25

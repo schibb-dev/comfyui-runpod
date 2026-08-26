@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import comfy_meta_lib as cml
 import clean_comfy_workflow as ccw
+from http_retry import http_json_with_retry
 
 
 def _now_stamp() -> str:
@@ -1402,14 +1403,7 @@ def generate_experiment(
 
 
 def _http_json(method: str, url: str, payload: Optional[Dict[str, Any]] = None, timeout_s: int = 30) -> Any:
-    data = None
-    headers = {"Content-Type": "application/json"}
-    if payload is not None:
-        data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-        raw = resp.read()
-    return json.loads(raw.decode("utf-8", "replace"))
+    return http_json_with_retry(method=method, url=url, payload=payload, timeout_s=timeout_s)
 
 
 def _read_prompt_id_from_submit(submit_path: Path) -> Optional[str]:

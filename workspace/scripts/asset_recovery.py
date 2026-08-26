@@ -20,9 +20,9 @@ import json
 import os
 import re
 import sys
-import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from http_retry import urlopen_read_with_retry
 
 _HERE = str(Path(__file__).resolve().parent)
 if _HERE not in sys.path:
@@ -59,9 +59,14 @@ def _search_roots(
 
 
 def _http_get(url: str, *, timeout: int = 45) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": "comfyui-runpod-recover/1"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read()
+    return urlopen_read_with_retry(
+        method="GET",
+        url=url,
+        headers={"User-Agent": "comfyui-runpod-recover/1"},
+        timeout_s=timeout,
+        retry_attempts=3,
+        retry_backoff_s=0.35,
+    )
 
 
 def _verify_sha(data: bytes, sha: Optional[str]) -> bool:

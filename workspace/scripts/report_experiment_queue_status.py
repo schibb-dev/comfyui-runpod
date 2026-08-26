@@ -20,11 +20,10 @@ import argparse
 import json
 import sys
 import time
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
+from http_retry import http_json_with_retry
 
 
 def _read_json(path: Path) -> Any:
@@ -47,10 +46,7 @@ def _resolve_repo_root() -> Path:
 
 
 def _http_json(url: str, *, timeout_s: int = 10) -> Any:
-    req = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-        raw = resp.read()
-    return json.loads(raw.decode("utf-8", "replace"))
+    return http_json_with_retry(method="GET", url=url, timeout_s=timeout_s)
 
 
 def fetch_queue_prompt_ids(server: str) -> Tuple[Set[str], Set[str]]:

@@ -1130,11 +1130,24 @@ function WorkProductViewer({
             ) : null}
           </>
         ) : showRunningLive ? (
-          <ComfyLivePreview
-            promptId={promptId}
-            submittedAt={item.submitted_at || item.created_at}
-            showMetrics={false}
-          />
+          <div className="work-product-viewer__live-plus-source">
+            <ComfyLivePreview
+              className="work-product-viewer__live-primary"
+              promptId={promptId}
+              submittedAt={item.submitted_at || item.created_at}
+              showMetrics={false}
+            />
+            {previewUrls.thumb ? (
+              <div className="work-product-viewer__live-source" title={previewUrls.label}>
+                <img
+                  className="work-product-viewer__live-source-img"
+                  src={previewUrls.thumb}
+                  alt={previewUrls.label || "source"}
+                />
+                <span className="work-product-live__badge work-product-live__badge--queued">source</span>
+              </div>
+            ) : null}
+          </div>
         ) : queuedSourcePlayUrl ? (
           <div className="work-product-viewer__queued-source">
             <div className="work-product-viewer__queued-source-frame">
@@ -1264,7 +1277,7 @@ function WorkProductViewer({
           <div className="work-product-viewer__empty">No output yet ({item.status || "pending"})</div>
         )}
       </div>
-      {(sourceUrl || sourceThumb) && !showSourceThumb && !queuedSourcePlayUrl && (
+      {(sourceUrl || sourceThumb) && !showSourceThumb && !queuedSourcePlayUrl && !showRunningLive && (
         <div className="work-product-viewer__source" title={source?.basename || "source"}>
           {sourceUrl ? (
             <>

@@ -16,12 +16,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from experiment_queue_manager import run_one_iteration
+from http_retry import http_json_with_retry
 
 
 def _read_json(path: Path) -> Any:
@@ -42,13 +42,7 @@ def _prompt_id_from_submit(submit_path: Path) -> Optional[str]:
 def fetch_queue_prompt_ids(server: str, timeout_s: int = 10) -> Optional[Set[str]]:
     """Return set of prompt_ids currently in ComfyUI queue (running + pending), or None on error."""
     try:
-        req = urllib.request.Request(
-            f"{server.rstrip('/')}/queue",
-            headers={"Accept": "application/json"},
-            method="GET",
-        )
-        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-            obj = json.loads(resp.read().decode("utf-8", "replace"))
+        obj = http_json_with_retry(method="GET", url=f"{server.rstrip('/')}/queue", timeout_s=timeout_s)
     except Exception:
         return None
     if not isinstance(obj, dict):

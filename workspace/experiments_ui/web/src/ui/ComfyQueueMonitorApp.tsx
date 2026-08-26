@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   comfyCancel,
   comfyClear,
@@ -7,6 +8,7 @@ import {
   fetchQueue,
   fetchQueueLedgerEvents,
   fetchQueueLedgerStatus,
+  moveQueuePrompt,
   saveQueueItemForLater,
   setQueueLedgerControl,
 } from "./api";
@@ -15,7 +17,7 @@ import { discoveryLibraryHref, submitHref, workbenchHref } from "./discoveryDeep
 import { PageHeader } from "./PageHeader";
 import { PipelineMediaPlayer, vhsWindowFromKeyParams } from "./PipelineMediaPlayer";
 import { PipelineFilterRow, PipelineList, PipelineScreen, PipelineScroll } from "./PipelineScreen";
-import { getSessionListCache, setSessionListCache } from "./sessionListCache";
+import { queryKeys } from "./queryKeys";
 import type {
   ComfyHistoryItem,
   ComfyLogEntry,
@@ -24,17 +26,7 @@ import type {
   QueueLedgerEvent,
   QueueLedgerEntry,
   QueueLedgerStatus,
-  QueueResponse,
 } from "./types";
-
-const COMFY_QUEUE_CACHE_KEY = "comfy-queue";
-
-type ComfyQueueCachePayload = {
-  data: QueueResponse | null;
-  history: ComfyHistoryItem[];
-  ledger: QueueLedgerStatus | null;
-  ledgerEvents: QueueLedgerEvent[];
-};
 
 function basename(rel?: string | null): string {
   const p = (rel || "").replace(/\\/g, "/");
@@ -323,13 +315,18 @@ function QueuePipelineRow({
 function QueueItemRow({
   item,
   kind,
+  movingPromptId,
+  onMovePrompt,
   onRefresh,
 }: {
   item: QueueComfyItem;
   kind: "running" | "pending";
+  movingPromptId?: string | null;
+  onMovePrompt?: (item: QueueComfyItem, to: "front" | "back") => Promise<void>;
   onRefresh: () => void;
 }) {
   const pid = item.prompt_id ?? "";
+  const moveBusy = Boolean(pid) && movingPromptId === pid;
   const thumb = queueThumb(item);
   const videoUrl = queueVideoUrl(item);
   const jobKey = String(item.job_key || "").trim() || null;
@@ -385,7 +382,7 @@ function QueueItemRow({
         <>
           <button
             type="button"
-            disabled={!pid}
+            disabled={!pid || moveBusy}
             title={kind === "running" ? "Interrupt current ComfyUI execution" : "Remove from pending queue"}
             onClick={() => {
               void (async () => {
@@ -399,6 +396,7 @@ function QueueItemRow({
           </button>
           <button
             type="button"
+            disabled={moveBusy}
             title="Save this queue item for later"
             onClick={() => {
               void saveQueueItemForLater({
@@ -416,6 +414,30 @@ function QueueItemRow({
           >
             Save
           </button>
+          {kind === "pending" && pid ? (
+            <>
+              <button
+                type="button"
+                disabled={moveBusy}
+                title="Move this waiting prompt to the front of the queue"
+                onClick={() => {
+                  void onMovePrompt?.(item, "front");
+                }}
+              >
+                {moveBusy ? "Moving…" : "Move to top"}
+              </button>
+              <button
+                type="button"
+                disabled={moveBusy}
+                title="Move this waiting prompt to the back of the queue"
+                onClick={() => {
+                  void onMovePrompt?.(item, "back");
+                }}
+              >
+                {moveBusy ? "Moving…" : "Move to bottom"}
+              </button>
+            </>
+          ) : null}
           <a
             className="pipeline-row__link"
             href={workbenchUrl}
@@ -1014,20 +1036,16 @@ function QueueLedgerPanel({
   );
 }
 
+const QUEUE_HISTORY_LIMIT = 80;
+const LEDGER_EVENTS_LIMIT = 30;
+const QUEUE_POLL_MS = 5000;
+
 export function ComfyQueueMonitorApp() {
-  const initialCache = getSessionListCache<ComfyQueueCachePayload>(COMFY_QUEUE_CACHE_KEY);
-  const [data, setData] = useState<QueueResponse | null>(() => initialCache?.value.data ?? null);
-  const [history, setHistory] = useState<ComfyHistoryItem[]>(() => initialCache?.value.history ?? []);
-  const [ledger, setLedger] = useState<QueueLedgerStatus | null>(() => initialCache?.value.ledger ?? null);
-  const [ledgerEvents, setLedgerEvents] = useState<QueueLedgerEvent[]>(
-    () => initialCache?.value.ledgerEvents ?? [],
-  );
-  const [error, setError] = useState("");
-  const [ledgerErr, setLedgerErr] = useState("");
+  const queryClient = useQueryClient();
   const [ledgerNotice, setLedgerNotice] = useState("");
-  const [loading, setLoading] = useState(() => !initialCache);
-  const [refreshing, setRefreshing] = useState(false);
-  const [ledgerBusy, setLedgerBusy] = useState(false);
+  const [ledgerActionErr, setLedgerActionErr] = useState("");
+  const [queueActionMsg, setQueueActionMsg] = useState("");
+  const [movingPromptId, setMovingPromptId] = useState<string | null>(null);
   const [pageTab, setPageTab] = useState<"queue" | "ledger">("queue");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [sortMode, setSortMode] = useState<SortMode>("newest");
@@ -1036,82 +1054,108 @@ export function ComfyQueueMonitorApp() {
     pending: true,
     history: true,
   });
-  const hasDataRef = useRef(Boolean(initialCache?.value.data || (initialCache?.value.history.length ?? 0)));
-  hasDataRef.current = Boolean(data || history.length);
-  const refreshGenRef = useRef(0);
+  const snapshotQuery = useQuery({
+    queryKey: queryKeys.queue.snapshot,
+    queryFn: () => fetchQueue(),
+    staleTime: 5_000,
+    refetchInterval: QUEUE_POLL_MS,
+    refetchIntervalInBackground: false,
+    placeholderData: (prev) => prev,
+  });
+  const historyQuery = useQuery({
+    queryKey: queryKeys.queue.history,
+    queryFn: () => fetchComfyHistory(QUEUE_HISTORY_LIMIT),
+    staleTime: 5_000,
+    refetchInterval: QUEUE_POLL_MS,
+    refetchIntervalInBackground: false,
+    placeholderData: (prev) => prev,
+  });
+  const ledgerStatusQuery = useQuery({
+    queryKey: queryKeys.queue.ledgerStatus,
+    queryFn: () => fetchQueueLedgerStatus(),
+    staleTime: 5_000,
+    refetchInterval: QUEUE_POLL_MS,
+    refetchIntervalInBackground: false,
+    placeholderData: (prev) => prev,
+  });
+  const ledgerEventsQuery = useQuery({
+    queryKey: queryKeys.queue.ledgerEvents(LEDGER_EVENTS_LIMIT),
+    queryFn: () => fetchQueueLedgerEvents(LEDGER_EVENTS_LIMIT),
+    staleTime: 5_000,
+    refetchInterval: QUEUE_POLL_MS,
+    refetchIntervalInBackground: false,
+    placeholderData: (prev) => prev,
+  });
+  const ledgerControlMutation = useMutation({
+    mutationFn: (action: QueueLedgerControlAction) => setQueueLedgerControl(action),
+  });
+  const movePromptMutation = useMutation({
+    mutationFn: moveQueuePrompt,
+  });
 
-  const refresh = async (opts?: { soft?: boolean }) => {
-    const soft =
-      opts?.soft === true ||
-      hasDataRef.current ||
-      Boolean(getSessionListCache<ComfyQueueCachePayload>(COMFY_QUEUE_CACHE_KEY));
-    const gen = ++refreshGenRef.current;
-    if (soft) setRefreshing(true);
-    else setLoading(true);
-    setError("");
-    try {
-      const [q, h, led, ev] = await Promise.all([
-        fetchQueue(),
-        fetchComfyHistory(80),
-        fetchQueueLedgerStatus().catch((e) => {
-          setLedgerErr(e instanceof Error ? e.message : String(e));
-          return null;
-        }),
-        fetchQueueLedgerEvents(30).catch(() => null),
-      ]);
-      if (gen !== refreshGenRef.current) return;
-      const nextHistory = Array.isArray(h.items) ? h.items : [];
-      const prev = getSessionListCache<ComfyQueueCachePayload>(COMFY_QUEUE_CACHE_KEY)?.value;
-      setData(q);
-      setHistory(nextHistory);
-      if (led) {
-        setLedger(led);
-        setLedgerErr("");
-      }
-      if (ev && Array.isArray(ev.events)) {
-        setLedgerEvents(ev.events);
-      }
-      setSessionListCache<ComfyQueueCachePayload>(COMFY_QUEUE_CACHE_KEY, {
-        data: q,
-        history: nextHistory,
-        ledger: led ?? prev?.ledger ?? null,
-        ledgerEvents: ev && Array.isArray(ev.events) ? ev.events : prev?.ledgerEvents ?? [],
-      });
-    } catch (e) {
-      if (gen !== refreshGenRef.current) return;
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      if (gen !== refreshGenRef.current) return;
-      if (soft) setRefreshing(false);
-      else setLoading(false);
-    }
+  const data = snapshotQuery.data ?? null;
+  const history = Array.isArray(historyQuery.data?.items) ? historyQuery.data.items : [];
+  const ledger = ledgerStatusQuery.data ?? null;
+  const ledgerEvents = Array.isArray(ledgerEventsQuery.data?.events) ? ledgerEventsQuery.data.events : [];
+  const hasData = Boolean(data || history.length || ledger || ledgerEvents.length);
+  const loading = !hasData && (snapshotQuery.isLoading || historyQuery.isLoading);
+  const refreshing =
+    hasData &&
+    (snapshotQuery.isFetching || historyQuery.isFetching || ledgerStatusQuery.isFetching || ledgerEventsQuery.isFetching);
+  const errorSource = snapshotQuery.error ?? historyQuery.error;
+  const error = errorSource instanceof Error ? errorSource.message : "";
+  const ledgerErrSource = ledgerActionErr || (ledgerStatusQuery.error instanceof Error ? ledgerStatusQuery.error.message : "");
+  const ledgerBusy = ledgerControlMutation.isPending;
+
+  const refresh = async () => {
+    setLedgerActionErr("");
+    await Promise.all([
+      snapshotQuery.refetch(),
+      historyQuery.refetch(),
+      ledgerStatusQuery.refetch(),
+      ledgerEventsQuery.refetch(),
+    ]);
   };
+
+  const invalidateQueue = () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.queue.snapshot }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.queue.history }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.queue.ledgerRoot }),
+    ]);
 
   const runLedgerAction = async (action: QueueLedgerControlAction) => {
-    setLedgerBusy(true);
-    setLedgerErr("");
+    setLedgerActionErr("");
     setLedgerNotice("");
     try {
-      const res = await setQueueLedgerControl(action);
+      const res = await ledgerControlMutation.mutateAsync(action);
       if (res.note) setLedgerNotice(res.note);
-      await refresh({ soft: true });
+      await invalidateQueue();
     } catch (e) {
-      setLedgerErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLedgerBusy(false);
+      setLedgerActionErr(e instanceof Error ? e.message : String(e));
     }
   };
 
-  useEffect(() => {
-    void refresh({ soft: Boolean(initialCache) });
-    const t = window.setInterval(() => {
-      if (document.visibilityState === "hidden") return;
-      void refresh({ soft: true });
-    }, 5000);
-    return () => window.clearInterval(t);
-    // Mount + poll only; refresh closes over setters.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const movePendingPrompt = async (item: QueueComfyItem, to: "front" | "back") => {
+    const pid = String(item.prompt_id || "").trim();
+    if (!pid) return;
+    setMovingPromptId(pid);
+    setQueueActionMsg("");
+    try {
+      await movePromptMutation.mutateAsync({
+        prompt_id: pid,
+        to,
+        client_id: "experiments-ui.queue-reorder",
+      });
+      setQueueActionMsg(to === "front" ? `Moved ${shortId(pid, 14)} to top` : `Moved ${shortId(pid, 14)} to bottom`);
+      await invalidateQueue();
+    } catch (e) {
+      setQueueActionMsg(e instanceof Error ? e.message : String(e));
+      await invalidateQueue();
+    } finally {
+      setMovingPromptId(null);
+    }
+  };
 
   const runningRaw = data?.comfyui?.running ?? [];
   const pendingRaw = data?.comfyui?.pending ?? [];
@@ -1184,8 +1228,8 @@ export function ComfyQueueMonitorApp() {
             ) : null}
             <button
               type="button"
-              onClick={() => void refresh({ soft: hasDataRef.current })}
-              disabled={loading && !hasDataRef.current}
+              onClick={() => void refresh()}
+              disabled={loading && !hasData}
             >
               {refreshing ? "Updating…" : "Refresh"}
             </button>
@@ -1196,7 +1240,7 @@ export function ComfyQueueMonitorApp() {
                 onClick={() => {
                   void (async () => {
                     await comfyClear();
-                    await refresh({ soft: true });
+                    await invalidateQueue();
                   })();
                 }}
               >
@@ -1332,6 +1376,7 @@ export function ComfyQueueMonitorApp() {
             ) : null}
           </div>
           {error ? <div className="queue-monitor-error">{error}</div> : null}
+          {queueActionMsg ? <div className="queue-monitor-error">{queueActionMsg}</div> : null}
           <div className="queue-monitor-split">
             <PipelineScroll>
               <PipelineList>
@@ -1344,7 +1389,8 @@ export function ComfyQueueMonitorApp() {
                           key={`${item.prompt_id ?? "run"}:${i}`}
                           item={item}
                           kind="running"
-                          onRefresh={() => void refresh({ soft: true })}
+                          movingPromptId={movingPromptId}
+                          onRefresh={() => void invalidateQueue()}
                         />
                       ))
                     ) : (
@@ -1361,7 +1407,9 @@ export function ComfyQueueMonitorApp() {
                           key={`${item.prompt_id ?? "pend"}:${i}`}
                           item={item}
                           kind="pending"
-                          onRefresh={() => void refresh({ soft: true })}
+                          movingPromptId={movingPromptId}
+                          onMovePrompt={movePendingPrompt}
+                          onRefresh={() => void invalidateQueue()}
                         />
                       ))
                     ) : (
@@ -1408,7 +1456,7 @@ export function ComfyQueueMonitorApp() {
             status={ledger}
             events={ledgerEvents}
             busy={ledgerBusy}
-            error={ledgerErr}
+            error={ledgerErrSource}
             notice={ledgerNotice}
             onAction={(a) => void runLedgerAction(a)}
           />

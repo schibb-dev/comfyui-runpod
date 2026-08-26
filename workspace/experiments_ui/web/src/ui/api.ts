@@ -51,8 +51,14 @@ import type {
   ShapeFactoryDiscardResponse,
   ShapeFactoryUpdatePendingTrimRequest,
   ShapeFactoryUpdatePendingTrimResponse,
+  ShapeFactoryUpdatePendingBindingRequest,
+  ShapeFactoryUpdatePendingBindingResponse,
   ShapeFactoryQuarantineListResponse,
   ShapeFactoryQuarantineReleaseResponse,
+  ShapeFactoryTemplatePromotionsResponse,
+  InputCurationStateResponse,
+  InputCurationStillsResponse,
+  InputCurationEffectiveSourcesResponse,
   ShapeFactoryPromptProfile,
   ShapeFactoryMapQueueOverrides,
   FutureRunDraft,
@@ -77,6 +83,8 @@ import type {
   QueueLedgerControlResponse,
   QueueLedgerEventsResponse,
   QueueLedgerStatus,
+  QueueMovePromptRequest,
+  QueueMovePromptResponse,
   WorkItemsListResponse,
   WorkItemsCreateResponse,
   WorkItemsCancelResponse,
@@ -274,6 +282,142 @@ export async function releaseShapeFactoryQuarantine(body: {
     const detail = [j.error, j.detail].filter(Boolean).join(": ");
     throw new Error(
       `POST /api/shape-factory/quarantine/release failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function fetchShapeFactoryTemplatePromotions(opts?: {
+  include_expired?: boolean;
+}): Promise<ShapeFactoryTemplatePromotionsResponse> {
+  const sp = new URLSearchParams();
+  if (opts?.include_expired) sp.set("include_expired", "1");
+  const qs = sp.toString();
+  const r = await fetch(`/api/shape-factory/template-promotions${qs ? `?${qs}` : ""}`);
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryTemplatePromotionsResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET /api/shape-factory/template-promotions failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function setShapeFactoryTemplatePromotion(body: {
+  family_slug: string;
+  intents?: Array<"extend" | "vary" | "derive">;
+  intent?: "extend" | "vary" | "derive";
+  scope: "temporary" | "long_term";
+  enabled?: boolean;
+  ttl_hours?: number;
+  note?: string;
+  actor?: string;
+}): Promise<ShapeFactoryTemplatePromotionsResponse> {
+  const r = await fetch("/api/shape-factory/template-promotions/set", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryTemplatePromotionsResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST /api/shape-factory/template-promotions/set failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function fetchShapeFactoryInputCurationState(): Promise<InputCurationStateResponse> {
+  const r = await fetch("/api/shape-factory/input-curation/state");
+  const j = (await r.json().catch(() => ({}))) as InputCurationStateResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET /api/shape-factory/input-curation/state failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function fetchShapeFactoryInputCurationStills(opts?: {
+  q?: string;
+  limit?: number;
+  offset?: number;
+  scan?: boolean;
+}): Promise<InputCurationStillsResponse> {
+  const sp = new URLSearchParams();
+  if (opts?.q?.trim()) sp.set("q", opts.q.trim());
+  if (opts?.limit != null) sp.set("limit", String(opts.limit));
+  if (opts?.offset != null) sp.set("offset", String(opts.offset));
+  if (opts?.scan) sp.set("scan", "1");
+  const qs = sp.toString();
+  const r = await fetch(`/api/shape-factory/input-curation/stills${qs ? `?${qs}` : ""}`);
+  const j = (await r.json().catch(() => ({}))) as InputCurationStillsResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET /api/shape-factory/input-curation/stills failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function fetchShapeFactoryInputCurationEffectiveSources(
+  familySlug: string,
+): Promise<InputCurationEffectiveSourcesResponse> {
+  const sp = new URLSearchParams({ family_slug: familySlug });
+  const r = await fetch(`/api/shape-factory/input-curation/effective-sources?${sp.toString()}`);
+  const j = (await r.json().catch(() => ({}))) as InputCurationEffectiveSourcesResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET /api/shape-factory/input-curation/effective-sources failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function mutateShapeFactoryInputCollection(body: {
+  op: "create" | "rename" | "delete" | "add_item" | "remove_item";
+  collection_id?: string;
+  name?: string;
+  description?: string;
+  path?: string;
+  note?: string;
+}): Promise<InputCurationStateResponse> {
+  const r = await fetch("/api/shape-factory/input-curation/collections", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as InputCurationStateResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST /api/shape-factory/input-curation/collections failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function mutateShapeFactoryInputBindings(body: {
+  op: "attach" | "detach" | "set";
+  family_slug: string;
+  collection_id?: string;
+  collection_ids?: string[];
+}): Promise<InputCurationStateResponse> {
+  const r = await fetch("/api/shape-factory/input-curation/bindings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as InputCurationStateResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST /api/shape-factory/input-curation/bindings failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
     );
   }
   return j;
@@ -1056,6 +1200,24 @@ export async function updatePendingShapeFactoryTrim(
   return j;
 }
 
+export async function updatePendingShapeFactoryBinding(
+  req: ShapeFactoryUpdatePendingBindingRequest,
+): Promise<ShapeFactoryUpdatePendingBindingResponse> {
+  const r = await fetch("/api/shape-factory/update-pending-binding", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryUpdatePendingBindingResponse;
+  if (!r.ok || !j.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST /api/shape-factory/update-pending-binding failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
 export type ShapeFactoryClip = {
   clip_id: string;
   parent_content_id: string;
@@ -1669,6 +1831,20 @@ export async function comfyCancel(req: ComfyCancelRequest): Promise<ComfyCancelR
     throw new Error(`POST /api/queue/comfy-cancel failed: ${r.status}${t ? `\n${t}` : ""}`);
   }
   return (await r.json()) as ComfyCancelResponse;
+}
+
+export async function moveQueuePrompt(req: QueueMovePromptRequest): Promise<QueueMovePromptResponse> {
+  const r = await fetch("/api/queue/move-prompt", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  const j = (await r.json().catch(() => ({}))) as QueueMovePromptResponse & { error?: string };
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`POST /api/queue/move-prompt failed: ${r.status}${detail ? `: ${detail}` : ""}`);
+  }
+  return j;
 }
 
 export async function fetchWip(dir?: string): Promise<WipResponse> {

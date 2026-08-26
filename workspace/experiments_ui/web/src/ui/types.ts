@@ -152,6 +152,21 @@ export type QueueSubmitPromptResponse = {
 export type ComfyCancelRequest = { prompt_id: string; kind: "pending" | "running" };
 export type ComfyCancelResponse = { ok: boolean; kind: "pending" | "running"; prompt_id: string; result?: unknown };
 
+export type QueueMovePromptRequest = {
+  prompt_id: string;
+  to: "front" | "back";
+  client_id?: string;
+};
+
+export type QueueMovePromptResponse = {
+  ok: boolean;
+  prompt_id: string;
+  to: "front" | "back";
+  moved?: boolean;
+  detail?: string;
+  submit?: unknown;
+};
+
 export type ComfyClearResponse = { ok: boolean; result?: unknown };
 
 export type OrchestratorProject = {
@@ -1491,6 +1506,30 @@ export type ShapeFactoryUpdatePendingTrimResponse = {
   prompt_id?: string;
 };
 
+/** POST /api/shape-factory/update-pending-binding — patch one binding path on pending/editing jobs. */
+export type ShapeFactoryUpdatePendingBindingRequest = {
+  job_key?: string;
+  job_path?: string;
+  slot: string;
+  path: string;
+  actor?: string;
+  reason?: string;
+  source_surface?: string;
+};
+
+export type ShapeFactoryUpdatePendingBindingResponse = {
+  ok: boolean;
+  job_key?: string;
+  job_path?: string;
+  slot?: string;
+  path?: string;
+  prompt_cleared?: boolean;
+  status?: string | null;
+  error?: string;
+  detail?: string;
+  prompt_id?: string;
+};
+
 /** GET /api/shape-factory/quarantine */
 export type ShapeFactoryQuarantineEntry = {
   workflow_path?: string;
@@ -1976,6 +2015,12 @@ export type WorkProductFamilyOption = {
   slug: string;
   shape_id?: string | null;
   shape_path?: string;
+  promotion?: {
+    scope?: "temporary" | "long_term" | string;
+    intents?: string[];
+    expires_at?: string | null;
+    note?: string | null;
+  };
   vhs_defaults?: {
     skip_first_frames?: number;
     frame_load_cap?: number;
@@ -1994,6 +2039,114 @@ export type ShapeFactoryFamiliesResponse = {
     derive?: WorkProductFamilyOption[];
   };
   extend_family_defaults?: Record<string, string>;
+  template_promotions?: {
+    effective?: Record<
+      string,
+      {
+        scope?: "temporary" | "long_term" | string;
+        intents?: string[];
+        expires_at?: string | null;
+        note?: string | null;
+      }
+    >;
+    path?: string;
+  };
+  error?: string;
+  detail?: string;
+};
+
+export type ShapeFactoryTemplatePromotionEntry = {
+  family_slug: string;
+  intent: "extend" | "vary" | "derive";
+  scope: "temporary" | "long_term";
+  note?: string | null;
+  actor?: string | null;
+  created_at?: string | null;
+  starts_at?: string | null;
+  expires_at?: string | null;
+};
+
+export type ShapeFactoryTemplatePromotionsResponse = {
+  ok: boolean;
+  path?: string;
+  schema_version?: string;
+  entries?: ShapeFactoryTemplatePromotionEntry[];
+  active_entries?: ShapeFactoryTemplatePromotionEntry[];
+  effective?: Record<
+    string,
+    {
+      scope?: "temporary" | "long_term" | string;
+      intents?: string[];
+      expires_at?: string | null;
+      note?: string | null;
+    }
+  >;
+  error?: string;
+  detail?: string;
+};
+
+export type InputCurationStillItem = {
+  path: string;
+  basename?: string;
+  size?: number;
+  mtime?: number;
+  first_seen?: number;
+  last_seen?: number;
+  content_id?: string | null;
+};
+
+export type InputCurationCollectionItem = {
+  path: string;
+  added_at?: string | null;
+  note?: string | null;
+  content_id?: string | null;
+};
+
+export type InputCurationCollection = {
+  id: string;
+  name: string;
+  description?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  items?: InputCurationCollectionItem[];
+};
+
+export type InputCurationStateResponse = {
+  ok: boolean;
+  schema_version?: string;
+  data_root?: string;
+  paths?: Record<string, string>;
+  collections?: InputCurationCollection[];
+  bindings?: Record<string, string[]>;
+  updated_at?: string | null;
+  error?: string;
+  detail?: string;
+};
+
+export type InputCurationStillsResponse = {
+  ok: boolean;
+  data_root?: string;
+  catalog_path?: string;
+  items?: InputCurationStillItem[];
+  count?: number;
+  total?: number;
+  limit?: number;
+  offset?: number;
+  error?: string;
+  detail?: string;
+};
+
+export type InputCurationEffectiveSourcesResponse = {
+  ok: boolean;
+  family_slug?: string;
+  source_still_required?: boolean;
+  pool_count?: number;
+  effective_count?: number;
+  added_count?: number;
+  deduped_count?: number;
+  missing_count?: number;
+  attached_collection_ids?: string[];
+  items?: Array<{ path: string; basename?: string }>;
   error?: string;
   detail?: string;
 };
