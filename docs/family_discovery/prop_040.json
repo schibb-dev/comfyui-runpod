@@ -1,0 +1,32 @@
+{
+  "id": "prop_040",
+  "status": "pending_review",
+  "proposed_family_slug": null,
+  "fingerprint": "0a7f5a63bb6f5cbdc6b68ba710f1c2625a466706df8bbfa2aeabf1d6aac33fdf",
+  "io_guess": "V2V",
+  "primary_input_guess": "video",
+  "input_profile_guess": "video_prompt",
+  "chain_role_guess": "extend",
+  "member_count": 1,
+  "representative": {
+    "source": "user",
+    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/wan21I2vNativeGGUFSelf_V21Singlesamp/Interpolation_Upscaler.json",
+    "name": "Interpolation_Upscaler.json",
+    "stem": null,
+    "node_count": 17
+  },
+  "members": [
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/wan21I2vNativeGGUFSelf_V21Singlesamp/Interpolation_Upscaler.json",
+      "name": "Interpolation_Upscaler.json",
+      "stem": null,
+      "node_count": 17
+    }
+  ],
+  "sample_videos": [],
+  "quarantine_notes": [],
+  "nearest_enrolled": null,
+  "operator_decision": null,
+  "operator_notes": null
+}

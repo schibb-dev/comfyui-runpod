@@ -1,0 +1,39 @@
+{
+  "id": "prop_026",
+  "status": "pending_review",
+  "proposed_family_slug": null,
+  "fingerprint": "c924167bca50fb86bf8f30c1789dbf01e456058485bfa9a981139e52cb0c8e1b",
+  "io_guess": "I2V",
+  "primary_input_guess": "still",
+  "input_profile_guess": "still_prompt",
+  "chain_role_guess": "origin",
+  "member_count": 2,
+  "representative": {
+    "source": "user",
+    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA6L.from_preset.json",
+    "name": "FB8VA6L.from_preset.json",
+    "stem": null,
+    "node_count": 74
+  },
+  "members": [
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA6L.from_preset.json",
+      "name": "FB8VA6L.from_preset.json",
+      "stem": null,
+      "node_count": 74
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA6L.template.cleaned.json",
+      "name": "FB8VA6L.template.cleaned.json",
+      "stem": null,
+      "node_count": 74
+    }
+  ],
+  "sample_videos": [],
+  "quarantine_notes": [],
+  "nearest_enrolled": null,
+  "operator_decision": null,
+  "operator_notes": null
+}

@@ -1,0 +1,32 @@
+{
+  "id": "prop_036",
+  "status": "pending_review",
+  "proposed_family_slug": null,
+  "fingerprint": "0463d710f1039b818b8b93eb7d7db5a38fe6284fbb5a485a70658cbc2df14703",
+  "io_guess": "I2V",
+  "primary_input_guess": "still",
+  "input_profile_guess": "still_prompt",
+  "chain_role_guess": "origin",
+  "member_count": 1,
+  "representative": {
+    "source": "user",
+    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/current/flux-generation/FLUX - INPAINT v7.0 (base).json",
+    "name": "FLUX - INPAINT v7.0 (base).json",
+    "stem": null,
+    "node_count": 32
+  },
+  "members": [
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/current/flux-generation/FLUX - INPAINT v7.0 (base).json",
+      "name": "FLUX - INPAINT v7.0 (base).json",
+      "stem": null,
+      "node_count": 32
+    }
+  ],
+  "sample_videos": [],
+  "quarantine_notes": [],
+  "nearest_enrolled": null,
+  "operator_decision": null,
+  "operator_notes": null
+}

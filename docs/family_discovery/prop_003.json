@@ -1,0 +1,36 @@
+{
+  "id": "prop_003",
+  "status": "pending_review",
+  "proposed_family_slug": null,
+  "fingerprint": "6535dd79cb4d197c1bd58ecd80dbfa737b06118f089bbd535427110e970b1c41",
+  "io_guess": "I2V",
+  "primary_input_guess": "still",
+  "input_profile_guess": "still_prompt",
+  "chain_role_guess": "origin",
+  "member_count": 1,
+  "representative": {
+    "source": "catalog",
+    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/FB8VA5-laying-down-readable.json",
+    "name": "FB8VA5-laying-down-readable.json",
+    "stem": null,
+    "node_count": 73
+  },
+  "members": [
+    {
+      "source": "catalog",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/FB8VA5-laying-down-readable.json",
+      "name": "FB8VA5-laying-down-readable.json",
+      "stem": null,
+      "node_count": 73
+    }
+  ],
+  "sample_videos": [
+    "/home/yuji/comfyui-runpod-data/output/og/2026-08-27/FB8VA5-ZOOMOUT_shape/FB8VA5-ZOOMOUT__pp-catalog-default__still-qqqpp-id975356-Debra-Lea__000_adhoc_ui1787805847_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-08-26/FB8VA5-ZOOMOUT_shape/FB8VA5-ZOOMOUT__pp-catalog-default__still-qqqpp-id975356-Debra-Lea__000_adhoc_ui1787799871_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-08-26/FB8VA5-ZOOMOUT_shape/FB8VA5-ZOOMOUT__pp-catalog-default__still-505411cb9f820ca5d19cd8c63b88be8b__000_adhoc_ui1787799950_00001.mp4"
+  ],
+  "quarantine_notes": [],
+  "nearest_enrolled": null,
+  "operator_decision": null,
+  "operator_notes": null
+}

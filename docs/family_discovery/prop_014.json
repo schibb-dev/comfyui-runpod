@@ -1,0 +1,46 @@
+{
+  "id": "prop_014",
+  "status": "pending_review",
+  "proposed_family_slug": null,
+  "fingerprint": "dd6f75aa1c956e7e2136872cf37b1bcff2a261a9dcfc7c160e00f13bab8b9d81",
+  "io_guess": "I2V",
+  "primary_input_guess": "still",
+  "input_profile_guess": "still_prompt",
+  "chain_role_guess": "origin",
+  "member_count": 3,
+  "representative": {
+    "source": "user",
+    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/X-Kneel-FB9-Nude3.json",
+    "name": "X-Kneel-FB9-Nude3.json",
+    "stem": null,
+    "node_count": 73
+  },
+  "members": [
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/X-Kneel-FB9-Nude3.json",
+      "name": "X-Kneel-FB9-Nude3.json",
+      "stem": null,
+      "node_count": 73
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/X-Kneel-Nude-FB9.json",
+      "name": "X-Kneel-Nude-FB9.json",
+      "stem": null,
+      "node_count": 73
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/active/x-kneel-fb9/X-Kneel-FB9-heavy.json",
+      "name": "X-Kneel-FB9-heavy.json",
+      "stem": null,
+      "node_count": 73
+    }
+  ],
+  "sample_videos": [],
+  "quarantine_notes": [],
+  "nearest_enrolled": null,
+  "operator_decision": null,
+  "operator_notes": null
+}

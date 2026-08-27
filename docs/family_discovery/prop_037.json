@@ -1,0 +1,32 @@
+{
+  "id": "prop_037",
+  "status": "pending_review",
+  "proposed_family_slug": null,
+  "fingerprint": "04ffa101d91e6314d7f26e3fa1dc63529e8b4a2ccb993e78cc12536e1e97eb85",
+  "io_guess": "I2V",
+  "primary_input_guess": "still",
+  "input_profile_guess": "still_prompt",
+  "chain_role_guess": "origin",
+  "member_count": 1,
+  "representative": {
+    "source": "user",
+    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/FLUX/GGUF/OUTPAINT.json",
+    "name": "OUTPAINT.json",
+    "stem": null,
+    "node_count": 33
+  },
+  "members": [
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/FLUX/GGUF/OUTPAINT.json",
+      "name": "OUTPAINT.json",
+      "stem": null,
+      "node_count": 33
+    }
+  ],
+  "sample_videos": [],
+  "quarantine_notes": [],
+  "nearest_enrolled": null,
+  "operator_decision": null,
+  "operator_notes": null
+}

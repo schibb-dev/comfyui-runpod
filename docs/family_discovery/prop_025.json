@@ -1,0 +1,39 @@
+{
+  "id": "prop_025",
+  "status": "pending_review",
+  "proposed_family_slug": null,
+  "fingerprint": "c04b48489d4f05b3258d9533fa40a91de2828417992337f93b57c31f799afa32",
+  "io_guess": null,
+  "primary_input_guess": null,
+  "input_profile_guess": null,
+  "chain_role_guess": "standalone",
+  "member_count": 2,
+  "representative": {
+    "source": "user",
+    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/WAN-cowgirl1A.json",
+    "name": "WAN-cowgirl1A.json",
+    "stem": null,
+    "node_count": 73
+  },
+  "members": [
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/WAN-cowgirl1A.json",
+      "name": "WAN-cowgirl1A.json",
+      "stem": null,
+      "node_count": 73
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/WAN-cowgirl1A_FIXED.json",
+      "name": "WAN-cowgirl1A_FIXED.json",
+      "stem": null,
+      "node_count": 73
+    }
+  ],
+  "sample_videos": [],
+  "quarantine_notes": [],
+  "nearest_enrolled": null,
+  "operator_decision": null,
+  "operator_notes": null
+}

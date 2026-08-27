@@ -1,0 +1,50 @@
+{
+  "id": "prop_010",
+  "status": "pending_review",
+  "proposed_family_slug": null,
+  "fingerprint": "7639f6b6cf7e7969b70d4bffa376999799fe70820887b390434accee9fe73024",
+  "io_guess": "I2V",
+  "primary_input_guess": "still",
+  "input_profile_guess": "still_prompt",
+  "chain_role_guess": "origin",
+  "member_count": 3,
+  "representative": {
+    "source": "user",
+    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9-handjob-start.json",
+    "name": "FB9-handjob-start.json",
+    "stem": null,
+    "node_count": 73
+  },
+  "members": [
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9-handjob-start.json",
+      "name": "FB9-handjob-start.json",
+      "stem": null,
+      "node_count": 73
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9-pose-start.json",
+      "name": "FB9-pose-start.json",
+      "stem": null,
+      "node_count": 73
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/X-FB9-POSE2.json",
+      "name": "X-FB9-POSE2.json",
+      "stem": null,
+      "node_count": 73
+    }
+  ],
+  "sample_videos": [
+    "/home/yuji/comfyui-runpod-data/output/og/2026-08-27/hourly/hourly__pp-catalog-default__src-X-Kneel-FB9-2026-03-18-224719_OG_00001__000_20260827084123_f2_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-08-27/hourly/hourly__pp-catalog-default__src-X-Kneel-FB9-2026-03-18-233711_OG_00001__000_20260827072918_f2_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-08-27/hourly/hourly__pp-catalog-default__src-FB9_GEX2__pp-3f38a1e6a2e5__src-hourly__pp-3f38a1e6a2e5__src-FB9_GE__00_20260827113622_f2_00001.mp4"
+  ],
+  "quarantine_notes": [],
+  "nearest_enrolled": null,
+  "operator_decision": null,
+  "operator_notes": null
+}

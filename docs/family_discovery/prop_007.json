@@ -1,0 +1,113 @@
+{
+  "id": "prop_007",
+  "status": "pending_review",
+  "proposed_family_slug": null,
+  "fingerprint": "6a2c7d9bfac1aea40acf1c556f326862713894f67c94043402daf0203ace7764",
+  "io_guess": "V2V",
+  "primary_input_guess": "video",
+  "input_profile_guess": "video_prompt",
+  "chain_role_guess": "extend",
+  "member_count": 13,
+  "representative": {
+    "source": "user",
+    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2.json",
+    "name": "FB9_GEX2.json",
+    "stem": null,
+    "node_count": 59
+  },
+  "members": [
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2.json",
+      "name": "FB9_GEX2.json",
+      "stem": null,
+      "node_count": 59
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2_COLORv2.json",
+      "name": "FB9_GEX2_COLORv2.json",
+      "stem": null,
+      "node_count": 59
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2_FACIAL.json",
+      "name": "FB9_GEX2_FACIAL.json",
+      "stem": null,
+      "node_count": 59
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2_OVERHEAD-cleaned.json",
+      "name": "FB9_GEX2_OVERHEAD-cleaned.json",
+      "stem": null,
+      "node_count": 59
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2_OVERHEAD.json",
+      "name": "FB9_GEX2_OVERHEAD.json",
+      "stem": null,
+      "node_count": 59
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2_OVERHEAD_POV.json",
+      "name": "FB9_GEX2_OVERHEAD_POV.json",
+      "stem": null,
+      "node_count": 59
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2_OVERHEAD_noFlorence_last8_v2_color.json",
+      "name": "FB9_GEX2_OVERHEAD_noFlorence_last8_v2_color.json",
+      "stem": null,
+      "node_count": 59
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2_OVERHEAD_v2.json",
+      "name": "FB9_GEX2_OVERHEAD_v2.json",
+      "stem": null,
+      "node_count": 59
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2_OVERHEAD_v2_color.json",
+      "name": "FB9_GEX2_OVERHEAD_v2_color.json",
+      "stem": null,
+      "node_count": 59
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2_SHOCK.json",
+      "name": "FB9_GEX2_SHOCK.json",
+      "stem": null,
+      "node_count": 59
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2_TIP.json",
+      "name": "FB9_GEX2_TIP.json",
+      "stem": null,
+      "node_count": 59
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/active/fb9-gex2/FB9_GEX2.json",
+      "name": "FB9_GEX2.json",
+      "stem": null,
+      "node_count": 59
+    }
+  ],
+  "sample_videos": [
+    "/home/yuji/comfyui-runpod-data/output/og/2026-08-27/hourly/hourly__pp-catalog-default__src-X-Kneel-FB9-2026-03-18-224719_OG_00001__000_20260827084123_f2_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-08-27/hourly/hourly__pp-catalog-default__src-X-Kneel-FB9-2026-03-18-233711_OG_00001__000_20260827072918_f2_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-08-27/hourly/hourly__pp-catalog-default__src-FB9_GEX2__pp-3f38a1e6a2e5__src-hourly__pp-3f38a1e6a2e5__src-FB9_GE__00_20260827113622_f2_00001.mp4"
+  ],
+  "quarantine_notes": [],
+  "nearest_enrolled": null,
+  "operator_decision": null,
+  "operator_notes": null
+}

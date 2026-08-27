@@ -1,0 +1,88 @@
+{
+  "id": "prop_008",
+  "status": "pending_review",
+  "proposed_family_slug": null,
+  "fingerprint": "905c45b21d95ca5682abfb49c594226d774d340d76f3df69497b379619ac23a6",
+  "io_guess": "I2V",
+  "primary_input_guess": "still",
+  "input_profile_guess": "still_prompt",
+  "chain_role_guess": "origin",
+  "member_count": 9,
+  "representative": {
+    "source": "user",
+    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/legacy/archived/Blonde Facial Workflow (133).json",
+    "name": "Blonde Facial Workflow (133).json",
+    "stem": null,
+    "node_count": 73
+  },
+  "members": [
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/legacy/archived/Blonde Facial Workflow (133).json",
+      "name": "Blonde Facial Workflow (133).json",
+      "stem": null,
+      "node_count": 73
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/legacy/archived/Dakota Workflow (134).json",
+      "name": "Dakota Workflow (134).json",
+      "stem": null,
+      "node_count": 73
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/legacy/archived/Facial Workflow (117).json",
+      "name": "Facial Workflow (117).json",
+      "stem": null,
+      "node_count": 73
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/legacy/archived/Facial Workflow (122).json",
+      "name": "Facial Workflow (122).json",
+      "stem": null,
+      "node_count": 73
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/legacy/archived/Facial Workflow (123).json",
+      "name": "Facial Workflow (123).json",
+      "stem": null,
+      "node_count": 73
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/legacy/archived/Facial Workflow (133).json",
+      "name": "Facial Workflow (133).json",
+      "stem": null,
+      "node_count": 73
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/legacy/archived/Facial2 Workflow (133A).json",
+      "name": "Facial2 Workflow (133A).json",
+      "stem": null,
+      "node_count": 73
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/legacy/archived/Handjobber.json",
+      "name": "Handjobber.json",
+      "stem": null,
+      "node_count": 73
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/legacy/archived/Unsaved Workflow (117a).json",
+      "name": "Unsaved Workflow (117a).json",
+      "stem": null,
+      "node_count": 73
+    }
+  ],
+  "sample_videos": [],
+  "quarantine_notes": [],
+  "nearest_enrolled": null,
+  "operator_decision": null,
+  "operator_notes": null
+}

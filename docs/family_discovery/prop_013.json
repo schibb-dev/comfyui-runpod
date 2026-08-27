@@ -1,0 +1,46 @@
+{
+  "id": "prop_013",
+  "status": "pending_review",
+  "proposed_family_slug": null,
+  "fingerprint": "b707ae9d3c40b82855f5fd8ea73f934fdc1a85395fdfcdd9b852e56ce3396ae2",
+  "io_guess": "I2V",
+  "primary_input_guess": "still",
+  "input_profile_guess": "still_prompt",
+  "chain_role_guess": "origin",
+  "member_count": 3,
+  "representative": {
+    "source": "user",
+    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/legacy/archived/Sc1-1-handjob.json",
+    "name": "Sc1-1-handjob.json",
+    "stem": null,
+    "node_count": 73
+  },
+  "members": [
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/legacy/archived/Sc1-1-handjob.json",
+      "name": "Sc1-1-handjob.json",
+      "stem": null,
+      "node_count": 73
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/legacy/archived/Sc1-2-facial.json",
+      "name": "Sc1-2-facial.json",
+      "stem": null,
+      "node_count": 73
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/legacy/archived/Sc1-handjob.json",
+      "name": "Sc1-handjob.json",
+      "stem": null,
+      "node_count": 73
+    }
+  ],
+  "sample_videos": [],
+  "quarantine_notes": [],
+  "nearest_enrolled": null,
+  "operator_decision": null,
+  "operator_notes": null
+}

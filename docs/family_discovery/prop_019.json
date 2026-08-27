@@ -1,0 +1,39 @@
+{
+  "id": "prop_019",
+  "status": "pending_review",
+  "proposed_family_slug": null,
+  "fingerprint": "760254720b4ba423883702b05ef669c4d997b551756ad4b09457de25f22a5f9e",
+  "io_guess": null,
+  "primary_input_guess": null,
+  "input_profile_guess": null,
+  "chain_role_guess": "standalone",
+  "member_count": 2,
+  "representative": {
+    "source": "user",
+    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/FLUX/Base/Tools/LoRA.json",
+    "name": "LoRA.json",
+    "stem": null,
+    "node_count": 36
+  },
+  "members": [
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/FLUX/Base/Tools/LoRA.json",
+      "name": "LoRA.json",
+      "stem": null,
+      "node_count": 36
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/FLUX/GGUF/Tools/LoRA.json",
+      "name": "LoRA.json",
+      "stem": null,
+      "node_count": 36
+    }
+  ],
+  "sample_videos": [],
+  "quarantine_notes": [],
+  "nearest_enrolled": null,
+  "operator_decision": null,
+  "operator_notes": null
+}

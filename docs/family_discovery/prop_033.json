@@ -1,0 +1,32 @@
+{
+  "id": "prop_033",
+  "status": "pending_review",
+  "proposed_family_slug": null,
+  "fingerprint": "0220a5a5b105119fc3e9934ab78dc822ad988ba7b70370d59d81c737549f589e",
+  "io_guess": null,
+  "primary_input_guess": null,
+  "input_profile_guess": null,
+  "chain_role_guess": "standalone",
+  "member_count": 1,
+  "representative": {
+    "source": "user",
+    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/MissPoundA.json",
+    "name": "MissPoundA.json",
+    "stem": null,
+    "node_count": 73
+  },
+  "members": [
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/MissPoundA.json",
+      "name": "MissPoundA.json",
+      "stem": null,
+      "node_count": 73
+    }
+  ],
+  "sample_videos": [],
+  "quarantine_notes": [],
+  "nearest_enrolled": null,
+  "operator_decision": null,
+  "operator_notes": null
+}
