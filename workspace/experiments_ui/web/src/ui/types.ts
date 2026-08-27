@@ -2073,6 +2073,7 @@ export type WorkProductFamilyOption = {
   input_profile?: string | null;
   chain_role?: string | null;
   io_class?: string | null;
+  source_still_required?: boolean;
   promotion?: {
     scope?: "temporary" | "long_term" | string;
     intents?: string[];

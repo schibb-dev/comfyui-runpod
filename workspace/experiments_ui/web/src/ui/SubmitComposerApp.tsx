@@ -7,6 +7,7 @@ import {
   finishShapeFactoryEdit,
   listShapeFactoryClipsLibrary,
   mintIdentityStill,
+  queueShapeFactoryCombo,
   updatePendingShapeFactoryBinding,
   updatePendingShapeFactoryTrim,
   type IdentityStillCandidate,
@@ -32,7 +33,13 @@ import {
   peekIdentityStill,
   type FamiliesBootstrap,
 } from "./shapeFactorySessionCache";
-import { isExtendFamilyOption, pickDefaultExtendFamily } from "./submitFamily";
+import {
+  isExtendFamilyOption,
+  isI2VFamilyOption,
+  isStillMediaPath,
+  pickDefaultExtendFamily,
+  pickDefaultI2VFamily,
+} from "./submitFamily";
 import type { ShapeFactoryMapQueueOverrides, WorkProductFamilyOption } from "./types";
 import { VideoTrimControls, type VideoTrimPlaybackMode } from "./VideoTrimControls";
 import { useTrimPlaybackEnforcement } from "./useTrimPlayback";
@@ -762,6 +769,7 @@ function SubmitAdvanceComposerApp() {
   const cachedFamiliesBoot = useMemo(() => peekFamiliesBootstrap(), []);
   const [layout, setLayout] = useState<RowLayout>(() => loadLayout());
   const [mediaRelpath, setMediaRelpath] = useState(intent.mediaRelpath || "");
+  const isStill = isStillMediaPath(mediaRelpath);
   const [clipId, setClipId] = useState(intent.clipId || "");
   const [markIn, setMarkIn] = useState<number | null>(intent.markIn);
   const [markOut, setMarkOut] = useState<number | null>(intent.markOut);
@@ -770,6 +778,12 @@ function SubmitAdvanceComposerApp() {
   const [currentTime, setCurrentTime] = useState(0);
   const [trimMode, setTrimMode] = useState<VideoTrimPlaybackMode>("repeat");
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [i2vFamily, setI2vFamily] = useState(() => {
+    if (!isStillMediaPath(intent.mediaRelpath)) return "";
+    if (intent.family) return intent.family;
+    if (!cachedFamiliesBoot) return "";
+    return pickDefaultI2VFamily(cachedFamiliesBoot.families || [], intent.family);
+  });
 
   const duration =
     videoDuration > 0
@@ -855,13 +869,20 @@ function SubmitAdvanceComposerApp() {
         intent.family,
         mediaRelpath || intent.mediaRelpath,
       );
-      const seedFamily = String(intent.family || "").trim() || extendDefault;
+      const routeSeedFamily = String(intent.family || "").trim() || extendDefault;
       setExtendFamily((prev) => {
         const prevOk = Boolean(prev) && extendRows.some((f) => f.slug === prev && isExtendFamilyOption(f));
         return prevOk ? prev : extendDefault;
       });
-      setVaryFamily((prev) => prev || seedFamily);
-      setDeriveFamily((prev) => prev || seedFamily);
+      setVaryFamily((prev) => prev || routeSeedFamily);
+      setDeriveFamily((prev) => prev || routeSeedFamily);
+      if (isStillMediaPath(mediaRelpath || intent.mediaRelpath)) {
+        const i2vDefault = pickDefaultI2VFamily(rows, intent.family);
+        setI2vFamily((prev) => {
+          const prevOk = Boolean(prev) && rows.some((f) => f.slug === prev && isI2VFamilyOption(f));
+          return prevOk ? prev : i2vDefault;
+        });
+      }
     },
     [intent.family, intent.mediaRelpath, mediaRelpath],
   );
@@ -903,7 +924,7 @@ function SubmitAdvanceComposerApp() {
     markIn,
     markOut,
     mode: trimMode,
-    enabled: Boolean(playUrl),
+    enabled: Boolean(playUrl) && !isStill,
   });
 
   useEffect(() => {
@@ -1036,16 +1057,25 @@ function SubmitAdvanceComposerApp() {
     markOut > markIn + 0.05;
 
   const anyRoute = extendOn || varyOn || deriveOn;
-  const canSubmit =
-    Boolean(mediaRelpath.trim()) &&
-    anyRoute &&
-    (!extendOn || Boolean(extendFamily)) &&
-    (!varyOn || Boolean(varyFamily)) &&
-    (!deriveOn || Boolean(deriveFamily)) &&
-    windowOk &&
-    !busy &&
-    !(extendOn && identityLoading) &&
-    !(extendOn && identityNeeded && !identitySelectedPath);
+  const i2vFamilyOpts = useMemo(() => {
+    const rows = families.filter(isI2VFamilyOption);
+    if (i2vFamily && !rows.some((f) => f.slug === i2vFamily)) {
+      rows.unshift(families.find((f) => f.slug === i2vFamily) || { slug: i2vFamily });
+    }
+    return rows.length ? rows : families;
+  }, [families, i2vFamily]);
+
+  const canSubmit = isStill
+    ? Boolean(mediaRelpath.trim()) && Boolean(i2vFamily) && !busy
+    : Boolean(mediaRelpath.trim()) &&
+      anyRoute &&
+      (!extendOn || Boolean(extendFamily)) &&
+      (!varyOn || Boolean(varyFamily)) &&
+      (!deriveOn || Boolean(deriveFamily)) &&
+      windowOk &&
+      !busy &&
+      !(extendOn && identityLoading) &&
+      !(extendOn && identityNeeded && !identitySelectedPath);
 
   const familyOpts = useMemo(() => {
     const rows = [...varyFamilyRows];
@@ -1105,6 +1135,27 @@ function SubmitAdvanceComposerApp() {
     setMsg(null);
     setLastJobKey(null);
     try {
+      if (isStill) {
+        const stillPath = mediaRelpath.trim().replace(/\\/g, "/");
+        const bindingPath =
+          stillPath.toLowerCase().startsWith("input/") || stillPath.includes("/")
+            ? stillPath
+            : `input/${stillPath.split("/").pop() || stillPath}`;
+        const res = await queueShapeFactoryCombo({
+          family_slug: i2vFamily,
+          bindings: { source_still: bindingPath },
+          front: when === "now",
+        });
+        if (res.job_key) setLastJobKey(res.job_key);
+        setMsg(
+          res.prompt_id
+            ? `Queued ${i2vFamily} · prompt ${res.prompt_id}`
+            : res.job_key
+              ? `Created ${res.job_key}${when === "later" ? " (pending)" : ""}`
+              : `Seeded ${i2vFamily}`,
+        );
+        return;
+      }
       const { overrides, warning } = buildOverrides();
       if (!overrides) {
         setMsg(warning || "Need a clip window");
@@ -1227,29 +1278,39 @@ function SubmitAdvanceComposerApp() {
 
   const constructionPreview = useMemo(() => {
     const routes: { kind: string; family: string; shapeId: string | null }[] = [];
-    if (extendOn) {
+    if (isStill) {
       routes.push({
-        kind: "Extend",
-        family: extendFamily || "",
-        shapeId: familyShapeId(families, extendFamily),
+        kind: "Seed",
+        family: i2vFamily || "",
+        shapeId: familyShapeId(families, i2vFamily),
       });
-    }
-    if (varyOn) {
-      routes.push({
-        kind: "Vary",
-        family: varyFamily || "",
-        shapeId: familyShapeId(families, varyFamily),
-      });
-    }
-    if (deriveOn) {
-      routes.push({
-        kind: "Derive",
-        family: deriveFamily || "",
-        shapeId: familyShapeId(families, deriveFamily),
-      });
+    } else {
+      if (extendOn) {
+        routes.push({
+          kind: "Extend",
+          family: extendFamily || "",
+          shapeId: familyShapeId(families, extendFamily),
+        });
+      }
+      if (varyOn) {
+        routes.push({
+          kind: "Vary",
+          family: varyFamily || "",
+          shapeId: familyShapeId(families, varyFamily),
+        });
+      }
+      if (deriveOn) {
+        routes.push({
+          kind: "Derive",
+          family: deriveFamily || "",
+          shapeId: familyShapeId(families, deriveFamily),
+        });
+      }
     }
 
-    const { overrides, warning } = buildOverrides();
+    const { overrides, warning } = isStill
+      ? { overrides: undefined as ShapeFactoryMapQueueOverrides | undefined, warning: null as string | null }
+      : buildOverrides();
     const params = (overrides?.parameters || {}) as Record<string, unknown>;
     const vhs =
       overrides && windowOk
@@ -1259,16 +1320,20 @@ function SubmitAdvanceComposerApp() {
           }
         : null;
 
-    const useLabel = activeClip
-      ? `Clip · ${activeClip.label || activeClip.clip_id}`
-      : windowOk
-        ? "Scrubber window"
-        : "No Use window";
+    const useLabel = isStill
+      ? "Still (full image)"
+      : activeClip
+        ? `Clip · ${activeClip.label || activeClip.clip_id}`
+        : windowOk
+          ? "Scrubber window"
+          : "No Use window";
     const useWindow =
-      windowOk && markIn != null && markOut != null ? `${formatTc(markIn)}–${formatTc(markOut)}` : null;
+      !isStill && windowOk && markIn != null && markOut != null
+        ? `${formatTc(markIn)}–${formatTc(markOut)}`
+        : null;
 
     let identityMode: "off" | "loading" | "not_required" | "needed" | "set" = "off";
-    if (extendOn) {
+    if (!isStill && extendOn) {
       if (identityLoading) identityMode = "loading";
       else if (!identityNeeded) identityMode = "not_required";
       else if (identitySelectedPath) identityMode = "set";
@@ -1279,13 +1344,17 @@ function SubmitAdvanceComposerApp() {
 
     const blockers: string[] = [];
     if (!mediaRelpath.trim()) blockers.push("need media");
-    if (!anyRoute) blockers.push("select a route");
-    if (extendOn && !extendFamily) blockers.push("Extend family");
-    if (varyOn && !varyFamily) blockers.push("Vary family");
-    if (deriveOn && !deriveFamily) blockers.push("Derive family");
-    if (!windowOk) blockers.push("set Use window");
-    if (extendOn && identityLoading) blockers.push("identity loading");
-    if (extendOn && identityNeeded && !identitySelectedPath) blockers.push("pick identity");
+    if (isStill) {
+      if (!i2vFamily) blockers.push("I2V family");
+    } else {
+      if (!anyRoute) blockers.push("select a route");
+      if (extendOn && !extendFamily) blockers.push("Extend family");
+      if (varyOn && !varyFamily) blockers.push("Vary family");
+      if (deriveOn && !deriveFamily) blockers.push("Derive family");
+      if (!windowOk) blockers.push("set Use window");
+      if (extendOn && identityLoading) blockers.push("identity loading");
+      if (extendOn && identityNeeded && !identitySelectedPath) blockers.push("pick identity");
+    }
     if (busy) blockers.push("submitting");
 
     const ready: ConstructionReady = canSubmit
@@ -1320,11 +1389,13 @@ function SubmitAdvanceComposerApp() {
     extendFamily,
     extendOn,
     families,
+    i2vFamily,
     identityCandidates,
     identityLoading,
     identityNeeded,
     identitySelectedId,
     identitySelectedPath,
+    isStill,
     markIn,
     markOut,
     mediaRelpath,
@@ -1379,12 +1450,13 @@ function SubmitAdvanceComposerApp() {
       {!hasIntent ? (
         <div className="submit-composer__empty" aria-label="Submit needs intent">
           <p className="submit-composer__empty-lead">
-            Submit is <strong>intent-only</strong> — open it from a doorway with a clip, scrubber window, or job.
+            Submit is <strong>intent-only</strong> — open it from a doorway with a still, clip, scrubber window, or job.
             This screen does not browse the corpus.
           </p>
           <p className="factory-muted">
-            Deep link shape: <span className="mono">/submit?media=…&clip_id=…</span> or{" "}
-            <span className="mono">from_job=…</span> (+ optional <span className="mono">origin</span>).
+            Deep link shape: <span className="mono">/submit?media=…</span> (still or video),{" "}
+            <span className="mono">clip_id=…</span>, or <span className="mono">from_job=…</span> (+ optional{" "}
+            <span className="mono">origin</span>).
           </p>
           <div className="submit-composer__empty-doors" role="list">
             <a className="drt-btn" href="/discovery" role="listitem">
@@ -1445,7 +1517,9 @@ function SubmitAdvanceComposerApp() {
           <div className="work-product-row__body">
             <div className="work-product-viewer">
               <div className="work-product-viewer__main">
-                {playUrl ? (
+                {playUrl && isStill ? (
+                  <img className="work-product-viewer__video" src={posterUrl || playUrl} alt="" />
+                ) : playUrl ? (
                   <video
                     ref={videoRef}
                     className="work-product-viewer__video"
@@ -1471,7 +1545,7 @@ function SubmitAdvanceComposerApp() {
                   <div className="work-product-viewer__empty">No media</div>
                 )}
               </div>
-              {playUrl ? (
+              {playUrl && !isStill ? (
                 <>
                   <VideoTrimControls
                     className="work-product-viewer__trim"
@@ -1528,9 +1602,57 @@ function SubmitAdvanceComposerApp() {
                   />
                 </>
               ) : null}
+              {isStill ? (
+                <p className="work-product-viewer__trim-warn factory-muted">
+                  Still seed — pick an I2V family and Submit now/later.
+                </p>
+              ) : null}
             </div>
 
             <div className="work-product-details submit-composer__compose">
+              {isStill ? (
+                <div className="work-product-quick-queue" role="group" aria-label="Submit still seed">
+                  <div className="work-product-quick-queue__row">
+                    <span className="work-product-quick-queue__label" title="I2V origin family for this still">
+                      Seed
+                    </span>
+                    <span className="work-product-quick-queue__sep" aria-hidden="true" />
+                    <button
+                      type="button"
+                      className={
+                        "drt-btn work-product-quick-queue__now" +
+                        (preferredWhen === "now" ? " submit-composer__when--preferred" : "")
+                      }
+                      disabled={!canSubmit}
+                      title="Generate and enqueue now"
+                      onClick={() => void submit("now")}
+                    >
+                      {busy && preferredWhen === "now" ? "Submitting…" : "Now"}
+                    </button>
+                    <button
+                      type="button"
+                      className={
+                        "drt-btn work-product-quick-queue__later" +
+                        (preferredWhen === "later" ? " submit-composer__when--preferred" : "")
+                      }
+                      disabled={!canSubmit}
+                      title="Generate job for later / hourly"
+                      onClick={() => void submit("later")}
+                    >
+                      {busy && preferredWhen === "later" ? "Submitting…" : "Later"}
+                    </button>
+                  </div>
+                  <div className="work-product-quick-queue__families">
+                    {familySelect(
+                      i2vFamily,
+                      setI2vFamily,
+                      "I2V family",
+                      "Still → video origin family (Kneel / FaceBlast / Bounce…)",
+                      i2vFamilyOpts,
+                    )}
+                  </div>
+                </div>
+              ) : (
               <div className="work-product-quick-queue" role="group" aria-label="Submit advance">
                 <div className="work-product-quick-queue__row">
                   <span className="work-product-quick-queue__label" title="Advance routes to create from this Use">
@@ -1683,6 +1805,8 @@ function SubmitAdvanceComposerApp() {
                     ) : null}
                   </div>
                 ) : null}
+              </div>
+              )}
                 <SubmitConstructionPreview
                   routes={constructionPreview.routes}
                   useLabel={constructionPreview.useLabel}
@@ -1715,7 +1839,6 @@ function SubmitAdvanceComposerApp() {
                     ) : null}
                   </div>
                 ) : null}
-              </div>
             </div>
           </div>
         </div>

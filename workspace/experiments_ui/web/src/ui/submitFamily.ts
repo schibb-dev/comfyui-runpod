@@ -1,8 +1,14 @@
-/** Shared extend-family defaults for Submit compose. */
+/** Shared extend / I2V family defaults for Submit compose. */
 
 import type { WorkProductFamilyOption } from "./types";
 
 export const PREFERRED_EXTEND_FAMILIES = ["FB9_GEX2", "FB9_GEX_FACIAL", "FB9_GEX"] as const;
+export const PREFERRED_I2V_FAMILIES = [
+  "X-KNEEL-FB9",
+  "X-KNEEL-FB9-bare",
+  "FB9-FaceBlast",
+  "BounceDanceA",
+] as const;
 
 /** Slug-only gate (I2V/still families are not video Extend targets). */
 export function isExtendFamilySlug(slug: string): boolean {
@@ -33,6 +39,37 @@ export function isExtendFamilyOption(f: WorkProductFamilyOption): boolean {
     sid.includes("facial") ||
     sid.includes("source")
   );
+}
+
+/** Still → I2V origin families (Kneel / FaceBlast / Bounce…). */
+export function isI2VFamilyOption(f: WorkProductFamilyOption): boolean {
+  const slug = String(f.slug || "").trim();
+  if (!slug) return false;
+  if (f.source_still_required) return true;
+  const role = String(f.chain_role || "").trim().toLowerCase();
+  if (role === "origin") return true;
+  const io = String(f.io_class || "").trim().toUpperCase();
+  if (io === "I2V") return true;
+  if (io === "V2V" || io === "VI2V" || io === "EXT") return false;
+  const sid = String(f.shape_id || "").toLowerCase();
+  if (sid.includes("i2v") || (sid.includes("still") && !sid.includes("identity"))) return true;
+  if (PREFERRED_I2V_FAMILIES.includes(slug as (typeof PREFERRED_I2V_FAMILIES)[number])) return true;
+  return false;
+}
+
+export function pickDefaultI2VFamily(
+  families: WorkProductFamilyOption[],
+  hintFamily?: string | null,
+): string {
+  const i2v = families.filter(isI2VFamilyOption);
+  const slugs = (i2v.length ? i2v : families).map((f) => f.slug).filter(Boolean);
+  const has = (slug: string) => slugs.includes(slug);
+  const hint = String(hintFamily || "").trim();
+  if (hint && has(hint)) return hint;
+  for (const pref of PREFERRED_I2V_FAMILIES) {
+    if (has(pref)) return pref;
+  }
+  return slugs[0] || PREFERRED_I2V_FAMILIES[0];
 }
 
 export function pickDefaultExtendFamily(
@@ -72,4 +109,12 @@ export function pickDefaultExtendFamily(
   }
   const first = slugs.find(isExtendFamilySlug);
   return first || slugs[0] || PREFERRED_EXTEND_FAMILIES[0];
+}
+
+/** True when a media path is a still (not a video Use). */
+export function isStillMediaPath(path?: string | null): boolean {
+  const p = String(path || "").trim().toLowerCase();
+  if (!p) return false;
+  if (/\.(mp4|webm|mov|mkv)(\?|$)/i.test(p)) return false;
+  return /\.(png|jpe?g|webp|gif)(\?|$)/i.test(p);
 }

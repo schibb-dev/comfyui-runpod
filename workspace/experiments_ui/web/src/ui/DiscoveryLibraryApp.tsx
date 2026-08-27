@@ -1022,10 +1022,21 @@ function DiscoveryItemMetaBody({
   const prev = it.class_types_preview ?? [];
   const play = discoveryPlayUrl(it);
   const thumb = discoveryThumbUrl(it);
+  const stillItem = !play && (isRasterImage(it.relpath) || isRasterImage(it.name) || it.library === "input");
   return (
     <>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
         <span style={{ fontWeight: 700, fontSize: 15, wordBreak: "break-word", flex: "1 1 200px" }}>{it.name}</span>
+        {stillItem ? (
+          <DiscoveryQueueFromClip
+            item={it}
+            mediaRelpath={it.relpath}
+            markIn={null}
+            markOut={null}
+            activeClip={null}
+            origin="library"
+          />
+        ) : null}
         <a
           className="discovery-exemplar-meta-btn"
           href={workbenchHrefForMedia({ relpath: it.video_relpath || it.relpath, name: it.name })}

@@ -16,7 +16,9 @@ Submit is **intent-modal**: a focused `/submit` **page** that only composes when
 | Nav | **Not in primary nav** — `/submit` is door-only; bare hits still show the empty doorway state |
 | Exit | After commit → Workbench / Queue; **Back to {origin}** when `origin` is set |
 
-New doorways (Factory map, Rating, richer Clips/Library CTAs) should only build `submitHref({…})` — they must not grow private submit UIs.
+New doorways (Factory map, Rating, richer Clips/Library CTAs, **still gallery**) should only build `submitHref({…})` — they must not grow private submit UIs.
+
+**Stills (G0 landing):** Library Details shows **Open in Submit** for images (no clip/marks). Submit seeds I2V with `source_still`. Gallery pad is later — [`STILL_GALLERY_HUB_PLAN.md`](./STILL_GALLERY_HUB_PLAN.md).
 
 ## Roles
 

@@ -1384,14 +1384,43 @@ def queue_shape_factory_combo(
             continue
         if slot_name not in req_by_slot:
             continue
-        resolved = resolve_existing_path(
-            path_str,
-            output_root=output_root,
-            data_root=data_root,
-            workspace_root=workspace_root,
-        )
+        resolved: Optional[Path] = None
+        try:
+            resolved = resolve_existing_path(
+                path_str,
+                output_root=output_root,
+                data_root=data_root,
+                workspace_root=workspace_root,
+            )
+        except FileNotFoundError:
+            if slot_name in {"source_still", "identity_anchor", "identity_still", "source_image"}:
+                resolved = _resolve_still_file(
+                    path_str,
+                    workspace_root=workspace_root,
+                    output_root=output_root,
+                    data_root=data_root,
+                )
+            if resolved is None:
+                raise
         picks[slot_name] = resolved
         slot_paths[slot_name] = str(resolved)
+
+    # Fill missing required still / prompt slots from the family's pools (same as map zip).
+    for slot_name, req in req_by_slot.items():
+        if slot_name in picks or (isinstance(req, dict) and req.get("optional")):
+            continue
+        if slot_name not in {
+            "source_still",
+            "identity_anchor",
+            "identity_still",
+            "source_image",
+            "prompt_profile",
+        }:
+            continue
+        fallback = _first_pool_member_for_slot(pools_doc, slot_name)
+        if fallback is not None:
+            picks[slot_name] = fallback
+            slot_paths[slot_name] = str(fallback)
 
     source_req = req_by_slot.get("source_still") if isinstance(req_by_slot, dict) else None
     if isinstance(source_req, dict) and not source_req.get("optional") and "source_still" not in picks:
