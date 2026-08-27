@@ -1845,6 +1845,8 @@ export type ShapeFactoryMapJob = {
   job_key?: string;
   family_slug?: string;
   status?: string;
+  /** hourly | ui | pipeline | factory | replay | derive | extend */
+  job_kind?: string;
   graph_hash?: string;
   shape_id?: string;
   prompt_id?: string;

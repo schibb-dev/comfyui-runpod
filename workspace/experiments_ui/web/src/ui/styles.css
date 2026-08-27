@@ -8466,6 +8466,43 @@ tr.disabled:hover td {
   font-size: 11px;
 }
 
+.sfmap-pair-kind {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border, #444);
+  color: var(--muted);
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+
+.sfmap-pair-kind--hourly {
+  border-color: #3d6b8a;
+  color: #9ec9e6;
+}
+
+.sfmap-pair-kind--ui {
+  border-color: #6b5a3d;
+  color: #e6d09e;
+}
+
+.sfmap-pair-kind--possible {
+  border-color: #555;
+  color: #aaa;
+  border-style: dashed;
+}
+
+.sfmap-pair-kind--seed,
+.sfmap-pair-kind--orphaned {
+  border-color: #6b3d3d;
+  color: #e6a09e;
+}
+
+.sfmap-pair-kind--pipeline {
+  border-color: #3d6b4a;
+  color: #9ee6b0;
+}
+
 .sfmap-pair-card__label {
   color: var(--muted);
   overflow: hidden;

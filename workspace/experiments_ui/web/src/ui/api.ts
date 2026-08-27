@@ -182,6 +182,7 @@ export async function fetchWorkflowExplorerFactory(): Promise<WorkflowExplorerFa
 export async function fetchShapeFactoryMap(opts?: {
   members_limit?: number;
   jobs_limit?: number;
+  jobs_per_family?: number;
   family?: string;
   skip_queue?: boolean;
 }): Promise<ShapeFactoryMapResponse> {
@@ -191,6 +192,9 @@ export async function fetchShapeFactoryMap(opts?: {
   }
   if (opts?.jobs_limit != null && opts.jobs_limit > 0) {
     sp.set("jobs_limit", String(opts.jobs_limit));
+  }
+  if (opts?.jobs_per_family != null && opts.jobs_per_family > 0) {
+    sp.set("jobs_per_family", String(opts.jobs_per_family));
   }
   if (opts?.family) sp.set("family", opts.family);
   if (opts?.skip_queue) sp.set("skip_queue", "1");

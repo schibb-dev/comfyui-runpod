@@ -941,9 +941,10 @@ def _deposit_pools_from_index(
 
     def _preview(m: Dict[str, Any]) -> Dict[str, Any]:
         row = _member_preview(m, **preview_kwargs)
-        # Seeded deposits carry no job (thus no source_still binding); recover it
-        # from the output's embedded LoadImage so the map still shows a source.
-        if seed_resolver is not None and not row.get("job_key") and not row.get("source_still"):
+        # Recover embedded LoadImage still when the deposit has no source preview.
+        # Also try when job_key is set but the job may be archived / not in the map
+        # payload — otherwise chips show a blank left side.
+        if seed_resolver is not None and not row.get("source_still"):
             ref = seed_resolver.resolve(row)
             if ref:
                 row["source_still"] = ref
@@ -1000,6 +1001,99 @@ def _job_status(job: Dict[str, Any]) -> str:
     return str(submit.get("status") or "queued")
 
 
+def classify_job_kind(job: Dict[str, Any]) -> str:
+    """Operator-facing origin label for map chips (hourly / ui / pipeline / …)."""
+    key = str(job.get("job_key") or "")
+    if key.startswith("hourly__"):
+        return "hourly"
+    if job.get("pipeline_id") or job.get("pipeline"):
+        return "pipeline"
+    if isinstance(job.get("adhoc_overrides"), dict) and job.get("adhoc_overrides"):
+        return "ui"
+    lower = key.lower()
+    if "adhoc_ui" in lower or "__ui" in lower or "_ui" in lower:
+        return "ui"
+    pick = str(job.get("pick_mode") or "").strip().lower()
+    if pick in {"replay", "derive", "extend"}:
+        return pick
+    return "factory"
+
+
+def _job_mtime(job_or_summary: Dict[str, Any]) -> float:
+    p = job_or_summary.get("job_path")
+    try:
+        return Path(str(p)).stat().st_mtime if p else 0.0
+    except Exception:
+        return 0.0
+
+
+def select_job_summaries_for_map(
+    job_summaries: List[Dict[str, Any]],
+    families: List[Dict[str, Any]],
+    *,
+    jobs_per_family: int = 40,
+    jobs_limit: int = 500,
+) -> List[Dict[str, Any]]:
+    """
+    Prefer recent jobs *per family* and always include deposit-referenced keys.
+
+    A global mtime top-N starves quieter families when one line (e.g. FB9_GEX)
+    dominates recent activity — leaving Source→Output chips as "job not in list"
+    even though the job file and bindings still exist.
+    """
+    per_family = max(1, int(jobs_per_family))
+    hard_cap = max(per_family, int(jobs_limit))
+
+    by_key: Dict[str, Dict[str, Any]] = {}
+    by_family: Dict[str, List[Dict[str, Any]]] = {}
+    for row in job_summaries:
+        jk = row.get("job_key")
+        if isinstance(jk, str) and jk.strip():
+            by_key[jk] = row
+        slug = row.get("family_slug")
+        if isinstance(slug, str) and slug.strip():
+            by_family.setdefault(slug, []).append(row)
+
+    selected: Dict[str, Dict[str, Any]] = {}
+    for _slug, rows in by_family.items():
+        for row in rows[:per_family]:
+            jk = row.get("job_key")
+            if isinstance(jk, str) and jk.strip():
+                selected[jk] = row
+
+    for fam in families:
+        for dep in fam.get("deposit_pools") or []:
+            if not isinstance(dep, dict):
+                continue
+            for mem in dep.get("members_preview") or []:
+                if not isinstance(mem, dict):
+                    continue
+                jk = mem.get("job_key")
+                if isinstance(jk, str) and jk in by_key:
+                    selected[jk] = by_key[jk]
+
+    items = list(selected.values())
+    items.sort(key=_job_mtime, reverse=True)
+    if len(items) > hard_cap:
+        # Keep deposit-referenced keys even under the cap.
+        must: Dict[str, Dict[str, Any]] = {}
+        for fam in families:
+            for dep in fam.get("deposit_pools") or []:
+                if not isinstance(dep, dict):
+                    continue
+                for mem in dep.get("members_preview") or []:
+                    if not isinstance(mem, dict):
+                        continue
+                    jk = mem.get("job_key")
+                    if isinstance(jk, str) and jk in selected:
+                        must[jk] = selected[jk]
+        rest = [r for r in items if r.get("job_key") not in must]
+        out = list(must.values()) + rest[: max(0, hard_cap - len(must))]
+        out.sort(key=_job_mtime, reverse=True)
+        return out
+    return items
+
+
 def _job_summary(
     job: Dict[str, Any],
     *,
@@ -1045,6 +1139,7 @@ def _job_summary(
         "job_key": job.get("job_key"),
         "family_slug": job.get("family_slug"),
         "status": _job_status(job),
+        "job_kind": classify_job_kind(job),
         "graph_hash": job.get("graph_hash"),
         "shape_id": job.get("shape_id"),
         "prompt_id": submit.get("prompt_id"),
@@ -1057,6 +1152,7 @@ def _job_summary(
         "created_at": job.get("created_at"),
         "pick_index": job.get("pick_index"),
         "pick_mode": job.get("pick_mode"),
+        "job_path": job.get("job_path"),
     }
 
 
@@ -1300,7 +1396,8 @@ def build_shape_factory_map(
     output_root: Path,
     comfy_server: str = "",
     members_limit: int = 24,
-    jobs_limit: int = 120,
+    jobs_limit: int = 500,
+    jobs_per_family: int = 40,
     family_filter: Optional[str] = None,
     skip_queue: bool = False,
     url_for: Optional[Callable[[str], str]] = None,
@@ -1400,14 +1497,7 @@ def build_shape_factory_map(
         counts[st] = counts.get(st, 0) + 1
 
     # Recent jobs first (by mtime of job file)
-    def job_mtime(j: Dict[str, Any]) -> float:
-        p = j.get("job_path")
-        try:
-            return Path(str(p)).stat().st_mtime if p else 0.0
-        except Exception:
-            return 0.0
-
-    all_jobs.sort(key=job_mtime, reverse=True)
+    all_jobs.sort(key=_job_mtime, reverse=True)
     job_summaries = [
         _job_summary(
             j,
@@ -1419,7 +1509,6 @@ def build_shape_factory_map(
         )
         for j in all_jobs
     ]
-    job_items = job_summaries[: max(1, jobs_limit)]
 
     jobs_by_family: Dict[str, List[Dict[str, Any]]] = {}
     for row in job_summaries:
@@ -1444,6 +1533,14 @@ def build_shape_factory_map(
             file_exists=file_exists,
             limit=proj_cap,
         )
+
+    # Payload jobs: per-family recent + every deposit-preview job_key (not global top-N).
+    job_items = select_job_summaries_for_map(
+        job_summaries,
+        families,
+        jobs_per_family=max(1, int(jobs_per_family)),
+        jobs_limit=max(1, int(jobs_limit)),
+    )
 
     queue_doc: Dict[str, Any] = {"ok": False, "skipped": True} if skip_queue else _fetch_comfy_queue(comfy_server)
     if not skip_queue and not queue_doc.get("ok"):
@@ -1505,6 +1602,8 @@ def build_shape_factory_map(
             "summary": counts,
             "total": len(all_jobs),
             "items": job_items,
+            "returned": len(job_items),
+            "jobs_per_family": max(1, int(jobs_per_family)),
             "pending_submit": pending_jobs[:20],
             "inflight": inflight_jobs[:20],
             "active": active_jobs[:20],

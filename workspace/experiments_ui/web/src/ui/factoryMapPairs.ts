@@ -8,6 +8,19 @@ import type {
 
 export type PairPhase = "job" | "future" | "seed";
 
+/** Operator-facing origin for Source→Output chips. */
+export type PairJobKind =
+  | "hourly"
+  | "ui"
+  | "pipeline"
+  | "factory"
+  | "replay"
+  | "derive"
+  | "extend"
+  | "possible"
+  | "seed"
+  | "orphaned";
+
 export type SourceOutputPairGap = "none" | "source" | "output";
 
 export type SourceOutputPair = {
@@ -20,9 +33,28 @@ export type SourceOutputPair = {
   gap: SourceOutputPairGap;
   gapNote?: string;
   phase?: PairPhase;
+  jobKind?: PairJobKind | string;
   comboKey?: string;
   bindings?: Record<string, ShapeFactoryMapMediaRef>;
 };
+
+export function classifyPairJobKind(
+  jobKey?: string | null,
+  job?: ShapeFactoryMapJob | null,
+  phase?: PairPhase,
+): PairJobKind | string {
+  if (phase === "future") return "possible";
+  if (phase === "seed") return "seed";
+  if (job?.job_kind) return job.job_kind;
+  const key = String(jobKey || job?.job_key || "");
+  if (key.startsWith("hourly__")) return "hourly";
+  const lower = key.toLowerCase();
+  if (lower.includes("adhoc_ui") || lower.includes("__ui") || /_ui\d/.test(lower)) return "ui";
+  const pick = String(job?.pick_mode || "").toLowerCase();
+  if (pick === "replay" || pick === "derive" || pick === "extend") return pick;
+  if (jobKey && !job) return "orphaned";
+  return "factory";
+}
 
 export function mediaIsPresent(media?: ShapeFactoryMapMediaRef | null): boolean {
   return Boolean(media?.url || media?.thumb_url || media?.path);
@@ -51,25 +83,83 @@ export function poolMemberKey(poolKey: string, mem: ShapeFactoryMapMediaRef): st
   return `${poolKey}:${mem.path || mem.basename}`;
 }
 
-export function shortPairLabel(pair: SourceOutputPair): string {
-  const jk = pair.jobKey || "";
-  const m = jk.match(/(?:pp|prompt_profile)-(.+?)__(?:src|source_video)/);
-  if (m?.[1]) return m[1];
-  const prompt = pair.bindings?.prompt_profile?.basename?.replace(/\.json$/i, "");
-  if (prompt) {
-    const src =
-      pair.source?.basename?.replace(/\.(mp4|png|jpe?g|webp)$/i, "") ||
-      pair.bindings?.source_still?.basename?.replace(/\.(png|jpe?g|webp)$/i, "") ||
-      pair.bindings?.source_video?.basename?.replace(/\.mp4$/i, "");
-    if (src) return `${prompt} · ${src.split("_").slice(-1)[0] || src}`;
-    return prompt;
+/** Prompt profile stems that are pool placeholders — omit from chip labels. */
+const NON_DATA_PROMPT_LABELS = new Set([
+  "catalog-default",
+  "pp-catalog-default",
+  "default",
+  "catalog_default",
+]);
+
+function stemFromBasename(name?: string | null): string {
+  return String(name || "")
+    .replace(/\.(mp4|webm|mov|png|jpe?g|webp|json)$/i, "")
+    .trim();
+}
+
+/** Compact operator-facing media id (prefer human stem, else short hash tail). */
+export function shortMediaLabel(name?: string | null, maxLen = 28): string {
+  const stem = stemFromBasename(name);
+  if (!stem) return "";
+  // Content-addressed stills: SSS/<hash>… — show short prefix + tail
+  const hashish = stem.match(/^(?:SSS|XXX|YYY|FAVBBBBB|qqqpp-)?([0-9a-f]{16,})$/i);
+  if (hashish) {
+    const h = hashish[1];
+    return `${h.slice(0, 6)}…${h.slice(-4)}`;
   }
+  if (stem.length <= maxLen) return stem;
+  // Keep a readable head and a short tail (dates / sequence often at end)
+  const tail = stem.split(/[_-]/).filter(Boolean).slice(-2).join("_");
+  if (tail && tail.length < maxLen - 1) {
+    const headBudget = maxLen - tail.length - 1;
+    return `${stem.slice(0, Math.max(6, headBudget))}…${tail}`;
+  }
+  return `${stem.slice(0, maxLen - 1)}…`;
+}
+
+function promptLabelIsUseful(raw?: string | null): boolean {
+  const stem = stemFromBasename(raw).toLowerCase();
+  if (!stem) return false;
+  if (NON_DATA_PROMPT_LABELS.has(stem)) return false;
+  if (stem.startsWith("pp-") && NON_DATA_PROMPT_LABELS.has(stem.slice(3))) return false;
+  return true;
+}
+
+function pairSourceStem(pair: SourceOutputPair): string {
   return (
-    pair.source?.basename?.replace(/\.mp4$/i, "") ||
-    pair.output?.basename?.replace(/\.mp4$/i, "") ||
-    jk.slice(0, 28) ||
-    "run"
+    shortMediaLabel(pair.source?.basename) ||
+    shortMediaLabel(pair.bindings?.source_still?.basename) ||
+    shortMediaLabel(pair.bindings?.source_video?.basename) ||
+    shortMediaLabel(pair.bindings?.source_video_ref?.basename) ||
+    shortMediaLabel(pair.bindings?.identity_anchor?.basename) ||
+    ""
   );
+}
+
+/**
+ * Chip caption: prefer source (or output) identity. Do not lead with
+ * catalog-default / other non-data prompt placeholders.
+ */
+export function shortPairLabel(pair: SourceOutputPair): string {
+  const src = pairSourceStem(pair);
+  const out = shortMediaLabel(pair.output?.basename);
+
+  const promptFromBinding = stemFromBasename(pair.bindings?.prompt_profile?.basename);
+  const jk = pair.jobKey || "";
+  const promptFromKey = jk.match(/(?:pp|prompt_profile)-(.+?)__(?:src|source_video|still|id)/)?.[1] || "";
+  const prompt = promptLabelIsUseful(promptFromBinding)
+    ? stemFromBasename(promptFromBinding)
+    : promptLabelIsUseful(promptFromKey)
+      ? stemFromBasename(promptFromKey)
+      : "";
+
+  if (src && prompt) return `${src} · ${prompt}`;
+  if (src) return src;
+  if (out && prompt) return `${out} · ${prompt}`;
+  if (out) return out;
+  if (prompt) return prompt;
+  if (jk) return shortMediaLabel(jk.replace(/^hourly__/, "").slice(0, 48)) || "run";
+  return "run";
 }
 
 function projectedToPair(row: ShapeFactoryMapProjectedPair): SourceOutputPair {
@@ -78,6 +168,7 @@ function projectedToPair(row: ShapeFactoryMapProjectedPair): SourceOutputPair {
     pairKey: row.pair_key || `future:${row.combo_key || "?"}`,
     comboKey: row.combo_key,
     phase: "future",
+    jobKind: "possible",
     source: row.source || primarySourceBinding(bindings),
     bindings,
     gap: row.gap || "output",
@@ -122,6 +213,7 @@ export function buildSourceOutputPairs(
           gap: hasRecovered ? "none" : "source",
           gapNote: hasRecovered ? "recovered source" : mem.source === "seed" ? "seed" : "no source",
           phase: "seed",
+          jobKind: "seed",
         });
       }
     }
@@ -165,19 +257,24 @@ export function buildSourceOutputPairs(
       gap,
       gapNote,
       phase: "job",
+      jobKind: classifyPairJobKind(jobKey, job, "job"),
     });
   }
 
   for (const [jobKey, deposit] of depositsByJob) {
     if (seenDepositJobs.has(jobKey)) continue;
+    const recovered = deposit.member.source_still;
+    const hasRecovered = mediaIsPresent(recovered);
     pairs.push({
       pairKey: jobKey,
       jobKey,
       output: deposit.member,
       outputMemberKey: deposit.memberKey,
-      gap: "source",
-      gapNote: "job not in list",
+      source: hasRecovered ? recovered : undefined,
+      gap: hasRecovered ? "none" : "source",
+      gapNote: hasRecovered ? "recovered source" : "job file missing",
       phase: "job",
+      jobKind: classifyPairJobKind(jobKey, null, "job"),
     });
   }
 

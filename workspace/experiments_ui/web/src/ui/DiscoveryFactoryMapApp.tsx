@@ -715,6 +715,12 @@ function DetailPanel({
           <section className="sfmap-detail-section">
             <h3>Job</h3>
             <div className="sfmap-detail-kv">
+              {selectedPair?.jobKind || job.job_kind ? (
+                <span className={`sfmap-pair-kind sfmap-pair-kind--${String(selectedPair?.jobKind || job.job_kind).replace(/[^a-z0-9_-]/gi, "")}`}>
+                  {selectedPair?.jobKind || job.job_kind}
+                </span>
+              ) : null}
+              {" "}
               <span className={statusClass(job.status)}>{job.status}</span>
               {job.family_slug ? <> · {job.family_slug}</> : null}
               {job.exec_sec != null ? <> · {Math.round(Number(job.exec_sec))}s</> : null}
@@ -2106,6 +2112,7 @@ function SourceOutputPairCard({
 }) {
   const status =
     pair.phase === "future" ? "future" : pair.job?.status || pair.gapNote || "—";
+  const kind = pair.jobKind || (pair.phase === "future" ? "possible" : pair.phase === "seed" ? "seed" : "factory");
   return (
     <button
       type="button"
@@ -2115,7 +2122,7 @@ function SourceOutputPairCard({
         (pair.phase === "future" ? " sfmap-pair-card--future" : "")
       }
       onClick={(e) => onSelect(e.currentTarget)}
-      title={pair.jobKey || pair.gapNote}
+      title={`${kind} · ${pair.jobKey || pair.gapNote || ""}`}
     >
       <div className="sfmap-pair-card__track">
         <PairEnd
@@ -2139,6 +2146,9 @@ function SourceOutputPairCard({
         />
       </div>
       <div className="sfmap-pair-card__meta">
+        <span className={`sfmap-pair-kind sfmap-pair-kind--${String(kind).replace(/[^a-z0-9_-]/gi, "")}`}>
+          {kind}
+        </span>
         <span className={statusClass(status)}>{status}</span>
         <span className="sfmap-pair-card__label">{shortPairLabel(pair)}</span>
       </div>
@@ -2427,12 +2437,14 @@ export function DiscoveryFactoryMapApp() {
   }, []);
 
   const membersLimit = route.view === "family" ? 24 : 8;
+  const jobsPerFamily = route.view === "family" ? 48 : 24;
   const mapQuery = useQuery({
-    queryKey: queryKeys.shapeFactory.map({ membersLimit, jobsLimit: 120 }),
+    queryKey: queryKeys.shapeFactory.map({ membersLimit, jobsLimit: 800, jobsPerFamily }),
     queryFn: () =>
       fetchShapeFactoryMap({
         members_limit: membersLimit,
-        jobs_limit: 120,
+        jobs_limit: 800,
+        jobs_per_family: jobsPerFamily,
       }),
     staleTime: 30_000,
     refetchInterval: POLL_MS,

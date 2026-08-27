@@ -2,7 +2,7 @@ export const queryKeys = {
   shapeFactory: {
     root: ["shapeFactory"] as const,
     mapRoot: ["shapeFactory", "map"] as const,
-    map: (opts: { membersLimit: number; jobsLimit: number }) =>
+    map: (opts: { membersLimit: number; jobsLimit: number; jobsPerFamily?: number }) =>
       ["shapeFactory", "map", opts] as const,
     quarantineRoot: ["shapeFactory", "quarantine"] as const,
     quarantine: (opts: { status?: string }) => ["shapeFactory", "quarantine", opts] as const,

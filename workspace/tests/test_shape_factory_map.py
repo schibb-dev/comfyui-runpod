@@ -24,10 +24,12 @@ from shape_factory_map import (  # noqa: E402
     _projected_pairs_for_family,
     _relpath_guess_from_abs,
     build_shape_factory_map,
+    classify_job_kind,
     job_key_slot_token,
     normalize_combo_key,
     resolve_output_relpath,
     resolve_shape_factory_data_root,
+    select_job_summaries_for_map,
 )
 
 
@@ -35,6 +37,62 @@ class ShapeFactoryMapTests(unittest.TestCase):
     def test_resolve_data_root_default(self) -> None:
         p = resolve_shape_factory_data_root(repo_root=ROOT)
         self.assertEqual(p, (ROOT / ".data").resolve())
+
+    def test_classify_job_kind(self) -> None:
+        self.assertEqual(classify_job_kind({"job_key": "hourly__pp-x__src-y"}), "hourly")
+        self.assertEqual(classify_job_kind({"job_key": "Fam__pp-x__still-y__ui1787"}), "ui")
+        self.assertEqual(classify_job_kind({"job_key": "Fam__x", "adhoc_overrides": {"parameters": {"frames": 8}}}), "ui")
+        self.assertEqual(classify_job_kind({"job_key": "Fam__x", "pipeline_id": "fb9-gex2-to-facial"}), "pipeline")
+        self.assertEqual(classify_job_kind({"job_key": "Fam__x", "pick_mode": "replay"}), "replay")
+        self.assertEqual(classify_job_kind({"job_key": "Fam__x"}), "factory")
+
+    def test_select_jobs_prefers_per_family_and_deposits(self) -> None:
+        # Dominating family A would win a global top-N; quieter B must still appear
+        # when its deposit preview references a job.
+        summaries = []
+        for i in range(30):
+            summaries.append(
+                {
+                    "job_key": f"A__job-{i}",
+                    "family_slug": "A",
+                    "job_path": f"/tmp/A-{i}.job.json",
+                }
+            )
+        summaries.append(
+            {
+                "job_key": "B__deposit-ref",
+                "family_slug": "B",
+                "job_path": "/tmp/B-dep.job.json",
+            }
+        )
+        summaries.append(
+            {
+                "job_key": "B__other",
+                "family_slug": "B",
+                "job_path": "/tmp/B-other.job.json",
+            }
+        )
+        families = [
+            {
+                "family_slug": "B",
+                "deposit_pools": [
+                    {
+                        "pool_id": "B_X",
+                        "members_preview": [{"job_key": "B__deposit-ref", "basename": "out.mp4"}],
+                    }
+                ],
+            }
+        ]
+        # Tiny per-family + tiny global cap still keeps deposit-ref
+        selected = select_job_summaries_for_map(
+            summaries,
+            families,
+            jobs_per_family=2,
+            jobs_limit=4,
+        )
+        keys = {r["job_key"] for r in selected}
+        self.assertIn("B__deposit-ref", keys)
+        self.assertTrue(any(k.startswith("A__") for k in keys))
 
     def test_combo_key_uses_short_slot_labels(self) -> None:
         key = _combo_key_from_slot_paths(

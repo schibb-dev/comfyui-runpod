@@ -1708,11 +1708,18 @@ def _shape_factory_map_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Di
             members_limit = min(int(n), 200)
             break
 
-    jobs_limit = 120
+    jobs_limit = 500
     for v in q.get("jobs_limit", []):
         n = _safe_int(v)
         if n is not None and n > 0:
-            jobs_limit = min(int(n), 500)
+            jobs_limit = min(int(n), 2000)
+            break
+
+    jobs_per_family = 40
+    for v in q.get("jobs_per_family", []):
+        n = _safe_int(v)
+        if n is not None and n > 0:
+            jobs_per_family = min(int(n), 200)
             break
 
     family_filter: Optional[str] = None
@@ -1741,6 +1748,7 @@ def _shape_factory_map_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Di
         comfy_server=str(cfg.comfy_server),
         members_limit=members_limit,
         jobs_limit=jobs_limit,
+        jobs_per_family=jobs_per_family,
         family_filter=family_filter,
         skip_queue=skip_queue,
         url_for=url_for,
