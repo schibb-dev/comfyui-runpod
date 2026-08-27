@@ -686,7 +686,9 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
         self.assertIn("FB9-FaceBlast", names)
         self.assertIn("BounceDanceA", names)
         self.assertIn("FB9_GEX", names)
-        self.assertNotIn("FB9_GEX2", names)
+        self.assertIn("FB9_GEX2", names)
+        weights = dict(_DEFAULT_SEED_FAMILY_WEIGHTS)
+        self.assertEqual(weights["FB9_GEX"], weights["FB9_GEX2"])
         i2v = {
             "FB9-FaceBlast",
             "X-KNEEL-FB9",
@@ -697,16 +699,15 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
         }
         i2v_w = sum(w for n, w in _DEFAULT_SEED_FAMILY_WEIGHTS if n in i2v)
         total_w = sum(w for _n, w in _DEFAULT_SEED_FAMILY_WEIGHTS)
-        weights = dict(_DEFAULT_SEED_FAMILY_WEIGHTS)
         self.assertEqual(total_w, 100)
-        self.assertGreaterEqual(i2v_w, 88)
+        self.assertGreaterEqual(i2v_w, 83)
         self.assertEqual(max(weights.values()), weights["X-KNEEL-FB9"])
         self.assertGreaterEqual(weights["X-KNEEL-FB9"], 32)
         self.assertNotIn("FB8VA4", weights)
-        picked = {select_seed_family(i) for i in range(80)}
+        picked = {select_seed_family(i) for i in range(200)}
         self.assertIn("X-KNEEL-FB9", picked)
         self.assertTrue(picked & {"FB9-FaceBlast", "BounceDanceA", "FB8VB2"})
-        self.assertNotIn("FB9_GEX2", picked)
+        self.assertTrue(picked & {"FB9_GEX", "FB9_GEX2"})
         self.assertNotIn("FB8VA4", picked)
 
     def test_want_seed_over_chain_respects_share(self) -> None:

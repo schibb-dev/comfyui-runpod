@@ -2450,12 +2450,13 @@ def plan_hourly_derive(
 # Seed families for idle hourly ticks (weights sum to 100 by default).
 # Bias toward still+prompt (i2v) templates so input images get exercised.
 # X-KNEEL-FB9 is the primary image-based seed; FaceBlast/BounceDance remain secondary.
-# FB9_GEX (v2v) remains allowed; FB9_GEX2 is intentionally excluded from seeds.
+# Extension (v2v) seeds: FB9_GEX and FB9_GEX2 share equal weight (GEX2 restored after workflow fix).
 _DEFAULT_SEED_FAMILY_WEIGHTS: Tuple[Tuple[str, int], ...] = (
-    ("X-KNEEL-FB9", 40),
+    ("X-KNEEL-FB9", 35),
     ("FB9-FaceBlast", 16),
     ("BounceDanceA", 16),
     ("FB9_GEX", 5),
+    ("FB9_GEX2", 5),
     # FB8VA4 quarantined 2026-08-21 — weight redistributed to other FB8 stills.
     ("FB8VB2", 8),
     ("FB8VA5-ZOOMOUT", 8),

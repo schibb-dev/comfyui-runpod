@@ -12,7 +12,8 @@
 # After hourly policy changes, dry-run variety with:
 #   python3 workspace/scripts/shape_factory_hourly.py simulate-picks --count 32
 # i2v hourlies target ~90% fresh input stills from the last week (see HOURLY_* below).
-# Kneel→GEX2 is disabled — hourlies do not seed or chain into FB9_GEX2.
+# Extension seeds: FB9_GEX and FB9_GEX2 share equal weight (Kneel→GEX2 chain still unused;
+# i2v still drains into FB9_GEX).
 # Install timer: bash scripts/install-shape-factory-hourly.sh
 set -euo pipefail
 
