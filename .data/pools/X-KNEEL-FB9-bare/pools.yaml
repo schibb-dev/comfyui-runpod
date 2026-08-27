@@ -1,0 +1,37 @@
+schema_version: comfyui-runpod.pools.v0
+shape: /home/yuji/src/comfyui-runpod/.data/shapes/X-KNEEL-FB9-bare.shape.yaml
+
+pools:
+  source_still:
+    slot: source_still
+    description: >
+      Start frames (A slot). Same input globs as X-KNEEL-FB9. Comfy LoadImage only
+      accepts files under input/, so do not pool output/og companion PNGs here.
+    members:
+      - glob: /home/yuji/comfyui-runpod-data/input/**/*.png
+        sort: mtime_desc
+        limit: 200
+      - glob: /home/yuji/comfyui-runpod-data/input/**/*.jpeg
+        sort: mtime_desc
+        limit: 200
+      - glob: /home/yuji/comfyui-runpod-data/input/**/*.jpg
+        sort: mtime_desc
+        limit: 200
+
+  prompt_profile:
+    slot: prompt_profile
+    description: >
+      Kneel prompt with no clothing beat and no turning beat (C slot).
+    members:
+      - dir: /workspace/.data/pools/X-KNEEL-FB9-bare/prompts
+        ext: [".json"]
+
+deposit_pools:
+  X-KNEEL-bare_X_og:
+    slot: final_video
+    description: X-KNEEL-FB9-bare shape_factory outputs (final_video)
+    seed_members:
+      - glob: /home/yuji/comfyui-runpod-data/output/og/**/X-Kneel-FB9-bare_shape/**/*.mp4
+        limit: 200
+      - glob: /home/yuji/comfyui-runpod-data/output/og/**/X-Kneel*bare*.mp4
+        limit: 200

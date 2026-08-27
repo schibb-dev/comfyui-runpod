@@ -44,7 +44,7 @@ Legacy `EXT` in older names parses as `V2V` with an extend hint
 
 Reserved later tags: `II2V`, `IV2V`, `I2I`, `V2I`, `T2V`, `VV2V`.
 
-## Current enrollment (12)
+## Current enrollment (13)
 
 | Family | IO | Role | Profile |
 |--------|----|------|---------|
@@ -55,6 +55,7 @@ Reserved later tags: `II2V`, `IV2V`, `I2I`, `V2I`, `T2V`, `VV2V`.
 | FB8VB2 | I2V | origin | still_prompt |
 | FB9-FaceBlast | I2V | origin | still_prompt |
 | X-KNEEL-FB9 | I2V | origin | still_prompt |
+| X-KNEEL-FB9-bare | I2V | origin | still_prompt |
 | ASTONISH_FB9_GEX | V2V | extend | video_prompt |
 | FB9_GEX | V2V | extend | video_prompt |
 | FB9_GEX2 | V2V | extend | video_prompt |

@@ -125,7 +125,7 @@ python3 shape_factory.py quarantine release --workflow /path/to/workflow.json --
 
 | Artifact | Path |
 |----------|------|
-| Shapes | `.data/shapes/{FB9_GEX2,FB9_GEX2_identity_anchor,FB9_GEX_FACIAL,FB9_GEX,FB9-FaceBlast,X-KNEEL-FB9,BounceDanceA,Breast-shake-FB8VA5,FB8VA5-ZOOMOUT,FB8VA4,FB8VB2,ASTONISH_FB9_GEX}.shape.yaml` |
+| Shapes | `.data/shapes/{FB9_GEX2,FB9_GEX2_identity_anchor,FB9_GEX_FACIAL,FB9_GEX,FB9-FaceBlast,X-KNEEL-FB9,X-KNEEL-FB9-bare,BounceDanceA,Breast-shake-FB8VA5,FB8VA5-ZOOMOUT,FB8VA4,FB8VB2,ASTONISH_FB9_GEX}.shape.yaml` |
 | Pools | `.data/pools/<family>/pools.yaml` |
 | Pool index | `.data/pools/<family>/index.json` |
 | Pipeline | `.data/pipelines/fb9-gex2-to-facial.pipeline.yaml` |
