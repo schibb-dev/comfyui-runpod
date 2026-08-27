@@ -1241,6 +1241,8 @@ export type ShapeFactoryClip = {
   deleted?: boolean;
   used?: boolean;
   use_count?: number;
+  /** Inferred/explicit rating of the parent media basename (when ratings index known). */
+  parent_rating?: number | null;
 };
 
 export type ShapeFactoryClipsListResponse = {
@@ -1260,6 +1262,20 @@ export type ShapeFactoryClipsLibraryParent = {
   asset_mtime?: number | null;
 };
 
+export type ClipsLibrarySort =
+  | "recent"
+  | "created"
+  | "oldest"
+  | "most_used"
+  | "unused_first"
+  | "most_popular"
+  | "rating"
+  | "default_first"
+  | "longest"
+  | "shortest"
+  | "label"
+  | "source";
+
 export type ShapeFactoryClipsLibraryResponse = {
   ok: boolean;
   clips?: ShapeFactoryClip[];
@@ -1270,11 +1286,14 @@ export type ShapeFactoryClipsLibraryResponse = {
   origin_counts?: Record<string, number>;
   /** Source videos with clip counts (for by-source browse). */
   parents?: ShapeFactoryClipsLibraryParent[];
+  sort?: ClipsLibrarySort;
+  sort_options?: ClipsLibrarySort[];
   filters?: {
     origin?: string | null;
     q?: string | null;
     defaults_only?: boolean;
     media_relpath?: string | null;
+    sort?: ClipsLibrarySort | null;
   };
   error?: string;
   detail?: string;
@@ -1365,6 +1384,7 @@ export async function listShapeFactoryClipsLibrary(opts?: {
   unusedOnly?: boolean;
   usedOnly?: boolean;
   starredOnly?: boolean;
+  sort?: ClipsLibrarySort | null;
 }): Promise<ShapeFactoryClipsLibraryResponse> {
   const sp = new URLSearchParams();
   if (opts?.limit != null) sp.set("limit", String(opts.limit));
@@ -1378,6 +1398,7 @@ export async function listShapeFactoryClipsLibrary(opts?: {
   if (opts?.unusedOnly) sp.set("unused_only", "1");
   if (opts?.usedOnly) sp.set("used_only", "1");
   if (opts?.starredOnly) sp.set("starred_only", "1");
+  if (opts?.sort?.trim()) sp.set("sort", opts.sort.trim());
   const qs = sp.toString();
   const r = await fetch(`/api/shape-factory/clips/library${qs ? `?${qs}` : ""}`);
   const j = (await r.json().catch(() => ({}))) as ShapeFactoryClipsLibraryResponse;

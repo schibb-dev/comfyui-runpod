@@ -4,6 +4,7 @@ import {
   listShapeFactoryClipsDerived,
   listShapeFactoryClipsLibrary,
   mutateShapeFactoryClip,
+  type ClipsLibrarySort,
   type ShapeFactoryClip,
   type ShapeFactoryClipDerivedItem,
   type ShapeFactoryClipsLibraryParent,
@@ -27,12 +28,59 @@ import { VideoTrimControls, type VideoTrimPlaybackMode } from "./VideoTrimContro
 const PAGE_SIZE = 80;
 const CLIPS_DETAIL_LAYOUT_KEY = "clips_library_detail_layout_v1";
 const CLIPS_VIEW_KEY = "clips_library_view_v1";
+const CLIPS_SORT_KEY = "clips_library_sort_v1";
 const CLIPS_AUTOPLAY_KEY = "clips_library_video_autoplay";
 const CLIPS_LOOP_KEY = "clips_library_loop_playback";
 const MARK_EPS = 1e-3;
 
 type ClipsDetailLayout = "stacked" | "split";
 type ClipsBrowseView = "all" | "by_source" | "derived";
+
+const CLIPS_SORT_OPTIONS: { value: ClipsLibrarySort; label: string; group: string }[] = [
+  { value: "recent", label: "Most Recent", group: "Activity" },
+  { value: "oldest", label: "Oldest", group: "Activity" },
+  { value: "most_used", label: "Most Used", group: "Activity" },
+  { value: "unused_first", label: "Unused first", group: "Activity" },
+  { value: "most_popular", label: "Most Popular (★)", group: "Activity" },
+  { value: "rating", label: "Parent rating", group: "Quality" },
+  { value: "default_first", label: "Defaults first", group: "Quality" },
+  { value: "longest", label: "Longest window", group: "Browse" },
+  { value: "shortest", label: "Shortest window", group: "Browse" },
+  { value: "label", label: "Label A–Z", group: "Browse" },
+  { value: "source", label: "Source path", group: "Browse" },
+];
+
+const CLIPS_SORT_VALUES = new Set(CLIPS_SORT_OPTIONS.map((o) => o.value));
+
+function loadClipsSort(): ClipsLibrarySort {
+  try {
+    const v = localStorage.getItem(CLIPS_SORT_KEY);
+    // "created" was removed from the menu (identical to recent for most bookmarks).
+    if (v === "created") return "recent";
+    if (v && CLIPS_SORT_VALUES.has(v as ClipsLibrarySort)) return v as ClipsLibrarySort;
+  } catch {
+    /* ignore */
+  }
+  return "recent";
+}
+
+function persistClipsSort(sort: ClipsLibrarySort) {
+  try {
+    localStorage.setItem(CLIPS_SORT_KEY, sort);
+  } catch {
+    /* ignore */
+  }
+}
+
+function clipsSortOptGroups(): { group: string; options: typeof CLIPS_SORT_OPTIONS }[] {
+  const groups: { group: string; options: typeof CLIPS_SORT_OPTIONS }[] = [];
+  for (const opt of CLIPS_SORT_OPTIONS) {
+    const last = groups[groups.length - 1];
+    if (last && last.group === opt.group) last.options.push(opt);
+    else groups.push({ group: opt.group, options: [opt] });
+  }
+  return groups;
+}
 
 type ClipDraft = {
   markIn: number;
@@ -210,6 +258,7 @@ export function ClipsLibraryApp() {
   const [showRetired, setShowRetired] = useState(false);
   const [usageFilter, setUsageFilter] = useState<"all" | "unused" | "used">("all");
   const [starredOnly, setStarredOnly] = useState(false);
+  const [sort, setSort] = useState<ClipsLibrarySort>(loadClipsSort);
   const [browseView, setBrowseView] = useState<ClipsBrowseView>(() =>
     loadClipsBrowseView(deep.view || (deep.mediaRelpath ? "by_source" : null)),
   );
@@ -236,6 +285,9 @@ export function ClipsLibraryApp() {
   const [siblingsEpoch, setSiblingsEpoch] = useState(0);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const reloadSeqRef = useRef(0);
+  const jumpToSortTopRef = useRef(false);
   const videoAutoplayRef = useRef(false);
   const dirtyRef = useRef(false);
   const [videoDuration, setVideoDuration] = useState(0);
@@ -266,6 +318,17 @@ export function ClipsLibraryApp() {
     }
   }, []);
 
+  const setSortFromUser = useCallback((next: ClipsLibrarySort) => {
+    jumpToSortTopRef.current = true;
+    setSort(next);
+    persistClipsSort(next);
+    try {
+      listRef.current?.scrollTo({ top: 0 });
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   const setVideoAutoplayFromUser = useCallback((on: boolean) => {
     setVideoAutoplay(on);
     persistClipsAutoplay(on);
@@ -281,6 +344,7 @@ export function ClipsLibraryApp() {
   }, []);
 
   const reload = useCallback(async () => {
+    const seq = ++reloadSeqRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -291,6 +355,7 @@ export function ClipsLibraryApp() {
           mediaRelpath: mediaFilter,
           includePending: true,
         });
+        if (seq !== reloadSeqRef.current) return;
         const rows = res.items || [];
         setDerived(rows);
         setDerivedTotal(res.total ?? rows.length);
@@ -312,7 +377,9 @@ export function ClipsLibraryApp() {
         unusedOnly: usageFilter === "unused",
         usedOnly: usageFilter === "used",
         starredOnly,
+        sort,
       });
+      if (seq !== reloadSeqRef.current) return;
       const rows = res.clips || [];
       setClips(rows);
       setParents(res.parents || []);
@@ -325,12 +392,23 @@ export function ClipsLibraryApp() {
           default_clip_id: rows.find((c) => c.is_default)?.clip_id || null,
         });
       }
+      const jumpTop = jumpToSortTopRef.current;
+      if (jumpTop) jumpToSortTopRef.current = false;
       setSelectedId((prev) => {
         if (browseView === "by_source" && !activeMedia) return null;
+        if (jumpTop && rows[0]?.clip_id) return rows[0].clip_id;
         if (prev && rows.some((c) => c.clip_id === prev)) return prev;
         return rows[0]?.clip_id || null;
       });
+      if (jumpTop) {
+        try {
+          listRef.current?.scrollTo({ top: 0 });
+        } catch {
+          /* ignore */
+        }
+      }
     } catch (e) {
+      if (seq !== reloadSeqRef.current) return;
       setError(e instanceof Error ? e.message : String(e));
       setClips([]);
       setParents([]);
@@ -338,9 +416,9 @@ export function ClipsLibraryApp() {
       setDerivedTotal(0);
       setTotal(0);
     } finally {
-      setLoading(false);
+      if (seq === reloadSeqRef.current) setLoading(false);
     }
-  }, [origin, q, defaultsOnly, showRetired, usageFilter, starredOnly, browseView, mediaFilter, derivedClipFilter]);
+  }, [origin, q, defaultsOnly, showRetired, usageFilter, starredOnly, sort, browseView, mediaFilter, derivedClipFilter]);
 
   useEffect(() => {
     void reload();
@@ -525,6 +603,33 @@ export function ClipsLibraryApp() {
     const keys = Object.keys(originCounts).sort((a, b) => (originCounts[b] || 0) - (originCounts[a] || 0));
     return keys;
   }, [originCounts]);
+
+  /** By-source parent index: reorder with the same Sort control (best-effort fields). */
+  const sortedParents = useMemo(() => {
+    const rows = parents.slice();
+    const key = sort;
+    rows.sort((a, b) => {
+      const an = String(a.media_basename || a.media_relpath || "").toLowerCase();
+      const bn = String(b.media_basename || b.media_relpath || "").toLowerCase();
+      const ap = String(a.media_relpath || "").toLowerCase();
+      const bp = String(b.media_relpath || "").toLowerCase();
+      const ac = Number(a.clip_count || 0);
+      const bc = Number(b.clip_count || 0);
+      const am = Number(a.asset_mtime || 0);
+      const bm = Number(b.asset_mtime || 0);
+      const ad = a.has_default ? 1 : 0;
+      const bd = b.has_default ? 1 : 0;
+      if (key === "oldest") return am - bm || ap.localeCompare(bp);
+      if (key === "label" || key === "source") return an.localeCompare(bn) || ap.localeCompare(bp);
+      if (key === "default_first") return bd - ad || bc - ac || bm - am;
+      if (key === "most_used" || key === "most_popular" || key === "unused_first") {
+        return key === "unused_first" ? ac - bc || bm - am : bc - ac || bm - am;
+      }
+      // recent / created / rating / longest / shortest → mtime then path
+      return bm - am || ap.localeCompare(bp);
+    });
+    return rows;
+  }, [parents, sort]);
 
   const queueItem = libraryItem || (mediaRelpath ? stubLibraryItem(mediaRelpath) : null);
 
@@ -830,6 +935,30 @@ export function ClipsLibraryApp() {
                   <option value="used">Used</option>
                 </select>
               </label>
+              <label className="clips-lib-filter">
+                Sort
+                <select
+                  value={sort}
+                  onChange={(e) => setSortFromUser(e.target.value as ClipsLibrarySort)}
+                  aria-label="Sort clips"
+                  disabled={showDerivedList}
+                  title={
+                    showDerivedList
+                      ? "Sort applies to clip bookmarks"
+                      : "Activity, quality, and browse sorts — heavy sorts scan job usage when needed"
+                  }
+                >
+                  {clipsSortOptGroups().map((g) => (
+                    <optgroup key={g.group} label={g.group}>
+                      {g.options.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+              </label>
               <div className="segmented clips-lib-view-switch" role="radiogroup" aria-label="Browse by">
                 <button
                   type="button"
@@ -875,6 +1004,9 @@ export function ClipsLibraryApp() {
                 : showParentPicker
                   ? `${parents.length} source video${parents.length === 1 ? "" : "s"}`
                   : `${total} clip${total === 1 ? "" : "s"}`}
+            {!loading && !showDerivedList
+              ? ` · sorted by ${CLIPS_SORT_OPTIONS.find((o) => o.value === sort)?.label || sort}`
+              : ""}
             {!loading && !showParentPicker && !showDerivedList && clips.length < total
               ? ` · showing ${clips.length}`
               : ""}
@@ -889,6 +1021,7 @@ export function ClipsLibraryApp() {
 
         <div className="clips-lib-layout">
           <aside
+            ref={listRef}
             className="clips-lib-list"
             aria-label={
               showDerivedList ? "Derived videos" : showParentPicker ? "Source videos" : "Clip library"
@@ -935,7 +1068,7 @@ export function ClipsLibraryApp() {
                 {!loading && parents.length === 0 ? (
                   <p className="factory-muted clips-lib-empty">No source videos match these filters.</p>
                 ) : null}
-                {parents.map((p) => (
+                {sortedParents.map((p) => (
                   <div key={p.media_relpath} className="clips-lib-card clips-lib-parent-card">
                     <button
                       type="button"
@@ -1062,6 +1195,12 @@ export function ClipsLibraryApp() {
                         <div className="clips-lib-card__meta mono">
                           {formatClipTimecode(c.mark_in_s)}–{formatClipTimecode(c.mark_out_s)}
                           <span className="factory-muted"> · {span.toFixed(1)}s</span>
+                          {typeof c.use_count === "number" && c.use_count > 0 ? (
+                            <span className="factory-muted"> · used {c.use_count}×</span>
+                          ) : null}
+                          {typeof c.parent_rating === "number" ? (
+                            <span className="factory-muted"> · ★{c.parent_rating.toFixed(1)}</span>
+                          ) : null}
                         </div>
                         {browseView === "all" ? (
                           <div className="clips-lib-card__path" title={c.media_relpath || undefined}>

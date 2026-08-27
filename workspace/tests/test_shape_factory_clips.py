@@ -478,6 +478,18 @@ class TestShapeFactoryClips(unittest.TestCase):
             used_lib = list_clips_library(con, jobs_root=root / "jobs", used_only=True, limit=50)
             self.assertEqual([c["clip_id"] for c in used_lib["clips"]], [used_clip["clip_id"]])
 
+            used_first = list_clips_library(con, jobs_root=root / "jobs", sort="most_used", limit=50)
+            self.assertEqual(used_first["sort"], "most_used")
+            self.assertEqual(used_first["clips"][0]["clip_id"], used_clip["clip_id"])
+            self.assertEqual(used_first["clips"][0]["use_count"], 1)
+
+            from shape_factory_clips import star_clip
+
+            star_clip(con, unused_clip["clip_id"])
+            popular = list_clips_library(con, jobs_root=root / "jobs", sort="most_popular", limit=50)
+            self.assertEqual(popular["clips"][0]["clip_id"], unused_clip["clip_id"])
+            self.assertTrue(popular["clips"][0]["is_starred"])
+
             with self.assertRaises(ValueError) as ctx:
                 delete_clip(con, used_clip["clip_id"], hard=True, jobs_root=root / "jobs")
             self.assertIn("clip_in_use", str(ctx.exception))
@@ -485,6 +497,74 @@ class TestShapeFactoryClips(unittest.TestCase):
 
             self.assertTrue(delete_clip(con, unused_clip["clip_id"], hard=True, jobs_root=root / "jobs"))
             self.assertIsNone(get_clip(con, unused_clip["clip_id"]))
+            con.close()
+
+    def test_list_clips_library_sort_by_parent_rating(self) -> None:
+        from shape_factory_clips import connect_clips, create_clip, list_clips_library
+
+        with _tmpdir() as td:
+            reg = Path(td) / "asset_registry.sqlite"
+            con = connect_clips(reg)
+            hi = "a" * 64
+            lo = "b" * 64
+            con.execute(
+                """
+                INSERT INTO assets(
+                    content_id, size, mtime, ext, kind, width, height,
+                    current_relpath, first_seen, last_seen, status
+                ) VALUES (?, 1, 1.0, '.mp4', 'video', NULL, NULL, ?, 't', 't', 'present')
+                """,
+                (hi, "og/hi.mp4"),
+            )
+            con.execute(
+                """
+                INSERT INTO assets(
+                    content_id, size, mtime, ext, kind, width, height,
+                    current_relpath, first_seen, last_seen, status
+                ) VALUES (?, 1, 1.0, '.mp4', 'video', NULL, NULL, ?, 't', 't', 'present')
+                """,
+                (lo, "og/lo.mp4"),
+            )
+            c_hi = create_clip(con, parent_content_id=hi, mark_in_s=0, mark_out_s=1, label="Hi")
+            c_lo = create_clip(con, parent_content_id=lo, mark_in_s=0, mark_out_s=1, label="Lo")
+            ratings = {"by_source_basename": {"hi.mp4": {"inferred": 4.5}, "lo.mp4": {"inferred": 2.0}}}
+            lib = list_clips_library(con, sort="rating", ratings_doc=ratings, limit=50)
+            self.assertEqual(lib["sort"], "rating")
+            self.assertEqual(lib["clips"][0]["clip_id"], c_hi["clip_id"])
+            self.assertAlmostEqual(float(lib["clips"][0]["parent_rating"]), 4.5)
+            self.assertEqual(lib["clips"][1]["clip_id"], c_lo["clip_id"])
+            con.close()
+
+    def test_list_clips_library_sql_sorts_longest_and_label(self) -> None:
+        from shape_factory_clips import connect_clips, create_clip, list_clips_library
+
+        with _tmpdir() as td:
+            reg = Path(td) / "asset_registry.sqlite"
+            con = connect_clips(reg)
+            parent = "c" * 64
+            con.execute(
+                """
+                INSERT INTO assets(
+                    content_id, size, mtime, ext, kind, width, height,
+                    current_relpath, first_seen, last_seen, status
+                ) VALUES (?, 1, 1.0, '.mp4', 'video', NULL, NULL, ?, 't', 't', 'present')
+                """,
+                (parent, "og/sort.mp4"),
+            )
+            short = create_clip(
+                con, parent_content_id=parent, mark_in_s=0.0, mark_out_s=1.0, label="Zebra"
+            )
+            long = create_clip(
+                con, parent_content_id=parent, mark_in_s=0.0, mark_out_s=9.0, label="Alpha"
+            )
+            by_len = list_clips_library(con, sort="longest", limit=50)
+            self.assertEqual(by_len["sort"], "longest")
+            self.assertEqual(by_len["clips"][0]["clip_id"], long["clip_id"])
+            by_label = list_clips_library(con, sort="label", limit=50)
+            self.assertEqual(by_label["clips"][0]["clip_id"], long["clip_id"])
+            self.assertEqual(by_label["clips"][1]["clip_id"], short["clip_id"])
+            unused = list_clips_library(con, jobs_root=Path(td) / "jobs", sort="unused_first", limit=50)
+            self.assertEqual(unused["sort"], "unused_first")
             con.close()
 
     def test_whole_window_and_near_dup_helpers(self) -> None:

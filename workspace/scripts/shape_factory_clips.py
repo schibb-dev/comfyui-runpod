@@ -273,6 +273,161 @@ def list_clips_for_parent(
     return out
 
 
+CLIPS_LIBRARY_SORTS = (
+    "recent",
+    "created",
+    "oldest",
+    "most_used",
+    "unused_first",
+    "most_popular",
+    "rating",
+    "default_first",
+    "longest",
+    "shortest",
+    "label",
+    "source",
+)
+# These need annotate-then-slice (job scan / ratings); others paginate in SQL.
+CLIPS_LIBRARY_POST_SORTS = frozenset({"most_used", "unused_first", "most_popular", "rating"})
+
+
+def normalize_clips_library_sort(raw: Optional[str]) -> str:
+    key = str(raw or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "recent": "recent",
+        "most_recent": "recent",
+        "newest": "recent",
+        "updated": "recent",
+        "created": "created",
+        "newest_created": "created",
+        "new": "created",
+        "oldest": "oldest",
+        "oldest_first": "oldest",
+        "most_used": "most_used",
+        "used": "most_used",
+        "usage": "most_used",
+        "unused_first": "unused_first",
+        "least_used": "unused_first",
+        "unused": "unused_first",
+        "most_popular": "most_popular",
+        "popular": "most_popular",
+        "rating": "rating",
+        "ratings": "rating",
+        "stars": "rating",
+        "default_first": "default_first",
+        "defaults": "default_first",
+        "defaults_first": "default_first",
+        "longest": "longest",
+        "duration": "longest",
+        "longest_first": "longest",
+        "shortest": "shortest",
+        "shortest_first": "shortest",
+        "label": "label",
+        "name": "label",
+        "az": "label",
+        "a_z": "label",
+        "source": "source",
+        "path": "source",
+        "media": "source",
+    }
+    return aliases.get(key, "recent")
+
+
+def _parent_rating_for_basename(
+    basename: Optional[str],
+    *,
+    by_source: Optional[Dict[str, Any]] = None,
+) -> Optional[float]:
+    """Best-effort inferred/explicit rating for a parent media basename."""
+    bn = str(basename or "").strip()
+    if not bn or not isinstance(by_source, dict):
+        return None
+    row = by_source.get(bn)
+    if not isinstance(row, dict):
+        return None
+    for key in ("inferred", "explicit", "stars", "rating"):
+        if row.get(key) is None:
+            continue
+        try:
+            return float(row[key])
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _clips_library_sql_order(sort: str) -> str:
+    """ORDER BY clause for SQL-paginated library sorts (safe fixed strings only)."""
+    if sort == "oldest":
+        return "c.updated_at ASC, c.created_at ASC, c.clip_id ASC"
+    if sort == "created":
+        return "c.created_at DESC, c.updated_at DESC, c.clip_id DESC"
+    if sort == "longest":
+        return "(c.mark_out_s - c.mark_in_s) DESC, c.updated_at DESC, c.clip_id DESC"
+    if sort == "shortest":
+        return "(c.mark_out_s - c.mark_in_s) ASC, c.updated_at DESC, c.clip_id ASC"
+    if sort == "label":
+        return "lower(IFNULL(c.label,'')) ASC, c.updated_at DESC, c.clip_id ASC"
+    if sort == "source":
+        return (
+            "lower(replace(IFNULL(a.current_relpath,''), char(92), '/')) ASC, "
+            "c.mark_in_s ASC, c.clip_id ASC"
+        )
+    if sort == "default_first":
+        return (
+            "CASE WHEN p.default_clip_id = c.clip_id THEN 1 ELSE 0 END DESC, "
+            "c.updated_at DESC, c.created_at DESC, c.clip_id DESC"
+        )
+    # recent + post-sort pre-fetch order
+    return "c.updated_at DESC, c.created_at DESC, c.clip_id DESC"
+
+
+def _clips_library_sort_key(clip: Dict[str, Any], sort: str) -> Tuple[Any, ...]:
+    """Sort key for post-sort modes. Ascending sorts use reverse=False at call site."""
+    updated = str(clip.get("updated_at") or "")
+    created = str(clip.get("created_at") or "")
+    cid = str(clip.get("clip_id") or "")
+    use_n = int(clip.get("use_count") or 0)
+    starred = 1 if clip.get("is_starred") else 0
+    default = 1 if clip.get("is_default") else 0
+    try:
+        dur = float(clip.get("duration_s") or 0.0)
+    except (TypeError, ValueError):
+        dur = 0.0
+    label = str(clip.get("label") or "").strip().lower()
+    path = str(clip.get("media_relpath") or "").strip().lower().replace("\\", "/")
+    rating = clip.get("parent_rating")
+    try:
+        rating_n = float(rating) if rating is not None else -1.0
+    except (TypeError, ValueError):
+        rating_n = -1.0
+    if sort == "most_used":
+        return (use_n, updated, created, cid)
+    if sort == "unused_first":
+        return (use_n, updated, created, cid)
+    if sort == "most_popular":
+        return (starred, use_n, updated, created, cid)
+    if sort == "rating":
+        return (rating_n, starred, use_n, updated, created, cid)
+    if sort == "oldest":
+        return (updated, created, cid)
+    if sort == "created":
+        return (created, updated, cid)
+    if sort == "longest" or sort == "shortest":
+        return (dur, updated, cid)
+    if sort == "label":
+        return (label, updated, cid)
+    if sort == "source":
+        return (path, float(clip.get("mark_in_s") or 0.0), cid)
+    if sort == "default_first":
+        return (default, updated, created, cid)
+    return (updated, created, cid)
+
+
+def _clips_library_sort_reverse(sort: str) -> bool:
+    """True → descending for ``_clips_library_sort_key``."""
+    return sort not in ("oldest", "shortest", "label", "source", "unused_first")
+
+
 def list_clips_library(
     con: sqlite3.Connection,
     *,
@@ -288,10 +443,13 @@ def list_clips_library(
     unused_only: bool = False,
     used_only: bool = False,
     starred_only: bool = False,
+    sort: Optional[str] = None,
+    ratings_doc: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Browse clips across parents, joined to asset current_relpath when known."""
     lim = max(1, min(int(limit or 100), 500))
     off = max(0, int(offset or 0))
+    sort_key = normalize_clips_library_sort(sort)
     origin_raw = str(origin or "").strip()
     origin_empty = origin_raw in ("(none)", "__empty__", "__none__")
     origin_f = None if origin_empty else (origin_raw or None)
@@ -341,11 +499,23 @@ def list_clips_library(
         LEFT JOIN assets a ON a.content_id = c.parent_content_id
         LEFT JOIN asset_clip_prefs p ON p.parent_content_id = c.parent_content_id
     """
-    # Usage filters need annotate-then-slice; otherwise SQL paginates.
+    # Usage filters / job+rating sorts need annotate-then-slice; SQL sorts paginate.
     filter_by_usage = bool(unused_only or used_only)
-    usage_counts = collect_used_clip_ids(jobs_root) if (jobs_root or filter_by_usage) else {}
-    sql_lim = 50_000 if filter_by_usage else lim
-    sql_off = 0 if filter_by_usage else off
+    needs_post_sort = filter_by_usage or sort_key in CLIPS_LIBRARY_POST_SORTS
+    need_usage = bool(
+        jobs_root
+        or filter_by_usage
+        or sort_key in ("most_used", "unused_first", "most_popular", "rating")
+    )
+    usage_counts = collect_used_clip_ids(jobs_root) if need_usage else {}
+    by_source: Dict[str, Any] = {}
+    if isinstance(ratings_doc, dict):
+        raw_src = ratings_doc.get("by_source_basename")
+        if isinstance(raw_src, dict):
+            by_source = raw_src
+    sql_lim = 50_000 if needs_post_sort else lim
+    sql_off = 0 if needs_post_sort else off
+    order_sql = _clips_library_sql_order(sort_key)
 
     rows = con.execute(
         f"""
@@ -362,7 +532,7 @@ def list_clips_library(
             ) THEN 1 ELSE 0 END AS is_starred
         {from_sql}
         WHERE {where_sql}
-        ORDER BY c.updated_at DESC, c.created_at DESC
+        ORDER BY {order_sql}
         LIMIT ? OFFSET ?
         """,
         tuple(params + [sql_lim, sql_off]),
@@ -392,6 +562,8 @@ def list_clips_library(
         n = int(usage_counts.get(str(d.get("clip_id") or ""), 0))
         d["use_count"] = n
         d["used"] = n > 0
+        parent_rating = _parent_rating_for_basename(d.get("media_basename"), by_source=by_source)
+        d["parent_rating"] = parent_rating
         clips.append(d)
 
     if unused_only:
@@ -399,7 +571,11 @@ def list_clips_library(
     elif used_only:
         clips = [c for c in clips if c.get("used")]
 
-    if filter_by_usage:
+    if needs_post_sort:
+        clips.sort(
+            key=lambda c: _clips_library_sort_key(c, sort_key),
+            reverse=_clips_library_sort_reverse(sort_key),
+        )
         total = len(clips)
         clips = clips[off : off + lim]
     else:
@@ -484,6 +660,8 @@ def list_clips_library(
         "total": total,
         "limit": lim,
         "offset": off,
+        "sort": sort_key,
+        "sort_options": list(CLIPS_LIBRARY_SORTS),
         "origin_counts": origin_counts,
         "parents": parents,
         "used_clip_ids": len(usage_counts),
@@ -497,6 +675,7 @@ def list_clips_library(
             "unused_only": bool(unused_only),
             "used_only": bool(used_only),
             "starred_only": bool(starred_only),
+            "sort": sort_key,
         },
     }
 
@@ -1101,12 +1280,16 @@ def _job_source_clip_id(job: Dict[str, Any]) -> Optional[str]:
     return cid or None
 
 
+_USAGE_COUNTS_CACHE: Dict[str, Any] = {"key": None, "counts": {}}
+
+
 def collect_used_clip_ids(jobs_root: Optional[Path]) -> Dict[str, int]:
     """
     Map clip_id → job count for seeds referenced in ``*.job.json``.
 
     A clip is **used** when count > 0 (``source_clip_id`` or ``vhs_window.clip_id``).
     Cheap scan: string gate then parse; no output-path resolution.
+    Cached by jobs-root path + directory mtime so library sorts stay snappy.
     """
     counts: Dict[str, int] = {}
     if jobs_root is None:
@@ -1114,6 +1297,15 @@ def collect_used_clip_ids(jobs_root: Optional[Path]) -> Dict[str, int]:
     root = Path(jobs_root).expanduser()
     if not root.is_dir():
         return counts
+    try:
+        stamp = f"{root.resolve()}|{root.stat().st_mtime_ns}"
+    except OSError:
+        stamp = str(root)
+    cached_key = _USAGE_COUNTS_CACHE.get("key")
+    cached_counts = _USAGE_COUNTS_CACHE.get("counts")
+    if cached_key == stamp and isinstance(cached_counts, dict):
+        return dict(cached_counts)
+
     for path in root.rglob("*.job.json"):
         try:
             raw = path.read_text(encoding="utf-8", errors="replace")
@@ -1131,6 +1323,8 @@ def collect_used_clip_ids(jobs_root: Optional[Path]) -> Dict[str, int]:
         if not cid:
             continue
         counts[cid] = int(counts.get(cid, 0)) + 1
+    _USAGE_COUNTS_CACHE["key"] = stamp
+    _USAGE_COUNTS_CACHE["counts"] = dict(counts)
     return counts
 
 

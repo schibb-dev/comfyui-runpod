@@ -2615,8 +2615,15 @@ def _shape_factory_clips_library_payload(cfg: "ServerConfig", q: Dict[str, List[
     include_deleted = (q.get("include_deleted") or [""])[0].strip().lower() in ("1", "true", "yes")
     deleted_only = (q.get("deleted_only") or [""])[0].strip().lower() in ("1", "true", "yes")
     starred_only = (q.get("starred_only") or [""])[0].strip().lower() in ("1", "true", "yes")
+    unused_only = (q.get("unused_only") or [""])[0].strip().lower() in ("1", "true", "yes")
+    used_only = (q.get("used_only") or [""])[0].strip().lower() in ("1", "true", "yes")
+    sort = (q.get("sort") or [""])[0].strip() or None
     data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
     jobs_root = Path(data_root) / "shape_factory" / "jobs"
+    try:
+        ratings_doc = _discovery_load_ratings_index(cfg)
+    except Exception:
+        ratings_doc = None
     reg = _clips_registry_path(cfg)
     con = connect_clips(reg)
     try:
@@ -2634,6 +2641,8 @@ def _shape_factory_clips_library_payload(cfg: "ServerConfig", q: Dict[str, List[
             unused_only=unused_only,
             used_only=used_only,
             starred_only=starred_only,
+            sort=sort,
+            ratings_doc=ratings_doc,
         )
     finally:
         con.close()
