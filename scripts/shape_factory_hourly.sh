@@ -267,19 +267,20 @@ if [ -n "$NEED_FACIAL_KEY" ]; then
 fi
 if [ -n "$NEED_FACIAL_KEY" ]; then
   NEED_FACIAL_VID=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('video') or '')" "$NEED_FACIAL_JSON")
+  # source_ref = GEX2 parent clip — lineage only (not a FACIAL graph slot).
   NEED_FACIAL_REF=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('source_ref') or '')" "$NEED_FACIAL_JSON")
   log "phase=facial — GEX2 complete without FACIAL ($NEED_FACIAL_KEY)"
   BIND_FACIAL=$(mktemp --suffix=.yaml)
-  python3 - "$NEED_FACIAL_VID" "$NEED_FACIAL_REF" "$BIND_FACIAL" <<'PY'
+  python3 - "$NEED_FACIAL_VID" "$BIND_FACIAL" <<'PY'
 import sys
 from pathlib import Path
-vid, ref, out = sys.argv[1], sys.argv[2], Path(sys.argv[3])
+vid, out = sys.argv[1], Path(sys.argv[2])
 def esc(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"')
-lines = ['source_video:', '  from: path', f'  path: "{esc(vid)}"']
-if ref.strip():
-    lines.extend(['source_video_ref:', '  from: path', f'  path: "{esc(ref)}"'])
-out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+out.write_text(
+    "\n".join(['source_video:', '  from: path', f'  path: "{esc(vid)}"']) + "\n",
+    encoding="utf-8",
+)
 PY
   (
     cd "$SCRIPTS"

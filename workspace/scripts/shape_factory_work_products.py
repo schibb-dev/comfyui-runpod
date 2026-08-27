@@ -121,6 +121,16 @@ def list_shape_families(
         except Exception:
             pass
         row: Dict[str, Any] = {"slug": family_slug or slug, "shape_id": shape_id, "shape_path": str(path)}
+        if doc:
+            for key in ("primary_input", "input_profile", "chain_role", "io_class"):
+                if doc.get(key) is not None and str(doc.get(key)).strip():
+                    row[key] = str(doc.get(key)).strip()
+            if "io_class" not in row and row.get("input_profile"):
+                from shape_factory_vocab import io_class_for_profile
+
+                io = io_class_for_profile(str(row["input_profile"]))
+                if io:
+                    row["io_class"] = io
         if vhs_defaults_fn is not None and doc:
             try:
                 row["vhs_defaults"] = vhs_defaults_fn(
@@ -145,16 +155,28 @@ def list_shape_families(
 
 
 def is_extend_family_option(row: Dict[str, Any]) -> bool:
-    """Mirror Submit UI: video Extend targets (V2V / facial / identity-anchor), not I2V/still."""
+    """Mirror Submit UI: video Extend targets (V2V / VI2V / extend role), not I2V/still."""
     slug = str(row.get("slug") or "").strip()
     if not slug:
+        return False
+    role = str(row.get("chain_role") or "").strip().lower()
+    if role == "extend":
+        return True
+    if role == "origin":
+        return False
+    io = str(row.get("io_class") or "").strip().upper()
+    if io in {"V2V", "VI2V", "EXT"}:
+        return True
+    if io == "I2V":
         return False
     sid = str(row.get("shape_id") or "").strip().lower()
     if not sid:
         return True
-    if "i2v" in sid or "still" in sid:
+    if "i2v" in sid and "vi2v" not in sid:
         return False
-    return "v2v" in sid or "facial" in sid or "source" in sid or "identity_anchor" in sid
+    if "still" in sid and "identity" not in sid:
+        return False
+    return "v2v" in sid or "vi2v" in sid or "facial" in sid or "source" in sid or "identity" in sid
 
 
 def _shapes_pipelines_fingerprint(data_root: Path) -> str:
@@ -857,6 +879,10 @@ def _shape_view(
         "shape_id": doc.get("shape_id"),
         "family_slug": doc.get("family_slug"),
         "graph_hash": doc.get("graph_hash"),
+        "primary_input": doc.get("primary_input"),
+        "input_profile": doc.get("input_profile"),
+        "chain_role": doc.get("chain_role"),
+        "io_class": doc.get("io_class"),
         "template": doc.get("template"),
         "template_basename": _basename(doc.get("template")),
         "output_prefix_root": doc.get("output_prefix_root"),

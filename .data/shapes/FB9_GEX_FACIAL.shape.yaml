@@ -1,12 +1,18 @@
 schema_version: comfyui-runpod.shape.v0
-shape_id: wan-v2v-facial
+shape_id: wan-v2v-source+prompt
 family_slug: FB9_GEX_FACIAL
-graph_hash: c12c4e13e077b0c8af4d23ec50faf78906337a9b195dfd8fdcd2644128da7391
+primary_input: video
+input_profile: video_prompt
+chain_role: extend
+io_class: V2V
+graph_hash: b96452c6f745725146914e101eaf75c65dd73dd4968bf80ff89b054b9c0bf229
 template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/FB9_GEX_FACIAL_2026-04-26_00001-readable.json
 candidate: /home/yuji/src/comfyui-runpod/.data/template_candidates/FB9_GEX_FACIAL_2026-04-26_00001.candidate.json
 
-# FB9 facial variant: two video inputs (primary + ref). Step 2 of gex2→facial pipeline
-# binds primary from pool:FB9_GEX2_X_og.
+# FB9 facial variant (V2V extend). Step 2 of gex2→facial pipeline binds
+# source_video from pool:FB9_GEX2_X_og. Parent GEX2 clip is lineage only
+# (job parent_output / hourly source_ref) — not a second graph input.
+# Dead optional source_video_ref → VHS #386 removed 2026-08 (node unlinked).
 requires:
   - slot: source_video
     role: X
@@ -14,15 +20,6 @@ requires:
     binding:
       type: vhs_load_video_path
       node_id: 377
-      field: video
-
-  - slot: source_video_ref
-    role: B
-    media: video
-    optional: true
-    binding:
-      type: vhs_load_video_path
-      node_id: 386
       field: video
 
   - slot: prompt_profile

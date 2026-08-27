@@ -1,6 +1,10 @@
 schema_version: comfyui-runpod.shape.v0
 shape_id: wan-i2v-still+prompt
 family_slug: Breast-shake-FB8VA5
+primary_input: still
+input_profile: still_prompt
+chain_role: origin
+io_class: I2V
 graph_hash: 08f9e237fbe0198adc80f40e2f940a40ec5c29a756f5a21a23c1eb14c2508dba
 template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/Breast-shake-FB8VA5-readable.json
 candidate: /home/yuji/src/comfyui-runpod/.data/template_candidates/Breast-shake-FB8VA5.candidate.json

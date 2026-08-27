@@ -14,6 +14,8 @@ This page mirrors the planning-relevant sections of the repo-root [DOCUMENTATION
 |----------|------------|
 | [CURRENT_GOAL.md](CURRENT_GOAL.md) | **Active handoff** — current goal (ComfyUI + GPU + mounts + Docker Desktop). |
 | [PLANNING_OVERVIEW.md](PLANNING_OVERVIEW.md) | **Planning hub** — programs P1–P9, focus, doc index. |
+| [WORKFLOW_INTENT.md](WORKFLOW_INTENT.md) | Factory + pipeline metaphor; station vocab; pipeline catalog pointer. |
+| [family_discovery/REVIEW.md](family_discovery/REVIEW.md) | Phase 2 provisional family proposals (operator naming gate). |
 | [../README.md](../README.md) | Main project guide (repo root). |
 | [../TROUBLESHOOTING.md](../TROUBLESHOOTING.md) | Common failures. |
 

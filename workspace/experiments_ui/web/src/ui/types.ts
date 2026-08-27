@@ -1240,6 +1240,10 @@ export type ShapeFactoryMapShape = {
   family_slug?: string;
   graph_hash?: string;
   template?: string;
+  primary_input?: string;
+  input_profile?: string;
+  chain_role?: string;
+  io_class?: string;
   requires?: Array<{ slot?: string; role?: string; media?: string; optional?: boolean }>;
   deposits?: Array<{ slot?: string; to_pool?: string }>;
 };
@@ -1820,6 +1824,8 @@ export type ShapeFactoryMapPipeline = {
   pipeline_id?: string;
   description?: string;
   path?: string;
+  input_guidance?: string;
+  affinity?: Array<{ when?: string } | string>;
   steps?: ShapeFactoryMapPipelineStep[];
 };
 
@@ -1966,6 +1972,10 @@ export type WorkProductShapeProfile = {
   shape_id?: string | null;
   family_slug?: string | null;
   graph_hash?: string | null;
+  primary_input?: string | null;
+  input_profile?: string | null;
+  chain_role?: string | null;
+  io_class?: string | null;
   template?: string | null;
   template_basename?: string | null;
   output_prefix_root?: string | null;
@@ -2059,6 +2069,10 @@ export type WorkProductFamilyOption = {
   slug: string;
   shape_id?: string | null;
   shape_path?: string;
+  primary_input?: string | null;
+  input_profile?: string | null;
+  chain_role?: string | null;
+  io_class?: string | null;
   promotion?: {
     scope?: "temporary" | "long_term" | string;
     intents?: string[];

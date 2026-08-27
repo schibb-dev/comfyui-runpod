@@ -1,6 +1,10 @@
 schema_version: comfyui-runpod.shape.v0
 shape_id: wan-i2v-still+prompt
 family_slug: BounceDanceA
+primary_input: still
+input_profile: still_prompt
+chain_role: origin
+io_class: I2V
 graph_hash: ff2bf962f6177d2c658bc78408337a97ac78fc4936f90e106789ea2b84c26442
 template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/BounceDanceA-readable.json
 candidate: /home/yuji/src/comfyui-runpod/.data/template_candidates/BounceDanceA.candidate.json

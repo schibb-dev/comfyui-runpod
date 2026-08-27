@@ -1,6 +1,10 @@
 schema_version: comfyui-runpod.shape.v0
 shape_id: wan-i2v-still+prompt
 family_slug: FB9-FaceBlast
+primary_input: still
+input_profile: still_prompt
+chain_role: origin
+io_class: I2V
 graph_hash: bcad7d8b3fb63ec1762a421caf2f4da5bb2fadd291b5bbf781ab147b26eff3e6
 template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/FB9-FaceBlast-readable.json
 candidate: /home/yuji/src/comfyui-runpod/.data/template_candidates/FB9-FaceBlast.candidate.json

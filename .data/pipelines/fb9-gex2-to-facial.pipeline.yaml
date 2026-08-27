@@ -1,6 +1,9 @@
 schema_version: comfyui-runpod.pipeline.v0
 pipeline_id: fb9-gex2-to-facial
 description: FB9_GEX2 base render → deposit X → FB9_GEX_FACIAL variant
+input_guidance: video
+affinity:
+  - when: hourly_facial_drain
 
 steps:
   - id: gex2-base

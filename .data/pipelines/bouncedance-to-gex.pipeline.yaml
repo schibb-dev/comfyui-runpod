@@ -1,6 +1,9 @@
 schema_version: comfyui-runpod.pipeline.v0
 pipeline_id: bouncedance-to-gex
 description: BounceDanceA deposit → FB9_GEX (hourly i2v→GEX chain; Workbench Extend default)
+input_guidance: still
+affinity:
+  - when: still_seed_to_gex
 
 steps:
   - id: bouncedance

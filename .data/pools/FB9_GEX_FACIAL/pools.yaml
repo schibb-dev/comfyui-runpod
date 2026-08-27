@@ -16,17 +16,6 @@ pools:
       - glob: /home/yuji/comfyui-runpod-data/output/og/**/X-Kneel-FB9-*.mp4
         limit: 400
 
-  source_video_ref:
-    slot: source_video_ref
-    description: Secondary reference clip (B slot) — independent pick
-    members:
-      - glob: /home/yuji/comfyui-runpod-data/output/og/**/X-Kneel-FB9-*.mp4
-        limit: 400
-      - glob: /home/yuji/comfyui-runpod-data/output/og/**/FB9_GEX2*.mp4
-        limit: 300
-      - glob: /home/yuji/comfyui-runpod-data/output/og/**/FB9_GEX_2026-*.mp4
-        limit: 200
-
   prompt_profile:
     slot: prompt_profile
     description: Facial-specific prompt bundles

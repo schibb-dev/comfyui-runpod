@@ -189,14 +189,23 @@ function FactoryMapFamilyNav({
       {families.map((fam) => {
         const slug = fam.family_slug;
         const active = activeSlug === slug;
+        const io = String(fam.shape?.io_class || "").trim();
+        const role = String(fam.shape?.chain_role || "").trim();
         return (
           <a
             key={slug}
             href={factoryMapFamilyHref(slug)}
             className={`sfmap-family-nav__link${active ? " sfmap-family-nav__link--active" : ""}`}
             aria-current={active ? "page" : undefined}
+            title={[io, role].filter(Boolean).join(" · ") || undefined}
           >
             {slug}
+            {io || role ? (
+              <span className="sfmap-family-nav__vocab">
+                {io || role}
+                {io && role ? ` · ${role}` : ""}
+              </span>
+            ) : null}
           </a>
         );
       })}
@@ -1012,6 +1021,8 @@ function InspectorTooltipOverlay({
 function FamilyGraph({ family }: { family: ShapeFactoryMapFamily }) {
   const shape = family.shape || {};
   const deposit = (family.deposit_pools || [])[0];
+  const io = String(shape.io_class || "").trim();
+  const role = String(shape.chain_role || "").trim();
   return (
     <div className="factory-plan sfmap-family-plan">
       <div className="factory-plan-header">
@@ -1020,6 +1031,12 @@ function FamilyGraph({ family }: { family: ShapeFactoryMapFamily }) {
           <div className="factory-muted">
             {shape.shape_id || "shape"} · graph {shortHash(shape.graph_hash)}
           </div>
+          {io || role ? (
+            <div className="sfmap-vocab-badges" aria-label="Station vocabulary">
+              {io ? <span className="factory-pill sfmap-vocab-pill">{io}</span> : null}
+              {role ? <span className="factory-pill sfmap-vocab-pill">{role}</span> : null}
+            </div>
+          ) : null}
         </div>
         {deposit?.member_count != null ? (
           <div className="factory-pill">
@@ -1056,6 +1073,12 @@ function FamilyGraph({ family }: { family: ShapeFactoryMapFamily }) {
           <div className="factory-card">
             <div className="factory-card-title">{shape.shape_id || family.family_slug}</div>
             <div className="factory-card-meta mono">hash {shortHash(shape.graph_hash)}</div>
+            {io || role ? (
+              <div className="sfmap-vocab-badges">
+                {io ? <span className="factory-pill sfmap-vocab-pill">{io}</span> : null}
+                {role ? <span className="factory-pill sfmap-vocab-pill">{role}</span> : null}
+              </div>
+            ) : null}
             <ul className="sfmap-slot-list">
               {(shape.requires || []).map((r) => (
                 <li key={r.slot}>
@@ -1079,11 +1102,13 @@ function FamilyGraph({ family }: { family: ShapeFactoryMapFamily }) {
 
 function PipelineStrip({ pipeline }: { pipeline: ShapeFactoryMapPipeline }) {
   const steps = pipeline.steps || [];
+  const guidance = String(pipeline.input_guidance || "").trim();
   return (
     <div className="sfmap-pipeline-strip">
       <div className="sfmap-pipeline-title">
         <strong>{pipeline.pipeline_id}</strong>
         <span className="factory-muted">{pipeline.description}</span>
+        {guidance ? <span className="factory-pill sfmap-vocab-pill">{guidance}</span> : null}
       </div>
       <div className="sfmap-pipeline-steps">
         {steps.map((step, idx) => (
@@ -1203,7 +1228,14 @@ function PipelineStepDetail({
           <strong>Shape</strong>
           {shape ? (
             <span>
-              {shape.shape_id || slug} · graph <span className="mono">{shortHash(shape.graph_hash)}</span>
+              {shape.shape_id || slug}
+              {shape.io_class || shape.chain_role ? (
+                <>
+                  {" "}
+                  · {[shape.io_class, shape.chain_role].filter(Boolean).join(" · ")}
+                </>
+              ) : null}{" "}
+              · graph <span className="mono">{shortHash(shape.graph_hash)}</span>
             </span>
           ) : step.shape ? (
             <span className="mono sfmap-detail-path">{step.shape}</span>

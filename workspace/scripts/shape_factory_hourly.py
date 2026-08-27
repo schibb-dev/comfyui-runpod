@@ -2580,7 +2580,8 @@ def find_gex2_needing_facial(
 ) -> Optional[Dict[str, Any]]:
     """Newest complete GEX2 whose output is not already a FACIAL source_video.
 
-    Returns ``{job_key, video, source_ref}`` (source_ref is the GEX2 parent clip).
+    Returns ``{job_key, video, source_ref}``. ``source_ref`` is the GEX2 parent
+    clip kept as lineage metadata only (FACIAL no longer binds ``source_video_ref``).
 
     By default only considers GEX2 jobs within ``HOURLY_FACIAL_LOOKBACK_DAYS``
     (created/completed/output age — not job-file mtime, which maintenance rewrites).
@@ -2874,7 +2875,8 @@ def simulate_hourly_picks(
                     "step": "chain_facial",
                     "parent_job": hit.get("job_key"),
                     "source_video": hit.get("video"),
-                    "source_video_ref": hit.get("source_ref"),
+                    # GEX2 parent clip — lineage metadata only (FACIAL has no source_video_ref slot).
+                    "lineage_source_ref": hit.get("source_ref"),
                     "source_still": None,
                 }
             )
@@ -3480,7 +3482,8 @@ def predict_hourly_gex2(
             "step": "chain_facial",
             "parent_job": need_facial.get("job_key"),
             "source_video": need_facial.get("video"),
-            "source_video_ref": need_facial.get("source_ref"),
+            # GEX2 parent clip — lineage metadata only (not a FACIAL bind slot).
+            "lineage_source_ref": need_facial.get("source_ref"),
             "ok": True,
         }
 

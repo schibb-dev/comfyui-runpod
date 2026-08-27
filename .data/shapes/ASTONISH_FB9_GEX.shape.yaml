@@ -1,6 +1,10 @@
 schema_version: comfyui-runpod.shape.v0
 shape_id: wan-v2v-source+prompt
 family_slug: ASTONISH_FB9_GEX
+primary_input: video
+input_profile: video_prompt
+chain_role: extend
+io_class: V2V
 graph_hash: 35f69ad119c7cbfb4ffe9c11d6bec544c38475868ea973a8e577001c99e52148
 template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/ASTONISH_FB9_GEX_2026-03-03_00023-2-readable.json
 candidate: /home/yuji/src/comfyui-runpod/.data/template_candidates/ASTONISH_FB9_GEX_2026-03-03_00023-2.candidate.json

@@ -12,6 +12,13 @@ Locked decisions (2026-07-03): install `/workflow/convert`, JSON pool index, pip
 
 **Plan (2026-08-20):** **Hourly policy as first-order managed data** — chain cadences, seed weights, lookbacks, and related knobs currently live as **code defaults + `HOURLY_*` env** (and only interval/queue caps in `.data/shape_factory/hourly-schedule.json` / Home UI). Move them into **durable config** (extend `hourly-schedule.json` or sibling `hourly-policy.yaml` under `.data/shape_factory/`) so operators edit without redeploying. Code becomes a thin reader (config → optional env override → hardcoded fallback). Home **Hourly schedule** controls should expose the same fields. Candidates to lift first: `facial_drain_every`, `i2v_gex_drain_every`, `seed_over_chain_share`, `facial_lookback_days`, `_DEFAULT_SEED_FAMILY_WEIGHTS` / `_IMAGE_TO_GEX_FAMILIES`, fresh-still / kneel / 2025 boosts, derive/archive shares. Keep allowlisted in git if we want policy history; runtime overrides stay in `.data`. **Orthogonal to clip Use bind** (★ + newer): [`docs/HOURLY_CLIP_GUIDANCE_PLAN.md`](../docs/HOURLY_CLIP_GUIDANCE_PLAN.md).
 
+**Plan (2026-08-27):** Station vocabulary + family discovery — `primary_input` /
+`input_profile` / `chain_role` / `io_class` on all 12 shapes; FACIAL dead
+`source_video_ref` removed; catalog stem parser; Factory Map / Work Products
+badges; corpus proposals under `docs/family_discovery/` (human naming gate).
+See [`docs/WORKFLOW_INTENT.md`](../docs/WORKFLOW_INTENT.md) and
+[`.data/shapes/README.md`](shapes/README.md).
+
 ## Session checklist
 
 ### A. workflow-to-api-converter

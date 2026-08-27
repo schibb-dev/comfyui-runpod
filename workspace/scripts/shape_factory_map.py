@@ -389,6 +389,15 @@ def _shape_summary(shape_path: Path, doc: Dict[str, Any]) -> Dict[str, Any]:
         "family_slug": doc.get("family_slug"),
         "graph_hash": doc.get("graph_hash"),
         "template": doc.get("template"),
+        "primary_input": doc.get("primary_input"),
+        "input_profile": doc.get("input_profile"),
+        "chain_role": doc.get("chain_role"),
+        "io_class": doc.get("io_class")
+        or (
+            {"still_prompt": "I2V", "video_prompt": "V2V", "video_identity_still_prompt": "VI2V"}.get(
+                str(doc.get("input_profile") or "")
+            )
+        ),
         "requires": slots,
         "deposits": deposit_targets,
     }
@@ -1188,6 +1197,8 @@ def _pipeline_summaries(pipelines_root: Path) -> List[Dict[str, Any]]:
                 "pipeline_id": doc.get("pipeline_id"),
                 "description": doc.get("description"),
                 "path": str(path),
+                "input_guidance": doc.get("input_guidance"),
+                "affinity": doc.get("affinity") if isinstance(doc.get("affinity"), list) else [],
                 "steps": steps,
             }
         )

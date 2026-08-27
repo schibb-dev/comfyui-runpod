@@ -8358,6 +8358,27 @@ tr.disabled:hover td {
   opacity: 0.75;
 }
 
+.sfmap-vocab-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.sfmap-vocab-pill {
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.sfmap-family-nav__vocab {
+  display: block;
+  font-size: 10px;
+  opacity: 0.7;
+  font-weight: 400;
+  line-height: 1.2;
+}
+
 .sfmap-pool-members__title {
   margin: 0 0 8px;
   font-size: 14px;

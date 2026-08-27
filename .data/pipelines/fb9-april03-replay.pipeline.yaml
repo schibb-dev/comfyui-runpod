@@ -1,6 +1,9 @@
 schema_version: comfyui-runpod.pipeline.v0
 pipeline_id: fb9-april03-replay
 description: |
+input_guidance: either
+affinity:
+  - when: historical_replay
   Replay early-April chained renders (pattern from 2026-04-03 og/):
   FB9_GEX2 base (source from April seed pool) → deposit → FB9_GEX_FACIAL.
   April 3 had ~20 GEX2 + ~16 FACIAL same-day pairs.

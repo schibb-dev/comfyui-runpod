@@ -13,19 +13,25 @@ export function isExtendFamilySlug(slug: string): boolean {
 /**
  * Families that can run Extend on a video Use (need a source_video / V2V contract).
  * I2V / still-only shapes belong in still doors, not video Extend.
- * GEX2 identity-anchor is a V2V extend with an extra still slot — keep it listed.
+ * GEX2 identity-anchor is VI2V extend with an extra still slot — keep it listed.
  */
 export function isExtendFamilyOption(f: WorkProductFamilyOption): boolean {
   const slug = String(f.slug || "").trim();
   if (!isExtendFamilySlug(slug)) return false;
+  const role = String(f.chain_role || "").trim().toLowerCase();
+  if (role === "extend") return true;
+  if (role === "origin") return false;
+  const io = String(f.io_class || "").trim().toUpperCase();
+  if (io === "V2V" || io === "VI2V" || io === "EXT") return true;
+  if (io === "I2V") return false;
   const sid = String(f.shape_id || "").toLowerCase();
   if (!sid) return true;
-  if (sid.includes("i2v") || sid.includes("still")) return false;
+  if (sid.includes("vi2v") || sid.includes("identity")) return true;
+  if (sid.includes("i2v") || (sid.includes("still") && !sid.includes("identity"))) return false;
   return (
     sid.includes("v2v") ||
     sid.includes("facial") ||
-    sid.includes("source") ||
-    sid.includes("identity_anchor")
+    sid.includes("source")
   );
 }
 

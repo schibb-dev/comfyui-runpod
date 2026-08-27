@@ -1,6 +1,10 @@
 schema_version: comfyui-runpod.shape.v0
 shape_id: wan-v2v-source+prompt
 family_slug: FB9_GEX2
+primary_input: video
+input_profile: video_prompt
+chain_role: extend
+io_class: V2V
 graph_hash: 0ac755226924fd9875810eca4a7d6894fa288ed7ad95e1be180f0d6e38b31368
 template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/FB9_GEX2-readable.json
 candidate: /home/yuji/src/comfyui-runpod/.data/template_candidates/FB9_GEX2.candidate.json

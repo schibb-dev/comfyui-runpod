@@ -1,6 +1,10 @@
 schema_version: comfyui-runpod.shape.v0
-shape_id: wan-v2v-source+prompt+identity_anchor
+shape_id: wan-vi2v-source+identity_still+prompt
 family_slug: FB9_GEX2_identity_anchor
+primary_input: video
+input_profile: video_identity_still_prompt
+chain_role: extend
+io_class: VI2V
 graph_hash: 9f07ac5ec23384b76449fc5cc97e025041979a794670466af2137d03ebf8a1c3
 template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/FB9_GEX2_identity_anchor-readable.json
 candidate: /home/yuji/src/comfyui-runpod/.data/template_candidates/FB9_GEX2_identity_anchor.candidate.json

@@ -1,6 +1,10 @@
 schema_version: comfyui-runpod.shape.v0
 shape_id: wan-i2v-still+prompt
 family_slug: X-KNEEL-FB9
+primary_input: still
+input_profile: still_prompt
+chain_role: origin
+io_class: I2V
 graph_hash: 703420280442c9f158ffde91fb67637ebd235a930490fdf5a3b308b8f14d7104
 template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/X-KNEEL-FB9-readable.json
 candidate: /home/yuji/src/comfyui-runpod/.data/template_candidates/X-KNEEL-FB9.candidate.json

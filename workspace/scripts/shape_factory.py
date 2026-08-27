@@ -1803,6 +1803,12 @@ def generate_job_for_picks(
         "warnings": warnings,
         "deposits": shape.get("deposits") or {},
     }
+    try:
+        from shape_factory_vocab import stamp_job_vocab
+
+        stamp_job_vocab(job_meta, shape)
+    except Exception:
+        pass
     if isinstance(draft_for_window.get("vhs_window"), dict):
         job_meta["vhs_window"] = draft_for_window["vhs_window"]
     if draft_for_window.get("source_clip_id"):

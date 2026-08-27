@@ -1582,8 +1582,10 @@ function ShapePeekButton({ shape, label }: { shape: WorkProductShapeProfile; lab
   useEffect(() => () => clearTimers(), []);
 
   const title = shape.shape_id || shape.basename || label;
+  const vocabBits = [shape.io_class, shape.chain_role].filter(Boolean).join(" · ");
   const metaBits = [
     shape.family_slug ? `family ${shape.family_slug}` : "",
+    vocabBits ? `vocab ${vocabBits}` : "",
     shape.graph_hash ? `graph ${String(shape.graph_hash).slice(0, 12)}…` : "",
     shape.output_prefix_root ? `prefix ${shape.output_prefix_root}` : "",
   ].filter(Boolean);
@@ -2694,6 +2696,16 @@ function WorkProductDetails({
           </span>
         ) : null}
         {item.family_slug ? <span className="work-product-badge">{item.family_slug}</span> : null}
+        {shape?.io_class ? (
+          <span className="work-product-badge" title="IO class (station process)">
+            {String(shape.io_class)}
+          </span>
+        ) : null}
+        {shape?.chain_role ? (
+          <span className="work-product-badge" title="Chain role in a pipeline">
+            {String(shape.chain_role)}
+          </span>
+        ) : null}
         {item.noise_seed != null && Number.isFinite(Number(item.noise_seed)) ? (
           <span
             className="work-product-badge work-product-badge--seed"
