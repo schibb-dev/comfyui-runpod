@@ -228,7 +228,7 @@ _Use this section during mental exploration. Promote bullets into a program’s 
 | Lineage DB sketch | [`LINEAGE_INDEX_SKETCH.md`](./LINEAGE_INDEX_SKETCH.md) |
 | Bucket model Phase 2 (work items, pools) | [`BUCKET_MODEL_PHASE2_PLAN.md`](./BUCKET_MODEL_PHASE2_PLAN.md) |
 | Clips / usable trim / starring / soft-delete | [`CLIP_SELECTION_MODEL.md`](./CLIP_SELECTION_MODEL.md) |
-| Hourly clip guidance (★ + newer) | [`HOURLY_CLIP_GUIDANCE_PLAN.md`](./HOURLY_CLIP_GUIDANCE_PLAN.md) |
+| Hourly as ruleset utility (policy + clip bind + observability) | [`HOURLY_UTILITY_PLAN.md`](./HOURLY_UTILITY_PLAN.md) |
 | Corpus lifecycle (judgment + generation loop) | [`CORPUS_LIFECYCLE.md`](./CORPUS_LIFECYCLE.md) |
 | Asset lifecycle (file custody / locate / move) | [`ASSET_LIFECYCLE_PLAN.md`](./ASSET_LIFECYCLE_PLAN.md) |
 | Output path drift (prevent / detect / recover) | [`OUTPUT_PATH_MITIGATION.md`](./OUTPUT_PATH_MITIGATION.md) |

@@ -49,7 +49,7 @@ Do **not** use ★ to mean “skip the glitch.” Do **not** use usable trim to 
 
 Unstarred clips stay available for manual Queue-from-clip / edit; they do **not** enter the hourly lottery.
 
-**Implementation sequence** (★ schema → picker → hourly bind → pool-level newer bias): [HOURLY_CLIP_GUIDANCE_PLAN.md](./HOURLY_CLIP_GUIDANCE_PLAN.md).
+**Implementation sequence** (★ schema → picker → hourly bind → pool-level newer bias): [HOURLY_UTILITY_PLAN.md](./HOURLY_UTILITY_PLAN.md) (U0 / U2).
 
 Optional later: asset flag **clip-required** → no full-file fallback until something is starred.
 
@@ -91,7 +91,7 @@ Cleanup UIs can filter **unused** (+ unstarred / retired) without guessing which
 
 **Shipped (library):** rows annotated with `used` / `use_count` from a jobs-tree scan; filters `unused_only` / `used_only`; hard-delete refuses used clips when `jobs_root` is provided.
 
-**Shipped (prefs):** `asset_clip_stars` multi-★ set (schema v5); legacy `default_clip_id` migrates into ★ and remains an alias. Automation uses `pick_seed_clip` (★ recency-weighted → usable-trim sidecar → full). See [HOURLY_CLIP_GUIDANCE_PLAN.md](./HOURLY_CLIP_GUIDANCE_PLAN.md).
+**Shipped (prefs):** `asset_clip_stars` multi-★ set (schema v5); legacy `default_clip_id` migrates into ★ and remains an alias. Automation uses `pick_seed_clip` (★ recency-weighted → usable-trim sidecar → full). See [HOURLY_UTILITY_PLAN.md](./HOURLY_UTILITY_PLAN.md) (U0).
 
 **Utility (not online path):** `shape_factory.py mine-clips-from-jobs` recovers bookmarks from historical job `vhs_window` Use marks — skips whole-file windows and near-dups; dry-run unless `--apply`; does not auto-★.
 
@@ -130,4 +130,4 @@ Hard delete is for **unused** junk only (near-dup mistakes, never queued).
 3. Else usable trim  
 4. Else full asset  
 
-(Implementation today: use → source_clip → default_clip → sibling → sidecar → full; hourly ★ + newer wiring: [HOURLY_CLIP_GUIDANCE_PLAN.md](./HOURLY_CLIP_GUIDANCE_PLAN.md).)
+(Implementation today: use → source_clip → default_clip → sibling → sidecar → full; hourly ★ + newer wiring: [HOURLY_UTILITY_PLAN.md](./HOURLY_UTILITY_PLAN.md).)

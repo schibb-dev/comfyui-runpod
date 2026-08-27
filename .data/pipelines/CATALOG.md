@@ -24,7 +24,7 @@ affinity:  # soft dispatch hints
 | `fb9-april03-replay` | replay / archive | historical replay |
 
 Hourly informal pipelines (not YAML): facial drain, I2V→GEX drain, seed families —
-see `shape_factory_hourly.py` / `docs/HOURLY_CLIP_GUIDANCE_PLAN.md`.
+see `shape_factory_hourly.py` / `docs/HOURLY_UTILITY_PLAN.md`.
 
 ## Soft affinities (draft)
 
