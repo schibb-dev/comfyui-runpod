@@ -49,6 +49,7 @@ import {
   type FactoryMapIndexContext,
 } from "./factoryMapSummaries";
 import { queryKeys } from "./queryKeys";
+import { peekFamiliesBootstrap } from "./shapeFactorySessionCache";
 import type {
   ShapeFactoryMapFamily,
   ShapeFactoryMapJob,
@@ -62,6 +63,60 @@ import type {
 } from "./types";
 
 const POLL_MS = 30_000;
+
+/** Index/pipeline first paint: topology + light jobs, no Comfy / member thumbs / pairs. */
+const MAP_SLIM = {
+  membersLimit: 0,
+  jobsLimit: 240,
+  jobsPerFamily: 8,
+  skipQueue: true,
+  projectedPairsLimit: 0,
+  phase: "slim" as const,
+};
+
+/** Index deepen + poll target. */
+const MAP_INDEX_FULL = {
+  membersLimit: 8,
+  jobsLimit: 800,
+  jobsPerFamily: 24,
+  skipQueue: false,
+  projectedPairsLimit: 12,
+  phase: "full" as const,
+};
+
+/** Single-family detail. */
+const MAP_FAMILY_FULL = {
+  membersLimit: 24,
+  jobsLimit: 800,
+  jobsPerFamily: 48,
+  skipQueue: false,
+  projectedPairsLimit: 48,
+  phase: "full" as const,
+};
+
+function warmFamiliesFromBootstrap(): ShapeFactoryMapFamily[] {
+  const boot = peekFamiliesBootstrap();
+  if (!boot?.families?.length) return [];
+  const out: ShapeFactoryMapFamily[] = [];
+  for (const f of boot.families) {
+    const slug = String(f.slug || "").trim();
+    if (!slug) continue;
+    out.push({
+      family_slug: slug,
+      shape: {
+        shape_id: f.shape_id || undefined,
+        shape_path: f.shape_path,
+        family_slug: slug,
+        primary_input: f.primary_input || undefined,
+        input_profile: f.input_profile || undefined,
+        chain_role: f.chain_role || undefined,
+        io_class: f.io_class || undefined,
+        requires: f.source_still_required ? [{ slot: "source_still" }] : undefined,
+      },
+    });
+  }
+  return out;
+}
 
 function shortHash(value?: string | null): string {
   return value ? value.slice(0, 12) : "—";
@@ -221,6 +276,7 @@ function FactoryMapAccordionSection({
   activities,
   defaultOpen,
   hint,
+  onOpenChange,
   children,
 }: {
   sectionId: string;
@@ -229,11 +285,29 @@ function FactoryMapAccordionSection({
   activities?: FactoryMapActivity[];
   defaultOpen?: boolean;
   hint?: string;
+  onOpenChange?: (open: boolean) => void;
   children: React.ReactNode;
 }) {
+  const detailsRef = useRef<HTMLDetailsElement | null>(null);
   const activeItems = (activities || []).filter((a) => a.active);
+
+  useLayoutEffect(() => {
+    const el = detailsRef.current;
+    if (!el) return;
+    if (defaultOpen) el.open = true;
+  }, [defaultOpen]);
+
+  useEffect(() => {
+    const el = detailsRef.current;
+    if (!el || !onOpenChange) return;
+    const onToggle = () => onOpenChange(el.open);
+    el.addEventListener("toggle", onToggle);
+    onOpenChange(el.open);
+    return () => el.removeEventListener("toggle", onToggle);
+  }, [onOpenChange]);
+
   return (
-    <details className="sfmap-accordion" id={sectionId} open={defaultOpen}>
+    <details className="sfmap-accordion" id={sectionId} ref={detailsRef}>
       <summary className="sfmap-accordion__summary">
         <span className="sfmap-accordion__summary-start">
           <span className="sfmap-accordion__caret" aria-hidden="true">
@@ -1486,12 +1560,14 @@ function FamilyIndexCard({
 
 function QuarantineWorkflowsPanel() {
   const queryClient = useQueryClient();
+  const [panelOpen, setPanelOpen] = useState(false);
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [msg, setMsg] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const quarantineQuery = useQuery({
     queryKey: queryKeys.shapeFactory.quarantine({ status: "quarantined" }),
     queryFn: () => fetchShapeFactoryQuarantine({ status: "quarantined" }),
+    enabled: panelOpen,
     staleTime: 60_000,
   });
   const releaseMutation = useMutation({
@@ -1502,7 +1578,7 @@ function QuarantineWorkflowsPanel() {
     },
   });
   const entries = quarantineQuery.data?.entries || [];
-  const loading = quarantineQuery.isLoading;
+  const loading = panelOpen && quarantineQuery.isLoading;
   const error = quarantineQuery.error instanceof Error ? quarantineQuery.error.message : null;
 
   const onRelease = async (entry: ShapeFactoryQuarantineEntry) => {
@@ -1529,13 +1605,15 @@ function QuarantineWorkflowsPanel() {
     }
   };
 
-  const summaryLine = loading
-    ? "loading…"
-    : error
-      ? "failed to load"
-      : entries.length
-        ? `${entries.length} blocked template${entries.length === 1 ? "" : "s"}`
-        : "none blocked";
+  const summaryLine = !panelOpen
+    ? "expand to load"
+    : loading
+      ? "loading…"
+      : error
+        ? "failed to load"
+        : entries.length
+          ? `${entries.length} blocked template${entries.length === 1 ? "" : "s"}`
+          : "none blocked";
 
   return (
     <FactoryMapAccordionSection
@@ -1543,7 +1621,8 @@ function QuarantineWorkflowsPanel() {
       title="Quarantined workflows"
       summaryLine={summaryLine}
       activities={entries.length ? [{ active: true, label: `${entries.length} quarantined` }] : undefined}
-      defaultOpen={entries.length > 0}
+      defaultOpen={false}
+      onOpenChange={setPanelOpen}
       hint="Templates blocked from factory generate/submit until a human releases them. Soft convert failures alone will not undo a release."
     >
       {error ? <p className="factory-error">{error}</p> : null}
@@ -1648,6 +1727,7 @@ function PromotionScoreboard({
 
 function InputCurationPanel({ families }: { families: ShapeFactoryMapFamily[] }) {
   const queryClient = useQueryClient();
+  const [panelOpen, setPanelOpen] = useState(false);
   const [stillQ, setStillQ] = useState("");
   const [selectedCollectionId, setSelectedCollectionId] = useState("");
   const [newCollectionName, setNewCollectionName] = useState("");
@@ -1673,19 +1753,21 @@ function InputCurationPanel({ families }: { families: ShapeFactoryMapFamily[] })
   const stateQuery = useQuery({
     queryKey: queryKeys.shapeFactory.inputCurationState,
     queryFn: () => fetchShapeFactoryInputCurationState(),
+    enabled: panelOpen,
     staleTime: 15_000,
     refetchOnWindowFocus: false,
   });
   const stillsQuery = useQuery({
     queryKey: queryKeys.shapeFactory.inputCurationStills({ q: stillQ, limit: 120 }),
     queryFn: () => fetchShapeFactoryInputCurationStills({ q: stillQ, limit: 120 }),
+    enabled: panelOpen,
     staleTime: 20_000,
     refetchOnWindowFocus: false,
   });
   const effectiveSourcesQuery = useQuery({
     queryKey: queryKeys.shapeFactory.inputCurationEffectiveSources(selectedFamilySlug || ""),
     queryFn: () => fetchShapeFactoryInputCurationEffectiveSources(selectedFamilySlug),
-    enabled: Boolean(selectedFamilySlug),
+    enabled: panelOpen && Boolean(selectedFamilySlug),
     staleTime: 10_000,
     refetchOnWindowFocus: false,
   });
@@ -1712,7 +1794,11 @@ function InputCurationPanel({ families }: { families: ShapeFactoryMapFamily[] })
     collections.find((c) => c.id === selectedCollectionId) || (collections.length ? collections[0] : null);
   const selectedCollectionItems = selectedCollection?.items || [];
   const attachedForFamily = selectedFamilySlug ? bindings[selectedFamilySlug] || [] : [];
-  const summaryLine = `${collections.length} collections · ${sourceStillFamilies.length} source_still families`;
+  const summaryLine = !panelOpen
+    ? "expand to load"
+    : stateQuery.isLoading
+      ? "loading…"
+      : `${collections.length} collections · ${sourceStillFamilies.length} source_still families`;
 
   useEffect(() => {
     if (!selectedCollectionId && collections.length > 0) setSelectedCollectionId(collections[0].id);
@@ -1734,6 +1820,7 @@ function InputCurationPanel({ families }: { families: ShapeFactoryMapFamily[] })
       title="Input curation"
       summaryLine={summaryLine}
       defaultOpen={false}
+      onOpenChange={setPanelOpen}
       hint="Collections attach per family; source selection merges pool stills with attached collections and de-dupes by path/content id."
     >
       {msg ? <p className="factory-muted">{msg}</p> : null}
@@ -2427,6 +2514,7 @@ export function DiscoveryFactoryMapApp() {
   const shapeFactoryFetchCount = useIsFetching({ queryKey: queryKeys.shapeFactory.root });
   const shapeFactoryMutationCount = useIsMutating();
   const [route, setRoute] = useState<FactoryMapRoute>(() => parseFactoryMapRoute());
+  const warmFamilies = useMemo(() => warmFamiliesFromBootstrap(), []);
 
   useEffect(() => {
     const onPop = () => setRoute(parseFactoryMapRoute());
@@ -2434,21 +2522,47 @@ export function DiscoveryFactoryMapApp() {
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
-  const membersLimit = route.view === "family" ? 24 : 8;
-  const jobsPerFamily = route.view === "family" ? 48 : 24;
-  const mapQuery = useQuery({
-    queryKey: queryKeys.shapeFactory.map({ membersLimit, jobsLimit: 800, jobsPerFamily }),
+  const wantsSlimFirst = route.view === "index" || route.view === "pipeline";
+
+  const slimQuery = useQuery({
+    queryKey: queryKeys.shapeFactory.map(MAP_SLIM),
     queryFn: () =>
       fetchShapeFactoryMap({
-        members_limit: membersLimit,
-        jobs_limit: 800,
-        jobs_per_family: jobsPerFamily,
+        members_limit: MAP_SLIM.membersLimit,
+        jobs_limit: MAP_SLIM.jobsLimit,
+        jobs_per_family: MAP_SLIM.jobsPerFamily,
+        skip_queue: MAP_SLIM.skipQueue,
+        projected_pairs_limit: MAP_SLIM.projectedPairsLimit,
       }),
+    // Warm nav for family detail too when index cache is cold.
+    enabled: wantsSlimFirst || route.view === "family",
+    staleTime: 30_000,
+    placeholderData: (prev) => prev,
+  });
+
+  const fullKey =
+    route.view === "family"
+      ? MAP_FAMILY_FULL
+      : MAP_INDEX_FULL;
+
+  const fullQuery = useQuery({
+    queryKey: queryKeys.shapeFactory.map(fullKey),
+    queryFn: () =>
+      fetchShapeFactoryMap({
+        members_limit: fullKey.membersLimit,
+        jobs_limit: fullKey.jobsLimit,
+        jobs_per_family: fullKey.jobsPerFamily,
+        skip_queue: fullKey.skipQueue,
+        projected_pairs_limit: fullKey.projectedPairsLimit,
+      }),
+    // Index/pipeline: deepen after slim. Family: load rich map immediately (slim still warms nav).
+    enabled: route.view === "family" || slimQuery.isSuccess || slimQuery.isError,
     staleTime: 30_000,
     refetchInterval: POLL_MS,
     refetchIntervalInBackground: false,
     placeholderData: (prev) => prev,
   });
+
   const promotionsQuery = useQuery({
     queryKey: queryKeys.shapeFactory.promotions({ includeExpired: false }),
     queryFn: () => fetchShapeFactoryTemplatePromotions(),
@@ -2462,16 +2576,46 @@ export function DiscoveryFactoryMapApp() {
       await queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.mapRoot });
     },
   });
-  const data = mapQuery.data || null;
-  const loading = mapQuery.isLoading && !data;
-  const refreshing = mapQuery.isFetching && !loading;
+
+  const mapData =
+    fullQuery.data?.ok ? fullQuery.data : slimQuery.data?.ok ? slimQuery.data : null;
+  const usingWarmShell = !mapData && warmFamilies.length > 0;
+  const data: ShapeFactoryMapResponse | null = mapData
+    ? mapData
+    : usingWarmShell
+      ? {
+          ok: true,
+          families: warmFamilies,
+          pipelines: [],
+          jobs: { total: 0, items: [], summary: {} },
+        }
+      : null;
+  const loading = !data && (slimQuery.isLoading || fullQuery.isLoading);
+  const showingSlim =
+    wantsSlimFirst && Boolean(slimQuery.data?.ok) && !(fullQuery.data?.ok);
+  const deepening = showingSlim && fullQuery.isFetching;
+  const refreshing =
+    (fullQuery.isFetching || (wantsSlimFirst && slimQuery.isFetching)) && !loading && !deepening;
   const error =
-    mapQuery.error instanceof Error
-      ? mapQuery.error.message
-      : data && !data.ok
-        ? data.error || "Map unavailable"
-        : "";
-  const reload = useCallback(() => mapQuery.refetch(), [mapQuery]);
+    mapData
+      ? fullQuery.error instanceof Error
+        ? fullQuery.error.message
+        : slimQuery.error instanceof Error && !fullQuery.data?.ok
+          ? slimQuery.error.message
+          : mapData.ok
+            ? ""
+            : mapData.error || "Map unavailable"
+      : !usingWarmShell && fullQuery.error instanceof Error
+        ? fullQuery.error.message
+        : !usingWarmShell && slimQuery.error instanceof Error
+          ? slimQuery.error.message
+          : "";
+  const reload = useCallback(() => {
+    void Promise.all([
+      wantsSlimFirst ? slimQuery.refetch() : Promise.resolve(),
+      fullQuery.refetch(),
+    ]);
+  }, [wantsSlimFirst, slimQuery, fullQuery]);
   const invalidateMap = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.mapRoot });
   }, [queryClient]);
@@ -2527,10 +2671,10 @@ export function DiscoveryFactoryMapApp() {
   const onQuickToday = useCallback(
     (familySlug: string) => {
       const now = new Date();
-      const midnight = new Date(now);
-      midnight.setHours(24, 0, 0, 0);
-      const ttl = Math.max(0.25, (midnight.getTime() - now.getTime()) / 3_600_000);
-      void applyQuickPromotion(familySlug, "temporary", ttl);
+      const end = new Date(now);
+      end.setHours(23, 59, 59, 999);
+      const hours = Math.max(0.25, (end.getTime() - now.getTime()) / 3_600_000);
+      void applyQuickPromotion(familySlug, "temporary", hours);
     },
     [applyQuickPromotion],
   );
@@ -2628,8 +2772,11 @@ export function DiscoveryFactoryMapApp() {
     }
   }, [closePromotionEditor, promotionEditorFamily, promotionEditorIntents, setPromotionMutation]);
   const statusLine = useMemo(() => {
-    if (loading) return "Loading factory map cache…";
+    if (loading) return "Loading factory map…";
+    if (usingWarmShell) return "Warm shell · loading map…";
+    if (deepening) return "Deepening map (queue · members · pairs)…";
     const details: string[] = [];
+    if (showingSlim) details.push("slim map");
     if (shapeFactoryFetchCount > 0) {
       details.push(
         `${shapeFactoryFetchCount} background fetch${shapeFactoryFetchCount === 1 ? "" : "es"}`,
@@ -2641,14 +2788,24 @@ export function DiscoveryFactoryMapApp() {
       );
     }
     if (details.length > 0) return `Syncing: ${details.join(" · ")}`;
-    return `Cache warm · last sync ${formatStatusTimestamp(mapQuery.dataUpdatedAt)}`;
-  }, [loading, mapQuery.dataUpdatedAt, shapeFactoryFetchCount, shapeFactoryMutationCount]);
+    const updatedAt = fullQuery.dataUpdatedAt || slimQuery.dataUpdatedAt;
+    return `Cache warm · last sync ${formatStatusTimestamp(updatedAt)}`;
+  }, [
+    loading,
+    usingWarmShell,
+    deepening,
+    showingSlim,
+    fullQuery.dataUpdatedAt,
+    slimQuery.dataUpdatedAt,
+    shapeFactoryFetchCount,
+    shapeFactoryMutationCount,
+  ]);
 
   return (
     <FactoryMapShell
       route={route}
       loading={loading}
-      refreshing={refreshing}
+      refreshing={refreshing || deepening}
       statusLine={statusLine}
       onRefresh={() => void reload()}
     >

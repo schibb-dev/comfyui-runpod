@@ -189,9 +189,11 @@ export async function fetchShapeFactoryMap(opts?: {
   jobs_per_family?: number;
   family?: string;
   skip_queue?: boolean;
+  /** 0 skips projected pair assembly (progressive index shell). */
+  projected_pairs_limit?: number;
 }): Promise<ShapeFactoryMapResponse> {
   const sp = new URLSearchParams();
-  if (opts?.members_limit != null && opts.members_limit > 0) {
+  if (opts?.members_limit != null && opts.members_limit >= 0) {
     sp.set("members_limit", String(opts.members_limit));
   }
   if (opts?.jobs_limit != null && opts.jobs_limit > 0) {
@@ -202,6 +204,9 @@ export async function fetchShapeFactoryMap(opts?: {
   }
   if (opts?.family) sp.set("family", opts.family);
   if (opts?.skip_queue) sp.set("skip_queue", "1");
+  if (opts?.projected_pairs_limit != null && opts.projected_pairs_limit >= 0) {
+    sp.set("projected_pairs_limit", String(opts.projected_pairs_limit));
+  }
   const qs = sp.toString();
   const r = await fetch(`/api/shape-factory/map${qs ? `?${qs}` : ""}`);
   const j = (await r.json().catch(() => ({}))) as ShapeFactoryMapResponse & { error?: string; detail?: string };

@@ -1704,7 +1704,8 @@ def _shape_factory_map_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Di
     members_limit = 24
     for v in q.get("members_limit", []):
         n = _safe_int(v)
-        if n is not None and n > 0:
+        # 0 = skip member previews (progressive index shell).
+        if n is not None and n >= 0:
             members_limit = min(int(n), 200)
             break
 
@@ -1720,6 +1721,13 @@ def _shape_factory_map_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Di
         n = _safe_int(v)
         if n is not None and n > 0:
             jobs_per_family = min(int(n), 200)
+            break
+
+    projected_pairs_limit = 48
+    for v in q.get("projected_pairs_limit", []):
+        n = _safe_int(v)
+        if n is not None and n >= 0:
+            projected_pairs_limit = min(int(n), 200)
             break
 
     family_filter: Optional[str] = None
@@ -1751,6 +1759,7 @@ def _shape_factory_map_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Di
         jobs_per_family=jobs_per_family,
         family_filter=family_filter,
         skip_queue=skip_queue,
+        projected_pairs_limit=projected_pairs_limit,
         url_for=url_for,
         wip_root=cfg.wip_root,
         workspace_root=cfg.workspace_root,

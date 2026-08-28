@@ -431,6 +431,24 @@ class ShapeFactoryMapTests(unittest.TestCase):
             self.assertEqual(payload["jobs"]["total"], 1)
             self.assertTrue(payload["hourly"]["next_sample"])
 
+            slim = build_shape_factory_map(
+                data_root=data,
+                output_root=out_root,
+                skip_queue=True,
+                members_limit=0,
+                jobs_limit=5,
+                jobs_per_family=2,
+                projected_pairs_limit=0,
+            )
+            self.assertTrue(slim["ok"])
+            fam = slim["families"][0]
+            for pool in fam.get("deposit_pools") or []:
+                self.assertEqual(pool.get("members_preview"), [])
+                self.assertIsNone(pool.get("latest_member"))
+            for pool in fam.get("input_pools") or []:
+                self.assertEqual(pool.get("members_preview"), [])
+            self.assertEqual(fam.get("projected_pairs"), [])
+
 
 class ShapeFactoryMapLiveTests(unittest.TestCase):
     @unittest.skipUnless((ROOT / ".data" / "pools").is_dir(), "live .data not present")

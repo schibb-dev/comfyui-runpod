@@ -819,7 +819,10 @@ def _pool_index_member_dicts(
             continue
         members = pool.get("members") if isinstance(pool.get("members"), list) else []
         cap = spec.get("limit")
-        take = int(cap) if isinstance(cap, int) and cap > 0 else limit
+        take = int(cap) if isinstance(cap, int) and cap > 0 else int(limit)
+        # Python slice `[-0:]` is the whole list — treat 0 as "no previews".
+        if take <= 0:
+            return []
         return [m for m in members[-take:] if isinstance(m, dict)]
     return []
 
@@ -851,12 +854,37 @@ def _input_pools_from_yaml(
         "file_exists": file_exists,
     }
     out: List[Dict[str, Any]] = []
+    ml = max(0, int(members_limit))
     for name, spec in pools.items():
         if not isinstance(spec, dict):
             continue
         members = spec.get("members") if isinstance(spec.get("members"), list) else []
         feeds_from: List[Dict[str, Any]] = []
         previews: List[Dict[str, Any]] = []
+        if ml <= 0:
+            for m in members:
+                if not isinstance(m, dict):
+                    continue
+                if m.get("kind") == "pool_index" or isinstance(m.get("pool_id"), str):
+                    feeds_from.append(
+                        {
+                            "pool_id": m.get("pool_id"),
+                            "from_index": m.get("glob"),
+                            "limit": m.get("limit"),
+                        }
+                    )
+            out.append(
+                {
+                    "name": name,
+                    "slot": spec.get("slot"),
+                    "description": spec.get("description"),
+                    "feeds_from": feeds_from or None,
+                    "member_glob_count": sum(1 for m in members if isinstance(m, dict) and m.get("glob")),
+                    "members_preview": [],
+                    "member_preview_count": 0,
+                }
+            )
+            continue
         for m in members:
             if not isinstance(m, dict):
                 continue
@@ -870,12 +898,12 @@ def _input_pools_from_yaml(
                 )
                 for mem in _pool_index_member_dicts(
                     m,
-                    limit=members_limit,
+                    limit=ml,
                     output_root=output_root,
                     data_root=data_root,
                 ):
                     previews.append(_member_preview(mem, **preview_kwargs))
-                    if len(previews) >= members_limit:
+                    if len(previews) >= ml:
                         break
                 continue
             if m.get("glob"):
@@ -888,7 +916,7 @@ def _input_pools_from_yaml(
                             **preview_kwargs,
                         )
                     )
-                    if len(previews) >= members_limit:
+                    if len(previews) >= ml:
                         break
                 continue
             if m.get("dir"):
@@ -900,7 +928,7 @@ def _input_pools_from_yaml(
                             "kind": "prompt",
                         }
                     )
-                    if len(previews) >= members_limit:
+                    if len(previews) >= ml:
                         break
         out.append(
             {
@@ -909,7 +937,7 @@ def _input_pools_from_yaml(
                 "description": spec.get("description"),
                 "feeds_from": feeds_from or None,
                 "member_glob_count": sum(1 for m in members if isinstance(m, dict) and m.get("glob")),
-                "members_preview": previews[:members_limit],
+                "members_preview": previews[:ml],
                 "member_preview_count": len(previews),
             }
         )
@@ -950,15 +978,15 @@ def _deposit_pools_from_index(
                 row["source_still"] = ref
         return row
 
+    ml = max(0, int(members_limit))
     for pool_id, spec in pools.items():
         if not isinstance(spec, dict):
             continue
         members = spec.get("members") if isinstance(spec.get("members"), list) else []
-        preview = [
-            _preview(m)
-            for m in members[-members_limit:]
-            if isinstance(m, dict)
-        ]
+        # `members[-0:]` is the whole list in Python — skip previews when ml==0.
+        preview = (
+            [_preview(m) for m in members[-ml:] if isinstance(m, dict)] if ml > 0 else []
+        )
         out.append(
             {
                 "pool_id": pool_id,
@@ -967,7 +995,7 @@ def _deposit_pools_from_index(
                 "member_count": len(members),
                 "members_preview": preview,
                 "latest_member": _member_preview(members[-1], **preview_kwargs)
-                if members and isinstance(members[-1], dict)
+                if ml > 0 and members and isinstance(members[-1], dict)
                 else None,
             }
         )
@@ -1465,7 +1493,7 @@ def build_shape_factory_map(
                     pools_yaml,
                     output_root=output_root,
                     data_root=data_root,
-                    members_limit=max(1, members_limit),
+                    members_limit=max(0, int(members_limit)),
                     url_for=url_for,
                     wip_root=wip_root,
                     workspace_root=workspace_root,
@@ -1474,7 +1502,7 @@ def build_shape_factory_map(
                 "deposit_pools": _deposit_pools_from_index(
                     index_doc,
                     output_root=output_root,
-                    members_limit=max(1, members_limit),
+                    members_limit=max(0, int(members_limit)),
                     url_for=url_for,
                     wip_root=wip_root,
                     workspace_root=workspace_root,
