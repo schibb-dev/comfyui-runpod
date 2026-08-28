@@ -164,9 +164,9 @@ Each program has: **intent**, **today**, **next** (actionable), **later**, **key
 | | |
 |--|--|
 | **Today** | `workflows/image_sorting_tools/` developed; Discovery path search + `asset_tags` bootstrap; Factory Map input curation (partial); **G0:** Library still → `/submit` I2V seed |
-| **Next (plan)** | **Still image gallery as launch hub** — G1+ gallery browse + launch pad. [`STILL_GALLERY_HUB_PLAN.md`](./STILL_GALLERY_HUB_PLAN.md) |
+| **Next (plan)** | Gallery G1+; **still auto-tagger** (PromptGen-large pin → provisional tags). [`STILL_GALLERY_HUB_PLAN.md`](./STILL_GALLERY_HUB_PLAN.md), [`STILL_AUTO_TAGGER_PLAN.md`](./STILL_AUTO_TAGGER_PLAN.md) |
 | **Later** | Optional merge with P1 embeddings; extend collections/tags to Work Products video |
-| **Docs** | `PROJECT_ORGANIZATION_PROPOSAL.md` Project C; `IMAGE_SORTER_GUIDE.md`; P1 tag sequence |
+| **Docs** | `PROJECT_ORGANIZATION_PROPOSAL.md` Project C; `IMAGE_SORTER_GUIDE.md`; P1 tag sequence; still auto-tagger plan |
 
 ---
 
@@ -213,6 +213,7 @@ Avoid parallel spikes across programs. Locked sequence for P1 vision:
 _Use this section during mental exploration. Promote bullets into a program’s **Next** when they stabilize._
 
 - **Still image gallery as launch hub (2026-08-27):** End-state is a still gallery where one selected image launches into Submit (I2V templates), collections→pools, Factory Map, ratings, identity, recover — doors only, no private compose. Near: Library still → `/submit`. Plan: [`STILL_GALLERY_HUB_PLAN.md`](./STILL_GALLERY_HUB_PLAN.md). Supersedes narrower “input still browser + collections” parking note.
+- **Still auto-tagger (2026-08-27):** Gallery needs tags at scale; reuse V1 runners + PromptGen-large V3a pin. **No monolith JSON** (SQLite + NDJSON audit); **UI enqueues** tagging to a **background worker** with simple event polling. Batch size empirical: small default (12) to learn, **large batches** as the practical ops target once measured. GPU flexible (local Comfy concert or RunPod). Default DB: `shape_factory/still_tags.sqlite`. Plan: [`STILL_AUTO_TAGGER_PLAN.md`](./STILL_AUTO_TAGGER_PLAN.md).
 - **V1 retrospective (2026-07-16): Keep time slices.** Offline 2s windows + whole-video A/B and the Vision slices review UI were enough to keep span-aware captions/tags on the path (index span rows later; V2 should enqueue the same portable scripts). Separately, blind tag judgment (48 samples) pinned **PromptGen-large** as the V3a day-one tagger; **base∪large** (or an informed union: large always, add base-only when ★/prior-good and not FP-blocked) stays deferred. Artifacts: `_status/vision_tag_judgments.ndjson`, `vision_v3a_tag_pin.json`.
 - **Hourly policy → managed config (2026-08-20):** Facial/i2v drain every-N, seed weights, lookbacks, boosts, etc. are first-order operator concerns but live in code/env today. See [`HOURLY_UTILITY_PLAN.md`](./HOURLY_UTILITY_PLAN.md).
 

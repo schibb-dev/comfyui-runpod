@@ -11,13 +11,16 @@ export const queryKeys = {
       ["shapeFactory", "templatePromotions", opts || { includeExpired: false }] as const,
     inputCurationRoot: ["shapeFactory", "inputCuration"] as const,
     inputCurationState: ["shapeFactory", "inputCuration", "state"] as const,
-    inputCurationStills: (opts?: { q?: string; limit?: number; offset?: number }) =>
-      ["shapeFactory", "inputCuration", "stills", opts || { q: "", limit: 120, offset: 0 }] as const,
+    inputCurationStills: (opts?: { q?: string; tag?: string; limit?: number }) =>
+      ["shapeFactory", "inputCuration", "stills", opts || { q: "", tag: "", limit: 96 }] as const,
     inputCurationEffectiveSources: (familySlug: string) =>
       ["shapeFactory", "inputCuration", "effectiveSources", familySlug] as const,
     workProductsRoot: ["shapeFactory", "workProducts"] as const,
     workProducts: (opts: { limit: number; hourlyOnly: boolean; family?: string | null }) =>
       ["shapeFactory", "workProducts", opts] as const,
+    submitAttemptsRoot: ["shapeFactory", "submitAttempts"] as const,
+    submitAttempts: (opts?: { limit?: number; errorsOnly?: boolean; family?: string }) =>
+      ["shapeFactory", "submitAttempts", opts || { limit: 12, errorsOnly: true }] as const,
   },
   queue: {
     root: ["queue"] as const,

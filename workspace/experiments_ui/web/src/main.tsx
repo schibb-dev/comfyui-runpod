@@ -17,6 +17,7 @@ const SCREENS: Record<AppRouteId, React.LazyExoticComponent<React.ComponentType>
   submit: lazy(() => import("./ui/SubmitComposerApp").then((m) => ({ default: m.SubmitComposerApp }))),
   "vision-slices": lazy(() => import("./ui/VisionSliceReviewApp").then((m) => ({ default: m.VisionSliceReviewApp }))),
   library: lazy(() => import("./ui/DiscoveryLibraryApp").then((m) => ({ default: m.DiscoveryLibraryApp }))),
+  stills: lazy(() => import("./ui/StillGalleryApp").then((m) => ({ default: m.StillGalleryApp }))),
   clips: lazy(() => import("./ui/ClipsLibraryApp").then((m) => ({ default: m.ClipsLibraryApp }))),
   experiments: lazy(() => import("./ui/App").then((m) => ({ default: m.App }))),
 };

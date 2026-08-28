@@ -3143,9 +3143,102 @@ def _shape_factory_input_curation_paths(cfg: ServerConfig, data_root: Path) -> D
     return {
         "collections_primary": primary_root / "input_collections.json",
         "bindings_primary": primary_root / "input_collection_bindings.json",
+        "tags_primary": primary_root / "input_still_tags.json",
+        "tags_db_primary": primary_root / "still_tags.sqlite",
         "collections_fallback": fallback_root / "input_collections.json",
         "bindings_fallback": fallback_root / "input_collection_bindings.json",
+        "tags_fallback": fallback_root / "input_still_tags.json",
+        "tags_db_fallback": fallback_root / "still_tags.sqlite",
     }
+
+
+def _shape_factory_still_tag_status_dir(cfg: ServerConfig) -> Path:
+    return _output_status_dir(cfg.output_root)
+
+
+def _shape_factory_input_curation_stills_tag_enqueue_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+    from vision_still_tags import enqueue_run, kick_worker  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    content_ids = body.get("content_ids")
+    if isinstance(content_ids, str):
+        content_ids = [content_ids]
+    if not isinstance(content_ids, list):
+        content_ids = None
+    else:
+        content_ids = [str(x).strip() for x in content_ids if str(x).strip()]
+    collection_id = str(body.get("collection_id") or "").strip() or None
+    only_missing = body.get("only_missing", True) is not False
+    force = body.get("force") is True
+    limit = _safe_int(body.get("limit"))
+    if limit is None:
+        limit = 12
+    limit = max(1, min(5000, int(limit)))
+    dry_run = body.get("dry_run") is True
+    provider = str(body.get("provider") or ("dry-run" if dry_run else "comfy")).strip() or "comfy"
+    comfy_server = str(body.get("comfy_server") or "").strip() or None
+    status_dir = _shape_factory_still_tag_status_dir(cfg)
+    enq = enqueue_run(
+        data_root=data_root,
+        content_ids=content_ids or None,
+        collection_id=collection_id,
+        only_missing=only_missing and not force,
+        limit=limit,
+        force=force,
+        provider=provider,
+        comfy_server=comfy_server,
+        dry_run=dry_run,
+        status_dir=status_dir,
+    )
+    kick_worker(data_root=data_root, status_dir=status_dir)
+    enq["ok"] = True
+    return enq
+
+
+def _shape_factory_input_curation_stills_tag_run_payload(cfg: ServerConfig, run_id: str) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+    from vision_still_tags import connect, default_db_path, ensure_db, get_run  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    db = default_db_path(data_root=data_root)
+    ensure_db(db)
+    con = connect(db)
+    try:
+        run = get_run(con, run_id)
+    finally:
+        con.close()
+    if not run:
+        return {"ok": False, "error": "run_not_found", "run_id": run_id}
+    return {"ok": True, "run": run}
+
+
+def _shape_factory_input_curation_stills_tag_events_payload(
+    cfg: ServerConfig, run_id: str, q: Dict[str, List[str]]
+) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+    from vision_still_tags import connect, default_db_path, ensure_db, list_events  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    after_id = _safe_int((q.get("after_id") or ["0"])[0]) or 0
+    limit = _safe_int((q.get("limit") or ["200"])[0]) or 200
+    db = default_db_path(data_root=data_root)
+    ensure_db(db)
+    con = connect(db)
+    try:
+        events = list_events(con, run_id=run_id, after_id=int(after_id), limit=int(limit))
+    finally:
+        con.close()
+    return {"ok": True, "run_id": run_id, "events": events, "count": len(events)}
 
 
 def _shape_factory_input_curation_state_payload(cfg: ServerConfig) -> Dict[str, Any]:
@@ -3195,8 +3288,20 @@ def _shape_factory_input_curation_stills_payload(cfg: ServerConfig, q: Dict[str,
             offset = max(0, int(n))
             break
     qtext = str((q.get("q") or [""])[0] or "").strip()
+    tag = str((q.get("tag") or [""])[0] or "").strip()
     scan = str((q.get("scan") or ["0"])[0]).strip().lower() in {"1", "true", "yes"}
-    payload = list_catalog_stills(data_root=data_root, q=qtext, limit=limit, offset=offset, scan=scan)
+    payload = list_catalog_stills(
+        data_root=data_root, q=qtext, limit=limit, offset=offset, scan=scan, tag=tag
+    )
+    # Quote file URLs properly for the browser.
+    for it in payload.get("items") or []:
+        if not isinstance(it, dict):
+            continue
+        rel = str(it.get("relpath") or "").strip().replace("\\", "/")
+        if rel:
+            quoted = "/files/" + urllib.parse.quote(rel, safe="/")
+            it["url"] = quoted
+            it["thumb_url"] = quoted
     payload["data_root"] = str(data_root)
     return payload
 
@@ -3343,6 +3448,74 @@ def _shape_factory_input_curation_bindings_mutate_payload(cfg: ServerConfig, bod
         "collection_ids": current,
         "bindings": saved.get("families") if isinstance(saved.get("families"), dict) else {},
         "updated_at": saved.get("updated_at"),
+    }
+
+
+def _shape_factory_input_curation_tags_mutate_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_input_curation import (  # type: ignore
+        choose_writable_path,
+        upsert_still_tags,
+    )
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    paths = _shape_factory_input_curation_paths(cfg, data_root)
+    write_path = choose_writable_path(paths["tags_primary"], [paths["tags_fallback"]])
+    content_id = str(body.get("content_id") or "").strip().lower()
+    if not content_id:
+        raise ValueError("missing_content_id")
+    tags = body.get("tags")
+    note = body.get("note") if "note" in body else None
+    if tags is not None and not isinstance(tags, list):
+        raise ValueError("bad_tags")
+    saved = upsert_still_tags(
+        data_root,
+        content_id=content_id,
+        tags=[str(t) for t in tags] if isinstance(tags, list) else None,
+        note=None if note is None else str(note),
+        write_path=write_path,
+        fallback_paths=[paths["tags_fallback"]],
+    )
+    # Prefer SQLite editorial store (G1 JSON kept as write-through during migration).
+    try:
+        from vision_still_tags import connect, default_db_path, ensure_db, upsert_editorial  # type: ignore
+
+        dbp = default_db_path(data_root=data_root)
+        ensure_db(dbp)
+        con = connect(dbp)
+        try:
+            item = upsert_editorial(
+                con,
+                content_id=content_id,
+                tags=[str(t) for t in tags] if isinstance(tags, list) else None,
+                note=None if note is None else str(note),
+            )
+        finally:
+            con.close()
+        return {
+            "ok": True,
+            "path": str(dbp),
+            "content_id": content_id,
+            "tags": list(item.get("editorial_tags") or item.get("tags") or []),
+            "note": item.get("note"),
+            "updated_at": item.get("updated_at"),
+            "store": "still_tags.sqlite",
+        }
+    except Exception:
+        pass
+    items = saved.get("items") if isinstance(saved.get("items"), dict) else {}
+    meta = items.get(content_id) if isinstance(items.get(content_id), dict) else {"tags": [], "note": None}
+    return {
+        "ok": True,
+        "path": str(write_path),
+        "content_id": content_id,
+        "tags": list(meta.get("tags") or []),
+        "note": meta.get("note"),
+        "updated_at": saved.get("updated_at"),
+        "store": "input_still_tags.json",
     }
 
 
@@ -3730,6 +3903,58 @@ def _quarantine_runtime_error_payload(exc: BaseException) -> Optional[Dict[str, 
         "error": "workflow_quarantined",
         "detail": msg,
     }
+
+
+def _shape_factory_submit_attempts_dir(cfg: ServerConfig) -> Path:
+    """Writable status dir (same parent as Comfy queue ledger)."""
+    return Path(cfg.queue_ledger_events_path).expanduser().resolve().parent
+
+
+def _shape_factory_submit_attempts_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
+    """GET /api/shape-factory/submit-attempts — recent Submit/queue outcomes."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_submit_attempts import list_attempts_payload  # type: ignore
+
+    limit = 80
+    for v in q.get("limit", []):
+        li = _safe_int(v)
+        if li is not None:
+            limit = max(1, min(500, int(li)))
+            break
+    errors_only = str((q.get("errors_only") or ["0"])[0] or "0").strip().lower() in {"1", "true", "yes"}
+    family = str((q.get("family") or q.get("family_slug") or [""])[0] or "").strip() or None
+    return list_attempts_payload(
+        _shape_factory_submit_attempts_dir(cfg),
+        limit=limit,
+        errors_only=errors_only,
+        family_slug=family,
+    )
+
+
+def _record_shape_factory_queue_attempt(
+    cfg: ServerConfig,
+    *,
+    body: Dict[str, Any],
+    ok: bool,
+    exc: Optional[BaseException] = None,
+    payload: Optional[Dict[str, Any]] = None,
+    http_status: Optional[int] = None,
+) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_submit_attempts import record_queue_outcome  # type: ignore
+
+    return record_queue_outcome(
+        _shape_factory_submit_attempts_dir(cfg),
+        body=body,
+        ok=ok,
+        exc=exc,
+        payload=payload,
+        http_status=http_status,
+    )
 
 
 def _vision_slice_captions_payload(cfg: ServerConfig) -> Dict[str, Any]:
@@ -9553,6 +9778,13 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return _json_response(self, 500, {"ok": False, "error": "quarantine_list_failed", "detail": str(e)})
 
+        if path == "/api/shape-factory/submit-attempts":
+            try:
+                payload = _shape_factory_submit_attempts_payload(cfg, q)
+                return _json_response(self, 200, payload)
+            except Exception as e:
+                return _json_response(self, 500, {"ok": False, "error": "submit_attempts_failed", "detail": str(e)})
+
         if path == "/api/shape-factory/template-promotions":
             try:
                 payload = _shape_factory_template_promotions_payload(cfg, q)
@@ -9568,6 +9800,24 @@ class Handler(BaseHTTPRequestHandler):
                 return _json_response(self, 200, payload)
             except Exception as e:
                 return _json_response(self, 500, {"ok": False, "error": "input_curation_stills_failed", "detail": str(e)})
+
+        if path.startswith("/api/shape-factory/input-curation/stills/tag/runs/"):
+            rest = path[len("/api/shape-factory/input-curation/stills/tag/runs/") :].strip("/")
+            parts = [p for p in rest.split("/") if p]
+            if not parts:
+                return _json_response(self, 404, {"ok": False, "error": "missing_run_id"})
+            run_id = parts[0]
+            try:
+                if len(parts) >= 2 and parts[1] == "events":
+                    payload = _shape_factory_input_curation_stills_tag_events_payload(cfg, run_id, q)
+                else:
+                    payload = _shape_factory_input_curation_stills_tag_run_payload(cfg, run_id)
+                code = 200 if payload.get("ok") else 404
+                return _json_response(self, code, payload)
+            except Exception as e:
+                return _json_response(
+                    self, 500, {"ok": False, "error": "input_curation_stills_tag_status_failed", "detail": str(e)}
+                )
 
         if path == "/api/shape-factory/input-curation/state":
             try:
@@ -9852,6 +10102,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_shape_factory_input_curation_collections_post()
         if path == "/api/shape-factory/input-curation/bindings":
             return self._handle_shape_factory_input_curation_bindings_post()
+        if path == "/api/shape-factory/input-curation/tags":
+            return self._handle_shape_factory_input_curation_tags_post()
+        if path == "/api/shape-factory/input-curation/stills/tag":
+            return self._handle_shape_factory_input_curation_stills_tag_post()
         if path == "/api/shape-factory/hourly-schedule":
             return self._handle_shape_factory_hourly_schedule_post()
         if path == "/api/vision/tag-judgment":
@@ -9943,6 +10197,40 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
         except Exception as e:
             return _json_response(self, 500, {"ok": False, "error": "input_curation_bindings_failed", "detail": str(e)})
+        return _json_response(self, 200, payload)
+
+    def _handle_shape_factory_input_curation_tags_post(self) -> None:
+        """POST /api/shape-factory/input-curation/tags — set tags/note for a still content_id."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        if not isinstance(body, dict):
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": "JSON object required"})
+        try:
+            payload = _shape_factory_input_curation_tags_mutate_payload(cfg, body)
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "input_curation_tags_failed", "detail": str(e)})
+        return _json_response(self, 200, payload)
+
+    def _handle_shape_factory_input_curation_stills_tag_post(self) -> None:
+        """POST /api/shape-factory/input-curation/stills/tag — enqueue PromptGen batch (background)."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        if not isinstance(body, dict):
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": "JSON object required"})
+        try:
+            payload = _shape_factory_input_curation_stills_tag_enqueue_payload(cfg, body)
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except Exception as e:
+            return _json_response(
+                self, 500, {"ok": False, "error": "input_curation_stills_tag_failed", "detail": str(e)}
+            )
         return _json_response(self, 200, payload)
 
     def _handle_vision_tag_judgment_post(self) -> None:
@@ -10161,16 +10449,47 @@ class Handler(BaseHTTPRequestHandler):
         try:
             payload = _shape_factory_queue_payload(cfg, body)
         except ValueError as e:
-            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+            _rec, err_body = _record_shape_factory_queue_attempt(cfg, body=body, ok=False, exc=e, http_status=400)
+            print(
+                f"[experiments-ui] shape-factory/queue failed attempt={_rec.get('attempt_id')} "
+                f"family={_rec.get('family_slug')} error={_rec.get('error')}: {e}",
+                flush=True,
+            )
+            return _json_response(self, 400, err_body or {"ok": False, "error": "bad_request", "detail": str(e)})
         except FileNotFoundError as e:
-            return _json_response(self, 404, {"ok": False, "error": "not_found", "detail": str(e)})
+            _rec, err_body = _record_shape_factory_queue_attempt(cfg, body=body, ok=False, exc=e, http_status=404)
+            print(
+                f"[experiments-ui] shape-factory/queue failed attempt={_rec.get('attempt_id')} "
+                f"family={_rec.get('family_slug')} error={_rec.get('error')}: {e}",
+                flush=True,
+            )
+            return _json_response(self, 404, err_body or {"ok": False, "error": "not_found", "detail": str(e)})
         except RuntimeError as e:
             qerr = _quarantine_runtime_error_payload(e)
-            if qerr is not None:
-                return _json_response(self, 409, qerr)
-            return _json_response(self, 502, {"ok": False, "error": "shape_factory_queue_failed", "detail": str(e)})
+            status = 409 if qerr is not None else 502
+            _rec, err_body = _record_shape_factory_queue_attempt(cfg, body=body, ok=False, exc=e, http_status=status)
+            print(
+                f"[experiments-ui] shape-factory/queue failed attempt={_rec.get('attempt_id')} "
+                f"family={_rec.get('family_slug')} error={_rec.get('error')}: {e}",
+                flush=True,
+            )
+            body_out = err_body or qerr or {"ok": False, "error": "shape_factory_queue_failed", "detail": str(e)}
+            if qerr is not None and err_body is not None:
+                body_out = {**err_body, "error": "workflow_quarantined"}
+            return _json_response(self, status, body_out)
         except Exception as e:
-            return _json_response(self, 500, {"ok": False, "error": "shape_factory_queue_failed", "detail": str(e)})
+            _rec, err_body = _record_shape_factory_queue_attempt(cfg, body=body, ok=False, exc=e, http_status=500)
+            print(
+                f"[experiments-ui] shape-factory/queue failed attempt={_rec.get('attempt_id')} "
+                f"family={_rec.get('family_slug')} error={_rec.get('error')}: {e}",
+                flush=True,
+            )
+            return _json_response(
+                self, 500, err_body or {"ok": False, "error": "shape_factory_queue_failed", "detail": str(e)}
+            )
+        _rec, _ = _record_shape_factory_queue_attempt(cfg, body=body, ok=True, payload=payload, http_status=200)
+        if isinstance(payload, dict) and _rec.get("attempt_id"):
+            payload = {**payload, "attempt_id": _rec.get("attempt_id")}
         return _json_response(self, 200, payload)
 
     def _read_request_json(self) -> Optional[Dict[str, Any]]:
@@ -12724,7 +13043,7 @@ def main() -> int:
     print(
         "[experiments-ui] comfy_live_routes=GET /api/comfy/live-preview, GET /api/comfy/live-status, GET /api/comfy/logs"
     )
-    print(        "[experiments-ui] shape_factory_routes=GET /api/shape-factory/map, GET /api/shape-factory/prompt-profile, GET /api/shape-factory/families, GET /api/shape-factory/work-products, GET /api/shape-factory/json-peek, GET /api/shape-factory/quarantine, POST /api/shape-factory/queue, POST /api/shape-factory/replay, POST /api/shape-factory/derive, POST /api/shape-factory/unqueue, POST /api/shape-factory/discard, POST /api/shape-factory/update-pending-trim, POST /api/shape-factory/quarantine/release")
+    print(        "[experiments-ui] shape_factory_routes=GET /api/shape-factory/map, GET /api/shape-factory/prompt-profile, GET /api/shape-factory/families, GET /api/shape-factory/work-products, GET /api/shape-factory/json-peek, GET /api/shape-factory/quarantine, GET /api/shape-factory/submit-attempts, POST /api/shape-factory/queue, POST /api/shape-factory/replay, POST /api/shape-factory/derive, POST /api/shape-factory/unqueue, POST /api/shape-factory/discard, POST /api/shape-factory/update-pending-trim, POST /api/shape-factory/quarantine/release")
     server.serve_forever()
     return 0
 

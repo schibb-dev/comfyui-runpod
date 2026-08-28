@@ -36,6 +36,7 @@ import type {
   ShapeFactoryMapResponse,
   ShapeFactoryMapQueueRequest,
   ShapeFactoryMapQueueResponse,
+  ShapeFactorySubmitAttemptsResponse,
   ShapeFactoryReplayRequest,
   ShapeFactoryReplayResponse,
   ShapeFactoryDeriveRequest,
@@ -59,6 +60,9 @@ import type {
   InputCurationStateResponse,
   InputCurationStillsResponse,
   InputCurationEffectiveSourcesResponse,
+  StillTagEnqueueResponse,
+  StillTagEvent,
+  StillTagRun,
   ShapeFactoryPromptProfile,
   ShapeFactoryMapQueueOverrides,
   FutureRunDraft,
@@ -347,12 +351,14 @@ export async function fetchShapeFactoryInputCurationState(): Promise<InputCurati
 
 export async function fetchShapeFactoryInputCurationStills(opts?: {
   q?: string;
+  tag?: string;
   limit?: number;
   offset?: number;
   scan?: boolean;
 }): Promise<InputCurationStillsResponse> {
   const sp = new URLSearchParams();
   if (opts?.q?.trim()) sp.set("q", opts.q.trim());
+  if (opts?.tag?.trim()) sp.set("tag", opts.tag.trim());
   if (opts?.limit != null) sp.set("limit", String(opts.limit));
   if (opts?.offset != null) sp.set("offset", String(opts.offset));
   if (opts?.scan) sp.set("scan", "1");
@@ -422,6 +428,97 @@ export async function mutateShapeFactoryInputBindings(body: {
     const detail = [j.error, j.detail].filter(Boolean).join(": ");
     throw new Error(
       `POST /api/shape-factory/input-curation/bindings failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function mutateShapeFactoryInputStillTags(body: {
+  content_id: string;
+  tags?: string[];
+  note?: string | null;
+}): Promise<{ ok: boolean; content_id?: string; tags?: string[]; note?: string | null; error?: string; detail?: string }> {
+  const r = await fetch("/api/shape-factory/input-curation/tags", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as {
+    ok: boolean;
+    content_id?: string;
+    tags?: string[];
+    note?: string | null;
+    error?: string;
+    detail?: string;
+  };
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST /api/shape-factory/input-curation/tags failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function enqueueShapeFactoryStillTagRun(body: {
+  content_ids?: string[];
+  collection_id?: string;
+  only_missing?: boolean;
+  force?: boolean;
+  limit?: number;
+  dry_run?: boolean;
+  provider?: string;
+  comfy_server?: string;
+}): Promise<StillTagEnqueueResponse> {
+  const r = await fetch("/api/shape-factory/input-curation/stills/tag", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as StillTagEnqueueResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST /api/shape-factory/input-curation/stills/tag failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function fetchShapeFactoryStillTagRun(runId: string): Promise<{ ok: boolean; run?: StillTagRun; error?: string }> {
+  const r = await fetch(`/api/shape-factory/input-curation/stills/tag/runs/${encodeURIComponent(runId)}`);
+  const j = (await r.json().catch(() => ({}))) as { ok: boolean; run?: StillTagRun; error?: string; detail?: string };
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET stills/tag/runs failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function fetchShapeFactoryStillTagEvents(
+  runId: string,
+  opts?: { after_id?: number; limit?: number },
+): Promise<{ ok: boolean; events?: StillTagEvent[]; count?: number }> {
+  const sp = new URLSearchParams();
+  if (opts?.after_id != null) sp.set("after_id", String(opts.after_id));
+  if (opts?.limit != null) sp.set("limit", String(opts.limit));
+  const qs = sp.toString();
+  const r = await fetch(
+    `/api/shape-factory/input-curation/stills/tag/runs/${encodeURIComponent(runId)}/events${qs ? `?${qs}` : ""}`,
+  );
+  const j = (await r.json().catch(() => ({}))) as {
+    ok: boolean;
+    events?: StillTagEvent[];
+    count?: number;
+    error?: string;
+    detail?: string;
+  };
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET stills/tag/events failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
     );
   }
   return j;
@@ -533,6 +630,69 @@ export async function fetchComfyLogs(opts?: { tail?: number }): Promise<ComfyLog
   return j;
 }
 
+export class ShapeFactoryQueueError extends Error {
+  readonly status: number;
+  readonly errorCode: string;
+  readonly detail: string;
+  readonly hint?: string;
+  readonly attemptId?: string;
+  readonly familySlug?: string;
+  readonly bindings?: Record<string, string>;
+  readonly pathHint?: string;
+  readonly ts?: string;
+
+  constructor(opts: {
+    status: number;
+    errorCode: string;
+    detail: string;
+    hint?: string;
+    attemptId?: string;
+    familySlug?: string;
+    bindings?: Record<string, string>;
+    pathHint?: string;
+    ts?: string;
+  }) {
+    const title = humanQueueErrorTitle(opts.errorCode, opts.familySlug);
+    const parts = [title];
+    if (opts.detail) parts.push(opts.detail);
+    if (opts.hint) parts.push(opts.hint);
+    super(parts.join(" — "));
+    this.name = "ShapeFactoryQueueError";
+    this.status = opts.status;
+    this.errorCode = opts.errorCode;
+    this.detail = opts.detail;
+    this.hint = opts.hint;
+    this.attemptId = opts.attemptId;
+    this.familySlug = opts.familySlug;
+    this.bindings = opts.bindings;
+    this.pathHint = opts.pathHint;
+    this.ts = opts.ts;
+  }
+}
+
+export function humanQueueErrorTitle(errorCode: string, familySlug?: string): string {
+  const fam = familySlug ? ` · ${familySlug}` : "";
+  switch (errorCode) {
+    case "workflow_quarantined":
+      return `Workflow quarantined${fam}`;
+    case "permission_denied":
+      return `Permission denied${fam}`;
+    case "missing_bindings":
+      return `Missing bindings${fam}`;
+    case "not_found":
+      return `Not found${fam}`;
+    case "bad_request":
+    case "combo_key_mismatch":
+      return `Bad request${fam}`;
+    default:
+      return `Submit failed${fam}`;
+  }
+}
+
+export function isShapeFactoryQueueError(e: unknown): e is ShapeFactoryQueueError {
+  return e instanceof ShapeFactoryQueueError;
+}
+
 export async function queueShapeFactoryCombo(req: ShapeFactoryMapQueueRequest): Promise<ShapeFactoryMapQueueResponse> {
   const r = await fetch("/api/shape-factory/queue", {
     method: "POST",
@@ -542,11 +702,48 @@ export async function queueShapeFactoryCombo(req: ShapeFactoryMapQueueRequest): 
   const j = (await r.json().catch(() => ({}))) as ShapeFactoryMapQueueResponse & {
     error?: string;
     detail?: string;
+    hint?: string;
+    attempt_id?: string;
+    family_slug?: string;
+    bindings?: Record<string, string>;
+    path_hint?: string;
+    ts?: string;
   };
   if (!r.ok || !j.ok) {
-    const detail = [j.error, j.detail].filter(Boolean).join(": ");
-    throw new Error(`POST /api/shape-factory/queue failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+    throw new ShapeFactoryQueueError({
+      status: r.status,
+      errorCode: String(j.error || "shape_factory_queue_failed"),
+      detail: String(j.detail || "").trim() || `HTTP ${r.status}`,
+      hint: j.hint ? String(j.hint) : undefined,
+      attemptId: j.attempt_id ? String(j.attempt_id) : undefined,
+      familySlug: j.family_slug ? String(j.family_slug) : req.family_slug,
+      bindings: j.bindings && typeof j.bindings === "object" ? j.bindings : undefined,
+      pathHint: j.path_hint ? String(j.path_hint) : undefined,
+      ts: j.ts ? String(j.ts) : undefined,
+    });
   }
+  return j;
+}
+
+export async function fetchShapeFactorySubmitAttempts(opts?: {
+  limit?: number;
+  errorsOnly?: boolean;
+  family?: string;
+}): Promise<ShapeFactorySubmitAttemptsResponse> {
+  const sp = new URLSearchParams();
+  if (opts?.limit != null) sp.set("limit", String(opts.limit));
+  if (opts?.errorsOnly) sp.set("errors_only", "1");
+  if (opts?.family) sp.set("family", opts.family);
+  const qs = sp.toString();
+  const r = await fetch(`/api/shape-factory/submit-attempts${qs ? `?${qs}` : ""}`);
+  const j = (await r.json().catch(() => ({}))) as ShapeFactorySubmitAttemptsResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET /api/shape-factory/submit-attempts failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  if (!Array.isArray(j.items)) j.items = [];
   return j;
 }
 

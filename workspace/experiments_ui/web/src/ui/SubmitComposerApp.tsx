@@ -4,6 +4,7 @@ import {
   beginShapeFactoryEdit,
   composeSubmitAdvance,
   fetchShapeFactoryJobEdit,
+  fetchShapeFactorySubmitAttempts,
   finishShapeFactoryEdit,
   listShapeFactoryClipsLibrary,
   mintIdentityStill,
@@ -15,6 +16,9 @@ import {
   type ShapeFactoryClip,
   type ShapeFactoryJobEditSnapshot,
 } from "./api";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { RecentSubmitAttemptsStrip, SubmitQueueErrorPanel } from "./SubmitAttemptError";
+import { queryKeys } from "./queryKeys";
 import { ClipBookmarksRail } from "./ClipBookmarksRail";
 import {
   clipsLibraryHref,
@@ -889,7 +893,15 @@ function SubmitAdvanceComposerApp() {
 
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<Error | null>(null);
   const [lastJobKey, setLastJobKey] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const recentErrorsQuery = useQuery({
+    queryKey: queryKeys.shapeFactory.submitAttempts({ limit: 8, errorsOnly: true }),
+    queryFn: () => fetchShapeFactorySubmitAttempts({ limit: 8, errorsOnly: true }),
+    staleTime: 15_000,
+    refetchOnWindowFocus: true,
+  });
   const [preferredWhen, setPreferredWhen] = useState<"now" | "later">(
     () => (intent.when === "now" || intent.when === "later" ? intent.when : "later"),
   );
@@ -1133,6 +1145,7 @@ function SubmitAdvanceComposerApp() {
     setPreferredWhen(when);
     setBusy(true);
     setMsg(null);
+    setSubmitError(null);
     setLastJobKey(null);
     try {
       if (isStill) {
@@ -1145,6 +1158,7 @@ function SubmitAdvanceComposerApp() {
           family_slug: i2vFamily,
           bindings: { source_still: bindingPath },
           front: when === "now",
+          source_surface: "submit",
         });
         if (res.job_key) setLastJobKey(res.job_key);
         setMsg(
@@ -1154,6 +1168,7 @@ function SubmitAdvanceComposerApp() {
               ? `Created ${res.job_key}${when === "later" ? " (pending)" : ""}`
               : `Seeded ${i2vFamily}`,
         );
+        void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.submitAttemptsRoot });
         return;
       }
       const { overrides, warning } = buildOverrides();
@@ -1188,8 +1203,12 @@ function SubmitAdvanceComposerApp() {
       });
       setLastJobKey(result.jobKeys[0] || null);
       setMsg([result.message, warning].filter(Boolean).join(" · "));
+      void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.submitAttemptsRoot });
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : String(e));
+      const err = e instanceof Error ? e : new Error(String(e));
+      setSubmitError(err);
+      setMsg(null);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.submitAttemptsRoot });
     } finally {
       setBusy(false);
     }
@@ -1819,11 +1838,13 @@ function SubmitAdvanceComposerApp() {
                   fromJob={intent.fromJob}
                   ready={constructionPreview.ready}
                 />
+                {submitError ? <SubmitQueueErrorPanel error={submitError} /> : null}
                 {msg ? (
-                  <p className="work-product-quick-queue__msg" title={msg}>
+                  <p className="work-product-quick-queue__msg work-product-quick-queue__msg--ok" title={msg}>
                     {msg}
                   </p>
                 ) : null}
+                <RecentSubmitAttemptsStrip items={recentErrorsQuery.data?.items || []} />
                 {lastJobKey ? (
                   <div className="submit-composer__links">
                     <a className="drt-btn" href={workbenchHref({ jobKey: lastJobKey })}>

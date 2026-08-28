@@ -1274,6 +1274,9 @@ export type ShapeFactoryMapQueueRequest = {
   combo_key?: string;
   bindings: Record<string, string>;
   front?: boolean;
+  dry_run?: boolean;
+  /** Operator surface that initiated the queue (submit, factory-map, …). */
+  source_surface?: string;
   overrides?: ShapeFactoryMapQueueOverrides;
 };
 
@@ -1328,7 +1331,13 @@ export type ShapeFactoryMapQueueResponse = {
   ok: boolean;
   error?: string;
   detail?: string;
+  hint?: string;
+  attempt_id?: string;
   family_slug?: string;
+  bindings?: Record<string, string>;
+  exc_type?: string;
+  path_hint?: string;
+  ts?: string;
   combo_key?: string;
   job_key?: string;
   job_path?: string;
@@ -1336,6 +1345,34 @@ export type ShapeFactoryMapQueueResponse = {
   prompt_id?: string;
   dry_run?: boolean;
   skipped?: boolean;
+};
+
+export type ShapeFactorySubmitAttempt = {
+  attempt_id?: string;
+  ts?: string;
+  ok?: boolean;
+  http_status?: number;
+  error?: string;
+  detail?: string;
+  hint?: string;
+  family_slug?: string;
+  bindings?: Record<string, string>;
+  job_key?: string;
+  prompt_id?: string;
+  path_hint?: string;
+  exc_type?: string;
+  source_surface?: string;
+};
+
+export type ShapeFactorySubmitAttemptsResponse = {
+  ok: boolean;
+  path?: string;
+  count?: number;
+  errors_only?: boolean;
+  family_slug?: string | null;
+  items?: ShapeFactorySubmitAttempt[];
+  error?: string;
+  detail?: string;
 };
 
 /** POST /api/shape-factory/replay — re-run (or extend) a prior job/pair. */
@@ -2148,12 +2185,21 @@ export type ShapeFactoryTemplatePromotionsResponse = {
 
 export type InputCurationStillItem = {
   path: string;
+  catalog_path?: string;
   basename?: string;
+  relpath?: string;
+  url?: string;
+  thumb_url?: string;
   size?: number;
   mtime?: number;
   first_seen?: number;
   last_seen?: number;
   content_id?: string | null;
+  tags?: string[];
+  editorial_tags?: string[];
+  provisional_tags?: string[];
+  effective_tags?: string[];
+  note?: string | null;
 };
 
 export type InputCurationCollectionItem = {
@@ -2188,11 +2234,17 @@ export type InputCurationStillsResponse = {
   ok: boolean;
   data_root?: string;
   catalog_path?: string;
+  input_root?: string;
   items?: InputCurationStillItem[];
   count?: number;
   total?: number;
+  resolved_total?: number;
+  skipped_missing?: number;
   limit?: number;
   offset?: number;
+  next_offset?: number;
+  has_more?: boolean;
+  tag?: string | null;
   error?: string;
   detail?: string;
 };
@@ -2208,6 +2260,47 @@ export type InputCurationEffectiveSourcesResponse = {
   missing_count?: number;
   attached_collection_ids?: string[];
   items?: Array<{ path: string; basename?: string }>;
+  error?: string;
+  detail?: string;
+};
+
+export type StillTagRun = {
+  run_id: string;
+  status: string;
+  scope?: Record<string, unknown>;
+  enqueued_at?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  total?: number;
+  done_count?: number;
+  error_count?: number;
+  skipped_count?: number;
+  pin_policy?: string | null;
+  model_pin?: string | null;
+  provider?: string | null;
+  comfy_server?: string | null;
+  detail?: string | null;
+};
+
+export type StillTagEvent = {
+  id: number;
+  run_id: string;
+  ts: string;
+  kind: string;
+  content_id?: string | null;
+  message?: string | null;
+  payload?: Record<string, unknown> | null;
+};
+
+export type StillTagEnqueueResponse = {
+  ok: boolean;
+  run_id?: string;
+  enqueued?: number;
+  skipped?: number;
+  model_pin?: string;
+  pin_policy?: string;
+  provider?: string;
+  comfy_server?: string;
   error?: string;
   detail?: string;
 };

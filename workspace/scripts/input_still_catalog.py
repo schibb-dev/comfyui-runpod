@@ -35,7 +35,69 @@ def default_input_root() -> Path:
     env = os.environ.get("COMFYUI_BIND_INPUT_DIR", "").strip()
     if env:
         return Path(env).expanduser().resolve()
-    return Path("/home/yuji/comfyui-runpod-data/input").resolve()
+    # Container bind is usually /workspace/input; host clone uses the data root.
+    for cand in (
+        Path("/workspace/input"),
+        Path("/ComfyUI/input"),
+        Path("/home/yuji/comfyui-runpod-data/input"),
+    ):
+        try:
+            if cand.is_dir():
+                return cand.resolve()
+        except OSError:
+            continue
+    return Path("/home/yuji/comfyui-runpod-data/input").expanduser().resolve()
+
+
+def resolve_catalog_still_path(stored: str, *, input_root: Optional[Path] = None) -> Optional[Path]:
+    """Map a catalog abs path onto a file that exists now (host↔container remaps)."""
+    raw = str(stored or "").strip()
+    if not raw:
+        return None
+    root = (input_root or default_input_root()).expanduser()
+    try:
+        root = root.resolve()
+    except OSError:
+        pass
+    p = Path(raw).expanduser()
+    try:
+        if p.is_file():
+            return p.resolve()
+    except OSError:
+        pass
+    name = p.name
+    if not name:
+        return None
+    # Rewrite …/input/<rel> → live input_root/<rel>
+    parts = list(p.parts)
+    if "input" in parts:
+        idx = parts.index("input")
+        rel = Path(*parts[idx + 1 :]) if idx + 1 < len(parts) else Path(name)
+        cand = root / rel
+        try:
+            if cand.is_file():
+                return cand.resolve()
+        except OSError:
+            pass
+    cand = root / name
+    try:
+        if cand.is_file():
+            return cand.resolve()
+    except OSError:
+        return None
+    return None
+
+
+def still_relpath_for_comfy(path: Path, *, input_root: Optional[Path] = None) -> str:
+    """Best-effort ``input/…`` relpath for /files and LoadImage."""
+    root = (input_root or default_input_root()).expanduser()
+    try:
+        root = root.resolve()
+        resolved = path.expanduser().resolve()
+        rel = resolved.relative_to(root).as_posix()
+        return f"input/{rel}"
+    except Exception:
+        return f"input/{path.name}"
 
 
 def connect(catalog_path: Path) -> sqlite3.Connection:

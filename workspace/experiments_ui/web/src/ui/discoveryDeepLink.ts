@@ -190,6 +190,9 @@ export function submitOriginHref(
   if (o === "factory" || o === "factory-map" || o === "factory_map") {
     return { href: "/discovery/factory-map", label: "Back to Factory" };
   }
+  if (o === "gallery" || o === "stills" || o === "still") {
+    return { href: "/discovery/stills", label: "Back to Stills" };
+  }
   if (o === "rate" || o === "rating") {
     return { href: "/discovery/rate", label: "Back to Rating" };
   }

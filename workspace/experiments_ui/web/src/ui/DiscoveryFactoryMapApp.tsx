@@ -16,6 +16,7 @@ import {
   replayShapeFactory,
   setShapeFactoryTemplatePromotion,
 } from "./api";
+import { SubmitQueueErrorPanel } from "./SubmitAttemptError";
 import { AssetInspector, type InspectorAsset } from "./AssetInspector";
 import { buildQueueOverrides, FutureRunEditor } from "./factoryMapFutureRunEditor";
 import { discoveryLibraryHref } from "./discoveryDeepLink";
@@ -456,7 +457,7 @@ function DetailPanel({
     selectedPair?.source || primarySourceBinding(bindings, selectedPair?.source);
   const output = selectedPair?.output;
   const [queueBusy, setQueueBusy] = useState(false);
-  const [queueError, setQueueError] = useState("");
+  const [queueError, setQueueError] = useState<Error | string>("");
   const [queueOk, setQueueOk] = useState("");
   const [runDraft, setRunDraft] = useState<FutureRunDraft | null>(null);
   const [runBaseline, setRunBaseline] = useState<FutureRunDraft | null>(null);
@@ -576,6 +577,7 @@ function DetailPanel({
         combo_key: selectedPair.comboKey,
         bindings: bindingPaths,
         overrides,
+        source_surface: "factory-map",
       });
       setQueueOk(
         res.prompt_id
@@ -586,7 +588,7 @@ function DetailPanel({
       );
       onQueued?.();
     } catch (e) {
-      setQueueError(e instanceof Error ? e.message : String(e));
+      setQueueError(e instanceof Error ? e : String(e));
     } finally {
       setQueueBusy(false);
     }
@@ -857,11 +859,7 @@ function DetailPanel({
             {queueBusy ? "Queueing…" : "Queue run"}
           </button>
           {queueOk ? <div className="sfmap-detail-meta sfmap-queue-ok">{queueOk}</div> : null}
-          {queueError ? (
-            <div className="sfmap-detail-meta sfmap-queue-error" role="alert">
-              {queueError}
-            </div>
-          ) : null}
+          {queueError ? <SubmitQueueErrorPanel error={queueError} className="sfmap-queue-error-panel" /> : null}
         </section>
       ) : null}
     </div>
@@ -1679,7 +1677,7 @@ function InputCurationPanel({ families }: { families: ShapeFactoryMapFamily[] })
     refetchOnWindowFocus: false,
   });
   const stillsQuery = useQuery({
-    queryKey: queryKeys.shapeFactory.inputCurationStills({ q: stillQ, limit: 120, offset: 0 }),
+    queryKey: queryKeys.shapeFactory.inputCurationStills({ q: stillQ, limit: 120 }),
     queryFn: () => fetchShapeFactoryInputCurationStills({ q: stillQ, limit: 120 }),
     staleTime: 20_000,
     refetchOnWindowFocus: false,
@@ -1723,7 +1721,7 @@ function InputCurationPanel({ families }: { families: ShapeFactoryMapFamily[] })
   const onRescan = useCallback(async () => {
     try {
       await fetchShapeFactoryInputCurationStills({ q: stillQ, limit: 120, scan: true });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.inputCurationStills({ q: stillQ, limit: 120, offset: 0 }) });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.inputCurationStills({ q: stillQ, limit: 120 }) });
       setMsg("Still catalog rescanned.");
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));

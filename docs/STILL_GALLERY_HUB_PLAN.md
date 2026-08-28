@@ -44,9 +44,9 @@ gallery (select still)
 | Piece | Where | Gap |
 |-------|--------|-----|
 | Discovery Library | `/discovery` | **G0:** stills get Open in Submit |
-| Factory Map input curation | still search + collections | Not a first-class gallery |
+| **Stills gallery** | `/discovery/stills` | **G1:** grid + collections + tags + Submit |
+| Factory Map input curation | still search + collections | Family attach remains here |
 | Submit | `/submit?media=…` | **G0:** still seed + I2V picker |
-| Queue from clip | Library → Submit | Videos still need clip/marks |
 
 ---
 
@@ -61,10 +61,14 @@ with `source_still`.
 
 **Exit:** Library still → one job in an origin family without Factory Map.
 
-### G1 — Gallery surface
+### G1 — Gallery surface *(landing)*
 
-Dedicated still browse (search/sort/tags) over `input/` — can start as a
-Library filter mode or Factory “Stills” home. Thumbnail grid is the primary UI.
+Dedicated **Stills** nav at `/discovery/stills`: thumbnail grid over `input/`,
+path search, tag filter/edit (content_id keyed), collections CRUD, and **Open in
+Submit** launch pad (origin=`gallery`). Reuses input-curation APIs; Factory Map
+still owns family↔collection attach.
+
+**Exit:** Browse / collect / tag stills and hand one into Submit without Library.
 
 ### G2 — Launch pad chrome
 
@@ -78,7 +82,12 @@ Gallery “Add to collection” is the human entry.
 
 ### G4 — Enrichment
 
-Tag-assisted sort (V3a PromptGen-large pin), optional ratings on stills.
+Tag-assisted sort / filter via **still auto-tagger** (PromptGen-large V3a pin;
+provisional vs editorial in **SQLite**, not a monolith JSON blob). Gallery UI
+**enqueues** tagging (selected / untagged / collection) — no live VLM in the
+request path. Optional ratings on stills later.
+
+**Plan:** [`STILL_AUTO_TAGGER_PLAN.md`](./STILL_AUTO_TAGGER_PLAN.md).
 
 ---
 
@@ -101,4 +110,5 @@ Tag-assisted sort (V3a PromptGen-large pin), optional ratings on stills.
 ## Related
 
 - [`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md) — P8 / parking lot
+- [`STILL_AUTO_TAGGER_PLAN.md`](./STILL_AUTO_TAGGER_PLAN.md) — G4 auto tags (PromptGen-large pin)
 - [`SUBMIT_WORKFLOW.md`](./SUBMIT_WORKFLOW.md)

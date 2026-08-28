@@ -10,6 +10,7 @@ export type AppRouteId =
   | "queue"
   | "factory"
   | "library"
+  | "stills"
   | "clips"
   | "rate"
   | "workbench"
@@ -42,6 +43,7 @@ export type AppRoute = {
 export const APP_ROUTES: AppRoute[] = [
   { id: "home", path: "/", label: "Home", hint: "Resume the loop — rate, triage, generate", group: "pipeline" },
   { id: "library", path: "/discovery", label: "Library", hint: "Search and find indexed media", group: "pipeline" },
+  { id: "stills", path: "/discovery/stills", label: "Stills", hint: "Input still gallery · collections · I2V launch", group: "pipeline" },
   { id: "clips", path: "/discovery/clips", label: "Clips", hint: "Browse clip bookmarks across parents", group: "pipeline" },
   { id: "factory", path: "/discovery/factory-map", label: "Factory", hint: "Manage shape families · recover / replay", group: "pipeline" },
   { id: "rate", path: "/discovery/rate", label: "Rating", hint: "Rating bootstrap queue", group: "pipeline" },
@@ -88,6 +90,7 @@ const MATCHERS: { id: AppRouteId; test: (p: string) => boolean }[] = [
   { id: "vision-slices", test: (p) => p.startsWith("/vision") },
   { id: "factory", test: (p) => p.startsWith("/discovery/factory-map") },
   { id: "rate", test: (p) => p.startsWith("/discovery/rate") },
+  { id: "stills", test: (p) => p.startsWith("/discovery/stills") },
   { id: "clips", test: (p) => p.startsWith("/discovery/clips") },
   { id: "library", test: (p) => p.startsWith("/discovery") },
   { id: "home", test: () => true },
