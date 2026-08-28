@@ -41,7 +41,7 @@ type RowLayout = "stacked" | "split";
 
 const LAYOUT_KEY = "work-products-row-layout";
 const SORT_KEY = "work-products-sort";
-const SECTION_OPEN_KEY = "work-products-section-open";
+const SECTION_OPEN_KEY = "work-products-section-open-v2";
 const HOURLY_ONLY_KEY = "work-products-hourly-only";
 const STATUS_FILTER_OFF_KEY = "work-products-status-filter-off";
 const MARKER_FILTER_OFF_KEY = "work-products-marker-filter-off";
@@ -86,15 +86,16 @@ const SORT_OPTIONS: Array<{ id: WorkProductSort; label: string }> = [
   { id: "pick_mode", label: "Pick mode" },
 ];
 
-/** Sections start open unless the operator collapsed them. */
+/** Property panels start collapsed; summary line stays visible on the header. */
 const DEFAULT_SECTION_OPEN: Record<string, boolean> = {
-  prompt: true,
-  run: true,
-  timing: true,
-  plan: true,
+  prompt: false,
+  run: false,
+  timing: false,
+  plan: false,
   appetite: false,
-  shape: true,
+  shape: false,
   bindings: false,
+  trim: false,
   other: false,
 };
 
@@ -1713,24 +1714,46 @@ function ShapePeekButton({ shape, label }: { shape: WorkProductShapeProfile; lab
   );
 }
 
+function filesHrefForRelpath(relpath: string): string {
+  const norm = relpath.replace(/^\/+/, "").replace(/\\/g, "/");
+  return "/files/" + norm.split("/").map(encodeURIComponent).join("/");
+}
+
+/** Deep link for a binding asset: Discovery / Stills gallery / raw file. */
 function bindingAssetHref(row: WorkProductDetailRow): string | null {
   const rel = String(row.relpath || "").trim().replace(/^\/+/, "").replace(/\\/g, "/");
   const asset = String(row.asset_url || "").trim();
   if (rel) {
-    // Indexed outputs → Discovery; input stills / other files → /files/.
-    if (/^(og|wip|output)\//i.test(rel) || /\.mp4($|\?)/i.test(rel)) {
+    if (/^(og|wip)\//i.test(rel)) {
       return discoveryLibraryHref(rel);
     }
-    return "/files/" + encodeURIComponent(rel);
+    if (/^output\//i.test(rel) || /\.mp4($|\?)/i.test(rel)) {
+      return discoveryLibraryHref(rel);
+    }
+    if (/^input\//i.test(rel) || /\.(jpe?g|png|webp|gif)($|\?)/i.test(rel)) {
+      const base = rel.split("/").pop() || rel;
+      const sp = new URLSearchParams();
+      if (base) sp.set("q", base);
+      return `/discovery/stills?${sp.toString()}`;
+    }
+    return filesHrefForRelpath(rel);
   }
   return asset || null;
+}
+
+function bindingOpenLabel(href: string | null): string {
+  if (!href) return "Open asset";
+  if (href.startsWith("/discovery/stills")) return "Open in Stills";
+  if (href.startsWith("/discovery")) return "Open in Library";
+  if (href.startsWith("/files/")) return "Open file";
+  return "Open asset";
 }
 
 function BindingDetailValue({ row }: { row: WorkProductDetailRow }) {
   const thumb = String(row.thumb_url || "").trim() || null;
   const href = bindingAssetHref(row);
   const label = enrichRoleMentions(row.value);
-  const openLabel = href?.startsWith("/discovery") ? "Open in Discovery" : "Open asset";
+  const openLabel = bindingOpenLabel(href);
   return (
     <div className="work-product-binding-media">
       {thumb ? (
@@ -1750,7 +1773,8 @@ function BindingDetailValue({ row }: { row: WorkProductDetailRow }) {
         </div>
         {href ? (
           <a className="work-product-binding-media__link" href={href}>
-            {row.relpath || openLabel}
+            {openLabel}
+            {row.relpath ? ` · ${row.relpath}` : ""}
           </a>
         ) : row.relpath ? (
           <span className="work-product-binding-media__link work-product-binding-media__link--muted">
@@ -2067,6 +2091,134 @@ function groupDetailRows(rows: WorkProductDetailRow[]): Array<{
     });
   }
   return groups;
+}
+
+function rowVal(
+  rows: WorkProductDetailRow[],
+  ...labels: string[]
+): string | null {
+  for (const label of labels) {
+    const hit = rows.find((r) => r.label === label);
+    if (hit && String(hit.value || "").trim()) return String(hit.value).trim();
+  }
+  return null;
+}
+
+function truncateSummary(text: string, max = 48): string {
+  const t = text.replace(/\s+/g, " ").trim();
+  if (t.length <= max) return t;
+  return `${t.slice(0, max - 1)}…`;
+}
+
+function BindingGroupSummaryLinks({
+  rows,
+  bindings,
+}: {
+  rows: WorkProductDetailRow[];
+  bindings?: Record<string, WorkProductBinding> | null;
+}) {
+  const items = rows
+    .filter((r) => r.label.startsWith("Binding · "))
+    .map((r) => {
+      const enriched = enrichBindingDetailRow(r, bindings);
+      const slot = r.label.slice("Binding · ".length).trim() || "binding";
+      const href = bindingAssetHref(enriched);
+      const base =
+        String(enriched.relpath || "")
+          .split("/")
+          .pop() || truncateSummary(enriched.value, 28);
+      return { slot, href, base, key: `${slot}:${enriched.relpath || enriched.value}` };
+    });
+  if (!items.length) return <span className="work-product-details__group-summary-muted">none</span>;
+  return (
+    <span className="work-product-details__group-summary-bindings">
+      {items.map((it) =>
+        it.href ? (
+          <a
+            key={it.key}
+            className="work-product-details__group-summary-link"
+            href={it.href}
+            title={bindingOpenLabel(it.href)}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {it.slot}
+          </a>
+        ) : (
+          <span key={it.key} className="work-product-details__group-summary-muted" title={it.base}>
+            {it.slot}
+          </span>
+        ),
+      )}
+    </span>
+  );
+}
+
+function detailGroupSummary(
+  group: {
+    id: string;
+    rows: WorkProductDetailRow[];
+    compact?: { rows: WorkProductDetailRow[] };
+  },
+  item: WorkProductItem,
+): React.ReactNode {
+  const rows = [...group.rows, ...(group.compact?.rows || [])];
+  if (group.id === "bindings") {
+    return <BindingGroupSummaryLinks rows={group.rows} bindings={item.bindings} />;
+  }
+  if (group.id === "prompt") {
+    const name = rowVal(rows, "Prompt name", "Prompt profile", "Prompt label", "Prompt file");
+    const excerpt = item.prompt_profile?.positive_excerpt || item.prompt_profile?.positive;
+    if (name && excerpt) return `${name} · ${truncateSummary(excerpt, 40)}`;
+    if (name) return name;
+    if (excerpt) return truncateSummary(excerpt, 56);
+    return `${rows.length} field${rows.length === 1 ? "" : "s"}`;
+  }
+  if (group.id === "run") {
+    const bits = [
+      rowVal(rows, "Seed") ? `seed ${rowVal(rows, "Seed")}` : null,
+      rowVal(rows, "Job key") ? truncateSummary(String(rowVal(rows, "Job key")), 28) : null,
+      rowVal(rows, "Created"),
+    ].filter(Boolean);
+    return bits.length ? bits.join(" · ") : `${rows.length} field${rows.length === 1 ? "" : "s"}`;
+  }
+  if (group.id === "timing") {
+    const exec = rowVal(rows, "Exec", "Exec sec");
+    const wall = rowVal(rows, "Wall sec");
+    const bits = [exec ? `exec ${exec}` : null, wall ? `wall ${wall}` : null].filter(Boolean);
+    return bits.length ? bits.join(" · ") : `${rows.length} field${rows.length === 1 ? "" : "s"}`;
+  }
+  if (group.id === "shape") {
+    const bits = [
+      rowVal(rows, "Template"),
+      rowVal(rows, "Shape", "Shape path"),
+    ].filter(Boolean);
+    return bits.length ? bits.map((b) => truncateSummary(String(b), 36)).join(" · ") : `${rows.length} field${rows.length === 1 ? "" : "s"}`;
+  }
+  if (group.id === "plan") {
+    const bits = [
+      rowVal(rows, "Derive action"),
+      rowVal(rows, "Plan source tag"),
+      rowVal(rows, "Parent output") ? `parent ${truncateSummary(String(rowVal(rows, "Parent output")), 24)}` : null,
+    ].filter(Boolean);
+    return bits.length ? bits.join(" · ") : `${rows.length} field${rows.length === 1 ? "" : "s"}`;
+  }
+  if (group.id === "trim") {
+    const skip = rowVal(rows, "VHS skip_first_frames", "skip_first_frames");
+    const cap = rowVal(rows, "VHS frame_load_cap", "frame_load_cap");
+    const bits = [skip != null ? `skip ${skip}` : null, cap != null ? `cap ${cap}` : null].filter(Boolean);
+    return bits.length ? bits.join(" · ") : `${rows.length} field${rows.length === 1 ? "" : "s"}`;
+  }
+  if (group.id === "appetite") {
+    const bits = [
+      rowVal(rows, "Appetite", "Appetite value"),
+      rowVal(rows, "Appetite facet"),
+      rowVal(rows, "Hold axis"),
+    ].filter(Boolean);
+    return bits.length ? bits.join(" · ") : `${rows.length} field${rows.length === 1 ? "" : "s"}`;
+  }
+  if (!rows.length) return null;
+  const first = rows[0];
+  return truncateSummary(`${first.label}: ${first.value}`, 56);
 }
 
 /** Friendlier display labels for the Run / Selection collections. */
@@ -2842,13 +2994,16 @@ function WorkProductDetails({
               className={`work-product-details__group${group.wide ? " work-product-details__group--wide" : ""}${
                 group.kv ? " work-product-details__group--kv" : ""
               }`}
-              open={sectionOpen[group.id] ?? DEFAULT_SECTION_OPEN[group.id] ?? true}
+              open={sectionOpen[group.id] ?? DEFAULT_SECTION_OPEN[group.id] ?? false}
               onToggle={(e) => {
                 const el = e.currentTarget;
                 setGroupOpen(group.id, el.open);
               }}
             >
-              <summary className="work-product-details__group-title">{group.title}</summary>
+              <summary className="work-product-details__group-title">
+                <span className="work-product-details__group-title-text">{group.title}</span>
+                <span className="work-product-details__group-summary">{detailGroupSummary(group, item)}</span>
+              </summary>
               {group.rows.length ? (
                 <dl
                   className={`work-product-details__list${group.wide ? " work-product-details__list--wide" : ""}${
