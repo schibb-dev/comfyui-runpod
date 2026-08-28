@@ -11708,11 +11708,42 @@ tr.disabled:hover td {
   gap: 8px;
   flex-wrap: wrap;
 }
-.page-header__updating {
-  color: var(--muted);
-  font-size: 0.85rem;
-  letter-spacing: 0.01em;
-  user-select: none;
+.page-header__refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 6.25rem; /* spinner slot + "Refresh" — no neighbor shift */
+}
+.page-header__spinner {
+  width: 0.85rem;
+  height: 0.85rem;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  visibility: hidden;
+}
+.page-header__spinner--active {
+  visibility: visible;
+  border-color: rgba(255, 255, 255, 0.22);
+  border-top-color: var(--muted, #9aa3ad);
+  animation: page-header-spin 0.7s linear infinite;
+}
+.page-header__sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+@keyframes page-header-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @media (max-width: 1024px) {

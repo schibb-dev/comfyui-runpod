@@ -1402,17 +1402,19 @@ export function ComfyQueueMonitorApp() {
         subtitle={subtitle}
         actions={
           <>
-            {refreshing ? (
-              <span className="page-header__updating" aria-live="polite">
-                updating…
-              </span>
-            ) : null}
             <button
               type="button"
+              className="page-header__refresh"
               onClick={() => void refresh()}
               disabled={loading && !hasData}
+              aria-busy={refreshing}
             >
-              {refreshing ? "Updating…" : "Refresh"}
+              <span
+                className={`page-header__spinner${refreshing ? " page-header__spinner--active" : ""}`}
+                aria-hidden="true"
+              />
+              Refresh
+              {refreshing ? <span className="page-header__sr-only">Updating</span> : null}
             </button>
             {pageTab === "queue" ? (
               <button

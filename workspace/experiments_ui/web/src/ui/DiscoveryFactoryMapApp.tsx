@@ -212,8 +212,23 @@ function FactoryMapShell({
               </nav>
             ) : null}
           </div>
-          <button type="button" disabled={loading || refreshing} onClick={onRefresh}>
-            {loading ? "Loading…" : refreshing ? "Updating…" : "Refresh"}
+          <button
+            type="button"
+            className="page-header__refresh"
+            disabled={loading || refreshing}
+            onClick={onRefresh}
+            aria-busy={loading || refreshing}
+          >
+            <span
+              className={`page-header__spinner${
+                loading || refreshing ? " page-header__spinner--active" : ""
+              }`}
+              aria-hidden="true"
+            />
+            Refresh
+            {loading || refreshing ? (
+              <span className="page-header__sr-only">{loading ? "Loading" : "Updating"}</span>
+            ) : null}
           </button>
         </header>
         <div className="sfmap-cache-status" role="status" aria-live="polite">
