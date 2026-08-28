@@ -185,7 +185,7 @@ export function submitOriginHref(
     return { href: workbenchHref({ jobKey: fromJob }), label: "Back to Workbench" };
   }
   if (o === "queue" || o === "comfy-queue" || o === "comfy_queue") {
-    return { href: "/queue", label: "Back to Queue" };
+    return { href: queueHref({ jobKey: fromJob }), label: "Back to Queue" };
   }
   if (o === "factory" || o === "factory-map" || o === "factory_map") {
     return { href: "/discovery/factory-map", label: "Back to Factory" };
@@ -210,8 +210,8 @@ export function workbenchHref(opts?: {
   const promptId = String(opts?.promptId || "").trim();
   const q = String(opts?.q || "").trim();
   if (job) sp.set("job", job);
-  else if (promptId) sp.set("prompt_id", promptId);
-  else if (q) sp.set("q", q);
+  if (promptId) sp.set("prompt_id", promptId);
+  if (!job && !promptId && q) sp.set("q", q);
   const qs = sp.toString();
   return qs ? `/workbench?${qs}` : "/workbench";
 }
@@ -253,4 +253,28 @@ export function parseWorkbenchDeepLink(search: string = window.location.search):
   const promptId = (sp.get("prompt_id") || "").trim() || null;
   const q = (sp.get("q") || "").trim() || null;
   return { job, promptId, q, filter: job || promptId || q };
+}
+
+/** Queue deep-link: Comfy prompt_id and/or factory job_key. */
+export function queueHref(opts?: {
+  promptId?: string | null;
+  jobKey?: string | null;
+}): string {
+  const sp = new URLSearchParams();
+  const promptId = String(opts?.promptId || "").trim();
+  const job = String(opts?.jobKey || "").trim();
+  if (promptId) sp.set("prompt_id", promptId);
+  if (job) sp.set("job", job);
+  const qs = sp.toString();
+  return qs ? `/comfy-queue?${qs}` : "/comfy-queue";
+}
+
+export function parseQueueDeepLink(search: string = window.location.search): {
+  promptId: string | null;
+  job: string | null;
+} {
+  const sp = new URLSearchParams(search);
+  const promptId = (sp.get("prompt_id") || "").trim() || null;
+  const job = (sp.get("job") || "").trim() || null;
+  return { promptId, job };
 }

@@ -10,6 +10,8 @@ Locked decisions (2026-07-03): install `/workflow/convert`, JSON pool index, pip
 
 **Plan (2026-08-20 / widened 2026-08-27):** **Still image gallery as launch hub** — browse `input` stills; from one image launch into Submit (I2V), collections→pools, Factory Map, ratings, identity. **G0 landing:** Library still → `/submit`. Full plan: [`docs/STILL_GALLERY_HUB_PLAN.md`](../docs/STILL_GALLERY_HUB_PLAN.md). (Older “input still browser + collections-as-pools” note folded into that doc.)
 
+**Backlog (2026-08-28):** UI navigation — (1) recent submits + (2) Queue/Workbench deeplinks **shipped**; still open: deeplinks on Library/Stills/etc., FS-style video browse, input/ browse (design). See [`docs/UI_NAVIGATION_BACKLOG.md`](../docs/UI_NAVIGATION_BACKLOG.md).
+
 **Plan (2026-08-20):** **Input still browser + collections-as-pools** — *(see Still gallery hub above; collections remain G3 of that plan.)*
 
 **Plan (2026-08-20 / merged 2026-08-27):** **Hourly as ruleset utility** — policy file, clip ★+newer bind, decision ledger, Home UI. Single plan: [`docs/HOURLY_UTILITY_PLAN.md`](../docs/HOURLY_UTILITY_PLAN.md). Candidates to lift first into durable config: `facial_drain_every`, `i2v_gex_drain_every`, `seed_over_chain_share`, `facial_lookback_days`, seed family weights / `IMAGE_TO_GEX` families, fresh-still / kneel / 2025 boosts, derive/archive shares, clip recency knobs.

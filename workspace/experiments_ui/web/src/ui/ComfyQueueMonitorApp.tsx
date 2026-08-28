@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   comfyCancel,
@@ -13,7 +13,7 @@ import {
   setQueueLedgerControl,
 } from "./api";
 import { ComfyLiveMetricsBar, ComfyLivePreview } from "./ComfyLivePreview";
-import { discoveryLibraryHref, submitHref, workbenchHref } from "./discoveryDeepLink";
+import { discoveryLibraryHref, parseQueueDeepLink, queueHref, submitHref, workbenchHref } from "./discoveryDeepLink";
 import { PageHeader } from "./PageHeader";
 import { PipelineMediaPlayer, vhsWindowFromKeyParams } from "./PipelineMediaPlayer";
 import { PipelineFilterRow, PipelineList, PipelineScreen, PipelineScroll } from "./PipelineScreen";
@@ -370,6 +370,8 @@ function QueuePipelineRow({
   statusLabel,
   statusVisual,
   promptId,
+  jobKey,
+  deepLinkHit,
   media,
   kindBadge,
   glanceRows,
@@ -384,6 +386,8 @@ function QueuePipelineRow({
   statusLabel: string;
   statusVisual: string;
   promptId?: string | null;
+  jobKey?: string | null;
+  deepLinkHit?: boolean;
   media: React.ReactNode;
   kindBadge?: { label: string; title: string; className: string } | null;
   glanceRows?: QueueGlanceRow[];
@@ -395,11 +399,21 @@ function QueuePipelineRow({
   actions: React.ReactNode;
 }) {
   const isError = statusVisual === "error" || statusVisual === "interrupted";
+  const pid = String(promptId || "").trim();
+  const jk = String(jobKey || "").trim();
+  const anchorId = pid
+    ? `queue-prompt-${pid}`
+    : jk
+      ? `queue-job-${jk}`
+      : undefined;
   return (
     <article
+      id={anchorId}
+      data-prompt-id={pid || undefined}
+      data-job-key={jk || undefined}
       className={`pipeline-row pipeline-row--status-${statusVisual}${
         live ? " pipeline-row--live" : ""
-      }${isError ? " pipeline-row--error" : ""}`}
+      }${isError ? " pipeline-row--error" : ""}${deepLinkHit ? " pipeline-row--deep-link" : ""}`}
     >
       <header className={`pipeline-row__head${liveMetrics ? " pipeline-row__head--live-metrics" : ""}`}>
         <div className="pipeline-row__head-main">
@@ -474,12 +488,14 @@ function QueueItemRow({
   movingPromptId,
   onMovePrompt,
   onRefresh,
+  deepLinkHit,
 }: {
   item: QueueComfyItem;
   kind: QueueLiveKind;
   movingPromptId?: string | null;
   onMovePrompt?: (item: QueueComfyItem, to: "front" | "back") => Promise<void>;
   onRefresh: () => void;
+  deepLinkHit?: boolean;
 }) {
   const pid = item.prompt_id ?? "";
   const moveBusy = Boolean(pid) && movingPromptId === pid;
@@ -542,6 +558,8 @@ function QueueItemRow({
       statusLabel={kind === "running" ? "running" : item.external ? "external" : "queued"}
       statusVisual={kind === "running" ? "running" : "queued"}
       promptId={pid}
+      jobKey={jobKey}
+      deepLinkHit={Boolean(deepLinkHit)}
       media={media}
       kindBadge={queueWorkflowKindBadge(item)}
       glanceRows={glanceRows}
@@ -637,7 +655,7 @@ function QueueItemRow({
   );
 }
 
-function HistoryItemRow({ item }: { item: ComfyHistoryItem }) {
+function HistoryItemRow({ item, deepLinkHit }: { item: ComfyHistoryItem; deepLinkHit?: boolean }) {
   const thumb = historyThumb(item);
   const videoUrl = item.primary_video_url || null;
   const jobKey = String(item.job_key || "").trim() || null;
@@ -680,6 +698,8 @@ function HistoryItemRow({ item }: { item: ComfyHistoryItem }) {
       statusLabel={statusLabel}
       statusVisual={statusVisual}
       promptId={item.prompt_id}
+      jobKey={jobKey}
+      deepLinkHit={Boolean(deepLinkHit)}
       media={
         <PipelineMediaPlayer
           videoUrl={videoUrl}
@@ -1223,6 +1243,8 @@ const QUEUE_POLL_MS = 5000;
 
 export function ComfyQueueMonitorApp() {
   const queryClient = useQueryClient();
+  const deepLink = useMemo(() => parseQueueDeepLink(), []);
+  const [deepLinkHitKey, setDeepLinkHitKey] = useState<string | null>(null);
   const [ledgerNotice, setLedgerNotice] = useState("");
   const [ledgerActionErr, setLedgerActionErr] = useState("");
   const [queueActionMsg, setQueueActionMsg] = useState("");
@@ -1355,6 +1377,62 @@ export function ComfyQueueMonitorApp() {
     if (statusFilter === "errors") return [];
     return sortQueueItems(pendingRaw, sortMode === "errors_first" ? "newest" : sortMode);
   }, [pendingRaw, statusFilter, sortMode]);
+
+  const matchQueueDeepLink = useCallback(
+    (item: { prompt_id?: string | null; job_key?: string | null }) => {
+      const wantPid = String(deepLink.promptId || "").trim();
+      const wantJob = String(deepLink.job || "").trim();
+      if (!wantPid && !wantJob) return false;
+      const pid = String(item.prompt_id || "").trim();
+      const jk = String(item.job_key || "").trim();
+      if (wantPid && pid && pid === wantPid) return true;
+      if (wantJob && jk && jk === wantJob) return true;
+      return false;
+    },
+    [deepLink.job, deepLink.promptId],
+  );
+
+  useEffect(() => {
+    if (!deepLink.promptId && !deepLink.job) return;
+    setPageTab("queue");
+    setStatusFilter("all");
+    const inRunning = runningRaw.some(matchQueueDeepLink);
+    const inPending = pendingRaw.some(matchQueueDeepLink);
+    const inHistory = history.some(matchQueueDeepLink);
+    // Open the section(s) that contain the hit; if not found yet, open all so scroll can land later.
+    setShow(
+      inRunning || inPending || inHistory
+        ? { running: inRunning, pending: inPending, history: inHistory }
+        : { running: true, pending: true, history: true },
+    );
+    const hit =
+      runningRaw.find(matchQueueDeepLink) ||
+      pendingRaw.find(matchQueueDeepLink) ||
+      history.find(matchQueueDeepLink);
+    if (!hit) return;
+    const key = `${hit.prompt_id || ""}|${hit.job_key || ""}`;
+    setDeepLinkHitKey(key);
+    const anchor =
+      (hit.prompt_id && document.getElementById(`queue-prompt-${hit.prompt_id}`)) ||
+      (hit.job_key && document.getElementById(`queue-job-${hit.job_key}`));
+    if (anchor) {
+      window.requestAnimationFrame(() => {
+        anchor.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    }
+  }, [
+    deepLink.job,
+    deepLink.promptId,
+    history,
+    matchQueueDeepLink,
+    pendingRaw,
+    runningRaw,
+  ]);
+
+  const isDeepLinkHit = (item: { prompt_id?: string | null; job_key?: string | null }) => {
+    if (!deepLinkHitKey) return false;
+    return deepLinkHitKey === `${item.prompt_id || ""}|${item.job_key || ""}`;
+  };
 
   const ledgerPaused = Boolean(ledger?.paused || ledger?.ops?.ledger?.paused);
   const ledgerBacklog = typeof ledger?.backlog_count === "number" ? ledger.backlog_count : 0;
@@ -1574,6 +1652,7 @@ export function ComfyQueueMonitorApp() {
                           kind="running"
                           movingPromptId={movingPromptId}
                           onRefresh={() => void invalidateQueue()}
+                          deepLinkHit={isDeepLinkHit(item)}
                         />
                       ))
                     ) : (
@@ -1593,6 +1672,7 @@ export function ComfyQueueMonitorApp() {
                           movingPromptId={movingPromptId}
                           onMovePrompt={movePendingPrompt}
                           onRefresh={() => void invalidateQueue()}
+                          deepLinkHit={isDeepLinkHit(item)}
                         />
                       ))
                     ) : (
@@ -1610,7 +1690,9 @@ export function ComfyQueueMonitorApp() {
                       ) : null}
                     </div>
                     {filteredHistory.length ? (
-                      filteredHistory.map((h) => <HistoryItemRow key={h.prompt_id} item={h} />)
+                      filteredHistory.map((h) => (
+                        <HistoryItemRow key={h.prompt_id} item={h} deepLinkHit={isDeepLinkHit(h)} />
+                      ))
                     ) : (
                       <div className="pipeline-empty">
                         {statusFilter === "errors" ? "(no errors in recent history)" : "(no history)"}

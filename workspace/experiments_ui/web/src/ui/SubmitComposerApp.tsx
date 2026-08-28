@@ -17,7 +17,7 @@ import {
   type ShapeFactoryJobEditSnapshot,
 } from "./api";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { RecentSubmitAttemptsStrip, SubmitQueueErrorPanel } from "./SubmitAttemptError";
+import { RecentSubmitsPanel, SubmitQueueErrorPanel } from "./SubmitAttemptError";
 import { queryKeys } from "./queryKeys";
 import { ClipBookmarksRail } from "./ClipBookmarksRail";
 import {
@@ -25,6 +25,7 @@ import {
   discoveryLibraryHref,
   hasSubmitIntent,
   parseSubmitDeepLink,
+  queueHref,
   submitOriginHref,
   workbenchHref,
 } from "./discoveryDeepLink";
@@ -896,9 +897,9 @@ function SubmitAdvanceComposerApp() {
   const [submitError, setSubmitError] = useState<Error | null>(null);
   const [lastJobKey, setLastJobKey] = useState<string | null>(null);
   const queryClient = useQueryClient();
-  const recentErrorsQuery = useQuery({
-    queryKey: queryKeys.shapeFactory.submitAttempts({ limit: 8, errorsOnly: true }),
-    queryFn: () => fetchShapeFactorySubmitAttempts({ limit: 8, errorsOnly: true }),
+  const recentSubmitsQuery = useQuery({
+    queryKey: queryKeys.shapeFactory.submitAttempts({ limit: 12, errorsOnly: false }),
+    queryFn: () => fetchShapeFactorySubmitAttempts({ limit: 12, errorsOnly: false }),
     staleTime: 15_000,
     refetchOnWindowFocus: true,
   });
@@ -1491,6 +1492,7 @@ function SubmitAdvanceComposerApp() {
               Factory · Rating doors next
             </span>
           </div>
+          <RecentSubmitsPanel items={recentSubmitsQuery.data?.items || []} />
         </div>
       ) : (
         <div
@@ -1844,13 +1846,13 @@ function SubmitAdvanceComposerApp() {
                     {msg}
                   </p>
                 ) : null}
-                <RecentSubmitAttemptsStrip items={recentErrorsQuery.data?.items || []} />
+                <RecentSubmitsPanel items={recentSubmitsQuery.data?.items || []} />
                 {lastJobKey ? (
                   <div className="submit-composer__links">
                     <a className="drt-btn" href={workbenchHref({ jobKey: lastJobKey })}>
                       Open in Workbench
                     </a>
-                    <a className="drt-btn" href="/comfy-queue">
+                    <a className="drt-btn" href={queueHref({ jobKey: lastJobKey })}>
                       Open Queue
                     </a>
                     {originBack ? (

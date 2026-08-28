@@ -1,5 +1,6 @@
 import type { ShapeFactorySubmitAttempt } from "./types";
 import { humanQueueErrorTitle, isShapeFactoryQueueError, type ShapeFactoryQueueError } from "./api";
+import { queueHref, workbenchHref } from "./discoveryDeepLink";
 
 function bindingSummary(bindings?: Record<string, string> | null): string {
   if (!bindings) return "";
@@ -8,6 +9,11 @@ function bindingSummary(bindings?: Record<string, string> | null): string {
     .map(([k, v]) => `${k}=${v}`)
     .slice(0, 3);
   return parts.join(" · ");
+}
+
+function formatAttemptWhen(ts?: string): string {
+  if (!ts) return "";
+  return ts.replace("T", " ").replace(/\+00:00$/, "Z");
 }
 
 export function SubmitQueueErrorPanel({
@@ -55,6 +61,7 @@ export function SubmitQueueErrorPanel({
   );
 }
 
+/** Errors-only strip (legacy callers). Prefer RecentSubmitsPanel. */
 export function RecentSubmitAttemptsStrip({
   items,
   className = "",
@@ -62,26 +69,79 @@ export function RecentSubmitAttemptsStrip({
   items: ShapeFactorySubmitAttempt[];
   className?: string;
 }) {
-  if (!items.length) return null;
+  return <RecentSubmitsPanel items={items} className={className} errorsOnly />;
+}
+
+/** Recent submit attempts (success + failure) with Queue / Workbench deep links when keys exist. */
+export function RecentSubmitsPanel({
+  items,
+  className = "",
+  errorsOnly = false,
+  title,
+}: {
+  items: ShapeFactorySubmitAttempt[];
+  className?: string;
+  errorsOnly?: boolean;
+  title?: string;
+}) {
+  const rows = errorsOnly ? items.filter((it) => it.ok === false) : items;
+  if (!rows.length) return null;
+  const head = title || (errorsOnly ? "Recent submit errors" : "Recent submits");
   return (
     <div className={`submit-attempts-strip ${className}`.trim()}>
-      <div className="submit-attempts-strip__head">Recent submit errors</div>
+      <div className="submit-attempts-strip__head">{head}</div>
       <ul className="submit-attempts-strip__list">
-        {items.map((it) => {
-          const title = humanQueueErrorTitle(String(it.error || "error"), it.family_slug);
+        {rows.map((it) => {
+          const ok = it.ok !== false;
+          const titleText = ok
+            ? it.family_slug
+              ? `Queued · ${it.family_slug}`
+              : "Queued"
+            : humanQueueErrorTitle(String(it.error || "error"), it.family_slug);
           const binds = bindingSummary(it.bindings);
-          const when = it.ts ? it.ts.replace("T", " ").replace(/\+00:00$/, "Z") : "";
+          const when = formatAttemptWhen(it.ts);
+          const jobKey = String(it.job_key || "").trim();
+          const promptId = String(it.prompt_id || "").trim();
+          const wb = jobKey || promptId ? workbenchHref({ jobKey: jobKey || null, promptId: promptId || null }) : null;
+          const qq = jobKey || promptId ? queueHref({ jobKey: jobKey || null, promptId: promptId || null }) : null;
           return (
-            <li key={it.attempt_id || `${it.ts}-${it.family_slug}-${it.error}`} className="submit-attempts-strip__item">
+            <li
+              key={it.attempt_id || `${it.ts}-${it.family_slug}-${it.error || "ok"}`}
+              className={`submit-attempts-strip__item${ok ? " submit-attempts-strip__item--ok" : ""}`}
+            >
               <div className="submit-attempts-strip__title">
-                {title}
+                <span className={`submit-attempts-strip__status${ok ? " is-ok" : " is-err"}`}>
+                  {ok ? "ok" : "err"}
+                </span>
+                {titleText}
                 {when ? <span className="submit-attempts-strip__when">{when}</span> : null}
               </div>
-              {it.detail ? <div className="submit-attempts-strip__detail">{it.detail}</div> : null}
-              {it.hint ? <div className="submit-attempts-strip__hint">{it.hint}</div> : null}
+              {!ok && it.detail ? <div className="submit-attempts-strip__detail">{it.detail}</div> : null}
+              {!ok && it.hint ? <div className="submit-attempts-strip__hint">{it.hint}</div> : null}
               <div className="submit-attempts-strip__meta">
-                {[it.attempt_id ? `attempt ${it.attempt_id}` : null, binds || null].filter(Boolean).join(" · ")}
+                {[
+                  it.attempt_id ? `attempt ${it.attempt_id}` : null,
+                  jobKey ? `job ${jobKey}` : null,
+                  promptId ? `prompt ${promptId.slice(0, 8)}…` : null,
+                  binds || null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
               </div>
+              {wb || qq ? (
+                <div className="submit-attempts-strip__links">
+                  {wb ? (
+                    <a className="drt-btn" href={wb}>
+                      Workbench
+                    </a>
+                  ) : null}
+                  {qq ? (
+                    <a className="drt-btn" href={qq}>
+                      Queue
+                    </a>
+                  ) : null}
+                </div>
+              ) : null}
             </li>
           );
         })}
