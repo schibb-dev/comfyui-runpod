@@ -1989,6 +1989,23 @@ export type WorkProductPromptProfile = {
   negative_chars?: number;
   missing?: boolean;
   error?: string;
+  owned?: boolean;
+  frozen?: boolean;
+  frozen_at?: string | null;
+  content_hash?: string | null;
+  /** True when owned content_hash differs from seed at source_profile. */
+  snowflake?: boolean;
+  /** Seed template baseline for snowflake diff / lineage. */
+  seed?: {
+    path?: string;
+    label?: string | null;
+    basename?: string;
+    positive?: string;
+    negative?: string;
+    positive_rows?: WorkProductPromptRow[];
+    negative_rows?: WorkProductPromptRow[];
+    content_hash?: string | null;
+  } | null;
 };
 
 export type WorkProductShapeSlot = {

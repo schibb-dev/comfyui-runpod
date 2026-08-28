@@ -2478,6 +2478,65 @@ def _shape_factory_update_pending_binding_payload(cfg: ServerConfig, body: Dict[
     )
 
 
+def _shape_factory_update_owned_prompt_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /api/shape-factory/update-owned-prompt — patch job-owned positive/negative."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory import update_pending_job_owned_prompt  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    job_key = str(body.get("job_key") or "").strip() or None
+    job_path_raw = str(body.get("job_path") or "").strip() or None
+    if not job_key and not job_path_raw:
+        raise ValueError("missing_job_key")
+    has_rows = "positive_rows" in body or "negative_rows" in body
+    has_text = "positive" in body or "negative" in body or "label" in body
+    if not has_rows and not has_text:
+        raise ValueError("missing_prompt_fields")
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    return update_pending_job_owned_prompt(
+        data_root=data_root,
+        job_key=job_key,
+        job_path=Path(job_path_raw) if job_path_raw else None,
+        positive=body.get("positive") if "positive" in body else None,
+        negative=body.get("negative") if "negative" in body else None,
+        positive_rows=body.get("positive_rows") if "positive_rows" in body else None,
+        negative_rows=body.get("negative_rows") if "negative_rows" in body else None,
+        label=body.get("label") if "label" in body else None,
+        server=str(cfg.comfy_server),
+    )
+
+
+def _shape_factory_promote_template_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /api/shape-factory/promote-template — write job prompt into family library."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory import promote_job_prompt_to_library  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    job_key = str(body.get("job_key") or "").strip() or None
+    job_path_raw = str(body.get("job_path") or "").strip() or None
+    if not job_key and not job_path_raw:
+        raise ValueError("missing_job_key")
+    fields = body.get("fields")
+    if isinstance(fields, list) and fields and "prompt" not in [str(f).strip() for f in fields]:
+        raise ValueError("unsupported_fields")
+    mode = str(body.get("mode") or "fork").strip().lower() or "fork"
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    return promote_job_prompt_to_library(
+        data_root=data_root,
+        job_key=job_key,
+        job_path=Path(job_path_raw) if job_path_raw else None,
+        mode=mode,
+        label=str(body.get("label") or "").strip() or None,
+        note=str(body.get("note") or "").strip() or None,
+        positive=body.get("positive") if isinstance(body.get("positive"), str) else None,
+        negative=body.get("negative") if isinstance(body.get("negative"), str) else None,
+    )
+
+
 def _shape_factory_begin_edit_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
     """POST /api/shape-factory/begin-edit — unqueue if needed; lock job as editing."""
     d = _workspace_scripts_dir()
@@ -8688,12 +8747,14 @@ def _queue_enrich_from_job(
                         job, data_root=data_root
                     )
                     if owned is not None:
-                        prompt_profile = owned_prompt_to_excerpt(owned)
+                        prompt_profile = owned_prompt_to_excerpt(owned, data_root=data_root)
                         label = str(owned.get("label") or "").strip()
                         if label:
                             glance["prompt_profile"] = label
                         elif owned.get("source_profile"):
                             glance["prompt_profile"] = Path(str(owned["source_profile"])).name
+                        if prompt_profile.get("snowflake"):
+                            glance["prompt_snowflake"] = True
                     else:
                         from shape_factory_work_products import _prompt_excerpt  # type: ignore
 
@@ -8716,12 +8777,14 @@ def _queue_enrich_from_job(
 
                 owned = get_owned_prompt(job)
                 if owned is not None:
-                    prompt_profile = owned_prompt_to_excerpt(owned)
+                    prompt_profile = owned_prompt_to_excerpt(owned, data_root=data_root)
                     glance["prompt_profile"] = str(
                         owned.get("label")
                         or Path(str(owned.get("source_profile") or "")).name
                         or "owned-prompt"
                     )
+                    if prompt_profile.get("snowflake"):
+                        glance["prompt_snowflake"] = True
             except Exception:
                 pass
         source_slot = str(construction.get("source_slot") or "").strip()
@@ -10241,6 +10304,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_shape_factory_update_pending_trim_post()
         if path == "/api/shape-factory/update-pending-binding":
             return self._handle_shape_factory_update_pending_binding_post()
+        if path == "/api/shape-factory/update-owned-prompt":
+            return self._handle_shape_factory_update_owned_prompt_post()
+        if path == "/api/shape-factory/promote-template":
+            return self._handle_shape_factory_promote_template_post()
         if path == "/api/shape-factory/clips":
             return self._handle_shape_factory_clips_post()
         if path == "/api/shape-factory/quarantine/release":
@@ -10605,6 +10672,46 @@ class Handler(BaseHTTPRequestHandler):
             )
         if payload.get("error") in {"not_pending", "still_on_comfy"}:
             return _json_response(self, 409, payload)
+        if payload.get("error") == "job_not_found":
+            return _json_response(self, 404, payload)
+        code = 200 if payload.get("ok", True) else 400
+        return _json_response(self, code, payload)
+
+    def _handle_shape_factory_update_owned_prompt_post(self) -> None:
+        """POST /api/shape-factory/update-owned-prompt — patch job-owned positive/negative."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _shape_factory_update_owned_prompt_payload(cfg, body if isinstance(body, dict) else {})
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except Exception as e:
+            return _json_response(
+                self, 500, {"ok": False, "error": "shape_factory_update_owned_prompt_failed", "detail": str(e)}
+            )
+        if payload.get("error") in {"not_pending", "still_on_comfy", "prompt_frozen"}:
+            return _json_response(self, 409, payload)
+        if payload.get("error") == "job_not_found":
+            return _json_response(self, 404, payload)
+        code = 200 if payload.get("ok", True) else 400
+        return _json_response(self, code, payload)
+
+    def _handle_shape_factory_promote_template_post(self) -> None:
+        """POST /api/shape-factory/promote-template — fork/overwrite family prompt library from job."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _shape_factory_promote_template_payload(cfg, body if isinstance(body, dict) else {})
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except Exception as e:
+            return _json_response(
+                self, 500, {"ok": False, "error": "shape_factory_promote_template_failed", "detail": str(e)}
+            )
         if payload.get("error") == "job_not_found":
             return _json_response(self, 404, payload)
         code = 200 if payload.get("ok", True) else 400

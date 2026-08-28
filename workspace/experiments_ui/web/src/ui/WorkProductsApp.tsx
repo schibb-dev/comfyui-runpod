@@ -1,13 +1,21 @@
 import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createPortal } from "react-dom";
-import { discardShapeFactoryJob, fetchShapeFactoryWorkProducts, finishShapeFactoryEdit, replayShapeFactory, unqueueShapeFactory, updatePendingShapeFactoryTrim } from "./api";
+import { discardShapeFactoryJob, fetchShapeFactoryWorkProducts, finishShapeFactoryEdit, promoteShapeFactoryTemplate, replayShapeFactory, unqueueShapeFactory, updatePendingShapeFactoryTrim, updateShapeFactoryOwnedPrompt } from "./api";
 import type { ShapeFactoryClip } from "./api";
 import { ClipBookmarksRail } from "./ClipBookmarksRail";
 import { ComfyLiveMetricsBar, ComfyLivePreview } from "./ComfyLivePreview";
 import { PageHeader } from "./PageHeader";
 import { PipelineScreen } from "./PipelineScreen";
-import { JsonPeekButton, PromptPeekButton } from "./PromptPeek";
+import { JsonPeekButton, PromptMarkupTable, PromptPeekButton } from "./PromptPeek";
+import {
+  clonePromptRows,
+  encodePromptRowsClient,
+  PromptChunkDiff,
+  PromptChunkEditor,
+  PromptSnowflakeChip,
+  rowsFromRawText,
+} from "./PromptChunks";
 import { VideoTrimControls } from "./VideoTrimControls";
 import {
   loadDiscoveryTrimAsync,
@@ -24,6 +32,7 @@ import {
 import { useTrimPlaybackEnforcement, type TrimPlaybackMode } from "./useTrimPlayback";
 import { discoveryLibraryHref, parseWorkbenchDeepLink, submitHref } from "./discoveryDeepLink";
 import { rememberFamiliesFromWorkProducts } from "./shapeFactorySessionCache";
+import { isStillMediaPath } from "./submitFamily";
 import { queryKeys } from "./queryKeys";
 import type {
   ShapeFactoryMapQueueOverrides,
@@ -41,7 +50,7 @@ type RowLayout = "stacked" | "split";
 
 const LAYOUT_KEY = "work-products-row-layout";
 const SORT_KEY = "work-products-sort";
-const SECTION_OPEN_KEY = "work-products-section-open-v2";
+const SECTION_OPEN_KEY = "work-products-section-open-v3";
 const HOURLY_ONLY_KEY = "work-products-hourly-only";
 const STATUS_FILTER_OFF_KEY = "work-products-status-filter-off";
 const MARKER_FILTER_OFF_KEY = "work-products-marker-filter-off";
@@ -346,6 +355,13 @@ function canUpdatePendingJobTrim(item: WorkProductItem): boolean {
   if (item.output_url) return false;
   if (!String(item.job_key || "").trim() && !String(item.job_path || "").trim()) return false;
   return isJobTrimEditable(item);
+}
+
+/** Promote writes the job's prompt into the family library — only after results exist. */
+function canPromoteJobPrompt(item: WorkProductItem): boolean {
+  if (isNonFactoryWorkProduct(item)) return false;
+  if (!String(item.job_key || "").trim() && !String(item.job_path || "").trim()) return false;
+  return Boolean(item.output_url || String(item.output_relpath || "").trim());
 }
 
 /** Comfy /history failure merged into Workbench with no factory job file. */
@@ -695,15 +711,32 @@ function badgeClass(kind?: string | null): string {
   return "";
 }
 
-function sourcePreviewUrls(item: WorkProductItem): { thumb: string | null; video: string | null; label: string } {
+function workbenchSourceBinding(item: WorkProductItem): WorkProductBinding | null {
   // Still-source families (e.g. BounceDanceA) bind `source_still`, not `source_image`.
-  const source =
+  return (
     item.bindings?.source_video ||
     item.bindings?.source_image ||
     item.bindings?.source_still ||
     item.bindings?.identity_still ||
     item.bindings?.identity_anchor ||
-    item.bindings?.start_image;
+    item.bindings?.start_image ||
+    null
+  );
+}
+
+/** Relpath for advancing / submitting from this job's input (not its output). */
+function workbenchSourceMediaRelpath(item: WorkProductItem): string | null {
+  const source = workbenchSourceBinding(item);
+  let rel = String(source?.relpath || item.parent_output_relpath || "").trim().replace(/\\/g, "/");
+  if (!rel) return null;
+  if (isStillMediaPath(rel) && !rel.includes("/") && !rel.toLowerCase().startsWith("input/")) {
+    rel = `input/${rel}`;
+  }
+  return rel;
+}
+
+function sourcePreviewUrls(item: WorkProductItem): { thumb: string | null; video: string | null; label: string } {
+  const source = workbenchSourceBinding(item);
   const thumb =
     source?.thumb_url ||
     item.parent_output_thumb_url ||
@@ -1897,18 +1930,7 @@ type DetailGroupDef = {
 };
 
 const DETAIL_GROUPS: DetailGroupDef[] = [
-  {
-    id: "prompt",
-    title: "Positive Prompt",
-    kv: true,
-    labels: [
-      "Prompt name",
-      "Prompt profile",
-      // Legacy labels (older API).
-      "Prompt label",
-      "Prompt file",
-    ],
-  },
+  // Prompt positive/negative live in WorkProductPromptEditor — do not duplicate here.
   {
     id: "run",
     title: "Run",
@@ -2165,14 +2187,6 @@ function detailGroupSummary(
   if (group.id === "bindings") {
     return <BindingGroupSummaryLinks rows={group.rows} bindings={item.bindings} />;
   }
-  if (group.id === "prompt") {
-    const name = rowVal(rows, "Prompt name", "Prompt profile", "Prompt label", "Prompt file");
-    const excerpt = item.prompt_profile?.positive_excerpt || item.prompt_profile?.positive;
-    if (name && excerpt) return `${name} · ${truncateSummary(excerpt, 40)}`;
-    if (name) return name;
-    if (excerpt) return truncateSummary(excerpt, 56);
-    return `${rows.length} field${rows.length === 1 ? "" : "s"}`;
-  }
   if (group.id === "run") {
     const bits = [
       rowVal(rows, "Seed") ? `seed ${rowVal(rows, "Seed")}` : null,
@@ -2327,6 +2341,366 @@ function badgePriorityClass(priority: string | undefined): string {
   return priority === "front" ? "work-product-badge--front" : "work-product-badge--pending";
 }
 
+function shortContentHash(hash?: string | null): string {
+  const h = String(hash || "").trim();
+  return h ? h.slice(0, 10) : "";
+}
+
+function WorkProductPromptEditor({
+  item,
+  onCommitted,
+}: {
+  item: WorkProductItem;
+  onCommitted?: () => void;
+}) {
+  const prompt = item.prompt_profile;
+  const queryClient = useQueryClient();
+  const editable = isJobTrimEditable(item) && !Boolean(prompt?.frozen);
+  const [editing, setEditing] = useState(false);
+  const [rawMode, setRawMode] = useState(false);
+  const [showDiff, setShowDiff] = useState(false);
+  const [positive, setPositive] = useState(() => String(prompt?.positive || ""));
+  const [negative, setNegative] = useState(() => String(prompt?.negative || ""));
+  const [posChunks, setPosChunks] = useState(() =>
+    clonePromptRows(prompt?.positive_rows, prompt?.positive || undefined),
+  );
+  const [negChunks, setNegChunks] = useState(() =>
+    clonePromptRows(prompt?.negative_rows, prompt?.negative || undefined),
+  );
+  const [dirty, setDirty] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [promoteOpen, setPromoteOpen] = useState(false);
+  const [promoteMode, setPromoteMode] = useState<"fork" | "overwrite">("fork");
+  const [promoteLabel, setPromoteLabel] = useState("");
+  const [promoteNote, setPromoteNote] = useState("");
+
+  useEffect(() => {
+    setPositive(String(prompt?.positive || ""));
+    setNegative(String(prompt?.negative || ""));
+    setPosChunks(clonePromptRows(prompt?.positive_rows, prompt?.positive || undefined));
+    setNegChunks(clonePromptRows(prompt?.negative_rows, prompt?.negative || undefined));
+    setDirty(false);
+    setMsg(null);
+    setEditing(false);
+    setRawMode(false);
+    setShowDiff(false);
+  }, [item.job_key, prompt?.content_hash, prompt?.positive, prompt?.negative]);
+
+  const saveMut = useMutation({
+    mutationFn: updateShapeFactoryOwnedPrompt,
+    onSuccess: async () => {
+      setDirty(false);
+      setEditing(false);
+      setRawMode(false);
+      setMsg("Saved to job");
+      await queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductsRoot });
+      onCommitted?.();
+    },
+    onError: (e) => setMsg(e instanceof Error ? e.message : String(e)),
+  });
+  const promoteMut = useMutation({
+    mutationFn: promoteShapeFactoryTemplate,
+    onSuccess: async (res) => {
+      setPromoteOpen(false);
+      setMsg(
+        res.mode === "overwrite"
+          ? `Overwrote catalog-default${res.bak_path ? " (bak kept)" : ""}`
+          : `Forked library variant${res.path ? ` · ${String(res.path).split("/").pop()}` : ""}`,
+      );
+      await queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductsRoot });
+      onCommitted?.();
+    },
+    onError: (e) => setMsg(e instanceof Error ? e.message : String(e)),
+  });
+
+  if (!prompt && !editable) return null;
+
+  const hash = shortContentHash(prompt?.content_hash);
+  const sourceLabel = prompt?.label || prompt?.basename || "owned prompt";
+  const busy = saveMut.isPending || promoteMut.isPending;
+  const canPromote = canPromoteJobPrompt(item) && !editing;
+  const canDiff = Boolean(prompt?.snowflake && prompt?.seed) && !editing;
+  const posRows = prompt?.positive_rows || [];
+  const negRows = prompt?.negative_rows || [];
+  const posText = String(prompt?.positive || positive || "");
+  const negText = String(prompt?.negative || negative || "");
+  const hasNeg = negRows.length > 0 || Boolean(negText.trim()) || editing;
+  const posSummary =
+    (editing ? posChunks : posRows).length > 0
+      ? `${(editing ? posChunks : posRows).length} part${(editing ? posChunks : posRows).length === 1 ? "" : "s"}`
+      : posText.trim()
+        ? `${posText.trim().length} chars`
+        : "empty";
+  const negSummary =
+    (editing ? negChunks : negRows).length > 0
+      ? `${(editing ? negChunks : negRows).length} part${(editing ? negChunks : negRows).length === 1 ? "" : "s"}`
+      : negText.trim()
+        ? `${negText.trim().length} chars`
+        : "empty";
+
+  const resetFromPrompt = () => {
+    setPositive(String(prompt?.positive || ""));
+    setNegative(String(prompt?.negative || ""));
+    setPosChunks(clonePromptRows(prompt?.positive_rows, prompt?.positive || undefined));
+    setNegChunks(clonePromptRows(prompt?.negative_rows, prompt?.negative || undefined));
+    setDirty(false);
+  };
+
+  const save = () => {
+    if (rawMode) {
+      void saveMut.mutateAsync({
+        job_key: item.job_key,
+        job_path: item.job_path || undefined,
+        positive,
+        negative,
+      });
+      return;
+    }
+    void saveMut.mutateAsync({
+      job_key: item.job_key,
+      job_path: item.job_path || undefined,
+      positive_rows: posChunks,
+      negative_rows: negChunks,
+    });
+  };
+
+  return (
+    <div className="work-product-prompt-editor">
+      <div className="work-product-prompt-editor__head">
+        <span className="work-product-prompt-editor__title">Prompt</span>
+        <span className="work-product-prompt-editor__name" title={prompt?.path || undefined}>
+          {sourceLabel}
+        </span>
+        <PromptSnowflakeChip prompt={prompt} />
+        <span className="factory-muted work-product-prompt-editor__meta">
+          {[
+            hash || null,
+            prompt?.frozen ? "frozen" : editable ? "editable" : null,
+            prompt?.snowflake && prompt.seed
+              ? `from ${prompt.seed.label || prompt.seed.basename || "seed"}`
+              : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </span>
+        <div className="work-product-prompt-editor__actions">
+          {prompt?.path ? <JsonPeekButton path={prompt.path} label="raw json" /> : null}
+          {canDiff ? (
+            <button type="button" className="drt-btn" disabled={busy} onClick={() => setShowDiff((v) => !v)}>
+              {showDiff ? "Hide diff" : "Show diff"}
+            </button>
+          ) : null}
+          {editable ? (
+            <button
+              type="button"
+              className="drt-btn"
+              disabled={busy}
+              onClick={() => {
+                if (editing) resetFromPrompt();
+                setEditing((v) => !v);
+                setRawMode(false);
+                setShowDiff(false);
+                setPromoteOpen(false);
+                setMsg(null);
+              }}
+            >
+              {editing ? "Cancel edit" : "Edit"}
+            </button>
+          ) : null}
+          {editing ? (
+            <button
+              type="button"
+              className="drt-btn"
+              disabled={busy}
+              onClick={() => {
+                if (!rawMode) {
+                  setPositive(encodePromptRowsClient(posChunks));
+                  setNegative(encodePromptRowsClient(negChunks));
+                } else {
+                  setPosChunks(rowsFromRawText(positive));
+                  setNegChunks(rowsFromRawText(negative));
+                }
+                setRawMode((v) => !v);
+              }}
+            >
+              {rawMode ? "Edit chunks" : "Edit raw"}
+            </button>
+          ) : null}
+          {editing ? (
+            <button type="button" className="drt-btn" disabled={!dirty || busy} onClick={() => save()}>
+              Save to job
+            </button>
+          ) : null}
+          {canPromote ? (
+            <button
+              type="button"
+              className="drt-btn"
+              disabled={busy || !(positive || negative || prompt)}
+              title="Copy this job's prompt into the family library after judging the output"
+              onClick={() => {
+                setPromoteMode("fork");
+                setPromoteLabel(
+                  String(prompt?.label || item.family_slug || "variant").replace(/catalog-default/i, "variant"),
+                );
+                setPromoteNote("");
+                setPromoteOpen(true);
+              }}
+            >
+              Promote…
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      <details className="work-product-prompt-editor__section">
+        <summary className="work-product-prompt-editor__section-summary">
+          <span>Positive</span>
+          <span className="factory-muted">{posSummary}</span>
+        </summary>
+        <div className="work-product-prompt-editor__section-body">
+          {editing && rawMode ? (
+            <textarea
+              className="work-product-prompt-editor__textarea"
+              value={positive}
+              disabled={busy}
+              rows={6}
+              onChange={(e) => {
+                setPositive(e.target.value);
+                setDirty(true);
+              }}
+            />
+          ) : editing ? (
+            <PromptChunkEditor
+              rows={posChunks}
+              disabled={busy}
+              onChange={(next) => {
+                setPosChunks(next);
+                setDirty(true);
+              }}
+            />
+          ) : prompt?.missing ? (
+            <div className="work-product-prompt-table__empty">Prompt file missing</div>
+          ) : prompt?.error ? (
+            <div className="work-product-prompt-table__empty">{prompt.error}</div>
+          ) : showDiff && canDiff ? (
+            <PromptChunkDiff
+              title=""
+              seedRows={prompt?.seed?.positive_rows || []}
+              jobRows={posRows}
+            />
+          ) : (
+            <PromptMarkupTable title="" rows={posRows} fallbackText={posText} />
+          )}
+        </div>
+      </details>
+
+      {hasNeg ? (
+        <details className="work-product-prompt-editor__section">
+          <summary className="work-product-prompt-editor__section-summary">
+            <span>Negative</span>
+            <span className="factory-muted">{negSummary}</span>
+          </summary>
+          <div className="work-product-prompt-editor__section-body">
+            {editing && rawMode ? (
+              <textarea
+                className="work-product-prompt-editor__textarea"
+                value={negative}
+                disabled={busy}
+                rows={4}
+                onChange={(e) => {
+                  setNegative(e.target.value);
+                  setDirty(true);
+                }}
+              />
+            ) : editing ? (
+              <PromptChunkEditor
+                rows={negChunks}
+                disabled={busy}
+                onChange={(next) => {
+                  setNegChunks(next);
+                  setDirty(true);
+                }}
+              />
+            ) : showDiff && canDiff ? (
+              <PromptChunkDiff
+                title=""
+                seedRows={prompt?.seed?.negative_rows || []}
+                jobRows={negRows}
+              />
+            ) : (
+              <PromptMarkupTable title="" rows={negRows} fallbackText={negText} />
+            )}
+          </div>
+        </details>
+      ) : null}
+
+      {msg ? <p className="work-product-prompt-editor__msg factory-muted">{msg}</p> : null}
+      {promoteOpen && canPromote ? (
+        <div className="work-product-prompt-editor__promote" role="dialog" aria-label="Promote prompt to library">
+          <p className="factory-muted">
+            After judging this output, write its prompt into the family library. Default is a new variant file
+            (git-friendly); overwrite replaces catalog-default.json with a .bak.
+          </p>
+          <div className="work-product-prompt-editor__promote-modes" role="radiogroup" aria-label="Promote mode">
+            <label>
+              <input
+                type="radio"
+                name={`promote-mode-${item.job_key}`}
+                checked={promoteMode === "fork"}
+                onChange={() => setPromoteMode("fork")}
+              />{" "}
+              Save as new variant
+            </label>
+            <label>
+              <input
+                type="radio"
+                name={`promote-mode-${item.job_key}`}
+                checked={promoteMode === "overwrite"}
+                onChange={() => setPromoteMode("overwrite")}
+              />{" "}
+              Overwrite family default
+            </label>
+          </div>
+          {promoteMode === "fork" ? (
+            <label className="work-product-prompt-editor__field">
+              <span>Variant label</span>
+              <input value={promoteLabel} onChange={(e) => setPromoteLabel(e.target.value)} disabled={busy} />
+            </label>
+          ) : null}
+          <label className="work-product-prompt-editor__field">
+            <span>Note (optional)</span>
+            <input value={promoteNote} onChange={(e) => setPromoteNote(e.target.value)} disabled={busy} />
+          </label>
+          <div className="work-product-prompt-editor__actions work-product-prompt-editor__actions--promote">
+            <button
+              type="button"
+              className="drt-btn"
+              disabled={busy}
+              onClick={() =>
+                void promoteMut.mutateAsync({
+                  job_key: item.job_key,
+                  job_path: item.job_path || undefined,
+                  fields: ["prompt"],
+                  mode: promoteMode,
+                  label: promoteMode === "fork" ? promoteLabel || undefined : "catalog-default",
+                  note: promoteNote || undefined,
+                  positive: String(prompt?.positive || positive || ""),
+                  negative: String(prompt?.negative || negative || ""),
+                })
+              }
+            >
+              {promoteMode === "overwrite" ? "Overwrite default" : "Save variant"}
+            </button>
+            <button type="button" className="drt-btn" disabled={busy} onClick={() => setPromoteOpen(false)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function workbenchAdvanceSubmitHref(
   item: WorkProductItem,
   opts: {
@@ -2349,6 +2723,40 @@ function workbenchAdvanceSubmitHref(
     markOut: clip ? clip.mark_out_s : opts.outputTrim.markOut,
     clipId: clip?.clip_id || opts.sourceClipId || null,
     step: opts.step || "advance.extend",
+    origin: "workbench",
+  });
+}
+
+/** Open Submit with this job's *input* as the subject (Extend/Vary for video, I2V for still). */
+function workbenchSourceSubmitHref(
+  item: WorkProductItem,
+  opts: {
+    sourceTrim: InputTrimState;
+    sourceClipId?: string | null;
+    step?: string | null;
+    clip?: ShapeFactoryClip | null;
+  },
+): string | null {
+  const media = workbenchSourceMediaRelpath(item);
+  if (!media) return null;
+  const still = isStillMediaPath(media);
+  const clip = opts.clip || null;
+  const windowOk =
+    !still &&
+    opts.sourceTrim.markIn != null &&
+    opts.sourceTrim.markOut != null &&
+    Number.isFinite(opts.sourceTrim.markIn) &&
+    Number.isFinite(opts.sourceTrim.markOut) &&
+    opts.sourceTrim.markOut > opts.sourceTrim.markIn + 0.05;
+  return submitHref({
+    mediaRelpath: media,
+    // Do not pass from_job — this media is the input, not this job's product.
+    family: String(item.family_slug || "").trim() || null,
+    markIn: still ? null : clip ? clip.mark_in_s : windowOk ? opts.sourceTrim.markIn : null,
+    markOut: still ? null : clip ? clip.mark_out_s : windowOk ? opts.sourceTrim.markOut : null,
+    clipId: still ? null : clip?.clip_id || opts.sourceClipId || null,
+    // Stills go through I2V on Submit; videos open the Advance (extend) compose.
+    step: still ? null : opts.step || "advance.extend",
     origin: "workbench",
   });
 }
@@ -2427,6 +2835,10 @@ function WorkProductQuickQueue({
     outputTrim,
     sourceClipId,
     extendFamilyDefaults,
+  });
+  const sourceSubmitUrl = workbenchSourceSubmitHref(item, {
+    sourceTrim,
+    sourceClipId,
   });
 
   const unqueue = async () => {
@@ -2625,10 +3037,25 @@ function WorkProductQuickQueue({
             href={submitUrl}
             title="Open Submit with Extend / Vary / Derive for this output"
           >
-            Open in Submit
+            Open output in Submit
           </a>
         ) : (
           <span className="work-product-quick-queue__hint">No output</span>
+        )}
+        {sourceSubmitUrl ? (
+          <a
+            className="drt-btn work-product-quick-queue__now"
+            href={sourceSubmitUrl}
+            title={
+              isStillMediaPath(workbenchSourceMediaRelpath(item) || "")
+                ? "Open Submit with this job's input still (I2V)"
+                : "Open Submit with Extend / Vary for this job's input video"
+            }
+          >
+            Open input in Submit
+          </a>
+        ) : (
+          <span className="work-product-quick-queue__hint">No input</span>
         )}
         {openBadge(extendOpen, "Extend")}
         {openBadge(varyOpen, "Vary")}
@@ -2822,14 +3249,27 @@ function WorkProductDetails({
   sourceClipId?: string | null;
   onCommitted?: () => void;
 }) {
-  const groups = useMemo(() => {
-    const filtered = (item.details || []).filter(
-      (r) => r.label !== "Prompt positive" && r.label !== "Prompt negative",
-    );
-    return groupDetailRows(filtered);
-  }, [item.details]);
-  const [sectionOpen, setSectionOpen] = useState<Record<string, boolean>>(() => loadSectionOpen());
   const prompt = item.prompt_profile;
+  const groups = useMemo(() => {
+    // Dedicated Positive/Negative editor owns prompt display — drop duplicate
+    // detail rows (legacy positive/negative, profile peek, binding slot).
+    const filtered = (item.details || []).filter((r) => {
+      if (
+        r.label === "Prompt positive" ||
+        r.label === "Prompt negative" ||
+        r.label === "Prompt name" ||
+        r.label === "Prompt profile" ||
+        r.label === "Prompt label" ||
+        r.label === "Prompt file"
+      ) {
+        return false;
+      }
+      if (prompt && r.label === "Binding · prompt_profile") return false;
+      return true;
+    });
+    return groupDetailRows(filtered);
+  }, [item.details, prompt]);
+  const [sectionOpen, setSectionOpen] = useState<Record<string, boolean>>(() => loadSectionOpen());
   const shape = item.shape_profile;
 
   const setGroupOpen = (id: string, open: boolean) => {
@@ -2848,6 +3288,7 @@ function WorkProductDetails({
           </span>
         ) : null}
         {item.family_slug ? <span className="work-product-badge">{item.family_slug}</span> : null}
+        <PromptSnowflakeChip prompt={prompt} />
         {shape?.io_class ? (
           <span className="work-product-badge" title="IO class (station process)">
             {String(shape.io_class)}
@@ -2950,6 +3391,7 @@ function WorkProductDetails({
         sourceClipId={sourceClipId}
         onCommitted={onCommitted}
       />
+      <WorkProductPromptEditor item={item} onCommitted={onCommitted} />
       <div className="work-product-details__groups">
         {groups.map((group) => {
           const renderRow = (row: WorkProductDetailRow, opts?: { kv?: boolean; compact?: boolean }) => {
@@ -3136,14 +3578,22 @@ function WorkProductRow({
               warning: null,
               clampedDefault: false,
             }));
-            const href = workbenchAdvanceSubmitHref(item, {
-              outputTrim,
+            // Clip rail lives on the *input* pane — advance that media, not the output.
+            const href = workbenchSourceSubmitHref(item, {
+              sourceTrim: {
+                markIn: clip.mark_in_s,
+                markOut: clip.mark_out_s,
+                dirty: true,
+                duration: sourceTrim.duration,
+                fps: sourceTrim.fps,
+                warning: null,
+                clampedDefault: false,
+              },
               sourceClipId: clip.clip_id,
-              extendFamilyDefaults,
               clip,
               step: "advance.extend",
             });
-            window.location.assign(href);
+            if (href) window.location.assign(href);
           }}
         />
         <WorkProductDetails
@@ -3254,14 +3704,44 @@ export function WorkProductsApp() {
   );
 
   useEffect(() => {
-    if (deepLinkScrolled.current || loading || !deepLink.filter || !visibleItems.length) return;
-    const needleJob = (deepLink.job || "").toLowerCase();
-    const needlePid = (deepLink.promptId || "").toLowerCase();
-    const match =
-      visibleItems.find((it) => needleJob && String(it.job_key || "").toLowerCase() === needleJob) ||
-      visibleItems.find((it) => needlePid && String(it.prompt_id || "").toLowerCase() === needlePid) ||
-      visibleItems[0];
+    if (deepLinkScrolled.current || loading) return;
+    const needleJob = String(deepLink.job || "").trim();
+    const needlePid = String(deepLink.promptId || "").trim();
+    const needleQ = String(deepLink.q || "").trim().toLowerCase();
+    if (!needleJob && !needlePid && !needleQ) return;
+
+    // Exact job / prompt_id against the full list (not just the filtered view).
+    let match =
+      (needleJob
+        ? items.find((it) => String(it.job_key || "").trim() === needleJob)
+        : undefined) ||
+      (needlePid
+        ? items.find((it) => String(it.prompt_id || "").trim() === needlePid)
+        : undefined);
+    if (!match && needleQ) {
+      match = visibleItems.find((it) => workProductNameHaystack(it).includes(needleQ));
+    }
     if (!match) return;
+
+    const inVisible = visibleItems.some(
+      (it) =>
+        (match!.job_key && it.job_key === match!.job_key) ||
+        (match!.prompt_id && it.prompt_id === match!.prompt_id),
+    );
+    // Status/marker toggles may hide the target — clear them for exact deep links.
+    if (!inVisible && (needleJob || needlePid)) {
+      if (statusOff.size) {
+        persistStatusFilterOff(new Set());
+        setStatusOff(new Set());
+      }
+      if (markerOff.size) {
+        persistMarkerFilterOff(new Set());
+        setMarkerOff(new Set());
+      }
+      return;
+    }
+    if (!inVisible) return;
+
     const id = `workbench-job-${String(match.job_key || "").replace(/[^\w.-]+/g, "_")}`;
     const el = document.getElementById(id);
     if (!el) return;
@@ -3271,7 +3751,16 @@ export function WorkProductsApp() {
       el.classList.add("work-product-row--deep-link");
       window.setTimeout(() => el.classList.remove("work-product-row--deep-link"), 2400);
     });
-  }, [deepLink.filter, deepLink.job, deepLink.promptId, loading, visibleItems]);
+  }, [
+    deepLink.job,
+    deepLink.promptId,
+    deepLink.q,
+    items,
+    loading,
+    markerOff.size,
+    statusOff.size,
+    visibleItems,
+  ]);
 
   const toggleStatusFilter = (status: string) => {
     setStatusOff((prev) => {

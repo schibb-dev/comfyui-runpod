@@ -70,6 +70,8 @@ import type {
   ShapeFactoryPromptProfile,
   ShapeFactoryMapQueueOverrides,
   FutureRunDraft,
+  WorkProductPromptProfile,
+  WorkProductPromptRow,
   AssetAuditResponse,
   AssetRecoverResponse,
   SetAssetRatingResponse,
@@ -1492,6 +1494,84 @@ export async function updatePendingShapeFactoryBinding(
     const detail = [j.error, j.detail].filter(Boolean).join(": ");
     throw new Error(
       `POST /api/shape-factory/update-pending-binding failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export type ShapeFactoryUpdateOwnedPromptRequest = {
+  job_key?: string;
+  job_path?: string;
+  positive?: string;
+  negative?: string;
+  positive_rows?: WorkProductPromptRow[];
+  negative_rows?: WorkProductPromptRow[];
+  label?: string;
+};
+
+export type ShapeFactoryUpdateOwnedPromptResponse = {
+  ok: boolean;
+  job_key?: string;
+  content_hash?: string;
+  prompt?: WorkProductPromptProfile;
+  error?: string;
+  detail?: string;
+};
+
+export async function updateShapeFactoryOwnedPrompt(
+  req: ShapeFactoryUpdateOwnedPromptRequest,
+): Promise<ShapeFactoryUpdateOwnedPromptResponse> {
+  const r = await fetch("/api/shape-factory/update-owned-prompt", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryUpdateOwnedPromptResponse;
+  if (!r.ok || !j.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST /api/shape-factory/update-owned-prompt failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export type ShapeFactoryPromoteTemplateRequest = {
+  job_key?: string;
+  job_path?: string;
+  fields?: string[];
+  mode?: "fork" | "overwrite";
+  label?: string;
+  note?: string;
+  positive?: string;
+  negative?: string;
+};
+
+export type ShapeFactoryPromoteTemplateResponse = {
+  ok: boolean;
+  job_key?: string;
+  family_slug?: string;
+  mode?: string;
+  path?: string;
+  bak_path?: string | null;
+  doc?: Record<string, unknown>;
+  error?: string;
+  detail?: string;
+};
+
+export async function promoteShapeFactoryTemplate(
+  req: ShapeFactoryPromoteTemplateRequest,
+): Promise<ShapeFactoryPromoteTemplateResponse> {
+  const r = await fetch("/api/shape-factory/promote-template", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryPromoteTemplateResponse;
+  if (!r.ok || !j.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST /api/shape-factory/promote-template failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
     );
   }
   return j;

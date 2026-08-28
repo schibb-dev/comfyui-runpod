@@ -731,6 +731,54 @@ def decode_prompt_markup(text: str) -> List[Dict[str, Any]]:
     return rows
 
 
+def _format_prompt_weight(weight: Any) -> str:
+    try:
+        w = float(weight)
+    except (TypeError, ValueError):
+        return "1"
+    if abs(w - round(w)) < 1e-9:
+        return str(int(round(w)))
+    # Trim trailing zeros but keep at least one decimal when needed.
+    text = f"{w:.4f}".rstrip("0").rstrip(".")
+    return text or "1"
+
+
+def _weight_is_unity(weight: Any) -> bool:
+    try:
+        return abs(float(weight) - 1.0) < 1e-6
+    except (TypeError, ValueError):
+        return True
+
+
+def encode_prompt_markup(rows: Any) -> str:
+    """
+    Encode chunk rows into canonical multiline prompt text.
+
+    - weight ≈ 1 → plain ``text`` line
+    - otherwise → ``(text:weight)``
+    Empty / blank texts are skipped.
+    """
+    lines: List[str] = []
+    if not isinstance(rows, list):
+        return ""
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        text = str(row.get("text") or "").strip()
+        if not text:
+            continue
+        # Escape bare newlines inside a clause so one row stays one line.
+        text = " ".join(text.splitlines()).strip()
+        if not text:
+            continue
+        w = row.get("weight", 1.0)
+        if _weight_is_unity(w):
+            lines.append(text)
+        else:
+            lines.append(f"({text}:{_format_prompt_weight(w)})")
+    return "\n".join(lines)
+
+
 def _decode_prompt_line(line: str) -> Dict[str, Any]:
     m = _EXPLICIT_WEIGHT_LINE.fullmatch(line)
     if m:
@@ -935,7 +983,14 @@ def _prompt_excerpt(
         "negative": negative,
         "positive_rows": decode_prompt_markup(positive),
         "negative_rows": decode_prompt_markup(negative),
+        "snowflake": False,
     }
+    try:
+        from shape_factory_owned_prompt import prompt_content_hash
+
+        out["content_hash"] = prompt_content_hash(positive, negative)
+    except Exception:
+        pass
     if positive:
         out["positive_excerpt"] = positive if len(positive) <= max_chars else positive[: max_chars - 1] + "…"
         out["positive_chars"] = len(positive)
@@ -1416,7 +1471,7 @@ def _work_product_item_from_job(
             job, data_root=data_root
         )
         if owned is not None:
-            prompt_profile = owned_prompt_to_excerpt(owned)
+            prompt_profile = owned_prompt_to_excerpt(owned, data_root=data_root)
     except Exception:
         prompt_profile = None
     if prompt_profile is None:

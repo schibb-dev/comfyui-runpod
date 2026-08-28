@@ -5792,6 +5792,19 @@ def job_edit_snapshot(
             break
 
     vhs = job.get("vhs_window") if isinstance(job.get("vhs_window"), dict) else {}
+    prompt_excerpt = None
+    try:
+        from shape_factory_owned_prompt import (
+            ensure_owned_prompt_from_bindings,
+            get_owned_prompt,
+            owned_prompt_to_excerpt,
+        )
+
+        owned = get_owned_prompt(job) or ensure_owned_prompt_from_bindings(job, data_root=data_root)
+        if owned is not None:
+            prompt_excerpt = owned_prompt_to_excerpt(owned, data_root=data_root)
+    except Exception:
+        prompt_excerpt = None
     return {
         "ok": True,
         "job_key": key,
@@ -5809,6 +5822,7 @@ def job_edit_snapshot(
         "output_prefix": job.get("output_prefix"),
         "created_at": job.get("created_at"),
         "construction": job.get("construction") if isinstance(job.get("construction"), dict) else None,
+        "prompt": prompt_excerpt,
     }
 
 
@@ -6105,6 +6119,228 @@ def update_pending_job_binding_path(
         "prompt_cleared": prompt_cleared,
         "status": status or "pending",
     }
+
+
+def update_pending_job_owned_prompt(
+    *,
+    data_root: Path,
+    positive: Optional[str] = None,
+    negative: Optional[str] = None,
+    positive_rows: Optional[list] = None,
+    negative_rows: Optional[list] = None,
+    label: Optional[str] = None,
+    job_key: Optional[str] = None,
+    job_path: Optional[Path] = None,
+    server: str = "",
+) -> dict[str, Any]:
+    """Patch ``job["prompt"]`` on a pre-Comfy factory job (refuses frozen / on-Comfy)."""
+    from shape_factory_owned_prompt import (
+        OwnedPromptFrozenError,
+        ensure_owned_prompt_from_bindings,
+        get_owned_prompt,
+        merge_owned_prompt,
+        owned_prompt_to_excerpt,
+    )
+    from shape_factory_work_products import encode_prompt_markup
+
+    data_root = Path(data_root).expanduser().resolve()
+    job_file: Optional[Path] = None
+    job: Optional[dict[str, Any]] = None
+
+    if job_path is not None:
+        jp = Path(job_path).expanduser()
+        if jp.is_file():
+            try:
+                loaded = json.loads(jp.read_text(encoding="utf-8"))
+            except Exception:
+                loaded = None
+            if isinstance(loaded, dict):
+                job_file, job = jp, loaded
+    if job is None and job_key:
+        job_file, job = find_job_by_key(data_root, str(job_key))
+    if job is None or job_file is None:
+        return {"ok": False, "error": "job_not_found", "job_key": job_key}
+
+    if hostify_job_paths(job):
+        atomic_write_json(job_file, job)
+
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    status = str(submit.get("status") or "").strip().lower()
+    pid = str(submit.get("prompt_id") or "").strip()
+    key = str(job.get("job_key") or job_file.stem.replace(".job", ""))
+
+    if status_is_on_comfy(status, pid) or not status_is_pending_editable(status):
+        return {
+            "ok": False,
+            "error": "not_pending",
+            "job_key": key,
+            "status": status or "unknown",
+            "prompt_id": pid or None,
+            "detail": "Unqueue first — only pending/editing (pre-Comfy) jobs can edit owned prompt.",
+        }
+
+    if pid and server:
+        try:
+            running_ids, pending_ids = queue_prompt_id_buckets(str(server).rstrip("/"), timeout_s=10)
+        except Exception:
+            running_ids, pending_ids = set(), set()
+        if pid in running_ids or pid in pending_ids:
+            return {
+                "ok": False,
+                "error": "still_on_comfy",
+                "job_key": key,
+                "prompt_id": pid,
+                "detail": "Prompt is still on Comfy; Unqueue first.",
+            }
+
+    if get_owned_prompt(job) is None:
+        ensure_owned_prompt_from_bindings(job, data_root=data_root)
+
+    # Rows win over raw strings when both are sent (chunk editor canonical path).
+    if positive_rows is not None:
+        positive = encode_prompt_markup(positive_rows)
+    if negative_rows is not None:
+        negative = encode_prompt_markup(negative_rows)
+
+    override: dict[str, Any] = {}
+    if positive is not None:
+        override["positive"] = positive
+    if negative is not None:
+        override["negative"] = negative
+    if label is not None:
+        override["label"] = label
+    if not override:
+        return {"ok": False, "error": "missing_prompt_fields", "job_key": key}
+
+    try:
+        owned = merge_owned_prompt(job, override)
+    except OwnedPromptFrozenError as exc:
+        return {
+            "ok": False,
+            "error": "prompt_frozen",
+            "job_key": key,
+            "detail": str(exc),
+        }
+
+    # Drop stale converted prompt so next submit paints from owned text.
+    prompt_candidates = [job_file.with_name(job_file.stem.replace(".job", "") + ".prompt.json")]
+    submit_prompt = str(submit.get("prompt_path") or "").strip()
+    if submit_prompt:
+        prompt_candidates.append(Path(submit_prompt).expanduser())
+    prompt_cleared = False
+    for p in prompt_candidates:
+        try:
+            if p.is_file():
+                p.unlink()
+                prompt_cleared = True
+        except Exception:
+            continue
+
+    atomic_write_json(job_file, job)
+    return {
+        "ok": True,
+        "job_key": key,
+        "job_path": str(job_file),
+        "status": status or "pending",
+        "prompt_cleared": prompt_cleared,
+        "prompt": owned_prompt_to_excerpt(owned, data_root=data_root),
+        "content_hash": owned.get("content_hash"),
+    }
+
+
+def promote_job_prompt_to_library(
+    *,
+    data_root: Path,
+    mode: str = "fork",
+    label: Optional[str] = None,
+    note: Optional[str] = None,
+    job_key: Optional[str] = None,
+    job_path: Optional[Path] = None,
+    positive: Optional[str] = None,
+    negative: Optional[str] = None,
+) -> dict[str, Any]:
+    """
+    Write this job's (or provided) prompt text into the family prompt library.
+
+    Allowed on frozen jobs — promote is a library write, not a job mutation.
+    When ``positive``/``negative`` are omitted, uses ``job["prompt"]``.
+    """
+    from shape_factory_owned_prompt import (
+        ensure_owned_prompt_from_bindings,
+        get_owned_prompt,
+        promote_prompt_to_library,
+        resolve_prompt_parent_path,
+    )
+
+    data_root = Path(data_root).expanduser().resolve()
+    job_file: Optional[Path] = None
+    job: Optional[dict[str, Any]] = None
+
+    if job_path is not None:
+        jp = Path(job_path).expanduser()
+        if jp.is_file():
+            try:
+                loaded = json.loads(jp.read_text(encoding="utf-8"))
+            except Exception:
+                loaded = None
+            if isinstance(loaded, dict):
+                job_file, job = jp, loaded
+    if job is None and job_key:
+        job_file, job = find_job_by_key(data_root, str(job_key))
+    if job is None or job_file is None:
+        return {"ok": False, "error": "job_not_found", "job_key": job_key}
+
+    key = str(job.get("job_key") or job_file.stem.replace(".job", ""))
+    family = str(job.get("family_slug") or "").strip()
+    if not family:
+        return {"ok": False, "error": "missing_family", "job_key": key}
+
+    owned = get_owned_prompt(job) or ensure_owned_prompt_from_bindings(job, data_root=data_root)
+    if owned is None and positive is None and negative is None:
+        return {"ok": False, "error": "no_owned_prompt", "job_key": key}
+
+    pos = str(positive if positive is not None else (owned or {}).get("positive") or "")
+    neg = str(negative if negative is not None else (owned or {}).get("negative") or "")
+    label_s = str(label or (owned or {}).get("label") or "").strip() or None
+    parent = resolve_prompt_parent_path(job)
+
+    result = promote_prompt_to_library(
+        data_root=data_root,
+        family_slug=family,
+        positive=pos,
+        negative=neg,
+        mode=mode,
+        label=label_s,
+        note=note,
+        promoted_from_job=key,
+        parent_path=parent,
+    )
+    if not result.get("ok"):
+        result["job_key"] = key
+        return result
+
+    # Point job provenance at the new library file (safe even when frozen).
+    if owned is not None and result.get("path"):
+        owned["source_profile"] = str(result["path"])
+        if result.get("doc") and isinstance(result["doc"], dict):
+            if result["doc"].get("label"):
+                owned["label"] = result["doc"]["label"]
+            if result["doc"].get("content_hash"):
+                owned["content_hash"] = result["doc"]["content_hash"]
+        job["prompt"] = owned
+        # Also refresh binding path so pool pickers see the same file.
+        bindings = job.get("bindings") if isinstance(job.get("bindings"), dict) else {}
+        meta = bindings.get("prompt_profile") if isinstance(bindings.get("prompt_profile"), dict) else {}
+        if isinstance(meta, dict):
+            meta["path"] = str(result["path"])
+            bindings["prompt_profile"] = meta
+            job["bindings"] = bindings
+        atomic_write_json(job_file, job)
+
+    result["job_key"] = key
+    result["family_slug"] = family
+    result["job_path"] = str(job_file)
+    return result
 
 
 def zero_vhs_load_window_on_workflow(workflow: dict[str, Any]) -> dict[str, Any]:

@@ -1,6 +1,7 @@
 import React, { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { fetchShapeFactoryJsonPeek } from "./api";
+import { PromptChunkDiff, PromptSnowflakeChip } from "./PromptChunks";
 import type { WorkProductPromptProfile, WorkProductPromptRow } from "./types";
 
 type PeekPos = { top: number; left: number; maxHeight: number };
@@ -194,21 +195,30 @@ export function JsonPeekButton({ path, label }: { path: string; label: string })
 export function PromptMarkupTable({
   title,
   rows,
+  fallbackText,
 }: {
   title: string;
   rows: WorkProductPromptRow[];
+  /** Shown as a single unweighted row when markup decode produced nothing. */
+  fallbackText?: string;
 }) {
-  if (!rows.length) {
+  const effectiveRows =
+    rows.length > 0
+      ? rows
+      : String(fallbackText || "").trim()
+        ? [{ text: String(fallbackText).trim(), weight: 1, raw: String(fallbackText) }]
+        : [];
+  if (!effectiveRows.length) {
     return (
       <div className="work-product-prompt-table-wrap">
-        <div className="work-product-prompt-table__title">{title}</div>
+        {title ? <div className="work-product-prompt-table__title">{title}</div> : null}
         <div className="work-product-prompt-table__empty">—</div>
       </div>
     );
   }
   return (
     <div className="work-product-prompt-table-wrap">
-      <div className="work-product-prompt-table__title">{title}</div>
+      {title ? <div className="work-product-prompt-table__title">{title}</div> : null}
       <table className="work-product-prompt-table">
         <thead>
           <tr>
@@ -219,7 +229,7 @@ export function PromptMarkupTable({
           </tr>
         </thead>
         <tbody>
-          {rows.map((row, i) => {
+          {effectiveRows.map((row, i) => {
             const w = Number(row.weight);
             const emphasis = !Number.isFinite(w) ? 0 : Math.max(0, Math.min(1, (w - 1) / 1.2));
             return (
@@ -251,6 +261,7 @@ export function PromptPeekButton({ prompt, label }: { prompt: WorkProductPromptP
   const panelId = useId();
   const [open, setOpen] = useState(false);
   const [pinned, setPinned] = useState(false);
+  const [showDiff, setShowDiff] = useState(false);
   const [pos, setPos] = useState<PeekPos>({ top: 0, left: 0, maxHeight: 360 });
 
   const clearTimers = () => {
@@ -287,6 +298,7 @@ export function PromptPeekButton({ prompt, label }: { prompt: WorkProductPromptP
     clearTimers();
     setPinned(false);
     setOpen(false);
+    setShowDiff(false);
   };
 
   useLayoutEffect(() => {
@@ -330,6 +342,9 @@ export function PromptPeekButton({ prompt, label }: { prompt: WorkProductPromptP
   const title = prompt.label || prompt.basename || label;
   const posRows = prompt.positive_rows || [];
   const negRows = prompt.negative_rows || [];
+  const seedPos = prompt.seed?.positive_rows || [];
+  const seedNeg = prompt.seed?.negative_rows || [];
+  const canDiff = Boolean(prompt.snowflake && prompt.seed);
 
   return (
     <>
@@ -359,6 +374,9 @@ export function PromptPeekButton({ prompt, label }: { prompt: WorkProductPromptP
       >
         {label}
         <span className="work-product-json-link__tag">prompt</span>
+        {prompt.snowflake ? (
+          <span className="work-product-json-link__tag work-product-json-link__tag--snowflake">snowflake</span>
+        ) : null}
       </button>
       {open
         ? createPortal(
@@ -379,7 +397,13 @@ export function PromptPeekButton({ prompt, label }: { prompt: WorkProductPromptP
               <div className="work-product-json-pop__head">
                 <strong className="work-product-json-pop__title">{title}</strong>
                 <div className="work-product-json-pop__actions">
+                  <PromptSnowflakeChip prompt={prompt} />
                   {pinned ? <span className="work-product-json-pop__note">pinned</span> : null}
+                  {canDiff ? (
+                    <button type="button" className="drt-btn" onClick={() => setShowDiff((v) => !v)}>
+                      {showDiff ? "Hide diff" : "Show diff"}
+                    </button>
+                  ) : null}
                   {prompt.path ? <JsonPeekButton path={prompt.path} label="raw json" /> : null}
                   <button type="button" className="work-product-json-pop__close" onClick={closePeek} aria-label="Close">
                     ×
@@ -396,11 +420,18 @@ export function PromptPeekButton({ prompt, label }: { prompt: WorkProductPromptP
                   <div className="work-product-prompt-table__empty">Prompt file missing</div>
                 ) : prompt.error ? (
                   <div className="work-product-prompt-table__empty">{prompt.error}</div>
+                ) : showDiff && canDiff ? (
+                  <>
+                    <PromptChunkDiff title="Positive" seedRows={seedPos} jobRows={posRows} />
+                    {negRows.length > 0 || seedNeg.length > 0 || (prompt.negative && prompt.negative.trim()) ? (
+                      <PromptChunkDiff title="Negative" seedRows={seedNeg} jobRows={negRows} />
+                    ) : null}
+                  </>
                 ) : (
                   <>
-                    <PromptMarkupTable title="Positive" rows={posRows} />
+                    <PromptMarkupTable title="Positive" rows={posRows} fallbackText={prompt.positive || undefined} />
                     {negRows.length > 0 || (prompt.negative && prompt.negative.trim()) ? (
-                      <PromptMarkupTable title="Negative" rows={negRows} />
+                      <PromptMarkupTable title="Negative" rows={negRows} fallbackText={prompt.negative || undefined} />
                     ) : null}
                   </>
                 )}
