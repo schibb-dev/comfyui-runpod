@@ -129,6 +129,7 @@ export function ComfyLivePreview({
 }) {
   const [bust, setBust] = useState(() => Date.now());
   const [hasFrame, setHasFrame] = useState(false);
+  const [imgFailed, setImgFailed] = useState(false);
   const { status, nowTick } = useComfyLiveStatus(promptId);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const frameUrlsRef = useRef<Map<number, string>>(new Map());
@@ -139,9 +140,20 @@ export function ComfyLivePreview({
   useEffect(() => {
     if (status?.has_preview) {
       setHasFrame(true);
+      setImgFailed(false);
       setBust(Date.now());
     }
   }, [status?.has_preview, status?.updated_at]);
+
+  // While running, periodically re-bust the still preview so a 204/race doesn't stick forever.
+  useEffect(() => {
+    const running = status?.status === "running" || (status?.value != null && status?.finished_at == null);
+    if (!running) return;
+    const id = window.setInterval(() => {
+      setBust(Date.now());
+    }, hasFrame && !imgFailed ? 2500 : 900);
+    return () => window.clearInterval(id);
+  }, [status?.status, status?.value, status?.finished_at, hasFrame, imgFailed, promptId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -163,6 +175,7 @@ export function ComfyLivePreview({
         img.src = url;
         frameImgsRef.current.set(idx, img);
         setHasFrame(true);
+        setImgFailed(false);
       } catch {
         /* ignore */
       }
@@ -246,6 +259,7 @@ export function ComfyLivePreview({
 
   const { value, max, pct, elapsedClient, eta } = liveTimingParts(status, nowTick, submittedAt);
   const animate = (status?.frames_count || 0) >= 2;
+  const showStill = !animate && (hasFrame || Boolean(status?.has_preview));
 
   return (
     <div className={["work-product-live", className].filter(Boolean).join(" ")}>
@@ -279,14 +293,18 @@ export function ComfyLivePreview({
       <div className="work-product-live__frame">
         {animate ? (
           <canvas className="work-product-live__img work-product-live__canvas" ref={canvasRef} />
-        ) : hasFrame || status?.has_preview ? (
+        ) : showStill ? (
           <img
             className="work-product-live__img"
             src={comfyLivePreviewUrl(promptId, bust)}
             alt={`Live preview ${promptId}`}
-            onLoad={() => setHasFrame(true)}
+            onLoad={() => {
+              setHasFrame(true);
+              setImgFailed(false);
+            }}
             onError={() => {
-              /* 204 / missing — keep waiting state */
+              setImgFailed(true);
+              setHasFrame(false);
             }}
           />
         ) : (

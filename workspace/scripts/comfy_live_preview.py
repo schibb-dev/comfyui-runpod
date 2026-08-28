@@ -27,11 +27,15 @@ DEFAULT_CLIENT_IDS: Tuple[str, ...] = (
     "shape-factory",
     "factory-map-ui",
     "experiments-ui",
+    "shape_factory_validate",
 )
 DEFAULT_MAX_ENTRIES = 32
 DEFAULT_FINISHED_TTL_S = 45.0
 DEFAULT_STALE_TTL_S = 600.0
 DEFAULT_MAX_VHS_FRAMES = 64
+# Binary preview frames sometimes arrive before/without prompt_id metadata.
+DEFAULT_ORPHAN_TTL_S = 8.0
+DEFAULT_ORPHAN_MAX = 12
 
 
 def ws_url_from_server(server: str, *, client_id: str) -> str:
@@ -243,6 +247,8 @@ class LivePreviewCache:
         finished_ttl_s: float = DEFAULT_FINISHED_TTL_S,
         stale_ttl_s: float = DEFAULT_STALE_TTL_S,
         max_vhs_frames: int = DEFAULT_MAX_VHS_FRAMES,
+        orphan_ttl_s: float = DEFAULT_ORPHAN_TTL_S,
+        orphan_max: int = DEFAULT_ORPHAN_MAX,
     ) -> None:
         self._lock = threading.RLock()
         self._by_pid: Dict[str, LivePreviewEntry] = {}
@@ -250,6 +256,12 @@ class LivePreviewCache:
         self.finished_ttl_s = float(finished_ttl_s)
         self.stale_ttl_s = float(stale_ttl_s)
         self.max_vhs_frames = max(1, int(max_vhs_frames))
+        self.orphan_ttl_s = float(orphan_ttl_s)
+        self.orphan_max = max(1, int(orphan_max))
+        # Shared across WS client threads — last prompt known to be executing.
+        self._running_pid: Optional[str] = None
+        # Frames that arrived without a resolvable prompt_id (await attach).
+        self._orphans: List[Tuple[float, bytes, str, Optional[int]]] = []
 
     def _touch(self, prompt_id: str) -> LivePreviewEntry:
         pid = str(prompt_id or "").strip()
@@ -259,6 +271,79 @@ class LivePreviewCache:
             self._by_pid[pid] = ent
         ent.updated_at = time.time()
         return ent
+
+    def _mark_running(self, prompt_id: str) -> None:
+        pid = str(prompt_id or "").strip()
+        if pid:
+            self._running_pid = pid
+
+    def _clear_running_if(self, prompt_id: str) -> None:
+        pid = str(prompt_id or "").strip()
+        if pid and self._running_pid == pid:
+            self._running_pid = None
+
+    def _prune_orphans_locked(self) -> None:
+        now = time.time()
+        self._orphans = [(t, *rest) for t, *rest in self._orphans if (now - t) <= self.orphan_ttl_s]
+        if len(self._orphans) > self.orphan_max:
+            self._orphans = self._orphans[-self.orphan_max :]
+
+    def guess_preview_pid(self, preferred: Optional[str] = None) -> Optional[str]:
+        """Best-effort prompt_id for a binary frame that lacks metadata."""
+        pref = str(preferred or "").strip()
+        with self._lock:
+            if pref and pref in self._by_pid:
+                return pref
+            running = str(self._running_pid or "").strip()
+            if running and running in self._by_pid:
+                ent = self._by_pid[running]
+                if ent.status in ("running", "unknown"):
+                    return running
+            active = [
+                e
+                for e in self._by_pid.values()
+                if e.status == "running" and e.finished_at is None
+            ]
+            if len(active) == 1:
+                return active[0].prompt_id
+            if active:
+                active.sort(key=lambda e: e.updated_at, reverse=True)
+                return active[0].prompt_id
+            if running:
+                return running
+            return pref or None
+
+    def stash_orphan_preview(
+        self,
+        image: bytes,
+        mime: str,
+        *,
+        frame_index: Optional[int] = None,
+    ) -> None:
+        if not image:
+            return
+        with self._lock:
+            self._prune_orphans_locked()
+            self._orphans.append((time.time(), image, mime or "image/jpeg", frame_index))
+            if len(self._orphans) > self.orphan_max:
+                self._orphans = self._orphans[-self.orphan_max :]
+
+    def flush_orphans_to(self, prompt_id: str) -> int:
+        """Attach buffered orphan frames to ``prompt_id``. Returns count attached."""
+        pid = str(prompt_id or "").strip()
+        if not pid:
+            return 0
+        with self._lock:
+            self._prune_orphans_locked()
+            if not self._orphans:
+                return 0
+            batch = list(self._orphans)
+            self._orphans.clear()
+        n = 0
+        for _t, image, mime, frame_idx in batch:
+            self.on_preview_bytes(pid, image, mime, frame_index=frame_idx)
+            n += 1
+        return n
 
     def _evict(self) -> None:
         now = time.time()
@@ -297,7 +382,10 @@ class LivePreviewCache:
             return None
         # VHS emits length/rate without prompt_id — attach to current execution.
         if msg_type == "VHS_latentpreview":
-            pid = str(current_pid or "").strip()
+            pid = str(current_pid or "").strip() or str(self._running_pid or "").strip()
+            if not pid:
+                # Fall back to sole running entry outside the lock-held section below.
+                pid = str(self.guess_preview_pid() or "").strip()
             if not pid:
                 return None
             with self._lock:
@@ -318,6 +406,7 @@ class LivePreviewCache:
                     ent.started_at = time.time()
                 ent.status = "running"
                 ent.finished_at = None
+                self._mark_running(pid)
                 self._evict()
             return pid
 
@@ -325,6 +414,7 @@ class LivePreviewCache:
         if not isinstance(pid, str) or not pid.strip():
             return None
         pid = pid.strip()
+        flush_after = False
         with self._lock:
             ent = self._touch(pid)
             if msg_type == "execution_start":
@@ -338,6 +428,8 @@ class LivePreviewCache:
                 ent.image = None
                 ent.value = None
                 ent.max = None
+                self._mark_running(pid)
+                flush_after = True
             elif msg_type == "executing":
                 node = data.get("node")
                 if node is None:
@@ -346,12 +438,14 @@ class LivePreviewCache:
                     ent.finished_at = time.time()
                     if ent.started_at is None:
                         ent.started_at = ent.finished_at
+                    self._clear_running_if(pid)
                 else:
                     ent.status = "running"
                     ent.node = str(node)
                     ent.finished_at = None
                     if ent.started_at is None:
                         ent.started_at = time.time()
+                    self._mark_running(pid)
             elif msg_type == "progress":
                 try:
                     ent.value = int(data.get("value"))
@@ -365,23 +459,29 @@ class LivePreviewCache:
                 ent.finished_at = None
                 if ent.started_at is None:
                     ent.started_at = time.time()
+                self._mark_running(pid)
             elif msg_type == "execution_success":
                 ent.status = "done"
                 ent.finished_at = time.time()
                 if ent.started_at is None:
                     ent.started_at = ent.finished_at
+                self._clear_running_if(pid)
             elif msg_type == "execution_error":
                 ent.status = "error"
                 ent.finished_at = time.time()
                 if ent.started_at is None:
                     ent.started_at = ent.finished_at
+                self._clear_running_if(pid)
             elif msg_type == "execution_interrupted":
                 ent.status = "interrupted"
                 ent.finished_at = time.time()
                 if ent.started_at is None:
                     ent.started_at = ent.finished_at
+                self._clear_running_if(pid)
             self._evict()
-            return pid
+        if flush_after:
+            self.flush_orphans_to(pid)
+        return pid
 
     def on_preview_bytes(
         self,
@@ -568,6 +668,10 @@ class LivePreviewBridge:
         image, mime, frame_idx, meta_pid = parsed
         pid = (meta_pid or current_pid or "").strip()
         if not pid:
+            pid = str(self.cache.guess_preview_pid() or "").strip()
+        if not pid:
+            # Frame arrived before execution_start on this socket — hold briefly.
+            self.cache.stash_orphan_preview(image, mime, frame_index=frame_idx)
             return
         self.cache.on_preview_bytes(pid, image, mime, frame_index=frame_idx)
 

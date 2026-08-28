@@ -144,6 +144,32 @@ class CacheTests(unittest.TestCase):
             cache.on_preview_bytes(pid, b"\xff\xd8" + bytes([i]) * 8, "image/jpeg")
         self.assertLessEqual(len(cache.status_items()), 3)
 
+    def test_orphan_flush_on_execution_start(self) -> None:
+        cache = LivePreviewCache(max_entries=8, orphan_ttl_s=5.0)
+        jpeg = b"\xff\xd8\xff" + b"\x22" * 12
+        cache.stash_orphan_preview(jpeg, "image/jpeg", frame_index=0)
+        self.assertIsNone(cache.get_image("later"))
+        cache.on_text_event("execution_start", {"prompt_id": "later"})
+        got = cache.get_image("later")
+        self.assertIsNotNone(got)
+        assert got is not None
+        self.assertEqual(got[0], jpeg)
+        st = cache.status_items(["later"])[0]
+        self.assertTrue(st["has_preview"])
+        self.assertEqual(st["frames_count"], 1)
+
+    def test_guess_preview_pid_uses_running(self) -> None:
+        cache = LivePreviewCache(max_entries=8)
+        cache.on_text_event("execution_start", {"prompt_id": "run-a"})
+        cache.on_text_event("progress", {"prompt_id": "run-a", "value": 1, "max": 10})
+        self.assertEqual(cache.guess_preview_pid(), "run-a")
+        jpeg = b"\xff\xd8\xffyy"
+        # Simulate binary without metadata attaching via guess
+        pid = cache.guess_preview_pid()
+        assert pid is not None
+        cache.on_preview_bytes(pid, jpeg, "image/jpeg")
+        self.assertEqual(cache.get_image("run-a")[0], jpeg)
+
 
 if __name__ == "__main__":
     unittest.main()
