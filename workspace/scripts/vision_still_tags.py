@@ -3,7 +3,8 @@
 Still auto-tagger store + batch runner (PromptGen-large via Comfy).
 
 SQLite at <data_root>/shape_factory/still_tags.sqlite — not a monolith JSON blob.
-Gallery enqueues runs; a background worker submits Comfy Florence jobs and writes events.
+Gallery enqueues runs into a backlog; an index-hour drainer submits Comfy Florence
+jobs (prefer front-of-queue) and writes events. See docs/STILL_TAG_INDEX_HOUR_PLAN.md.
 """
 
 from __future__ import annotations
@@ -29,10 +30,24 @@ DEFAULT_PIN_POLICY = "cohort_x2_pg_large_tags"
 DEFAULT_TASK = "prompt_gen_tags"
 DEFAULT_LIMIT = 12
 DEFAULT_COMFY_SERVER = "http://127.0.0.1:8188"
+SCHEDULE_BASENAME = "still_tag_schedule.json"
+DEFAULT_SCHEDULE: Dict[str, Any] = {
+    "schema_version": 1,
+    "enabled": False,
+    "timezone": "America/New_York",
+    "window_start": "02:00",
+    "window_duration_min": 180,
+    "front": True,
+    "max_inflight": 1,
+    "max_items_per_tick": 48,
+    "comfy_server": None,
+    "auto_drain_on_enqueue": False,
+}
 _SHA256_RE = re.compile(r"([0-9a-f]{64})", re.IGNORECASE)
 
 _worker_lock = threading.Lock()
 _worker_thread: Optional[threading.Thread] = None
+_drain_thread: Optional[threading.Thread] = None
 
 
 def _utc_now_iso() -> str:
@@ -694,6 +709,7 @@ def process_run(
     data_root: Path,
     run_id: str,
     status_dir: Optional[Path] = None,
+    front: bool = False,
 ) -> Dict[str, Any]:
     db_path = default_db_path(data_root=data_root)
     con = connect(db_path)
@@ -717,7 +733,12 @@ def process_run(
             "UPDATE still_tag_runs SET status=?, started_at=? WHERE run_id=?",
             ("running", _utc_now_iso(), run_id),
         )
-        append_event(con, run_id=run_id, kind="started", message=f"provider={provider} server={server}")
+        append_event(
+            con,
+            run_id=run_id,
+            kind="started",
+            message=f"provider={provider} server={server} front={bool(front)}",
+        )
         con.commit()
 
         from vision_slice_runner import CaptionRequest, make_runner  # type: ignore
@@ -731,6 +752,7 @@ def process_run(
             task=DEFAULT_TASK,
             max_new_tokens=256,
             image_mode="upload",
+            front=bool(front),
         )
 
         ndjson_path: Optional[Path] = None
@@ -851,8 +873,13 @@ def process_run(
         con.close()
 
 
-def kick_worker(*, data_root: Path, status_dir: Optional[Path] = None) -> None:
-    """Ensure a background thread is draining queued runs."""
+def kick_worker(
+    *,
+    data_root: Path,
+    status_dir: Optional[Path] = None,
+    front: bool = False,
+) -> None:
+    """Ensure a background thread is draining queued runs (immediate / smoke path)."""
     global _worker_thread
 
     def _loop() -> None:
@@ -874,7 +901,12 @@ def kick_worker(*, data_root: Path, status_dir: Optional[Path] = None) -> None:
             if not row:
                 break
             try:
-                process_run(data_root=data_root, run_id=str(row["run_id"]), status_dir=status_dir)
+                process_run(
+                    data_root=data_root,
+                    run_id=str(row["run_id"]),
+                    status_dir=status_dir,
+                    front=bool(front),
+                )
             except Exception:
                 # process_run should record errors; keep draining
                 time.sleep(0.2)
@@ -885,6 +917,356 @@ def kick_worker(*, data_root: Path, status_dir: Optional[Path] = None) -> None:
         t = threading.Thread(target=_loop, name="still-tag-worker", daemon=True)
         _worker_thread = t
         t.start()
+
+
+def default_schedule_path(*, data_root: Optional[Path] = None) -> Path:
+    return default_db_path(data_root=data_root).parent / SCHEDULE_BASENAME
+
+
+def load_schedule(*, data_root: Optional[Path] = None, path: Optional[Path] = None) -> Dict[str, Any]:
+    p = Path(path) if path is not None else default_schedule_path(data_root=data_root)
+    out = dict(DEFAULT_SCHEDULE)
+    if not p.is_file():
+        return out
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return out
+    if not isinstance(raw, dict):
+        return out
+    for k, v in raw.items():
+        if k in DEFAULT_SCHEDULE or k == "schema_version":
+            out[k] = v
+    return out
+
+
+def save_schedule(
+    schedule: Dict[str, Any],
+    *,
+    data_root: Optional[Path] = None,
+    path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    p = Path(path) if path is not None else default_schedule_path(data_root=data_root)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    merged = dict(DEFAULT_SCHEDULE)
+    if isinstance(schedule, dict):
+        for k, v in schedule.items():
+            if k in DEFAULT_SCHEDULE or k == "schema_version":
+                merged[k] = v
+    merged["schema_version"] = 1
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(json.dumps(merged, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(p)
+    return merged
+
+
+def _parse_hhmm(value: Any) -> Optional[Tuple[int, int]]:
+    s = str(value or "").strip()
+    if not s or ":" not in s:
+        return None
+    try:
+        hh_s, mm_s = s.split(":", 1)
+        hh, mm = int(hh_s), int(mm_s)
+        if 0 <= hh <= 23 and 0 <= mm <= 59:
+            return hh, mm
+    except Exception:
+        return None
+    return None
+
+
+def index_window_status(
+    schedule: Optional[Dict[str, Any]] = None,
+    *,
+    now: Optional[_dt.datetime] = None,
+) -> Dict[str, Any]:
+    """Return whether *now* is inside the configured index window."""
+    sch = dict(DEFAULT_SCHEDULE)
+    if isinstance(schedule, dict):
+        sch.update(schedule)
+    enabled = bool(sch.get("enabled"))
+    start = _parse_hhmm(sch.get("window_start")) or (2, 0)
+    duration = max(1, int(sch.get("window_duration_min") or 180))
+    tz_name = str(sch.get("timezone") or "").strip() or None
+
+    if now is None:
+        now = _dt.datetime.now(tz=_dt.timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=_dt.timezone.utc)
+
+    local = now
+    tz_ok = False
+    if tz_name:
+        try:
+            from zoneinfo import ZoneInfo
+
+            local = now.astimezone(ZoneInfo(tz_name))
+            tz_ok = True
+        except Exception:
+            local = now.astimezone()
+    else:
+        local = now.astimezone()
+
+    start_dt = local.replace(hour=start[0], minute=start[1], second=0, microsecond=0)
+    end_dt = start_dt + _dt.timedelta(minutes=duration)
+    # Window may wrap past midnight
+    if end_dt <= start_dt:
+        end_dt = start_dt + _dt.timedelta(minutes=duration)
+
+    in_window = False
+    if local < start_dt:
+        # maybe previous day's window still open (wrap)
+        prev_start = start_dt - _dt.timedelta(days=1)
+        prev_end = prev_start + _dt.timedelta(minutes=duration)
+        if prev_start <= local < prev_end:
+            in_window = True
+            start_dt, end_dt = prev_start, prev_end
+    elif start_dt <= local < end_dt:
+        in_window = True
+    else:
+        in_window = False
+
+    reason = "ok" if (enabled and in_window) else (
+        "disabled" if not enabled else "outside_window"
+    )
+    return {
+        "enabled": enabled,
+        "in_window": bool(in_window),
+        "reason": reason,
+        "timezone": tz_name,
+        "timezone_resolved": tz_ok,
+        "local_now": local.replace(microsecond=0).isoformat(),
+        "window_start_local": start_dt.replace(microsecond=0).isoformat(),
+        "window_end_local": end_dt.replace(microsecond=0).isoformat(),
+        "window_duration_min": duration,
+        "front": bool(sch.get("front", True)),
+        "max_inflight": max(1, int(sch.get("max_inflight") or 1)),
+        "max_items_per_tick": max(1, int(sch.get("max_items_per_tick") or 48)),
+        "auto_drain_on_enqueue": bool(sch.get("auto_drain_on_enqueue")),
+        "comfy_server": sch.get("comfy_server"),
+    }
+
+
+def should_auto_drain_on_enqueue(
+    *,
+    data_root: Optional[Path] = None,
+    drain_now: bool = False,
+    schedule: Optional[Dict[str, Any]] = None,
+) -> bool:
+    if drain_now:
+        return True
+    env = str(os.environ.get("STILL_TAG_AUTO_DRAIN") or "").strip().lower()
+    if env in {"1", "true", "yes", "on"}:
+        return True
+    sch = schedule if isinstance(schedule, dict) else load_schedule(data_root=data_root)
+    return bool(sch.get("auto_drain_on_enqueue"))
+
+
+def backlog_stats(*, data_root: Path) -> Dict[str, Any]:
+    db_path = default_db_path(data_root=data_root)
+    ensure_db(db_path)
+    con = connect(db_path)
+    try:
+        queued = con.execute(
+            "SELECT run_id, total, enqueued_at, provider FROM still_tag_runs WHERE status='queued' ORDER BY enqueued_at ASC"
+        ).fetchall()
+        running = con.execute(
+            "SELECT COUNT(*) AS c FROM still_tag_runs WHERE status='running'"
+        ).fetchone()
+        items_total = con.execute("SELECT COUNT(*) AS c FROM still_tag_items").fetchone()
+        items_prov = con.execute(
+            """
+            SELECT COUNT(*) AS c FROM still_tag_items
+            WHERE provisional_tags IS NOT NULL AND provisional_tags != '[]'
+            """
+        ).fetchone()
+        queued_targets = sum(int(r["total"] or 0) for r in queued)
+        return {
+            "ok": True,
+            "db_path": str(db_path),
+            "queued_runs": len(queued),
+            "queued_targets": queued_targets,
+            "running_runs": int(running["c"] if running else 0),
+            "items_total": int(items_total["c"] if items_total else 0),
+            "items_with_provisional": int(items_prov["c"] if items_prov else 0),
+            "oldest_queued_at": queued[0]["enqueued_at"] if queued else None,
+            "queued_run_ids": [str(r["run_id"]) for r in queued[:20]],
+        }
+    finally:
+        con.close()
+
+
+def drain_backlog(
+    *,
+    data_root: Path,
+    status_dir: Optional[Path] = None,
+    force: bool = False,
+    respect_schedule: bool = True,
+    front: Optional[bool] = None,
+    max_items: Optional[int] = None,
+    until_minutes: Optional[float] = None,
+    provider_override: Optional[str] = None,
+    comfy_server_override: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Process queued still-tag runs until empty, item budget, or time/window end.
+
+    ``max_inflight`` is recorded for ops; IH1 processes runs sequentially (one Florence
+    prompt outstanding via process_run's wait loop). Raising inflight is a later pipeline.
+    """
+    sch = load_schedule(data_root=data_root)
+    win = index_window_status(sch)
+    if respect_schedule and not force:
+        if not win["enabled"]:
+            return {"ok": True, "skipped": True, "reason": "schedule_disabled", "window": win}
+        if not win["in_window"]:
+            return {"ok": True, "skipped": True, "reason": "outside_window", "window": win}
+
+    use_front = bool(win["front"] if front is None else front)
+    budget = int(max_items if max_items is not None else win["max_items_per_tick"])
+    budget = max(1, budget)
+    deadline = time.time() + float(until_minutes) * 60.0 if until_minutes else None
+    if respect_schedule and not force and win.get("window_end_local"):
+        try:
+            end_local = _dt.datetime.fromisoformat(str(win["window_end_local"]))
+            if end_local.tzinfo is None:
+                end_local = end_local.replace(tzinfo=_dt.timezone.utc)
+            deadline_win = end_local.timestamp()
+            deadline = min(deadline, deadline_win) if deadline is not None else deadline_win
+        except Exception:
+            pass
+
+    ensure_db(default_db_path(data_root=data_root))
+    done_items = 0
+    runs_processed = 0
+    errors = 0
+    run_results: List[Dict[str, Any]] = []
+
+    while done_items < budget:
+        if deadline is not None and time.time() >= deadline:
+            break
+        if respect_schedule and not force:
+            win_now = index_window_status(sch)
+            if not win_now["in_window"]:
+                break
+
+        con = connect(default_db_path(data_root=data_root))
+        try:
+            row = con.execute(
+                """
+                SELECT run_id, total FROM still_tag_runs
+                WHERE status='queued'
+                ORDER BY enqueued_at ASC
+                LIMIT 1
+                """
+            ).fetchone()
+        finally:
+            con.close()
+        if not row:
+            break
+
+        run_id = str(row["run_id"])
+        # Optional: skip starting a huge run when almost out of budget and already did work
+        total = int(row["total"] or 0)
+        if done_items > 0 and total > (budget - done_items) and (budget - done_items) < total:
+            break
+
+        if comfy_server_override or provider_override:
+            con = connect(default_db_path(data_root=data_root))
+            try:
+                if comfy_server_override:
+                    con.execute(
+                        "UPDATE still_tag_runs SET comfy_server=? WHERE run_id=?",
+                        (str(comfy_server_override).rstrip("/"), run_id),
+                    )
+                if provider_override:
+                    con.execute(
+                        "UPDATE still_tag_runs SET provider=? WHERE run_id=?",
+                        (str(provider_override), run_id),
+                    )
+                con.commit()
+            finally:
+                con.close()
+
+        try:
+            out = process_run(
+                data_root=data_root,
+                run_id=run_id,
+                status_dir=status_dir,
+                front=use_front,
+            )
+        except Exception as e:
+            errors += 1
+            run_results.append({"run_id": run_id, "ok": False, "error": str(e)})
+            time.sleep(0.2)
+            continue
+
+        runs_processed += 1
+        dc = int((out.get("run") or {}).get("done_count") or out.get("done_count") or 0)
+        if not dc and out.get("ok"):
+            # fall back: count from returned run
+            r2 = out.get("run") if isinstance(out.get("run"), dict) else {}
+            dc = int(r2.get("done_count") or 0)
+        done_items += max(0, dc)
+        run_results.append(
+            {
+                "run_id": run_id,
+                "ok": bool(out.get("ok")),
+                "done_count": dc,
+                "error": out.get("error"),
+            }
+        )
+
+    return {
+        "ok": True,
+        "skipped": False,
+        "front": use_front,
+        "max_inflight": win["max_inflight"],
+        "budget": budget,
+        "done_items": done_items,
+        "runs_processed": runs_processed,
+        "errors": errors,
+        "window": win,
+        "runs": run_results,
+    }
+
+
+def kick_drain(
+    *,
+    data_root: Path,
+    status_dir: Optional[Path] = None,
+    force: bool = False,
+    respect_schedule: bool = True,
+    front: Optional[bool] = None,
+    max_items: Optional[int] = None,
+    until_minutes: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Spawn a background drain tick (daemon). Returns immediately."""
+    global _drain_thread
+
+    result_box: Dict[str, Any] = {"ok": True, "started": False}
+
+    def _run() -> None:
+        try:
+            result_box["result"] = drain_backlog(
+                data_root=data_root,
+                status_dir=status_dir,
+                force=force,
+                respect_schedule=respect_schedule,
+                front=front,
+                max_items=max_items,
+                until_minutes=until_minutes,
+            )
+        except Exception as e:
+            result_box["result"] = {"ok": False, "error": str(e)}
+
+    with _worker_lock:
+        if _drain_thread is not None and _drain_thread.is_alive():
+            return {"ok": True, "started": False, "reason": "drain_already_running"}
+        t = threading.Thread(target=_run, name="still-tag-drain", daemon=True)
+        _drain_thread = t
+        t.start()
+        result_box["started"] = True
+    return result_box
 
 
 def enrich_still_items(

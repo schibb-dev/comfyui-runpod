@@ -87,7 +87,8 @@ provisional vs editorial in **SQLite**, not a monolith JSON blob). Gallery UI
 **enqueues** tagging (selected / untagged / collection) — no live VLM in the
 request path. Optional ratings on stills later.
 
-**Plan:** [`STILL_AUTO_TAGGER_PLAN.md`](./STILL_AUTO_TAGGER_PLAN.md).
+**Plan:** [`STILL_AUTO_TAGGER_PLAN.md`](./STILL_AUTO_TAGGER_PLAN.md),
+[`STILL_TAG_INDEX_HOUR_PLAN.md`](./STILL_TAG_INDEX_HOUR_PLAN.md) (enqueue backlog → index-hour drain).
 
 ---
 

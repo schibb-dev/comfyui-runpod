@@ -3161,7 +3161,11 @@ def _shape_factory_input_curation_stills_tag_enqueue_payload(cfg: ServerConfig, 
     if d.is_dir() and str(d) not in sys.path:
         sys.path.insert(0, str(d))
     from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
-    from vision_still_tags import enqueue_run, kick_worker  # type: ignore
+    from vision_still_tags import (  # type: ignore
+        enqueue_run,
+        kick_worker,
+        should_auto_drain_on_enqueue,
+    )
 
     data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
     content_ids = body.get("content_ids")
@@ -3181,6 +3185,7 @@ def _shape_factory_input_curation_stills_tag_enqueue_payload(cfg: ServerConfig, 
     dry_run = body.get("dry_run") is True
     provider = str(body.get("provider") or ("dry-run" if dry_run else "comfy")).strip() or "comfy"
     comfy_server = str(body.get("comfy_server") or "").strip() or None
+    drain_now = body.get("drain_now") is True
     status_dir = _shape_factory_still_tag_status_dir(cfg)
     enq = enqueue_run(
         data_root=data_root,
@@ -3194,9 +3199,110 @@ def _shape_factory_input_curation_stills_tag_enqueue_payload(cfg: ServerConfig, 
         dry_run=dry_run,
         status_dir=status_dir,
     )
-    kick_worker(data_root=data_root, status_dir=status_dir)
+    auto = should_auto_drain_on_enqueue(data_root=data_root, drain_now=drain_now)
+    if auto:
+        kick_worker(data_root=data_root, status_dir=status_dir, front=body.get("front") is True)
     enq["ok"] = True
+    enq["drain_kicked"] = bool(auto)
+    enq["queued_for_index_hour"] = not bool(auto)
     return enq
+
+
+def _shape_factory_input_curation_stills_tag_backlog_payload(cfg: ServerConfig) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+    from vision_still_tags import backlog_stats, index_window_status, load_schedule  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    sch = load_schedule(data_root=data_root)
+    stats = backlog_stats(data_root=data_root)
+    stats["schedule"] = sch
+    stats["window"] = index_window_status(sch)
+    return stats
+
+
+def _shape_factory_input_curation_stills_tag_schedule_payload(cfg: ServerConfig) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+    from vision_still_tags import (  # type: ignore
+        default_schedule_path,
+        index_window_status,
+        load_schedule,
+    )
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    sch = load_schedule(data_root=data_root)
+    return {
+        "ok": True,
+        "path": str(default_schedule_path(data_root=data_root)),
+        "schedule": sch,
+        "window": index_window_status(sch),
+    }
+
+
+def _shape_factory_input_curation_stills_tag_schedule_set_payload(
+    cfg: ServerConfig, body: Dict[str, Any]
+) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+    from vision_still_tags import (  # type: ignore
+        default_schedule_path,
+        index_window_status,
+        load_schedule,
+        save_schedule,
+    )
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    cur = load_schedule(data_root=data_root)
+    patch = body.get("schedule") if isinstance(body.get("schedule"), dict) else body
+    if not isinstance(patch, dict):
+        raise ValueError("schedule object required")
+    for k, v in patch.items():
+        if k in cur or k == "schema_version":
+            cur[k] = v
+    saved = save_schedule(cur, data_root=data_root)
+    return {
+        "ok": True,
+        "path": str(default_schedule_path(data_root=data_root)),
+        "schedule": saved,
+        "window": index_window_status(saved),
+    }
+
+
+def _shape_factory_input_curation_stills_tag_drain_payload(
+    cfg: ServerConfig, body: Dict[str, Any]
+) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+    from vision_still_tags import kick_drain  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    status_dir = _shape_factory_still_tag_status_dir(cfg)
+    force = body.get("force") is True
+    respect = body.get("respect_schedule", not force) is not False
+    front = body.get("front")
+    front_b = None if front is None else bool(front)
+    max_items = _safe_int(body.get("max_items"))
+    until = body.get("until_minutes")
+    until_f = float(until) if until is not None and str(until).strip() != "" else None
+    kicked = kick_drain(
+        data_root=data_root,
+        status_dir=status_dir,
+        force=force,
+        respect_schedule=respect and not force,
+        front=front_b,
+        max_items=max_items,
+        until_minutes=until_f,
+    )
+    return {"ok": True, **kicked}
 
 
 def _shape_factory_input_curation_stills_tag_run_payload(cfg: ServerConfig, run_id: str) -> Dict[str, Any]:
@@ -9801,6 +9907,24 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return _json_response(self, 500, {"ok": False, "error": "input_curation_stills_failed", "detail": str(e)})
 
+        if path == "/api/shape-factory/input-curation/stills/tag/backlog":
+            try:
+                payload = _shape_factory_input_curation_stills_tag_backlog_payload(cfg)
+                return _json_response(self, 200, payload)
+            except Exception as e:
+                return _json_response(
+                    self, 500, {"ok": False, "error": "still_tag_backlog_failed", "detail": str(e)}
+                )
+
+        if path == "/api/shape-factory/input-curation/stills/tag/schedule":
+            try:
+                payload = _shape_factory_input_curation_stills_tag_schedule_payload(cfg)
+                return _json_response(self, 200, payload)
+            except Exception as e:
+                return _json_response(
+                    self, 500, {"ok": False, "error": "still_tag_schedule_failed", "detail": str(e)}
+                )
+
         if path.startswith("/api/shape-factory/input-curation/stills/tag/runs/"):
             rest = path[len("/api/shape-factory/input-curation/stills/tag/runs/") :].strip("/")
             parts = [p for p in rest.split("/") if p]
@@ -10106,6 +10230,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_shape_factory_input_curation_tags_post()
         if path == "/api/shape-factory/input-curation/stills/tag":
             return self._handle_shape_factory_input_curation_stills_tag_post()
+        if path == "/api/shape-factory/input-curation/stills/tag/schedule":
+            return self._handle_shape_factory_input_curation_stills_tag_schedule_post()
+        if path == "/api/shape-factory/input-curation/stills/tag/drain":
+            return self._handle_shape_factory_input_curation_stills_tag_drain_post()
         if path == "/api/shape-factory/hourly-schedule":
             return self._handle_shape_factory_hourly_schedule_post()
         if path == "/api/vision/tag-judgment":
@@ -10230,6 +10358,40 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return _json_response(
                 self, 500, {"ok": False, "error": "input_curation_stills_tag_failed", "detail": str(e)}
+            )
+        return _json_response(self, 200, payload)
+
+    def _handle_shape_factory_input_curation_stills_tag_schedule_post(self) -> None:
+        """POST /api/shape-factory/input-curation/stills/tag/schedule — update index-hour knobs."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _shape_factory_input_curation_stills_tag_schedule_set_payload(
+                cfg, body if isinstance(body, dict) else {}
+            )
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except Exception as e:
+            return _json_response(
+                self, 500, {"ok": False, "error": "still_tag_schedule_set_failed", "detail": str(e)}
+            )
+        return _json_response(self, 200, payload)
+
+    def _handle_shape_factory_input_curation_stills_tag_drain_post(self) -> None:
+        """POST /api/shape-factory/input-curation/stills/tag/drain — kick an index-hour drain tick."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            body = {}
+        if not isinstance(body, dict):
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": "JSON object required"})
+        try:
+            payload = _shape_factory_input_curation_stills_tag_drain_payload(cfg, body)
+        except Exception as e:
+            return _json_response(
+                self, 500, {"ok": False, "error": "still_tag_drain_failed", "detail": str(e)}
             )
         return _json_response(self, 200, payload)
 

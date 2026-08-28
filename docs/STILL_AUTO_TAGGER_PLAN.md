@@ -32,6 +32,9 @@
 6. **GPU placement stays flexible until load is known.** Do not hard-pick “always drain” vs
    “always remote.” Worker targets a **CaptionRunner** endpoint (same V1 contract); ops
    chooses local Comfy (concert / quiet periods) or remote Comfy (RunPod) per run or env.
+7. **Index hour (2026-08-28):** Enqueue ≠ drain. Gallery builds a SQLite backlog anytime;
+   a reserved window drains Florence prompts (prefer Comfy `front`, capped in-flight) so
+   tagging does not thrash with I2V mid-day. See [`STILL_TAG_INDEX_HOUR_PLAN.md`](./STILL_TAG_INDEX_HOUR_PLAN.md).
 
 ---
 
@@ -314,9 +317,11 @@ whether `effective` feeds pool facets later.
 
 **Exit:** operator tags from UI day-to-day without CLI.
 
-### T4 — Batch ops / runners
+### T4 — Batch ops / runners / index hour
 
 - Collection / untagged / retag at scale; documented Docker/RunPod drain recipes.
+- **Index-hour drainer** (enqueue≠drain, schedule window, front + inflight caps) —
+  [`STILL_TAG_INDEX_HOUR_PLAN.md`](./STILL_TAG_INDEX_HOUR_PLAN.md).
 
 ### T5 — V2 handoff (later)
 
@@ -357,6 +362,7 @@ whether `effective` feeds pool facets later.
 - [x] Worker: **always background** + simple event monitoring (poll `events?after_id=`)
 - [x] Pin: read from `output/_status/vision_v3a_tag_pin.json` (no vendored copy unless path missing)
 - [x] GPU: **flexible** — local Comfy (concert / idle) and/or RunPod Comfy via existing runner; no hard drain-vs-sidecar pick
+- [x] **Index hour:** enqueue builds backlog; scheduled/forced drain owns Florence (see index-hour plan)
 - [ ] Default `COMFY_SERVER` + whether UI exposes “use remote” / batch size vs env-only
 - [ ] Measured steady tags/min + preferred large-batch size (fill after first real runs)
 - [ ] Whether `effective` tags feed factory pool facets later

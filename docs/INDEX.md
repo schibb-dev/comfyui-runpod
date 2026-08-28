@@ -48,6 +48,7 @@ This page mirrors the planning-relevant sections of the repo-root [DOCUMENTATION
 | [HOURLY_UTILITY_PLAN.md](HOURLY_UTILITY_PLAN.md) | Hourlies as ruleset utility: policy file, clip ★+newer bind, decision ledger, Home UI. |
 | [STILL_GALLERY_HUB_PLAN.md](STILL_GALLERY_HUB_PLAN.md) | Still gallery as launch hub: Submit / collections / map / ratings from one image. |
 | [STILL_AUTO_TAGGER_PLAN.md](STILL_AUTO_TAGGER_PLAN.md) | Still auto-tagger (PromptGen-large pin → provisional gallery tags). |
+| [STILL_TAG_INDEX_HOUR_PLAN.md](STILL_TAG_INDEX_HOUR_PLAN.md) | Index-hour drain: enqueue≠GPU; reserved window + front/inflight caps. |
 | [HOURLY_CLIP_GUIDANCE_PLAN.md](HOURLY_CLIP_GUIDANCE_PLAN.md) | Stub → `HOURLY_UTILITY_PLAN.md` (clip bind = U0/U2). |
 | [HOURLY_RULESET_UTILITY.md](HOURLY_RULESET_UTILITY.md) | Stub → `HOURLY_UTILITY_PLAN.md` (policy/ledger/UI = U1/U3/U4). |
 | [BUCKET_MODEL_PHASE2_PLAN.md](BUCKET_MODEL_PHASE2_PLAN.md) | Work items, pool pages, multi-route Advance. |

@@ -246,6 +246,7 @@ class ComfyRunnerConfig:
     timeout_s: float = 900.0
     poll_interval_s: float = 1.0
     submit_timeout_s: float = 60.0
+    front: bool = False
 
 
 class ComfyCaptionRunner:
@@ -323,6 +324,8 @@ class ComfyCaptionRunner:
             seed=self.cfg.seed,
         )
         payload = {"prompt": prompt, "client_id": self.cfg.client_id}
+        if self.cfg.front:
+            payload["front"] = True
         submit = _http_json(
             "POST",
             f"{self.server}/prompt",
@@ -393,6 +396,7 @@ def make_runner(
     dry_run: bool = False,
     task: str = DEFAULT_COMFY_TASK,
     max_new_tokens: int = 64,
+    front: bool = False,
 ) -> CaptionRunner:
     """
     Factory used by vision_slice_caption_run.
@@ -416,6 +420,7 @@ def make_runner(
                 runner_label=label,
                 image_mode=image_mode,
                 comfy_input_root=comfy_input_root,
+                front=bool(front),
             )
         )
 

@@ -2,9 +2,12 @@
 """
 CLI / drain entry for still auto-tagger (local Comfy or dry-run).
 
-Example:
+Prefer index-hour drain for GPU work:
+  vision_still_tag_run.py --enqueue-only --limit 12
+  vision_still_tag_drain.py --force --front --max-items 12
+
+Example (legacy one-shot smoke — processes immediately):
   python3 workspace/scripts/vision_still_tag_run.py --dry-run --limit 12
-  python3 workspace/scripts/vision_still_tag_run.py --limit 12 --comfy-server http://127.0.0.1:8188
 """
 
 from __future__ import annotations
@@ -30,7 +33,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--comfy-server", default=None)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--run-id", default=None, help="Process an existing queued run_id only")
-    ap.add_argument("--enqueue-only", action="store_true", help="Enqueue and exit (no process)")
+    ap.add_argument("--enqueue-only", action="store_true", help="Enqueue and exit (no GPU; index-hour default)")
+    ap.add_argument(
+        "--drain-now",
+        action="store_true",
+        help="After enqueue, kick immediate drain (smoke escape hatch)",
+    )
+    ap.add_argument("--front", action="store_true", help="When draining/processing, use Comfy front=true")
     args = ap.parse_args(argv)
 
     scripts = Path(__file__).resolve().parent
@@ -42,6 +51,7 @@ def main(argv: list[str] | None = None) -> int:
         enqueue_run,
         kick_worker,
         process_run,
+        should_auto_drain_on_enqueue,
     )
 
     repo = scripts.parents[1]
@@ -58,7 +68,12 @@ def main(argv: list[str] | None = None) -> int:
     ).expanduser()
 
     if args.run_id:
-        out = process_run(data_root=data_root, run_id=args.run_id, status_dir=status_dir)
+        out = process_run(
+            data_root=data_root,
+            run_id=args.run_id,
+            status_dir=status_dir,
+            front=bool(args.front),
+        )
         print(json.dumps(out, indent=2))
         return 0 if out.get("ok") else 1
 
@@ -76,11 +91,22 @@ def main(argv: list[str] | None = None) -> int:
         status_dir=status_dir,
     )
     print(json.dumps({**enq, "db_path": str(default_db_path(data_root=data_root))}, indent=2))
-    if args.enqueue_only:
-        kick_worker(data_root=data_root, status_dir=status_dir)
-        return 0 if enq.get("ok") else 1
+    if not enq.get("ok"):
+        return 1
 
-    out = process_run(data_root=data_root, run_id=enq["run_id"], status_dir=status_dir)
+    if args.enqueue_only:
+        if should_auto_drain_on_enqueue(data_root=data_root, drain_now=bool(args.drain_now)):
+            kick_worker(data_root=data_root, status_dir=status_dir, front=bool(args.front))
+            print(json.dumps({"auto_drain_kicked": True}, indent=2))
+        return 0
+
+    # Legacy one-shot: process this run immediately (smoke / debug).
+    out = process_run(
+        data_root=data_root,
+        run_id=enq["run_id"],
+        status_dir=status_dir,
+        front=bool(args.front),
+    )
     print(json.dumps(out, indent=2))
     return 0 if out.get("ok") else 1
 
