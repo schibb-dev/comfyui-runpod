@@ -3291,7 +3291,7 @@ def _shape_factory_input_curation_stills_tag_drain_payload(
     if d.is_dir() and str(d) not in sys.path:
         sys.path.insert(0, str(d))
     from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
-    from vision_still_tags import kick_drain  # type: ignore
+    from vision_still_tags import drain_backlog, kick_drain  # type: ignore
 
     data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
     status_dir = _shape_factory_still_tag_status_dir(cfg)
@@ -3302,6 +3302,22 @@ def _shape_factory_input_curation_stills_tag_drain_payload(
     max_items = _safe_int(body.get("max_items"))
     until = body.get("until_minutes")
     until_f = float(until) if until is not None and str(until).strip() != "" else None
+    sync = body.get("sync") is True
+    provider = str(body.get("provider") or "").strip() or None
+    comfy_server = str(body.get("comfy_server") or "").strip() or None
+    if sync:
+        result = drain_backlog(
+            data_root=data_root,
+            status_dir=status_dir,
+            force=force,
+            respect_schedule=respect and not force,
+            front=front_b,
+            max_items=max_items,
+            until_minutes=until_f,
+            provider_override=provider,
+            comfy_server_override=comfy_server,
+        )
+        return {"ok": True, "sync": True, "started": True, "result": result, **{k: result.get(k) for k in ("skipped", "front", "done_items", "runs_processed", "reason") if k in result}}
     kicked = kick_drain(
         data_root=data_root,
         status_dir=status_dir,
@@ -3311,7 +3327,7 @@ def _shape_factory_input_curation_stills_tag_drain_payload(
         max_items=max_items,
         until_minutes=until_f,
     )
-    return {"ok": True, **kicked}
+    return {"ok": True, "sync": False, **kicked}
 
 
 def _shape_factory_input_curation_stills_tag_run_payload(cfg: ServerConfig, run_id: str) -> Dict[str, Any]:

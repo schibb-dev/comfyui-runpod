@@ -63,6 +63,10 @@ import type {
   StillTagEnqueueResponse,
   StillTagEvent,
   StillTagRun,
+  StillTagBacklogResponse,
+  StillTagScheduleResponse,
+  StillTagDrainResponse,
+  StillTagSchedule,
   ShapeFactoryPromptProfile,
   ShapeFactoryMapQueueOverrides,
   FutureRunDraft,
@@ -474,6 +478,8 @@ export async function enqueueShapeFactoryStillTagRun(body: {
   dry_run?: boolean;
   provider?: string;
   comfy_server?: string;
+  drain_now?: boolean;
+  front?: boolean;
 }): Promise<StillTagEnqueueResponse> {
   const r = await fetch("/api/shape-factory/input-curation/stills/tag", {
     method: "POST",
@@ -485,6 +491,73 @@ export async function enqueueShapeFactoryStillTagRun(body: {
     const detail = [j.error, j.detail].filter(Boolean).join(": ");
     throw new Error(
       `POST /api/shape-factory/input-curation/stills/tag failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function fetchShapeFactoryStillTagBacklog(): Promise<StillTagBacklogResponse> {
+  const r = await fetch("/api/shape-factory/input-curation/stills/tag/backlog");
+  const j = (await r.json().catch(() => ({}))) as StillTagBacklogResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET stills/tag/backlog failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function fetchShapeFactoryStillTagSchedule(): Promise<StillTagScheduleResponse> {
+  const r = await fetch("/api/shape-factory/input-curation/stills/tag/schedule");
+  const j = (await r.json().catch(() => ({}))) as StillTagScheduleResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET stills/tag/schedule failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function setShapeFactoryStillTagSchedule(
+  patch: Partial<StillTagSchedule>,
+): Promise<StillTagScheduleResponse> {
+  const r = await fetch("/api/shape-factory/input-curation/stills/tag/schedule", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  const j = (await r.json().catch(() => ({}))) as StillTagScheduleResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST stills/tag/schedule failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function drainShapeFactoryStillTags(body?: {
+  force?: boolean;
+  respect_schedule?: boolean;
+  front?: boolean;
+  max_items?: number;
+  until_minutes?: number;
+  sync?: boolean;
+  provider?: string;
+  comfy_server?: string;
+}): Promise<StillTagDrainResponse> {
+  const r = await fetch("/api/shape-factory/input-curation/stills/tag/drain", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  const j = (await r.json().catch(() => ({}))) as StillTagDrainResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST stills/tag/drain failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
     );
   }
   return j;

@@ -16505,6 +16505,38 @@ tr.disabled:hover td {
 .still-gallery__msg {
   margin: 0 16px 8px;
 }
+.still-gallery__index-hour {
+  margin: 0 16px 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #444);
+  background: var(--panel, #12141a);
+  font-size: 13px;
+}
+.still-gallery__index-hour-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 14px;
+  margin-bottom: 4px;
+}
+.still-gallery__index-hour-hint {
+  margin: 0 0 8px;
+  font-size: 12px;
+}
+.still-gallery__index-hour-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.still-gallery__index-hour-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 4px;
+  font-size: 12px;
+  color: var(--muted, #9aa3b5);
+}
 .still-gallery__run {
   margin: 0 16px 10px;
   padding: 8px 10px;

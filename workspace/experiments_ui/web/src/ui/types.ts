@@ -2301,6 +2301,76 @@ export type StillTagEnqueueResponse = {
   pin_policy?: string;
   provider?: string;
   comfy_server?: string;
+  drain_kicked?: boolean;
+  queued_for_index_hour?: boolean;
+  error?: string;
+  detail?: string;
+};
+
+export type StillTagSchedule = {
+  schema_version?: number;
+  enabled?: boolean;
+  timezone?: string;
+  window_start?: string;
+  window_duration_min?: number;
+  front?: boolean;
+  max_inflight?: number;
+  max_items_per_tick?: number;
+  comfy_server?: string | null;
+  auto_drain_on_enqueue?: boolean;
+};
+
+export type StillTagWindowStatus = {
+  enabled?: boolean;
+  in_window?: boolean;
+  reason?: string;
+  timezone?: string | null;
+  local_now?: string;
+  window_start_local?: string;
+  window_end_local?: string;
+  window_duration_min?: number;
+  front?: boolean;
+  max_inflight?: number;
+  max_items_per_tick?: number;
+  auto_drain_on_enqueue?: boolean;
+  comfy_server?: string | null;
+};
+
+export type StillTagBacklogResponse = {
+  ok: boolean;
+  db_path?: string;
+  queued_runs?: number;
+  queued_targets?: number;
+  running_runs?: number;
+  items_total?: number;
+  items_with_provisional?: number;
+  oldest_queued_at?: string | null;
+  queued_run_ids?: string[];
+  schedule?: StillTagSchedule;
+  window?: StillTagWindowStatus;
+  error?: string;
+  detail?: string;
+};
+
+export type StillTagScheduleResponse = {
+  ok: boolean;
+  path?: string;
+  schedule?: StillTagSchedule;
+  window?: StillTagWindowStatus;
+  error?: string;
+  detail?: string;
+};
+
+export type StillTagDrainResponse = {
+  ok: boolean;
+  started?: boolean;
+  reason?: string;
+  sync?: boolean;
+  result?: Record<string, unknown>;
+  skipped?: boolean;
+  front?: boolean;
+  done_items?: number;
+  runs_processed?: number;
   error?: string;
   detail?: string;
 };

@@ -89,6 +89,8 @@ request path. Optional ratings on stills later.
 
 **Plan:** [`STILL_AUTO_TAGGER_PLAN.md`](./STILL_AUTO_TAGGER_PLAN.md),
 [`STILL_TAG_INDEX_HOUR_PLAN.md`](./STILL_TAG_INDEX_HOUR_PLAN.md) (enqueue backlog → index-hour drain).
+Gallery shows an **Index hour** panel (backlog counts, schedule enable, Drain now
+dry-run/Comfy) so enqueue≠GPU is visible without leaving Stills.
 
 ---
 

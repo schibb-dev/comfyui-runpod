@@ -99,6 +99,62 @@ class StillTagIndexHourTests(unittest.TestCase):
 
         self.assertIs(captured.get("payload", {}).get("front"), True)
 
+    def test_enqueue_then_force_dry_run_drain(self) -> None:
+        """Demo path: backlog enqueue without kick, then force drain with dry-run."""
+        import hashlib
+
+        from vision_still_tags import (
+            backlog_stats,
+            drain_backlog,
+            enqueue_run,
+            should_auto_drain_on_enqueue,
+        )
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "shape_factory").mkdir(parents=True)
+            cid = hashlib.sha256(b"index-hour-smoke").hexdigest()
+            # Fake still on disk so resolve_targets can find it via content_ids path search.
+            # Prefer explicit content_ids so we don't need a catalog.
+            with mock.patch(
+                "vision_still_tags.resolve_targets",
+                return_value=[
+                    {
+                        "content_id": cid,
+                        "path": str(root / f"SSS{cid}.jpeg"),
+                        "relpath": f"input/SSS{cid}.jpeg",
+                        "missing": False,
+                    }
+                ],
+            ):
+                self.assertFalse(should_auto_drain_on_enqueue(data_root=root))
+                enq = enqueue_run(
+                    data_root=root,
+                    content_ids=[cid],
+                    only_missing=False,
+                    force=True,
+                    limit=1,
+                    dry_run=True,
+                )
+                self.assertTrue(enq.get("ok"))
+                self.assertEqual(enq.get("enqueued"), 1)
+                mid = backlog_stats(data_root=root)
+                self.assertGreaterEqual(int(mid.get("queued_runs") or 0), 1)
+
+                out = drain_backlog(
+                    data_root=root,
+                    force=True,
+                    respect_schedule=False,
+                    front=True,
+                    max_items=1,
+                    provider_override="dry-run",
+                )
+            self.assertTrue(out.get("ok"))
+            self.assertFalse(out.get("skipped"))
+            self.assertGreaterEqual(int(out.get("done_items") or 0), 1)
+            after = backlog_stats(data_root=root)
+            self.assertEqual(int(after.get("queued_runs") or 0), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

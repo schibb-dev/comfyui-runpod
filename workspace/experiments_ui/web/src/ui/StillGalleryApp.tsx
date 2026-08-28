@@ -1,13 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  drainShapeFactoryStillTags,
   enqueueShapeFactoryStillTagRun,
   fetchShapeFactoryInputCurationState,
   fetchShapeFactoryInputCurationStills,
+  fetchShapeFactoryStillTagBacklog,
   fetchShapeFactoryStillTagEvents,
   fetchShapeFactoryStillTagRun,
   mutateShapeFactoryInputCollection,
   mutateShapeFactoryInputStillTags,
+  setShapeFactoryStillTagSchedule,
 } from "./api";
 import { submitHref } from "./discoveryDeepLink";
 import { PageHeader } from "./PageHeader";
@@ -86,6 +89,13 @@ export function StillGalleryApp() {
     staleTime: 15_000,
   });
 
+  const backlogQuery = useQuery({
+    queryKey: queryKeys.shapeFactory.stillTagBacklog,
+    queryFn: fetchShapeFactoryStillTagBacklog,
+    refetchInterval: 5_000,
+    staleTime: 2_000,
+  });
+
   const collections = (stateQuery.data?.collections || []) as InputCurationCollection[];
   const selectedCollection =
     collections.find((c) => c.id === collectionId) || (collections.length ? collections[0] : null);
@@ -139,6 +149,7 @@ export function StillGalleryApp() {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.inputCurationRoot }),
       queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.inputCurationStills(stillsKey) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.stillTagBacklog }),
     ]);
   };
 
@@ -154,13 +165,58 @@ export function StillGalleryApp() {
   const tagRunMut = useMutation({
     mutationFn: enqueueShapeFactoryStillTagRun,
     onSuccess: (res) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.stillTagBacklog });
       if (res.run_id) {
         setActiveRunId(res.run_id);
         setRunEvents([]);
         eventAfterId.current = 0;
-        setRunStatus("queued");
-        setMsg(`Tag run ${res.run_id} · enqueued ${res.enqueued ?? 0}`);
+        setRunStatus(res.drain_kicked ? "running" : "queued");
+        const n = res.enqueued ?? 0;
+        if (res.queued_for_index_hour) {
+          setMsg(`Queued ${n} for index hour · run ${res.run_id} (no GPU yet)`);
+        } else if (res.drain_kicked) {
+          setMsg(`Tag run ${res.run_id} · enqueued ${n} · drain kicked`);
+        } else {
+          setMsg(`Tag run ${res.run_id} · enqueued ${n}`);
+        }
       }
+    },
+  });
+
+  const drainMut = useMutation({
+    mutationFn: drainShapeFactoryStillTags,
+    onSuccess: (res) => {
+      void invalidate();
+      const result = res.result || {};
+      const runs = Array.isArray(result.runs) ? result.runs : [];
+      const firstRun = runs.find((r) => r && typeof r === "object" && (r as { run_id?: string }).run_id) as
+        | { run_id?: string }
+        | undefined;
+      if (firstRun?.run_id) {
+        setActiveRunId(String(firstRun.run_id));
+        setRunEvents([]);
+        eventAfterId.current = 0;
+        setRunStatus("done");
+      }
+      if (res.skipped || result.skipped) {
+        setMsg(`Drain skipped · ${res.reason || result.reason || "outside window"}`);
+      } else if (res.sync) {
+        setMsg(
+          `Drain done · ${res.done_items ?? result.done_items ?? 0} items · ${res.runs_processed ?? result.runs_processed ?? 0} runs`,
+        );
+      } else if (res.started) {
+        setMsg("Drain started (background)");
+      } else {
+        setMsg(`Drain: ${res.reason || "not started"}`);
+      }
+    },
+  });
+
+  const scheduleMut = useMutation({
+    mutationFn: setShapeFactoryStillTagSchedule,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.stillTagBacklog });
+      setMsg("Schedule updated");
     },
   });
 
@@ -211,6 +267,19 @@ export function StillGalleryApp() {
       })
     : null;
 
+  const backlog = backlogQuery.data;
+  const win = backlog?.window;
+  const sch = backlog?.schedule;
+  const queuedTargets = backlog?.queued_targets ?? 0;
+  const queuedRuns = backlog?.queued_runs ?? 0;
+  const windowLabel = !win
+    ? "…"
+    : !win.enabled
+      ? "schedule off"
+      : win.in_window
+        ? "in window"
+        : "outside window";
+
   return (
     <div className="pipeline-screen layout still-gallery">
       <PageHeader
@@ -228,7 +297,7 @@ export function StillGalleryApp() {
                   .catch((e) => setMsg(e instanceof Error ? e.message : String(e)))
               }
             >
-              Tag untagged ({TAG_BATCH_DEFAULT})
+              Queue untagged ({TAG_BATCH_DEFAULT})
             </button>
             <button
               type="button"
@@ -254,11 +323,91 @@ export function StillGalleryApp() {
       />
 
       {msg ? <p className="factory-muted still-gallery__msg">{msg}</p> : null}
+
+      <div className="still-gallery__index-hour" aria-live="polite">
+        <div className="still-gallery__index-hour-head">
+          <strong>Index hour</strong>
+          <span className="factory-muted mono">
+            backlog {queuedTargets} targets · {queuedRuns} runs · {windowLabel}
+            {win?.local_now ? ` · local ${win.local_now.slice(11, 16)}` : ""}
+          </span>
+        </div>
+        <p className="factory-muted still-gallery__index-hour-hint">
+          Queue anytime; Florence runs in the reserved window (or Drain now). Avoids GPU thrash with I2V.
+        </p>
+        <div className="still-gallery__index-hour-actions">
+          <label className="still-gallery__index-hour-toggle">
+            <input
+              type="checkbox"
+              checked={Boolean(sch?.enabled)}
+              disabled={scheduleMut.isPending || backlogQuery.isLoading}
+              onChange={(e) =>
+                void scheduleMut
+                  .mutateAsync({ enabled: e.target.checked })
+                  .catch((err) => setMsg(err instanceof Error ? err.message : String(err)))
+              }
+            />
+            Schedule enabled
+          </label>
+          <button
+            type="button"
+            className="drt-btn"
+            disabled={drainMut.isPending || queuedRuns < 1}
+            title="Process backlog with dry-run provider (no Comfy)"
+            onClick={() =>
+              void drainMut
+                .mutateAsync({
+                  force: true,
+                  respect_schedule: false,
+                  sync: true,
+                  front: true,
+                  max_items: TAG_BATCH_DEFAULT,
+                  provider: "dry-run",
+                })
+                .catch((e) => setMsg(e instanceof Error ? e.message : String(e)))
+            }
+          >
+            Drain now (dry-run)
+          </button>
+          <button
+            type="button"
+            className="drt-btn"
+            disabled={drainMut.isPending || queuedRuns < 1}
+            title="Force Comfy drain now (front of queue)"
+            onClick={() =>
+              void drainMut
+                .mutateAsync({
+                  force: true,
+                  respect_schedule: false,
+                  front: true,
+                  max_items: TAG_BATCH_DEFAULT,
+                  sync: false,
+                })
+                .catch((e) => setMsg(e instanceof Error ? e.message : String(e)))
+            }
+          >
+            Drain now (Comfy)
+          </button>
+          <button
+            type="button"
+            className="drt-btn"
+            disabled={backlogQuery.isFetching}
+            onClick={() => void backlogQuery.refetch()}
+          >
+            Refresh
+          </button>
+        </div>
+        {backlogQuery.error instanceof Error ? (
+          <p className="factory-error">{backlogQuery.error.message}</p>
+        ) : null}
+      </div>
+
       {activeRunId ? (
         <div className="still-gallery__run" aria-live="polite">
           <div className="still-gallery__run-head">
             <span className="mono">
               Tag run {activeRunId} · {runStatus || "…"}
+              {runStatus === "queued" ? " · waiting for index hour" : ""}
             </span>
             {runStatus === "done" || runStatus === "error" || runStatus === "cancelled" ? (
               <button type="button" className="drt-btn" onClick={() => setActiveRunId(null)}>
@@ -376,7 +525,26 @@ export function StillGalleryApp() {
                         .catch((e) => setMsg(e instanceof Error ? e.message : String(e)))
                     }
                   >
-                    Tag this
+                    Queue tag
+                  </button>
+                  <button
+                    type="button"
+                    className="drt-btn"
+                    disabled={!selected.content_id || tagRunMut.isPending || drainMut.isPending}
+                    title="Enqueue and drain immediately (smoke)"
+                    onClick={() =>
+                      void tagRunMut
+                        .mutateAsync({
+                          content_ids: [String(selected.content_id)],
+                          force: true,
+                          limit: 1,
+                          dry_run: true,
+                          drain_now: true,
+                        })
+                        .catch((e) => setMsg(e instanceof Error ? e.message : String(e)))
+                    }
+                  >
+                    Tag now (dry-run)
                   </button>
                   <a
                     className="drt-btn"

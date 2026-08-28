@@ -1,6 +1,7 @@
 # Still-tag index hour — plan
 
-**Status:** Active (2026-08-28). Brainstorm locked; **IH1 landing** (enqueue≠drain, schedule, front drain).  
+**Status:** Active (2026-08-28). **IH1 + gallery demo** landed (enqueue≠drain, schedule,
+front drain, Still gallery index-hour panel, dry-run smoke).  
 **Parent:** [`STILL_AUTO_TAGGER_PLAN.md`](./STILL_AUTO_TAGGER_PLAN.md) (T1 store/UI enqueue already landed).
 
 **Related:** [`SCHEDULED_AND_CONTAINER_JOBS_RUNDOWN.md`](./SCHEDULED_AND_CONTAINER_JOBS_RUNDOWN.md),
@@ -97,8 +98,9 @@ outside the window it no-ops.
 | `POST …/stills/tag` | Enqueue only (unless `drain_now` or schedule `auto_drain_on_enqueue`) |
 | `GET …/stills/tag/backlog` | Queued runs, target counts, schedule + `in_window` |
 | `GET/POST …/stills/tag/schedule` | Read/update schedule JSON |
-| `POST …/stills/tag/drain` | Start/signal a drain tick (background; respects schedule unless `force`) |
+| `POST …/stills/tag/drain` | Drain tick (`sync: true` for demo; else background). Respects schedule unless `force` |
 | `vision_still_tag_drain.py` | Ops drain: `--respect-schedule` \| `--force`, `--front`, `--max-items`, `--until-minutes` |
+| `vision_still_tag_index_hour_smoke.py` | Dry-run enqueue → force drain (no GPU) |
 
 CLI debug `vision_still_tag_run.py` remains for one-shot smoke; prefer
 `--enqueue-only` without GPU, then drain separately.
@@ -107,11 +109,11 @@ CLI debug `vision_still_tag_run.py` remains for one-shot smoke; prefer
 
 ## Phased movement
 
-### IH0 — This doc + contracts — **now**
+### IH0 — This doc + contracts — **done**
 
 Lock enqueue≠drain, schedule knobs, front+inflight story.
 
-### IH1 — Implement slice — **now**
+### IH1 — Implement slice — **done**
 
 - Schedule load/save + `in_window`
 - Enqueue stops auto-kicking by default
@@ -119,6 +121,13 @@ Lock enqueue≠drain, schedule knobs, front+inflight story.
 - `drain_backlog` / CLI drain with front + max-items + until + respect-schedule
 - Backlog + schedule GET/POST; drain POST kicks background drain tick
 - Unit tests (schedule window, enqueue-without-kick, front payload)
+
+### IH1.5 — Gallery demo — **done**
+
+- Still gallery **Index hour** panel: backlog counts, window status, schedule enable,
+  Drain now (dry-run / Comfy), “queued for index hour” copy
+- Drain API `sync: true` for reliable dry-run demos
+- Smoke script + unit test for enqueue → force dry-run drain
 
 ### IH2 — Measure
 
@@ -130,7 +139,7 @@ Lock enqueue≠drain, schedule knobs, front+inflight story.
 - Home / Experiments schedule card (mirror hourly controls)
 - Optional hard pause of I2V during window
 - Documented RunPod drain recipe
-- Gallery copy: “queued for index hour” vs live events when draining
+- Live GPU smoke of events while draining (optional; dry-run path covers UI)
 
 ---
 
@@ -140,13 +149,17 @@ Lock enqueue≠drain, schedule knobs, front+inflight story.
 - [x] Index-hour drain can front-load Florence prompts with an in-flight/item cap — CLI/API drain (`max_inflight` recorded; sequential wait in IH1)
 - [x] Schedule knobs changeable without schema migration
 - [x] Multi-hour windows work (backlog burn) without new code paths
-- [ ] Same SQLite runs/events UI polling still works while draining (smoke on live GPU)
+- [x] Gallery shows backlog / window / drain controls (demo without GPU via dry-run)
+- [ ] Same SQLite runs/events UI polling still works while draining on live Florence GPU
 
 ---
 
 ## Suggested first commands (after IH1)
 
 ```bash
+# Enqueue → force drain (dry-run, no GPU) — demo path
+python3 workspace/scripts/vision_still_tag_index_hour_smoke.py --limit 3
+
 # Enqueue a smoke batch (no GPU)
 python3 workspace/scripts/vision_still_tag_run.py --enqueue-only --limit 12 --dry-run
 
