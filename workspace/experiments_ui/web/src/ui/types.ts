@@ -2008,6 +2008,22 @@ export type WorkProductPromptProfile = {
   } | null;
 };
 
+export type WorkProductParamsValues = {
+  frames?: number;
+  steps?: number;
+  overlap?: number;
+  seed?: number;
+};
+
+export type WorkProductParamsProfile = {
+  current?: WorkProductParamsValues;
+  seed?: WorkProductParamsValues;
+  snowflake?: boolean;
+  diffs?: Record<string, { job?: number | null; seed?: number | null }>;
+  template_path?: string | null;
+  keys?: string[];
+};
+
 export type WorkProductShapeSlot = {
   slot?: string;
   role?: string;
@@ -2095,6 +2111,8 @@ export type WorkProductItem = {
   markers?: Record<string, string>;
   bindings?: Record<string, WorkProductBinding>;
   prompt_profile?: WorkProductPromptProfile | null;
+  /** Simple run knobs vs template seed (frames/steps/overlap/seed). */
+  params_profile?: WorkProductParamsProfile | null;
   shape_profile?: WorkProductShapeProfile | null;
   media_meta?: WorkProductMediaMeta | null;
   /** Compact run timing from job/sidecar (exec, queue wait, …). */
@@ -2408,6 +2426,7 @@ export type WorkProductTiming = {
   unload_event_count?: number | null;
   load_models?: string[] | null;
   frames?: number | null;
+  steps?: number | null;
   /** Context/overlap frames from workload (Wan extend blend width), when known. */
   overlap?: number | null;
   sec_per_frame?: number | null;

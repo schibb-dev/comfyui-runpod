@@ -1,7 +1,7 @@
 import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createPortal } from "react-dom";
-import { discardShapeFactoryJob, fetchShapeFactoryWorkProducts, finishShapeFactoryEdit, promoteShapeFactoryTemplate, replayShapeFactory, unqueueShapeFactory, updatePendingShapeFactoryTrim, updateShapeFactoryOwnedPrompt } from "./api";
+import { discardShapeFactoryJob, fetchShapeFactoryWorkProducts, finishShapeFactoryEdit, promoteShapeFactoryTemplate, replayShapeFactory, unqueueShapeFactory, updatePendingShapeFactoryTrim, updateShapeFactoryOwnedParams, updateShapeFactoryOwnedPrompt } from "./api";
 import type { ShapeFactoryClip } from "./api";
 import { ClipBookmarksRail } from "./ClipBookmarksRail";
 import { ComfyLiveMetricsBar, ComfyLivePreview } from "./ComfyLivePreview";
@@ -41,6 +41,8 @@ import type {
   WorkProductDetailRow,
   WorkProductFamilyOption,
   WorkProductItem,
+  WorkProductParamsProfile,
+  WorkProductParamsValues,
   WorkProductPromptProfile,
   WorkProductShapeProfile,
   WorkProductShapeSlot,
@@ -2703,6 +2705,241 @@ function WorkProductPromptEditor({
   );
 }
 
+const PARAM_FIELD_DEFS: Array<{ key: keyof WorkProductParamsValues; label: string }> = [
+  { key: "frames", label: "Frames" },
+  { key: "steps", label: "Steps" },
+  { key: "overlap", label: "Overlap" },
+  { key: "seed", label: "Seed" },
+];
+
+function WorkProductParamsEditor({
+  item,
+  onCommitted,
+}: {
+  item: WorkProductItem;
+  onCommitted?: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const profile = item.params_profile;
+  const editable = isJobTrimEditable(item);
+  const [editing, setEditing] = useState(false);
+  const [showDiff, setShowDiff] = useState(false);
+  const [draft, setDraft] = useState<WorkProductParamsValues>(() => ({ ...(profile?.current || {}) }));
+  const [dirty, setDirty] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [promoteOpen, setPromoteOpen] = useState(false);
+  const [promoteMode, setPromoteMode] = useState<"fork" | "overwrite">("overwrite");
+
+  useEffect(() => {
+    setDraft({ ...(profile?.current || {}) });
+    setDirty(false);
+    setMsg(null);
+    setEditing(false);
+    setShowDiff(false);
+  }, [item.job_key, profile?.snowflake, profile?.current?.frames, profile?.current?.steps, profile?.current?.overlap, profile?.current?.seed]);
+
+  const saveMut = useMutation({
+    mutationFn: updateShapeFactoryOwnedParams,
+    onSuccess: async () => {
+      setDirty(false);
+      setEditing(false);
+      setMsg("Saved to job");
+      await queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductsRoot });
+      onCommitted?.();
+    },
+    onError: (e) => setMsg(e instanceof Error ? e.message : String(e)),
+  });
+  const promoteMut = useMutation({
+    mutationFn: promoteShapeFactoryTemplate,
+    onSuccess: async (res) => {
+      setPromoteOpen(false);
+      setMsg(
+        res.mode === "fork"
+          ? `Forked catalog readable${res.path ? ` · ${String(res.path).split("/").pop()}` : ""}`
+          : `Overwrote catalog template${res.bak_path ? " (bak kept)" : ""}`,
+      );
+      await queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductsRoot });
+      onCommitted?.();
+    },
+    onError: (e) => setMsg(e instanceof Error ? e.message : String(e)),
+  });
+
+  const current = profile?.current || {};
+  const seed = profile?.seed || {};
+  const hasAny = PARAM_FIELD_DEFS.some(({ key }) => current[key] != null || seed[key] != null);
+  if (!hasAny && !editable) return null;
+
+  const busy = saveMut.isPending || promoteMut.isPending;
+  const canPromote =
+    Boolean(profile?.snowflake && (isJobTrimEditable(item) || canPromoteJobPrompt(item))) && !editing;
+  const canDiff = Boolean(profile?.snowflake) && !editing;
+
+  const setField = (key: keyof WorkProductParamsValues, raw: string) => {
+    const next = { ...draft };
+    if (!raw.trim()) {
+      delete next[key];
+    } else {
+      const n = Number(raw);
+      if (!Number.isFinite(n)) return;
+      next[key] = Math.trunc(n);
+    }
+    setDraft(next);
+    setDirty(true);
+  };
+
+  return (
+    <div className="work-product-prompt-editor work-product-params-editor">
+      <details className="work-product-prompt-editor__details" open={Boolean(profile?.snowflake)}>
+        <summary className="work-product-prompt-editor__summary">
+          <span className="work-product-prompt-editor__summary-title">
+            Params
+            {profile?.snowflake ? (
+              <span className="work-product-badge work-product-badge--snowflake" title="Differs from template seed">
+                snowflake
+              </span>
+            ) : null}
+          </span>
+          <span className="factory-muted work-product-prompt-editor__summary-meta">
+            {[
+              current.frames != null ? `frames ${current.frames}` : null,
+              current.steps != null ? `steps ${current.steps}` : null,
+              current.overlap != null ? `overlap ${current.overlap}` : null,
+              current.seed != null ? `seed ${current.seed}` : null,
+            ]
+              .filter(Boolean)
+              .join(" · ") || "template defaults"}
+          </span>
+        </summary>
+        <div className="work-product-prompt-editor__body">
+          <div className="work-product-prompt-editor__actions">
+            {editable ? (
+              <button
+                type="button"
+                className="drt-btn"
+                disabled={busy}
+                onClick={() => {
+                  if (editing) {
+                    setDraft({ ...(profile?.current || {}) });
+                    setDirty(false);
+                    setEditing(false);
+                  } else setEditing(true);
+                }}
+              >
+                {editing ? "Cancel" : "Edit"}
+              </button>
+            ) : null}
+            {editing ? (
+              <button
+                type="button"
+                className="drt-btn"
+                disabled={busy || !dirty}
+                onClick={() =>
+                  void saveMut.mutateAsync({
+                    job_key: item.job_key,
+                    job_path: item.job_path || undefined,
+                    parameters: draft,
+                  })
+                }
+              >
+                Save to job
+              </button>
+            ) : null}
+            {canDiff ? (
+              <button type="button" className="drt-btn" disabled={busy} onClick={() => setShowDiff((v) => !v)}>
+                {showDiff ? "Hide diff" : "Show diff"}
+              </button>
+            ) : null}
+            {canPromote ? (
+              <button type="button" className="drt-btn" disabled={busy} onClick={() => setPromoteOpen(true)}>
+                Promote…
+              </button>
+            ) : null}
+          </div>
+          <div className="work-product-params-editor__grid">
+            {PARAM_FIELD_DEFS.map(({ key, label }) => {
+              const jobVal = editing ? draft[key] : current[key];
+              const seedVal = seed[key];
+              const changed = jobVal != null && seedVal != null && jobVal !== seedVal;
+              return (
+                <label key={key} className={"work-product-params-editor__field" + (changed ? " is-snowflake" : "")}>
+                  <span className="work-product-params-editor__label">{label}</span>
+                  {editing ? (
+                    <input
+                      type="number"
+                      className="work-product-params-editor__input"
+                      value={jobVal ?? ""}
+                      onChange={(e) => setField(key, e.target.value)}
+                      disabled={busy}
+                    />
+                  ) : (
+                    <span className="work-product-params-editor__value mono">
+                      {jobVal != null ? jobVal : "—"}
+                      {showDiff && seedVal != null && changed ? (
+                        <span className="factory-muted"> ← {seedVal}</span>
+                      ) : null}
+                    </span>
+                  )}
+                </label>
+              );
+            })}
+          </div>
+          {msg ? <p className="factory-muted work-product-prompt-editor__msg">{msg}</p> : null}
+          {promoteOpen && canPromote ? (
+            <div className="work-product-prompt-editor__promote" role="dialog" aria-label="Promote params to catalog">
+              <p className="factory-muted">
+                Write these knobs into the catalog readable. Overwrite keeps a .bak; fork writes a sibling file.
+              </p>
+              <div className="work-product-prompt-editor__promote-modes" role="radiogroup" aria-label="Promote mode">
+                <label>
+                  <input
+                    type="radio"
+                    name={`promote-params-${item.job_key}`}
+                    checked={promoteMode === "overwrite"}
+                    onChange={() => setPromoteMode("overwrite")}
+                    disabled={busy}
+                  />{" "}
+                  Overwrite catalog template
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name={`promote-params-${item.job_key}`}
+                    checked={promoteMode === "fork"}
+                    onChange={() => setPromoteMode("fork")}
+                    disabled={busy}
+                  />{" "}
+                  Save as new readable fork
+                </label>
+              </div>
+              <div className="work-product-prompt-editor__actions work-product-prompt-editor__actions--promote">
+                <button type="button" className="drt-btn" disabled={busy} onClick={() => setPromoteOpen(false)}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="drt-btn"
+                  disabled={busy}
+                  onClick={() =>
+                    void promoteMut.mutateAsync({
+                      job_key: item.job_key,
+                      job_path: item.job_path || undefined,
+                      fields: ["params"],
+                      mode: promoteMode,
+                      parameters: current,
+                    })
+                  }
+                >
+                  {promoteMode === "fork" ? "Fork readable" : "Overwrite template"}
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </details>
+    </div>
+  );
+}
+
 function workbenchAdvanceSubmitHref(
   item: WorkProductItem,
   opts: {
@@ -3394,6 +3631,7 @@ function WorkProductDetails({
         onCommitted={onCommitted}
       />
       <WorkProductPromptEditor item={item} onCommitted={onCommitted} />
+      <WorkProductParamsEditor item={item} onCommitted={onCommitted} />
       <div className="work-product-details__groups">
         {groups.map((group) => {
           const renderRow = (row: WorkProductDetailRow, opts?: { kv?: boolean; compact?: boolean }) => {

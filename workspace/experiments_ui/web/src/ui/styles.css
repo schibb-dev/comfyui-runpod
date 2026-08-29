@@ -17078,6 +17078,36 @@ tr.disabled:hover td {
   transition: outline-color 0.9s ease;
 }
 
+.work-product-params-editor__field.is-snowflake .work-product-params-editor__value,
+.work-product-params-editor__field.is-snowflake .work-product-params-editor__input {
+  color: color-mix(in srgb, var(--accent, #7aa2ff) 80%, #fff);
+}
+
+.work-product-params-editor__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: 8px 12px;
+  margin-top: 8px;
+}
+
+.work-product-params-editor__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.work-product-params-editor__label {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.work-product-params-editor__value {
+  font-size: 13px;
+}
+
 .still-gallery__tile--deep-link {
   outline: 2px solid rgba(110, 168, 254, 0.85);
   outline-offset: 2px;

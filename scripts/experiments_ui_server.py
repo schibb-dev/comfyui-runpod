@@ -2478,6 +2478,31 @@ def _shape_factory_update_pending_binding_payload(cfg: ServerConfig, body: Dict[
     )
 
 
+def _shape_factory_update_owned_params_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /api/shape-factory/update-owned-params — patch frames/steps/overlap/seed."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory import update_pending_job_params  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    job_key = str(body.get("job_key") or "").strip() or None
+    job_path_raw = str(body.get("job_path") or "").strip() or None
+    if not job_key and not job_path_raw:
+        raise ValueError("missing_job_key")
+    parameters = body.get("parameters")
+    if not isinstance(parameters, dict) or not parameters:
+        raise ValueError("missing_parameters")
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    return update_pending_job_params(
+        data_root=data_root,
+        job_key=job_key,
+        job_path=Path(job_path_raw) if job_path_raw else None,
+        parameters=parameters,
+        server=str(cfg.comfy_server),
+    )
+
+
 def _shape_factory_update_owned_prompt_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
     """POST /api/shape-factory/update-owned-prompt — patch job-owned positive/negative."""
     d = _workspace_scripts_dir()
@@ -2509,32 +2534,74 @@ def _shape_factory_update_owned_prompt_payload(cfg: ServerConfig, body: Dict[str
 
 
 def _shape_factory_promote_template_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
-    """POST /api/shape-factory/promote-template — write job prompt into family library."""
+    """POST /api/shape-factory/promote-template — write job prompt/params into family library."""
     d = _workspace_scripts_dir()
     if d.is_dir() and str(d) not in sys.path:
         sys.path.insert(0, str(d))
-    from shape_factory import promote_job_prompt_to_library  # type: ignore
+    from shape_factory import promote_job_params_to_catalog, promote_job_prompt_to_library  # type: ignore
     from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
 
     job_key = str(body.get("job_key") or "").strip() or None
     job_path_raw = str(body.get("job_path") or "").strip() or None
     if not job_key and not job_path_raw:
         raise ValueError("missing_job_key")
-    fields = body.get("fields")
-    if isinstance(fields, list) and fields and "prompt" not in [str(f).strip() for f in fields]:
+    fields_raw = body.get("fields")
+    fields = [str(f).strip() for f in fields_raw] if isinstance(fields_raw, list) else ["prompt"]
+    fields = [f for f in fields if f]
+    if not fields:
+        fields = ["prompt"]
+    unsupported = [f for f in fields if f not in {"prompt", "params"}]
+    if unsupported:
         raise ValueError("unsupported_fields")
     mode = str(body.get("mode") or "fork").strip().lower() or "fork"
     data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
-    return promote_job_prompt_to_library(
-        data_root=data_root,
-        job_key=job_key,
-        job_path=Path(job_path_raw) if job_path_raw else None,
-        mode=mode,
-        label=str(body.get("label") or "").strip() or None,
-        note=str(body.get("note") or "").strip() or None,
-        positive=body.get("positive") if isinstance(body.get("positive"), str) else None,
-        negative=body.get("negative") if isinstance(body.get("negative"), str) else None,
-    )
+    out: Dict[str, Any] = {"ok": True, "job_key": job_key, "fields": fields, "results": {}}
+    if "prompt" in fields:
+        prompt_res = promote_job_prompt_to_library(
+            data_root=data_root,
+            job_key=job_key,
+            job_path=Path(job_path_raw) if job_path_raw else None,
+            mode=mode,
+            label=str(body.get("label") or "").strip() or None,
+            note=str(body.get("note") or "").strip() or None,
+            positive=body.get("positive") if isinstance(body.get("positive"), str) else None,
+            negative=body.get("negative") if isinstance(body.get("negative"), str) else None,
+        )
+        out["results"]["prompt"] = prompt_res
+        if not prompt_res.get("ok"):
+            out["ok"] = False
+            out["error"] = prompt_res.get("error") or "prompt_promote_failed"
+            out["detail"] = prompt_res.get("detail")
+            return out
+        # Keep top-level keys for existing prompt-only clients.
+        for k in ("mode", "path", "bak_path", "doc", "family_slug"):
+            if k in prompt_res:
+                out[k] = prompt_res[k]
+    if "params" in fields:
+        # Params promote defaults to overwrite (catalog readable); fork still available.
+        params_mode = mode if mode in {"fork", "overwrite"} else "overwrite"
+        if "prompt" not in fields and mode == "fork":
+            params_mode = "fork"
+        elif "prompt" not in fields:
+            params_mode = mode or "overwrite"
+        params_res = promote_job_params_to_catalog(
+            data_root=data_root,
+            job_key=job_key,
+            job_path=Path(job_path_raw) if job_path_raw else None,
+            mode=params_mode,
+            parameters=body.get("parameters") if isinstance(body.get("parameters"), dict) else None,
+        )
+        out["results"]["params"] = params_res
+        if not params_res.get("ok"):
+            out["ok"] = False
+            out["error"] = params_res.get("error") or "params_promote_failed"
+            out["detail"] = params_res.get("detail")
+            return out
+        if "prompt" not in fields:
+            for k in ("mode", "path", "bak_path"):
+                if k in params_res:
+                    out[k] = params_res[k]
+    return out
 
 
 def _shape_factory_begin_edit_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -10306,6 +10373,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_shape_factory_update_pending_binding_post()
         if path == "/api/shape-factory/update-owned-prompt":
             return self._handle_shape_factory_update_owned_prompt_post()
+        if path == "/api/shape-factory/update-owned-params":
+            return self._handle_shape_factory_update_owned_params_post()
         if path == "/api/shape-factory/promote-template":
             return self._handle_shape_factory_promote_template_post()
         if path == "/api/shape-factory/clips":
@@ -10692,6 +10761,27 @@ class Handler(BaseHTTPRequestHandler):
                 self, 500, {"ok": False, "error": "shape_factory_update_owned_prompt_failed", "detail": str(e)}
             )
         if payload.get("error") in {"not_pending", "still_on_comfy", "prompt_frozen"}:
+            return _json_response(self, 409, payload)
+        if payload.get("error") == "job_not_found":
+            return _json_response(self, 404, payload)
+        code = 200 if payload.get("ok", True) else 400
+        return _json_response(self, code, payload)
+
+    def _handle_shape_factory_update_owned_params_post(self) -> None:
+        """POST /api/shape-factory/update-owned-params — patch frames/steps/overlap/seed."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _shape_factory_update_owned_params_payload(cfg, body if isinstance(body, dict) else {})
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except Exception as e:
+            return _json_response(
+                self, 500, {"ok": False, "error": "shape_factory_update_owned_params_failed", "detail": str(e)}
+            )
+        if payload.get("error") in {"not_pending", "still_on_comfy"}:
             return _json_response(self, 409, payload)
         if payload.get("error") == "job_not_found":
             return _json_response(self, 404, payload)

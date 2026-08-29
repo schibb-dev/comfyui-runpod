@@ -71,6 +71,7 @@ import type {
   ShapeFactoryMapQueueOverrides,
   FutureRunDraft,
   WorkProductPromptProfile,
+  WorkProductParamsProfile,
   WorkProductPromptRow,
   AssetAuditResponse,
   AssetRecoverResponse,
@@ -1536,6 +1537,46 @@ export async function updateShapeFactoryOwnedPrompt(
   return j;
 }
 
+export type ShapeFactoryUpdateOwnedParamsRequest = {
+  job_key?: string;
+  job_path?: string;
+  parameters: {
+    frames?: number;
+    steps?: number;
+    overlap?: number;
+    seed?: number;
+    noise_seed?: number;
+  };
+};
+
+export type ShapeFactoryUpdateOwnedParamsResponse = {
+  ok: boolean;
+  job_key?: string;
+  status?: string;
+  parameters?: Record<string, number>;
+  params_profile?: WorkProductParamsProfile;
+  error?: string;
+  detail?: string;
+};
+
+export async function updateShapeFactoryOwnedParams(
+  req: ShapeFactoryUpdateOwnedParamsRequest,
+): Promise<ShapeFactoryUpdateOwnedParamsResponse> {
+  const r = await fetch("/api/shape-factory/update-owned-params", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryUpdateOwnedParamsResponse;
+  if (!r.ok || !j.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST /api/shape-factory/update-owned-params failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
 export type ShapeFactoryPromoteTemplateRequest = {
   job_key?: string;
   job_path?: string;
@@ -1545,6 +1586,13 @@ export type ShapeFactoryPromoteTemplateRequest = {
   note?: string;
   positive?: string;
   negative?: string;
+  parameters?: {
+    frames?: number;
+    steps?: number;
+    overlap?: number;
+    seed?: number;
+    noise_seed?: number;
+  };
 };
 
 export type ShapeFactoryPromoteTemplateResponse = {

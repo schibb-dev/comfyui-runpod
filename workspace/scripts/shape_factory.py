@@ -6343,6 +6343,262 @@ def promote_job_prompt_to_library(
     return result
 
 
+def update_pending_job_params(
+    *,
+    data_root: Path,
+    parameters: dict[str, Any],
+    job_key: Optional[str] = None,
+    job_path: Optional[Path] = None,
+    server: str = "",
+) -> dict[str, Any]:
+    """Patch frames/steps/overlap/seed on a pre-Comfy factory job (refuses on-Comfy)."""
+    from shape_factory_owned_params import owned_params_to_profile
+    from shape_factory_queue import build_adhoc_dev_tuning
+
+    data_root = Path(data_root).expanduser().resolve()
+    job_file: Optional[Path] = None
+    job: Optional[dict[str, Any]] = None
+
+    if job_path is not None:
+        jp = Path(job_path).expanduser()
+        if jp.is_file():
+            try:
+                loaded = json.loads(jp.read_text(encoding="utf-8"))
+            except Exception:
+                loaded = None
+            if isinstance(loaded, dict):
+                job_file, job = jp, loaded
+    if job is None and job_key:
+        job_file, job = find_job_by_key(data_root, str(job_key))
+    if job is None or job_file is None:
+        return {"ok": False, "error": "job_not_found", "job_key": job_key}
+
+    if hostify_job_paths(job):
+        atomic_write_json(job_file, job)
+
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    status = str(submit.get("status") or "").strip().lower()
+    pid = str(submit.get("prompt_id") or "").strip()
+    key = str(job.get("job_key") or job_file.stem.replace(".job", ""))
+
+    if status_is_on_comfy(status, pid) or not status_is_pending_editable(status):
+        return {
+            "ok": False,
+            "error": "not_pending",
+            "job_key": key,
+            "status": status or "unknown",
+            "prompt_id": pid or None,
+            "detail": "Unqueue first — only pending/editing (pre-Comfy) jobs can edit params.",
+        }
+
+    if pid and server:
+        try:
+            running_ids, pending_ids = queue_prompt_id_buckets(str(server).rstrip("/"), timeout_s=10)
+        except Exception:
+            running_ids, pending_ids = set(), set()
+        if pid in running_ids or pid in pending_ids:
+            return {
+                "ok": False,
+                "error": "still_on_comfy",
+                "job_key": key,
+                "prompt_id": pid,
+                "detail": "Prompt is still on Comfy; Unqueue first.",
+            }
+
+    if not isinstance(parameters, dict) or not parameters:
+        return {"ok": False, "error": "missing_parameters", "job_key": key}
+
+    clean: dict[str, Any] = {}
+    for k in ("frames", "steps", "overlap", "seed", "noise_seed"):
+        if k not in parameters:
+            continue
+        raw = parameters.get(k)
+        if raw is None or raw == "":
+            continue
+        try:
+            clean[k if k != "noise_seed" else "seed"] = int(raw)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "invalid_parameter", "job_key": key, "detail": f"bad {k}"}
+    if not clean:
+        return {"ok": False, "error": "missing_parameters", "job_key": key}
+
+    tuning = build_adhoc_dev_tuning(clean, data_root=data_root)
+    if not tuning:
+        return {"ok": False, "error": "empty_tuning", "job_key": key}
+
+    workflow_path = ensure_job_workflow_path(job, data_root=data_root)
+    if not workflow_path.is_file():
+        return {
+            "ok": False,
+            "error": "workflow_missing",
+            "job_key": key,
+            "workflow_path": str(workflow_path),
+        }
+    workflow = read_json(workflow_path)
+    if not is_litegraph_workflow(workflow):
+        return {"ok": False, "error": "not_litegraph", "job_key": key}
+
+    changes = apply_dev_tuning_ui(workflow, tuning)
+    atomic_write_json(workflow_path, workflow)
+    capture_job_workload(job, workflow)
+
+    # Merge adhoc_overrides.parameters for echo / snowflake detection.
+    adhoc = job.get("adhoc_overrides") if isinstance(job.get("adhoc_overrides"), dict) else {}
+    adhoc = dict(adhoc)
+    prev = adhoc.get("parameters") if isinstance(adhoc.get("parameters"), dict) else {}
+    merged_params = dict(prev)
+    merged_params.update(clean)
+    adhoc["parameters"] = merged_params
+    job["adhoc_overrides"] = adhoc
+
+    dev = job.get("dev_tuning") if isinstance(job.get("dev_tuning"), dict) else {}
+    dev = dict(dev)
+    spec = dict(dev.get("spec") if isinstance(dev.get("spec"), dict) else {})
+    # Merge ui_nodes / noise_seed from this patch.
+    ui_prev = dict(spec.get("ui_nodes") if isinstance(spec.get("ui_nodes"), dict) else {})
+    ui_new = tuning.get("ui_nodes") if isinstance(tuning.get("ui_nodes"), dict) else {}
+    for nid, node_spec in ui_new.items():
+        ui_prev[nid] = copy.deepcopy(node_spec)
+    spec["ui_nodes"] = ui_prev
+    api_prev = dict(spec.get("api_nodes") if isinstance(spec.get("api_nodes"), dict) else {})
+    api_new = tuning.get("api_nodes") if isinstance(tuning.get("api_nodes"), dict) else {}
+    for nid, node_spec in api_new.items():
+        api_prev[str(nid)] = copy.deepcopy(node_spec)
+    spec["api_nodes"] = api_prev
+    if tuning.get("noise_seed") is not None:
+        spec["noise_seed"] = int(tuning["noise_seed"])
+    if not spec.get("profile_id"):
+        spec["profile_id"] = "adhoc-ui"
+    spec["output_prefix_suffix"] = tuning.get("output_prefix_suffix") or spec.get("output_prefix_suffix") or "_adhoc"
+    dev["spec"] = spec
+    job["dev_tuning"] = dev
+    job["generated_workflow_path"] = str(workflow_path)
+
+    prompt_candidates = [
+        job_file.with_name(job_file.stem.replace(".job", "") + ".prompt.json"),
+    ]
+    submit_prompt = str(submit.get("prompt_path") or "").strip()
+    if submit_prompt:
+        prompt_candidates.append(Path(submit_prompt).expanduser())
+    prompt_cleared = False
+    for p in prompt_candidates:
+        try:
+            if p.is_file():
+                p.unlink()
+                prompt_cleared = True
+        except Exception:
+            continue
+
+    atomic_write_json(job_file, job)
+    profile = owned_params_to_profile(job, data_root=data_root, job_path=job_file)
+    return {
+        "ok": True,
+        "job_key": key,
+        "job_path": str(job_file),
+        "status": status or "pending",
+        "prompt_cleared": prompt_cleared,
+        "parameters": clean,
+        "changes": changes,
+        "params_profile": profile,
+    }
+
+
+def promote_job_params_to_catalog(
+    *,
+    data_root: Path,
+    mode: str = "overwrite",
+    job_key: Optional[str] = None,
+    job_path: Optional[Path] = None,
+    parameters: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """
+    Write job (or provided) frames/steps/overlap/seed into the catalog readable.
+
+    Default mode is overwrite-with-.bak. Fork writes a sibling ``*-params-<slug>-readable.json``
+    without retargeting the shape template (operator can point the shape later).
+    """
+    from shape_factory_owned_params import (
+        extract_job_current_params,
+        owned_params_to_profile,
+        patch_readable_mx_sliders,
+        write_json_with_bak,
+    )
+
+    data_root = Path(data_root).expanduser().resolve()
+    job_file: Optional[Path] = None
+    job: Optional[dict[str, Any]] = None
+
+    if job_path is not None:
+        jp = Path(job_path).expanduser()
+        if jp.is_file():
+            try:
+                loaded = json.loads(jp.read_text(encoding="utf-8"))
+            except Exception:
+                loaded = None
+            if isinstance(loaded, dict):
+                job_file, job = jp, loaded
+    if job is None and job_key:
+        job_file, job = find_job_by_key(data_root, str(job_key))
+    if job is None or job_file is None:
+        return {"ok": False, "error": "job_not_found", "job_key": job_key}
+
+    key = str(job.get("job_key") or job_file.stem.replace(".job", ""))
+    profile = owned_params_to_profile(job, data_root=data_root, job_path=job_file)
+    template_path_s = str(profile.get("template_path") or job.get("template_path") or "").strip()
+    if not template_path_s:
+        return {"ok": False, "error": "missing_template", "job_key": key}
+    template_path = Path(template_path_s).expanduser()
+    if not template_path.is_file():
+        return {"ok": False, "error": "template_missing", "job_key": key, "path": str(template_path)}
+
+    current = extract_job_current_params(job, job_file, data_root=data_root)
+    if isinstance(parameters, dict) and parameters:
+        for k, v in parameters.items():
+            if v is None or v == "":
+                continue
+            try:
+                current[k if k != "noise_seed" else "seed"] = int(v)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "invalid_parameter", "job_key": key, "detail": f"bad {k}"}
+    if not current:
+        return {"ok": False, "error": "no_params", "job_key": key}
+
+    mode_s = str(mode or "overwrite").strip().lower() or "overwrite"
+    try:
+        workflow = read_json(template_path)
+    except Exception as exc:
+        return {"ok": False, "error": "template_read_failed", "job_key": key, "detail": str(exc)}
+    if not is_litegraph_workflow(workflow):
+        return {"ok": False, "error": "not_litegraph", "job_key": key}
+
+    changes = patch_readable_mx_sliders(workflow, current)
+    if mode_s == "fork":
+        stamp = utc_now().replace(":", "").replace("-", "")[:15]
+        dest = template_path.with_name(f"{template_path.stem}-params-{stamp}{template_path.suffix}")
+        dest.write_text(json.dumps(workflow, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return {
+            "ok": True,
+            "job_key": key,
+            "mode": "fork",
+            "path": str(dest),
+            "bak_path": None,
+            "parameters": current,
+            "changes": changes,
+            "detail": "Forked catalog readable; shape.template not retargeted.",
+        }
+
+    bak = write_json_with_bak(template_path, workflow)
+    return {
+        "ok": True,
+        "job_key": key,
+        "mode": "overwrite",
+        "path": str(template_path),
+        "bak_path": str(bak) if bak else None,
+        "parameters": current,
+        "changes": changes,
+    }
+
+
 def zero_vhs_load_window_on_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
     """Clear fossilized catalog skip/cap on VHS_LoadVideoPath nodes (full-file default)."""
     return apply_dev_tuning_ui(

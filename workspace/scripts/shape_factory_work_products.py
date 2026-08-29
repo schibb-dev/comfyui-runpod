@@ -1319,6 +1319,11 @@ def _timing_summary(timings: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         frames_i = int(frames) if frames is not None else None
     except (TypeError, ValueError):
         frames_i = None
+    steps = workload.get("steps")
+    try:
+        steps_i = int(steps) if steps is not None else None
+    except (TypeError, ValueError):
+        steps_i = None
     overlap = workload.get("overlap")
     try:
         overlap_i = int(overlap) if overlap is not None else None
@@ -1382,6 +1387,7 @@ def _timing_summary(timings: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "unload_event_count": model_totals.get("unload_event_count"),
         "load_models": load_names or None,
         "frames": frames_i,
+        "steps": steps_i,
         "overlap": overlap_i,
         "sec_per_frame": sec_per_frame,
         "terminal": terminal,
@@ -1484,6 +1490,14 @@ def _work_product_item_from_job(
                     workspace_root=output_root.parent,
                 )
                 break
+
+    params_profile = None
+    try:
+        from shape_factory_owned_params import owned_params_to_profile
+
+        params_profile = owned_params_to_profile(job, data_root=data_root, job_path=path)
+    except Exception:
+        params_profile = None
 
     construction = _synthesize_construction(job)
     status = str(
@@ -1647,6 +1661,7 @@ def _work_product_item_from_job(
         "output_thumb_url": _file_url(thumb_rel),
         "bindings": bindings_out,
         "prompt_profile": prompt_profile,
+        "params_profile": params_profile,
         "shape_profile": shape_profile,
         "media_meta": media_meta or None,
         "timing": timing,
