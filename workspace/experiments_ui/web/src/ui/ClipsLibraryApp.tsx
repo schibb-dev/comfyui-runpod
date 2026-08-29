@@ -290,6 +290,8 @@ export function ClipsLibraryApp() {
   const jumpToSortTopRef = useRef(false);
   const videoAutoplayRef = useRef(false);
   const dirtyRef = useRef(false);
+  const deepLinkScrolled = useRef(false);
+  const [deepLinkHitId, setDeepLinkHitId] = useState<string | null>(null);
   const [videoDuration, setVideoDuration] = useState(0);
   const [videoTime, setVideoTime] = useState(0);
   const [videoAutoplay, setVideoAutoplay] = useState(loadClipsAutoplay);
@@ -573,6 +575,21 @@ export function ClipsLibraryApp() {
     const next = `${window.location.pathname}?${sp.toString()}`;
     window.history.replaceState(null, "", next);
   }, [selectedId, q, origin, browseView, mediaFilter, derivedClipFilter]);
+
+  useEffect(() => {
+    if (deepLinkScrolled.current || loading) return;
+    const want = String(deep.clipId || "").trim();
+    if (!want) return;
+    if (!clips.some((c) => c.clip_id === want)) return;
+    const el = document.getElementById(`clips-card-${want}`);
+    if (!el) return;
+    deepLinkScrolled.current = true;
+    setDeepLinkHitId(want);
+    window.requestAnimationFrame(() => {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    window.setTimeout(() => setDeepLinkHitId((cur) => (cur === want ? null : cur)), 2400);
+  }, [clips, deep.clipId, loading]);
 
   const selectParentMedia = useCallback(
     (rel: string) => {
@@ -1152,14 +1169,17 @@ export function ClipsLibraryApp() {
                   const active = c.clip_id === selectedId;
                   const span = Math.max(0, c.mark_out_s - c.mark_in_s);
                   const retired = Boolean(c.deleted || c.deleted_at);
+                  const deepHit = deepLinkHitId === c.clip_id;
                   return (
                     <button
+                      id={`clips-card-${c.clip_id}`}
                       key={c.clip_id}
                       type="button"
                       className={
                         "clips-lib-card" +
                         (active ? " clips-lib-card--active" : "") +
-                        (retired ? " clips-lib-card--retired" : "")
+                        (retired ? " clips-lib-card--retired" : "") +
+                        (deepHit ? " clips-lib-card--deep-link" : "")
                       }
                       onClick={() => selectClipId(c.clip_id)}
                     >

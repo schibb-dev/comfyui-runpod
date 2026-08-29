@@ -10,7 +10,7 @@ Locked decisions (2026-07-03): install `/workflow/convert`, JSON pool index, pip
 
 **Plan (2026-08-20 / widened 2026-08-27):** **Still image gallery as launch hub** — browse `input` stills; from one image launch into Submit (I2V), collections→pools, Factory Map, ratings, identity. **G0 landing:** Library still → `/submit`. Full plan: [`docs/STILL_GALLERY_HUB_PLAN.md`](../docs/STILL_GALLERY_HUB_PLAN.md). (Older “input still browser + collections-as-pools” note folded into that doc.)
 
-**Backlog (2026-08-28):** UI navigation — (1) recent submits + (2) Queue/Workbench deeplinks **shipped**; still open: deeplinks on Library/Stills/etc., FS-style video browse, input/ browse (design). See [`docs/UI_NAVIGATION_BACKLOG.md`](../docs/UI_NAVIGATION_BACKLOG.md).
+**Backlog (2026-08-28):** UI navigation — (1) recent submits + (2) Queue/Workbench/Library/Clips/Stills deeplinks **shipped**; still open: Rating/Factory Map targeting, FS-style video browse, input/ tree browse (design). See [`docs/UI_NAVIGATION_BACKLOG.md`](../docs/UI_NAVIGATION_BACKLOG.md).
 
 **Plan (2026-08-20):** **Input still browser + collections-as-pools** — *(see Still gallery hub above; collections remain G3 of that plan.)*
 

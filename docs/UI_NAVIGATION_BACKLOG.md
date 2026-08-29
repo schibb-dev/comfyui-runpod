@@ -16,16 +16,19 @@ Related today: Submit deep links ([`SUBMIT_WORKFLOW.md`](./SUBMIT_WORKFLOW.md)),
 
 ### 2. Deep links everywhere (first-order navigation)
 
-**Shipped this slice:**
+**Shipped:**
 
-- Queue: `?prompt_id=` / `?job=` → expand section, scroll, highlight (`pipeline-row--deep-link`).
-- Workbench: `?job=` / `?prompt_id=` / `?q=` → seed filter, exact match + scroll/highlight; clear status/marker filters when an exact target is hidden.
-- Helpers in [`discoveryDeepLink.ts`](../workspace/experiments_ui/web/src/ui/discoveryDeepLink.ts): `queueHref` / `parseQueueDeepLink`, `workbenchHref` / `parseWorkbenchDeepLink`.
+- Queue: `?prompt_id=` / `?job=` → expand section, scroll, highlight.
+- Workbench: `?job=` / `?prompt_id=` / `?q=` → seed filter, exact match + scroll/highlight.
+- Library: `?relpath=` → select + scroll + deep-link flash (`discoveryLibraryHref`).
+- Clips: `?clip_id=` / `?media=` / `?view=` → select + scroll + flash (`clipsLibraryHref`).
+- Stills: `?content_id=` / `?relpath=` / `?q=` → filter, select tile, scroll + flash; URL sync on select (`stillsHref` / `parseStillDeepLink`). Workbench still bindings use `content_id` when present.
+- Helpers in [`discoveryDeepLink.ts`](../workspace/experiments_ui/web/src/ui/discoveryDeepLink.ts).
 
-**Still open:**
+**Still open / thinner:**
 
-- Deeplink into Library, Still gallery, and every other multi-asset surface so a URL lands on a specific item.
-- First-order navigation to everything (stable identity in the URL: content_id / relpath, clip id, etc.) beyond Queue/Workbench.
+- Rating queue, Factory Map cell, and other multi-asset surfaces that still lack stable URL targeting.
+- First-order door links everywhere (every surface that *knows* an id should emit the matching href).
 
 ### 3. Filesystem-style navigation to videos
 
@@ -36,6 +39,7 @@ Related today: Submit deep links ([`SUBMIT_WORKFLOW.md`](./SUBMIT_WORKFLOW.md)),
 
 - Same treatment for **`input/`** (stills and other loaders’ sources).
 - Complicated by **ComfyUI loader path conventions** (what LoadImage / VHS / etc. resolve vs what we show as workspace-relative paths). Needs careful mapping so “browse to file” and “what the graph will load” stay aligned.
+- Note: Still gallery is the current still entry point; this item is a true FS tree, not the gallery grid.
 
 ---
 
@@ -43,4 +47,4 @@ Related today: Submit deep links ([`SUBMIT_WORKFLOW.md`](./SUBMIT_WORKFLOW.md)),
 
 - Items 2–4 are one theme: **addressability + browse**, not more one-off search boxes.
 - Prefer content-addressed or stable keys in links (`job_key`, `prompt_id`, `content_id`, `clip_id`) over fragile absolute paths.
-- Next when picking this up: finish (2) for Library / Stills / Clips consistency; then (3); hold (4) until path-resolution design.
+- Next when picking this up: (3) FS video browse spike, or fill remaining (2) surfaces (Rating / Factory Map).

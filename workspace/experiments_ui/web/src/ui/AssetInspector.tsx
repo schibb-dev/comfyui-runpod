@@ -48,7 +48,7 @@ export function AssetInspector({
   showMedia = true,
 }: {
   asset: InspectorAsset | null;
-  onOpenRelpath?: (relpath: string) => void | Promise<boolean>;
+  onOpenRelpath?: (relpath: string) => void | Promise<boolean | string>;
   actions?: React.ReactNode;
   showMedia?: boolean;
 }) {

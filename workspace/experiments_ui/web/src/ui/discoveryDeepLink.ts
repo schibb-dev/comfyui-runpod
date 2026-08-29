@@ -1,8 +1,53 @@
+/** Extract a 64-hex content_id from a path or basename (content-addressed stills). */
+export function extractContentIdFromName(name?: string | null): string | null {
+  const m = /([0-9a-f]{64})/i.exec(String(name || "").trim());
+  return m ? m[1].toLowerCase() : null;
+}
+
 /** Build a Discovery library URL that opens a specific indexed asset. */
 export function discoveryLibraryHref(relpath?: string | null): string {
   const norm = (relpath || "").trim().replace(/^\/+/, "").replace(/\\/g, "/");
   if (!norm) return "/discovery";
   return `/discovery?relpath=${encodeURIComponent(norm)}`;
+}
+
+/** Still gallery deep-link: prefer content_id, else relpath, else free-text q. */
+export function stillsHref(opts?: {
+  contentId?: string | null;
+  relpath?: string | null;
+  q?: string | null;
+}): string {
+  const sp = new URLSearchParams();
+  const contentId = String(opts?.contentId || "").trim().toLowerCase();
+  const rel = String(opts?.relpath || "")
+    .trim()
+    .replace(/^\/+/, "")
+    .replace(/\\/g, "/");
+  const q = String(opts?.q || "").trim();
+  if (contentId) sp.set("content_id", contentId);
+  if (rel) sp.set("relpath", rel);
+  if (q) sp.set("q", q);
+  else if (!contentId && rel) {
+    const base = rel.split("/").pop() || rel;
+    if (base) sp.set("q", base);
+  } else if (contentId && !q) {
+    sp.set("q", contentId);
+  }
+  const qs = sp.toString();
+  return qs ? `/discovery/stills?${qs}` : "/discovery/stills";
+}
+
+export function parseStillDeepLink(search: string = window.location.search): {
+  contentId: string | null;
+  relpath: string | null;
+  q: string | null;
+} {
+  const sp = new URLSearchParams(search);
+  const contentId = (sp.get("content_id") || "").trim().toLowerCase() || null;
+  const relRaw = (sp.get("relpath") || "").trim().replace(/\\/g, "/").replace(/^\/+/, "");
+  const relpath = relRaw || null;
+  const q = (sp.get("q") || "").trim() || null;
+  return { contentId, relpath, q };
 }
 
 /** Build a Clips library URL, optionally selecting a clip / source video. */
@@ -191,7 +236,15 @@ export function submitOriginHref(
     return { href: "/discovery/factory-map", label: "Back to Factory" };
   }
   if (o === "gallery" || o === "stills" || o === "still") {
-    return { href: "/discovery/stills", label: "Back to Stills" };
+    const stillRel = media && /^(input\/|\S+\.(jpe?g|png|webp|gif)$)/i.test(media) ? media : null;
+    return {
+      href: stillsHref({
+        relpath: stillRel,
+        contentId: extractContentIdFromName(stillRel || media),
+        q: stillRel ? null : media,
+      }),
+      label: "Back to Stills",
+    };
   }
   if (o === "rate" || o === "rating") {
     return { href: "/discovery/rate", label: "Back to Rating" };

@@ -38,7 +38,7 @@ function ContributorList({
   onJumpFailed,
 }: {
   rows: DiscoveryAssetRatingsContributor[];
-  onOpenRelpath?: (relpath: string) => void | Promise<boolean>;
+  onOpenRelpath?: (relpath: string) => void | Promise<boolean | string>;
   onJumpFailed?: (relpath: string) => void;
 }) {
   if (!rows.length) {
@@ -215,7 +215,7 @@ function InferredLensSection({
   lead?: React.ReactNode;
   children?: React.ReactNode;
   onUpdated: (ratings: DiscoveryAssetRatingsResponse) => void;
-  onOpenRelpath?: (relpath: string) => void | Promise<boolean>;
+  onOpenRelpath?: (relpath: string) => void | Promise<boolean | string>;
   onJumpFailed?: (relpath: string) => void;
 }) {
   const inferred = num(block.inferred);
@@ -253,7 +253,7 @@ export function DiscoveryAssetRatingsPanel({
   onJudgmentSaved,
 }: {
   seedItem: DiscoveryLibraryItem | null;
-  onOpenRelpath?: (relpath: string) => void | Promise<boolean>;
+  onOpenRelpath?: (relpath: string) => void | Promise<boolean | string>;
   /** Called after inline quality/appetite saves so the library list can refresh its rollup. */
   onJudgmentSaved?: (relpath: string, ratings: DiscoveryAssetRatingsResponse) => void;
 }) {
@@ -271,7 +271,7 @@ export function DiscoveryAssetRatingsPanel({
       if (!onOpenRelpath) return false;
       const ok = await onOpenRelpath(rel);
       if (ok) setJumpError("");
-      return ok === true;
+      return Boolean(ok);
     },
     [onOpenRelpath]
   );

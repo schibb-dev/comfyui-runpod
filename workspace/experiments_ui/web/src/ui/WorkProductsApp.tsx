@@ -30,7 +30,7 @@ import {
   vhsDefaultsToMarks,
 } from "./workProductTrim";
 import { useTrimPlaybackEnforcement, type TrimPlaybackMode } from "./useTrimPlayback";
-import { discoveryLibraryHref, parseWorkbenchDeepLink, submitHref } from "./discoveryDeepLink";
+import { discoveryLibraryHref, extractContentIdFromName, parseWorkbenchDeepLink, stillsHref, submitHref } from "./discoveryDeepLink";
 import { rememberFamiliesFromWorkProducts } from "./shapeFactorySessionCache";
 import { isStillMediaPath } from "./submitFamily";
 import { queryKeys } from "./queryKeys";
@@ -1765,9 +1765,11 @@ function bindingAssetHref(row: WorkProductDetailRow): string | null {
     }
     if (/^input\//i.test(rel) || /\.(jpe?g|png|webp|gif)($|\?)/i.test(rel)) {
       const base = rel.split("/").pop() || rel;
-      const sp = new URLSearchParams();
-      if (base) sp.set("q", base);
-      return `/discovery/stills?${sp.toString()}`;
+      return stillsHref({
+        contentId: extractContentIdFromName(base),
+        relpath: rel.startsWith("input/") ? rel : `input/${base}`,
+        q: base,
+      });
     }
     return filesHrefForRelpath(rel);
   }

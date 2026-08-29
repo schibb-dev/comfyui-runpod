@@ -12,7 +12,7 @@ import {
   mutateShapeFactoryInputStillTags,
   setShapeFactoryStillTagSchedule,
 } from "./api";
-import { submitHref } from "./discoveryDeepLink";
+import { parseStillDeepLink, stillsHref, submitHref } from "./discoveryDeepLink";
 import { PageHeader } from "./PageHeader";
 import { queryKeys } from "./queryKeys";
 import type { InputCurationCollection, InputCurationStillItem, StillTagEvent } from "./types";
@@ -30,14 +30,42 @@ function stillMediaRelpath(it: InputCurationStillItem): string {
   return bn ? `input/${bn}` : "";
 }
 
+function stillTileDomId(it: InputCurationStillItem): string {
+  const cid = String(it.content_id || "").trim();
+  if (cid) return `still-tile-${cid}`;
+  const key = String(it.path || it.relpath || it.basename || "")
+    .trim()
+    .replace(/[^\w.-]+/g, "_");
+  return `still-tile-${key || "x"}`;
+}
+
+function stillMatchesDeepLink(
+  it: InputCurationStillItem,
+  deep: { contentId: string | null; relpath: string | null },
+): boolean {
+  const wantCid = String(deep.contentId || "").trim().toLowerCase();
+  const wantRel = String(deep.relpath || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "")
+    .toLowerCase();
+  if (wantCid && String(it.content_id || "").trim().toLowerCase() === wantCid) return true;
+  if (wantRel) {
+    const rel = stillMediaRelpath(it).toLowerCase();
+    const base = (it.basename || "").toLowerCase();
+    if (rel === wantRel || rel.endsWith("/" + wantRel) || base === wantRel.split("/").pop()) return true;
+  }
+  return false;
+}
+
 export function StillGalleryApp() {
   const queryClient = useQueryClient();
+  const deep = useMemo(() => parseStillDeepLink(), []);
   const [q, setQ] = useState(() => {
-    try {
-      return new URLSearchParams(window.location.search).get("q")?.trim() || "";
-    } catch {
-      return "";
-    }
+    if (deep.q) return deep.q;
+    if (deep.contentId) return deep.contentId;
+    if (deep.relpath) return deep.relpath.split("/").pop() || deep.relpath;
+    return "";
   });
   const [qDebounced, setQDebounced] = useState(q);
   const [tagFilter, setTagFilter] = useState("");
@@ -52,6 +80,8 @@ export function StillGalleryApp() {
   const [runEvents, setRunEvents] = useState<StillTagEvent[]>([]);
   const [runStatus, setRunStatus] = useState<string | null>(null);
   const eventAfterId = useRef(0);
+  const deepLinkDone = useRef(false);
+  const [deepLinkHitPath, setDeepLinkHitPath] = useState<string | null>(null);
 
   useEffect(() => {
     const t = window.setTimeout(() => setQDebounced(q.trim()), 250);
@@ -127,6 +157,54 @@ export function StillGalleryApp() {
     if (selected) setTagDraft((selected.editorial_tags || selected.tags || []).join(", "));
     else setTagDraft("");
   }, [selected?.path, selected?.content_id, (selected?.editorial_tags || selected?.tags || []).join("|")]);
+
+  useEffect(() => {
+    if (deepLinkDone.current || stillsQuery.isLoading) return;
+    if (!deep.contentId && !deep.relpath) return;
+    const match = items.find((it) => stillMatchesDeepLink(it, deep));
+    if (!match) {
+      if (stillsQuery.hasNextPage && !stillsQuery.isFetchingNextPage) {
+        void stillsQuery.fetchNextPage();
+      } else if (!stillsQuery.isFetchingNextPage && items.length) {
+        deepLinkDone.current = true;
+        setMsg(
+          `Still not in gallery results: ${deep.contentId || deep.relpath}${
+            qDebounced ? "" : " (try searching)"
+          }`,
+        );
+      }
+      return;
+    }
+    deepLinkDone.current = true;
+    setSelectedPath(match.path);
+    setDeepLinkHitPath(match.path);
+    window.requestAnimationFrame(() => {
+      const el = document.getElementById(stillTileDomId(match));
+      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    window.setTimeout(() => setDeepLinkHitPath((cur) => (cur === match.path ? null : cur)), 2400);
+  }, [
+    deep,
+    deep.contentId,
+    deep.relpath,
+    items,
+    qDebounced,
+    stillsQuery.hasNextPage,
+    stillsQuery.isFetchingNextPage,
+    stillsQuery.isLoading,
+    stillsQuery.fetchNextPage,
+  ]);
+
+  useEffect(() => {
+    if (!selected) return;
+    const next = stillsHref({
+      contentId: selected.content_id || null,
+      relpath: stillMediaRelpath(selected) || null,
+      q: qDebounced || null,
+    });
+    if (`${window.location.pathname}${window.location.search}` === next) return;
+    window.history.replaceState(null, "", next);
+  }, [selected, qDebounced]);
 
   useEffect(() => {
     const el = sentinelRef.current;
@@ -455,13 +533,19 @@ export function StillGalleryApp() {
           <div className="still-gallery__grid" role="list">
             {items.map((it) => {
               const active = selected?.path === it.path;
+              const deepHit = deepLinkHitPath === it.path;
               const src = it.thumb_url || it.url;
               return (
                 <button
                   key={it.path}
+                  id={stillTileDomId(it)}
                   type="button"
                   role="listitem"
-                  className={"still-gallery__tile" + (active ? " still-gallery__tile--active" : "")}
+                  className={
+                    "still-gallery__tile" +
+                    (active ? " still-gallery__tile--active" : "") +
+                    (deepHit ? " still-gallery__tile--deep-link" : "")
+                  }
                   onClick={() => setSelectedPath(it.path)}
                   title={it.basename || it.path}
                 >

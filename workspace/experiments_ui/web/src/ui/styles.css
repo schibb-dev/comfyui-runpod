@@ -17065,3 +17065,21 @@ tr.disabled:hover td {
     position: static;
   }
 }
+
+.discovery-phone-row--deep-link {
+  outline: 2px solid rgba(110, 168, 254, 0.85);
+  outline-offset: 2px;
+  transition: outline-color 0.9s ease;
+}
+
+.clips-lib-card--deep-link {
+  outline: 2px solid rgba(110, 168, 254, 0.85);
+  outline-offset: 2px;
+  transition: outline-color 0.9s ease;
+}
+
+.still-gallery__tile--deep-link {
+  outline: 2px solid rgba(110, 168, 254, 0.85);
+  outline-offset: 2px;
+  transition: outline-color 0.9s ease;
+}

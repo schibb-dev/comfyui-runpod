@@ -1146,6 +1146,7 @@ type ThumbRowProps = {
   onGoToExemplarLibrary: () => void;
   onActivate: () => void;
   selected?: boolean;
+  deepLinkHit?: boolean;
   /** Stable id for scroll-into-view (phone + desktop lists). */
   listRowId?: string;
   /** Desktop list is a listbox; phone rows stay focusable buttons even with listRowId. */
@@ -1159,6 +1160,7 @@ function DiscoveryListThumbRow({
   onGoToExemplarLibrary,
   onActivate,
   selected,
+  deepLinkHit,
   listRowId,
   desktopListboxChild,
 }: ThumbRowProps) {
@@ -1169,7 +1171,11 @@ function DiscoveryListThumbRow({
   return (
     <div
       id={listRowId}
-      className={`discovery-phone-row${selected ? " discovery-desktop-row--selected" : ""}`}
+      className={
+        `discovery-phone-row` +
+        (selected ? " discovery-desktop-row--selected" : "") +
+        (deepLinkHit ? " discovery-phone-row--deep-link" : "")
+      }
       role={isDesktopOption ? "option" : "button"}
       tabIndex={isDesktopOption ? -1 : 0}
       aria-selected={selected ? true : undefined}
@@ -2502,7 +2508,7 @@ function DiscoveryDesktopPreview({
   trimSeekBoundsRef: DiscoveryDesktopTrimSeekRef;
   trimKeyboardRef: React.MutableRefObject<DiscoveryTrimKeyboardApi | null>;
   onOpenLineageSummary: (s: DiscoveryAssetLineageItemSummary) => void;
-  onOpenRatingsRelpath: (relpath: string) => void | Promise<boolean>;
+  onOpenRatingsRelpath: (relpath: string) => void | Promise<boolean | string>;
   resolveSummaryToLibraryItem: (s: DiscoveryAssetLineageItemSummary) => DiscoveryLibraryItem | null;
   onJudgmentSaved: (relpath: string, ratings: DiscoveryAssetRatingsResponse) => void;
   previewLayout: DiscoveryDesktopPreviewLayout;
@@ -3327,7 +3333,7 @@ function DiscoveryLibraryInner() {
   );
 
   const openRatingsRelpath = useCallback(
-    async (relpath: string): Promise<boolean> => {
+    async (relpath: string): Promise<string | false> => {
       const norm = relpath.trim().replace(/^\/+/, "").replace(/\\/g, "/");
       if (!norm) return false;
 
@@ -3349,8 +3355,9 @@ function DiscoveryLibraryInner() {
 
       if (!target) return false;
 
+      const key = discoveryItemKey(target);
       if (isPhone) {
-        const ix = displayed.findIndex((x) => discoveryItemKey(x) === discoveryItemKey(target!));
+        const ix = displayed.findIndex((x) => discoveryItemKey(x) === key);
         if (ix >= 0) {
           setPhoneLineageJumpItem(null);
           setPhoneFocusIndex(ix);
@@ -3359,13 +3366,12 @@ function DiscoveryLibraryInner() {
         }
         setPhoneViewerOpen(true);
       } else {
-        const key = discoveryItemKey(target);
         pinnedDesktopSelectionKeyRef.current = key;
         setLineageJumpItem(target);
         setDesktopSelectedKey(key);
         queueMicrotask(() => desktopListScrollRef.current?.focus());
       }
-      return true;
+      return key;
     },
     [items, isPhone, displayed]
   );
@@ -3381,16 +3387,20 @@ function DiscoveryLibraryInner() {
   }, []);
 
   const deepLinkHandledRef = useRef(false);
+  const [deepLinkHitKey, setDeepLinkHitKey] = useState<string | null>(null);
   useEffect(() => {
     if (loading || deepLinkHandledRef.current) return;
     const rel = parseDiscoveryDeepLinkRelpath();
     if (!rel) return;
     deepLinkHandledRef.current = true;
-    void openRatingsRelpath(rel).then((ok) => {
-      if (!ok) {
+    void openRatingsRelpath(rel).then((hit) => {
+      if (!hit) {
         setErr(`Discovery item not found: ${rel}`);
         setQInput(rel.split("/").pop() || rel);
+        return;
       }
+      setDeepLinkHitKey(hit);
+      window.setTimeout(() => setDeepLinkHitKey((cur) => (cur === hit ? null : cur)), 2400);
     });
   }, [loading, openRatingsRelpath]);
 
@@ -3780,6 +3790,7 @@ function DiscoveryLibraryInner() {
                   setPhoneViewerOpen(true);
                 }}
                 selected={phoneFocusIndex === idx}
+                deepLinkHit={deepLinkHitKey === discoveryItemKey(it)}
                 listRowId={`discovery-phone-list-row-${idx}`}
               />
             ))}
@@ -3924,6 +3935,7 @@ function DiscoveryLibraryInner() {
                     desktopListScrollRef.current?.focus();
                   }}
                   selected={desktopSelectedKey === discoveryItemKey(it)}
+                  deepLinkHit={deepLinkHitKey === discoveryItemKey(it)}
                   listRowId={`discovery-desktop-row-${idx}`}
                   desktopListboxChild
                 />
@@ -4001,7 +4013,7 @@ type PhoneDetailProps = {
   videoAutoplay: boolean;
   onVideoAutoplayChange: (on: boolean) => void;
   onOpenLineageSummary: (s: DiscoveryAssetLineageItemSummary) => void;
-  onOpenRatingsRelpath: (relpath: string) => void | Promise<boolean>;
+  onOpenRatingsRelpath: (relpath: string) => void | Promise<boolean | string>;
   onJudgmentSaved: (relpath: string, ratings: DiscoveryAssetRatingsResponse) => void;
   resolveSummaryToLibraryItem: (s: DiscoveryAssetLineageItemSummary) => DiscoveryLibraryItem | null;
 };
