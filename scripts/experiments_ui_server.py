@@ -2204,6 +2204,17 @@ def _fast_track_extend(cfg: "ServerConfig", rel: str, body: Dict[str, Any]) -> D
         for alias in ("identity_anchor", "source_still", "identity_still"):
             if alias in body and body.get(alias) not in (None, ""):
                 replay_body[alias] = body.get(alias)
+        # Submit / Library always know the clip being extended (``rel``). Parent
+        # I2V jobs often complete without stamping submit.outputs / deposit.videos,
+        # so forward the media path explicitly or Extend fails with
+        # ``extend requires a resolvable output path``.
+        explicit_out = str(body.get("output_path") or "").strip()
+        if explicit_out:
+            replay_body["output_path"] = explicit_out
+        else:
+            media_abs = _safe_join(cfg.output_root, rel)
+            if media_abs is not None and media_abs.is_file():
+                replay_body["output_path"] = str(media_abs)
         try:
             return _shape_factory_replay_payload(cfg, replay_body)
         except ValueError as e:
