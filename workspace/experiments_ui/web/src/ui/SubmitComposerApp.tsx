@@ -28,6 +28,7 @@ import {
   queueHref,
   submitOriginHref,
   workbenchHref,
+  type SubmitDeepLink,
 } from "./discoveryDeepLink";
 import { PageHeader } from "./PageHeader";
 import {
@@ -209,10 +210,15 @@ function familyShapeId(families: WorkProductFamilyOption[], slug: string): strin
 function SubmitEditJobApp({
   editJob,
   origin,
+  presentation = "page",
+  onClose,
 }: {
   editJob: string;
   origin: string | null;
+  presentation?: "page" | "modal";
+  onClose?: () => void;
 }) {
+  const isModal = presentation === "modal";
   const [busy, setBusy] = useState(false);
   const [bootError, setBootError] = useState<string | null>(null);
   const [snap, setSnap] = useState<ShapeFactoryJobEditSnapshot | null>(null);
@@ -271,10 +277,12 @@ function SubmitEditJobApp({
               ? "Saved for later (pending)"
               : "Edit cancelled (pending)",
         );
-        if (opts?.navigate !== false) {
+        if (opts?.navigate !== false && !isModal) {
           window.setTimeout(() => {
             window.location.href = originBack.href;
           }, action === "now" ? 600 : 200);
+        } else if (isModal && onClose && opts?.navigate !== false) {
+          window.setTimeout(() => onClose(), action === "now" ? 600 : 200);
         }
       } catch (e) {
         setMsg(e instanceof Error ? e.message : String(e));
@@ -282,7 +290,7 @@ function SubmitEditJobApp({
         setBusy(false);
       }
     },
-    [editJob, originBack.href],
+    [editJob, isModal, onClose, originBack.href],
   );
 
   const refreshSnapshot = useCallback(async () => {
@@ -414,14 +422,20 @@ function SubmitEditJobApp({
 
   if (bootError) {
     return (
-      <div className="submit-composer">
+      <div className={`submit-composer${isModal ? " submit-composer--modal" : ""}`}>
         <PageHeader
           title="Edit job"
           subtitle={editJob}
           actions={
-            <a className="drt-btn" href={originBack.href}>
-              {originBack.label}
-            </a>
+            isModal && onClose ? (
+              <button type="button" className="drt-btn" onClick={onClose}>
+                Close
+              </button>
+            ) : (
+              <a className="drt-btn" href={originBack.href}>
+                {originBack.label}
+              </a>
+            )
           }
         />
         <p className="work-product-viewer__trim-warn">{bootError}</p>
@@ -430,25 +444,40 @@ function SubmitEditJobApp({
   }
 
   return (
-    <div className="submit-composer">
+    <div className={`submit-composer${isModal ? " submit-composer--modal" : ""}`}>
       <PageHeader
         title="Edit job"
         subtitle={`${snap?.family_slug || "…"} · ${editJob}`}
         actions={
-          <a
-            className="drt-btn"
-            href={originBack.href}
-            onClick={(e) => {
-              if (releasedRef.current || finished) return;
-              e.preventDefault();
-              void releaseEdit("cancel");
-            }}
-          >
-            {originBack.label}
-          </a>
+          isModal && onClose ? (
+            <button
+              type="button"
+              className="drt-btn"
+              onClick={() => {
+                if (releasedRef.current || finished) {
+                  onClose();
+                  return;
+                }
+                void releaseEdit("cancel");
+              }}
+            >
+              Close
+            </button>
+          ) : (
+            <a
+              className="drt-btn"
+              href={originBack.href}
+              onClick={(e) => {
+                if (releasedRef.current || finished) return;
+                e.preventDefault();
+                void releaseEdit("cancel");
+              }}
+            >
+              {originBack.label}
+            </a>
+          )
         }
       />
-
       <div className="work-product-row work-product-row--split submit-composer__stage" aria-label="Edit job">
         <div className="work-product-row__head">
           <div className="work-product-row__head-main">
@@ -760,16 +789,54 @@ function SubmitConstructionPreview({
   );
 }
 
-export function SubmitComposerApp() {
-  const intent = useMemo(() => parseSubmitDeepLink(), []);
+export type SubmitComposerProps = {
+  /** When omitted, intent comes from the URL (full /submit page). */
+  intent?: SubmitDeepLink | null;
+  presentation?: "page" | "modal";
+  onClose?: () => void;
+  onSubmitted?: (info: { jobKeys: string[] }) => void;
+};
+
+export function SubmitComposerApp({
+  intent: intentProp,
+  presentation = "page",
+  onClose,
+  onSubmitted,
+}: SubmitComposerProps = {}) {
+  const urlIntent = useMemo(() => parseSubmitDeepLink(), []);
+  const intent = intentProp ?? urlIntent;
   if (intent.editJob) {
-    return <SubmitEditJobApp editJob={intent.editJob} origin={intent.origin} />;
+    return (
+      <SubmitEditJobApp
+        editJob={intent.editJob}
+        origin={intent.origin}
+        presentation={presentation}
+        onClose={onClose}
+      />
+    );
   }
-  return <SubmitAdvanceComposerApp />;
+  return (
+    <SubmitAdvanceComposerApp
+      intent={intent}
+      presentation={presentation}
+      onClose={onClose}
+      onSubmitted={onSubmitted}
+    />
+  );
 }
 
-function SubmitAdvanceComposerApp() {
-  const intent = useMemo(() => parseSubmitDeepLink(), []);
+function SubmitAdvanceComposerApp({
+  intent,
+  presentation = "page",
+  onClose,
+  onSubmitted,
+}: {
+  intent: SubmitDeepLink;
+  presentation?: "page" | "modal";
+  onClose?: () => void;
+  onSubmitted?: (info: { jobKeys: string[] }) => void;
+}) {
+  const isModal = presentation === "modal";
   const initialRoutes = useMemo(() => stepToRouteFlags(intent.step), [intent.step]);
   const cachedFamiliesBoot = useMemo(() => peekFamiliesBootstrap(), []);
   const [layout, setLayout] = useState<RowLayout>(() => loadLayout());
@@ -1170,6 +1237,7 @@ function SubmitAdvanceComposerApp() {
               : `Seeded ${i2vFamily}`,
         );
         void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.submitAttemptsRoot });
+        if (res.job_key) onSubmitted?.({ jobKeys: [res.job_key] });
         return;
       }
       const { overrides, warning } = buildOverrides();
@@ -1205,6 +1273,7 @@ function SubmitAdvanceComposerApp() {
       setLastJobKey(result.jobKeys[0] || null);
       setMsg([result.message, warning].filter(Boolean).join(" · "));
       void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.submitAttemptsRoot });
+      if (result.jobKeys.length) onSubmitted?.({ jobKeys: result.jobKeys });
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
       setSubmitError(err);
@@ -1425,13 +1494,21 @@ function SubmitAdvanceComposerApp() {
   ]);
 
   return (
-    <div className="layout submit-composer panel">
+    <div className={`layout submit-composer panel${isModal ? " submit-composer--modal" : ""}`}>
       <PageHeader
         title="Submit"
-        subtitle="Compose a factory job from a door handoff — Library, Clips, and Workbench find the subject; Submit only composes."
+        subtitle={
+          isModal
+            ? "Compose without leaving Workbench"
+            : "Compose a factory job from a door handoff — Library, Clips, and Workbench find the subject; Submit only composes."
+        }
         actions={
           <div className="submit-composer__header-actions">
-            {originBack ? (
+            {isModal && onClose ? (
+              <button type="button" className="drt-btn" onClick={onClose}>
+                Close
+              </button>
+            ) : originBack ? (
               <a className="drt-btn" href={originBack.href}>
                 {originBack.label}
               </a>
@@ -1466,7 +1543,6 @@ function SubmitAdvanceComposerApp() {
           </div>
         }
       />
-
       {!hasIntent ? (
         <div className="submit-composer__empty" aria-label="Submit needs intent">
           <p className="submit-composer__empty-lead">
@@ -1510,7 +1586,11 @@ function SubmitAdvanceComposerApp() {
               </code>
             </div>
             <div className="submit-composer__links">
-              {originBack ? (
+              {isModal && onClose ? (
+                <button type="button" className="drt-btn" onClick={onClose}>
+                  Close
+                </button>
+              ) : originBack ? (
                 <a className="drt-btn" href={originBack.href}>
                   {originBack.label}
                 </a>
@@ -1849,13 +1929,18 @@ function SubmitAdvanceComposerApp() {
                 <RecentSubmitsPanel items={recentSubmitsQuery.data?.items || []} />
                 {lastJobKey ? (
                   <div className="submit-composer__links">
+                    {isModal && onClose ? (
+                      <button type="button" className="drt-btn" onClick={onClose}>
+                        Done
+                      </button>
+                    ) : null}
                     <a className="drt-btn" href={workbenchHref({ jobKey: lastJobKey })}>
                       Open in Workbench
                     </a>
                     <a className="drt-btn" href={queueHref({ jobKey: lastJobKey })}>
                       Open Queue
                     </a>
-                    {originBack ? (
+                    {!isModal && originBack ? (
                       <a className="drt-btn" href={originBack.href}>
                         {originBack.label}
                       </a>

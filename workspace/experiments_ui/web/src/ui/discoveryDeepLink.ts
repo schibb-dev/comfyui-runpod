@@ -122,47 +122,6 @@ export function parseDiscoveryDeepLinkRelpath(search: string = window.location.s
   return rel.trim().replace(/^\/+/, "").replace(/\\/g, "/");
 }
 
-/** Submit compose deep-link: hand off intent from Library / Clips / etc. */
-export function submitHref(opts?: {
-  mediaRelpath?: string | null;
-  clipId?: string | null;
-  markIn?: number | null;
-  markOut?: number | null;
-  family?: string | null;
-  identity?: string | null;
-  when?: "now" | "later" | null;
-  fromJob?: string | null;
-  editJob?: string | null;
-  step?: string | null;
-  origin?: string | null;
-}): string {
-  const sp = new URLSearchParams();
-  const media = String(opts?.mediaRelpath || "").trim().replace(/\\/g, "/");
-  const clipId = String(opts?.clipId || "").trim();
-  const family = String(opts?.family || "").trim();
-  const identity = String(opts?.identity || "").trim();
-  const fromJob = String(opts?.fromJob || "").trim();
-  const step = String(opts?.step || "").trim();
-  const origin = String(opts?.origin || "").trim();
-  if (media) sp.set("media", media);
-  if (clipId) sp.set("clip_id", clipId);
-  if (opts?.markIn != null && Number.isFinite(opts.markIn)) sp.set("mark_in", String(opts.markIn));
-  if (opts?.markOut != null && Number.isFinite(opts.markOut)) sp.set("mark_out", String(opts.markOut));
-  if (family) sp.set("family", family);
-  if (identity) sp.set("identity", identity);
-  if (opts?.when === "now" || opts?.when === "later") sp.set("when", opts.when);
-  if (fromJob) sp.set("from_job", fromJob);
-  if (opts?.editJob) {
-    const editJob = String(opts.editJob).trim();
-    if (editJob) sp.set("edit_job", editJob);
-  }
-  if (step) sp.set("step", step);
-  if (origin) sp.set("origin", origin);
-  const qs = sp.toString();
-  // Bare /submit is the intent-modal empty state — doors should always pass intent.
-  return qs ? `/submit?${qs}` : "/submit";
-}
-
 export type SubmitDeepLink = {
   mediaRelpath: string | null;
   clipId: string | null;
@@ -178,37 +137,88 @@ export type SubmitDeepLink = {
   origin: string | null;
 };
 
+export type SubmitDeepLinkOpts = {
+  mediaRelpath?: string | null;
+  clipId?: string | null;
+  markIn?: number | null;
+  markOut?: number | null;
+  family?: string | null;
+  identity?: string | null;
+  when?: "now" | "later" | null;
+  fromJob?: string | null;
+  editJob?: string | null;
+  step?: string | null;
+  origin?: string | null;
+};
+
+/** Structured Submit intent (modal handoff or deep-link fields). */
+export function buildSubmitDeepLink(opts?: SubmitDeepLinkOpts): SubmitDeepLink {
+  const media = String(opts?.mediaRelpath || "")
+    .trim()
+    .replace(/\\/g, "/");
+  const when = opts?.when === "now" || opts?.when === "later" ? opts.when : null;
+  return {
+    mediaRelpath: media || null,
+    clipId: String(opts?.clipId || "").trim() || null,
+    markIn: opts?.markIn != null && Number.isFinite(opts.markIn) ? Number(opts.markIn) : null,
+    markOut: opts?.markOut != null && Number.isFinite(opts.markOut) ? Number(opts.markOut) : null,
+    family: String(opts?.family || "").trim() || null,
+    identity: String(opts?.identity || "").trim() || null,
+    when,
+    fromJob: String(opts?.fromJob || "").trim() || null,
+    editJob: String(opts?.editJob || "").trim() || null,
+    step: String(opts?.step || "").trim() || null,
+    origin: String(opts?.origin || "").trim() || null,
+  };
+}
+
+/** Submit compose deep-link: hand off intent from Library / Clips / etc. */
+export function submitHref(opts?: SubmitDeepLinkOpts): string {
+  const intent = buildSubmitDeepLink(opts);
+  const sp = new URLSearchParams();
+  if (intent.mediaRelpath) sp.set("media", intent.mediaRelpath);
+  if (intent.clipId) sp.set("clip_id", intent.clipId);
+  if (intent.markIn != null) sp.set("mark_in", String(intent.markIn));
+  if (intent.markOut != null) sp.set("mark_out", String(intent.markOut));
+  if (intent.family) sp.set("family", intent.family);
+  if (intent.identity) sp.set("identity", intent.identity);
+  if (intent.when) sp.set("when", intent.when);
+  if (intent.fromJob) sp.set("from_job", intent.fromJob);
+  if (intent.editJob) sp.set("edit_job", intent.editJob);
+  if (intent.step) sp.set("step", intent.step);
+  if (intent.origin) sp.set("origin", intent.origin);
+  const qs = sp.toString();
+  // Bare /submit is the intent-modal empty state — doors should always pass intent.
+  return qs ? `/submit?${qs}` : "/submit";
+}
+
+export function submitHrefFromDeepLink(intent: SubmitDeepLink): string {
+  return submitHref(intent);
+}
+
 export function parseSubmitDeepLink(search: string = window.location.search): SubmitDeepLink {
   const sp = new URLSearchParams(search);
   const mediaRaw = (sp.get("media") || sp.get("media_relpath") || "").trim().replace(/\\/g, "/");
-  const clipId = (sp.get("clip_id") || "").trim() || null;
-  const family = (sp.get("family") || "").trim() || null;
-  const identity = (sp.get("identity") || "").trim() || null;
-  const fromJob = (sp.get("from_job") || "").trim() || null;
-  const editJob = (sp.get("edit_job") || "").trim() || null;
-  const step = (sp.get("step") || "").trim() || null;
-  const origin = (sp.get("origin") || "").trim() || null;
   const whenRaw = (sp.get("when") || "").trim().toLowerCase();
-  const when = whenRaw === "now" || whenRaw === "later" ? whenRaw : null;
   const parseMark = (key: string): number | null => {
     const raw = sp.get(key);
     if (raw == null || !String(raw).trim()) return null;
     const n = Number(raw);
     return Number.isFinite(n) ? n : null;
   };
-  return {
+  return buildSubmitDeepLink({
     mediaRelpath: mediaRaw || null,
-    clipId,
+    clipId: (sp.get("clip_id") || "").trim() || null,
     markIn: parseMark("mark_in"),
     markOut: parseMark("mark_out"),
-    family,
-    identity,
-    when,
-    fromJob,
-    editJob,
-    step,
-    origin,
-  };
+    family: (sp.get("family") || "").trim() || null,
+    identity: (sp.get("identity") || "").trim() || null,
+    when: whenRaw === "now" || whenRaw === "later" ? whenRaw : null,
+    fromJob: (sp.get("from_job") || "").trim() || null,
+    editJob: (sp.get("edit_job") || "").trim() || null,
+    step: (sp.get("step") || "").trim() || null,
+    origin: (sp.get("origin") || "").trim() || null,
+  });
 }
 
 /** Intent-modal: compose only when a door handed off a subject. */

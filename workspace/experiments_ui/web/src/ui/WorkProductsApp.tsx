@@ -30,7 +30,8 @@ import {
   vhsDefaultsToMarks,
 } from "./workProductTrim";
 import { useTrimPlaybackEnforcement, type TrimPlaybackMode } from "./useTrimPlayback";
-import { discoveryLibraryHref, extractContentIdFromName, parseWorkbenchDeepLink, stillsHref, submitHref } from "./discoveryDeepLink";
+import { discoveryLibraryHref, extractContentIdFromName, parseWorkbenchDeepLink, stillsHref, buildSubmitDeepLink, type SubmitDeepLink } from "./discoveryDeepLink";
+import { SubmitComposerModal } from "./SubmitComposerModal";
 import { rememberFamiliesFromWorkProducts } from "./shapeFactorySessionCache";
 import { isStillMediaPath } from "./submitFamily";
 import { queryKeys } from "./queryKeys";
@@ -2940,7 +2941,7 @@ function WorkProductParamsEditor({
   );
 }
 
-function workbenchAdvanceSubmitHref(
+function workbenchAdvanceSubmitIntent(
   item: WorkProductItem,
   opts: {
     outputTrim: InputTrimState;
@@ -2949,12 +2950,12 @@ function workbenchAdvanceSubmitHref(
     step?: string | null;
     clip?: ShapeFactoryClip | null;
   },
-): string {
+): SubmitDeepLink {
   const media = String(item.output_relpath || "").trim();
   const successors = opts.extendFamilyDefaults || EMPTY_EXTEND_DEFAULTS;
   const family = smartExtendFamily(item, successors);
   const clip = opts.clip || null;
-  return submitHref({
+  return buildSubmitDeepLink({
     mediaRelpath: media || null,
     fromJob: item.job_key || null,
     family: family || item.family_slug || null,
@@ -2967,7 +2968,7 @@ function workbenchAdvanceSubmitHref(
 }
 
 /** Open Submit with this job's *input* as the subject (Extend/Vary for video, I2V for still). */
-function workbenchSourceSubmitHref(
+function workbenchSourceSubmitIntent(
   item: WorkProductItem,
   opts: {
     sourceTrim: InputTrimState;
@@ -2975,7 +2976,7 @@ function workbenchSourceSubmitHref(
     step?: string | null;
     clip?: ShapeFactoryClip | null;
   },
-): string | null {
+): SubmitDeepLink | null {
   const media = workbenchSourceMediaRelpath(item);
   if (!media) return null;
   const still = isStillMediaPath(media);
@@ -2987,7 +2988,7 @@ function workbenchSourceSubmitHref(
     Number.isFinite(opts.sourceTrim.markIn) &&
     Number.isFinite(opts.sourceTrim.markOut) &&
     opts.sourceTrim.markOut > opts.sourceTrim.markIn + 0.05;
-  return submitHref({
+  return buildSubmitDeepLink({
     mediaRelpath: media,
     // Do not pass from_job — this media is the input, not this job's product.
     family: String(item.family_slug || "").trim() || null,
@@ -3007,6 +3008,7 @@ function WorkProductQuickQueue({
   sourceTrim,
   sourceClipId,
   onCommitted,
+  onOpenSubmit,
 }: {
   item: WorkProductItem;
   families?: WorkProductFamilyOption[];
@@ -3015,6 +3017,7 @@ function WorkProductQuickQueue({
   sourceTrim: InputTrimState;
   sourceClipId?: string | null;
   onCommitted?: () => void;
+  onOpenSubmit?: (intent: SubmitDeepLink) => void;
 }) {
   const open = item.work_items_open || [];
   const extendOpen = openPoolItem(open, "extend");
@@ -3058,8 +3061,8 @@ function WorkProductQuickQueue({
   const canUnqueue = canUnqueueWorkProduct(item) && !isBusy;
   const canEditSubmit = canEditJobViaSubmit(item) && !isBusy;
   const isEditing = workProductStatusKey(item) === "editing";
-  const editSubmitUrl = canEditSubmit
-    ? submitHref({
+  const editSubmitIntent = canEditSubmit
+    ? buildSubmitDeepLink({
         editJob: jobKey,
         origin: "workbench",
         family: item.family_slug || null,
@@ -3070,16 +3073,19 @@ function WorkProductQuickQueue({
   const canDelete = canDeleteWorkProduct(item) && !isBusy;
   const deleteIsPendingOnly = canDiscardPendingWorkProduct(item);
   const nonFactory = isNonFactoryWorkProduct(item);
-  const submitUrl = workbenchAdvanceSubmitHref(item, {
+  const submitIntent = workbenchAdvanceSubmitIntent(item, {
     outputTrim,
     sourceClipId,
     extendFamilyDefaults,
   });
-  const sourceSubmitUrl = workbenchSourceSubmitHref(item, {
+  const sourceSubmitIntent = workbenchSourceSubmitIntent(item, {
     sourceTrim,
     sourceClipId,
   });
-
+  const openSubmit = (intent: SubmitDeepLink | null) => {
+    if (!intent) return;
+    if (onOpenSubmit) onOpenSubmit(intent);
+  };
   const unqueue = async () => {
     const pid = String(item.prompt_id || "").trim();
     if (!pid || isBusy) return;
@@ -3271,28 +3277,30 @@ function WorkProductQuickQueue({
           Advance
         </span>
         {relpath ? (
-          <a
+          <button
+            type="button"
             className="drt-btn work-product-quick-queue__now"
-            href={submitUrl}
             title="Open Submit with Extend / Vary / Derive for this output"
+            onClick={() => openSubmit(submitIntent)}
           >
             Open output in Submit
-          </a>
+          </button>
         ) : (
           <span className="work-product-quick-queue__hint">No output</span>
         )}
-        {sourceSubmitUrl ? (
-          <a
+        {sourceSubmitIntent ? (
+          <button
+            type="button"
             className="drt-btn work-product-quick-queue__now"
-            href={sourceSubmitUrl}
             title={
               isStillMediaPath(workbenchSourceMediaRelpath(item) || "")
                 ? "Open Submit with this job's input still (I2V)"
                 : "Open Submit with Extend / Vary for this job's input video"
             }
+            onClick={() => openSubmit(sourceSubmitIntent)}
           >
             Open input in Submit
-          </a>
+          </button>
         ) : (
           <span className="work-product-quick-queue__hint">No input</span>
         )}
@@ -3367,16 +3375,17 @@ function WorkProductQuickQueue({
         >
           Later
         </button>
-        {canEditSubmit && editSubmitUrl ? (
+        {canEditSubmit && editSubmitIntent ? (
           <>
             <span className="work-product-quick-queue__sep" aria-hidden="true" />
-            <a
+            <button
+              type="button"
               className="drt-btn work-product-quick-queue__edit"
-              href={editSubmitUrl}
               title="Edit this run in Submit (unqueues if waiting on Comfy; holds pending-drain)"
+              onClick={() => openSubmit(editSubmitIntent)}
             >
               Edit
-            </a>
+            </button>
           </>
         ) : null}
         {isEditing ? (
@@ -3479,6 +3488,7 @@ function WorkProductDetails({
   sourceTrim,
   sourceClipId,
   onCommitted,
+  onOpenSubmit,
 }: {
   item: WorkProductItem;
   families?: WorkProductFamilyOption[];
@@ -3487,6 +3497,7 @@ function WorkProductDetails({
   sourceTrim: InputTrimState;
   sourceClipId?: string | null;
   onCommitted?: () => void;
+  onOpenSubmit?: (intent: SubmitDeepLink) => void;
 }) {
   const prompt = item.prompt_profile;
   const groups = useMemo(() => {
@@ -3629,6 +3640,7 @@ function WorkProductDetails({
         sourceTrim={sourceTrim}
         sourceClipId={sourceClipId}
         onCommitted={onCommitted}
+        onOpenSubmit={onOpenSubmit}
       />
       <WorkProductPromptEditor item={item} onCommitted={onCommitted} />
       <WorkProductParamsEditor item={item} onCommitted={onCommitted} />
@@ -3719,12 +3731,14 @@ function WorkProductRow({
   families,
   extendFamilyDefaults,
   onCommitted,
+  onOpenSubmit,
 }: {
   item: WorkProductItem;
   layout: RowLayout;
   families?: WorkProductFamilyOption[];
   extendFamilyDefaults?: Record<string, string>;
   onCommitted?: () => void;
+  onOpenSubmit?: (intent: SubmitDeepLink) => void;
 }) {
   const thumbMeta = isSourceThumbPreviewItem(item) ? sourceThumbPreviewMeta(item) : null;
   const thumbBadgeClass = thumbMeta ? `work-product-badge--live-${thumbMeta.visual}` : "";
@@ -3819,7 +3833,7 @@ function WorkProductRow({
               clampedDefault: false,
             }));
             // Clip rail lives on the *input* pane — advance that media, not the output.
-            const href = workbenchSourceSubmitHref(item, {
+            const intent = workbenchSourceSubmitIntent(item, {
               sourceTrim: {
                 markIn: clip.mark_in_s,
                 markOut: clip.mark_out_s,
@@ -3833,7 +3847,7 @@ function WorkProductRow({
               clip,
               step: "advance.extend",
             });
-            if (href) window.location.assign(href);
+            if (intent && onOpenSubmit) onOpenSubmit(intent);
           }}
         />
         <WorkProductDetails
@@ -3844,6 +3858,7 @@ function WorkProductRow({
           sourceTrim={sourceTrim}
           sourceClipId={selectedClipId}
           onCommitted={onCommitted}
+          onOpenSubmit={onOpenSubmit}
         />
       </div>
     </article>
@@ -3865,6 +3880,7 @@ export function WorkProductsApp() {
   const [decodeVaeFilter, setDecodeVaeFilter] = useState<DecodeVaeFilter>(() => loadDecodeVaeFilter());
   const [clearFailedBusy, setClearFailedBusy] = useState(false);
   const [clearFailedMsg, setClearFailedMsg] = useState<string | null>(null);
+  const [submitModalIntent, setSubmitModalIntent] = useState<SubmitDeepLink | null>(null);
   const deepLinkScrolled = useRef(false);
   const bulkDiscardMutation = useMutation({ mutationFn: discardShapeFactoryJob });
   const queryState = useQuery({
@@ -4342,6 +4358,7 @@ export function WorkProductsApp() {
               layout={layout}
               families={families}
               extendFamilyDefaults={extendFamilyDefaults}
+              onOpenSubmit={setSubmitModalIntent}
               onCommitted={() => {
                 void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductsRoot });
               }}
@@ -4349,6 +4366,14 @@ export function WorkProductsApp() {
           ))}
         </div>
       </div>
+      <SubmitComposerModal
+        intent={submitModalIntent}
+        onClose={() => setSubmitModalIntent(null)}
+        onSubmitted={() => {
+          void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductsRoot });
+          void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.submitAttemptsRoot });
+        }}
+      />
     </PipelineScreen>
   );
 }
