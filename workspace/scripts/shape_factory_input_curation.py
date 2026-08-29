@@ -401,6 +401,7 @@ def list_catalog_stills(
     from input_still_catalog import (  # type: ignore
         default_catalog_path,
         default_input_root,
+        is_download_copy_name,
         resolve_catalog_still_path,
         scan_input_stills,
         still_relpath_for_comfy,
@@ -463,6 +464,8 @@ def list_catalog_stills(
     total = 0
     items: List[Dict[str, Any]] = []
     skipped_missing = 0
+    skipped_download_copies = 0
+    seen_resolved: set[str] = set()
     sql_offset = 0
     batch = 400
     need = off + lim
@@ -494,6 +497,16 @@ def list_catalog_stills(
                 if resolved is None:
                     skipped_missing += 1
                     continue
+                # Accidental Windows/browser `` (1)`` / `` (2)`` re-downloads: omit from
+                # gallery (thumb URLs that strip the suffix 404 when only the copy exists).
+                if is_download_copy_name(resolved.name):
+                    skipped_download_copies += 1
+                    continue
+                resolved_key = str(resolved)
+                if resolved_key in seen_resolved:
+                    skipped_download_copies += 1
+                    continue
+                seen_resolved.add(resolved_key)
                 content_id = _extract_content_id(str(resolved)) or _extract_content_id(str(r["path"]))
                 if tagged_ids is not None and (not content_id or content_id not in tagged_ids):
                     continue
@@ -545,6 +558,7 @@ def list_catalog_stills(
         "total": total,
         "resolved_total": len(items),
         "skipped_missing": skipped_missing,
+        "skipped_download_copies": skipped_download_copies,
         "limit": lim,
         "offset": off,
         "next_offset": off + len(page),

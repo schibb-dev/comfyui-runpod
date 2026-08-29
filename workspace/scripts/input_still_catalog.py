@@ -11,6 +11,7 @@ copy-in mtimes on WSL do not hide fresh drops.
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -19,6 +20,55 @@ from typing import Any, Dict, List, Optional, Sequence
 STILL_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 SKIP_DIR_NAMES = {"_factory", "__pycache__"}
 CATALOG_BASENAME = "input_still_catalog.sqlite"
+
+# Windows / browser accidental re-download: ``foo (1).jpeg``, ``foo (2).png``.
+_DOWNLOAD_COPY_RE = re.compile(r"^(?P<stem>.+?)(?: \(\d+\))+(?P<ext>\.[^.]+)$")
+_DOWNLOAD_COPY_NOEXT_RE = re.compile(r"^(?P<stem>.+?)(?: \(\d+\))+$")
+
+
+def strip_download_copy_suffix(path_or_name: str) -> str:
+    """Drop `` (1)`` / `` (2)`` / … before the extension (or at end if no ext).
+
+    Accidental duplicate downloads are almost always byte-identical to the
+    original; treat the copy name as the canonical basename for lookup/id.
+    Preserves any parent directory prefix.
+    """
+    raw = str(path_or_name or "").strip().replace("\\", "/")
+    if not raw:
+        return ""
+    if "/" in raw:
+        parent, base = raw.rsplit("/", 1)
+        parent_prefix = parent + "/"
+    else:
+        base = raw
+        parent_prefix = ""
+    m = _DOWNLOAD_COPY_RE.match(base)
+    if m:
+        return f"{parent_prefix}{m.group('stem')}{m.group('ext')}"
+    m = _DOWNLOAD_COPY_NOEXT_RE.match(base)
+    if m:
+        return f"{parent_prefix}{m.group('stem')}"
+    return raw
+
+
+def download_copy_name_candidates(path_or_name: str) -> List[str]:
+    """Original name first, then canonical (no `` (N)``) when different."""
+    raw = str(path_or_name or "").strip().replace("\\", "/")
+    if not raw:
+        return []
+    canon = strip_download_copy_suffix(raw)
+    if canon and canon != raw:
+        return [raw, canon]
+    return [raw]
+
+
+def is_download_copy_name(path_or_name: str) -> bool:
+    """True when basename looks like an accidental `` (N)`` re-download."""
+    raw = str(path_or_name or "").strip().replace("\\", "/")
+    if not raw:
+        return False
+    base = raw.rsplit("/", 1)[-1]
+    return bool(base) and strip_download_copy_suffix(base) != base
 
 
 def default_catalog_path(*, data_root: Optional[Path] = None) -> Path:
@@ -62,29 +112,59 @@ def resolve_catalog_still_path(stored: str, *, input_root: Optional[Path] = None
     p = Path(raw).expanduser()
     try:
         if p.is_file():
+            # Prefer the canonical sibling over an accidental `` (1)`` re-download.
+            if is_download_copy_name(p.name):
+                canon = strip_download_copy_suffix(p.name)
+                if canon and canon != p.name:
+                    sibling = p.parent / canon
+                    try:
+                        if sibling.is_file():
+                            return sibling.resolve()
+                    except OSError:
+                        pass
             return p.resolve()
     except OSError:
         pass
     name = p.name
     if not name:
         return None
+    name_candidates = download_copy_name_candidates(name)
     # Rewrite …/input/<rel> → live input_root/<rel>
     parts = list(p.parts)
     if "input" in parts:
         idx = parts.index("input")
         rel = Path(*parts[idx + 1 :]) if idx + 1 < len(parts) else Path(name)
-        cand = root / rel
+        for cand_name in download_copy_name_candidates(rel.as_posix()):
+            cand = root / cand_name
+            try:
+                if cand.is_file():
+                    # Prefer canonical when both the copy and original exist under root.
+                    if is_download_copy_name(cand.name):
+                        canon = strip_download_copy_suffix(cand.name)
+                        sibling = cand.parent / canon
+                        try:
+                            if sibling.is_file():
+                                return sibling.resolve()
+                        except OSError:
+                            pass
+                    return cand.resolve()
+            except OSError:
+                pass
+    for cand_name in name_candidates:
+        cand = root / cand_name
         try:
             if cand.is_file():
+                if is_download_copy_name(cand.name):
+                    canon = strip_download_copy_suffix(cand.name)
+                    sibling = cand.parent / canon
+                    try:
+                        if sibling.is_file():
+                            return sibling.resolve()
+                    except OSError:
+                        pass
                 return cand.resolve()
         except OSError:
-            pass
-    cand = root / name
-    try:
-        if cand.is_file():
-            return cand.resolve()
-    except OSError:
-        return None
+            continue
     return None
 
 
@@ -95,9 +175,20 @@ def still_relpath_for_comfy(path: Path, *, input_root: Optional[Path] = None) ->
         root = root.resolve()
         resolved = path.expanduser().resolve()
         rel = resolved.relative_to(root).as_posix()
+        canon = strip_download_copy_suffix(rel)
+        if canon and canon != rel:
+            try:
+                if (root / canon).is_file():
+                    return f"input/{canon}"
+            except OSError:
+                pass
+            # Sole `` (1)`` copy: keep the real name so /files can serve it.
+            return f"input/{rel}"
         return f"input/{rel}"
     except Exception:
-        return f"input/{path.name}"
+        name = path.name
+        canon = strip_download_copy_suffix(name)
+        return f"input/{canon or name}"
 
 
 def connect(catalog_path: Path) -> sqlite3.Connection:
@@ -221,6 +312,14 @@ def scan_input_stills(
                     continue
                 if not files_changed or not is_file or not _is_still_file(ent.name):
                     continue
+                # Accidental re-downloads: ignore ``foo (1).jpeg`` when ``foo.jpeg`` exists.
+                if is_download_copy_name(ent.name):
+                    canon_name = strip_download_copy_suffix(ent.name)
+                    try:
+                        if canon_name and (Path(ent.path).parent / canon_name).is_file():
+                            continue
+                    except OSError:
+                        pass
                 try:
                     st = ent.stat(follow_symlinks=False)
                 except OSError:

@@ -75,6 +75,13 @@ def ingest_windows_input_inbox(
         stats["error"] = "dest_missing"
         return stats
 
+    try:
+        from input_still_catalog import strip_download_copy_suffix  # type: ignore
+    except Exception:  # pragma: no cover
+
+        def strip_download_copy_suffix(n: str) -> str:  # type: ignore
+            return n
+
     copied: List[str] = []
     for ent in sorted(inbox.iterdir(), key=lambda p: p.name.lower()):
         if not ent.is_file():
@@ -82,8 +89,10 @@ def ingest_windows_input_inbox(
         if not _is_still(ent.name):
             stats["skipped_not_still"] += 1
             continue
-        target = dest / ent.name
-        rec: Dict[str, Any] = {"name": ent.name, "src": str(ent)}
+        # Normalize Windows `` (1)`` / `` (2)`` re-download names to the canonical basename.
+        dest_name = strip_download_copy_suffix(ent.name) or ent.name
+        target = dest / dest_name
+        rec: Dict[str, Any] = {"name": ent.name, "src": str(ent), "dest_name": dest_name}
         if target.exists():
             stats["skipped_exists"] += 1
             rec["action"] = "skip_exists"
@@ -104,7 +113,7 @@ def ingest_windows_input_inbox(
                 rec["ingested"] = str(ingested_dir / ent.name)
             else:
                 stats["copied"] += 1
-        copied.append(ent.name)
+        copied.append(dest_name)
         stats["files"].append(rec)
 
     stats["ok"] = True

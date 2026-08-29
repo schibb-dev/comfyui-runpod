@@ -1020,17 +1020,29 @@ def comfy_load_image_relpath(path: Path, data_root: Path) -> tuple[str, Optional
                 continue
             rel = path.relative_to(root)
             # Flat files → basename; nested under input → keep subdir/file.
-            return (path.name if rel.parent == Path(".") else rel.as_posix()), None
+            # Strip accidental Windows/browser `` (1)`` download-copy suffixes.
+            try:
+                from input_still_catalog import strip_download_copy_suffix  # type: ignore
+            except Exception:  # pragma: no cover
+                strip_download_copy_suffix = lambda n: n  # type: ignore
+            if rel.parent == Path("."):
+                return strip_download_copy_suffix(path.name) or path.name, None
+            return strip_download_copy_suffix(rel.as_posix()) or rel.as_posix(), None
         except (AttributeError, ValueError, OSError):
             continue
+    try:
+        from input_still_catalog import strip_download_copy_suffix as _strip_dl  # type: ignore
+    except Exception:  # pragma: no cover
+        _strip_dl = lambda n: n  # type: ignore
+    fallback_name = _strip_dl(path.name) or path.name
     if not path.is_file():
-        return path.name, f"LoadImage path outside input roots; using basename {path.name!r}"
+        return fallback_name, f"LoadImage path outside input roots; using basename {fallback_name!r}"
     try:
         stage_root = _resolve_load_image_stage_root(data_root)
         widget, warns = stage_load_image_for_comfy(path, stage_root)
         return widget, (warns[0] if warns else f"staged LoadImage → {widget}")
     except Exception as e:
-        return path.name, f"LoadImage stage failed ({e}); using basename {path.name!r}"
+        return fallback_name, f"LoadImage stage failed ({e}); using basename {fallback_name!r}"
 
 
 def coerce_pool_fs_path(raw: str | Path) -> Path:
@@ -6248,101 +6260,6 @@ def update_pending_job_owned_prompt(
     }
 
 
-def promote_job_prompt_to_library(
-    *,
-    data_root: Path,
-    mode: str = "fork",
-    label: Optional[str] = None,
-    note: Optional[str] = None,
-    job_key: Optional[str] = None,
-    job_path: Optional[Path] = None,
-    positive: Optional[str] = None,
-    negative: Optional[str] = None,
-) -> dict[str, Any]:
-    """
-    Write this job's (or provided) prompt text into the family prompt library.
-
-    Allowed on frozen jobs — promote is a library write, not a job mutation.
-    When ``positive``/``negative`` are omitted, uses ``job["prompt"]``.
-    """
-    from shape_factory_owned_prompt import (
-        ensure_owned_prompt_from_bindings,
-        get_owned_prompt,
-        promote_prompt_to_library,
-        resolve_prompt_parent_path,
-    )
-
-    data_root = Path(data_root).expanduser().resolve()
-    job_file: Optional[Path] = None
-    job: Optional[dict[str, Any]] = None
-
-    if job_path is not None:
-        jp = Path(job_path).expanduser()
-        if jp.is_file():
-            try:
-                loaded = json.loads(jp.read_text(encoding="utf-8"))
-            except Exception:
-                loaded = None
-            if isinstance(loaded, dict):
-                job_file, job = jp, loaded
-    if job is None and job_key:
-        job_file, job = find_job_by_key(data_root, str(job_key))
-    if job is None or job_file is None:
-        return {"ok": False, "error": "job_not_found", "job_key": job_key}
-
-    key = str(job.get("job_key") or job_file.stem.replace(".job", ""))
-    family = str(job.get("family_slug") or "").strip()
-    if not family:
-        return {"ok": False, "error": "missing_family", "job_key": key}
-
-    owned = get_owned_prompt(job) or ensure_owned_prompt_from_bindings(job, data_root=data_root)
-    if owned is None and positive is None and negative is None:
-        return {"ok": False, "error": "no_owned_prompt", "job_key": key}
-
-    pos = str(positive if positive is not None else (owned or {}).get("positive") or "")
-    neg = str(negative if negative is not None else (owned or {}).get("negative") or "")
-    label_s = str(label or (owned or {}).get("label") or "").strip() or None
-    parent = resolve_prompt_parent_path(job)
-
-    result = promote_prompt_to_library(
-        data_root=data_root,
-        family_slug=family,
-        positive=pos,
-        negative=neg,
-        mode=mode,
-        label=label_s,
-        note=note,
-        promoted_from_job=key,
-        parent_path=parent,
-    )
-    if not result.get("ok"):
-        result["job_key"] = key
-        return result
-
-    # Point job provenance at the new library file (safe even when frozen).
-    if owned is not None and result.get("path"):
-        owned["source_profile"] = str(result["path"])
-        if result.get("doc") and isinstance(result["doc"], dict):
-            if result["doc"].get("label"):
-                owned["label"] = result["doc"]["label"]
-            if result["doc"].get("content_hash"):
-                owned["content_hash"] = result["doc"]["content_hash"]
-        job["prompt"] = owned
-        # Also refresh binding path so pool pickers see the same file.
-        bindings = job.get("bindings") if isinstance(job.get("bindings"), dict) else {}
-        meta = bindings.get("prompt_profile") if isinstance(bindings.get("prompt_profile"), dict) else {}
-        if isinstance(meta, dict):
-            meta["path"] = str(result["path"])
-            bindings["prompt_profile"] = meta
-            job["bindings"] = bindings
-        atomic_write_json(job_file, job)
-
-    result["job_key"] = key
-    result["family_slug"] = family
-    result["job_path"] = str(job_file)
-    return result
-
-
 def update_pending_job_params(
     *,
     data_root: Path,
@@ -6597,6 +6514,101 @@ def promote_job_params_to_catalog(
         "parameters": current,
         "changes": changes,
     }
+
+
+def promote_job_prompt_to_library(
+    *,
+    data_root: Path,
+    mode: str = "fork",
+    label: Optional[str] = None,
+    note: Optional[str] = None,
+    job_key: Optional[str] = None,
+    job_path: Optional[Path] = None,
+    positive: Optional[str] = None,
+    negative: Optional[str] = None,
+) -> dict[str, Any]:
+    """
+    Write this job's (or provided) prompt text into the family prompt library.
+
+    Allowed on frozen jobs — promote is a library write, not a job mutation.
+    When ``positive``/``negative`` are omitted, uses ``job["prompt"]``.
+    """
+    from shape_factory_owned_prompt import (
+        ensure_owned_prompt_from_bindings,
+        get_owned_prompt,
+        promote_prompt_to_library,
+        resolve_prompt_parent_path,
+    )
+
+    data_root = Path(data_root).expanduser().resolve()
+    job_file: Optional[Path] = None
+    job: Optional[dict[str, Any]] = None
+
+    if job_path is not None:
+        jp = Path(job_path).expanduser()
+        if jp.is_file():
+            try:
+                loaded = json.loads(jp.read_text(encoding="utf-8"))
+            except Exception:
+                loaded = None
+            if isinstance(loaded, dict):
+                job_file, job = jp, loaded
+    if job is None and job_key:
+        job_file, job = find_job_by_key(data_root, str(job_key))
+    if job is None or job_file is None:
+        return {"ok": False, "error": "job_not_found", "job_key": job_key}
+
+    key = str(job.get("job_key") or job_file.stem.replace(".job", ""))
+    family = str(job.get("family_slug") or "").strip()
+    if not family:
+        return {"ok": False, "error": "missing_family", "job_key": key}
+
+    owned = get_owned_prompt(job) or ensure_owned_prompt_from_bindings(job, data_root=data_root)
+    if owned is None and positive is None and negative is None:
+        return {"ok": False, "error": "no_owned_prompt", "job_key": key}
+
+    pos = str(positive if positive is not None else (owned or {}).get("positive") or "")
+    neg = str(negative if negative is not None else (owned or {}).get("negative") or "")
+    label_s = str(label or (owned or {}).get("label") or "").strip() or None
+    parent = resolve_prompt_parent_path(job)
+
+    result = promote_prompt_to_library(
+        data_root=data_root,
+        family_slug=family,
+        positive=pos,
+        negative=neg,
+        mode=mode,
+        label=label_s,
+        note=note,
+        promoted_from_job=key,
+        parent_path=parent,
+    )
+    if not result.get("ok"):
+        result["job_key"] = key
+        return result
+
+    # Point job provenance at the new library file (safe even when frozen).
+    if owned is not None and result.get("path"):
+        owned["source_profile"] = str(result["path"])
+        if result.get("doc") and isinstance(result["doc"], dict):
+            if result["doc"].get("label"):
+                owned["label"] = result["doc"]["label"]
+            if result["doc"].get("content_hash"):
+                owned["content_hash"] = result["doc"]["content_hash"]
+        job["prompt"] = owned
+        # Also refresh binding path so pool pickers see the same file.
+        bindings = job.get("bindings") if isinstance(job.get("bindings"), dict) else {}
+        meta = bindings.get("prompt_profile") if isinstance(bindings.get("prompt_profile"), dict) else {}
+        if isinstance(meta, dict):
+            meta["path"] = str(result["path"])
+            bindings["prompt_profile"] = meta
+            job["bindings"] = bindings
+        atomic_write_json(job_file, job)
+
+    result["job_key"] = key
+    result["family_slug"] = family
+    result["job_path"] = str(job_file)
+    return result
 
 
 def zero_vhs_load_window_on_workflow(workflow: dict[str, Any]) -> dict[str, Any]:

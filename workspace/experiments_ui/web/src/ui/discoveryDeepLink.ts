@@ -4,6 +4,22 @@ export function extractContentIdFromName(name?: string | null): string | null {
   return m ? m[1].toLowerCase() : null;
 }
 
+/** Strip Windows/browser `` (1)`` / `` (2)`` download-copy suffixes before the extension. */
+export function stripDownloadCopySuffix(pathOrName?: string | null): string {
+  const raw = String(pathOrName || "")
+    .trim()
+    .replace(/\\/g, "/");
+  if (!raw) return "";
+  const slash = raw.lastIndexOf("/");
+  const parent = slash >= 0 ? raw.slice(0, slash + 1) : "";
+  const base = slash >= 0 ? raw.slice(slash + 1) : raw;
+  const withExt = /^(.*?)(?: \(\d+\))+(\.[^.]+)$/.exec(base);
+  if (withExt) return parent + withExt[1] + withExt[2];
+  const noExt = /^(.*?)(?: \(\d+\))+$/.exec(base);
+  if (noExt) return parent + noExt[1];
+  return raw;
+}
+
 /** Build a Discovery library URL that opens a specific indexed asset. */
 export function discoveryLibraryHref(relpath?: string | null): string {
   const norm = (relpath || "").trim().replace(/^\/+/, "").replace(/\\/g, "/");
@@ -19,11 +35,13 @@ export function stillsHref(opts?: {
 }): string {
   const sp = new URLSearchParams();
   const contentId = String(opts?.contentId || "").trim().toLowerCase();
-  const rel = String(opts?.relpath || "")
-    .trim()
-    .replace(/^\/+/, "")
-    .replace(/\\/g, "/");
-  const q = String(opts?.q || "").trim();
+  const rel = stripDownloadCopySuffix(
+    String(opts?.relpath || "")
+      .trim()
+      .replace(/^\/+/, "")
+      .replace(/\\/g, "/")
+  );
+  const q = stripDownloadCopySuffix(String(opts?.q || "").trim());
   if (contentId) sp.set("content_id", contentId);
   if (rel) sp.set("relpath", rel);
   if (q) sp.set("q", q);

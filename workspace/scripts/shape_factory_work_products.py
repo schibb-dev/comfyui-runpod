@@ -411,6 +411,12 @@ def _binding_media_relpath(abs_p: Any, *, data_root: Path, output_root: Path) ->
     bn = Path(raw.replace("\\", "/")).name
     if not bn or bn == raw.rstrip("/"):
         return None
+    try:
+        from input_still_catalog import download_copy_name_candidates, strip_download_copy_suffix
+    except Exception:
+        download_copy_name_candidates = lambda n: [n]  # type: ignore
+        strip_download_copy_suffix = lambda n: n  # type: ignore
+    name_candidates = download_copy_name_candidates(bn)
     input_roots = (
         Path(os.environ.get("COMFYUI_BIND_INPUT_DIR") or "/home/yuji/comfyui-runpod-data/input"),
         Path("/home/yuji/comfyui-runpod-data/input"),
@@ -419,12 +425,14 @@ def _binding_media_relpath(abs_p: Any, *, data_root: Path, output_root: Path) ->
         output_root.parent / "input",
     )
     for root in input_roots:
-        try:
-            cand = Path(root).expanduser() / bn
-            if cand.is_file():
-                return f"input/{bn}"
-        except Exception:
-            continue
+        for name in name_candidates:
+            try:
+                cand = Path(root).expanduser() / name
+                if cand.is_file():
+                    # Prefer canonical name in the reported relpath.
+                    return f"input/{strip_download_copy_suffix(bn)}"
+            except Exception:
+                continue
     return None
 
 

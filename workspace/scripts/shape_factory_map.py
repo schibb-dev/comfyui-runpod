@@ -434,6 +434,16 @@ def resolve_existing_path(
             if s.startswith(host_prefix):
                 add(ws + suffix + s[len(host_prefix) :])
     add(str(path or ""))
+    # Accidental Windows/browser re-download names: also try without `` (1)``.
+    try:
+        from input_still_catalog import strip_download_copy_suffix  # type: ignore
+
+        for cand in list(candidates):
+            canon = strip_download_copy_suffix(cand)
+            if canon and canon != cand:
+                add(canon)
+    except Exception:
+        pass
     for cand in candidates:
         p = Path(cand).expanduser()
         if p.is_file():

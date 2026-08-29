@@ -91,6 +91,61 @@ class TestShapeFactoryInputCuration(unittest.TestCase):
         self.assertEqual(int(merged.get("added_count") or 0), 1)
         self.assertGreaterEqual(int(merged.get("deduped_count") or 0), 1)
 
+    def test_list_catalog_stills_omits_download_copy_names(self) -> None:
+        import os
+
+        from input_still_catalog import scan_input_stills
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            data_root = root / ".data"
+            (data_root / "shape_factory").mkdir(parents=True, exist_ok=True)
+            input_root = root / "input"
+            input_root.mkdir()
+            h = "c" * 64
+            canon = input_root / f"{h}.jpeg"
+            copy = input_root / f"{h} (1).jpeg"
+            only_copy_h = "d" * 64
+            only_copy = input_root / f"{only_copy_h} (1).jpeg"
+            canon.write_bytes(b"canon")
+            copy.write_bytes(b"copy")
+            only_copy.write_bytes(b"alone")
+
+            prev = os.environ.get("COMFYUI_BIND_INPUT_DIR")
+            prev_cat = os.environ.get("HOURLY_INPUT_STILL_CATALOG_PATH")
+            cat = data_root / "shape_factory" / "input_still_catalog.sqlite"
+            try:
+                os.environ["COMFYUI_BIND_INPUT_DIR"] = str(input_root)
+                os.environ["HOURLY_INPUT_STILL_CATALOG_PATH"] = str(cat)
+                # Force both names into the catalog (scan skips copy when canon exists).
+                scan_input_stills(input_root=input_root, catalog_path=cat)
+                import sqlite3
+
+                con = sqlite3.connect(str(cat))
+                con.execute(
+                    "INSERT OR IGNORE INTO stills(path, size, mtime, ext, first_seen, last_seen) VALUES(?,?,?,?,?,?)",
+                    (str(copy.resolve()), 4, 1.0, ".jpeg", 1.0, 1.0),
+                )
+                con.commit()
+                con.close()
+
+                payload = curation.list_catalog_stills(data_root=data_root, limit=50, offset=0)
+            finally:
+                if prev is None:
+                    os.environ.pop("COMFYUI_BIND_INPUT_DIR", None)
+                else:
+                    os.environ["COMFYUI_BIND_INPUT_DIR"] = prev
+                if prev_cat is None:
+                    os.environ.pop("HOURLY_INPUT_STILL_CATALOG_PATH", None)
+                else:
+                    os.environ["HOURLY_INPUT_STILL_CATALOG_PATH"] = prev_cat
+
+        basenames = [it.get("basename") for it in payload.get("items") or []]
+        self.assertIn(canon.name, basenames)
+        self.assertNotIn(copy.name, basenames)
+        self.assertNotIn(only_copy.name, basenames)
+        self.assertGreaterEqual(int(payload.get("skipped_download_copies") or 0), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

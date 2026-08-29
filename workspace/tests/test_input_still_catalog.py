@@ -143,5 +143,45 @@ class InputStillCatalogTests(unittest.TestCase):
                 hourly._FIRST_SEEN_CACHE = None
 
 
+class DownloadCopySuffixTests(unittest.TestCase):
+    def test_strip_download_copy_suffix(self) -> None:
+        from input_still_catalog import download_copy_name_candidates, strip_download_copy_suffix
+
+        h = "eada631b1c1a6328a1d4f37fa26b8d1f38f79954022851d0c512908d44374272"
+        self.assertEqual(strip_download_copy_suffix(f"{h} (1).jpeg"), f"{h}.jpeg")
+        self.assertEqual(strip_download_copy_suffix(f"{h} (2).JPEG"), f"{h}.JPEG")
+        self.assertEqual(strip_download_copy_suffix(f"input/{h} (1).png"), f"input/{h}.png")
+        self.assertEqual(strip_download_copy_suffix(f"{h}.jpeg"), f"{h}.jpeg")
+        self.assertEqual(download_copy_name_candidates(f"{h} (1).jpeg"), [f"{h} (1).jpeg", f"{h}.jpeg"])
+
+    def test_resolve_prefers_canonical_when_copy_missing(self) -> None:
+        from input_still_catalog import resolve_catalog_still_path
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "input"
+            root.mkdir()
+            h = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            real = root / f"{h}.jpeg"
+            real.write_bytes(b"real")
+            got = resolve_catalog_still_path(str(root / f"{h} (1).jpeg"), input_root=root)
+            self.assertIsNotNone(got)
+            self.assertEqual(got.resolve(), real.resolve())
+
+    def test_resolve_prefers_canonical_when_both_exist(self) -> None:
+        from input_still_catalog import resolve_catalog_still_path
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "input"
+            root.mkdir()
+            h = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            real = root / f"{h}.jpeg"
+            copy = root / f"{h} (1).jpeg"
+            real.write_bytes(b"real")
+            copy.write_bytes(b"copy")
+            got = resolve_catalog_still_path(str(copy), input_root=root)
+            self.assertIsNotNone(got)
+            self.assertEqual(got.resolve(), real.resolve())
+
+
 if __name__ == "__main__":
     unittest.main()

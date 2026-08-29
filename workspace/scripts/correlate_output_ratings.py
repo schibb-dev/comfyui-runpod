@@ -195,7 +195,13 @@ def normalize_source_basename(path_like: str) -> str:
     s = str(path_like or "").strip().replace("\\", "/")
     if not s:
         return ""
-    return Path(s).name
+    name = Path(s).name
+    try:
+        from input_still_catalog import strip_download_copy_suffix  # type: ignore
+
+        return strip_download_copy_suffix(name) or name
+    except Exception:
+        return name
 
 
 def output_relpath_keys_from_xmp(xmp_path: Path, og_root: Path) -> Tuple[str, str]:
