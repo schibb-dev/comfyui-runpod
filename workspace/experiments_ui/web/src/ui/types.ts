@@ -1357,6 +1357,8 @@ export type ShapeFactorySubmitAttempt = {
   hint?: string;
   family_slug?: string;
   bindings?: Record<string, string>;
+  media_relpath?: string | null;
+  thumb_url?: string | null;
   job_key?: string;
   prompt_id?: string;
   path_hint?: string;

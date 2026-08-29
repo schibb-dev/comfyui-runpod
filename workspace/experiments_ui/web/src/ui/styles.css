@@ -5192,6 +5192,12 @@ div.discovery-comfy-q-lora-name.discovery-comfy-q-lora-name--meta {
   box-shadow: inset 0 0 0 2px var(--accent), 0 0 0 1px rgba(90, 162, 255, 0.35);
 }
 
+.discovery-phone-row--deep-link {
+  outline: 2px solid rgba(110, 168, 254, 0.85);
+  outline-offset: 2px;
+  transition: outline-color 0.9s ease;
+}
+
 @media (max-width: 767px) {
   .discovery-screen .discovery-subtitle {
     display: none;
@@ -14203,6 +14209,42 @@ tr.disabled:hover td {
   background: rgba(0, 0, 0, 0.12);
 }
 
+.submit-attempts-strip__row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.submit-attempts-strip__thumb {
+  flex: 0 0 48px;
+  width: 48px;
+  height: 48px;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.submit-attempts-strip__thumb-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.submit-attempts-strip__thumb-empty {
+  width: 100%;
+  height: 100%;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.04), transparent 55%),
+    rgba(0, 0, 0, 0.2);
+}
+
+.submit-attempts-strip__body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .submit-attempts-strip__item--ok {
   border-color: color-mix(in srgb, var(--ok, #3d9a6a) 35%, var(--border));
 }
@@ -16300,6 +16342,12 @@ tr.disabled:hover td {
   background: color-mix(in srgb, currentColor 10%, transparent);
 }
 
+.clips-lib-card--deep-link {
+  outline: 2px solid rgba(110, 168, 254, 0.85);
+  outline-offset: 2px;
+  transition: outline-color 0.9s ease;
+}
+
 .clips-lib-card__thumb {
   width: 4.5rem;
   height: 4.5rem;
@@ -16947,6 +16995,45 @@ tr.disabled:hover td {
   border-color: var(--accent, #7aa2ff);
   box-shadow: inset 0 0 0 1px var(--accent, #7aa2ff);
 }
+.still-gallery__tile--deep-link {
+  outline: 2px solid rgba(110, 168, 254, 0.85);
+  outline-offset: 2px;
+  transition: outline-color 0.9s ease;
+}
+.work-product-params-editor__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: 8px 12px;
+  margin-top: 8px;
+}
+.work-product-params-editor__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+.work-product-params-editor__field.is-snowflake .work-product-params-editor__value,
+.work-product-params-editor__field.is-snowflake .work-product-params-editor__input {
+  color: color-mix(in srgb, var(--accent, #7aa2ff) 80%, #fff);
+}
+.work-product-params-editor__label {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.work-product-params-editor__input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.25);
+  color: inherit;
+}
+.work-product-params-editor__value {
+  font-size: 13px;
+}
 .still-gallery__thumb {
   width: 100%;
   aspect-ratio: 1;
@@ -17064,52 +17151,4 @@ tr.disabled:hover td {
   .still-gallery__side {
     position: static;
   }
-}
-
-.discovery-phone-row--deep-link {
-  outline: 2px solid rgba(110, 168, 254, 0.85);
-  outline-offset: 2px;
-  transition: outline-color 0.9s ease;
-}
-
-.clips-lib-card--deep-link {
-  outline: 2px solid rgba(110, 168, 254, 0.85);
-  outline-offset: 2px;
-  transition: outline-color 0.9s ease;
-}
-
-.work-product-params-editor__field.is-snowflake .work-product-params-editor__value,
-.work-product-params-editor__field.is-snowflake .work-product-params-editor__input {
-  color: color-mix(in srgb, var(--accent, #7aa2ff) 80%, #fff);
-}
-
-.work-product-params-editor__grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
-  gap: 8px 12px;
-  margin-top: 8px;
-}
-
-.work-product-params-editor__field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 12px;
-}
-
-.work-product-params-editor__label {
-  color: var(--muted);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.work-product-params-editor__value {
-  font-size: 13px;
-}
-
-.still-gallery__tile--deep-link {
-  outline: 2px solid rgba(110, 168, 254, 0.85);
-  outline-offset: 2px;
-  transition: outline-color 0.9s ease;
 }

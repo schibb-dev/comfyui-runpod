@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -21,6 +22,18 @@ MAX_DETAIL_CHARS = 1200
 
 _PERM_RE = re.compile(r"Permission denied:\s*'([^']+)'", re.I)
 _ERRNO13_RE = re.compile(r"\[Errno\s*13\][^\n]*?'([^']+)'", re.I)
+_MEDIA_SLOTS = (
+    "source_still",
+    "source_image",
+    "identity_still",
+    "identity_anchor",
+    "start_image",
+    "source_video",
+    "parent_video",
+    "source",
+)
+_IMAGE_EXT_RE = re.compile(r"\.(jpe?g|png|webp|gif)$", re.I)
+_VIDEO_EXT_RE = re.compile(r"\.(mp4|webm|mov|mkv)$", re.I)
 
 
 def attempts_path(status_dir: Path) -> Path:
@@ -42,6 +55,64 @@ def _basename(path: Any) -> str:
     return s.rsplit("/", 1)[-1]
 
 
+def _binding_raw_path(spec: Any) -> str:
+    if isinstance(spec, str):
+        return spec.strip()
+    if isinstance(spec, dict):
+        return str(spec.get("relpath") or spec.get("path") or spec.get("basename") or spec.get("member") or "").strip()
+    return ""
+
+
+def as_workspace_media_relpath(raw: Any) -> Optional[str]:
+    """Normalize a binding path into a workspace-relative media path for /files/."""
+    s = str(raw or "").strip().replace("\\", "/")
+    if not s:
+        return None
+    try:
+        from input_still_catalog import strip_download_copy_suffix  # type: ignore
+
+        s = strip_download_copy_suffix(s)
+    except Exception:
+        pass
+    for prefix in ("input/", "og/", "wip/", "output/", "thumbs/"):
+        idx = s.find(prefix)
+        if idx >= 0:
+            return s[idx:]
+    base = s.rsplit("/", 1)[-1]
+    if _IMAGE_EXT_RE.search(base):
+        return f"input/{base}"
+    return None
+
+
+def extract_media_relpath(bindings: Any) -> Optional[str]:
+    if not isinstance(bindings, dict):
+        return None
+    for slot in _MEDIA_SLOTS:
+        if slot not in bindings:
+            continue
+        rel = as_workspace_media_relpath(_binding_raw_path(bindings.get(slot)))
+        if rel:
+            return rel
+    for spec in bindings.values():
+        rel = as_workspace_media_relpath(_binding_raw_path(spec))
+        if rel:
+            return rel
+    return None
+
+
+def thumb_url_for_relpath(relpath: Optional[str]) -> Optional[str]:
+    rel = str(relpath or "").strip().replace("\\", "/")
+    if not rel:
+        return None
+    # Prefer a still/poster for videos when a sibling .png is the usual convention.
+    if _VIDEO_EXT_RE.search(rel):
+        rel = _VIDEO_EXT_RE.sub(".png", rel)
+    elif not _IMAGE_EXT_RE.search(rel):
+        return None
+    encoded = "/".join(urllib.parse.quote(part, safe="") for part in rel.split("/") if part != "")
+    return f"/files/{encoded}"
+
+
 def summarize_bindings(bindings: Any) -> Dict[str, str]:
     """Map slot → basename (or short path) for logs / UI."""
     out: Dict[str, str] = {}
@@ -51,22 +122,22 @@ def summarize_bindings(bindings: Any) -> Dict[str, str]:
         key = str(slot or "").strip()
         if not key:
             continue
-        if isinstance(spec, str):
-            out[key] = _basename(spec) or spec.strip()[:120]
-        elif isinstance(spec, dict):
-            raw = str(spec.get("path") or spec.get("basename") or spec.get("member") or "").strip()
-            out[key] = _basename(raw) or raw[:120]
+        raw = _binding_raw_path(spec)
+        out[key] = _basename(raw) or raw[:120]
     return out
 
 
 def summarize_request_body(body: Any) -> Dict[str, Any]:
     body_d = body if isinstance(body, dict) else {}
     family = str(body_d.get("family_slug") or body_d.get("family") or "").strip()
-    bindings = summarize_bindings(body_d.get("bindings"))
+    bindings_raw = body_d.get("bindings")
+    bindings = summarize_bindings(bindings_raw)
+    media_relpath = extract_media_relpath(bindings_raw)
     surface = str(body_d.get("source_surface") or body_d.get("surface") or "").strip() or None
     return {
         "family_slug": family or None,
         "bindings": bindings,
+        "media_relpath": media_relpath,
         "source_surface": surface,
         "dry_run": bool(body_d.get("dry_run") or False),
         "front": bool(body_d.get("front") or False),
@@ -196,6 +267,12 @@ def build_attempt_record(
         "dry_run": bool(request_summary.get("dry_run") or False),
         "front": bool(request_summary.get("front") or False),
     }
+    media_relpath = str(request_summary.get("media_relpath") or "").strip()
+    if media_relpath:
+        rec["media_relpath"] = media_relpath
+        thumb = thumb_url_for_relpath(media_relpath)
+        if thumb:
+            rec["thumb_url"] = thumb
     if http_status is not None:
         rec["http_status"] = int(http_status)
     if error:
@@ -345,6 +422,21 @@ def record_queue_outcome(
     return rec, error_response_body(rec)
 
 
+def enrich_attempt_item(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Attach media_relpath / thumb_url for UI (including legacy basename-only rows)."""
+    item = dict(record)
+    media = str(item.get("media_relpath") or "").strip().replace("\\", "/")
+    if not media:
+        media = extract_media_relpath(item.get("bindings")) or ""
+        if media:
+            item["media_relpath"] = media
+    if media and not item.get("thumb_url"):
+        thumb = thumb_url_for_relpath(media)
+        if thumb:
+            item["thumb_url"] = thumb
+    return item
+
+
 def list_attempts_payload(
     status_dir: Path,
     *,
@@ -353,7 +445,7 @@ def list_attempts_payload(
     family_slug: Optional[str] = None,
 ) -> Dict[str, Any]:
     path = attempts_path(status_dir)
-    items = read_attempts(path, limit=limit, errors_only=errors_only, family_slug=family_slug)
+    items = [enrich_attempt_item(it) for it in read_attempts(path, limit=limit, errors_only=errors_only, family_slug=family_slug)]
     return {
         "ok": True,
         "path": str(path),

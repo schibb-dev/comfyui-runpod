@@ -56,6 +56,7 @@ class SubmitAttemptsTests(unittest.TestCase):
             }
             summary = summarize_request_body(body)
             self.assertEqual(summary["bindings"]["source_still"], "abc.jpeg")
+            self.assertEqual(summary["media_relpath"], "input/abc.jpeg")
 
             ok = build_attempt_record(
                 ok=True,
@@ -64,6 +65,8 @@ class SubmitAttemptsTests(unittest.TestCase):
                 job_key="job_ok",
                 prompt_id="pid",
             )
+            self.assertEqual(ok.get("media_relpath"), "input/abc.jpeg")
+            self.assertTrue(str(ok.get("thumb_url") or "").startswith("/files/input/"))
             bad = build_attempt_record(
                 ok=False,
                 request_summary=summary,
