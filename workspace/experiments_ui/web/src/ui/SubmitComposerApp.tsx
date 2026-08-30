@@ -200,10 +200,20 @@ function IdentityStillThumbButton({
   );
 }
 
-function familyShapeId(families: WorkProductFamilyOption[], slug: string): string | null {
-  const hit = families.find((f) => f.slug === slug);
-  const sid = String(hit?.shape_id || "").trim();
-  return sid || null;
+function readStickyIdentity(): string {
+  try {
+    return String(window.sessionStorage.getItem("submit_sticky_identity") || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function clearStickyIdentity(): void {
+  try {
+    window.sessionStorage.removeItem("submit_sticky_identity");
+  } catch {
+    /* ignore */
+  }
 }
 
 /** Edit an existing pending/queued factory job in place (not advance). */
@@ -1082,9 +1092,15 @@ function SubmitAdvanceComposerApp({
           setIdentitySelectedPath(intent.identity);
           setIdentitySelectedId(cands.find((c) => c.path === intent.identity)?.id || "");
         } else {
-          const rec = cands.find((c) => c.id === cached.recommended_id) || cands[0];
-          setIdentitySelectedPath(rec?.path || intent.identity || "");
-          setIdentitySelectedId(rec?.id || "");
+          const sticky = readStickyIdentity();
+          if (sticky) {
+            setIdentitySelectedPath(sticky);
+            setIdentitySelectedId(cands.find((c) => c.path === sticky)?.id || "");
+          } else {
+            const rec = cands.find((c) => c.id === cached.recommended_id) || cands[0];
+            setIdentitySelectedPath(rec?.path || intent.identity || "");
+            setIdentitySelectedId(rec?.id || "");
+          }
         }
       }
       setIdentityLoading(false);
@@ -1104,9 +1120,15 @@ function SubmitAdvanceComposerApp({
             setIdentitySelectedPath(intent.identity);
             setIdentitySelectedId(cands.find((c) => c.path === intent.identity)?.id || "");
           } else {
-            const rec = cands.find((c) => c.id === res.recommended_id) || cands[0];
-            setIdentitySelectedPath(rec?.path || intent.identity || "");
-            setIdentitySelectedId(rec?.id || "");
+            const sticky = readStickyIdentity();
+            if (sticky) {
+              setIdentitySelectedPath(sticky);
+              setIdentitySelectedId(cands.find((c) => c.path === sticky)?.id || "");
+            } else {
+              const rec = cands.find((c) => c.id === res.recommended_id) || cands[0];
+              setIdentitySelectedPath(rec?.path || intent.identity || "");
+              setIdentitySelectedId(rec?.id || "");
+            }
           }
         } else if (!intent.identity) {
           setIdentitySelectedPath("");
@@ -1237,7 +1259,10 @@ function SubmitAdvanceComposerApp({
               : `Seeded ${i2vFamily}`,
         );
         void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.submitAttemptsRoot });
-        if (res.job_key) onSubmitted?.({ jobKeys: [res.job_key] });
+        if (res.job_key) {
+          onSubmitted?.({ jobKeys: [res.job_key] });
+          clearStickyIdentity();
+        }
         return;
       }
       const { overrides, warning } = buildOverrides();
@@ -1273,8 +1298,10 @@ function SubmitAdvanceComposerApp({
       setLastJobKey(result.jobKeys[0] || null);
       setMsg([result.message, warning].filter(Boolean).join(" · "));
       void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.submitAttemptsRoot });
-      if (result.jobKeys.length) onSubmitted?.({ jobKeys: result.jobKeys });
-    } catch (e) {
+      if (result.jobKeys.length) {
+        onSubmitted?.({ jobKeys: result.jobKeys });
+        if (identitySelectedPath) clearStickyIdentity();
+      }    } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
       setSubmitError(err);
       setMsg(null);

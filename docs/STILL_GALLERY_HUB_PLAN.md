@@ -1,7 +1,8 @@
 # Still image gallery — launch hub
 
-**Status:** North star (2026-08-27). Absorbs and widens the older “input still
-browser + collections-as-pools” note.
+**Status:** G0–G1 done; **G2 launch pad landing** (2026-08-29). G3 collections→pools
+next. Absorbs and widens the older “input still browser + collections-as-pools”
+note.
 
 **Related:** [`SUBMIT_WORKFLOW.md`](./SUBMIT_WORKFLOW.md) (doors → `/submit`),
 [`.data/WORKFLOW_FACTORY_NEXT.md`](../.data/WORKFLOW_FACTORY_NEXT.md) (collections),
@@ -52,7 +53,7 @@ gallery (select still)
 
 ## Phased movement (sketch)
 
-### G0 — Still door into Submit *(landing)*
+### G0 — Still door into Submit *(done)*
 
 From Library: if item is an image, **Open in Submit** appears on Details (no
 clip/marks). Deep link `media=input/…&origin=library`. Submit shows still
@@ -61,7 +62,7 @@ with `source_still`.
 
 **Exit:** Library still → one job in an origin family without Factory Map.
 
-### G1 — Gallery surface *(landing)*
+### G1 — Gallery surface *(done)*
 
 Dedicated **Stills** nav at `/discovery/stills`: thumbnail grid over `input/`,
 path search, tag filter/edit (content_id keyed), collections CRUD, and **Open in
@@ -70,17 +71,20 @@ still owns family↔collection attach.
 
 **Exit:** Browse / collect / tag stills and hand one into Submit without Library.
 
-### G2 — Launch pad chrome
+### G2 — Launch pad chrome *(landing 2026-08-29)*
 
-Selected still: persistent action strip (Submit / collection / map / rate /
-identity). All actions are `href` doors or thin APIs — no second compose UI.
+Selected still: persistent **Launch** strip — Submit (modal, stay on gallery),
+Collection (focus panel), Map, Library, Workbench, Identity (session stash for
+next VI2V Extend). Tag actions stay secondary. No second compose UI.
+
+**Exit:** Hand off to every major door without losing gallery scroll/selection.
 
 ### G3 — Collections → pools
 
 Named collections register as pool members for hourly/I2V (existing next-step).
 Gallery “Add to collection” is the human entry.
 
-### G4 — Enrichment
+### G4 — Enrichment *(partial)*
 
 Tag-assisted sort / filter via **still auto-tagger** (PromptGen-large V3a pin;
 provisional vs editorial in **SQLite**, not a monolith JSON blob). Gallery UI

@@ -17138,11 +17138,19 @@ tr.disabled:hover td {
   margin: 0;
 }
 .still-gallery__actions,
+.still-gallery__launch,
 .still-gallery__tag-row {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+}
+.still-gallery__launch {
+  margin: 4px 0 2px;
+  padding: 8px;
+  border: 1px solid var(--border, #2a3142);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel2, #1a1f2a) 80%, transparent);
 }
 .still-gallery__cta {
   font-weight: 650;

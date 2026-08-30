@@ -8,8 +8,7 @@ Locked decisions (2026-07-03): install `/workflow/convert`, JSON pool index, pip
 
 **Plan (2026-08-20):** Hourly **facial backlog editor** — the GEX2→FACIAL drain set is derived (`list_gex2_needing_facial`), not a curated queue. Want a Workbench/Home surface to inspect, pin/skip, dedupe by source, and cull items (without inventing FACIAL children). Policy knobs today: `HOURLY_FACIAL_LOOKBACK_DAYS`, `HOURLY_SEED_OVER_CHAIN_SHARE`, **`HOURLY_FACIAL_DRAIN_EVERY` (default 6)**, **`HOURLY_I2V_GEX_DRAIN_EVERY` (default 3 — Kneel/FaceBlast/… → FB9_GEX)**. One-shot cull archive: `.data/shape_factory/jobs/_archive/facial_backlog_cull_*` (unique extras reinstated 2026-08-20; same-source dupes of keepers left archived).
 
-**Plan (2026-08-20 / widened 2026-08-27):** **Still image gallery as launch hub** — browse `input` stills; from one image launch into Submit (I2V), collections→pools, Factory Map, ratings, identity. **G0 landing:** Library still → `/submit`. Full plan: [`docs/STILL_GALLERY_HUB_PLAN.md`](../docs/STILL_GALLERY_HUB_PLAN.md). (Older “input still browser + collections-as-pools” note folded into that doc.)
-
+**Plan (2026-08-20 / widened 2026-08-27):** **Still image gallery as launch hub** — G0/G1 done; **G2 launch pad** (Submit modal + Map/Library/Workbench/Identity doors) landing 2026-08-29. Next: **G3** collections→pools. Full plan: [`docs/STILL_GALLERY_HUB_PLAN.md`](../docs/STILL_GALLERY_HUB_PLAN.md).
 **Backlog (2026-08-28):** UI navigation — (1) recent submits + (2) Queue/Workbench/Library/Clips/Stills deeplinks **shipped**; still open: Rating/Factory Map targeting, FS-style video browse, input/ tree browse (design). See [`docs/UI_NAVIGATION_BACKLOG.md`](../docs/UI_NAVIGATION_BACKLOG.md).
 
 **Plan (2026-08-20):** **Input still browser + collections-as-pools** — *(see Still gallery hub above; collections remain G3 of that plan.)*

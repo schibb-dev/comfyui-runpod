@@ -12,9 +12,10 @@ import {
   mutateShapeFactoryInputStillTags,
   setShapeFactoryStillTagSchedule,
 } from "./api";
-import { parseStillDeepLink, stillsHref, submitHref } from "./discoveryDeepLink";
+import { parseStillDeepLink, stillsHref, buildSubmitDeepLink, discoveryLibraryHref, workbenchHrefForMedia, type SubmitDeepLink } from "./discoveryDeepLink";
 import { PageHeader } from "./PageHeader";
 import { queryKeys } from "./queryKeys";
+import { SubmitComposerModal } from "./SubmitComposerModal";
 import type { InputCurationCollection, InputCurationStillItem, StillTagEvent } from "./types";
 
 const PAGE = 96;
@@ -74,8 +75,10 @@ export function StillGalleryApp() {
   const [newCollectionName, setNewCollectionName] = useState("");
   const [tagDraft, setTagDraft] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
+  const [submitModalIntent, setSubmitModalIntent] = useState<SubmitDeepLink | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const collectionsPanelRef = useRef<HTMLElement | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [runEvents, setRunEvents] = useState<StillTagEvent[]>([]);
   const [runStatus, setRunStatus] = useState<string | null>(null);
@@ -338,13 +341,41 @@ export function StillGalleryApp() {
     return bits.join(" · ");
   }, [items.length, firstPage?.total, stillsQuery.hasNextPage]);
 
-  const submitUrl = selected
-    ? submitHref({
-        mediaRelpath: stillMediaRelpath(selected),
+  const selectedRel = selected ? stillMediaRelpath(selected) : "";
+  const submitIntent = selected
+    ? buildSubmitDeepLink({
+        mediaRelpath: selectedRel,
         origin: "gallery",
       })
     : null;
+  const libraryHref = selectedRel ? discoveryLibraryHref(selectedRel) : null;
+  const workbenchHref = selected
+    ? workbenchHrefForMedia({
+        relpath: selectedRel,
+        name: selected.basename,
+      })
+    : null;
+  const factoryMapHref = selected?.content_id
+    ? `/discovery/factory-map#still=${encodeURIComponent(String(selected.content_id))}`
+    : "/discovery/factory-map";
 
+  const openSubmitModal = () => {
+    if (submitIntent) setSubmitModalIntent(submitIntent);
+  };
+
+  const focusCollections = () => {
+    collectionsPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  };
+
+  const stashAsIdentity = async () => {
+    if (!selectedRel) return;
+    try {
+      window.sessionStorage.setItem("submit_sticky_identity", selectedRel);
+      setMsg(`Identity stashed · ${selectedRel.split("/").pop()} (used on next video Extend in Submit)`);
+    } catch {
+      setMsg("Could not stash identity (sessionStorage blocked)");
+    }
+  };
   const backlog = backlogQuery.data;
   const win = backlog?.window;
   const sch = backlog?.schedule;
@@ -588,13 +619,50 @@ export function StillGalleryApp() {
                     alt={selected.basename || ""}
                   />
                 ) : null}
-                <p className="mono still-gallery__path">{stillMediaRelpath(selected)}</p>
-                <div className="still-gallery__actions">
-                  {submitUrl ? (
-                    <a className="drt-btn still-gallery__cta" href={submitUrl}>
-                      Open in Submit
+                <p className="mono still-gallery__path">{selectedRel}</p>
+                <div className="still-gallery__launch" role="group" aria-label="Launch pad">
+                  <button
+                    type="button"
+                    className="drt-btn still-gallery__cta"
+                    disabled={!submitIntent}
+                    title="Compose I2V without leaving the gallery"
+                    onClick={openSubmitModal}
+                  >
+                    Submit
+                  </button>
+                  <button
+                    type="button"
+                    className="drt-btn"
+                    disabled={!selected}
+                    title="Scroll to collections — add this still to a set"
+                    onClick={focusCollections}
+                  >
+                    Collection
+                  </button>
+                  <a className="drt-btn" href={factoryMapHref} title="Factory Map (family attach / pairs)">
+                    Map
+                  </a>
+                  {libraryHref ? (
+                    <a className="drt-btn" href={libraryHref} title="Open this still in Library">
+                      Library
                     </a>
                   ) : null}
+                  {workbenchHref ? (
+                    <a className="drt-btn" href={workbenchHref} title="Find jobs that used this still">
+                      Workbench
+                    </a>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="drt-btn"
+                    disabled={!selectedRel}
+                    title="Remember as identity_anchor for the next video Extend on Submit"
+                    onClick={() => void stashAsIdentity()}
+                  >
+                    Identity
+                  </button>
+                </div>
+                <div className="still-gallery__actions">
                   <button
                     type="button"
                     className="drt-btn"
@@ -630,13 +698,6 @@ export function StillGalleryApp() {
                   >
                     Tag now (dry-run)
                   </button>
-                  <a
-                    className="drt-btn"
-                    href={`/discovery/factory-map`}
-                    title="Factory Map (attach collections to I2V families there)"
-                  >
-                    Factory Map
-                  </a>
                 </div>
                 {(selected.provisional_tags || []).length ? (
                   <p className="factory-muted still-gallery__prov">
@@ -681,7 +742,7 @@ export function StillGalleryApp() {
             )}
           </section>
 
-          <section className="still-gallery__panel">
+          <section className="still-gallery__panel" aria-label="Collections" ref={collectionsPanelRef}>
             <h2>Collections</h2>
             <div className="still-gallery__tag-row">
               <input
@@ -771,6 +832,14 @@ export function StillGalleryApp() {
         </aside>
       </div>
       </div>
+      <SubmitComposerModal
+        intent={submitModalIntent}
+        onClose={() => setSubmitModalIntent(null)}
+        onSubmitted={() => {
+          void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.submitAttemptsRoot });
+          setMsg("Submitted — gallery selection kept");
+        }}
+      />
     </div>
   );
 }
