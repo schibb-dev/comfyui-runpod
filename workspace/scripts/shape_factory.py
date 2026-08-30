@@ -7788,6 +7788,49 @@ def cmd_deposit(args: argparse.Namespace) -> int:
             if not quiet:
                 print(f"  job_output_index_warn: {exc}", file=sys.stderr)
 
+        # Tip outputs into Discovery index so Lineage/Library see them without ?refresh=1.
+        try:
+            from discovery_index_upsert import (
+                default_discovery_index_path,
+                relpath_under_output,
+                tip_in_discovery_relpaths,
+            )
+
+            out_root = None
+            for vp in video_paths:
+                try:
+                    parts = vp.resolve().parts
+                    if "og" in parts:
+                        out_root = Path(*parts[: parts.index("og")])
+                        break
+                    if "wip" in parts:
+                        out_root = Path(*parts[: parts.index("wip")])
+                        break
+                except OSError:
+                    continue
+            if out_root is None:
+                out_root = (data_root / "output").resolve()
+            idx_path = default_discovery_index_path(out_root)
+            rels: list[str] = []
+            for vp in video_paths:
+                r = relpath_under_output(out_root, vp)
+                if r:
+                    rels.append(r)
+            if rels:
+                tip = tip_in_discovery_relpaths(
+                    index_path=idx_path,
+                    output_root=out_root,
+                    relpaths=rels,
+                )
+                if not quiet and tip.get("created_count"):
+                    print(
+                        f"  discovery_index_tip_in created={tip.get('created_count')} "
+                        f"ok={tip.get('ok_count')} index={idx_path}"
+                    )
+        except Exception as exc:
+            if not quiet:
+                print(f"  discovery_index_tip_in_warn: {exc}", file=sys.stderr)
+
     print(f"\ndeposit_added={deposited}")
     print(f"deposit_skipped={skipped}")
     return 0

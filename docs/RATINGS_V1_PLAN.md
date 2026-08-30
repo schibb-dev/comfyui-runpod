@@ -215,7 +215,7 @@ Implementation: [`workspace/scripts/shape_factory_triage.py`](../workspace/scrip
 | Lineage API + UI | `scripts/experiments_ui_server.py`, `DiscoveryAssetLineagePanel.tsx` |
 | Graph fingerprint | `workspace/scripts/snowflake_inventory.py` (`graph_fingerprint`) |
 | Factory jobs / deposits | `.data/shape_factory/jobs/<family>/`, `shape_factory deposit` |
-| Discovery index | `<data>/output/output/_status/discovery_og_wip_index.json` |
+| Discovery index | `<data>/output/output/_status/discovery_og_wip_index.json` (kept current via deposit tip-in + lineage ensure; full `?refresh=1` rebuild; watcher planned — [`DISCOVERY_INDEX_WATCHER_PLAN.md`](./DISCOVERY_INDEX_WATCHER_PLAN.md)) |
 | Lineage edges | `<data>/output/output/_status/discovery_lineage_edges.json` |
 
 **Data root (host):** `/home/yuji/comfyui-runpod-data`

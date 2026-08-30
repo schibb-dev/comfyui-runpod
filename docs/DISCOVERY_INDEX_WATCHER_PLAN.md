@@ -14,6 +14,18 @@ Today [`scripts/experiments_ui_server.py`](../scripts/experiments_ui_server.py) 
 
 Downstream work (lineage, vision tagging, similarity embeddings) must run on **independent schedules** and must **not** slow discovery reindexing.
 
+### Interim: natural tip-in + ensure (shipped; watcher still end state)
+
+Until this watcher lands, the Discovery index stays usable via:
+
+| Path | When | What |
+|------|------|------|
+| **Tip-in** | `shape_factory deposit` (after durable outputs) | Best-effort upsert of each deposited `og/`/`wip` media stem into `discovery_og_wip_index.json` ([`discovery_index_upsert.py`](../workspace/scripts/discovery_index_upsert.py)) |
+| **Ensure on miss** | `GET /api/discovery/asset-lineage` when seed missing | If the file exists under og/wip, upsert one stem group, invalidate cache, retry lineage |
+| **Explicit ensure** | `POST /api/discovery/library/ensure` `{ relpath }` / `{ relpaths }` | Same upsert helper for callers that already know a path |
+
+Hot path stays cheap (no full corpus `rglob`). Full `?refresh=1` remains for rebuild/reconcile. Tip-in + ensure are **safety nets** once the watcher exists (races, API-only hosts without the watcher process).
+
 ## Design principle: discovery fast, everything else queued
 
 | Layer | v1 scope | Trigger | Output |
@@ -234,7 +246,7 @@ output/_status/enrichment/
 
 | File | Writer | Reader |
 |------|--------|--------|
-| `discovery_og_wip_index.json` | discovery watcher, `refresh=1` | API, handlers |
+| `discovery_og_wip_index.json` | discovery watcher, `refresh=1`, tip-in/ensure | API, handlers |
 | `discovery_og_wip_index.json.lock` | discovery writers | writers wait |
 | `discovery_watcher_state.json` | discovery watcher | API |
 | `asset_job_queue.jsonl` | discovery watcher | asset_job_worker |

@@ -716,6 +716,66 @@ def _build_discovery_og_wip_index(cfg: "ServerConfig") -> Dict[str, Any]:
 _DISCOVERY_INDEX_CACHE: Dict[str, Tuple[float, int, Dict[str, Any]]] = {}
 
 
+def _discovery_invalidate_index_cache(path: Optional[Path] = None) -> None:
+    if path is None:
+        _DISCOVERY_INDEX_CACHE.clear()
+        return
+    try:
+        key = str(path.resolve())
+    except Exception:
+        key = str(path)
+    _DISCOVERY_INDEX_CACHE.pop(key, None)
+
+
+def _discovery_upsert_relpath(cfg: "ServerConfig", relpath: str) -> Dict[str, Any]:
+    """Tip-in / ensure one og|wip media path into discovery_og_wip_index.json."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from discovery_index_upsert import ensure_discovery_relpath  # type: ignore
+
+    idx_path = cfg.discovery_index_path
+    out = ensure_discovery_relpath(
+        index_path=idx_path,
+        output_root=cfg.output_root,
+        relpath=relpath,
+    )
+    if out.get("ok"):
+        _discovery_invalidate_index_cache(idx_path)
+    return out
+
+
+def _discovery_library_ensure_payload(cfg: "ServerConfig", body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /api/discovery/library/ensure { relpath } | { relpaths: [...] }."""
+    rels: List[str] = []
+    one = str(body.get("relpath") or "").strip()
+    if one:
+        rels.append(one)
+    raw_list = body.get("relpaths")
+    if isinstance(raw_list, list):
+        for x in raw_list:
+            s = str(x or "").strip()
+            if s:
+                rels.append(s)
+    if not rels:
+        return {"ok": False, "error": "missing_relpath"}
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from discovery_index_upsert import tip_in_discovery_relpaths  # type: ignore
+
+    payload = tip_in_discovery_relpaths(
+        index_path=cfg.discovery_index_path,
+        output_root=cfg.output_root,
+        relpaths=rels,
+    )
+    if payload.get("ok_count"):
+        _discovery_invalidate_index_cache(cfg.discovery_index_path)
+    payload["discovery_index_path"] = str(cfg.discovery_index_path)
+    return payload
+
+
+
 def _load_discovery_index_disk(path: Path) -> Optional[Dict[str, Any]]:
     if not path.exists():
         return None
@@ -7333,6 +7393,7 @@ def _discovery_compute_asset_lineage_graph_only(
         "ok": True,
         "query_relpath": rel,
         "discovery_index_path": str(cfg.discovery_index_path),
+        "discovery_index_ensured": bool(_ensured_flag),
         "lineage_graph_path": str(views["lineage_graph_path"]),
         "graph_only": True,
         "infer_parents": bool(infer_parents),
@@ -7403,13 +7464,30 @@ def _discovery_compute_asset_lineage(
                 payload["persist"] = bool(persist)
                 payload["persisted_new_edges"] = int(added)
             return payload
-        return {"ok": False, "error": "not_in_discovery_index", "detail": rel}
+        # Natural heal: tip the file into Discovery if it exists under og/wip.
+        ensured = False
+        try:
+            ens = _discovery_upsert_relpath(cfg, rel)
+            if ens.get("ok"):
+                ensured = True
+                idx2 = _load_discovery_index_disk(cfg.discovery_index_path)
+                if isinstance(idx2, dict):
+                    idx = idx2
+                    seed_item = _discovery_item_for_relpath(idx, rel)
+        except Exception:
+            ensured = False
+        if not isinstance(seed_item, dict):
+            return {"ok": False, "error": "not_in_discovery_index", "detail": rel}
+        # Fall through with refreshed seed; annotate below on success path.
+        _ensured_flag = ensured
+    else:
+        _ensured_flag = False
 
     seed_gid = str(seed_item.get("group_id") or "")
     max_depth = max(0, min(int(max_depth), 12))
 
     if graph_only:
-        return _discovery_compute_asset_lineage_graph_only(
+        payload = _discovery_compute_asset_lineage_graph_only(
             cfg,
             idx,
             seed_item,
@@ -7420,6 +7498,9 @@ def _discovery_compute_asset_lineage(
             infer_parents=infer_parents,
             infer_children=infer_children,
         )
+        if _ensured_flag and isinstance(payload, dict) and payload.get("ok"):
+            payload["discovery_index_ensured"] = True
+        return payload
 
     processed_groups: set = set()
     queue: collections.deque = collections.deque()
@@ -10336,6 +10417,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_discovery_asset_recover_post()
         if path == "/api/discovery/ensure-thumb":
             return self._handle_discovery_ensure_thumb_post()
+        if path == "/api/discovery/library/ensure":
+            return self._handle_discovery_library_ensure_post()
         if path == "/api/discovery/asset-ratings/set":
             return self._handle_discovery_asset_ratings_set_post()
         if path == "/api/discovery/asset-appetite/set":
@@ -11982,6 +12065,23 @@ class Handler(BaseHTTPRequestHandler):
         status = 200 if payload.get("ok") else 400
         return _json_response(self, status, payload)
 
+    def _handle_discovery_library_ensure_post(self) -> None:
+        """
+        POST /api/discovery/library/ensure  { relpath } | { relpaths: [...] }
+
+        Tip one (or many) og/wip media paths into discovery_og_wip_index.json without a full rescan.
+        """
+        cfg = self.server.cfg
+        obj = self._read_request_json()
+        if obj is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _discovery_library_ensure_payload(cfg, obj if isinstance(obj, dict) else {})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "library_ensure_failed", "detail": str(e)})
+        status = 200 if payload.get("ok") else 400
+        return _json_response(self, status, payload)
+
     def _handle_discovery_asset_ratings_set_post(self) -> None:
         """
         POST /api/discovery/asset-ratings/set  { relpath, stars: 0-5, axis?: quality_axis }
@@ -13425,6 +13525,7 @@ def main() -> int:
         "/api/discovery/asset-lineage, /api/discovery/asset-ratings, /api/discovery/asset-ratings/verify, "
         "/api/discovery/rating-sampler, GET /api/discovery/asset-audit, POST /api/discovery/asset-recover, "
         "POST /api/discovery/ensure-thumb, "
+        "POST /api/discovery/library/ensure, "
         "POST /api/discovery/asset-ratings/set, POST /api/discovery/asset-appetite/set, "
         "GET/POST /api/discovery/disposition-catalog, GET /api/discovery/disposition-suggest, "
         "POST /api/discovery/asset-disposition/toggle, POST /api/discovery/asset-disposition/run-step, "
