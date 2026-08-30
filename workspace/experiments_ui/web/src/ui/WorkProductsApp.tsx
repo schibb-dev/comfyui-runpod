@@ -31,11 +31,16 @@ import {
 } from "./workProductTrim";
 import { useTrimPlaybackEnforcement, type TrimPlaybackMode } from "./useTrimPlayback";
 import { discoveryLibraryHref, extractContentIdFromName, parseWorkbenchDeepLink, stillsHref, buildSubmitDeepLink, type SubmitDeepLink } from "./discoveryDeepLink";
+import { factoryMapFamilyHref } from "./factoryMapRoute";
+import { WorkProductAppetiteStrip } from "./WorkProductAppetiteStrip";
+import { DiscoveryAssetLineagePanel } from "./DiscoveryAssetLineagePanel";
 import { SubmitComposerModal } from "./SubmitComposerModal";
 import { rememberFamiliesFromWorkProducts } from "./shapeFactorySessionCache";
 import { isStillMediaPath } from "./submitFamily";
 import { queryKeys } from "./queryKeys";
 import type {
+  DiscoveryAssetLineageItemSummary,
+  DiscoveryLibraryItem,
   ShapeFactoryMapQueueOverrides,
   WorkItem,
   WorkProductBinding,
@@ -105,6 +110,7 @@ const DEFAULT_SECTION_OPEN: Record<string, boolean> = {
   timing: false,
   plan: false,
   appetite: false,
+  lineage: false,
   shape: false,
   bindings: false,
   trim: false,
@@ -3480,6 +3486,73 @@ function WorkProductQuickQueue({
 }
 
 
+function workProductLineageSeed(item: WorkProductItem): DiscoveryLibraryItem | null {
+  const relpath = String(item.output_relpath || "").trim().replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!relpath) return null;
+  const name = relpath.split("/").pop() || relpath;
+  return {
+    group_id: undefined,
+    relpath,
+    library: "og",
+    name,
+    mtime: 0,
+    size: 0,
+    sha256: "",
+    url: item.output_url || undefined,
+    thumb_url: item.output_thumb_url || undefined,
+  } as DiscoveryLibraryItem;
+}
+
+function openLineageSummaryInLibrary(s: DiscoveryAssetLineageItemSummary) {
+  const rel =
+    String(s.relpath || "").trim() ||
+    String(s.workspace_relpath || "").trim() ||
+    "";
+  const href = discoveryLibraryHref(rel || null);
+  window.location.assign(href);
+}
+
+function WorkProductLineageSection({
+  item,
+  open,
+  onOpenChange,
+}: {
+  item: WorkProductItem;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const seed = useMemo(() => workProductLineageSeed(item), [item]);
+  const summary = seed
+    ? String(seed.name || seed.relpath || "output")
+    : "no output yet";
+
+  return (
+    <details
+      className="work-product-details__group work-product-details__group--wide work-product-details__lineage"
+      open={open}
+      onToggle={(e) => onOpenChange(e.currentTarget.open)}
+    >
+      <summary className="work-product-details__group-title">
+        <span className="work-product-details__group-title-text">Lineage</span>
+        <span className="work-product-details__group-summary" title={summary}>
+          {summary}
+        </span>
+      </summary>
+      {open ? (
+        seed ? (
+          <div className="work-product-lineage-panel">
+            <DiscoveryAssetLineagePanel seedItem={seed} onOpenSummary={openLineageSummaryInLibrary} />
+          </div>
+        ) : (
+          <p className="factory-muted work-product-lineage-empty">
+            Lineage available once this job has an output.
+          </p>
+        )
+      ) : null}
+    </details>
+  );
+}
+
 function WorkProductDetails({
   item,
   families,
@@ -3537,7 +3610,15 @@ function WorkProductDetails({
             Hourly
           </span>
         ) : null}
-        {item.family_slug ? <span className="work-product-badge">{item.family_slug}</span> : null}
+        {item.family_slug ? (
+          <a
+            className="work-product-badge work-product-badge--link"
+            href={factoryMapFamilyHref(item.family_slug, { focus: "pools" })}
+            title="Open family pools on Factory Map"
+          >
+            {item.family_slug}
+          </a>
+        ) : null}
         <PromptSnowflakeChip prompt={prompt} />
         {shape?.io_class ? (
           <span className="work-product-badge" title="IO class (station process)">
@@ -3632,6 +3713,16 @@ function WorkProductDetails({
         </div>
       ) : null}
       <FlowEventTimeline item={item} />
+      <WorkProductAppetiteStrip
+        relpath={item.output_relpath}
+        jobKey={item.job_key}
+        familySlug={item.family_slug}
+        disabledHint={
+          isLivePreviewItem(item) || String(item.status || "") === "pending"
+            ? "Appetite available once this job has an output"
+            : "Appetite needs an output path"
+        }
+      />
       <WorkProductQuickQueue
         item={item}
         families={families}
@@ -3645,6 +3736,11 @@ function WorkProductDetails({
       <WorkProductPromptEditor item={item} onCommitted={onCommitted} />
       <WorkProductParamsEditor item={item} onCommitted={onCommitted} />
       <div className="work-product-details__groups">
+        <WorkProductLineageSection
+          item={item}
+          open={sectionOpen.lineage ?? DEFAULT_SECTION_OPEN.lineage ?? false}
+          onOpenChange={(next) => setGroupOpen("lineage", next)}
+        />
         {groups.map((group) => {
           const renderRow = (row: WorkProductDetailRow, opts?: { kv?: boolean; compact?: boolean }) => {
             const long =
@@ -3775,7 +3871,28 @@ function WorkProductRow({
       >
         <div className="work-product-row__head-main">
           <div className="work-product-row__title">
-            <strong>{item.family_slug || "job"}</strong>
+            {item.family_slug ? (
+              <strong>
+                <a
+                  className="work-product-family-link"
+                  href={factoryMapFamilyHref(item.family_slug, { focus: "pools" })}
+                  title="Open family on Factory Map"
+                >
+                  {item.family_slug}
+                </a>
+              </strong>
+            ) : (
+              <strong>job</strong>
+            )}
+            {item.job_key && item.family_slug ? (
+              <a
+                className="work-product-badge work-product-badge--link"
+                href={factoryMapFamilyHref(item.family_slug, { focus: "job", jobKey: item.job_key })}
+                title="Open this job on Factory Map"
+              >
+                On map
+              </a>
+            ) : null}
             {item.is_hourly ? (
               <span className="work-product-badge work-product-badge--hourly" title="Produced by the hourly planner">
                 Hourly
