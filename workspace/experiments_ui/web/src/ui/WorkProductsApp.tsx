@@ -30,7 +30,7 @@ import {
   vhsDefaultsToMarks,
 } from "./workProductTrim";
 import { useTrimPlaybackEnforcement, type TrimPlaybackMode } from "./useTrimPlayback";
-import { discoveryLibraryHref, extractContentIdFromName, parseWorkbenchDeepLink, stillsHref, buildSubmitDeepLink, type SubmitDeepLink } from "./discoveryDeepLink";
+import { discoveryLibraryHref, extractContentIdFromName, parseWorkbenchDeepLink, stillsHref, buildSubmitDeepLink, lineageSummaryHref, type SubmitDeepLink } from "./discoveryDeepLink";
 import { factoryMapFamilyHref } from "./factoryMapRoute";
 import { WorkProductAppetiteStrip } from "./WorkProductAppetiteStrip";
 import { DiscoveryAssetLineagePanel } from "./DiscoveryAssetLineagePanel";
@@ -3504,12 +3504,7 @@ function workProductLineageSeed(item: WorkProductItem): DiscoveryLibraryItem | n
 }
 
 function openLineageSummaryInLibrary(s: DiscoveryAssetLineageItemSummary) {
-  const rel =
-    String(s.relpath || "").trim() ||
-    String(s.workspace_relpath || "").trim() ||
-    "";
-  const href = discoveryLibraryHref(rel || null);
-  window.location.assign(href);
+  window.location.assign(lineageSummaryHref(s));
 }
 
 function WorkProductLineageSection({

@@ -4,7 +4,7 @@ import { AssetJudgmentEditor } from "./AssetJudgmentEditor";
 import { DiscoveryAssetLineagePanel } from "./DiscoveryAssetLineagePanel";
 import { DiscoveryAssetRatingsPanel } from "./DiscoveryAssetRatingsPanel";
 import { DiscoveryWorkflowFacetsPanel } from "./DiscoveryWorkflowFacetsPanel";
-import { discoveryLibraryHref } from "./discoveryDeepLink";
+import { discoveryLibraryHref, isLineageInputStill, lineageSummaryHref } from "./discoveryDeepLink";
 import type { DiscoveryAssetLineageItemSummary, DiscoveryLibraryItem, DiscoveryWorkflowFacetsResponse } from "./types";
 
 /** Minimal selection the Inspector needs. Any screen (Library / Factory / Rate) can build one. */
@@ -99,6 +99,10 @@ export function AssetInspector({
 
   const onOpenSummary = useCallback(
     (s: DiscoveryAssetLineageItemSummary) => {
+      if (isLineageInputStill(s)) {
+        window.location.assign(lineageSummaryHref(s));
+        return;
+      }
       const rel = s.relpath || s.video_relpath || s.thumb_relpath;
       if (rel && onOpenRelpath) void onOpenRelpath(rel);
       else if (rel) window.location.assign(discoveryLibraryHref(rel));

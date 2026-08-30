@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchDiscoveryAssetLineage } from "./api";
-import { workbenchHrefForMedia } from "./discoveryDeepLink";
+import { lineageSummaryHref, workbenchHrefForMedia } from "./discoveryDeepLink";
 import type {
   DiscoveryAssetLineageAncestryNavEntry,
   DiscoveryAssetLineageEdgeRow,
@@ -107,12 +107,20 @@ function LineageNodeCard({
     external ? str(item?.relpath) || str((item as { workspace_relpath?: string }).workspace_relpath) : null;
   const thumb = lineageThumbUrl(item, resolveLibraryItem, thumbRel);
   const kind = str(item?.media_kind);
+  const mediaRel = str(item?.relpath) || str(item?.workspace_relpath) || null;
   const workbenchUrl = workbenchHrefForMedia({
-    relpath: str(item?.relpath) || str(item?.workspace_relpath) || null,
+    relpath: mediaRel,
     name: str(item?.name) || null,
     groupId,
   });
-
+  const stillsUrl = external
+    ? lineageSummaryHref({
+        ...summary,
+        relpath: mediaRel || summary.relpath,
+        external: true,
+        library: "input",
+      })
+    : null;
   return (
     <span className={"dal-node-wrap" + (layout === "chain" ? " dal-node-wrap--chain" : "")}>
       <button
@@ -129,9 +137,10 @@ function LineageNodeCard({
             ...summary,
             relpath: str(item?.relpath) || str(item?.workspace_relpath) || summary.relpath,
             external: external || undefined,
+            library: external ? summary.library || "input" : summary.library,
           })
         }
-        title={str(item?.relpath) || groupId}
+        title={external ? `Open in Stills: ${str(item?.relpath) || groupId}` : str(item?.relpath) || groupId}
       >
         <span className="dal-node-thumb-wrap" aria-hidden={thumb ? undefined : true}>
           {thumb ? (
@@ -150,14 +159,25 @@ function LineageNodeCard({
         </span>
       </button>
       {!compact ? (
-        <a
-          className="dal-node-workbench"
-          href={workbenchUrl}
-          title="Find related factory jobs in Workbench"
-          onClick={(e) => e.stopPropagation()}
-        >
-          Workbench
-        </a>
+        external && stillsUrl ? (
+          <a
+            className="dal-node-workbench"
+            href={stillsUrl}
+            title="Open this input still in Stills Viewer"
+            onClick={(e) => e.stopPropagation()}
+          >
+            Stills
+          </a>
+        ) : (
+          <a
+            className="dal-node-workbench"
+            href={workbenchUrl}
+            title="Find related factory jobs in Workbench"
+            onClick={(e) => e.stopPropagation()}
+          >
+            Workbench
+          </a>
+        )
       ) : null}
     </span>
   );

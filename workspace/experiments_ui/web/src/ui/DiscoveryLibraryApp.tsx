@@ -8,7 +8,7 @@ import {
 } from "./api";
 import type { ShapeFactoryClip } from "./api";
 import { formatUnixMtime, formatIsoDateTime } from "./locale";
-import { parseDiscoveryDeepLinkRelpath, workbenchHrefForMedia } from "./discoveryDeepLink";
+import { isLineageInputStill, lineageSummaryHref, parseDiscoveryDeepLinkRelpath, workbenchHrefForMedia } from "./discoveryDeepLink";
 import { APPETITE_ROW_GLYPH, appetiteRowTitle, discoveryRatingsRollupFromResponse } from "./discoveryRatingsRollup";
 import { DiscoveryAssetLineagePanel } from "./DiscoveryAssetLineagePanel";
 import { DiscoveryAssetRatingsPanel } from "./DiscoveryAssetRatingsPanel";
@@ -3291,10 +3291,20 @@ function DiscoveryLibraryInner() {
 
   const openLineageSummary = useCallback(
     async (s: DiscoveryAssetLineageItemSummary) => {
+      if (isLineageInputStill(s) || (s.external === true)) {
+        window.location.assign(lineageSummaryHref(s));
+        return;
+      }
+      const wsRelEarly = lineageSummaryWorkspaceRelpath(s);
+      if (wsRelEarly && isWorkspaceInputRelpath(wsRelEarly)) {
+        window.location.assign(lineageSummaryHref({ ...s, external: true, library: "input" }));
+        return;
+      }
       let target = resolveSummaryToLibraryItem(s);
       const wsRel = lineageSummaryWorkspaceRelpath(s);
       if (!target && wsRel && (s.external === true || isWorkspaceInputRelpath(wsRel))) {
-        target = syntheticInputLibraryItem(wsRel, s);
+        window.location.assign(lineageSummaryHref({ ...s, external: true, library: "input" }));
+        return;
       }
       if (!target) {
         try {
@@ -3305,7 +3315,8 @@ function DiscoveryLibraryInner() {
           if (res.ok && res.item) target = res.item;
         } catch {
           if (wsRel && isWorkspaceInputRelpath(wsRel)) {
-            target = syntheticInputLibraryItem(wsRel, s);
+            window.location.assign(lineageSummaryHref({ ...s, external: true, library: "input" }));
+            return;
           } else {
             return;
           }

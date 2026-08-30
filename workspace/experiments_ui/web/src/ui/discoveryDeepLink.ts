@@ -297,6 +297,78 @@ export function workbenchHref(opts?: {
   return qs ? `/workbench?${qs}` : "/workbench";
 }
 
+/** Normalize a lineage/input path to ``input/<file>`` when it is a Comfy input still. */
+export function normalizeInputStillRelpath(relpath?: string | null): string | null {
+  let norm = String(relpath || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "");
+  if (!norm) return null;
+  if (norm.toLowerCase().startsWith("input/")) return norm;
+  // Bare basename stills (common in lineage external rows).
+  if (!norm.includes("/") && /\.(png|jpe?g|webp|gif)$/i.test(norm)) {
+    return `input/${norm}`;
+  }
+  return null;
+}
+
+/** True when a lineage summary refers to a Comfy ``input/`` still (not og/wip Library). */
+export function isLineageInputStill(s: {
+  external?: boolean;
+  library?: string | null;
+  relpath?: string | null;
+  workspace_relpath?: string | null;
+  thumb_relpath?: string | null;
+  name?: string | null;
+}): boolean {
+  if (s.external === true) return true;
+  if (String(s.library || "").trim().toLowerCase() === "input") return true;
+  for (const c of [s.relpath, s.workspace_relpath, s.thumb_relpath]) {
+    const norm = String(c || "")
+      .trim()
+      .replace(/\\/g, "/")
+      .replace(/^\/+/, "");
+    if (norm.toLowerCase().startsWith("input/")) return true;
+  }
+  return false;
+}
+
+/**
+ * Deep-link for a lineage node click: input stills → Stills Viewer; otherwise Discovery Library.
+ */
+export function lineageSummaryHref(s: {
+  external?: boolean;
+  library?: string | null;
+  relpath?: string | null;
+  workspace_relpath?: string | null;
+  video_relpath?: string | null;
+  thumb_relpath?: string | null;
+  name?: string | null;
+}): string {
+  const raw =
+    String(s.relpath || "").trim() ||
+    String(s.workspace_relpath || "").trim() ||
+    String(s.thumb_relpath || "").trim() ||
+    String(s.video_relpath || "").trim() ||
+    "";
+  if (isLineageInputStill(s)) {
+    const inputRel =
+      normalizeInputStillRelpath(raw) ||
+      normalizeInputStillRelpath(s.name) ||
+      (raw ? (raw.toLowerCase().startsWith("input/") ? raw : `input/${raw.split("/").pop() || raw}`) : null);
+    const contentId =
+      extractContentIdFromName(inputRel) ||
+      extractContentIdFromName(raw) ||
+      extractContentIdFromName(s.name);
+    return stillsHref({
+      contentId,
+      relpath: inputRel,
+      q: contentId || (inputRel ? inputRel.split("/").pop() : null),
+    });
+  }
+  return discoveryLibraryHref(raw || null);
+}
+
 /** Seed Workbench search from a library / lineage media path or basename. */
 export function workbenchHrefForMedia(opts: {
   relpath?: string | null;
