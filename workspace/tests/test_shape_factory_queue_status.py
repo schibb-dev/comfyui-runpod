@@ -399,6 +399,45 @@ class QueueStatusTests(unittest.TestCase):
             paths = sf.iter_pending_submit_job_paths(args)
             self.assertEqual([p.name for p in paths], ["zzz_pending.job.json"])
 
+    def test_rebind_job_after_prompt_move_updates_submit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            jobs = data / "shape_factory" / "jobs" / "Fam"
+            jobs.mkdir(parents=True)
+            key = "Fam__pp-x__src-y__000_ui1"
+            path = jobs / f"{key}.job.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "job_key": key,
+                        "submit": {
+                            "prompt_id": "old-pid",
+                            "status": "interrupted",
+                            "interrupted_reason": "missing_from_comfy_queue_and_history",
+                            "interrupted_at": "2026-01-01T00:00:00Z",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            out = sf.rebind_job_after_prompt_move(
+                data_root=data,
+                old_prompt_id="old-pid",
+                new_prompt_id="new-pid",
+                status="queued",
+            )
+            self.assertTrue(out.get("ok"))
+            self.assertTrue(out.get("factory_job"))
+            self.assertEqual(out.get("job_key"), key)
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            submit = saved["submit"]
+            self.assertEqual(submit["prompt_id"], "new-pid")
+            self.assertEqual(submit["previous_prompt_id"], "old-pid")
+            self.assertEqual(submit["status"], "queued")
+            self.assertEqual(submit.get("prompt_id_rebound_reason"), "queue_move_reorder")
+            self.assertNotIn("interrupted_reason", submit)
+            self.assertNotIn("interrupted_at", submit)
+
 
 if __name__ == "__main__":
     unittest.main()

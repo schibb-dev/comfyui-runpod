@@ -131,10 +131,15 @@ def _comfy_submit_prompt(
     client_id: str = "experiments-ui",
     timeout_s: int = 30,
     preview_method: str = "auto",
+    extra_data: Optional[Dict[str, Any]] = None,
+    outputs_to_execute: Optional[List[Any]] = None,
 ) -> Any:
     """
     POST a workflow graph to ComfyUI /prompt (same payload shape as the UI uses for requeue).
     Returns Comfy's JSON body. Raises on network / HTTP / JSON errors (urllib / json).
+
+    When ``extra_data`` is provided (e.g. queue reorder), it is preserved so factory
+    ``workflow_name`` / job_key metadata survives delete+resubmit.
     """
     comfy = str(comfy_server).rstrip("/")
     # Normalize Windows-style model paths (WAN\file.gguf → WAN/file.gguf) before validate.
@@ -148,9 +153,17 @@ def _comfy_submit_prompt(
     payload: Dict[str, Any] = {"prompt": prompt, "client_id": client_id}
     if front:
         payload["front"] = True
+    ed: Dict[str, Any] = {}
+    if isinstance(extra_data, dict):
+        # Shallow copy; drop nested client_id — top-level client_id is authoritative.
+        ed = {k: v for k, v in extra_data.items() if k != "client_id"}
     method = str(preview_method or "").strip()
     if method:
-        payload["extra_data"] = {"preview_method": method}
+        ed["preview_method"] = method
+    if ed:
+        payload["extra_data"] = ed
+    if isinstance(outputs_to_execute, list) and outputs_to_execute:
+        payload["outputs_to_execute"] = outputs_to_execute
     return _http_json("POST", f"{comfy}/prompt", payload, timeout_s=timeout_s)
 
 
@@ -12841,10 +12854,12 @@ class Handler(BaseHTTPRequestHandler):
         Body: { "prompt_id": str, "to": "front"|"back", "client_id"?: str }
 
         Best-effort safe move for waiting prompts:
-        1) capture prompt graph from current pending queue row,
-        2) delete prompt from pending queue,
-        3) verify it did not transition to running during move,
-        4) re-submit graph to requested position.
+        1) capture prompt graph (+ extra_data / outputs) from current pending queue row,
+        2) forget old id in queue ledger so delete does not trigger restore,
+        3) delete prompt from pending queue,
+        4) verify it did not transition to running during move,
+        5) re-submit graph to requested position (preserving factory metadata),
+        6) rebind matching shape-factory job to the new prompt_id.
         """
         cfg = self.server.cfg
         body = self._read_request_json()
@@ -12873,19 +12888,82 @@ class Handler(BaseHTTPRequestHandler):
             running = qobj.get("queue_running")
             return (pending if isinstance(pending, list) else [], running if isinstance(running, list) else [])
 
-        def _extract_prompt_obj(items: List[Any], pid: str) -> Optional[Dict[str, Any]]:
+        def _extract_pending_row(items: List[Any], pid: str) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], Optional[List[Any]]]:
             for it in items:
                 if not (isinstance(it, list) and len(it) >= 2 and isinstance(it[1], str) and it[1].strip() == pid):
                     continue
-                if len(it) >= 3 and isinstance(it[2], dict):
-                    return it[2]
-            return None
+                prompt = it[2] if len(it) >= 3 and isinstance(it[2], dict) else None
+                extra = it[3] if len(it) >= 4 and isinstance(it[3], dict) else None
+                outputs = it[4] if len(it) >= 5 and isinstance(it[4], list) else None
+                return prompt, extra, outputs
+            return None, None, None
 
         def _has_pid(items: List[Any], pid: str) -> bool:
             for it in items:
                 if isinstance(it, list) and len(it) >= 2 and isinstance(it[1], str) and it[1].strip() == pid:
                     return True
             return False
+
+        def _ledger_forget_prompt(pid: str) -> bool:
+            """Drop mirrored restore state so intentional delete does not re-queue the old id."""
+            try:
+                from comfy_queue_ledger import _forget_mirrored_prompt  # type: ignore
+            except Exception:
+                d = _workspace_scripts_dir()
+                if d.is_dir() and str(d) not in sys.path:
+                    sys.path.insert(0, str(d))
+                try:
+                    from comfy_queue_ledger import _forget_mirrored_prompt  # type: ignore
+                except Exception:
+                    return False
+            try:
+                st = _read_queue_ledger_state(cfg.queue_ledger_state_path)
+                if not isinstance(st, dict):
+                    return False
+                _forget_mirrored_prompt(st, pid)
+                _write_queue_ledger_state(cfg.queue_ledger_state_path, st)
+                return True
+            except Exception:
+                return False
+
+        def _ledger_seed_new_prompt(
+            *,
+            old_pid: str,
+            new_pid: str,
+            prompt_obj: Dict[str, Any],
+            extra: Optional[Dict[str, Any]],
+            outputs: Optional[List[Any]],
+        ) -> bool:
+            try:
+                st = _read_queue_ledger_state(cfg.queue_ledger_state_path)
+                if not isinstance(st, dict):
+                    return False
+                known = st.get("known")
+                if not isinstance(known, dict):
+                    known = {}
+                    st["known"] = known
+                prev = known.pop(old_pid, None) if isinstance(known.get(old_pid), dict) else {}
+                if not isinstance(prev, dict):
+                    prev = {}
+                rec = dict(prev)
+                rec["prompt"] = prompt_obj
+                if isinstance(extra, dict):
+                    rec["extra_data"] = extra
+                if isinstance(outputs, list):
+                    rec["outputs_to_execute"] = outputs
+                rec["last_phase"] = "pending"
+                known[new_pid] = rec
+                snap = st.get("last_snapshot")
+                if isinstance(snap, dict):
+                    pending_ids = snap.get("pending")
+                    if isinstance(pending_ids, list):
+                        pending_ids[:] = [x for x in pending_ids if x != old_pid]
+                        if new_pid not in pending_ids:
+                            pending_ids.append(new_pid)
+                _write_queue_ledger_state(cfg.queue_ledger_state_path, st)
+                return True
+            except Exception:
+                return False
 
         try:
             pending_0, running_0 = _queue_lists()
@@ -12901,7 +12979,7 @@ class Handler(BaseHTTPRequestHandler):
                 409,
                 {"ok": False, "error": "prompt_already_running", "prompt_id": prompt_id, "detail": "Prompt already started running; cannot reorder pending queue item."},
             )
-        prompt_obj = _extract_prompt_obj(pending_0, prompt_id)
+        prompt_obj, extra_data, outputs_to_execute = _extract_pending_row(pending_0, prompt_id)
         if not isinstance(prompt_obj, dict):
             return _json_response(
                 self,
@@ -12913,6 +12991,8 @@ class Handler(BaseHTTPRequestHandler):
                     "detail": "Prompt is not in pending queue (or no prompt graph available). Refresh queue and retry.",
                 },
             )
+
+        ledger_forgot = _ledger_forget_prompt(prompt_id)
 
         try:
             _http_void("POST", f"{comfy}/queue", {"delete": [prompt_id]}, timeout_s=10, retry_attempts=2)
@@ -12972,12 +13052,26 @@ class Handler(BaseHTTPRequestHandler):
                 )
 
         try:
-            submit = _comfy_submit_prompt(cfg.comfy_server, prompt_obj, front=front, client_id=client_id)
+            submit = _comfy_submit_prompt(
+                cfg.comfy_server,
+                prompt_obj,
+                front=front,
+                client_id=client_id,
+                extra_data=extra_data if isinstance(extra_data, dict) else None,
+                outputs_to_execute=outputs_to_execute if isinstance(outputs_to_execute, list) else None,
+            )
         except Exception as e:
             # Fallback: try to restore to back if the intended submit failed.
             restored = False
             try:
-                _comfy_submit_prompt(cfg.comfy_server, prompt_obj, front=False, client_id=client_id)
+                _comfy_submit_prompt(
+                    cfg.comfy_server,
+                    prompt_obj,
+                    front=False,
+                    client_id=client_id,
+                    extra_data=extra_data if isinstance(extra_data, dict) else None,
+                    outputs_to_execute=outputs_to_execute if isinstance(outputs_to_execute, list) else None,
+                )
                 restored = True
             except Exception:
                 restored = False
@@ -12995,7 +13089,57 @@ class Handler(BaseHTTPRequestHandler):
                 },
             )
 
-        return _json_response(self, 200, {"ok": True, "prompt_id": prompt_id, "to": to_raw, "moved": True, "submit": submit})
+        new_prompt_id = ""
+        if isinstance(submit, dict):
+            new_prompt_id = str(submit.get("prompt_id") or "").strip()
+
+        factory_rebind: Dict[str, Any] = {"ok": True, "factory_job": False}
+        if new_prompt_id and new_prompt_id != prompt_id:
+            try:
+                d = _workspace_scripts_dir()
+                if d.is_dir() and str(d) not in sys.path:
+                    sys.path.insert(0, str(d))
+                from shape_factory import rebind_job_after_prompt_move  # type: ignore
+                from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+                data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+                factory_rebind = rebind_job_after_prompt_move(
+                    data_root=data_root,
+                    old_prompt_id=prompt_id,
+                    new_prompt_id=new_prompt_id,
+                    status="queued",
+                )
+            except Exception as exc:
+                factory_rebind = {
+                    "ok": False,
+                    "factory_job": False,
+                    "error": "factory_rebind_failed",
+                    "detail": str(exc),
+                    "old_prompt_id": prompt_id,
+                    "new_prompt_id": new_prompt_id,
+                }
+            _ledger_seed_new_prompt(
+                old_pid=prompt_id,
+                new_pid=new_prompt_id,
+                prompt_obj=prompt_obj,
+                extra=extra_data if isinstance(extra_data, dict) else None,
+                outputs=outputs_to_execute if isinstance(outputs_to_execute, list) else None,
+            )
+
+        return _json_response(
+            self,
+            200,
+            {
+                "ok": True,
+                "prompt_id": prompt_id,
+                "new_prompt_id": new_prompt_id or None,
+                "to": to_raw,
+                "moved": True,
+                "submit": submit,
+                "factory_rebind": factory_rebind,
+                "ledger_forgot_old": bool(ledger_forgot),
+            },
+        )
 
     def _handle_comfy_cancel(self) -> None:
         cfg = self.server.cfg

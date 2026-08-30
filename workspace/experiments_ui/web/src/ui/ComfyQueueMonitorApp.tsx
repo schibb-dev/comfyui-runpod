@@ -1325,6 +1325,7 @@ export function ComfyQueueMonitorApp() {
       queryClient.invalidateQueries({ queryKey: queryKeys.queue.snapshot }),
       queryClient.invalidateQueries({ queryKey: queryKeys.queue.history }),
       queryClient.invalidateQueries({ queryKey: queryKeys.queue.ledgerRoot }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductsRoot }),
     ]);
 
   const runLedgerAction = async (action: QueueLedgerControlAction) => {

@@ -201,10 +201,21 @@ export type QueueMovePromptRequest = {
 export type QueueMovePromptResponse = {
   ok: boolean;
   prompt_id: string;
+  new_prompt_id?: string | null;
   to: "front" | "back";
   moved?: boolean;
   detail?: string;
   submit?: unknown;
+  factory_rebind?: {
+    ok?: boolean;
+    factory_job?: boolean;
+    job_key?: string;
+    new_prompt_id?: string;
+    old_prompt_id?: string;
+    error?: string;
+    detail?: string;
+  };
+  ledger_forgot_old?: boolean;
 };
 
 export type ComfyClearResponse = { ok: boolean; result?: unknown };

@@ -5322,6 +5322,111 @@ def find_job_by_prompt_id(jobs_root: Path, prompt_id: str) -> tuple[Optional[Pat
     return None, None
 
 
+def rebind_job_after_prompt_move(
+    *,
+    data_root: Path,
+    old_prompt_id: str,
+    new_prompt_id: str,
+    status: str = "queued",
+) -> dict[str, Any]:
+    """
+    After a waiting-queue reorder (delete + re-submit), point the factory job at
+    the new Comfy ``prompt_id`` so Workbench does not treat the old id as interrupted.
+    """
+    old_pid = str(old_prompt_id or "").strip()
+    new_pid = str(new_prompt_id or "").strip()
+    if not old_pid or not new_pid:
+        return {
+            "ok": False,
+            "error": "missing_prompt_id",
+            "factory_job": False,
+            "old_prompt_id": old_pid or None,
+            "new_prompt_id": new_pid or None,
+        }
+    if old_pid == new_pid:
+        return {
+            "ok": True,
+            "factory_job": False,
+            "unchanged": True,
+            "old_prompt_id": old_pid,
+            "new_prompt_id": new_pid,
+        }
+
+    data_root = Path(data_root).expanduser().resolve()
+    jobs_root = data_root / "shape_factory" / "jobs"
+    job_file, job = find_job_by_prompt_id(jobs_root, old_pid)
+    if job is None or job_file is None:
+        return {
+            "ok": True,
+            "factory_job": False,
+            "old_prompt_id": old_pid,
+            "new_prompt_id": new_pid,
+        }
+
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    if not isinstance(submit, dict):
+        submit = {}
+    previous = str(submit.get("prompt_id") or old_pid).strip() or old_pid
+    target = str(status or "").strip().lower() or "queued"
+    if target not in {"queued", "running", "submitted"}:
+        target = "queued"
+
+    submit["previous_prompt_id"] = previous
+    submit["prompt_id"] = new_pid
+    submit["prompt_id_rebound_at"] = utc_now()
+    submit["prompt_id_rebound_reason"] = "queue_move_reorder"
+    submit["status"] = target
+    for k in (
+        "interrupted_at",
+        "interrupted_reason",
+        "abandoned_at",
+        "abandoned_from",
+        "abandoned_reason",
+        "error",
+        "error_node",
+        "error_type",
+        "comfy_error",
+        "node_errors",
+        "unqueued_at",
+    ):
+        submit.pop(k, None)
+    job["submit"] = submit
+
+    # Keep submit sidecar aligned so jobs-repair / status do not resurrect the old id.
+    sidecar_action = None
+    raw_sidecar = str(submit.get("submit_path") or "").strip()
+    if raw_sidecar:
+        sp = Path(raw_sidecar).expanduser()
+        if sp.is_file():
+            try:
+                rec = json.loads(sp.read_text(encoding="utf-8"))
+            except Exception:
+                rec = None
+            if isinstance(rec, dict):
+                rec["previous_prompt_id"] = previous
+                rec["prompt_id"] = new_pid
+                rec["status"] = target
+                rec["prompt_id_rebound_reason"] = "queue_move_reorder"
+                rec["prompt_id_rebound_at"] = utc_now()
+                for k in ("unqueued_at", "interrupted_at", "interrupted_reason"):
+                    rec.pop(k, None)
+                atomic_write_json(sp, rec)
+                sidecar_action = "rebound"
+
+    atomic_write_json(job_file, job)
+    return {
+        "ok": True,
+        "factory_job": True,
+        "old_prompt_id": old_pid,
+        "new_prompt_id": new_pid,
+        "previous_prompt_id": previous,
+        "job_key": str(job.get("job_key") or job_file.stem.replace(".job", "")),
+        "job_path": str(job_file),
+        "status": target,
+        "submit_sidecar": sidecar_action,
+    }
+
+
 def find_job_by_key(data_root: Path, job_key: str) -> tuple[Optional[Path], Optional[dict[str, Any]]]:
     key = str(job_key or "").strip()
     if not key:
