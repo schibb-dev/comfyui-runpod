@@ -200,6 +200,12 @@ function IdentityStillThumbButton({
   );
 }
 
+function familyShapeId(families: WorkProductFamilyOption[], slug: string): string | null {
+  const hit = families.find((f) => f.slug === slug);
+  const sid = String(hit?.shape_id || "").trim();
+  return sid || null;
+}
+
 function readStickyIdentity(): string {
   try {
     return String(window.sessionStorage.getItem("submit_sticky_identity") || "").trim();

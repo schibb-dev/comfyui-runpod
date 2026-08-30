@@ -108,6 +108,7 @@ import type {
   JsonPeekResponse,
   ComfyLiveStatusResponse,
   ComfyLogsResponse,
+  InputCurationAppetiteSeedsResponse,
 } from "./types";
 
 function experimentsUiStaleApiHint(): string {
@@ -396,6 +397,23 @@ export async function fetchShapeFactoryInputCurationEffectiveSources(
     const detail = [j.error, j.detail].filter(Boolean).join(": ");
     throw new Error(
       `GET /api/shape-factory/input-curation/effective-sources failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function fetchShapeFactoryInputCurationAppetiteSeeds(
+  familySlug: string,
+  opts?: { limit?: number },
+): Promise<InputCurationAppetiteSeedsResponse> {
+  const sp = new URLSearchParams({ family_slug: familySlug });
+  if (opts?.limit != null) sp.set("limit", String(opts.limit));
+  const r = await fetch(`/api/shape-factory/input-curation/appetite-seeds?${sp.toString()}`);
+  const j = (await r.json().catch(() => ({}))) as InputCurationAppetiteSeedsResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET /api/shape-factory/input-curation/appetite-seeds failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
     );
   }
   return j;

@@ -3,6 +3,7 @@ import { useIsFetching, useIsMutating, useMutation, useQuery, useQueryClient } f
 import { createPortal } from "react-dom";
 import {
   fetchShapeFactoryMap,
+  fetchShapeFactoryInputCurationAppetiteSeeds,
   fetchShapeFactoryInputCurationEffectiveSources,
   fetchShapeFactoryInputCurationState,
   fetchShapeFactoryInputCurationStills,
@@ -19,9 +20,10 @@ import {
 import { SubmitQueueErrorPanel } from "./SubmitAttemptError";
 import { AssetInspector, type InspectorAsset } from "./AssetInspector";
 import { buildQueueOverrides, FutureRunEditor } from "./factoryMapFutureRunEditor";
-import { discoveryLibraryHref } from "./discoveryDeepLink";
+import { discoveryLibraryHref, stillsHref } from "./discoveryDeepLink";
 import { MediaFullscreenModal, type MediaFullscreenPayload } from "./MediaFullscreenModal";
 import { formatIsoDateTime } from "./locale";
+import { WorkProductAppetiteStrip, normalizeAppetiteRelpath } from "./WorkProductAppetiteStrip";
 import {
   buildSourceOutputPairs,
   countPairPhases,
@@ -35,9 +37,11 @@ import {
   factoryMapIndexHref,
   factoryMapPipelineHref,
   familySlugFromShapePath,
+  parseFactoryMapFocus,
   parseFactoryMapRoute,
   pipelineFamilySlugs,
   stepFamilySlug,
+  type FactoryMapFocus,
   type FactoryMapRoute,
 } from "./factoryMapRoute";
 import {
@@ -51,7 +55,9 @@ import {
 import { queryKeys } from "./queryKeys";
 import { peekFamiliesBootstrap } from "./shapeFactorySessionCache";
 import type {
+  ShapeFactoryMapDepositPool,
   ShapeFactoryMapFamily,
+  ShapeFactoryMapInputPool,
   ShapeFactoryMapJob,
   ShapeFactoryMapMediaRef,
   ShapeFactoryMapPipeline,
@@ -290,6 +296,7 @@ function FactoryMapAccordionSection({
   summaryLine,
   activities,
   defaultOpen,
+  forceOpen,
   hint,
   onOpenChange,
   children,
@@ -299,6 +306,8 @@ function FactoryMapAccordionSection({
   summaryLine: string;
   activities?: FactoryMapActivity[];
   defaultOpen?: boolean;
+  /** When true, force the details open (e.g. #curation deep link). */
+  forceOpen?: boolean;
   hint?: string;
   onOpenChange?: (open: boolean) => void;
   children: React.ReactNode;
@@ -309,8 +318,8 @@ function FactoryMapAccordionSection({
   useLayoutEffect(() => {
     const el = detailsRef.current;
     if (!el) return;
-    if (defaultOpen) el.open = true;
-  }, [defaultOpen]);
+    if (forceOpen || defaultOpen) el.open = true;
+  }, [defaultOpen, forceOpen]);
 
   useEffect(() => {
     const el = detailsRef.current;
@@ -501,6 +510,10 @@ function MediaAssetInspector({
   );
 }
 
+function jobRowDomId(jobKey: string): string {
+  return `sfmap-job-${String(jobKey || "").replace(/[^\w.-]+/g, "_")}`;
+}
+
 function JobRow({
   job,
   selected,
@@ -513,6 +526,7 @@ function JobRow({
   return (
     <button
       type="button"
+      id={job.job_key ? jobRowDomId(job.job_key) : undefined}
       className={"sfmap-job-row" + (selected ? " sfmap-job-row--selected" : "")}
       onClick={(e) => onSelect(e.currentTarget)}
     >
@@ -583,6 +597,16 @@ function DetailPanel({
     const raw = row?.basename || row?.path || "";
     return raw ? raw.split(/[\\/]/).pop() || "" : "";
   }, [bindings, selectedPair?.gap, selectedPair?.phase]);
+
+  const appetiteRelpath = useMemo(() => {
+    const fromPair = normalizeAppetiteRelpath(output?.relpath);
+    if (fromPair) return fromPair;
+    for (const o of job?.outputs || []) {
+      const r = normalizeAppetiteRelpath(o?.relpath);
+      if (r) return r;
+    }
+    return "";
+  }, [output?.relpath, job?.outputs]);
 
   const handleRecover = useCallback(async () => {
     if (!missingSourceName) return;
@@ -744,6 +768,18 @@ function DetailPanel({
         </section>
       ) : null}
 
+      {(selectedPair == null || selectedPair.phase !== "future") ? (
+        <section className="sfmap-detail-section">
+          <h3>Appetite</h3>
+          <WorkProductAppetiteStrip
+            relpath={appetiteRelpath || null}
+            jobKey={job?.job_key}
+            familySlug={job?.family_slug || familySlug}
+            disabledHint="Appetite available once this run has an output"
+          />
+        </section>
+      ) : null}
+
       {output?.relpath && selectedPair?.phase !== "future" ? (
         <section className="sfmap-detail-section">
           <h3>Signals</h3>
@@ -817,6 +853,20 @@ function DetailPanel({
               {job.exec_sec != null ? <> · {Math.round(Number(job.exec_sec))}s</> : null}
             </div>
             <div className="sfmap-detail-kv mono">{job.job_key}</div>
+            {job.family_slug ? (
+              <div className="sfmap-detail-actions sfmap-detail-factory-links">
+                <a href={factoryMapFamilyHref(job.family_slug, { focus: "pools" })}>Pools</a>
+                <a href={factoryMapFamilyHref(job.family_slug, { focus: "curation" })}>Curate</a>
+                {job.job_key ? (
+                  <a href={factoryMapFamilyHref(job.family_slug, { focus: "job", jobKey: job.job_key })}>
+                    Job on map
+                  </a>
+                ) : null}
+                <a href={factoryMapIndexHref({ focus: "curation", familySlug: job.family_slug })}>
+                  Input curation
+                </a>
+              </div>
+            ) : null}
             {job.deposit_to ? (
               <div className="sfmap-detail-kv">
                 deposit <span className="mono">{job.deposit_to}</span>
@@ -1111,13 +1161,81 @@ function InspectorTooltipOverlay({
   );
 }
 
-function FamilyGraph({ family }: { family: ShapeFactoryMapFamily }) {
+function PoolMemberThumbStrip({
+  members,
+  emptyLabel,
+  onOpenMedia,
+}: {
+  members?: ShapeFactoryMapMediaRef[] | null;
+  emptyLabel?: string;
+  onOpenMedia?: (media: MediaFullscreenPayload) => void;
+}) {
+  const list = (members || []).filter((m) => Boolean(m?.thumb_url || m?.url));
+  if (!list.length) {
+    return <div className="sfmap-pool-thumbs sfmap-pool-thumbs--empty factory-muted">{emptyLabel || "No preview members"}</div>;
+  }
+  return (
+    <div className="sfmap-pool-thumbs" role="list">
+      {list.slice(0, 12).map((m, i) => {
+        const src = m.thumb_url || m.url || "";
+        const key = m.path || m.relpath || src || String(i);
+        return (
+          <button
+            key={key}
+            type="button"
+            className="sfmap-pool-thumb"
+            role="listitem"
+            title={m.basename || m.path || m.relpath || ""}
+            disabled={!onOpenMedia || !src}
+            onClick={() => {
+              if (!onOpenMedia || !src) return;
+              onOpenMedia({
+                kind: mediaLooksLikeVideo(m) && m.url ? "video" : "image",
+                url: m.url || m.thumb_url || src,
+                title: m.basename || "pool member",
+              });
+            }}
+          >
+            <img src={src} alt="" loading="lazy" />
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function poolPreviewCount(pool: ShapeFactoryMapInputPool | ShapeFactoryMapDepositPool): number | null {
+  if ("member_preview_count" in pool && typeof pool.member_preview_count === "number") {
+    return pool.member_preview_count;
+  }
+  if ("member_count" in pool && typeof pool.member_count === "number") return pool.member_count;
+  const n = pool.members_preview?.length;
+  return typeof n === "number" ? n : null;
+}
+
+function familyUsesSourceStill(family: ShapeFactoryMapFamily): boolean {
+  if ((family.shape?.requires || []).some((r) => String(r?.slot || "").trim() === "source_still")) {
+    return true;
+  }
+  return (family.input_pools || []).some((p) => {
+    const slot = String(p.slot || p.name || "").trim();
+    return slot === "source_still" || slot.includes("still");
+  });
+}
+
+function FamilyGraph({
+  family,
+  onOpenMedia,
+}: {
+  family: ShapeFactoryMapFamily;
+  onOpenMedia?: (media: MediaFullscreenPayload) => void;
+}) {
   const shape = family.shape || {};
   const deposit = (family.deposit_pools || [])[0];
   const io = String(shape.io_class || "").trim();
   const role = String(shape.chain_role || "").trim();
   return (
-    <div className="factory-plan sfmap-family-plan">
+    <div className="factory-plan sfmap-family-plan" id="sfmap-family-pools">
       <div className="factory-plan-header">
         <div>
           <h2>{family.family_slug}</h2>
@@ -1142,19 +1260,27 @@ function FamilyGraph({ family }: { family: ShapeFactoryMapFamily }) {
         <section className="factory-column">
           <h3>Input pools</h3>
           <div className="factory-card-list">
-            {(family.input_pools || []).map((pool) => (
-              <div key={`${pool.name}-${pool.slot}`} className="factory-card sfmap-input-pool-card">
-                <div className="factory-card-title">{pool.name || pool.slot}</div>
-                <div className="factory-card-meta">{pool.description}</div>
-                {pool.feeds_from?.length ? (
-                  <div className="factory-card-meta">
-                    from {pool.feeds_from.map((f) => f.pool_id).filter(Boolean).join(", ")}
-                  </div>
-                ) : (
-                  <div className="factory-card-meta">{pool.member_glob_count || 0} glob source(s)</div>
-                )}
-              </div>
-            ))}
+            {(family.input_pools || []).map((pool) => {
+              const count = poolPreviewCount(pool);
+              return (
+                <div key={`${pool.name}-${pool.slot}`} className="factory-card sfmap-input-pool-card">
+                  <div className="factory-card-title">{pool.name || pool.slot}</div>
+                  <div className="factory-card-meta">{pool.description}</div>
+                  {pool.feeds_from?.length ? (
+                    <div className="factory-card-meta">
+                      from {pool.feeds_from.map((f) => f.pool_id).filter(Boolean).join(", ")}
+                      {count != null ? ` · ${count} preview` : ""}
+                    </div>
+                  ) : (
+                    <div className="factory-card-meta">
+                      {pool.member_glob_count || 0} glob source(s)
+                      {count != null ? ` · ${count} preview` : ""}
+                    </div>
+                  )}
+                  <PoolMemberThumbStrip members={pool.members_preview} onOpenMedia={onOpenMedia} />
+                </div>
+              );
+            })}
             {!family.input_pools?.length ? <div className="factory-empty">No input pools</div> : null}
           </div>
         </section>
@@ -1187,9 +1313,219 @@ function FamilyGraph({ family }: { family: ShapeFactoryMapFamily }) {
         <section className="factory-column">
           <h3>{deposit?.pool_id || "Deposit pool"}</h3>
           <div className="factory-card-meta">{deposit?.description}</div>
+          {deposit?.member_count != null ? (
+            <div className="factory-card-meta">{deposit.member_count} deposited</div>
+          ) : null}
+          <PoolMemberThumbStrip
+            members={deposit?.members_preview}
+            onOpenMedia={onOpenMedia}
+            emptyLabel={deposit ? "No deposit preview" : "No deposit pool"}
+          />
         </section>
       </div>
     </div>
+  );
+}
+
+function FamilyCurateSourcesStrip({ familySlug }: { familySlug: string }) {
+  const queryClient = useQueryClient();
+  const [msg, setMsg] = useState("");
+  const [seedCollectionId, setSeedCollectionId] = useState("");
+  const stateQuery = useQuery({
+    queryKey: queryKeys.shapeFactory.inputCurationState,
+    queryFn: () => fetchShapeFactoryInputCurationState(),
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
+  });
+  const appetiteQuery = useQuery({
+    queryKey: queryKeys.shapeFactory.inputCurationAppetiteSeeds(familySlug),
+    queryFn: () => fetchShapeFactoryInputCurationAppetiteSeeds(familySlug, { limit: 24 }),
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
+  const mutateBindings = useMutation({
+    mutationFn: mutateShapeFactoryInputBindings,
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.inputCurationRoot }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.mapRoot }),
+      ]);
+    },
+  });
+  const mutateCollection = useMutation({
+    mutationFn: mutateShapeFactoryInputCollection,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.inputCurationRoot });
+    },
+  });
+
+  const collections = (stateQuery.data?.collections || []) as InputCurationCollection[];
+  const attachedIds = new Set((stateQuery.data?.bindings || {})[familySlug] || []);
+  const attached = collections.filter((c) => attachedIds.has(c.id));
+  const unattached = collections.filter((c) => !attachedIds.has(c.id));
+  const seedTarget =
+    collections.find((c) => c.id === seedCollectionId) || attached[0] || collections[0] || null;
+  const appetiteItems = appetiteQuery.data?.items || [];
+
+  useEffect(() => {
+    if (seedCollectionId) return;
+    if (attached[0]?.id) setSeedCollectionId(attached[0].id);
+    else if (collections[0]?.id) setSeedCollectionId(collections[0].id);
+  }, [attached, collections, seedCollectionId]);
+
+  const addSeedToCollection = (path: string) => {
+    if (!seedTarget) {
+      setMsg("Create or attach a collection first");
+      return;
+    }
+    void mutateCollection
+      .mutateAsync({ op: "add_item", collection_id: seedTarget.id, path })
+      .then(() => setMsg(`Added to ${seedTarget.name}`))
+      .catch((e) => setMsg(e instanceof Error ? e.message : String(e)));
+  };
+
+  return (
+    <section className="sfmap-family-curate" id="sfmap-family-curate">
+      <div className="sfmap-family-curate__head">
+        <h3 className="sfmap-family-curate__title">Curate sources</h3>
+        <div className="sfmap-family-curate__links">
+          <a href="/discovery/stills">Browse stills</a>
+          <a href={factoryMapIndexHref({ focus: "curation", familySlug })}>Open full Input curation</a>
+        </div>
+      </div>
+      <p className="factory-muted sfmap-family-curate__hint">
+        Attach collections so hourly / map merges them with this family&apos;s pool stills.
+      </p>
+      {stateQuery.isLoading ? <p className="factory-muted">Loading collections…</p> : null}
+      {stateQuery.error instanceof Error ? <p className="factory-error">{stateQuery.error.message}</p> : null}
+      {msg ? <p className="factory-muted">{msg}</p> : null}
+      <div className="sfmap-family-curate__cols">
+        <div>
+          <h4>Attached</h4>
+          <ul className="sfmap-curation-list">
+            {attached.map((c) => (
+              <li key={c.id}>
+                <span className="mono">
+                  {c.name} <span className="factory-muted">({(c.items || []).length})</span>
+                </span>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={mutateBindings.isPending}
+                  onClick={() =>
+                    void mutateBindings
+                      .mutateAsync({ op: "detach", family_slug: familySlug, collection_id: c.id })
+                      .then(() => setMsg(`Detached ${c.name}`))
+                      .catch((e) => setMsg(e instanceof Error ? e.message : String(e)))
+                  }
+                >
+                  Detach
+                </button>
+              </li>
+            ))}
+            {!attached.length && !stateQuery.isLoading ? (
+              <li className="factory-muted">None attached</li>
+            ) : null}
+          </ul>
+        </div>
+        <div>
+          <h4>Available</h4>
+          <ul className="sfmap-curation-list">
+            {unattached.slice(0, 12).map((c) => (
+              <li key={c.id}>
+                <span className="mono">
+                  {c.name} <span className="factory-muted">({(c.items || []).length})</span>
+                </span>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={mutateBindings.isPending}
+                  onClick={() =>
+                    void mutateBindings
+                      .mutateAsync({ op: "attach", family_slug: familySlug, collection_id: c.id })
+                      .then(() => setMsg(`Attached ${c.name}`))
+                      .catch((e) => setMsg(e instanceof Error ? e.message : String(e)))
+                  }
+                >
+                  Attach
+                </button>
+              </li>
+            ))}
+            {!unattached.length && !stateQuery.isLoading ? (
+              <li className="factory-muted">
+                No collections yet — create some in{" "}
+                <a href="/discovery/stills">Stills</a> or{" "}
+                <a href={factoryMapIndexHref({ focus: "curation", familySlug })}>Input curation</a>.
+              </li>
+            ) : null}
+          </ul>
+        </div>
+      </div>
+
+      <div className="sfmap-family-curate__appetite">
+        <div className="sfmap-family-curate__appetite-head">
+          <h4>Appetite seeds</h4>
+          <span className="factory-muted">
+            Source stills from jobs marked more / fast_track (facet source|both)
+          </span>
+          {collections.length ? (
+            <label className="sfmap-family-curate__seed-target">
+              Add to{" "}
+              <select
+                value={seedTarget?.id || ""}
+                onChange={(e) => setSeedCollectionId(e.target.value)}
+                aria-label="Collection for appetite seeds"
+              >
+                {collections.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                    {attachedIds.has(c.id) ? " (attached)" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+        </div>
+        {appetiteQuery.isLoading ? <p className="factory-muted">Loading appetite seeds…</p> : null}
+        {appetiteQuery.error instanceof Error ? (
+          <p className="factory-error">{appetiteQuery.error.message}</p>
+        ) : null}
+        {appetiteItems.length ? (
+          <ul className="sfmap-appetite-seed-list">
+            {appetiteItems.map((seed) => {
+              const cid = String(seed.content_id || "").trim();
+              const href = stillsHref({
+                contentId: cid || null,
+                q: seed.basename || seed.path,
+              });
+              return (
+                <li key={`${seed.path}-${seed.job_key || ""}`}>
+                  <span className="sfmap-appetite-seed__meta">
+                    <span className={`factory-pill sfmap-appetite-pill sfmap-appetite-pill--${seed.appetite || "more"}`}>
+                      {seed.appetite || "more"}
+                    </span>
+                    {seed.facet ? <span className="factory-muted">{seed.facet}</span> : null}
+                    <a href={href} className="mono" title={seed.path}>
+                      {seed.basename || seed.path}
+                    </a>
+                  </span>
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={!seedTarget || mutateCollection.isPending}
+                    onClick={() => addSeedToCollection(seed.path)}
+                  >
+                    Add
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        ) : !appetiteQuery.isLoading && !appetiteQuery.error ? (
+          <p className="factory-muted">No high-appetite source stills for this family yet.</p>
+        ) : null}
+      </div>
+    </section>
   );
 }
 
@@ -1740,13 +2076,21 @@ function PromotionScoreboard({
   );
 }
 
-function InputCurationPanel({ families }: { families: ShapeFactoryMapFamily[] }) {
+function InputCurationPanel({
+  families,
+  forceOpen,
+  preferredFamilySlug,
+}: {
+  families: ShapeFactoryMapFamily[];
+  forceOpen?: boolean;
+  preferredFamilySlug?: string | null;
+}) {
   const queryClient = useQueryClient();
-  const [panelOpen, setPanelOpen] = useState(false);
+  const [panelOpen, setPanelOpen] = useState(Boolean(forceOpen));
   const [stillQ, setStillQ] = useState("");
   const [selectedCollectionId, setSelectedCollectionId] = useState("");
   const [newCollectionName, setNewCollectionName] = useState("");
-  const [selectedFamilySlug, setSelectedFamilySlug] = useState("");
+  const [selectedFamilySlug, setSelectedFamilySlug] = useState(String(preferredFamilySlug || ""));
   const [msg, setMsg] = useState("");
 
   const sourceStillFamilies = useMemo(
@@ -1762,8 +2106,17 @@ function InputCurationPanel({ families }: { families: ShapeFactoryMapFamily[] })
   );
 
   useEffect(() => {
+    if (forceOpen) setPanelOpen(true);
+  }, [forceOpen]);
+
+  useEffect(() => {
+    const pref = String(preferredFamilySlug || "").trim();
+    if (pref && sourceStillFamilies.includes(pref)) {
+      setSelectedFamilySlug(pref);
+      return;
+    }
     if (!selectedFamilySlug && sourceStillFamilies.length > 0) setSelectedFamilySlug(sourceStillFamilies[0]);
-  }, [selectedFamilySlug, sourceStillFamilies]);
+  }, [preferredFamilySlug, selectedFamilySlug, sourceStillFamilies]);
 
   const stateQuery = useQuery({
     queryKey: queryKeys.shapeFactory.inputCurationState,
@@ -1835,6 +2188,7 @@ function InputCurationPanel({ families }: { families: ShapeFactoryMapFamily[] })
       title="Input curation"
       summaryLine={summaryLine}
       defaultOpen={false}
+      forceOpen={forceOpen}
       onOpenChange={setPanelOpen}
       hint="Collections attach per family; source selection merges pool stills with attached collections and de-dupes by path/content id."
     >
@@ -2019,6 +2373,8 @@ function FactoryMapIndexView({
   onQuickToday,
   onQuickLongTerm,
   onOpenPromotionEditor,
+  curationForceOpen,
+  curationPreferredFamily,
 }: {
   data: ShapeFactoryMapResponse;
   families: ShapeFactoryMapFamily[];
@@ -2036,11 +2392,20 @@ function FactoryMapIndexView({
   onQuickToday?: (familySlug: string) => void;
   onQuickLongTerm?: (familySlug: string) => void;
   onOpenPromotionEditor?: (familySlug: string) => void;
+  curationForceOpen?: boolean;
+  curationPreferredFamily?: string | null;
 }) {
   const summary = data.jobs?.summary || {};
   const queue = data.queue;
   const hourly = data.hourly?.next_sample;
   const allJobs = data.jobs?.items || [];
+
+  useEffect(() => {
+    if (!curationForceOpen) return;
+    window.requestAnimationFrame(() => {
+      document.getElementById("sfmap-input-curation")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }, [curationForceOpen]);
 
   const jobCountsByFamily = useMemo(() => {
     const out: Record<string, Record<string, number>> = {};
@@ -2122,7 +2487,11 @@ function FactoryMapIndexView({
       ) : null}
 
       <PromotionScoreboard entries={promotionEntries || []} />
-      <InputCurationPanel families={families} />
+      <InputCurationPanel
+        families={families}
+        forceOpen={curationForceOpen}
+        preferredFamilySlug={curationPreferredFamily}
+      />
 
       <FactoryMapAccordionSection
         sectionId="sfmap-families"
@@ -2261,17 +2630,20 @@ function FactoryMapFamilyView({
   family,
   families,
   onReload,
+  mapFocus,
 }: {
   data: ShapeFactoryMapResponse;
   family: ShapeFactoryMapFamily;
   families: ShapeFactoryMapFamily[];
   onReload: () => void;
+  mapFocus?: FactoryMapFocus | null;
 }) {
   const [selectedPairKey, setSelectedPairKey] = useState<string | null>(null);
   const [selectedJobKey, setSelectedJobKey] = useState<string | null>(null);
   const [inspectorAnchor, setInspectorAnchor] = useState<HTMLElement | null>(null);
   const [inspectorScrollPad, setInspectorScrollPad] = useState(0);
   const [mediaModal, setMediaModal] = useState<MediaFullscreenPayload | null>(null);
+  const focusAppliedRef = useRef<string>("");
 
   const openMedia = useCallback((media: MediaFullscreenPayload) => {
     setMediaModal(media);
@@ -2400,12 +2772,56 @@ function FactoryMapFamilyView({
     [closeInspector, openPairInspector, pairs, selectedJobKey],
   );
 
+  useEffect(() => {
+    if (!mapFocus) return;
+    const token =
+      mapFocus.kind === "job"
+        ? `job:${mapFocus.jobKey}`
+        : mapFocus.kind === "curation"
+          ? `curation:${mapFocus.familySlug || ""}`
+          : mapFocus.kind;
+    const appliedKey = `${family.family_slug}:${token}`;
+    if (focusAppliedRef.current === appliedKey) return;
+    focusAppliedRef.current = appliedKey;
+
+    const scrollTo = (id: string) => {
+      window.requestAnimationFrame(() => {
+        document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    };
+
+    if (mapFocus.kind === "pools") {
+      scrollTo("sfmap-family-pools");
+      return;
+    }
+    if (mapFocus.kind === "curation") {
+      scrollTo("sfmap-family-curate");
+      return;
+    }
+    if (mapFocus.kind === "job") {
+      const key = mapFocus.jobKey;
+      setSelectedJobKey(key);
+      const pair = pairs.find((p) => p.jobKey === key);
+      if (pair) setSelectedPairKey(pair.pairKey);
+      window.requestAnimationFrame(() => {
+        const el = document.getElementById(jobRowDomId(key));
+        if (el instanceof HTMLElement) {
+          el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+          setInspectorAnchor(el);
+        }
+      });
+    }
+  }, [family.family_slug, mapFocus, pairs]);
+
+  const showCurate = familyUsesSourceStill(family);
+
   return (
     <>
       <FactoryMapFamilyNav families={families} activeSlug={family.family_slug} />
 
       <div className="sfmap-family-block">
-        <FamilyGraph family={family} />
+        <FamilyGraph family={family} onOpenMedia={openMedia} />
+        {showCurate ? <FamilyCurateSourcesStrip familySlug={family.family_slug} /> : null}
         <section className="sfmap-pool-members sfmap-pair-section">
           <h3 className="sfmap-pool-members__title">
             Source → Output
@@ -2529,12 +2945,21 @@ export function DiscoveryFactoryMapApp() {
   const shapeFactoryFetchCount = useIsFetching({ queryKey: queryKeys.shapeFactory.root });
   const shapeFactoryMutationCount = useIsMutating();
   const [route, setRoute] = useState<FactoryMapRoute>(() => parseFactoryMapRoute());
+  const [mapFocus, setMapFocus] = useState<FactoryMapFocus | null>(() => parseFactoryMapFocus());
   const warmFamilies = useMemo(() => warmFamiliesFromBootstrap(), []);
 
   useEffect(() => {
-    const onPop = () => setRoute(parseFactoryMapRoute());
+    const onPop = () => {
+      setRoute(parseFactoryMapRoute());
+      setMapFocus(parseFactoryMapFocus());
+    };
+    const onHash = () => setMapFocus(parseFactoryMapFocus());
     window.addEventListener("popstate", onPop);
-    return () => window.removeEventListener("popstate", onPop);
+    window.addEventListener("hashchange", onHash);
+    return () => {
+      window.removeEventListener("popstate", onPop);
+      window.removeEventListener("hashchange", onHash);
+    };
   }, []);
 
   const wantsSlimFirst = route.view === "index" || route.view === "pipeline";
@@ -2849,6 +3274,10 @@ export function DiscoveryFactoryMapApp() {
               onQuickToday={onQuickToday}
               onQuickLongTerm={onQuickLongTerm}
               onOpenPromotionEditor={openPromotionEditor}
+              curationForceOpen={mapFocus?.kind === "curation"}
+              curationPreferredFamily={
+                mapFocus?.kind === "curation" ? mapFocus.familySlug || null : null
+              }
             />
           ) : route.view === "pipeline" ? (
             activePipeline ? (
@@ -2869,7 +3298,13 @@ export function DiscoveryFactoryMapApp() {
               </div>
             )
           ) : activeFamily ? (
-            <FactoryMapFamilyView data={data} family={activeFamily} families={families} onReload={invalidateMap} />
+            <FactoryMapFamilyView
+              data={data}
+              family={activeFamily}
+              families={families}
+              onReload={invalidateMap}
+              mapFocus={mapFocus}
+            />
           ) : (
             <div className="sfmap-not-found">
               <p>

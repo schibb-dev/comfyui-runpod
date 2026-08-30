@@ -17,7 +17,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 from http_retry import http_json_with_retry
 
 try:
@@ -610,6 +610,18 @@ def _resolve_dir_paths(
     return []
 
 
+def _path_mtime(path: Path) -> float:
+    try:
+        return float(path.stat().st_mtime)
+    except OSError:
+        return 0.0
+
+
+def _sort_paths_newest_first(paths: Sequence[Path]) -> List[Path]:
+    """Newest mtime first (path string as stable tie-break)."""
+    return sorted(list(paths), key=lambda p: (_path_mtime(p), str(p)), reverse=True)
+
+
 def _pool_slot_paths(
     pool_def: Dict[str, Any],
     *,
@@ -745,7 +757,10 @@ def _projected_pairs_for_family(
             continue
         paths = _pool_slot_paths(pool_def, output_root=output_root, data_root=data_root)
         if paths:
-            pool_paths[slot] = paths
+            # Alphabetical globs put old content-hash names first; futures then look stale.
+            # Newest-first + per-slot cap keeps product scan on recent candidates.
+            per_slot_cap = max(limit, 32)
+            pool_paths[slot] = _sort_paths_newest_first(paths)[:per_slot_cap]
 
     if len(pool_paths) < 2:
         return []

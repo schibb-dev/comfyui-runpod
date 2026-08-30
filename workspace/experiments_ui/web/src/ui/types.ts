@@ -2301,6 +2301,29 @@ export type InputCurationEffectiveSourcesResponse = {
   detail?: string;
 };
 
+export type InputCurationAppetiteSeedItem = {
+  path: string;
+  basename?: string;
+  content_id?: string | null;
+  appetite?: Appetite | string | null;
+  facet?: AppetiteFacet | string | null;
+  updated_at?: string | null;
+  job_key?: string | null;
+  output_key?: string | null;
+};
+
+export type InputCurationAppetiteSeedsResponse = {
+  ok: boolean;
+  family_slug?: string;
+  count?: number;
+  total?: number;
+  items?: InputCurationAppetiteSeedItem[];
+  min_states?: string[];
+  facets?: string[];
+  error?: string;
+  detail?: string;
+};
+
 export type StillTagRun = {
   run_id: string;
   status: string;

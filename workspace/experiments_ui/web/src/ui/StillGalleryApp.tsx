@@ -71,6 +71,9 @@ export function StillGalleryApp() {
   const [qDebounced, setQDebounced] = useState(q);
   const [tagFilter, setTagFilter] = useState("");
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  /** Paths in the multi-select set (includes focus when non-empty). */
+  const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
+  const selectAnchorRef = useRef<string | null>(null);
   const [collectionId, setCollectionId] = useState<string>("");
   const [newCollectionName, setNewCollectionName] = useState("");
   const [tagDraft, setTagDraft] = useState("");
@@ -156,6 +159,107 @@ export function StillGalleryApp() {
     (selectedPath ? items.find((it) => stillMediaRelpath(it) === selectedPath) : null) ||
     null;
 
+  const selectedSet = useMemo(() => new Set(selectedPaths), [selectedPaths]);
+  const selectedItems = useMemo(
+    () => items.filter((it) => selectedSet.has(it.path)),
+    [items, selectedSet],
+  );
+  const multiCount = selectedPaths.length;
+  const selectedContentIds = useMemo(() => {
+    const ids: string[] = [];
+    const seen = new Set<string>();
+    for (const it of selectedItems.length ? selectedItems : selected ? [selected] : []) {
+      const cid = String(it.content_id || "").trim();
+      if (!cid || seen.has(cid)) continue;
+      seen.add(cid);
+      ids.push(cid);
+    }
+    return ids;
+  }, [selected, selectedItems]);
+
+  const focusPath = (path: string, opts?: { replaceMulti?: boolean }) => {
+    setSelectedPath(path);
+    selectAnchorRef.current = path;
+    if (opts?.replaceMulti !== false) setSelectedPaths([path]);
+  };
+
+  const onTileClick = (it: InputCurationStillItem, e: React.MouseEvent) => {
+    const path = it.path;
+    const meta = e.metaKey || e.ctrlKey;
+    if (e.shiftKey && selectAnchorRef.current) {
+      const anchor = selectAnchorRef.current;
+      const i0 = items.findIndex((x) => x.path === anchor);
+      const i1 = items.findIndex((x) => x.path === path);
+      if (i0 >= 0 && i1 >= 0) {
+        const lo = Math.min(i0, i1);
+        const hi = Math.max(i0, i1);
+        const range = items.slice(lo, hi + 1).map((x) => x.path);
+        if (meta) {
+          const next = new Set(selectedPaths);
+          for (const p of range) next.add(p);
+          setSelectedPaths([...next]);
+        } else {
+          setSelectedPaths(range);
+        }
+        setSelectedPath(path);
+        return;
+      }
+    }
+    if (meta) {
+      setSelectedPaths((prev) => {
+        const next = new Set(prev);
+        if (next.has(path)) next.delete(path);
+        else next.add(path);
+        const arr = [...next];
+        if (!arr.length) {
+          setSelectedPath(null);
+          return [];
+        }
+        setSelectedPath(path);
+        selectAnchorRef.current = path;
+        return arr;
+      });
+      return;
+    }
+    focusPath(path);
+  };
+
+  const clearSelection = () => {
+    setSelectedPaths([]);
+    setSelectedPath(null);
+    selectAnchorRef.current = null;
+  };
+
+  const addSelectionToCollection = async () => {
+    if (!selectedCollection) return;
+    const paths = (selectedItems.length ? selectedItems : selected ? [selected] : [])
+      .map((it) => it.path)
+      .filter(Boolean);
+    if (!paths.length) return;
+    let added = 0;
+    for (const path of paths) {
+      await collectionMut.mutateAsync({
+        op: "add_item",
+        collection_id: selectedCollection.id,
+        path,
+      });
+      added += 1;
+    }
+    setMsg(`Added ${added} to ${selectedCollection.name}`);
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (submitModalIntent) return;
+      if (!selectedPaths.length && !selectedPath) return;
+      e.preventDefault();
+      clearSelection();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedPath, selectedPaths.length, submitModalIntent]);
+
   useEffect(() => {
     if (selected) setTagDraft((selected.editorial_tags || selected.tags || []).join(", "));
     else setTagDraft("");
@@ -179,7 +283,7 @@ export function StillGalleryApp() {
       return;
     }
     deepLinkDone.current = true;
-    setSelectedPath(match.path);
+    focusPath(match.path);
     setDeepLinkHitPath(match.path);
     window.requestAnimationFrame(() => {
       const el = document.getElementById(stillTileDomId(match));
@@ -553,6 +657,16 @@ export function StillGalleryApp() {
           aria-label="Filter by tag"
         />
         <span className="factory-muted still-gallery__count">{totalLabel}</span>
+        {multiCount > 0 ? (
+          <span className="still-gallery__multi-status" aria-live="polite">
+            {multiCount} selected
+            <button type="button" className="drt-btn" onClick={clearSelection} title="Clear selection (Esc)">
+              Clear
+            </button>
+          </span>
+        ) : (
+          <span className="factory-muted still-gallery__multi-hint">Ctrl/⌘ click · Shift range</span>
+        )}
       </div>
 
       <div className="still-gallery__body">
@@ -561,9 +675,10 @@ export function StillGalleryApp() {
           {stillsQuery.error instanceof Error ? (
             <p className="factory-error">{stillsQuery.error.message}</p>
           ) : null}
-          <div className="still-gallery__grid" role="list">
+          <div className="still-gallery__grid" role="listbox" aria-multiselectable="true" aria-label="Stills">
             {items.map((it) => {
               const active = selected?.path === it.path;
+              const checked = selectedSet.has(it.path);
               const deepHit = deepLinkHitPath === it.path;
               const src = it.thumb_url || it.url;
               return (
@@ -571,15 +686,18 @@ export function StillGalleryApp() {
                   key={it.path}
                   id={stillTileDomId(it)}
                   type="button"
-                  role="listitem"
+                  role="option"
+                  aria-selected={checked || active}
                   className={
                     "still-gallery__tile" +
                     (active ? " still-gallery__tile--active" : "") +
+                    (checked ? " still-gallery__tile--checked" : "") +
                     (deepHit ? " still-gallery__tile--deep-link" : "")
                   }
-                  onClick={() => setSelectedPath(it.path)}
+                  onClick={(e) => onTileClick(it, e)}
                   title={it.basename || it.path}
                 >
+                  {checked ? <span className="still-gallery__check" aria-hidden="true" /> : null}
                   {src ? (
                     <img className="still-gallery__thumb" src={src} alt="" loading="lazy" />
                   ) : (
@@ -609,9 +727,14 @@ export function StillGalleryApp() {
 
         <aside className="still-gallery__side" aria-label="Still launch pad">
           <section className="still-gallery__panel">
-            <h2>Selected</h2>
+            <h2>{multiCount > 1 ? `Selected (${multiCount})` : "Selected"}</h2>
             {selected ? (
               <>
+                {multiCount > 1 ? (
+                  <p className="factory-muted still-gallery__multi-lead">
+                    Focus for launch · bulk tag / collection use the whole selection
+                  </p>
+                ) : null}
                 {selected.url || selected.thumb_url ? (
                   <img
                     className="still-gallery__preview"
@@ -666,30 +789,35 @@ export function StillGalleryApp() {
                   <button
                     type="button"
                     className="drt-btn"
-                    disabled={!selected.content_id || tagRunMut.isPending}
+                    disabled={!selectedContentIds.length || tagRunMut.isPending}
+                    title={
+                      selectedContentIds.length > 1
+                        ? `Queue tags for ${selectedContentIds.length} stills`
+                        : "Queue tag for focused still"
+                    }
                     onClick={() =>
                       void tagRunMut
                         .mutateAsync({
-                          content_ids: [String(selected.content_id)],
+                          content_ids: selectedContentIds,
                           force: true,
-                          limit: 1,
+                          limit: Math.max(1, selectedContentIds.length),
                         })
                         .catch((e) => setMsg(e instanceof Error ? e.message : String(e)))
                     }
                   >
-                    Queue tag
+                    Queue tag{selectedContentIds.length > 1 ? ` (${selectedContentIds.length})` : ""}
                   </button>
                   <button
                     type="button"
                     className="drt-btn"
-                    disabled={!selected.content_id || tagRunMut.isPending || drainMut.isPending}
+                    disabled={!selectedContentIds.length || tagRunMut.isPending || drainMut.isPending}
                     title="Enqueue and drain immediately (smoke)"
                     onClick={() =>
                       void tagRunMut
                         .mutateAsync({
-                          content_ids: [String(selected.content_id)],
+                          content_ids: selectedContentIds,
                           force: true,
-                          limit: 1,
+                          limit: Math.max(1, selectedContentIds.length),
                           dry_run: true,
                           drain_now: true,
                         })
@@ -785,19 +913,19 @@ export function StillGalleryApp() {
             <button
               type="button"
               className="drt-btn still-gallery__cta"
-              disabled={!selected || !selectedCollection || collectionMut.isPending}
+              disabled={
+                (!selected && !selectedItems.length) || !selectedCollection || collectionMut.isPending
+              }
               onClick={() =>
-                void collectionMut
-                  .mutateAsync({
-                    op: "add_item",
-                    collection_id: selectedCollection?.id,
-                    path: selected?.path,
-                  })
-                  .then(() => setMsg(`Added to ${selectedCollection?.name}`))
-                  .catch((e) => setMsg(e instanceof Error ? e.message : String(e)))
+                void addSelectionToCollection().catch((e) =>
+                  setMsg(e instanceof Error ? e.message : String(e)),
+                )
               }
             >
               Add selected to collection
+              {Math.max(multiCount, selected ? 1 : 0) > 1
+                ? ` (${Math.max(multiCount, 1)})`
+                : ""}
             </button>
             {selectedCollection ? (
               <ul className="still-gallery__collection-list">

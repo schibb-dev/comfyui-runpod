@@ -775,7 +775,6 @@ def _discovery_library_ensure_payload(cfg: "ServerConfig", body: Dict[str, Any])
     return payload
 
 
-
 def _load_discovery_index_disk(path: Path) -> Optional[Dict[str, Any]]:
     if not path.exists():
         return None
@@ -3906,6 +3905,36 @@ def _shape_factory_input_curation_effective_sources_payload(cfg: ServerConfig, q
         "attached_collection_ids": merged.get("attached_collection_ids") or [],
         "items": [{"path": p, "basename": Path(p).name} for p in members[:lim]],
     }
+
+
+def _shape_factory_input_curation_appetite_seeds_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
+    """Source stills credited by high appetite (more/fast_track, facet source|both) on family jobs."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_input_curation import list_appetite_source_seeds  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root, _load_jobs  # type: ignore
+
+    family_slug = str((q.get("family_slug") or [""])[0] or "").strip()
+    if not family_slug:
+        raise ValueError("missing_family_slug")
+    lim = 40
+    for raw in q.get("limit", []):
+        n = _safe_int(raw)
+        if n is not None:
+            lim = max(1, min(200, int(n)))
+            break
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    jobs_root = data_root / "shape_factory" / "jobs" / family_slug
+    jobs = _load_jobs(jobs_root) if jobs_root.is_dir() else []
+    appetite_doc = _discovery_load_appetite_index(cfg) or {}
+    return list_appetite_source_seeds(
+        family_slug=family_slug,
+        appetite_doc=appetite_doc if isinstance(appetite_doc, dict) else {},
+        jobs=jobs,
+        limit=lim,
+    )
 
 
 def _shape_factory_template_promotions_set_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -10208,6 +10237,17 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return _json_response(
                     self, 500, {"ok": False, "error": "input_curation_effective_sources_failed", "detail": str(e)}
+                )
+
+        if path == "/api/shape-factory/input-curation/appetite-seeds":
+            try:
+                payload = _shape_factory_input_curation_appetite_seeds_payload(cfg, q)
+                return _json_response(self, 200, payload)
+            except ValueError as e:
+                return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+            except Exception as e:
+                return _json_response(
+                    self, 500, {"ok": False, "error": "input_curation_appetite_seeds_failed", "detail": str(e)}
                 )
 
         if path == "/api/vision/slice-captions":

@@ -567,6 +567,147 @@ def list_catalog_stills(
     }
 
 
+def _appetite_rank(state: str) -> float:
+    # Mirror shape_factory_ratings.APPETITE_SCORE without a hard import cycle.
+    return {"less": 1.0, "neutral": 2.5, "more": 4.0, "fast_track": 5.0}.get(str(state or "").strip(), 0.0)
+
+
+def _job_output_path_keys(job: Dict[str, Any]) -> List[str]:
+    keys: List[str] = []
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    outs = submit.get("outputs") if isinstance(submit.get("outputs"), list) else []
+    if not outs and isinstance(job.get("outputs"), list):
+        outs = job.get("outputs") or []
+    for o in outs:
+        if isinstance(o, dict):
+            for k in ("relpath", "path", "basename"):
+                v = str(o.get(k) or "").strip().replace("\\", "/")
+                if v:
+                    keys.append(v)
+                    keys.append(Path(v).name)
+        elif isinstance(o, str) and o.strip():
+            keys.append(o.strip().replace("\\", "/"))
+            keys.append(Path(o.strip()).name)
+    deposit = str(job.get("deposit_path") or job.get("output_path") or "").strip().replace("\\", "/")
+    if deposit:
+        keys.append(deposit)
+        keys.append(Path(deposit).name)
+    return _dedupe_strs(keys)
+
+
+def _job_source_still_path(job: Dict[str, Any]) -> str:
+    bindings = job.get("bindings") if isinstance(job.get("bindings"), dict) else {}
+    for slot in ("source_still", "identity_anchor"):
+        row = bindings.get(slot)
+        if isinstance(row, dict):
+            p = str(row.get("path") or "").strip()
+            if p:
+                return p
+        elif isinstance(row, str) and row.strip():
+            return row.strip()
+    return ""
+
+
+def list_appetite_source_seeds(
+    *,
+    family_slug: str,
+    appetite_doc: Dict[str, Any],
+    jobs: Sequence[Dict[str, Any]],
+    limit: int = 40,
+    min_states: Sequence[str] = ("more", "fast_track"),
+    facets: Sequence[str] = ("source", "both"),
+) -> Dict[str, Any]:
+    """
+    Suggest source_still paths for curation from high-appetite family outputs.
+
+    Appetite is a "do more WITH this" signal on outputs. Facet ``source`` / ``both``
+    credits the material — those stills are the ones worth attaching to pools.
+    """
+    wanted_states = {str(s).strip() for s in min_states if str(s).strip()}
+    wanted_facets = {str(f).strip() for f in facets if str(f).strip()} or {"source", "both"}
+    table = appetite_doc.get("by_output_relpath") if isinstance(appetite_doc, dict) else {}
+    if not isinstance(table, dict):
+        table = {}
+
+    # Index appetite rows by basename + full key for cheap job matching.
+    appetite_by_key: Dict[str, Dict[str, Any]] = {}
+    for key, row in table.items():
+        if not isinstance(row, dict):
+            continue
+        state = str(row.get("appetite") or "").strip()
+        if state not in wanted_states:
+            continue
+        facet = str(row.get("facet") or row.get("appetite_facet") or "both").strip() or "both"
+        if facet not in wanted_facets:
+            continue
+        k = str(key or "").strip().replace("\\", "/")
+        if not k:
+            continue
+        packed = {"appetite": state, "facet": facet, "updated_at": row.get("updated_at"), "key": k}
+        appetite_by_key[k] = packed
+        appetite_by_key[Path(k).name] = packed
+
+    slug = str(family_slug or "").strip()
+    seeds: List[Dict[str, Any]] = []
+    seen_still: set[str] = set()
+    seen_content: set[str] = set()
+
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        if slug and str(job.get("family_slug") or "").strip() != slug:
+            continue
+        still = _job_source_still_path(job)
+        if not still:
+            continue
+        matched: Optional[Dict[str, Any]] = None
+        for ok in _job_output_path_keys(job):
+            hit = appetite_by_key.get(ok) or appetite_by_key.get(Path(ok).name)
+            if hit:
+                matched = hit
+                break
+        if not matched:
+            continue
+        still_key = still
+        cid = _extract_content_id(still)
+        if still_key in seen_still or (cid and cid in seen_content):
+            continue
+        seen_still.add(still_key)
+        if cid:
+            seen_content.add(cid)
+        seeds.append(
+            {
+                "path": still,
+                "basename": Path(still).name,
+                "content_id": cid,
+                "appetite": matched.get("appetite"),
+                "facet": matched.get("facet"),
+                "updated_at": matched.get("updated_at"),
+                "job_key": job.get("job_key"),
+                "output_key": matched.get("key"),
+            }
+        )
+
+    seeds.sort(
+        key=lambda s: (
+            _appetite_rank(str(s.get("appetite") or "")),
+            str(s.get("updated_at") or ""),
+        ),
+        reverse=True,
+    )
+    lim = max(1, min(200, int(limit)))
+    page = seeds[:lim]
+    return {
+        "ok": True,
+        "family_slug": slug,
+        "count": len(page),
+        "total": len(seeds),
+        "items": page,
+        "min_states": sorted(wanted_states),
+        "facets": sorted(wanted_facets),
+    }
+
+
 def choose_writable_path(primary: Path, fallbacks: Sequence[Path]) -> Path:
     candidates = [primary, *list(fallbacks or [])]
     for cand in candidates:

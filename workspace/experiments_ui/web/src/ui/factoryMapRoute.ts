@@ -3,6 +3,17 @@ export type FactoryMapRoute =
   | { view: "family"; familySlug: string }
   | { view: "pipeline"; pipelineId: string };
 
+/** Hash focus on factory-map pages (#pools / #curation[=slug] / #job=key). */
+export type FactoryMapFocus =
+  | { kind: "pools" }
+  | { kind: "curation"; familySlug?: string }
+  | { kind: "job"; jobKey: string };
+
+export type FactoryMapFamilyFocusOpts = {
+  focus?: "pools" | "curation" | "job";
+  jobKey?: string;
+};
+
 const PREFIX = "/discovery/factory-map";
 const PIPELINE_PREFIX = `${PREFIX}/pipeline/`;
 
@@ -20,12 +31,41 @@ export function parseFactoryMapRoute(pathname: string = window.location.pathname
   return { view: "index" };
 }
 
-export function factoryMapIndexHref(): string {
+export function parseFactoryMapFocus(hash: string = typeof window !== "undefined" ? window.location.hash : ""): FactoryMapFocus | null {
+  const raw = (hash || "").replace(/^#/, "").trim();
+  if (!raw) return null;
+  // Ignore unrelated hashes (e.g. still=…)
+  if (raw === "pools") return { kind: "pools" };
+  if (raw === "curation") return { kind: "curation" };
+  if (raw.startsWith("curation=")) {
+    const familySlug = decodeURIComponent(raw.slice("curation=".length)).trim();
+    return familySlug ? { kind: "curation", familySlug } : { kind: "curation" };
+  }
+  if (raw.startsWith("job=")) {
+    const jobKey = decodeURIComponent(raw.slice("job=".length)).trim();
+    return jobKey ? { kind: "job", jobKey } : null;
+  }
+  return null;
+}
+
+export function factoryMapIndexHref(opts?: { focus?: "curation"; familySlug?: string }): string {
+  if (opts?.focus === "curation") {
+    const slug = String(opts.familySlug || "").trim();
+    return slug ? `${PREFIX}#curation=${encodeURIComponent(slug)}` : `${PREFIX}#curation`;
+  }
   return PREFIX;
 }
 
-export function factoryMapFamilyHref(familySlug: string): string {
-  return `${PREFIX}/${encodeURIComponent(familySlug)}`;
+export function factoryMapFamilyHref(familySlug: string, opts?: FactoryMapFamilyFocusOpts): string {
+  const base = `${PREFIX}/${encodeURIComponent(familySlug)}`;
+  if (!opts?.focus) return base;
+  if (opts.focus === "job") {
+    const key = String(opts.jobKey || "").trim();
+    return key ? `${base}#job=${encodeURIComponent(key)}` : base;
+  }
+  if (opts.focus === "pools") return `${base}#pools`;
+  if (opts.focus === "curation") return `${base}#curation`;
+  return base;
 }
 
 export function factoryMapPipelineHref(pipelineId: string): string {

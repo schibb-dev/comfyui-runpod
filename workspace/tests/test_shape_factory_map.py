@@ -357,6 +357,53 @@ class ShapeFactoryMapTests(unittest.TestCase):
             self.assertTrue(any(p["phase"] == "future" for p in projected))
             self.assertGreaterEqual(len(projected), 2)
 
+    def test_projected_pairs_prefer_newest_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            data = root / ".data"
+            pools_dir = data / "pools" / "DEMO"
+            pools_dir.mkdir(parents=True)
+            prompts = pools_dir / "prompts"
+            prompts.mkdir()
+            (prompts / "only.json").write_text("{}", encoding="utf-8")
+            out_root = root / "output"
+            og = out_root / "output" / "og"
+            og.mkdir(parents=True)
+            # Alphabetical: aaa before zzz — without mtime sort, futures stick on aaa.
+            old = og / "aaa_old.mp4"
+            new = og / "zzz_new.mp4"
+            old.write_bytes(b"old")
+            new.write_bytes(b"new")
+            import os
+            import time
+
+            now = time.time()
+            os.utime(old, (now - 10_000, now - 10_000))
+            os.utime(new, (now, now))
+            pools_yaml = pools_dir / "pools.yaml"
+            pools_yaml.write_text(
+                "pools:\n"
+                "  source_video:\n"
+                "    slot: source_video\n"
+                f"    members:\n      - glob: {old}\n      - glob: {new}\n"
+                "  prompt_profile:\n"
+                "    slot: prompt_profile\n"
+                f"    members:\n      - dir: {prompts}\n        ext: [\".json\"]\n",
+                encoding="utf-8",
+            )
+            projected = _projected_pairs_for_family(
+                pools_yaml,
+                {"requires": [{"slot": "source_video"}, {"slot": "prompt_profile"}]},
+                [],
+                output_root=out_root,
+                data_root=data,
+                file_exists=lambda rel: (out_root / rel).is_file(),
+                limit=2,
+            )
+            self.assertGreaterEqual(len(projected), 1)
+            first_src = projected[0]["bindings"]["source_video"]["path"]
+            self.assertTrue(str(first_src).endswith("zzz_new.mp4"), first_src)
+
     def test_build_from_fixture(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

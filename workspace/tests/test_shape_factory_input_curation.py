@@ -146,6 +146,41 @@ class TestShapeFactoryInputCuration(unittest.TestCase):
         self.assertNotIn(only_copy.name, basenames)
         self.assertGreaterEqual(int(payload.get("skipped_download_copies") or 0), 1)
 
+    def test_list_appetite_source_seeds_credits_source_facet(self) -> None:
+        still = f"/tmp/SSS{'c' * 64}.png"
+        jobs = [
+            {
+                "family_slug": "FAM",
+                "job_key": "j1",
+                "bindings": {"source_still": {"path": still}},
+                "submit": {"outputs": [{"relpath": "og/out_a.mp4"}]},
+            },
+            {
+                "family_slug": "FAM",
+                "job_key": "j2",
+                "bindings": {"source_still": {"path": "/tmp/other.png"}},
+                "submit": {"outputs": [{"relpath": "og/out_b.mp4"}]},
+            },
+        ]
+        appetite_doc = {
+            "by_output_relpath": {
+                "og/out_a.mp4": {"appetite": "fast_track", "facet": "source", "updated_at": "2026-08-29T12:00:00Z"},
+                "og/out_b.mp4": {"appetite": "more", "facet": "result", "updated_at": "2026-08-29T13:00:00Z"},
+            }
+        }
+        payload = curation.list_appetite_source_seeds(
+            family_slug="FAM",
+            appetite_doc=appetite_doc,
+            jobs=jobs,
+            limit=10,
+        )
+        self.assertTrue(payload.get("ok"))
+        items = payload.get("items") or []
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["path"], still)
+        self.assertEqual(items[0]["appetite"], "fast_track")
+        self.assertEqual(items[0]["content_id"], "c" * 64)
+
 
 if __name__ == "__main__":
     unittest.main()

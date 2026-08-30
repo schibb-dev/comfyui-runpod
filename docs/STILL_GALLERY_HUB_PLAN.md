@@ -1,8 +1,10 @@
 # Still image gallery — launch hub
 
-**Status:** G0–G1 done; **G2 launch pad landing** (2026-08-29). G3 collections→pools
-next. Absorbs and widens the older “input still browser + collections-as-pools”
-note.
+**Status:** G0–G1 done; **G2 launch pad landing** (2026-08-29). **G3 map-side
+half landing** (family-page Curate sources strip + collection attach, appetite
+seed suggestions, job→Factory Map `#pools` / `#curation` / `#job=` links).
+Gallery collections→pools registration for hourly still pending. Absorbs and
+widens the older “input still browser + collections-as-pools” note.
 
 **Related:** [`SUBMIT_WORKFLOW.md`](./SUBMIT_WORKFLOW.md) (doors → `/submit`),
 [`.data/WORKFLOW_FACTORY_NEXT.md`](../.data/WORKFLOW_FACTORY_NEXT.md) (collections),
@@ -83,6 +85,12 @@ next VI2V Extend). Tag actions stay secondary. No second compose UI.
 
 Named collections register as pool members for hourly/I2V (existing next-step).
 Gallery “Add to collection” is the human entry.
+
+**Map-side (2026-08-29):** Factory Map family pages with `source_still` show a
+**Curate sources** strip (attach/detach collections, deep-link to full Input
+curation + Stills). High-appetite outputs (`more` / `fast_track`, facet
+`source`|`both`) surface as **Appetite seeds** to add into collections.
+Workbench family badges and “On map” link to `#pools` / `#job=<key>`.
 
 ### G4 — Enrichment *(partial)*
 
