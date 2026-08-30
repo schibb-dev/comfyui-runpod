@@ -12,7 +12,7 @@ This document **organizes** scattered design notes, running systems, and sketche
 | **Corral** | When something repeats or blocks you, **name it**, assign it to **one program**, set **one next action**. |
 | **Execute** | Pick **at most one primary spike** and **one maintenance lane** per week; everything else stays parked. |
 
-**Personal north star (design):** learn where models are **transformative** vs **noise**; build a **human-led corpus** with **classical search** for daily discovery and **batch AI** for analysis, tagging, and occasional retrain. See [`DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md`](./DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md).
+**Personal north star (design):** learn where models are **transformative** vs **noise**; build a **human-led corpus** with **classical search** for daily discovery and **batch AI** for analysis, tagging, and occasional retrain. See [`DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md`](./DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md). **Desire→technique / find+generate loop:** [`HEURISTIC_ENGINE_NORTH_STAR.md`](./HEURISTIC_ENGINE_NORTH_STAR.md).
 
 ---
 
@@ -216,6 +216,7 @@ _Use this section during mental exploration. Promote bullets into a program’s 
 - **Still auto-tagger (2026-08-27):** Gallery needs tags at scale; reuse V1 runners + PromptGen-large V3a pin. **No monolith JSON** (SQLite + NDJSON audit); **UI enqueues** tagging to a backlog; **index-hour drainer** owns Florence (front + inflight caps) so tagging does not thrash with I2V. Batch size empirical: small default (12) to learn, **large batches** as the ops target once measured. GPU flexible (local Comfy concert or RunPod). Default DB: `shape_factory/still_tags.sqlite`. Plans: [`STILL_AUTO_TAGGER_PLAN.md`](./STILL_AUTO_TAGGER_PLAN.md), [`STILL_TAG_INDEX_HOUR_PLAN.md`](./STILL_TAG_INDEX_HOUR_PLAN.md).
 - **V1 retrospective (2026-07-16): Keep time slices.** Offline 2s windows + whole-video A/B and the Vision slices review UI were enough to keep span-aware captions/tags on the path (index span rows later; V2 should enqueue the same portable scripts). Separately, blind tag judgment (48 samples) pinned **PromptGen-large** as the V3a day-one tagger; **base∪large** (or an informed union: large always, add base-only when ★/prior-good and not FP-blocked) stays deferred. Artifacts: `_status/vision_tag_judgments.ndjson`, `vision_v3a_tag_pin.json`.
 - **Hourly policy → managed config (2026-08-20):** Facial/i2v drain every-N, seed weights, lookbacks, boosts, etc. are first-order operator concerns but live in code/env today. See [`HOURLY_UTILITY_PLAN.md`](./HOURLY_UTILITY_PLAN.md).
+- **Heuristic engine north star (2026-08-29):** Appetite marks + similarity (tags / provenance / later embeds) → desire↔technique map; “more like this” = find **and** generate; exploit vs explore; classical heuristics tuned by models. Orientation doc: [`HEURISTIC_ENGINE_NORTH_STAR.md`](./HEURISTIC_ENGINE_NORTH_STAR.md).
 
 ---
 ## Doc index (quick links)
@@ -223,6 +224,7 @@ _Use this section during mental exploration. Promote bullets into a program’s 
 | Topic | Document |
 |-------|----------|
 | Planning hub | **this file** |
+| Heuristic engine (desire→technique / find+generate) | [`HEURISTIC_ENGINE_NORTH_STAR.md`](./HEURISTIC_ENGINE_NORTH_STAR.md) |
 | Discovery / similarity / HITL / LLM posture | [`DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md`](./DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md) |
 | P1 V1 time-slice caption spike (impl) | [`VISION_V1_TIME_SLICE_CAPTION_SPIKE.md`](./VISION_V1_TIME_SLICE_CAPTION_SPIKE.md) |
 | Discovery FS watcher + enrichment jobs (planned) | [`DISCOVERY_INDEX_WATCHER_PLAN.md`](./DISCOVERY_INDEX_WATCHER_PLAN.md) |

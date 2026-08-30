@@ -2,7 +2,7 @@
 
 **Status:** Model v0 (terminology + canonical picture + catalog/gaps). Not a UI build yet.
 
-**Related:** [`ASSET_LIFECYCLE_PLAN.md`](./ASSET_LIFECYCLE_PLAN.md) (file custody), [`DISPOSITION_BUCKET_MODEL.md`](./DISPOSITION_BUCKET_MODEL.md) (day-to-day review/disposition), [`RATINGS_V1_PLAN.md`](./RATINGS_V1_PLAN.md) (quality vs appetite), [`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md).
+**Related:** [`ASSET_LIFECYCLE_PLAN.md`](./ASSET_LIFECYCLE_PLAN.md) (file custody), [`DISPOSITION_BUCKET_MODEL.md`](./DISPOSITION_BUCKET_MODEL.md) (day-to-day review/disposition), [`RATINGS_V1_PLAN.md`](./RATINGS_V1_PLAN.md) (quality vs appetite), [`HEURISTIC_ENGINE_NORTH_STAR.md`](./HEURISTIC_ENGINE_NORTH_STAR.md) (desire→technique / find+generate), [`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md).
 
 ---
 
