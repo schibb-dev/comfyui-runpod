@@ -2,29 +2,43 @@
   "id": "prop_038",
   "status": "pending_review",
   "proposed_family_slug": null,
-  "fingerprint": "05e61ce1d03d32a303659e3855474aa7ea4b0abb8e6d7d212d77800d85f36fa2",
-  "io_guess": "I2V",
-  "primary_input_guess": "still",
-  "input_profile_guess": "still_prompt",
-  "chain_role_guess": "origin",
+  "fingerprint": "3167911ea171a4e949996e116e5b32de93061d22dd2a2126e12991a857b69bee",
+  "io_guess": "V2V",
+  "primary_input_guess": "video",
+  "input_profile_guess": "video_prompt",
+  "chain_role_guess": "extend",
   "member_count": 1,
   "representative": {
     "source": "user",
-    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/HIDREAM/Base/HiDream - INPAINT (base).json",
-    "name": "HiDream - INPAINT (base).json",
+    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9/FB9-Gen-Extension.json",
+    "name": "FB9-Gen-Extension.json",
     "stem": null,
-    "node_count": 43
+    "node_count": 60
   },
   "members": [
     {
       "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/HIDREAM/Base/HiDream - INPAINT (base).json",
-      "name": "HiDream - INPAINT (base).json",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9/FB9-Gen-Extension.json",
+      "name": "FB9-Gen-Extension.json",
       "stem": null,
-      "node_count": 43
+      "node_count": 60
     }
   ],
-  "sample_videos": [],
+  "sample_videos": [
+    "/home/yuji/comfyui-runpod-data/output/og/2026-03-14/FB9_GEX_2026-03-14_00008.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-03-14/FB9_GEX_2026-03-14_00007.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-03-14/FB9_GEX_2026-03-14_00006.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-03-14/FB9_GEX_2026-03-14_00005.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-03-14/FB9_GEX_2026-03-14_00004.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-03-14/FB9_GEX_2026-03-14_00003.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-03-14/FB9_GEX_2026-03-14_00002.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-03-14/FB9_GEX_2026-03-14_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-03-02/FB9_GEX_2026-03-02_00011.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-03-02/FB9_GEX_2026-03-02_00010.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-03-02/FB9_GEX_2026-03-02_00009.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-03-02/FB9_GEX_2026-03-02_00008.mp4"
+  ],
+  "sample_source": "fingerprint_exemplars",
   "quarantine_notes": [],
   "nearest_enrolled": null,
   "operator_decision": null,

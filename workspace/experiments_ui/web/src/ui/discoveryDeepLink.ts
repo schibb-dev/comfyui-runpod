@@ -27,6 +27,13 @@ export function discoveryLibraryHref(relpath?: string | null): string {
   return `/discovery?relpath=${encodeURIComponent(norm)}`;
 }
 
+/** Library URL scoped to a folder prefix (date / generation tree browse). */
+export function discoveryLibraryFolderHref(pathPrefix?: string | null): string {
+  const norm = (pathPrefix || "").trim().replace(/^\/+/, "").replace(/\\/g, "/");
+  if (!norm) return "/discovery";
+  return `/discovery?prefix=${encodeURIComponent(norm)}`;
+}
+
 /** Still gallery deep-link: prefer content_id, else relpath, else free-text q. */
 export function stillsHref(opts?: {
   contentId?: string | null;
@@ -120,6 +127,17 @@ export function parseDiscoveryDeepLinkRelpath(search: string = window.location.s
   const rel = sp.get("relpath");
   if (!rel || !rel.trim()) return null;
   return rel.trim().replace(/^\/+/, "").replace(/\\/g, "/");
+}
+
+/** Optional `?prefix=og/YYYY-MM-DD/...` folder browse deep link. */
+export function parseDiscoveryDeepLinkPrefix(search: string = window.location.search): string | null {
+  const sp = new URLSearchParams(search);
+  const raw = (sp.get("prefix") || "").trim().replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!raw) return null;
+  const top = raw.split("/", 1)[0];
+  if (top !== "og" && top !== "wip") return null;
+  if (raw.includes("..")) return null;
+  return raw;
 }
 
 export type SubmitDeepLink = {

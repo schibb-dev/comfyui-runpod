@@ -2,18 +2,17 @@
 
 - **status:** `pending_review`
 - **IO guess:** `I2V` · profile `still_prompt` · role `origin`
-- **fingerprint:** `b31d458070fcc6f1…`
-- **members:** 2
-- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/I2V-FizzNodes_FIXED.json`
+- **fingerprint:** `01553f6fef910a18…`
+- **members:** 1
+- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/FLUX/Base/Tools/PuLID_Redux.json`
 
-## Sample videos
+## Sample videos (by fingerprint, not output name)
 
-_none found by brand heuristic — locate manually_
+_none in exemplar index — run `shape_factory_family_discovery.py index-exemplars`_
 
 ## Members
 
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/I2V-FizzNodes_FIXED.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/I2V-FizzNodes_FRESH.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/FLUX/Base/Tools/PuLID_Redux.json`
 
 ## Operator gate
 

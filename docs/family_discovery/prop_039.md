@@ -2,17 +2,17 @@
 
 - **status:** `pending_review`
 - **IO guess:** `I2V` · profile `still_prompt` · role `origin`
-- **fingerprint:** `075eff84e2ea0cf0…`
+- **fingerprint:** `31cb217ba4ce1fc8…`
 - **members:** 1
-- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/X-FB9-POSE-B.json`
+- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/HIDREAM/Base/HiDream - INPAINT (base).json`
 
-## Sample videos
+## Sample videos (by fingerprint, not output name)
 
-_none found by brand heuristic — locate manually_
+_none in exemplar index — run `shape_factory_family_discovery.py index-exemplars`_
 
 ## Members
 
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/X-FB9-POSE-B.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/HIDREAM/Base/HiDream - INPAINT (base).json`
 
 ## Operator gate
 

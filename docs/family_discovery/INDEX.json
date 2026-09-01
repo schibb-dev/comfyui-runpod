@@ -1,290 +1,371 @@
 {
   "schema_version": "comfyui-runpod.family-discovery-index.v0",
-  "generated_at": "2026-08-27T14:02:30Z",
+  "generated_at": "2026-09-01T11:51:59Z",
   "cluster_report": "cluster_report.json",
   "proposals": [
     {
       "id": "prop_001",
-      "io_guess": "VI2V",
+      "io_guess": "I2V",
       "members": 1,
-      "representative": "FB8VB2_2026-01-06_234750_EXT_00001-readable.json",
-      "status": "pending_review"
+      "representative": "004359_OG_00001-readable.json",
+      "status": "pending_review",
+      "fingerprint": "0ddd5820e4ed929ba7a8f41785d88db5be491a9b973f9e5595afb6f50be8a9cf",
+      "sample_count": 20
     },
     {
       "id": "prop_002",
       "io_guess": "I2V",
       "members": 1,
-      "representative": "2025-12-06-215827_filename_RAW_00001-readable.json",
-      "status": "pending_review"
+      "representative": "FB8VA5-laying-down-readable.json",
+      "status": "pending_review",
+      "fingerprint": "4f87433bb2b5ef5e37fa9816d64bb2f01ba1e4a44dad3349a3dfe6ce20102c8b",
+      "sample_count": 0
     },
     {
       "id": "prop_003",
       "io_guess": "I2V",
       "members": 1,
-      "representative": "FB8VA5-laying-down-readable.json",
-      "status": "pending_review"
+      "representative": "103520_OG_00001-readable.json",
+      "status": "pending_review",
+      "fingerprint": "6148705420bf1b206a257607b1d77da4ead67ee12519cacc08473cb8f0a6accb",
+      "sample_count": 20
     },
     {
       "id": "prop_004",
-      "io_guess": "I2V",
+      "io_guess": "VI2V",
       "members": 1,
-      "representative": "103520_OG_00001-readable.json",
-      "status": "pending_review"
+      "representative": "FB8VB2_2026-01-06_234750_EXT_00001-readable.json",
+      "status": "pending_review",
+      "fingerprint": "bdb83359b2791cebde174e7200764e087b4aea5df61431075748efe14793219a",
+      "sample_count": 20
     },
     {
       "id": "prop_005",
       "io_guess": "I2V",
       "members": 1,
       "representative": "141756_OG_00001-readable.json",
-      "status": "pending_review"
+      "status": "pending_review",
+      "fingerprint": "d2eaf23dfd5b6956addbdd1d4ecb5005d43a4a97e7f851e744036701b58d4dc6",
+      "sample_count": 20
     },
     {
       "id": "prop_006",
       "io_guess": "I2V",
       "members": 1,
-      "representative": "004359_OG_00001-readable.json",
-      "status": "pending_review"
+      "representative": "2025-12-06-215827_filename_RAW_00001-readable.json",
+      "status": "pending_review",
+      "fingerprint": "dc6787b6ffeb17ab4e2fd8d61899c1dee65775df85f8600f18795aa768725eb4",
+      "sample_count": 20
     },
     {
       "id": "prop_007",
-      "io_guess": "V2V",
-      "members": 13,
-      "representative": "FB9_GEX2.json",
-      "status": "pending_review"
+      "io_guess": "I2V",
+      "members": 65,
+      "representative": "FB8VA-mainline-readable.json",
+      "status": "pending_review",
+      "fingerprint": "24d722a6bd18834126926cd0da726d3910ab834873a32be2805966f8f2bd7fce",
+      "sample_count": 20
     },
     {
       "id": "prop_008",
-      "io_guess": "I2V",
-      "members": 9,
-      "representative": "Blonde Facial Workflow (133).json",
-      "status": "pending_review"
+      "io_guess": "V2V",
+      "members": 17,
+      "representative": "ASTONISH_FB9_GEX_2026-03-03_00023 (2).json",
+      "status": "pending_review",
+      "fingerprint": "a3ae8f765bdf713e6b98feb13065865b62f2a0ba83c0212629a5095248c5b81a",
+      "sample_count": 20
     },
     {
       "id": "prop_009",
       "io_guess": "I2V",
-      "members": 4,
-      "representative": "FB8VA-mainline-readable.json",
-      "status": "pending_review"
+      "members": 17,
+      "representative": "FB8VA5-laying-down.cleaned.json",
+      "status": "pending_review",
+      "fingerprint": "daeaf9447fa11b7c1682c07d18774b646273415015caf0e577a7314cc42ee879",
+      "sample_count": 20
     },
     {
       "id": "prop_010",
       "io_guess": "I2V",
-      "members": 3,
-      "representative": "FB9-handjob-start.json",
-      "status": "pending_review"
+      "members": 11,
+      "representative": "FB8VA5-laying-down.json",
+      "status": "pending_review",
+      "fingerprint": "87118e9ecdf4672530a6e46fb99fdce296df18422a86ab736d0ac2ac7ff49b46",
+      "sample_count": 8
     },
     {
       "id": "prop_011",
       "io_guess": "I2V",
-      "members": 3,
-      "representative": "X-Kneel-FB9-Bra-test.json",
-      "status": "pending_review"
+      "members": 7,
+      "representative": "FB8VA-mainline-dance.json",
+      "status": "pending_review",
+      "fingerprint": "39d96d4a5ddf7cf21680d6fdd383a05d0c9855b15104175a2517bb6595362c9f",
+      "sample_count": 1
     },
     {
       "id": "prop_012",
-      "io_guess": "I2V",
-      "members": 3,
-      "representative": "X-Kneel-FB9-Undress.json",
-      "status": "pending_review"
+      "io_guess": "V2V",
+      "members": 5,
+      "representative": "EXPT-EXTENSION.json",
+      "status": "pending_review",
+      "fingerprint": "e8ec45c9b5909974e1811c098278d2af81ec9750527cb1325a666e18077b74bc",
+      "sample_count": 9
     },
     {
       "id": "prop_013",
       "io_guess": "I2V",
-      "members": 3,
-      "representative": "Sc1-1-handjob.json",
-      "status": "pending_review"
+      "members": 4,
+      "representative": "EXPT-PromptScheduleA.json",
+      "status": "pending_review",
+      "fingerprint": "1843f03a1fb80597f756d7dd5fd9afd22dc9fb9610e327c08fb5ce168faeb857",
+      "sample_count": 0
     },
     {
       "id": "prop_014",
       "io_guess": "I2V",
-      "members": 3,
-      "representative": "X-Kneel-FB9-Nude3.json",
-      "status": "pending_review"
+      "members": 4,
+      "representative": "FB9-Gen-PromptSchedule.json",
+      "status": "pending_review",
+      "fingerprint": "cdcb87aa5084c6a834aa9231454473867f9d365a5c707aa3c823ce7705ae9e70",
+      "sample_count": 12
     },
     {
       "id": "prop_015",
-      "io_guess": "V2V",
+      "io_guess": "I2V",
       "members": 2,
-      "representative": "FB9_GEX2-FACIAL.json",
-      "status": "pending_review"
+      "representative": "I2V-FizzNodes_FIXED.json",
+      "status": "pending_review",
+      "fingerprint": "06e9cef55871d4f032bfe3c3947be446ad7e19e0144dc5ea2223ef7f5a6e3016",
+      "sample_count": 0
     },
     {
       "id": "prop_016",
-      "io_guess": "I2V",
-      "members": 2,
-      "representative": "X-FB9-POSE-NUDE.json",
-      "status": "pending_review"
-    },
-    {
-      "id": "prop_017",
-      "io_guess": "V2V",
-      "members": 2,
-      "representative": "ASTONISH_FB9_GEX_2026-03-03_00023 (2).json",
-      "status": "pending_review"
-    },
-    {
-      "id": "prop_018",
-      "io_guess": "I2V",
-      "members": 2,
-      "representative": "X-Kneel-FB9-Gripping-B.json",
-      "status": "pending_review"
-    },
-    {
-      "id": "prop_019",
       "io_guess": null,
       "members": 2,
       "representative": "LoRA.json",
-      "status": "pending_review"
+      "status": "pending_review",
+      "fingerprint": "17e2defdc3087c4294ab3089ac441bfd815e10696a661d6b6bdf259e1a528695",
+      "sample_count": 0
+    },
+    {
+      "id": "prop_017",
+      "io_guess": "I2V",
+      "members": 2,
+      "representative": "EXPT-PromptScheduleB.json",
+      "status": "pending_review",
+      "fingerprint": "4019e1c7425e0bbca73b2f37d66f626ec8291a11a0e69dd7e654241565c854e5",
+      "sample_count": 0
+    },
+    {
+      "id": "prop_018",
+      "io_guess": null,
+      "members": 2,
+      "representative": "TXT to IMG 1.json",
+      "status": "pending_review",
+      "fingerprint": "9679854d260887d26f4eb13fa83f765b2f95482cac363b7aa3a98a493a45b0b8",
+      "sample_count": 0
+    },
+    {
+      "id": "prop_019",
+      "io_guess": "I2V",
+      "members": 2,
+      "representative": "INPAINT.json",
+      "status": "pending_review",
+      "fingerprint": "993f22499e8c5c29a4f7aa190027c3523e02e4ecc58c951a3b1897e9d36563f3",
+      "sample_count": 0
     },
     {
       "id": "prop_020",
       "io_guess": "I2V",
       "members": 2,
-      "representative": "SB_s1c1_reconciled.json",
-      "status": "pending_review"
+      "representative": "Undress_pulldown_FB8VA5L-2026-02-16-103025_OG_00001.json",
+      "status": "pending_review",
+      "fingerprint": "ad1b82afeccedd767896e1df7da11e85970cbfb4db27693070f8119ba6e9b4b9",
+      "sample_count": 0
     },
     {
       "id": "prop_021",
-      "io_guess": "I2V",
+      "io_guess": "VI2V",
       "members": 2,
-      "representative": "FaceBlastAStroker.json",
-      "status": "pending_review"
+      "representative": "PS-EXPT.json",
+      "status": "pending_review",
+      "fingerprint": "ef58bdfcb51c65b2f5206363fa8057a76aa82ad59dc4c55c9bb92ea6988e2e7d",
+      "sample_count": 0
     },
     {
       "id": "prop_022",
       "io_guess": "I2V",
-      "members": 2,
-      "representative": "FB8VA5-laying-down.cleaned.json",
-      "status": "pending_review"
+      "members": 1,
+      "representative": "DualSampling (Simplified) v2.1.json",
+      "status": "pending_review",
+      "fingerprint": "00955b5a3180b028609050caec9d7f83ad79f0312996f9281411899a43d5934a",
+      "sample_count": 0
     },
     {
       "id": "prop_023",
       "io_guess": "I2V",
-      "members": 2,
-      "representative": "I2V-FizzNodes_FIXED.json",
-      "status": "pending_review"
+      "members": 1,
+      "representative": "PuLID_Redux.json",
+      "status": "pending_review",
+      "fingerprint": "01553f6fef910a18ad0b3fea1342c9103e988807a1232fda5f9039851d05e68b",
+      "sample_count": 0
     },
     {
       "id": "prop_024",
       "io_guess": "I2V",
-      "members": 2,
-      "representative": "FB8VA-mainline-dance.json",
-      "status": "pending_review"
+      "members": 1,
+      "representative": "EXPT-PromptSchedule.json",
+      "status": "pending_review",
+      "fingerprint": "01f8a88cb2c0b6c8c257fb8600aefd111aa35cfcce6ad9e3ff63739a4fb64401",
+      "sample_count": 0
     },
     {
       "id": "prop_025",
-      "io_guess": null,
-      "members": 2,
-      "representative": "WAN-cowgirl1A.json",
-      "status": "pending_review"
+      "io_guess": "I2V",
+      "members": 1,
+      "representative": "FB8VA5L-1.prompt_schedule.json",
+      "status": "pending_review",
+      "fingerprint": "0a035eb1531fee1b7fbc686bbb9893b573ee878390c46defd63cf0341769cf6f",
+      "sample_count": 0
     },
     {
       "id": "prop_026",
       "io_guess": "I2V",
-      "members": 2,
-      "representative": "FB8VA6L.from_preset.json",
-      "status": "pending_review"
+      "members": 1,
+      "representative": "LTXV - IMG to VIDEO (gguf).json",
+      "status": "pending_review",
+      "fingerprint": "0e91943cab7874290623eb9749ffe00e8667fe3d477aa3a3360ee05fcb2e797c",
+      "sample_count": 0
     },
     {
       "id": "prop_027",
       "io_guess": "V2V",
-      "members": 2,
-      "representative": "FB9_GEX2_OVERHEAD_A.json",
-      "status": "pending_review"
+      "members": 1,
+      "representative": "SB_extender_reconciled.json",
+      "status": "pending_review",
+      "fingerprint": "0fa3195d915478c6edabd6a2175f6f675dd737d4ab170ee97975d1b3a03d5d91",
+      "sample_count": 8
     },
     {
       "id": "prop_028",
       "io_guess": "I2V",
-      "members": 2,
-      "representative": "X-Kneel-FB9-Gripping.json",
-      "status": "pending_review"
+      "members": 1,
+      "representative": "FLUX - INPAINT v7.0 (gguf).json",
+      "status": "pending_review",
+      "fingerprint": "1064da2eb8da88fb596b8b99e5101787984f0f77cef4b1d44cd708cf033207a5",
+      "sample_count": 0
     },
     {
       "id": "prop_029",
-      "io_guess": "V2V",
-      "members": 2,
-      "representative": "FB9_GEX_FACIAL_SURPRISE.json",
-      "status": "pending_review"
+      "io_guess": "I2V",
+      "members": 1,
+      "representative": "CtrlNet HED.json",
+      "status": "pending_review",
+      "fingerprint": "16c9e074b57a2a95648889dcf75594c6d82d2a5239d1df146af354879576611b",
+      "sample_count": 0
     },
     {
       "id": "prop_030",
-      "io_guess": "V2V",
-      "members": 2,
-      "representative": "FB8VA5-VIDEO EXTENSION.cleaned.json",
-      "status": "pending_review"
+      "io_guess": null,
+      "members": 1,
+      "representative": "FB9_GEX_DESPERATE_FACIAL.json",
+      "status": "pending_review",
+      "fingerprint": "18d7b7fc7299152e0ab8b5a74538d13a355df2a4ce682fdd381c4568e4b9b698",
+      "sample_count": 0
     },
     {
       "id": "prop_031",
       "io_guess": "I2V",
-      "members": 2,
-      "representative": "FaceBlastAStroke.json",
-      "status": "pending_review"
+      "members": 1,
+      "representative": "Background changer.json",
+      "status": "pending_review",
+      "fingerprint": "1e113f4da095cdba82872f8b76294f00f12c5edc967d5ee2e4fd4d1c656af5aa",
+      "sample_count": 0
     },
     {
       "id": "prop_032",
-      "io_guess": "V2V",
+      "io_guess": "I2V",
       "members": 1,
-      "representative": "FB9_GEX2_OVERHEAD_A.json",
-      "status": "pending_review"
+      "representative": "WAN_2.1_IMG_to_VIDEO.json",
+      "status": "pending_review",
+      "fingerprint": "205671515e2aaf122beebc0c1eb366c3ef934d46ad844744bb672f5a480d8dc8",
+      "sample_count": 0
     },
     {
       "id": "prop_033",
-      "io_guess": null,
+      "io_guess": "I2V",
       "members": 1,
-      "representative": "MissPoundA.json",
-      "status": "pending_review"
+      "representative": "IMG to VIDEO.json",
+      "status": "pending_review",
+      "fingerprint": "253c97e6323fef37636059b70558081394ce6a69643c627c67578eb79b7bb8db",
+      "sample_count": 0
     },
     {
       "id": "prop_034",
       "io_guess": "I2V",
       "members": 1,
-      "representative": "wan_i2v_pov_missionary_v1.1_workflow.json",
-      "status": "pending_review"
+      "representative": "2_pass_pose_worship.json",
+      "status": "pending_review",
+      "fingerprint": "27a32a218ac4101b39db5893d0a300a78f6d5f42354468dd6aa8024c93789eb4",
+      "sample_count": 0
     },
     {
       "id": "prop_035",
       "io_guess": "I2V",
       "members": 1,
-      "representative": "simple_test.json",
-      "status": "pending_review"
+      "representative": "FaceBlast8K_modified.json",
+      "status": "pending_review",
+      "fingerprint": "2aa8cfe5975250e0412a5bfa6a2a386e8e431630bea00abf9231e52146b74fc4",
+      "sample_count": 0
     },
     {
       "id": "prop_036",
       "io_guess": "I2V",
       "members": 1,
-      "representative": "FLUX - INPAINT v7.0 (base).json",
-      "status": "pending_review"
+      "representative": "IMG to IMG.json",
+      "status": "pending_review",
+      "fingerprint": "2e729be5d583f77b40105f0841ac18499fa82e2f017dbb8cef3b8af1481bdd6f",
+      "sample_count": 0
     },
     {
       "id": "prop_037",
       "io_guess": "I2V",
       "members": 1,
-      "representative": "OUTPAINT.json",
-      "status": "pending_review"
+      "representative": "SingleSampling (Simplified).json",
+      "status": "pending_review",
+      "fingerprint": "303fa564091eb3a34f3b1648ff341dfd8d8a1841685193c32b4e12d8ffd9e323",
+      "sample_count": 0
     },
     {
       "id": "prop_038",
-      "io_guess": "I2V",
+      "io_guess": "V2V",
       "members": 1,
-      "representative": "HiDream - INPAINT (base).json",
-      "status": "pending_review"
+      "representative": "FB9-Gen-Extension.json",
+      "status": "pending_review",
+      "fingerprint": "3167911ea171a4e949996e116e5b32de93061d22dd2a2126e12991a857b69bee",
+      "sample_count": 12
     },
     {
       "id": "prop_039",
       "io_guess": "I2V",
       "members": 1,
-      "representative": "X-FB9-POSE-B.json",
-      "status": "pending_review"
+      "representative": "HiDream - INPAINT (base).json",
+      "status": "pending_review",
+      "fingerprint": "31cb217ba4ce1fc86c5bef5a6996a2fe8d5f3260f06c70d47b3d567785a06003",
+      "sample_count": 0
     },
     {
       "id": "prop_040",
-      "io_guess": "V2V",
+      "io_guess": "I2V",
       "members": 1,
-      "representative": "Interpolation_Upscaler.json",
-      "status": "pending_review"
+      "representative": "Native-I2V-60FPS.json",
+      "status": "pending_review",
+      "fingerprint": "37051fd38f9dc464767bc0918b88bef2dc85997ab15be8d070609b38af44f770",
+      "sample_count": 0
     }
   ],
-  "covered_clusters": 12,
-  "uncovered_clusters": 249,
-  "review_instructions": "For each prop_NNN: watch sample videos, then set status in the JSON to new_family|merge|skip and fill proposed_family_slug or merge target. Then run: python3 shape_factory_family_discovery.py enroll --prop prop_NNN ..."
+  "covered_clusters": 15,
+  "uncovered_clusters": 123,
+  "exemplar_index": "/home/yuji/src/comfyui-runpod/.data/shape_factory/family_discovery_exemplars.json",
+  "review_instructions": "For each prop_NNN: watch fingerprint-matched sample videos (not basename cousins), then set status to new_family|merge|skip and fill proposed_family_slug or merge target. Then run: python3 shape_factory_family_discovery.py enroll --prop prop_NNN ..."
 }

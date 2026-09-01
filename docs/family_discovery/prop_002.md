@@ -2,19 +2,17 @@
 
 - **status:** `pending_review`
 - **IO guess:** `I2V` · profile `still_prompt` · role `origin`
-- **fingerprint:** `248ad523176b42ba…`
+- **fingerprint:** `4f87433bb2b5ef5e…`
 - **members:** 1
-- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/2025-12-06-215827_filename_RAW_00001-readable.json`
+- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/FB8VA5-laying-down-readable.json`
 
-## Sample videos
+## Sample videos (by fingerprint, not output name)
 
-- `/home/yuji/comfyui-runpod-data/output/og/_trash/2026-08-05/2025-12-05_172448_OG_00001.mp4`
-- `/home/yuji/comfyui-runpod-data/output/og/_trash/2026-08-05/ST_2025121921300200002_2025121916331600002_0.mp4`
-- `/home/yuji/comfyui-runpod-data/output/og/_trash/2026-08-05/2025-12-10_121426_OG_00001.mp4`
+_none in exemplar index — run `shape_factory_family_discovery.py index-exemplars`_
 
 ## Members
 
-- [catalog] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/2025-12-06-215827_filename_RAW_00001-readable.json`
+- [catalog] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/FB8VA5-laying-down-readable.json`
 
 ## Operator gate
 

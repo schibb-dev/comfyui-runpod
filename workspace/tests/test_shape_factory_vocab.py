@@ -159,6 +159,63 @@ class GuessIoTests(unittest.TestCase):
         self.assertEqual(g["io_class"], "I2V")
 
 
+class TopologyFingerprintTests(unittest.TestCase):
+    def _wf(self, *, loader="LoadImage", node_order=None, link_order=None):
+        nodes = [
+            {"id": 1, "type": loader, "mode": 0},
+            {
+                "id": 2,
+                "type": "WanImageToVideo",
+                "mode": 0,
+                "inputs": [{"name": "start_image", "link": 1}],
+            },
+            {"id": 3, "type": "VHS_VideoCombine", "mode": 2},
+        ]
+        links = [_link(1, 1, 0, 2, 0, "IMAGE"), _link(2, 2, 0, 3, 0, "IMAGE")]
+        if node_order:
+            nodes = [nodes[i] for i in node_order]
+        if link_order:
+            links = [links[i] for i in link_order]
+        return {"nodes": nodes, "links": links}
+
+    def test_order_invariant(self) -> None:
+        from shape_factory_vocab import graph_fingerprint_topology
+
+        a = graph_fingerprint_topology(self._wf())
+        b = graph_fingerprint_topology(self._wf(node_order=[2, 0, 1], link_order=[1, 0]))
+        self.assertEqual(a, b)
+
+    def test_loader_alias(self) -> None:
+        from shape_factory_vocab import graph_fingerprint_topology
+
+        a = graph_fingerprint_topology(self._wf(loader="LoadImage"))
+        b = graph_fingerprint_topology(self._wf(loader="LoadImageWithFilename|pysssss"))
+        self.assertEqual(a, b)
+        c = graph_fingerprint_topology(
+            self._wf(loader="LoadImageWithFilename|pysssss"), aliases=False
+        )
+        self.assertNotEqual(a, c)
+
+    def test_id_renumber_invariant(self) -> None:
+        from shape_factory_vocab import graph_fingerprint_topology
+
+        wf_a = self._wf()
+        wf_b = {
+            "nodes": [
+                {"id": 10, "type": "LoadImage", "mode": 0},
+                {
+                    "id": 20,
+                    "type": "WanImageToVideo",
+                    "mode": 0,
+                    "inputs": [{"name": "start_image", "link": 1}],
+                },
+                {"id": 30, "type": "VHS_VideoCombine", "mode": 2},
+            ],
+            "links": [_link(1, 10, 0, 20, 0, "IMAGE"), _link(2, 20, 0, 30, 0, "IMAGE")],
+        }
+        self.assertEqual(graph_fingerprint_topology(wf_a), graph_fingerprint_topology(wf_b))
+
+
 class EnrolledShapesSmoke(unittest.TestCase):
     def test_all_enrolled_shapes_vocab(self) -> None:
         root = Path(__file__).resolve().parents[2] / ".data" / "shapes"

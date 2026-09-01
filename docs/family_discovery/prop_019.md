@@ -1,19 +1,19 @@
 # prop_019
 
 - **status:** `pending_review`
-- **IO guess:** `None` · profile `None` · role `standalone`
-- **fingerprint:** `760254720b4ba423…`
+- **IO guess:** `I2V` · profile `still_prompt` · role `origin`
+- **fingerprint:** `993f22499e8c5c29…`
 - **members:** 2
-- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/FLUX/Base/Tools/LoRA.json`
+- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/FLUX/Base/INPAINT.json`
 
-## Sample videos
+## Sample videos (by fingerprint, not output name)
 
-_none found by brand heuristic — locate manually_
+_none in exemplar index — run `shape_factory_family_discovery.py index-exemplars`_
 
 ## Members
 
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/FLUX/Base/Tools/LoRA.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/FLUX/GGUF/Tools/LoRA.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/FLUX/Base/INPAINT.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/current/flux-generation/FLUX - INPAINT v7.0 (base).json`
 
 ## Operator gate
 

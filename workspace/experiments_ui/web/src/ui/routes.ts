@@ -14,6 +14,7 @@ export type AppRouteId =
   | "clips"
   | "rate"
   | "workbench"
+  | "family-ab"
   | "submit"
   | "vision-slices"
   | "experiments"
@@ -62,6 +63,13 @@ export const APP_ROUTES: AppRoute[] = [
     hint: "Job status — pending trim, retry, bindings, discard",
     group: "pipeline",
   },
+  {
+    id: "family-ab",
+    path: "/family-ab",
+    label: "Family A/B",
+    hint: "Exemplar-locked family compare · catalog distinction",
+    group: "tools",
+  },
   { id: "queue", path: "/comfy-queue", label: "Queue", hint: "What's generating on Comfy right now", group: "pipeline" },
   { id: "vision-slices", path: "/vision/slices", label: "Vision slices", hint: "V1 time-slice captions vs video", group: "tools" },
   { id: "experiments", path: "/experiments", label: "Experiments", hint: "Tune experiments & runs", group: "tools" },
@@ -84,6 +92,7 @@ const MATCHERS: { id: AppRouteId; test: (p: string) => boolean }[] = [
   { id: "orchestrator", test: (p) => p.startsWith("/orchestrator") },
   { id: "workflows", test: (p) => p.startsWith("/workflow-explorer") },
   { id: "experiments", test: (p) => p.startsWith("/experiments") },
+  { id: "family-ab", test: (p) => p.startsWith("/family-ab") },
   { id: "submit", test: (p) => p.startsWith("/submit") },
   // Canonical /workbench; keep /work-products as a deep-link alias.
   { id: "workbench", test: (p) => p.startsWith("/workbench") || p.startsWith("/work-products") },

@@ -534,6 +534,122 @@ def _og_wip_library_roots(cfg: "ServerConfig") -> Tuple[Path, Path]:
     )
 
 
+_DISCOVERY_DATE_FOLDER_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _discovery_normalize_path_prefix(raw: str, lib_filter: str) -> str:
+    """Normalize folder-browse prefix; empty if invalid or incompatible with library filter."""
+    prefix = _normalize_rel_posix(str(raw or "").strip())
+    if not prefix:
+        return ""
+    top = prefix.split("/", 1)[0]
+    if top not in ("og", "wip"):
+        return ""
+    if lib_filter in ("og", "wip") and top != lib_filter:
+        return ""
+    return prefix
+
+
+def _discovery_item_relpath_candidates(it: Dict[str, Any]) -> List[str]:
+    out: List[str] = []
+    seen: set[str] = set()
+
+    def _add(raw: Any) -> None:
+        if not isinstance(raw, str) or not raw.strip():
+            return
+        norm = _normalize_rel_posix(raw.strip())
+        if not norm or norm in seen:
+            return
+        seen.add(norm)
+        out.append(norm)
+
+    for k in ("relpath", "video_relpath", "thumb_relpath"):
+        _add(it.get(k))
+    mems = it.get("members")
+    if isinstance(mems, list):
+        for mm in mems:
+            if isinstance(mm, dict):
+                _add(mm.get("relpath"))
+    return out
+
+
+def _discovery_path_under_prefix(path: str, prefix: str) -> bool:
+    if not prefix:
+        return True
+    return path == prefix or path.startswith(prefix + "/")
+
+
+def _discovery_folder_child_segment(path: str, prefix: str) -> Optional[str]:
+    """Immediate child folder name under prefix, or None if path is a file in this folder."""
+    if prefix:
+        if path == prefix:
+            return None
+        if not path.startswith(prefix + "/"):
+            return None
+        rest = path[len(prefix) + 1 :]
+    else:
+        rest = path
+    if not rest:
+        return None
+    if "/" not in rest:
+        return None
+    return rest.split("/", 1)[0]
+
+
+def _discovery_item_in_folder(path: str, prefix: str) -> bool:
+    """True when path's parent directory equals prefix (file sits in this folder)."""
+    if not path:
+        return False
+    parent = path.rsplit("/", 1)[0] if "/" in path else ""
+    return parent == prefix
+
+
+def _discovery_sort_folder_names(names: List[str]) -> List[str]:
+    dates = [n for n in names if _DISCOVERY_DATE_FOLDER_RE.match(n)]
+    others = [n for n in names if not _DISCOVERY_DATE_FOLDER_RE.match(n)]
+    return sorted(dates, reverse=True) + sorted(others, key=lambda s: s.lower())
+
+
+def _discovery_folder_browse_stats(
+    items: List[Dict[str, Any]], prefix: str
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Immediate child folders + count of files whose parent dir equals prefix."""
+    child_counts: Dict[str, int] = {}
+    files_in_folder = 0
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        paths = _discovery_item_relpath_candidates(it)
+        if not paths:
+            continue
+        # Prefer primary relpath for folder membership; fall back to any candidate.
+        primary = paths[0]
+        matched_child: Optional[str] = None
+        in_here = False
+        for p in paths:
+            seg = _discovery_folder_child_segment(p, prefix)
+            if seg:
+                matched_child = seg
+                break
+            if _discovery_item_in_folder(p, prefix) or (not prefix and "/" not in p):
+                in_here = True
+        if matched_child:
+            child_counts[matched_child] = child_counts.get(matched_child, 0) + 1
+        elif in_here or _discovery_item_in_folder(primary, prefix):
+            files_in_folder += 1
+    folders: List[Dict[str, Any]] = []
+    for name in _discovery_sort_folder_names(list(child_counts.keys())):
+        child_prefix = f"{prefix}/{name}" if prefix else name
+        folders.append(
+            {
+                "name": name,
+                "path_prefix": child_prefix,
+                "item_count": int(child_counts[name]),
+            }
+        )
+    return folders, files_in_folder
+
+
 def _output_status_dir(output_root: Path) -> Path:
     return _prefer_flat_library_dir(output_root, "_status")
 
@@ -2360,6 +2476,132 @@ def _shape_factory_replay_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Di
         workspace_root=cfg.workspace_root,
         output_root=cfg.output_root,
         comfy_server=str(cfg.comfy_server),
+    )
+
+
+def _ab_enrich_media_urls(cfg: ServerConfig, doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Attach viewer URLs for side outputs on an ab manifest."""
+    out = dict(doc)
+    for side_key in ("job_a", "job_b"):
+        side = out.get(side_key) if isinstance(out.get(side_key), dict) else {}
+        side = dict(side)
+        urls: List[str] = []
+        for raw in side.get("outputs") or []:
+            url = _family_discovery_abs_to_url(cfg, raw)
+            if url:
+                urls.append(url)
+        side["output_urls"] = urls
+        out[side_key] = side
+    return out
+
+
+def _shape_factory_ab_queue_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_ab import queue_ab_from_exemplar  # type: ignore
+
+    result = queue_ab_from_exemplar(
+        body,
+        repo_root=_repo_root(),
+        workspace_root=cfg.workspace_root,
+        output_root=cfg.output_root,
+        comfy_server=str(cfg.comfy_server),
+    )
+    if isinstance(result, dict) and isinstance(result.get("ab"), dict):
+        result = dict(result)
+        result["ab"] = _ab_enrich_media_urls(cfg, result["ab"])
+    return result
+
+
+def _shape_factory_ab_list_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_ab import list_ab_experiments  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    limit = 50
+    raw_limit = (q.get("limit") or [""])[0]
+    try:
+        limit = max(1, min(200, int(raw_limit)))
+    except (TypeError, ValueError):
+        pass
+    status = str((q.get("status") or [""])[0] or "").strip() or None
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    rows = list_ab_experiments(data_root, limit=limit, status=status)
+    enriched = [_ab_enrich_media_urls(cfg, r) for r in rows]
+    return {"ok": True, "experiments": enriched}
+
+
+def _shape_factory_ab_get_payload(cfg: ServerConfig, ab_id: str) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_ab import get_ab_experiment  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    doc = get_ab_experiment(data_root, ab_id, refresh=True)
+    return {"ok": True, "ab": _ab_enrich_media_urls(cfg, doc)}
+
+
+def _shape_factory_ab_judge_payload(cfg: ServerConfig, ab_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_ab import judge_ab_experiment  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    result = judge_ab_experiment(
+        data_root,
+        ab_id,
+        body,
+        output_root=cfg.output_root,
+    )
+    if isinstance(result, dict) and isinstance(result.get("ab"), dict):
+        result = dict(result)
+        result["ab"] = _ab_enrich_media_urls(cfg, result["ab"])
+    return result
+
+
+def _shape_factory_adopt_match_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_adopt import match_output_to_shapes, resolve_media_abs  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    rel = str((q.get("relpath") or [""])[0] or "").strip()
+    if not rel:
+        raise ValueError("relpath required")
+    media = resolve_media_abs(
+        relpath=rel,
+        output_root=cfg.output_root,
+        workspace_root=cfg.workspace_root,
+    )
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    return match_output_to_shapes(media_abs=media, data_root=data_root)
+
+
+def _shape_factory_adopt_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_adopt import adopt_output_easy  # type: ignore
+
+    rel = str(body.get("relpath") or body.get("output_relpath") or "").strip()
+    if not rel:
+        raise ValueError("relpath required")
+    return adopt_output_easy(
+        relpath=rel,
+        repo_root=_repo_root(),
+        output_root=cfg.output_root,
+        workspace_root=cfg.workspace_root,
+        family_slug=str(body.get("family_slug") or body.get("family") or "").strip() or None,
+        dry_run=bool(body.get("dry_run") or False),
+        force=bool(body.get("force") or False),
     )
 
 
@@ -7950,6 +8192,1104 @@ def _factory_browse_entry_url(root_id: str, relpath: str, path: Path) -> Optiona
     return f"/api/workflow-explorer/factory/browse-file?{sp}"
 
 
+def _family_discovery_candidates() -> List[Path]:
+    """Possible locations for ``docs/family_discovery`` (host, docker docs mount, workspace mirror)."""
+    return [
+        _repo_root() / "docs" / "family_discovery",
+        Path("/workspace/docs/family_discovery"),
+        Path(__file__).resolve().parent.parent / "docs" / "family_discovery",
+        _repo_root() / "family_discovery",
+        Path("/workspace/family_discovery"),
+    ]
+
+
+def _family_discovery_dir() -> Path:
+    """
+    Operator review cards live in repo ``docs/family_discovery/``.
+
+    Prefer any candidate that has ``INDEX.json`` (so an empty ``/workspace/docs/…``
+    stub does not win over the workspace mirror). Fall back to the first existing dir.
+    """
+    candidates = _family_discovery_candidates()
+    for c in candidates:
+        try:
+            if (c / "INDEX.json").is_file():
+                return c
+        except Exception:
+            continue
+    for c in candidates:
+        try:
+            if c.is_dir():
+                return c
+        except Exception:
+            continue
+    return candidates[0]
+
+
+def _family_discovery_writable_dirs() -> List[Path]:
+    """Dirs that already hold review cards — dual-write patches so docs + mirror stay aligned."""
+    out: List[Path] = []
+    seen: set = set()
+    for c in _family_discovery_candidates():
+        try:
+            key = str(c.resolve()) if c.exists() else str(c)
+        except Exception:
+            key = str(c)
+        if key in seen:
+            continue
+        try:
+            if (c / "INDEX.json").is_file():
+                seen.add(key)
+                out.append(c)
+        except Exception:
+            continue
+    if not out:
+        primary = _family_discovery_dir()
+        out.append(primary)
+    return out
+
+
+def _family_discovery_abs_to_url(cfg: "ServerConfig", abs_path: Any) -> Optional[str]:
+    """Map an absolute host path to a preview URL (/files/… or factory browse-file).
+
+    Proposal JSON stores host paths under ``COMFYUI_BIND_OUTPUT_DIR`` (e.g.
+    ``/home/yuji/comfyui-runpod-data/output/…``). Inside Docker those files live
+    under ``cfg.output_root`` / ``workspace`` — reuse factory remapping.
+    """
+    raw = str(abs_path or "").strip()
+    if not raw:
+        return None
+    try:
+        resolved = _resolve_factory_asset_file(cfg, raw).expanduser().resolve()
+    except Exception:
+        try:
+            resolved = Path(raw).expanduser().resolve()
+        except Exception:
+            return None
+    if not resolved.is_file():
+        return None
+    try:
+        out_root = Path(cfg.output_root).expanduser().resolve()
+        rel = resolved.relative_to(out_root)
+        return "/files/" + urllib.parse.quote(_normalize_rel_posix(str(rel).replace("\\", "/")), safe="/")
+    except Exception:
+        pass
+    for root in cfg.factory_browse_roots or []:
+        if not isinstance(root, dict):
+            continue
+        root_id = str(root.get("id") or "").strip()
+        root_path_raw = str(root.get("path") or "").strip()
+        if not root_id or not root_path_raw:
+            continue
+        try:
+            root_path = Path(root_path_raw).expanduser().resolve()
+            rel = resolved.relative_to(root_path)
+        except Exception:
+            continue
+        url = _factory_browse_entry_url(root_id, _normalize_rel_posix(str(rel).replace("\\", "/")), resolved)
+        if url:
+            return url
+    return None
+
+
+def _family_discovery_enrolled_slugs() -> List[str]:
+    shapes = _repo_root() / ".data" / "shapes"
+    if not shapes.is_dir():
+        return []
+    out: List[str] = []
+    for path in sorted(shapes.glob("*.shape.yaml")):
+        slug = path.name[: -len(".shape.yaml")]
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception:
+            out.append(slug)
+            continue
+        m = re.search(r"(?m)^family_slug:\s*[\"']?([^\s\"'#]+)", text)
+        if m:
+            out.append(m.group(1).strip())
+        else:
+            out.append(slug)
+    # stable unique
+    seen: set = set()
+    uniq: List[str] = []
+    for s in out:
+        if s and s not in seen:
+            seen.add(s)
+            uniq.append(s)
+    return uniq
+
+
+def _family_discovery_workflow_media_stem(name: str) -> str:
+    """
+    Map a workflow filename to the natural OG media stem.
+
+    ``141756_OG_00001-readable.json`` → ``141756_OG_00001``
+    """
+    stem = Path(str(name or "").strip()).stem
+    if not stem:
+        return ""
+    # Catalog exports often append -readable / .cleaned / from_preset.
+    for suffix in ("-readable", ".cleaned", ".from_preset", "_from_preset"):
+        if stem.lower().endswith(suffix.lower()):
+            stem = stem[: -len(suffix)]
+    return stem.strip()
+
+
+def _family_discovery_stem_aliases(stem: str) -> List[str]:
+    """``FB9_GEX2-FACIAL`` ↔ ``FB9_GEX2_FACIAL`` (workflow vs output naming)."""
+    s = str(stem or "").strip()
+    if not s:
+        return []
+    out: List[str] = []
+    for cand in (s, s.replace("-", "_"), s.replace("_", "-")):
+        if cand and cand not in out:
+            out.append(cand)
+    return out
+
+
+_FAMILY_DISCOVERY_DATE_PH = re.compile(r"%date:[^%]+%", re.I)
+_FAMILY_DISCOVERY_OUTPUT_SUFFIX = re.compile(
+    r"[-_](OG|UPIN|UP|IN|LF|RAW|PREVIEW|FINAL)(?:_?\d+)?$",
+    re.I,
+)
+
+
+def _family_discovery_stem_ok(stem: str) -> bool:
+    """Reject model names, placeholders, and other non-output brands."""
+    s = str(stem or "").strip()
+    if len(s) < 5:
+        return False
+    if "%" in s or "/" in s or "\\" in s or " " in s:
+        return False
+    low = s.lower()
+    if low in {"wan", "wip", "og", "output", "upin", "preview", "raw", "final", "lf"}:
+        return False
+    if any(
+        tok in low
+        for tok in (
+            ".gguf",
+            ".safetensors",
+            ".ckpt",
+            "florence",
+            "promptgen",
+            "filename",
+            "faceblast8k",
+        )
+    ):
+        return False
+    # Bare numeric run ids from old VHS previews (e.g. 182905).
+    if re.fullmatch(r"\d{4,}", s):
+        return False
+    return True
+
+
+def _family_discovery_stem_from_prefix_template(prefix: str) -> Optional[str]:
+    """
+    ``og/%date%/X-Kneel-FB9-%date%-%date%_OG`` → ``X-Kneel-FB9``.
+
+    User workflow files are often renamed (``…-Undress.json``) while the VHS
+    ``filename_prefix`` still carries the real output brand.
+    """
+    raw = str(prefix or "").strip().replace("\\", "/")
+    if not raw:
+        return None
+    leaf = raw.split("/")[-1]
+    # Skip templates that only substitute the loaded media name.
+    if "%filename%" in leaf.lower():
+        return None
+    leaf = _FAMILY_DISCOVERY_DATE_PH.sub("", leaf)
+    leaf = re.sub(r"[-_]+", "-", leaf).strip("-_")
+    leaf = _FAMILY_DISCOVERY_OUTPUT_SUFFIX.sub("", leaf).strip("-_")
+    if "%" in leaf:
+        return None
+    leaf = re.sub(r"[-_]+\d*$", "", leaf).strip("-_")
+    if not _family_discovery_stem_ok(leaf):
+        return None
+    return leaf
+
+
+def _family_discovery_stems_from_workflow_file(path: Path) -> List[str]:
+    """Read LiteGraph workflow JSON; collect brands only from VHS filename_prefix templates."""
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(obj, dict):
+        return []
+    nodes = obj.get("nodes")
+    if not isinstance(nodes, list):
+        return []
+    found: List[str] = []
+    seen: set = set()
+
+    def _add(stem: Optional[str]) -> None:
+        s = str(stem or "").strip()
+        if not _family_discovery_stem_ok(s):
+            return
+        key = s.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        found.append(s)
+
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        widgets = node.get("widgets_values")
+        prefixes: List[str] = []
+        if isinstance(widgets, dict):
+            fp = widgets.get("filename_prefix")
+            if isinstance(fp, str) and fp.strip():
+                prefixes.append(fp)
+        elif isinstance(widgets, list):
+            for v in widgets:
+                if isinstance(v, str) and ("%date:" in v.lower() or v.lower().startswith(("og/", "wip/"))):
+                    prefixes.append(v)
+        for pref in prefixes:
+            _add(_family_discovery_stem_from_prefix_template(pref))
+    return found
+
+
+def _family_discovery_resolve_workflow_path(cfg: "ServerConfig", raw: str) -> Optional[Path]:
+    raw = str(raw or "").strip()
+    if not raw:
+        return None
+    try:
+        p = _resolve_factory_asset_file(cfg, raw)
+    except Exception:
+        p = Path(raw).expanduser()
+    try:
+        if p.is_file():
+            return p
+    except Exception:
+        return None
+    return None
+
+
+def _family_discovery_prop_stems(cfg: "ServerConfig", prop: Dict[str, Any]) -> List[str]:
+    """Canonical stems to search (filename + VHS filename_prefix brands). No alias explosion."""
+    stems: List[str] = []
+    seen: set = set()
+
+    def _add(stem: str) -> None:
+        s = _family_discovery_workflow_media_stem(str(stem or "").strip()) or str(stem or "").strip()
+        if not _family_discovery_stem_ok(s):
+            return
+        key = s.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        stems.append(s)
+
+    rep = prop.get("representative") if isinstance(prop.get("representative"), dict) else None
+    if isinstance(rep, dict):
+        rep_name = str(rep.get("name") or "")
+        rep_path = str(rep.get("path") or "")
+        _add(_family_discovery_workflow_media_stem(rep_name or rep_path))
+        wf = _family_discovery_resolve_workflow_path(cfg, rep_path)
+        if wf is not None:
+            for s in _family_discovery_stems_from_workflow_file(wf):
+                _add(s)
+    return stems
+
+
+def _family_discovery_video_matches_stem(basename: str, stem: str) -> bool:
+    """
+    True only when a video is plausibly from this exact workflow template.
+
+    Accepts:
+      - ``{stem}.mp4``
+      - ``{stem}__…`` (factory prefix)
+      - ``{stem}_2026-…`` / ``{stem}-2026-…`` / ``{stem}_00001…`` (dated/numbered runs)
+      - factory names whose *first* ``src-`` / ``id-`` token is this stem
+        (so ``src-FB9_GEX2__…__src-X-Kneel-FB9-…`` does not count as Kneel)
+
+    Rejects brand-token false friends and sibling variants
+    (``X-Kneel-FB9`` → ``X-Kneel-FB9-Bra``).
+    """
+    name = Path(str(basename or "")).name
+    if not name:
+        return False
+    base = Path(name).stem
+    b = base.lower()
+    n = name.lower()
+
+    def _aliases() -> List[str]:
+        return [a for a in _family_discovery_stem_aliases(stem) if len(a) >= 3]
+
+    for s in _aliases():
+        sl = s.lower()
+        if b == sl:
+            return True
+        if n.startswith(sl + "__"):
+            return True
+        # Dated / numbered continuation after - or _ (not -Bra / _FACIAL).
+        if len(b) > len(sl) + 1 and b.startswith(sl) and b[len(sl)] in "-_":
+            rest = b[len(sl) + 1 :]
+            if rest and rest[0].isdigit():
+                return True
+
+    # Only the first src-/id- token is the producer; later ones are inputs.
+    m = re.search(r"(?:^|__)(?:src|id)-(.+?)(?=__|$)", n)
+    if not m:
+        return False
+    token = m.group(1).strip().lower()
+    token = Path(token).stem  # drop accidental .mp4
+    for s in _aliases():
+        sl = s.lower()
+        if token == sl:
+            return True
+        if len(token) > len(sl) + 1 and token.startswith(sl) and token[len(sl)] in "-_":
+            rest = token[len(sl) + 1 :]
+            if rest and rest[0].isdigit():
+                return True
+    return False
+
+
+def _family_discovery_is_parent_stem(parent: str, child: str) -> bool:
+    """True if ``parent`` is a strict brand prefix of ``child`` (``X-Kneel-FB9`` ⊂ ``X-Kneel-FB9-Bra``)."""
+    p = str(parent or "").strip().lower()
+    c = str(child or "").strip().lower()
+    if not p or not c or p == c:
+        return False
+    return c.startswith(p + "-") or c.startswith(p + "_")
+
+
+def _family_discovery_stem_tiers(stems: List[str]) -> List[List[str]]:
+    """
+    Group stems from most specific to shared parents.
+
+    Sample lookup uses the first tier that yields hits, so Bra-test/Bra cards do not
+    collapse to the same shared ``X-Kneel-FB9-…_OG`` clips as Undress.
+    """
+    remaining = [str(s).strip() for s in stems if str(s).strip()]
+    tiers: List[List[str]] = []
+    while remaining:
+        maximal = [
+            s
+            for s in remaining
+            if not any(_family_discovery_is_parent_stem(s, other) for other in remaining if other != s)
+        ]
+        if not maximal:
+            maximal = [max(remaining, key=lambda x: (len(x), x.lower()))]
+        # Stable: longest first within a tier.
+        maximal = sorted(set(maximal), key=lambda x: (-len(x), x.lower()))
+        tiers.append(maximal)
+        rem_set = set(maximal)
+        remaining = [s for s in remaining if s not in rem_set]
+    return tiers
+
+
+def _family_discovery_find_og_mp4(cfg: "ServerConfig", stem: str) -> Optional[Path]:
+    """Locate ``{stem}.mp4`` under output/og (date dirs + shallow subdirs)."""
+    for s in _family_discovery_stem_aliases(stem):
+        if not s or "/" in s or "\\" in s:
+            continue
+        og = _prefer_flat_library_dir(Path(cfg.output_root), "og")
+        if not og.is_dir():
+            return None
+        try:
+            date_dirs = [p for p in og.iterdir() if p.is_dir() and not p.name.startswith("_")]
+        except Exception:
+            date_dirs = []
+        for d in date_dirs:
+            cand = d / f"{s}.mp4"
+            if cand.is_file():
+                return cand
+            try:
+                for sub in d.iterdir():
+                    if not sub.is_dir():
+                        continue
+                    cand2 = sub / f"{s}.mp4"
+                    if cand2.is_file():
+                        return cand2
+            except Exception:
+                continue
+        # No full-tree rglob — related search covers dated exports cheaply.
+    return None
+
+
+_FAMILY_DISCOVERY_SAMPLE_TARGET = 20
+_FAMILY_DISCOVERY_DATE_DIR = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_FAMILY_DISCOVERY_EXEMPLAR_CACHE: Dict[str, Any] = {"mtime": None, "payload": None}
+
+
+def _family_discovery_exemplar_index_path() -> Path:
+    return _repo_root() / ".data" / "shape_factory" / "family_discovery_exemplars.json"
+
+
+def _family_discovery_load_exemplar_index() -> Dict[str, Any]:
+    path = _family_discovery_exemplar_index_path()
+    if not path.is_file():
+        return {"ok": False, "fingerprints": {}, "path": str(path)}
+    try:
+        mtime = path.stat().st_mtime_ns
+    except Exception:
+        mtime = None
+    cached = _FAMILY_DISCOVERY_EXEMPLAR_CACHE
+    if cached.get("mtime") == mtime and isinstance(cached.get("payload"), dict):
+        return cached["payload"]
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        return {"ok": False, "fingerprints": {}, "path": str(path), "error": str(e)}
+    if not isinstance(obj, dict):
+        return {"ok": False, "fingerprints": {}, "path": str(path), "error": "invalid"}
+    fps = obj.get("fingerprints") if isinstance(obj.get("fingerprints"), dict) else {}
+    payload = {**obj, "ok": True, "fingerprints": fps, "path": str(path)}
+    _FAMILY_DISCOVERY_EXEMPLAR_CACHE["mtime"] = mtime
+    _FAMILY_DISCOVERY_EXEMPLAR_CACHE["payload"] = payload
+    return payload
+
+
+def _family_discovery_remap_output_path(cfg: "ServerConfig", raw: Any) -> Optional[Path]:
+    """Map exemplar index paths onto the live output_root (host vs container mounts)."""
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    p = Path(text)
+    if p.is_file():
+        return p
+    parts = p.parts
+    if "output" in parts:
+        i = parts.index("output")
+        alt = Path(cfg.output_root).joinpath(*parts[i + 1 :])
+        if alt.is_file():
+            return alt
+    # Common host bind → container workspace.
+    for prefix in (
+        "/home/yuji/comfyui-runpod-data/output",
+        "/mnt/e/comfyui-runpod-data/output",
+    ):
+        if text.startswith(prefix + "/") or text == prefix:
+            alt = Path(cfg.output_root) / text[len(prefix) :].lstrip("/\\")
+            if alt.is_file():
+                return alt
+    return p if p.exists() else None
+
+
+def _family_discovery_samples_for_fingerprint(
+    cfg: "ServerConfig", fingerprint: str, *, limit: int = _FAMILY_DISCOVERY_SAMPLE_TARGET
+) -> List[Path]:
+    """Exemplar mp4s for a structural fingerprint — ignores output basename/brand."""
+    fp = str(fingerprint or "").strip()
+    if not fp or limit <= 0:
+        return []
+    idx = _family_discovery_load_exemplar_index()
+    bucket = (idx.get("fingerprints") or {}).get(fp)
+    if not isinstance(bucket, list):
+        return []
+    out: List[Path] = []
+    seen: set = set()
+    for raw in bucket:
+        p = _family_discovery_remap_output_path(cfg, raw)
+        if p is None or not p.is_file():
+            continue
+        try:
+            key = str(p.resolve())
+        except Exception:
+            key = str(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _family_discovery_seed_embed_fingerprint(cfg: "ServerConfig", prop: Dict[str, Any]) -> Optional[str]:
+    """
+    Fingerprint the representative's own companion PNG embed when present.
+
+    Catalog readables are often quarantined/rewritten (node renames), so their
+    stored fingerprint may not match live og/ embeds. Locating the *same* run by
+    exact stem is only a seed — expansion stays fingerprint-based.
+    """
+    stems = _family_discovery_prop_stems(cfg, prop)
+    if not stems:
+        return None
+    # Prefer the longest / most specific stem (usually the catalog basename).
+    for stem in sorted(stems, key=lambda s: (-len(s), s.lower())):
+        mp4 = _family_discovery_find_og_mp4(cfg, stem)
+        if mp4 is None:
+            continue
+        png = mp4.with_suffix(".png")
+        if not png.is_file():
+            continue
+        try:
+            meta = _import_comfy_meta_lib()
+            sys.path.insert(0, str(_repo_root() / "workspace" / "scripts"))
+            from shape_factory_vocab import graph_fingerprint_topology  # type: ignore
+        except Exception:
+            return None
+        try:
+            chunks = meta.read_png_text_chunks(png)
+            _pr, wf = meta.extract_prompt_workflow_from_png_chunks(chunks)
+            if isinstance(wf, dict) and isinstance(wf.get("nodes"), list):
+                return graph_fingerprint_topology(wf)
+        except Exception:
+            continue
+    return None
+
+
+def _family_discovery_prop_sample_paths(
+    cfg: "ServerConfig", prop: Dict[str, Any], *, limit: int = _FAMILY_DISCOVERY_SAMPLE_TARGET
+) -> Tuple[List[Path], Optional[str]]:
+    """
+    Resolve up to ``limit`` exemplar mp4s for a proposal.
+
+    Order: card fingerprint → seed-embed fingerprint (same run's PNG) → merge.
+    Never expands by brand/basename cousins.
+    """
+    seen: set = set()
+    out: List[Path] = []
+    used_fp: Optional[str] = None
+
+    def _extend(fp: Optional[str]) -> None:
+        nonlocal used_fp
+        if not fp or len(out) >= limit:
+            return
+        hits = _family_discovery_samples_for_fingerprint(cfg, fp, limit=limit)
+        if hits and used_fp is None:
+            used_fp = fp
+        for p in hits:
+            try:
+                key = str(p.resolve())
+            except Exception:
+                key = str(p)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(p)
+            if len(out) >= limit:
+                return
+
+    _extend(str(prop.get("fingerprint") or "").strip() or None)
+    if len(out) < max(3, limit // 4):
+        seed_fp = _family_discovery_seed_embed_fingerprint(cfg, prop)
+        if seed_fp and seed_fp != str(prop.get("fingerprint") or "").strip():
+            _extend(seed_fp)
+    return out[:limit], used_fp
+
+
+def _family_discovery_date_range_from_paths(paths: List[Path]) -> Dict[str, Any]:
+    """Derive output date span from exemplar paths under og/YYYY-MM-DD/…"""
+    dates: List[str] = []
+    for p in paths:
+        for part in p.parts:
+            if _FAMILY_DISCOVERY_DATE_DIR.match(part):
+                dates.append(part)
+                break
+    dates = sorted(set(dates))
+    if not dates:
+        return {
+            "output_date_first": None,
+            "output_date_last": None,
+            "output_date_days": None,
+            "match_stems": [],
+        }
+    first, last = dates[0], dates[-1]
+    try:
+        from datetime import date as _date
+
+        d0 = _date.fromisoformat(first)
+        d1 = _date.fromisoformat(last)
+        days = (d1 - d0).days + 1
+    except Exception:
+        days = len(dates)
+    return {
+        "output_date_first": first,
+        "output_date_last": last,
+        "output_date_days": days,
+        "match_stems": [],
+    }
+
+
+def _family_discovery_find_related_mp4s(cfg: "ServerConfig", stems: List[str], *, limit: int = 3) -> List[Path]:
+    """Exact stem hits first, then newest matching outputs under og/ date dirs.
+
+    Kept for legacy callers; Family Review samples prefer fingerprint exemplars.
+    """
+    clean = [str(s).strip() for s in stems if str(s).strip()]
+    if not clean or limit <= 0:
+        return []
+    out: List[Path] = []
+    seen: set = set()
+
+    def _add(p: Optional[Path]) -> None:
+        if p is None or not p.is_file():
+            return
+        try:
+            key = str(p.resolve())
+        except Exception:
+            key = str(p)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(p)
+
+    for stem in sorted(clean, key=lambda s: (-len(s), s.lower())):
+        _add(_family_discovery_find_og_mp4(cfg, stem))
+        if len(out) >= limit:
+            return out[:limit]
+
+    og = _prefer_flat_library_dir(Path(cfg.output_root), "og")
+    if not og.is_dir():
+        return out
+
+    aliases = sorted(
+        {a for stem in clean for a in _family_discovery_stem_aliases(stem) if len(a) >= 4},
+        key=len,
+        reverse=True,
+    )
+    if not aliases:
+        return out
+
+    try:
+        date_dirs = sorted(
+            [p for p in og.iterdir() if p.is_dir() and not p.name.startswith("_")],
+            key=lambda p: p.name,
+            reverse=True,
+        )
+    except Exception:
+        date_dirs = []
+
+    primary: List[Tuple[float, Path]] = []
+    secondary: List[Tuple[float, Path]] = []
+    for d in date_dirs:
+        cands: List[Path] = []
+        for alias in aliases:
+            for pat in (f"{alias}-*.mp4", f"{alias}_*.mp4", f"{alias}__*.mp4", f"{alias}.mp4"):
+                try:
+                    cands.extend(d.glob(pat))
+                except Exception:
+                    pass
+                # Case variants used by factory (X-KNEEL-FB9).
+                au, al = alias.upper(), alias.lower()
+                if au != alias:
+                    for pat in (f"{au}-*.mp4", f"{au}_*.mp4", f"{au}__*.mp4"):
+                        try:
+                            cands.extend(d.glob(pat))
+                        except Exception:
+                            pass
+                if al != alias and al != au:
+                    for pat in (f"{al}-*.mp4", f"{al}_*.mp4", f"{al}__*.mp4"):
+                        try:
+                            cands.extend(d.glob(pat))
+                        except Exception:
+                            pass
+            hourly = d / "hourly"
+            if hourly.is_dir():
+                for a2 in {alias, alias.upper(), alias.lower()}:
+                    try:
+                        cands.extend(hourly.glob(f"*{a2}*.mp4"))
+                    except Exception:
+                        pass
+        for p in cands:
+            if not any(_family_discovery_video_matches_stem(p.name, stem) for stem in clean):
+                continue
+            try:
+                mtime = p.stat().st_mtime
+            except Exception:
+                mtime = 0.0
+            # Prefer basename-prefixed OG exports over factory names that only cite src-.
+            name_l = p.name.lower()
+            is_primary = any(
+                name_l.startswith(a.lower() + "-")
+                or name_l.startswith(a.lower() + "_")
+                or name_l.startswith(a.lower() + "__")
+                or Path(name_l).stem == a.lower()
+                for a in aliases
+            )
+            (primary if is_primary else secondary).append((mtime, p))
+        # Newest dirs first — stop once we have enough direct OG exports.
+        if len(primary) >= limit:
+            break
+
+    for bucket in (primary, secondary):
+        bucket.sort(key=lambda t: t[0], reverse=True)
+        for _, p in bucket:
+            _add(p)
+            if len(out) >= limit:
+                return out[:limit]
+    return out[:limit]
+
+
+def _family_discovery_find_distinguishing_mp4s(
+    cfg: "ServerConfig", stems: List[str], *, limit: int = 4
+) -> Tuple[List[Path], List[str]]:
+    """
+    Samples for the most specific stem tier that has hits.
+
+    Returns ``(paths, stems_used)`` so Bra vs Undress do not share parent-brand clips
+    when a more specific brand exists.
+    """
+    for tier in _family_discovery_stem_tiers(stems):
+        hits = _family_discovery_find_related_mp4s(cfg, tier, limit=limit)
+        if hits:
+            return hits, tier
+    return [], []
+
+
+def _family_discovery_collect_sample_paths(cfg: "ServerConfig", prop: Dict[str, Any]) -> List[str]:
+    """Fingerprint-matched exemplars only (output naming is not authoritative)."""
+    hits, _fp = _family_discovery_prop_sample_paths(
+        cfg, prop, limit=_FAMILY_DISCOVERY_SAMPLE_TARGET
+    )
+    return [str(p) for p in hits]
+
+
+_FAMILY_DISCOVERY_INDEX_CACHE: Dict[str, Any] = {"key": None, "payload": None}
+
+
+def _family_discovery_date_dir_has_match(date_dir: Path, stems: List[str]) -> bool:
+    """True if this og/YYYY-MM-DD folder has any output matching the stems."""
+    clean = [s for s in stems if s]
+    if not clean:
+        return False
+    aliases = sorted(
+        {a for stem in clean for a in _family_discovery_stem_aliases(stem) if len(a) >= 4},
+        key=len,
+        reverse=True,
+    )
+    try:
+        for p in date_dir.iterdir():
+            if not p.is_file() or p.suffix.lower() != ".mp4":
+                continue
+            name = p.name
+            # Cheap reject before regex-heavy matcher.
+            low = name.lower()
+            if not any(a.lower() in low for a in aliases):
+                continue
+            if any(_family_discovery_video_matches_stem(name, stem) for stem in clean):
+                return True
+    except Exception:
+        pass
+    hourly = date_dir / "hourly"
+    if not hourly.is_dir():
+        return False
+    for alias in aliases:
+        for pat in (f"*{alias}*.mp4", f"*{alias.upper()}*.mp4", f"*{alias.lower()}*.mp4"):
+            try:
+                for p in hourly.glob(pat):
+                    if any(_family_discovery_video_matches_stem(p.name, stem) for stem in clean):
+                        return True
+            except Exception:
+                continue
+    return False
+
+
+def _family_discovery_output_date_range(cfg: "ServerConfig", stems: List[str]) -> Dict[str, Any]:
+    """
+    Earliest/latest ``og/YYYY-MM-DD`` folders for the most specific stem tier with hits.
+
+    Same specificity rule as samples — parent brands are only used when no more
+    specific brand has dated outputs.
+    """
+    empty = {
+        "output_date_first": None,
+        "output_date_last": None,
+        "output_date_days": 0,
+        "match_stems": list(stems),
+    }
+    clean = [str(s).strip() for s in stems if str(s).strip()]
+    if not clean:
+        return empty
+    og = _prefer_flat_library_dir(Path(cfg.output_root), "og")
+    if not og.is_dir():
+        return empty
+
+    try:
+        date_dirs = sorted(
+            [p for p in og.iterdir() if p.is_dir() and _FAMILY_DISCOVERY_DATE_DIR.match(p.name)],
+            key=lambda p: p.name,
+        )
+    except Exception:
+        return empty
+
+    for tier in _family_discovery_stem_tiers(clean):
+        hit_dates = [d.name for d in date_dirs if _family_discovery_date_dir_has_match(d, tier)]
+        if hit_dates:
+            return {
+                "output_date_first": hit_dates[0],
+                "output_date_last": hit_dates[-1],
+                "output_date_days": len(hit_dates),
+                "match_stems": tier,
+            }
+    return empty
+
+
+def _family_discovery_enrich_prop(cfg: "ServerConfig", prop: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(prop)
+    hits, used_fp = _family_discovery_prop_sample_paths(
+        cfg, prop, limit=_FAMILY_DISCOVERY_SAMPLE_TARGET
+    )
+    samples_out: List[Dict[str, Any]] = []
+    for hit in hits:
+        path = str(hit)
+        name = Path(path).name
+        entry: Dict[str, Any] = {"path": path, "name": name}
+        entry["url"] = _family_discovery_abs_to_url(cfg, path)
+        samples_out.append(entry)
+    out["sample_videos"] = samples_out
+    out["sample_source"] = "fingerprint_exemplars"
+    out["sample_target"] = _FAMILY_DISCOVERY_SAMPLE_TARGET
+    # Dates from exemplar paths (og/YYYY-MM-DD/…), not from output basename stems.
+    out.update(_family_discovery_date_range_from_paths(hits))
+    if used_fp:
+        out["match_stems"] = [f"fingerprint:{used_fp[:16]}…"]
+    elif str(prop.get("fingerprint") or "").strip():
+        out["match_stems"] = [f"fingerprint:{str(prop.get('fingerprint'))[:16]}…"]
+    else:
+        out["match_stems"] = []
+    if not hits:
+        idx = _family_discovery_load_exemplar_index()
+        out["sample_index_ok"] = bool(idx.get("ok"))
+        out["sample_index_path"] = idx.get("path")
+    rep = prop.get("representative") if isinstance(prop.get("representative"), dict) else None
+    if isinstance(rep, dict):
+        rep2 = dict(rep)
+        rpath = str(rep2.get("path") or "").strip()
+        if rpath:
+            try:
+                remapped = _resolve_factory_asset_file(cfg, rpath)
+                rep2["exists"] = remapped.is_file()
+            except Exception:
+                rep2["exists"] = Path(rpath).expanduser().is_file()
+        out["representative"] = rep2
+    return out
+
+
+def _family_discovery_load_index(cfg: Optional["ServerConfig"] = None) -> Dict[str, Any]:
+    idx_path = _family_discovery_dir() / "INDEX.json"
+    if not idx_path.is_file():
+        return {
+            "ok": False,
+            "error": "index_missing",
+            "path": str(idx_path),
+            "proposals": [],
+            "enrolled_families": _family_discovery_enrolled_slugs(),
+        }
+    try:
+        obj = json.loads(idx_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        return {"ok": False, "error": "index_unreadable", "detail": str(e), "path": str(idx_path), "proposals": []}
+    if not isinstance(obj, dict):
+        return {"ok": False, "error": "index_invalid", "path": str(idx_path), "proposals": []}
+    proposals = [p for p in (obj.get("proposals") if isinstance(obj.get("proposals"), list) else []) if isinstance(p, dict)]
+
+    cache_key = None
+    if cfg is not None:
+        try:
+            og = _prefer_flat_library_dir(Path(cfg.output_root), "og")
+            ex = _family_discovery_exemplar_index_path()
+            ex_m = ex.stat().st_mtime_ns if ex.is_file() else 0
+            cache_key = f"{idx_path.stat().st_mtime_ns}:{og.stat().st_mtime_ns}:{ex_m}:{len(proposals)}"
+        except Exception:
+            cache_key = None
+        cached = _FAMILY_DISCOVERY_INDEX_CACHE
+        if cache_key and cached.get("key") == cache_key and isinstance(cached.get("payload"), dict):
+            return cached["payload"]
+
+    # Attach output date ranges + exemplar sample counts per proposal.
+    if cfg is not None and proposals:
+        prop_stems: Dict[str, List[str]] = {}
+        prop_cards: Dict[str, Dict[str, Any]] = {}
+        for row in proposals:
+            pid = str(row.get("id") or "").strip()
+            if not re.fullmatch(r"prop_\d{3}", pid):
+                continue
+            path = _family_discovery_prop_path(pid)
+            if path is None or not path.is_file():
+                continue
+            try:
+                card = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(card, dict):
+                continue
+            prop_cards[pid] = card
+            stems = _family_discovery_prop_stems(cfg, card)
+            if stems:
+                prop_stems[pid] = stems
+
+        dates_by_prop: Dict[str, List[str]] = {pid: [] for pid in prop_stems}
+        og = _prefer_flat_library_dir(Path(cfg.output_root), "og")
+        if og.is_dir() and prop_stems:
+            try:
+                date_dirs = sorted(
+                    [p for p in og.iterdir() if p.is_dir() and _FAMILY_DISCOVERY_DATE_DIR.match(p.name)],
+                    key=lambda p: p.name,
+                )
+            except Exception:
+                date_dirs = []
+            prepared = list(prop_stems.items())
+            for d in date_dirs:
+                for pid, stems in prepared:
+                    if _family_discovery_date_dir_has_match(d, stems):
+                        dates_by_prop[pid].append(d.name)
+
+        for row in proposals:
+            pid = str(row.get("id") or "").strip()
+            days = dates_by_prop.get(pid) or []
+            if days:
+                row["output_date_first"] = days[0]
+                row["output_date_last"] = days[-1]
+                row["output_date_days"] = len(days)
+            else:
+                row["output_date_first"] = None
+                row["output_date_last"] = None
+                row["output_date_days"] = 0
+            if pid in prop_stems:
+                row["match_stems"] = prop_stems[pid]
+            card = prop_cards.get(pid)
+            if card is not None:
+                try:
+                    hits, _used_fp = _family_discovery_prop_sample_paths(
+                        cfg, card, limit=_FAMILY_DISCOVERY_SAMPLE_TARGET
+                    )
+                    row["sample_count"] = len(hits)
+                    row["sample_target"] = _FAMILY_DISCOVERY_SAMPLE_TARGET
+                except Exception:
+                    row["sample_count"] = 0
+                    row["sample_target"] = _FAMILY_DISCOVERY_SAMPLE_TARGET
+            else:
+                row.setdefault("sample_count", 0)
+                row.setdefault("sample_target", _FAMILY_DISCOVERY_SAMPLE_TARGET)
+
+    payload = {
+        "ok": True,
+        "schema_version": obj.get("schema_version"),
+        "generated_at": obj.get("generated_at"),
+        "review_instructions": obj.get("review_instructions"),
+        "covered_clusters": obj.get("covered_clusters"),
+        "uncovered_clusters": obj.get("uncovered_clusters"),
+        "path": str(idx_path),
+        "proposals": proposals,
+        "enrolled_families": _family_discovery_enrolled_slugs(),
+    }
+    if cache_key:
+        _FAMILY_DISCOVERY_INDEX_CACHE["key"] = cache_key
+        _FAMILY_DISCOVERY_INDEX_CACHE["payload"] = payload
+    return payload
+
+
+def _family_discovery_prop_path(prop_id: str) -> Optional[Path]:
+    pid = str(prop_id or "").strip()
+    if not re.fullmatch(r"prop_\d{3}", pid):
+        return None
+    path = _family_discovery_dir() / f"{pid}.json"
+    return path
+
+
+def _family_discovery_load_prop(cfg: "ServerConfig", prop_id: str) -> Dict[str, Any]:
+    path = _family_discovery_prop_path(prop_id)
+    if path is None:
+        return {"ok": False, "error": "bad_prop_id", "prop_id": prop_id}
+    if not path.is_file():
+        return {"ok": False, "error": "prop_missing", "prop_id": prop_id, "path": str(path)}
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        return {"ok": False, "error": "prop_unreadable", "detail": str(e), "path": str(path)}
+    if not isinstance(obj, dict):
+        return {"ok": False, "error": "prop_invalid", "path": str(path)}
+    return {
+        "ok": True,
+        "path": str(path),
+        "prop": _family_discovery_enrich_prop(cfg, obj),
+        "enrolled_families": _family_discovery_enrolled_slugs(),
+    }
+
+
+def _family_discovery_patch_prop(cfg: "ServerConfig", prop_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    path = _family_discovery_prop_path(prop_id)
+    if path is None:
+        return {"ok": False, "error": "bad_prop_id", "prop_id": prop_id}
+    if not path.is_file():
+        return {"ok": False, "error": "prop_missing", "prop_id": prop_id, "path": str(path)}
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        return {"ok": False, "error": "prop_unreadable", "detail": str(e), "path": str(path)}
+    if not isinstance(obj, dict):
+        return {"ok": False, "error": "prop_invalid", "path": str(path)}
+
+    allowed_status = {
+        "pending_review",
+        "new_family",
+        "merge",
+        "skip",
+        "enrolled",
+    }
+    if "status" in body:
+        status = str(body.get("status") or "").strip().lower()
+        if status not in allowed_status:
+            return {"ok": False, "error": "bad_status", "allowed": sorted(allowed_status)}
+        obj["status"] = status
+    if "proposed_family_slug" in body:
+        raw = body.get("proposed_family_slug")
+        if raw is None or str(raw).strip() == "":
+            obj["proposed_family_slug"] = None
+        else:
+            slug = str(raw).strip()
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", slug):
+                return {"ok": False, "error": "bad_proposed_family_slug"}
+            obj["proposed_family_slug"] = slug
+    if "nearest_enrolled" in body:
+        raw = body.get("nearest_enrolled")
+        if raw is None or str(raw).strip() == "":
+            obj["nearest_enrolled"] = None
+        else:
+            obj["nearest_enrolled"] = str(raw).strip()
+    if "operator_notes" in body:
+        raw = body.get("operator_notes")
+        if raw is None or str(raw).strip() == "":
+            obj["operator_notes"] = None
+        else:
+            obj["operator_notes"] = str(raw).strip()[:4000]
+    if "operator_decision" in body:
+        raw = body.get("operator_decision")
+        if raw is None or str(raw).strip() == "":
+            obj["operator_decision"] = None
+        else:
+            obj["operator_decision"] = str(raw).strip()[:512]
+
+    # Keep INDEX.json status row in sync when present; dual-write to docs + mirror.
+    written: List[str] = []
+    for d in _family_discovery_writable_dirs():
+        prop_path = d / f"{prop_id}.json"
+        idx_path = d / "INDEX.json"
+        try:
+            if prop_path.is_file() or d == path.parent:
+                _atomic_write_json(prop_path, obj)
+                written.append(str(prop_path))
+            if idx_path.is_file():
+                try:
+                    idx = json.loads(idx_path.read_text(encoding="utf-8"))
+                except Exception:
+                    idx = None
+                if isinstance(idx, dict) and isinstance(idx.get("proposals"), list):
+                    for row in idx["proposals"]:
+                        if isinstance(row, dict) and str(row.get("id") or "") == str(obj.get("id") or prop_id):
+                            row["status"] = obj.get("status")
+                            break
+                    _atomic_write_json(idx_path, idx)
+        except Exception:
+            continue
+    if not written:
+        _atomic_write_json(path, obj)
+        written.append(str(path))
+    return {
+        "ok": True,
+        "path": written[0],
+        "paths": written,
+        "prop": _family_discovery_enrich_prop(cfg, obj),
+        "enrolled_families": _family_discovery_enrolled_slugs(),
+    }
+
+
 def _factory_browse_file_allowed(path: Path, kind: str, media_type_filter: str = "all") -> bool:
     suffix = path.suffix.lower()
     if kind == "workflow":
@@ -10093,6 +11433,43 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return _json_response(self, 500, {"ok": False, "error": "work_products_failed", "detail": str(e)})
 
+        if path == "/api/shape-factory/ab-experiments":
+            try:
+                payload = _shape_factory_ab_list_payload(cfg, q)
+                return _json_response(self, 200, payload)
+            except Exception as e:
+                return _json_response(self, 500, {"ok": False, "error": "ab_list_failed", "detail": str(e)})
+
+        if path == "/api/shape-factory/adopt-match":
+            try:
+                payload = _shape_factory_adopt_match_payload(cfg, q)
+                code = 200 if payload.get("ok") or payload.get("error") in {
+                    "no_ui_workflow",
+                    "no_shape_match",
+                    "ambiguous_shape_match",
+                    "fingerprint_failed",
+                } else 400
+                return _json_response(self, code, payload)
+            except ValueError as e:
+                return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+            except FileNotFoundError as e:
+                return _json_response(self, 404, {"ok": False, "error": "not_found", "detail": str(e)})
+            except Exception as e:
+                return _json_response(self, 500, {"ok": False, "error": "adopt_match_failed", "detail": str(e)})
+
+        if path.startswith("/api/shape-factory/ab-experiments/"):
+            ab_id = path[len("/api/shape-factory/ab-experiments/") :].strip().strip("/")
+            if ab_id and "/" not in ab_id:
+                try:
+                    payload = _shape_factory_ab_get_payload(cfg, ab_id)
+                    return _json_response(self, 200, payload)
+                except FileNotFoundError as e:
+                    return _json_response(self, 404, {"ok": False, "error": "not_found", "detail": str(e)})
+                except ValueError as e:
+                    return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+                except Exception as e:
+                    return _json_response(self, 500, {"ok": False, "error": "ab_get_failed", "detail": str(e)})
+
         if path == "/api/shape-factory/markers":
             try:
                 payload = _shape_factory_markers_payload(cfg, q)
@@ -10299,6 +11676,25 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/workflow-explorer/factory/browse-file":
             return self._handle_factory_browse_file_get(q)
 
+        if path == "/api/workflow-explorer/family-discovery":
+            try:
+                return _json_response(self, 200, _family_discovery_load_index(cfg))
+            except Exception as e:
+                return _json_response(
+                    self, 500, {"ok": False, "error": "family_discovery_index_failed", "detail": str(e)}
+                )
+
+        if path.startswith("/api/workflow-explorer/family-discovery/"):
+            prop_id = path[len("/api/workflow-explorer/family-discovery/") :].strip().strip("/")
+            try:
+                payload = _family_discovery_load_prop(cfg, prop_id)
+            except Exception as e:
+                return _json_response(
+                    self, 500, {"ok": False, "error": "family_discovery_prop_failed", "detail": str(e)}
+                )
+            code = 200 if payload.get("ok") else (404 if payload.get("error") in {"prop_missing", "bad_prop_id"} else 400)
+            return _json_response(self, code, payload)
+
         if path == "/api/queue/ledger-status":
             st = _read_queue_ledger_state(cfg.queue_ledger_state_path)
             entries = _queue_ledger_entries(st)
@@ -10498,10 +11894,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_factory_assets_post()
         if path == "/api/workflow-explorer/factory/workflows":
             return self._handle_factory_workflows_post()
+        if path.startswith("/api/workflow-explorer/family-discovery/"):
+            return self._handle_family_discovery_prop_post(path)
         if path == "/api/shape-factory/queue":
             return self._handle_shape_factory_queue_post()
         if path == "/api/shape-factory/replay":
             return self._handle_shape_factory_replay_post()
+        if path == "/api/shape-factory/ab-queue":
+            return self._handle_shape_factory_ab_queue_post()
+        if path == "/api/shape-factory/adopt-from-embed":
+            return self._handle_shape_factory_adopt_post()
+        if path.startswith("/api/shape-factory/ab-experiments/") and path.endswith("/judgment"):
+            return self._handle_shape_factory_ab_judgment_post(path)
         if path == "/api/shape-factory/derive":
             return self._handle_shape_factory_derive_post()
         if path == "/api/shape-factory/unqueue":
@@ -10735,6 +12139,68 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, 502, {"ok": False, "error": "shape_factory_replay_failed", "detail": str(e)})
         except Exception as e:
             return _json_response(self, 500, {"ok": False, "error": "shape_factory_replay_failed", "detail": str(e)})
+        status = 200 if payload.get("ok", True) else 400
+        return _json_response(self, status, payload)
+
+    def _handle_shape_factory_ab_queue_post(self) -> None:
+        """POST /api/shape-factory/ab-queue — exemplar-locked family A/B pair."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _shape_factory_ab_queue_payload(cfg, body)
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except FileNotFoundError as e:
+            return _json_response(self, 404, {"ok": False, "error": "not_found", "detail": str(e)})
+        except RuntimeError as e:
+            qerr = _quarantine_runtime_error_payload(e)
+            if qerr is not None:
+                return _json_response(self, 409, qerr)
+            return _json_response(self, 502, {"ok": False, "error": "ab_queue_failed", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "ab_queue_failed", "detail": str(e)})
+        status = 200 if payload.get("ok", True) else 400
+        return _json_response(self, status, payload)
+
+    def _handle_shape_factory_ab_judgment_post(self, path: str) -> None:
+        """POST /api/shape-factory/ab-experiments/{id}/judgment — distinction call."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        prefix = "/api/shape-factory/ab-experiments/"
+        rest = path[len(prefix) :] if path.startswith(prefix) else ""
+        ab_id = rest[: -len("/judgment")] if rest.endswith("/judgment") else ""
+        ab_id = ab_id.strip().strip("/")
+        if not ab_id:
+            return _json_response(self, 400, {"ok": False, "error": "missing_ab_id"})
+        try:
+            payload = _shape_factory_ab_judge_payload(cfg, ab_id, body)
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except FileNotFoundError as e:
+            return _json_response(self, 404, {"ok": False, "error": "not_found", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "ab_judge_failed", "detail": str(e)})
+        status = 200 if payload.get("ok", True) else 400
+        return _json_response(self, status, payload)
+
+    def _handle_shape_factory_adopt_post(self) -> None:
+        """POST /api/shape-factory/adopt-from-embed — easy-case mint Workbench job from embed."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _shape_factory_adopt_payload(cfg, body)
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except FileNotFoundError as e:
+            return _json_response(self, 404, {"ok": False, "error": "not_found", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "adopt_failed", "detail": str(e)})
         status = 200 if payload.get("ok", True) else 400
         return _json_response(self, status, payload)
 
@@ -11359,13 +12825,34 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             con.close()
 
+    def _handle_family_discovery_prop_post(self, path: str) -> None:
+        """POST /api/workflow-explorer/family-discovery/{prop_id} — patch operator fields."""
+        cfg = self.server.cfg
+        prop_id = path[len("/api/workflow-explorer/family-discovery/") :].strip().strip("/")
+        obj = self._read_request_json()
+        if obj is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        if not isinstance(obj, dict):
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _family_discovery_patch_prop(cfg, prop_id, obj)
+        except Exception as e:
+            return _json_response(
+                self, 500, {"ok": False, "error": "family_discovery_patch_failed", "detail": str(e)}
+            )
+        code = 200 if payload.get("ok") else (404 if payload.get("error") in {"prop_missing", "bad_prop_id"} else 400)
+        return _json_response(self, code, payload)
+
     def _handle_discovery_library_get(self, q: Dict[str, List[str]]) -> None:
         """
         GET /api/discovery/library
           ?refresh=1 — rescan output/output/{og,wip}, rewrite JSON index
           ?q= — case-insensitive substring on relpath or filename
           ?since_days=N — keep items with mtime within last N days
+            (ignored when path_prefix is set)
           ?library=og|wip|all
+          ?path_prefix= — folder browse: keep items under this POSIX prefix;
+            response includes folders[] (immediate children) + files_in_folder
           ?limit= — max items after sort (default 800, max 8000)
         """
         cfg = self.server.cfg
@@ -11388,6 +12875,9 @@ class Handler(BaseHTTPRequestHandler):
             if s in ("og", "wip", "all"):
                 lib_filter = s
                 break
+
+        path_prefix_raw = (q.get("path_prefix") or [""])[0].strip()
+        path_prefix = _discovery_normalize_path_prefix(path_prefix_raw, lib_filter)
 
         limit = 800
         for v in q.get("limit", []):
@@ -11474,8 +12964,9 @@ class Handler(BaseHTTPRequestHandler):
             items_in = []
 
         now = time.time()
+        # Folder browse is how operators reach deep dated trees — skip mtime window.
         since_cut = None
-        if since_days is not None and since_days > 0:
+        if not path_prefix and since_days is not None and since_days > 0:
             since_cut = now - float(since_days) * 86400.0
 
         filtered: List[Dict[str, Any]] = []
@@ -11487,6 +12978,10 @@ class Handler(BaseHTTPRequestHandler):
                 continue
             rp = str(it.get("relpath") or "")
             nm = str(it.get("name") or "")
+            if path_prefix:
+                cands = _discovery_item_relpath_candidates(it)
+                if not any(_discovery_path_under_prefix(p, path_prefix) for p in cands):
+                    continue
             if qtext:
                 blob_parts = [rp.lower(), nm.lower()]
                 mems = it.get("members")
@@ -11507,6 +13002,8 @@ class Handler(BaseHTTPRequestHandler):
                     continue
             filtered.append(it)
 
+        folders, files_in_folder = _discovery_folder_browse_stats(filtered, path_prefix)
+
         total_after_filter = len(filtered)
         truncated = total_after_filter > limit
         filtered = filtered[:limit]
@@ -11521,6 +13018,9 @@ class Handler(BaseHTTPRequestHandler):
             "item_count_filtered": total_after_filter,
             "truncated": truncated,
             "limit": limit,
+            "path_prefix": path_prefix,
+            "folders": folders,
+            "files_in_folder": files_in_folder,
             "health": health,
             "items": filtered,
         }

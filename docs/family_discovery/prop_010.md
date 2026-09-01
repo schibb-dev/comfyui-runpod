@@ -2,21 +2,34 @@
 
 - **status:** `pending_review`
 - **IO guess:** `I2V` · profile `still_prompt` · role `origin`
-- **fingerprint:** `7639f6b6cf7e7969…`
-- **members:** 3
-- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9-handjob-start.json`
+- **fingerprint:** `87118e9ecdf46725…`
+- **members:** 11
+- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA5-laying-down.json`
 
-## Sample videos
+## Sample videos (by fingerprint, not output name)
 
-- `/home/yuji/comfyui-runpod-data/output/og/2026-08-27/hourly/hourly__pp-catalog-default__src-X-Kneel-FB9-2026-03-18-224719_OG_00001__000_20260827084123_f2_00001.mp4`
-- `/home/yuji/comfyui-runpod-data/output/og/2026-08-27/hourly/hourly__pp-catalog-default__src-X-Kneel-FB9-2026-03-18-233711_OG_00001__000_20260827072918_f2_00001.mp4`
-- `/home/yuji/comfyui-runpod-data/output/og/2026-08-27/hourly/hourly__pp-catalog-default__src-FB9_GEX2__pp-3f38a1e6a2e5__src-hourly__pp-3f38a1e6a2e5__src-FB9_GE__00_20260827113622_f2_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-12/X-FB9-POSE-2026-05-12-232225_OG_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-12/X-FB9-POSE-2026-05-12-232242_OG_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-12/X-FB9-POSE-2026-05-12-203643_OG_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-12/X-FB9-POSE-2026-05-12-153337_OG_00004.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-12/X-FB9-POSE-2026-05-12-153337_OG_00003.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-12/X-FB9-POSE-2026-05-12-153337_OG_00002.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-12/X-FB9-POSE-2026-05-12-153337_OG_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-12/X-FB9-POSE-2026-05-12-152720_OG_00001.mp4`
 
 ## Members
 
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9-handjob-start.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9-pose-start.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/X-FB9-POSE2.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA5-laying-down.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA5-laying-down5.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA5L-1.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA5L-laying-down3.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA6L.from_preset.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA6L.template.cleaned.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA6L.titles.canonical.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA6L.titles.canonical2.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VAL-2.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/Undress_TEST-FB8VA5L-2026-02-12-105708_OG_00001.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/X-FB9-POSE-OVERHEAD.json`
 
 ## Operator gate
 

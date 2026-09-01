@@ -2,43 +2,64 @@
   "id": "prop_014",
   "status": "pending_review",
   "proposed_family_slug": null,
-  "fingerprint": "dd6f75aa1c956e7e2136872cf37b1bcff2a261a9dcfc7c160e00f13bab8b9d81",
+  "fingerprint": "cdcb87aa5084c6a834aa9231454473867f9d365a5c707aa3c823ce7705ae9e70",
   "io_guess": "I2V",
   "primary_input_guess": "still",
   "input_profile_guess": "still_prompt",
   "chain_role_guess": "origin",
-  "member_count": 3,
+  "member_count": 4,
   "representative": {
     "source": "user",
-    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/X-Kneel-FB9-Nude3.json",
-    "name": "X-Kneel-FB9-Nude3.json",
+    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9/FB9-Gen-PromptSchedule.json",
+    "name": "FB9-Gen-PromptSchedule.json",
     "stem": null,
-    "node_count": 73
+    "node_count": 63
   },
   "members": [
     {
       "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/X-Kneel-FB9-Nude3.json",
-      "name": "X-Kneel-FB9-Nude3.json",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9/FB9-Gen-PromptSchedule.json",
+      "name": "FB9-Gen-PromptSchedule.json",
       "stem": null,
-      "node_count": 73
+      "node_count": 63
     },
     {
       "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/X-Kneel-Nude-FB9.json",
-      "name": "X-Kneel-Nude-FB9.json",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9-Intro-PS.json",
+      "name": "FB9-Intro-PS.json",
       "stem": null,
-      "node_count": 73
+      "node_count": 63
     },
     {
       "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/active/x-kneel-fb9/X-Kneel-FB9-heavy.json",
-      "name": "X-Kneel-FB9-heavy.json",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/KneelTestA.json",
+      "name": "KneelTestA.json",
       "stem": null,
-      "node_count": 73
+      "node_count": 63
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/KneelTestB.json",
+      "name": "KneelTestB.json",
+      "stem": null,
+      "node_count": 63
     }
   ],
-  "sample_videos": [],
+  "sample_videos": [
+    "/home/yuji/comfyui-runpod-data/output/og/2026-03-03/KneelTestA_FB9_GPS_2026-03-03_00005.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-03-03/KneelTestA_FB9_GPS_2026-03-03_00004.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-03-03/KneelTestA_FB9_GPS_2026-03-03_00003.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-03-03/KneelTestA_FB9_GPS_2026-03-03_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-03-03/FB9_GPS_2026-03-03_00004.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-03-03/FB9_GPS_2026-03-03_00003.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-03-03/FB9_GPS_2026-03-03_00002.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-03-03/FB9_GPS_2026-03-03_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-03-02/FB9_GPS_2026-03-02_00012.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-03-02/FB9_GPS_2026-03-02_00011.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-03-02/FB9_GPS_2026-03-02_00004.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-03-02/FB9_GPS_2026-03-02_00003.mp4"
+  ],
+  "sample_source": "fingerprint_exemplars",
   "quarantine_notes": [],
   "nearest_enrolled": null,
   "operator_decision": null,

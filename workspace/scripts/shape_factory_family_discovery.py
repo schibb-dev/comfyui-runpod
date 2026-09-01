@@ -2,10 +2,15 @@
 """Cluster workflow corpus for Phase 2 family discovery.
 
 Scans catalog readable JSONs, template candidates, and user workflow trees;
-groups by structural graph fingerprint; marks clusters covered by enrolled shapes.
+groups by **topology** fingerprint (id-free node-type multiset + typed edges);
+marks clusters covered by enrolled shapes.
+
+Exemplar videos for review are keyed by the same topology fingerprint (PNG
+workflow embeds under ``output/og``), not by output basename / brand tokens.
 
 Usage:
   python3 shape_factory_family_discovery.py cluster [--write docs/family_discovery]
+  python3 shape_factory_family_discovery.py index-exemplars [--output-root …]
   python3 shape_factory_family_discovery.py enroll --prop prop_003 --slug MyFamily ...
 """
 
@@ -24,10 +29,14 @@ _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
+from comfy_meta_lib import (  # noqa: E402
+    extract_prompt_workflow_from_png_chunks,
+    read_png_text_chunks,
+)
 from shape_factory import load_yaml  # noqa: E402
 from shape_factory_vocab import (  # noqa: E402
     format_catalog_stem,
-    graph_fingerprint_lite,
+    graph_fingerprint_topology,
     guess_io_from_workflow,
     load_workflow_json,
     parse_catalog_stem,
@@ -42,8 +51,14 @@ DEFAULT_CATALOG = Path(
 DEFAULT_USER_WF = Path("/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows")
 DEFAULT_CANDIDATES = DEFAULT_DATA / "template_candidates"
 DEFAULT_OUT = REPO / "docs" / "family_discovery"
+DEFAULT_EXEMPLAR_INDEX = DEFAULT_DATA / "shape_factory" / "family_discovery_exemplars.json"
+DEFAULT_OUTPUT_ROOT = Path("/home/yuji/comfyui-runpod-data/output")
+
+# Review UI target: enough clips to judge a variation without drowning the operator.
+SAMPLE_TARGET = 20
 
 NOISE_NAME_RE = re.compile(r"(?i)(^|[_-])(tune-|tunetest|TUNETEST)")
+_DATE_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _utc() -> str:
@@ -62,7 +77,7 @@ def _is_noise(path: Path) -> bool:
 
 
 def _enrolled_fingerprints(shapes_dir: Path) -> Dict[str, Dict[str, Any]]:
-    """Map fingerprint → enrolled family meta (from shape template when present)."""
+    """Map topology fingerprint → enrolled family meta (from shape template when present)."""
     out: Dict[str, Dict[str, Any]] = {}
     for path in sorted(shapes_dir.glob("*.shape.yaml")):
         doc = load_yaml(path)
@@ -74,6 +89,7 @@ def _enrolled_fingerprints(shapes_dir: Path) -> Dict[str, Dict[str, Any]]:
             "chain_role": doc.get("chain_role"),
             "graph_hash": doc.get("graph_hash"),
         }
+        # Historical lite/graph_hash values may still appear on cards; keep as weak keys.
         gh = str(doc.get("graph_hash") or "").strip()
         if gh:
             out[gh] = meta
@@ -81,7 +97,7 @@ def _enrolled_fingerprints(shapes_dir: Path) -> Dict[str, Dict[str, Any]]:
         if tpl:
             wf = load_workflow_json(Path(str(tpl)))
             if wf:
-                fp = graph_fingerprint_lite(wf)
+                fp = graph_fingerprint_topology(wf)
                 out[fp] = meta
                 meta["fingerprint"] = fp
     return out
@@ -162,7 +178,7 @@ def cluster_corpus(
         if not wf or not isinstance(wf.get("nodes"), list):
             errors.append({"path": str(path), "source": source, "error": "unreadable_or_not_litegraph"})
             continue
-        fp = graph_fingerprint_lite(wf)
+        fp = graph_fingerprint_topology(wf)
         stem_info = parse_catalog_stem(path.name)
         guess = guess_io_from_workflow(wf)
         bucket = clusters.setdefault(
@@ -223,24 +239,156 @@ def cluster_corpus(
     }
 
 
-def _sample_videos_for_name(name: str, output_root: Path, limit: int = 3) -> List[str]:
-    """Best-effort: find a few og videos whose basename shares a brand token."""
-    brand = re.split(r"[_\-]", Path(name).stem.replace("-readable", ""))[0]
-    if len(brand) < 3:
+def _sample_videos_for_fingerprint(
+    fingerprint: str,
+    *,
+    exemplar_index: Optional[Dict[str, Any]] = None,
+    index_path: Path = DEFAULT_EXEMPLAR_INDEX,
+    limit: int = SAMPLE_TARGET,
+) -> List[str]:
+    """Return up to ``limit`` mp4 paths for this structural fingerprint (not by basename)."""
+    fp = str(fingerprint or "").strip()
+    if not fp or limit <= 0:
         return []
-    hits: List[str] = []
-    og = output_root / "og"
-    if not og.is_dir():
+    idx = exemplar_index
+    if idx is None:
+        idx = load_exemplar_index(index_path)
+    bucket = (idx.get("fingerprints") or {}).get(fp) if isinstance(idx, dict) else None
+    if not isinstance(bucket, list):
         return []
-    # shallow scan recent date dirs
-    dates = sorted([p for p in og.iterdir() if p.is_dir()], reverse=True)[:14]
-    for d in dates:
-        for mp4 in d.rglob("*.mp4"):
-            if brand.lower() in mp4.name.lower():
-                hits.append(str(mp4))
-                if len(hits) >= limit:
-                    return hits
-    return hits
+    out: List[str] = []
+    for raw in bucket:
+        p = Path(str(raw))
+        if p.is_file():
+            out.append(str(p))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _workflow_from_png(png: Path) -> Optional[Dict[str, Any]]:
+    try:
+        chunks = read_png_text_chunks(png)
+    except Exception:
+        return None
+    _prompt, wf = extract_prompt_workflow_from_png_chunks(chunks)
+    if isinstance(wf, dict) and isinstance(wf.get("nodes"), list):
+        return wf
+    return None
+
+
+def build_exemplar_index(
+    *,
+    output_root: Path = DEFAULT_OUTPUT_ROOT,
+    index_path: Path = DEFAULT_EXEMPLAR_INDEX,
+    per_fp: int = SAMPLE_TARGET,
+    stride: int = 1,
+    years: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """
+    Scan ``output/og/**/*.png`` workflow embeds → topology fingerprint → sibling ``.mp4``.
+
+    Naming is ignored: differently named dumps with the same graph topology share a bucket.
+    """
+    og = Path(output_root) / "og"
+    year_prefixes = tuple(years) if years else None
+    pngs: List[Path] = []
+    if og.is_dir():
+        for day in sorted(og.iterdir()):
+            if not day.is_dir() or day.name.startswith("_"):
+                continue
+            if year_prefixes and not any(day.name.startswith(y) for y in year_prefixes):
+                continue
+            if not _DATE_DIR_RE.match(day.name):
+                continue
+            for p in day.glob("*.png"):
+                pngs.append(p)
+            hourly = day / "hourly"
+            if hourly.is_dir():
+                for p in hourly.glob("*.png"):
+                    pngs.append(p)
+
+    stride = max(1, int(stride))
+    scanned = pngs[::stride]
+    buckets: Dict[str, List[Tuple[float, str]]] = defaultdict(list)
+    seen_mp4: Dict[str, Set[str]] = defaultdict(set)
+    stats = {
+        "png_candidates": len(pngs),
+        "png_scanned": len(scanned),
+        "with_workflow": 0,
+        "with_mp4": 0,
+        "errors": 0,
+    }
+
+    for png in scanned:
+        wf = _workflow_from_png(png)
+        if not wf:
+            continue
+        try:
+            fp = graph_fingerprint_topology(wf)
+        except Exception:
+            stats["errors"] += 1
+            continue
+        stats["with_workflow"] += 1
+        mp4 = png.with_suffix(".mp4")
+        if not mp4.is_file():
+            continue
+        try:
+            key = str(mp4.resolve())
+        except Exception:
+            key = str(mp4)
+        if key in seen_mp4[fp]:
+            continue
+        seen_mp4[fp].add(key)
+        try:
+            mtime = mp4.stat().st_mtime
+        except Exception:
+            mtime = 0.0
+        buckets[fp].append((mtime, str(mp4)))
+        stats["with_mp4"] += 1
+
+    fingerprints: Dict[str, List[str]] = {}
+    for fp, rows in buckets.items():
+        rows.sort(key=lambda t: t[0], reverse=True)
+        fingerprints[fp] = [path for _, path in rows[: max(1, int(per_fp))]]
+
+    payload = {
+        "schema_version": "comfyui-runpod.family-discovery-exemplars.v2",
+        "fingerprint_kind": "topology",
+        "generated_at": _utc(),
+        "output_root": str(output_root),
+        "per_fp": int(per_fp),
+        "stride": stride,
+        "years": list(year_prefixes) if year_prefixes else None,
+        "counts": {
+            **stats,
+            "fingerprints": len(fingerprints),
+            "exemplars": sum(len(v) for v in fingerprints.values()),
+        },
+        "fingerprints": fingerprints,
+    }
+    index_path = Path(index_path)
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    index_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    payload["index_path"] = str(index_path)
+    return payload
+
+
+def load_exemplar_index(index_path: Path = DEFAULT_EXEMPLAR_INDEX) -> Dict[str, Any]:
+    path = Path(index_path)
+    if not path.is_file():
+        return {"fingerprints": {}, "ok": False, "error": "missing", "path": str(path)}
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        return {"fingerprints": {}, "ok": False, "error": str(e), "path": str(path)}
+    if not isinstance(obj, dict):
+        return {"fingerprints": {}, "ok": False, "error": "invalid", "path": str(path)}
+    if not isinstance(obj.get("fingerprints"), dict):
+        obj["fingerprints"] = {}
+    obj["ok"] = True
+    obj["path"] = str(path)
+    return obj
 
 
 def write_proposal_cards(
@@ -249,10 +397,12 @@ def write_proposal_cards(
     *,
     output_root: Path,
     max_props: int = 40,
+    exemplar_index_path: Path = DEFAULT_EXEMPLAR_INDEX,
+    sample_limit: int = SAMPLE_TARGET,
 ) -> List[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     uncovered = [c for c in report["clusters"] if not c.get("covered_by")]
-    # Prefer clusters with catalog/candidate evidence over pure user one-offs
+
     def rank(c: Dict[str, Any]) -> Tuple[int, int, str]:
         sources = {m["source"] for m in c["members"]}
         weight = (2 if "catalog" in sources else 0) + (1 if "candidate" in sources else 0)
@@ -261,18 +411,22 @@ def write_proposal_cards(
     uncovered.sort(key=rank)
     written: List[Path] = []
     index_rows: List[Dict[str, Any]] = []
+    exemplar_idx = load_exemplar_index(exemplar_index_path)
 
     for i, cluster in enumerate(uncovered[:max_props], start=1):
         prop_id = f"prop_{i:03d}"
         guess = cluster.get("io_guess") or {}
         members = cluster["members"]
         rep = members[0]
-        videos = _sample_videos_for_name(rep["name"], output_root)
+        fp = str(cluster.get("fingerprint") or "")
+        videos = _sample_videos_for_fingerprint(
+            fp, exemplar_index=exemplar_idx, limit=sample_limit
+        )
         card = {
             "id": prop_id,
-            "status": "pending_review",  # new_family | merge | skip
+            "status": "pending_review",
             "proposed_family_slug": None,
-            "fingerprint": cluster["fingerprint"],
+            "fingerprint": fp,
             "io_guess": guess.get("io_class"),
             "primary_input_guess": guess.get("primary_input"),
             "input_profile_guess": guess.get("input_profile"),
@@ -281,6 +435,7 @@ def write_proposal_cards(
             "representative": rep,
             "members": members[:12],
             "sample_videos": videos,
+            "sample_source": "fingerprint_exemplars",
             "quarantine_notes": [],
             "nearest_enrolled": None,
             "operator_decision": None,
@@ -288,24 +443,26 @@ def write_proposal_cards(
         }
         path = out_dir / f"{prop_id}.json"
         path.write_text(json.dumps(card, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        # Human-readable sidecar
         md = out_dir / f"{prop_id}.md"
         lines = [
             f"# {prop_id}",
             "",
             f"- **status:** `{card['status']}`",
             f"- **IO guess:** `{card['io_guess']}` · profile `{card['input_profile_guess']}` · role `{card['chain_role_guess']}`",
-            f"- **fingerprint:** `{card['fingerprint'][:16]}…`",
+            f"- **fingerprint:** `{fp[:16]}…`" if fp else "- **fingerprint:** —",
             f"- **members:** {card['member_count']}",
             f"- **representative:** `{rep['path']}`",
             "",
-            "## Sample videos",
+            "## Sample videos (by fingerprint, not output name)",
             "",
         ]
         if videos:
             lines.extend(f"- `{v}`" for v in videos)
         else:
-            lines.append("_none found by brand heuristic — locate manually_")
+            lines.append(
+                "_none in exemplar index — run "
+                "`shape_factory_family_discovery.py index-exemplars`_"
+            )
         lines.extend(["", "## Members", ""])
         for m in members[:12]:
             lines.append(f"- [{m['source']}] `{m['path']}`")
@@ -329,6 +486,8 @@ def write_proposal_cards(
                 "members": card["member_count"],
                 "representative": rep["name"],
                 "status": card["status"],
+                "fingerprint": fp,
+                "sample_count": len(videos),
             }
         )
 
@@ -339,10 +498,12 @@ def write_proposal_cards(
         "proposals": index_rows,
         "covered_clusters": report["counts"]["covered_clusters"],
         "uncovered_clusters": report["counts"]["uncovered_clusters"],
+        "exemplar_index": str(exemplar_index_path),
         "review_instructions": (
-            "For each prop_NNN: watch sample videos, then set status in the JSON to "
-            "new_family|merge|skip and fill proposed_family_slug or merge target. "
-            "Then run: python3 shape_factory_family_discovery.py enroll --prop prop_NNN ..."
+            "For each prop_NNN: watch fingerprint-matched sample videos (not basename "
+            "cousins), then set status to new_family|merge|skip and fill "
+            "proposed_family_slug or merge target. Then run: "
+            "python3 shape_factory_family_discovery.py enroll --prop prop_NNN ..."
         ),
     }
     (out_dir / "INDEX.json").write_text(
@@ -361,22 +522,29 @@ def write_proposal_cards(
                 f"- Covered clusters (already enrolled): **{summary['covered_clusters']}**",
                 f"- Uncovered clusters with proposals: **{len(index_rows)}** "
                 f"(of {summary['uncovered_clusters']} uncovered)",
+                f"- Sample videos: up to **{sample_limit}** per prop via fingerprint "
+                f"exemplar index (`{Path(exemplar_index_path).name}`), not output naming.",
                 "",
                 "## How to review",
                 "",
-                "1. Open each `prop_NNN.md` and watch listed sample videos (or locate better ones).",
+                "**UI (preferred):** open Experiments UI → Workflow Explorer → **Family review** tab.",
+                "",
+                "**Manual / CLI:**",
+                "",
+                "1. Open each `prop_NNN.md` and watch listed sample videos.",
                 "2. Decide: **new family** / **merge** into an enrolled slug / **skip**.",
                 "3. Edit the matching `prop_NNN.json`: set `status`, `proposed_family_slug` "
                 "(or `nearest_enrolled` for merge), and `operator_notes`.",
-                "4. For approved new families, run enroll (scaffolds shape/pools with Phase 1 fields).",
+                "4. For approved new families, run enroll.",
                 "",
                 "## Proposal index",
                 "",
-                "| id | IO | members | representative | status |",
-                "|----|----|---------|----------------|--------|",
+                "| id | IO | members | samples | representative | status |",
+                "|----|----|---------|---------|----------------|--------|",
             ]
             + [
-                f"| {r['id']} | {r['io_guess'] or '—'} | {r['members']} | `{r['representative']}` | {r['status']} |"
+                f"| {r['id']} | {r.get('io_guess') or '—'} | {r['members']} | "
+                f"{r.get('sample_count', 0)} | `{r['representative']}` | {r['status']} |"
                 for r in index_rows
             ]
             + ["", "No families are auto-enrolled. Naming is the human gate.", ""]
@@ -385,6 +553,7 @@ def write_proposal_cards(
     )
     written.append(out_dir / "REVIEW.md")
     return written
+
 
 
 def enroll_from_prop(
@@ -442,7 +611,7 @@ def enroll_from_prop(
     if not wf:
         raise RuntimeError(f"cannot load workflow from {src}")
 
-    fp = graph_fingerprint_lite(wf)
+    fp = graph_fingerprint_topology(wf)
     # Minimal requires — operator must wire node_ids before generate
     if profile == "still_prompt":
         requires = [
@@ -588,9 +757,26 @@ def main(argv: Optional[List[str]] = None) -> int:
     c.add_argument("--catalog-dir", type=Path, default=DEFAULT_CATALOG)
     c.add_argument("--user-dir", type=Path, default=DEFAULT_USER_WF)
     c.add_argument("--candidates-dir", type=Path, default=DEFAULT_CANDIDATES)
-    c.add_argument("--output-root", type=Path, default=Path("/home/yuji/comfyui-runpod-data/output"))
+    c.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     c.add_argument("--write", type=Path, default=DEFAULT_OUT)
     c.add_argument("--max-props", type=int, default=40)
+    c.add_argument("--exemplar-index", type=Path, default=DEFAULT_EXEMPLAR_INDEX)
+    c.add_argument("--sample-limit", type=int, default=SAMPLE_TARGET)
+
+    ix = sub.add_parser(
+        "index-exemplars",
+        help="Build fingerprint→mp4 exemplar index from output/og PNG embeds (ignores filenames)",
+    )
+    ix.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
+    ix.add_argument("--index", type=Path, default=DEFAULT_EXEMPLAR_INDEX)
+    ix.add_argument("--per-fp", type=int, default=SAMPLE_TARGET)
+    ix.add_argument("--stride", type=int, default=1, help="Scan every Nth PNG (1=all)")
+    ix.add_argument(
+        "--years",
+        nargs="*",
+        default=None,
+        help="Optional date-dir prefixes e.g. 2025 2026 (default: all)",
+    )
 
     e = sub.add_parser("enroll", help="Scaffold shape+pools from an approved prop card")
     e.add_argument("--prop", required=True, help="prop id (prop_001) or path to prop JSON")
@@ -619,9 +805,23 @@ def main(argv: Optional[List[str]] = None) -> int:
             args.write,
             output_root=args.output_root,
             max_props=args.max_props,
+            exemplar_index_path=args.exemplar_index,
+            sample_limit=args.sample_limit,
         )
         print(json.dumps(report["counts"], indent=2))
         print(f"wrote proposals under {args.write}")
+        return 0
+
+    if args.cmd == "index-exemplars":
+        payload = build_exemplar_index(
+            output_root=args.output_root,
+            index_path=args.index,
+            per_fp=args.per_fp,
+            stride=args.stride,
+            years=args.years,
+        )
+        print(json.dumps(payload.get("counts"), indent=2))
+        print(f"wrote {payload.get('index_path')}")
         return 0
 
     if args.cmd == "enroll":

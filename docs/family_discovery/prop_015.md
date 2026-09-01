@@ -1,21 +1,19 @@
 # prop_015
 
 - **status:** `pending_review`
-- **IO guess:** `V2V` · profile `video_prompt` · role `extend`
-- **fingerprint:** `4d512ffe2f915adf…`
+- **IO guess:** `I2V` · profile `still_prompt` · role `origin`
+- **fingerprint:** `06e9cef55871d4f0…`
 - **members:** 2
-- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2-FACIAL.json`
+- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/I2V-FizzNodes_FIXED.json`
 
-## Sample videos
+## Sample videos (by fingerprint, not output name)
 
-- `/home/yuji/comfyui-runpod-data/output/og/2026-08-27/hourly/hourly__pp-catalog-default__src-X-Kneel-FB9-2026-03-18-224719_OG_00001__000_20260827084123_f2_00001.mp4`
-- `/home/yuji/comfyui-runpod-data/output/og/2026-08-27/hourly/hourly__pp-catalog-default__src-X-Kneel-FB9-2026-03-18-233711_OG_00001__000_20260827072918_f2_00001.mp4`
-- `/home/yuji/comfyui-runpod-data/output/og/2026-08-27/hourly/hourly__pp-catalog-default__src-FB9_GEX2__pp-3f38a1e6a2e5__src-hourly__pp-3f38a1e6a2e5__src-FB9_GE__00_20260827113622_f2_00001.mp4`
+_none in exemplar index — run `shape_factory_family_discovery.py index-exemplars`_
 
 ## Members
 
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2-FACIAL.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2-FACIAL2.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/I2V-FizzNodes_FIXED.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/I2V-FizzNodes_FRESH.json`
 
 ## Operator gate
 

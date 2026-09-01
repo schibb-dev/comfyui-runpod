@@ -8428,10 +8428,16 @@ def build_parser() -> argparse.ArgumentParser:
     add_rating_sampler_subparser(sub)
     add_tags_subparser(sub)
     add_markers_subparser(sub)
+    from shape_factory_ab import add_ab_subparser
+
+    add_ab_subparser(sub)
     add_source_facets_subparser(sub)
     add_job_output_index_subparser(sub)
     add_seed_sources_subparser(sub)
     add_backfill_subparser(sub)
+    from shape_factory_adopt import add_adopt_subparser
+
+    add_adopt_subparser(sub)
     add_hygiene_subparser(sub)
 
     return parser

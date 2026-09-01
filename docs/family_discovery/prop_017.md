@@ -1,19 +1,19 @@
 # prop_017
 
 - **status:** `pending_review`
-- **IO guess:** `V2V` · profile `video_prompt` · role `extend`
-- **fingerprint:** `6a3feb3d0083d98c…`
+- **IO guess:** `I2V` · profile `still_prompt` · role `origin`
+- **fingerprint:** `4019e1c7425e0bbc…`
 - **members:** 2
-- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/ASTONISH_FB9_GEX_2026-03-03_00023 (2).json`
+- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/EXPT-PromptScheduleB.json`
 
-## Sample videos
+## Sample videos (by fingerprint, not output name)
 
-_none found by brand heuristic — locate manually_
+_none in exemplar index — run `shape_factory_family_discovery.py index-exemplars`_
 
 ## Members
 
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/ASTONISH_FB9_GEX_2026-03-03_00023 (2).json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FEAR_FB9_GEX_2026-03-03_00023 (2).json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/EXPT-PromptScheduleB.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/PromtptScheduleC.cleaned.json`
 
 ## Operator gate
 

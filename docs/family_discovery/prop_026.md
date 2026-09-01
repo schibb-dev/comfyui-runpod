@@ -2,18 +2,17 @@
 
 - **status:** `pending_review`
 - **IO guess:** `I2V` · profile `still_prompt` · role `origin`
-- **fingerprint:** `c924167bca50fb86…`
-- **members:** 2
-- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA6L.from_preset.json`
+- **fingerprint:** `0e91943cab787429…`
+- **members:** 1
+- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/LTXV/GGUF/LTXV - IMG to VIDEO (gguf).json`
 
-## Sample videos
+## Sample videos (by fingerprint, not output name)
 
-_none found by brand heuristic — locate manually_
+_none in exemplar index — run `shape_factory_family_discovery.py index-exemplars`_
 
 ## Members
 
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA6L.from_preset.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA6L.template.cleaned.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/LTXV/GGUF/LTXV - IMG to VIDEO (gguf).json`
 
 ## Operator gate
 

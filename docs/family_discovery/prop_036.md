@@ -2,17 +2,17 @@
 
 - **status:** `pending_review`
 - **IO guess:** `I2V` · profile `still_prompt` · role `origin`
-- **fingerprint:** `0463d710f1039b81…`
+- **fingerprint:** `2e729be5d583f77b…`
 - **members:** 1
-- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/current/flux-generation/FLUX - INPAINT v7.0 (base).json`
+- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/FLUX/Base/IMG to IMG.json`
 
-## Sample videos
+## Sample videos (by fingerprint, not output name)
 
-_none found by brand heuristic — locate manually_
+_none in exemplar index — run `shape_factory_family_discovery.py index-exemplars`_
 
 ## Members
 
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/current/flux-generation/FLUX - INPAINT v7.0 (base).json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/FLUX/Base/IMG to IMG.json`
 
 ## Operator gate
 

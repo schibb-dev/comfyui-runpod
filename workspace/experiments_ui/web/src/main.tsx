@@ -14,6 +14,7 @@ const SCREENS: Record<AppRouteId, React.LazyExoticComponent<React.ComponentType>
   factory: lazy(() => import("./ui/DiscoveryFactoryMapApp").then((m) => ({ default: m.DiscoveryFactoryMapApp }))),
   rate: lazy(() => import("./ui/DiscoveryRatingQueueApp").then((m) => ({ default: m.DiscoveryRatingQueueApp }))),
   workbench: lazy(() => import("./ui/WorkProductsApp").then((m) => ({ default: m.WorkProductsApp }))),
+  "family-ab": lazy(() => import("./ui/FamilyABApp").then((m) => ({ default: m.FamilyABApp }))),
   submit: lazy(() => import("./ui/SubmitComposerApp").then((m) => ({ default: m.SubmitComposerApp }))),
   "vision-slices": lazy(() => import("./ui/VisionSliceReviewApp").then((m) => ({ default: m.VisionSliceReviewApp }))),
   library: lazy(() => import("./ui/DiscoveryLibraryApp").then((m) => ({ default: m.DiscoveryLibraryApp }))),

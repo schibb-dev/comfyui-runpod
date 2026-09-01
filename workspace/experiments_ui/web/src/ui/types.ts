@@ -482,6 +482,12 @@ export type WorkItemsPriorityResponse = {
   detail?: string;
 };
 
+export type DiscoveryLibraryFolder = {
+  name: string;
+  path_prefix: string;
+  item_count: number;
+};
+
 export type DiscoveryLibraryResponse = {
   version: number;
   updated_at?: string;
@@ -492,6 +498,12 @@ export type DiscoveryLibraryResponse = {
   item_count_filtered: number;
   truncated: boolean;
   limit: number;
+  /** Active folder-browse prefix (empty = corpus root). */
+  path_prefix?: string;
+  /** Immediate child folders under path_prefix. */
+  folders?: DiscoveryLibraryFolder[];
+  /** Items whose parent directory equals path_prefix (not nested deeper). */
+  files_in_folder?: number;
   health?: {
     generated_at?: string;
     reason?: string;
@@ -1203,6 +1215,102 @@ export type WorkflowExplorerBrowseResponse = {
   truncated?: boolean;
   limit?: number;
   media_type?: "all" | "image" | "video" | string;
+};
+
+export type FamilyDiscoveryStatus =
+  | "pending_review"
+  | "new_family"
+  | "merge"
+  | "skip"
+  | "enrolled";
+
+export type FamilyDiscoveryIndexRow = {
+  id: string;
+  io_guess?: string | null;
+  members?: number;
+  representative?: string | null;
+  status?: FamilyDiscoveryStatus | string | null;
+  output_date_first?: string | null;
+  output_date_last?: string | null;
+  output_date_days?: number | null;
+  match_stems?: string[];
+  /** Fingerprint-matched exemplar clips available for review. */
+  sample_count?: number | null;
+  sample_target?: number | null;
+};
+
+export type FamilyDiscoverySampleVideo = {
+  path?: string;
+  name?: string;
+  url?: string | null;
+  [key: string]: unknown;
+};
+
+export type FamilyDiscoveryMember = {
+  source?: string;
+  path?: string;
+  name?: string;
+  node_count?: number;
+  stem?: Record<string, unknown> | null;
+  exists?: boolean;
+};
+
+export type FamilyDiscoveryProp = {
+  id: string;
+  status?: FamilyDiscoveryStatus | string | null;
+  proposed_family_slug?: string | null;
+  fingerprint?: string;
+  io_guess?: string | null;
+  primary_input_guess?: string | null;
+  input_profile_guess?: string | null;
+  chain_role_guess?: string | null;
+  member_count?: number;
+  representative?: FamilyDiscoveryMember;
+  members?: FamilyDiscoveryMember[];
+  sample_videos?: FamilyDiscoverySampleVideo[];
+  sample_source?: string | null;
+  sample_target?: number | null;
+  quarantine_notes?: string[];
+  nearest_enrolled?: string | null;
+  operator_decision?: string | null;
+  operator_notes?: string | null;
+  enrolled_at?: string | null;
+  enrolled_shape?: string | null;
+  output_date_first?: string | null;
+  output_date_last?: string | null;
+  output_date_days?: number | null;
+  match_stems?: string[];
+};
+
+export type FamilyDiscoveryIndexResponse = {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  path?: string;
+  schema_version?: string;
+  generated_at?: string;
+  review_instructions?: string;
+  covered_clusters?: number;
+  uncovered_clusters?: number;
+  proposals: FamilyDiscoveryIndexRow[];
+  enrolled_families?: string[];
+};
+
+export type FamilyDiscoveryPropResponse = {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  path?: string;
+  prop?: FamilyDiscoveryProp;
+  enrolled_families?: string[];
+};
+
+export type FamilyDiscoveryPropPatch = {
+  status?: FamilyDiscoveryStatus | string;
+  proposed_family_slug?: string | null;
+  nearest_enrolled?: string | null;
+  operator_notes?: string | null;
+  operator_decision?: string | null;
 };
 
 export type ShapeFactoryMapMediaRef = {
@@ -2854,3 +2962,92 @@ export type VisionTagJudgmentSaveResponse = {
   detail?: string;
 };
 
+
+export type AbCatalogDisposition =
+  | "no_distinction"
+  | "keep_as_variant"
+  | "improve_base"
+  | "new_family"
+  | "inconclusive";
+
+export type AbJobSide = {
+  job_key?: string | null;
+  family_slug?: string | null;
+  status?: string | null;
+  outputs?: string[];
+  output_urls?: string[];
+  prompt_id?: string | null;
+  ok?: boolean;
+  error?: string | null;
+};
+
+export type AbJudgment = {
+  catalog_disposition: AbCatalogDisposition | string;
+  observed_effect?: string | null;
+  embody_side?: "a" | "b" | string | null;
+  notes?: string | null;
+  judged_at?: string | null;
+};
+
+export type AbExperiment = {
+  ab_id: string;
+  created_at?: string;
+  updated_at?: string;
+  status?: string;
+  label?: string | null;
+  hypothesis?: string | null;
+  family_a?: string;
+  family_b?: string;
+  exemplar?: {
+    job_key?: string | null;
+    output_relpath?: string | null;
+    family_slug?: string | null;
+  };
+  shared?: Record<string, string>;
+  side_a?: Record<string, unknown>;
+  side_b?: Record<string, unknown>;
+  notes_engine?: string[];
+  job_a?: AbJobSide;
+  job_b?: AbJobSide;
+  judgment?: AbJudgment | null;
+  dry_run?: boolean;
+};
+
+export type AbExperimentsListResponse = {
+  ok: boolean;
+  experiments?: AbExperiment[];
+  error?: string;
+  detail?: string;
+};
+
+export type AbExperimentResponse = {
+  ok: boolean;
+  ab?: AbExperiment;
+  error?: string;
+  detail?: string;
+  markers_stamped?: unknown[];
+};
+
+export type AbQueueRequest = {
+  exemplar?: { job_key?: string; output_relpath?: string };
+  job_key?: string;
+  output_relpath?: string;
+  family_a?: string;
+  family_b: string;
+  label?: string;
+  hypothesis?: string;
+  seed_mode?: string;
+  front?: boolean;
+  dry_run?: boolean;
+  side_a?: Record<string, unknown>;
+  side_b?: Record<string, unknown>;
+  identity_anchor?: string;
+  knobs?: Record<string, number | string>;
+};
+
+export type AbJudgmentRequest = {
+  catalog_disposition: AbCatalogDisposition | string;
+  observed_effect?: string;
+  embody_side?: "a" | "b" | string;
+  notes?: string;
+};

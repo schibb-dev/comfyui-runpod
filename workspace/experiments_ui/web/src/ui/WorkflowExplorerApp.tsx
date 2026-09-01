@@ -11,6 +11,7 @@ import { MediaAssetCard } from "./MediaAssetCard";
 import { VideoAutoplayToggle } from "./VideoAutoplayToggle";
 import { VideoTrimControls, type VideoTrimPlaybackMode } from "./VideoTrimControls";
 import { WorkflowVideoLinker } from "./WorkflowVideoLinker";
+import { FamilyDiscoveryReview } from "./FamilyDiscoveryReview";
 import type {
   WorkflowExplorerAsset,
   WorkflowExplorerBrowseEntry,
@@ -713,7 +714,7 @@ function RunPlanGraph({
 }
 
 export function WorkflowExplorerApp() {
-  const [topTab, setTopTab] = useState<"factory" | "linker">("factory");
+  const [topTab, setTopTab] = useState<"factory" | "linker" | "family_review">("factory");
   const [data, setData] = useState<WorkflowExplorerFactoryResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [busyAction, setBusyAction] = useState("");
@@ -786,6 +787,15 @@ export function WorkflowExplorerApp() {
             >
               Workflow ↔ Video
             </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={topTab === "family_review"}
+              className={`wx-screen-tab${topTab === "family_review" ? " wx-screen-tab--active" : ""}`}
+              onClick={() => setTopTab("family_review")}
+            >
+              Family review
+            </button>
           </div>
         </div>
         {topTab === "factory" ? (
@@ -841,8 +851,10 @@ export function WorkflowExplorerApp() {
             ) : null}
           </div>
         </>
-      ) : (
+      ) : topTab === "linker" ? (
         <WorkflowVideoLinker />
+      ) : (
+        <FamilyDiscoveryReview />
       )}
     </div>
   );

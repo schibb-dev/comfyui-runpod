@@ -1,18 +1,18 @@
 # prop_040
 
 - **status:** `pending_review`
-- **IO guess:** `V2V` · profile `video_prompt` · role `extend`
-- **fingerprint:** `0a7f5a63bb6f5cbd…`
+- **IO guess:** `I2V` · profile `still_prompt` · role `origin`
+- **fingerprint:** `37051fd38f9dc464…`
 - **members:** 1
-- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/wan21I2vNativeGGUFSelf_V21Singlesamp/Interpolation_Upscaler.json`
+- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/Native-I2V-60FPS.json`
 
-## Sample videos
+## Sample videos (by fingerprint, not output name)
 
-_none found by brand heuristic — locate manually_
+_none in exemplar index — run `shape_factory_family_discovery.py index-exemplars`_
 
 ## Members
 
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/wan21I2vNativeGGUFSelf_V21Singlesamp/Interpolation_Upscaler.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/Native-I2V-60FPS.json`
 
 ## Operator gate
 

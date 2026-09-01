@@ -2,20 +2,17 @@
 
 - **status:** `pending_review`
 - **IO guess:** `I2V` · profile `still_prompt` · role `origin`
-- **fingerprint:** `b814d690bce79c5b…`
-- **members:** 2
-- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA-mainline-dance.json`
+- **fingerprint:** `01f8a88cb2c0b6c8…`
+- **members:** 1
+- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/EXPT-PromptSchedule.json`
 
-## Sample videos
+## Sample videos (by fingerprint, not output name)
 
-- `/home/yuji/comfyui-runpod-data/output/og/_trash/2026-08-05/FB8VA_2026-01-05_153757_OG_00001.mp4`
-- `/home/yuji/comfyui-runpod-data/output/og/2026-08-27/FB8VA5-ZOOMOUT_shape/FB8VA5-ZOOMOUT__pp-catalog-default__still-qqqpp-id975356-Debra-Lea__000_adhoc_ui1787805847_00001.mp4`
-- `/home/yuji/comfyui-runpod-data/output/og/2026-08-26/FB8VA5-ZOOMOUT_shape/FB8VA5-ZOOMOUT__pp-catalog-default__still-qqqpp-id975356-Debra-Lea__000_adhoc_ui1787799871_00001.mp4`
+_none in exemplar index — run `shape_factory_family_discovery.py index-exemplars`_
 
 ## Members
 
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA-mainline-dance.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA-mainline-undress.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/EXPT-PromptSchedule.json`
 
 ## Operator gate
 

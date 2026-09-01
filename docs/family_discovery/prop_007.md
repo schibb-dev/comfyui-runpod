@@ -1,31 +1,48 @@
 # prop_007
 
 - **status:** `pending_review`
-- **IO guess:** `V2V` · profile `video_prompt` · role `extend`
-- **fingerprint:** `6a2c7d9bfac1aea4…`
-- **members:** 13
-- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2.json`
+- **IO guess:** `I2V` · profile `still_prompt` · role `origin`
+- **fingerprint:** `24d722a6bd188341…`
+- **members:** 65
+- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA-mainline-readable.json`
 
-## Sample videos
+## Sample videos (by fingerprint, not output name)
 
-- `/home/yuji/comfyui-runpod-data/output/og/2026-08-27/hourly/hourly__pp-catalog-default__src-X-Kneel-FB9-2026-03-18-224719_OG_00001__000_20260827084123_f2_00001.mp4`
-- `/home/yuji/comfyui-runpod-data/output/og/2026-08-27/hourly/hourly__pp-catalog-default__src-X-Kneel-FB9-2026-03-18-233711_OG_00001__000_20260827072918_f2_00001.mp4`
-- `/home/yuji/comfyui-runpod-data/output/og/2026-08-27/hourly/hourly__pp-catalog-default__src-FB9_GEX2__pp-3f38a1e6a2e5__src-hourly__pp-3f38a1e6a2e5__src-FB9_GE__00_20260827113622_f2_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-27/2026-05-27-102407_FaceBlastAStroke_OG_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-27/2026-05-27-102230_FaceBlastAStroke_OG_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-27/2026-05-27-090107_FaceBlastAStroke_OG_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00006.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00004.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00007.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00011.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00020.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00012.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00002.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00014.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00018.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00005.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00009.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00008.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00021.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00003.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00010.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00017.mp4`
 
 ## Members
 
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2_COLORv2.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2_FACIAL.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2_OVERHEAD-cleaned.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2_OVERHEAD.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2_OVERHEAD_POV.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2_OVERHEAD_noFlorence_last8_v2_color.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2_OVERHEAD_v2.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2_OVERHEAD_v2_color.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2_SHOCK.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2_TIP.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/active/fb9-gex2/FB9_GEX2.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA-mainline-readable.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA-mainline-readable.workflow.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FaceBlast8L.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FaceBlast8M.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FaceBlast8N.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FaceBlast8O.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FaceBlastA.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FaceBlastAStroke.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/MissPoundA.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/FLUX/GGUF/IMG to IMG.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/WAN-C0wg1rlB.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/WAN-c0wg1rl.json`
 
 ## Operator gate
 

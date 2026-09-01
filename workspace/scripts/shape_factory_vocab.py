@@ -7,8 +7,10 @@ Not a constraint / lockout engine.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -506,21 +508,28 @@ def guess_io_from_workflow(workflow: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def graph_fingerprint_lite(workflow: Dict[str, Any]) -> str:
-    """Stable structural fingerprint (nodes types+ids + links) — matches factory explorer style."""
-    import hashlib
+def graph_fingerprint_lite(
+    workflow: Dict[str, Any], *, include_mode: bool = True
+) -> str:
+    """Stable structural fingerprint (nodes types+ids + links) — matches factory explorer style.
 
+    ``include_mode=False`` ignores per-node mute/bypass so a run that unmutes
+    VHS_VideoCombine (etc.) still matches the enrolled template.
+
+    Note: list order of ``nodes``/``links`` affects this hash. Prefer
+    :func:`graph_fingerprint_topology` for family discovery / template matching.
+    """
     nodes = []
     for node in workflow.get("nodes") or []:
         if not isinstance(node, dict):
             continue
-        nodes.append(
-            {
-                "id": node.get("id"),
-                "type": node.get("type") or node.get("class_type"),
-                "mode": node.get("mode", 0),
-            }
-        )
+        row = {
+            "id": node.get("id"),
+            "type": node.get("type") or node.get("class_type"),
+        }
+        if include_mode:
+            row["mode"] = node.get("mode", 0)
+        nodes.append(row)
     links = []
     for link in workflow.get("links") or []:
         if isinstance(link, list):
@@ -533,6 +542,67 @@ def graph_fingerprint_lite(workflow: Dict[str, Any]) -> str:
                 }
             )
     payload = {"nodes": nodes, "links": links}
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+# Cosmetic / plugin renames that do not change controllable I/O for template review.
+_NODE_TYPE_ALIASES: Dict[str, str] = {
+    "LoadImageWithFilename": "LoadImage",
+    "LoadImageWithFilename|pysssss": "LoadImage",
+}
+
+
+def normalize_node_type(node_type: str, *, aliases: bool = True) -> str:
+    t = str(node_type or "").strip()
+    if not t:
+        return t
+    if aliases:
+        return _NODE_TYPE_ALIASES.get(t, t)
+    return t
+
+
+def graph_fingerprint_topology(
+    workflow: Dict[str, Any], *, aliases: bool = True
+) -> str:
+    """Id-free topology fingerprint (snowflake-style).
+
+    Hashes the multiset of node types plus typed edges
+    ``(src_type, edge_type, dst_type)``. Ignores node ids, link ids, mute/bypass,
+    widget values, and array order — so catalog saves and og embeds of the same
+    template family collide. Use this for discovery clustering, exemplars, and
+    “what can I vary?” template grouping.
+    """
+    nodes_by_id: Dict[Any, str] = {}
+    node_types: List[str] = []
+    for node in workflow.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        node_type = normalize_node_type(
+            str(node.get("type") or node.get("class_type") or ""), aliases=aliases
+        )
+        if not node_type:
+            continue
+        nodes_by_id[node.get("id")] = node_type
+        node_types.append(node_type)
+
+    edges: List[Tuple[str, str, str]] = []
+    for link in workflow.get("links") or []:
+        if isinstance(link, list) and len(link) >= 6:
+            src_type = nodes_by_id.get(link[1], "?")
+            dst_type = nodes_by_id.get(link[3], "?")
+            edge_type = str(link[5])
+            edges.append((src_type, edge_type, dst_type))
+        elif isinstance(link, dict):
+            src_type = nodes_by_id.get(link.get("origin_id"), "?")
+            dst_type = nodes_by_id.get(link.get("target_id"), "?")
+            edge_type = str(link.get("type") or "")
+            edges.append((src_type, edge_type, dst_type))
+
+    payload = {
+        "node_types": sorted(Counter(node_types).items()),
+        "edges": sorted(edges),
+    }
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 

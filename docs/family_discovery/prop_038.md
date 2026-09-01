@@ -1,18 +1,29 @@
 # prop_038
 
 - **status:** `pending_review`
-- **IO guess:** `I2V` · profile `still_prompt` · role `origin`
-- **fingerprint:** `05e61ce1d03d32a3…`
+- **IO guess:** `V2V` · profile `video_prompt` · role `extend`
+- **fingerprint:** `3167911ea171a4e9…`
 - **members:** 1
-- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/HIDREAM/Base/HiDream - INPAINT (base).json`
+- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9/FB9-Gen-Extension.json`
 
-## Sample videos
+## Sample videos (by fingerprint, not output name)
 
-_none found by brand heuristic — locate manually_
+- `/home/yuji/comfyui-runpod-data/output/og/2026-03-14/FB9_GEX_2026-03-14_00008.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-03-14/FB9_GEX_2026-03-14_00007.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-03-14/FB9_GEX_2026-03-14_00006.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-03-14/FB9_GEX_2026-03-14_00005.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-03-14/FB9_GEX_2026-03-14_00004.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-03-14/FB9_GEX_2026-03-14_00003.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-03-14/FB9_GEX_2026-03-14_00002.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-03-14/FB9_GEX_2026-03-14_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-03-02/FB9_GEX_2026-03-02_00011.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-03-02/FB9_GEX_2026-03-02_00010.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-03-02/FB9_GEX_2026-03-02_00009.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-03-02/FB9_GEX_2026-03-02_00008.mp4`
 
 ## Members
 
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/HIDREAM/Base/HiDream - INPAINT (base).json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9/FB9-Gen-Extension.json`
 
 ## Operator gate
 

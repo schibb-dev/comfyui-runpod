@@ -2,19 +2,20 @@
 
 - **status:** `pending_review`
 - **IO guess:** `I2V` · profile `still_prompt` · role `origin`
-- **fingerprint:** `b707ae9d3c40b828…`
-- **members:** 3
-- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/legacy/archived/Sc1-1-handjob.json`
+- **fingerprint:** `1843f03a1fb80597…`
+- **members:** 4
+- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/EXPT-PromptScheduleA.json`
 
-## Sample videos
+## Sample videos (by fingerprint, not output name)
 
-_none found by brand heuristic — locate manually_
+_none in exemplar index — run `shape_factory_family_discovery.py index-exemplars`_
 
 ## Members
 
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/legacy/archived/Sc1-1-handjob.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/legacy/archived/Sc1-2-facial.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/legacy/archived/Sc1-handjob.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/EXPT-PromptScheduleA.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/X-PS1-Handy.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/X-PS1-Laying.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/X-PS1-Strip.json`
 
 ## Operator gate
 

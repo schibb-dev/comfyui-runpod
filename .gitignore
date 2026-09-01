@@ -64,6 +64,8 @@ workspace/.hf_token
 
 # One-off migrations / scratch scripts (not part of supported repo tooling)
 workspace/ephemera/
+# Runtime mirror of docs/family_discovery for the container (until ./docs is mounted).
+workspace/family_discovery/
 
 # Workspace runtime / local state
 workspace/_tmp/

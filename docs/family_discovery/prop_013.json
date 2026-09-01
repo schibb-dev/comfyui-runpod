@@ -2,43 +2,51 @@
   "id": "prop_013",
   "status": "pending_review",
   "proposed_family_slug": null,
-  "fingerprint": "b707ae9d3c40b82855f5fd8ea73f934fdc1a85395fdfcdd9b852e56ce3396ae2",
+  "fingerprint": "1843f03a1fb80597f756d7dd5fd9afd22dc9fb9610e327c08fb5ce168faeb857",
   "io_guess": "I2V",
   "primary_input_guess": "still",
   "input_profile_guess": "still_prompt",
   "chain_role_guess": "origin",
-  "member_count": 3,
+  "member_count": 4,
   "representative": {
     "source": "user",
-    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/legacy/archived/Sc1-1-handjob.json",
-    "name": "Sc1-1-handjob.json",
+    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/EXPT-PromptScheduleA.json",
+    "name": "EXPT-PromptScheduleA.json",
     "stem": null,
-    "node_count": 73
+    "node_count": 82
   },
   "members": [
     {
       "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/legacy/archived/Sc1-1-handjob.json",
-      "name": "Sc1-1-handjob.json",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/EXPT-PromptScheduleA.json",
+      "name": "EXPT-PromptScheduleA.json",
       "stem": null,
-      "node_count": 73
+      "node_count": 82
     },
     {
       "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/legacy/archived/Sc1-2-facial.json",
-      "name": "Sc1-2-facial.json",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/X-PS1-Handy.json",
+      "name": "X-PS1-Handy.json",
       "stem": null,
-      "node_count": 73
+      "node_count": 82
     },
     {
       "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/legacy/archived/Sc1-handjob.json",
-      "name": "Sc1-handjob.json",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/X-PS1-Laying.json",
+      "name": "X-PS1-Laying.json",
       "stem": null,
-      "node_count": 73
+      "node_count": 82
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/X-PS1-Strip.json",
+      "name": "X-PS1-Strip.json",
+      "stem": null,
+      "node_count": 82
     }
   ],
   "sample_videos": [],
+  "sample_source": "fingerprint_exemplars",
   "quarantine_notes": [],
   "nearest_enrolled": null,
   "operator_decision": null,

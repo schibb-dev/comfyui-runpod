@@ -1,19 +1,19 @@
 # prop_016
 
 - **status:** `pending_review`
-- **IO guess:** `I2V` · profile `still_prompt` · role `origin`
-- **fingerprint:** `6792171fa1e3c30a…`
+- **IO guess:** `None` · profile `None` · role `standalone`
+- **fingerprint:** `17e2defdc3087c42…`
 - **members:** 2
-- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/X-FB9-POSE-NUDE.json`
+- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/FLUX/Base/Tools/LoRA.json`
 
-## Sample videos
+## Sample videos (by fingerprint, not output name)
 
-_none found by brand heuristic — locate manually_
+_none in exemplar index — run `shape_factory_family_discovery.py index-exemplars`_
 
 ## Members
 
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/X-FB9-POSE-NUDE.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/X-FB9-POSE-UNDRESS-A.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/FLUX/Base/Tools/LoRA.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/FLUX/GGUF/Tools/LoRA.json`
 
 ## Operator gate
 

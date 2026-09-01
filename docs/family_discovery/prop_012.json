@@ -2,43 +2,68 @@
   "id": "prop_012",
   "status": "pending_review",
   "proposed_family_slug": null,
-  "fingerprint": "b66030c7af49df1bda220de3a900f9c3707693387a2ccd1ac24511fac83c300d",
-  "io_guess": "I2V",
-  "primary_input_guess": "still",
-  "input_profile_guess": "still_prompt",
-  "chain_role_guess": "origin",
-  "member_count": 3,
+  "fingerprint": "e8ec45c9b5909974e1811c098278d2af81ec9750527cb1325a666e18077b74bc",
+  "io_guess": "V2V",
+  "primary_input_guess": "video",
+  "input_profile_guess": "video_prompt",
+  "chain_role_guess": "extend",
+  "member_count": 5,
   "representative": {
     "source": "user",
-    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/X-Kneel-FB9-Undress.json",
-    "name": "X-Kneel-FB9-Undress.json",
+    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/EXPT-EXTENSION.json",
+    "name": "EXPT-EXTENSION.json",
     "stem": null,
-    "node_count": 73
+    "node_count": 72
   },
   "members": [
     {
       "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/X-Kneel-FB9-Undress.json",
-      "name": "X-Kneel-FB9-Undress.json",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/EXPT-EXTENSION.json",
+      "name": "EXPT-EXTENSION.json",
       "stem": null,
-      "node_count": 73
+      "node_count": 72
     },
     {
       "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/X-Kneel-FB9.json",
-      "name": "X-Kneel-FB9.json",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA5-VIDEO EXTENSION.cleaned.json",
+      "name": "FB8VA5-VIDEO EXTENSION.cleaned.json",
       "stem": null,
-      "node_count": 73
+      "node_count": 72
     },
     {
       "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/active/x-kneel-fb9/X-Kneel-FB9.json",
-      "name": "X-Kneel-FB9.json",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA5-VIDEO EXTENSION.json",
+      "name": "FB8VA5-VIDEO EXTENSION.json",
       "stem": null,
-      "node_count": 73
+      "node_count": 72
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/WAN/GGUF/VIDEO EXTENSION.json",
+      "name": "VIDEO EXTENSION.json",
+      "stem": null,
+      "node_count": 72
+    },
+    {
+      "source": "user",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/legacy/archived/SB-extender.json",
+      "name": "SB-extender.json",
+      "stem": null,
+      "node_count": 72
     }
   ],
-  "sample_videos": [],
+  "sample_videos": [
+    "/home/yuji/comfyui-runpod-data/output/og/2025-06-22/161432_OG_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2025-06-23/144144_OG_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2025-06-23/041712_OG_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2025-06-23/043436_OG_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2025-06-23/042600_OG_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2025-06-23/041245_OG_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2025-06-23/044442_OG_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2025-06-23/051421_OG_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2025-06-23/143017_OG_00001.mp4"
+  ],
+  "sample_source": "fingerprint_exemplars",
   "quarantine_notes": [],
   "nearest_enrolled": null,
   "operator_decision": null,

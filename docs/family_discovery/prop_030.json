@@ -2,40 +2,30 @@
   "id": "prop_030",
   "status": "pending_review",
   "proposed_family_slug": null,
-  "fingerprint": "fa40fe4d6e0438b3e594e7c157d3599d8456221b9d93b29f62e96d97a7404ade",
-  "io_guess": "V2V",
-  "primary_input_guess": "video",
-  "input_profile_guess": "video_prompt",
-  "chain_role_guess": "extend",
-  "member_count": 2,
+  "fingerprint": "18d7b7fc7299152e0ab8b5a74538d13a355df2a4ce682fdd381c4568e4b9b698",
+  "io_guess": null,
+  "primary_input_guess": null,
+  "input_profile_guess": null,
+  "chain_role_guess": "standalone",
+  "member_count": 1,
   "representative": {
     "source": "user",
-    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA5-VIDEO EXTENSION.cleaned.json",
-    "name": "FB8VA5-VIDEO EXTENSION.cleaned.json",
+    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX_DESPERATE_FACIAL.json",
+    "name": "FB9_GEX_DESPERATE_FACIAL.json",
     "stem": null,
-    "node_count": 72
+    "node_count": 55
   },
   "members": [
     {
       "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA5-VIDEO EXTENSION.cleaned.json",
-      "name": "FB8VA5-VIDEO EXTENSION.cleaned.json",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX_DESPERATE_FACIAL.json",
+      "name": "FB9_GEX_DESPERATE_FACIAL.json",
       "stem": null,
-      "node_count": 72
-    },
-    {
-      "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA5-VIDEO EXTENSION.json",
-      "name": "FB8VA5-VIDEO EXTENSION.json",
-      "stem": null,
-      "node_count": 72
+      "node_count": 55
     }
   ],
-  "sample_videos": [
-    "/home/yuji/comfyui-runpod-data/output/og/2026-08-27/FB8VA5-ZOOMOUT_shape/FB8VA5-ZOOMOUT__pp-catalog-default__still-qqqpp-id975356-Debra-Lea__000_adhoc_ui1787805847_00001.mp4",
-    "/home/yuji/comfyui-runpod-data/output/og/2026-08-26/FB8VA5-ZOOMOUT_shape/FB8VA5-ZOOMOUT__pp-catalog-default__still-qqqpp-id975356-Debra-Lea__000_adhoc_ui1787799871_00001.mp4",
-    "/home/yuji/comfyui-runpod-data/output/og/2026-08-26/FB8VA5-ZOOMOUT_shape/FB8VA5-ZOOMOUT__pp-catalog-default__still-505411cb9f820ca5d19cd8c63b88be8b__000_adhoc_ui1787799950_00001.mp4"
-  ],
+  "sample_videos": [],
+  "sample_source": "fingerprint_exemplars",
   "quarantine_notes": [],
   "nearest_enrolled": null,
   "operator_decision": null,

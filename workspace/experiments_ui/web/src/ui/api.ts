@@ -33,6 +33,13 @@ import type {
   WorkflowExplorerAddWorkflowRequest,
   WorkflowExplorerRemoveWorkflowRequest,
   WorkflowExplorerBrowseResponse,
+  FamilyDiscoveryIndexResponse,
+  FamilyDiscoveryPropResponse,
+  FamilyDiscoveryPropPatch,
+  AbExperimentResponse,
+  AbExperimentsListResponse,
+  AbJudgmentRequest,
+  AbQueueRequest,
   ShapeFactoryMapResponse,
   ShapeFactoryMapQueueRequest,
   ShapeFactoryMapQueueResponse,
@@ -171,6 +178,7 @@ export async function fetchDiscoveryLibrary(opts?: {
   q?: string;
   since_days?: number;
   library?: "og" | "wip" | "all";
+  path_prefix?: string;
   limit?: number;
 }): Promise<DiscoveryLibraryResponse> {
   const sp = new URLSearchParams();
@@ -178,6 +186,7 @@ export async function fetchDiscoveryLibrary(opts?: {
   if (opts?.q != null && opts.q !== "") sp.set("q", opts.q);
   if (opts?.since_days != null && opts.since_days > 0) sp.set("since_days", String(opts.since_days));
   if (opts?.library && opts.library !== "all") sp.set("library", opts.library);
+  if (opts?.path_prefix != null && opts.path_prefix !== "") sp.set("path_prefix", opts.path_prefix);
   if (opts?.limit != null && opts.limit > 0) sp.set("limit", String(opts.limit));
   const qs = sp.toString();
   const r = await fetch(`/api/discovery/library${qs ? `?${qs}` : ""}`);
@@ -189,6 +198,39 @@ export async function fetchWorkflowExplorerFactory(): Promise<WorkflowExplorerFa
   const r = await fetch("/api/workflow-explorer/factory");
   if (!r.ok) throw new Error(`GET /api/workflow-explorer/factory failed: ${r.status}`);
   return (await r.json()) as WorkflowExplorerFactoryResponse;
+}
+
+export async function fetchFamilyDiscoveryIndex(): Promise<FamilyDiscoveryIndexResponse> {
+  const r = await fetch("/api/workflow-explorer/family-discovery");
+  if (!r.ok) throw new Error(`GET /api/workflow-explorer/family-discovery failed: ${r.status}`);
+  return (await r.json()) as FamilyDiscoveryIndexResponse;
+}
+
+export async function fetchFamilyDiscoveryProp(propId: string): Promise<FamilyDiscoveryPropResponse> {
+  const id = encodeURIComponent(String(propId || "").trim());
+  const r = await fetch(`/api/workflow-explorer/family-discovery/${id}`);
+  const j = (await r.json().catch(() => ({}))) as FamilyDiscoveryPropResponse;
+  if (!r.ok || j.ok === false) {
+    throw new Error(j.error || `GET family-discovery/${propId} failed: ${r.status}`);
+  }
+  return j;
+}
+
+export async function updateFamilyDiscoveryProp(
+  propId: string,
+  patch: FamilyDiscoveryPropPatch
+): Promise<FamilyDiscoveryPropResponse> {
+  const id = encodeURIComponent(String(propId || "").trim());
+  const r = await fetch(`/api/workflow-explorer/family-discovery/${id}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  const j = (await r.json().catch(() => ({}))) as FamilyDiscoveryPropResponse;
+  if (!r.ok || j.ok === false) {
+    throw new Error(j.error || j.detail || `POST family-discovery/${propId} failed: ${r.status}`);
+  }
+  return j;
 }
 
 export async function fetchShapeFactoryMap(opts?: {
@@ -2424,4 +2466,103 @@ export async function saveQueueItemForLater(payload: {
     throw new Error(`POST /api/orchestrator/saved-items failed: ${r.status}${t ? `\n${t}` : ""}`);
   }
   return (await r.json()) as Record<string, unknown>;
+}
+
+export async function fetchAbExperiments(opts?: {
+  limit?: number;
+  status?: string;
+}): Promise<AbExperimentsListResponse> {
+  const qs = new URLSearchParams();
+  if (opts?.limit != null) qs.set("limit", String(opts.limit));
+  if (opts?.status) qs.set("status", opts.status);
+  const q = qs.toString();
+  const r = await fetch(`/api/shape-factory/ab-experiments${q ? `?${q}` : ""}`);
+  if (!r.ok) {
+    const t = await r.text().catch(() => "");
+    throw new Error(`GET ab-experiments failed: ${r.status}${t ? `\n${t}` : ""}`);
+  }
+  return (await r.json()) as AbExperimentsListResponse;
+}
+
+export async function fetchAbExperiment(abId: string): Promise<AbExperimentResponse> {
+  const r = await fetch(`/api/shape-factory/ab-experiments/${encodeURIComponent(abId)}`);
+  if (!r.ok) {
+    const t = await r.text().catch(() => "");
+    throw new Error(`GET ab-experiment failed: ${r.status}${t ? `\n${t}` : ""}`);
+  }
+  return (await r.json()) as AbExperimentResponse;
+}
+
+export async function queueAbExperiment(body: AbQueueRequest): Promise<AbExperimentResponse> {
+  const r = await fetch("/api/shape-factory/ab-queue", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const json = (await r.json().catch(() => ({}))) as AbExperimentResponse;
+  if (!r.ok || json.ok === false) {
+    throw new Error(json.detail || json.error || `POST ab-queue failed: ${r.status}`);
+  }
+  return json;
+}
+
+export async function judgeAbExperiment(
+  abId: string,
+  body: AbJudgmentRequest,
+): Promise<AbExperimentResponse> {
+  const r = await fetch(`/api/shape-factory/ab-experiments/${encodeURIComponent(abId)}/judgment`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const json = (await r.json().catch(() => ({}))) as AbExperimentResponse;
+  if (!r.ok || json.ok === false) {
+    throw new Error(json.detail || json.error || `POST ab-judgment failed: ${r.status}`);
+  }
+  return json;
+}
+
+export type AdoptFromEmbedResponse = {
+  ok: boolean;
+  adopted?: boolean;
+  already_indexed?: boolean;
+  dry_run?: boolean;
+  job_key?: string;
+  family_slug?: string;
+  job_path?: string;
+  workbench_href?: string;
+  error?: string;
+  detail?: string;
+  match?: {
+    ok?: boolean;
+    error?: string;
+    confidence?: string;
+    family_slug?: string;
+    matches?: Array<{ family_slug?: string }>;
+    detail?: string;
+  };
+};
+
+export async function matchAdoptFromEmbed(relpath: string): Promise<AdoptFromEmbedResponse> {
+  const qs = new URLSearchParams({ relpath });
+  const r = await fetch(`/api/shape-factory/adopt-match?${qs}`);
+  return (await r.json()) as AdoptFromEmbedResponse;
+}
+
+export async function adoptFromEmbed(body: {
+  relpath: string;
+  family_slug?: string;
+  dry_run?: boolean;
+  force?: boolean;
+}): Promise<AdoptFromEmbedResponse> {
+  const r = await fetch("/api/shape-factory/adopt-from-embed", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const json = (await r.json().catch(() => ({}))) as AdoptFromEmbedResponse;
+  if (!r.ok && json.ok !== true) {
+    throw new Error(json.detail || json.error || `adopt failed: ${r.status}`);
+  }
+  return json;
 }

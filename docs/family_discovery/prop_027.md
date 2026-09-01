@@ -2,20 +2,24 @@
 
 - **status:** `pending_review`
 - **IO guess:** `V2V` · profile `video_prompt` · role `extend`
-- **fingerprint:** `e1821996e9d7bbc1…`
-- **members:** 2
-- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2_OVERHEAD_A.json`
+- **fingerprint:** `0fa3195d915478c6…`
+- **members:** 1
+- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/legacy/archived/SB_extender_reconciled.json`
 
-## Sample videos
+## Sample videos (by fingerprint, not output name)
 
-- `/home/yuji/comfyui-runpod-data/output/og/2026-08-27/hourly/hourly__pp-catalog-default__src-X-Kneel-FB9-2026-03-18-224719_OG_00001__000_20260827084123_f2_00001.mp4`
-- `/home/yuji/comfyui-runpod-data/output/og/2026-08-27/hourly/hourly__pp-catalog-default__src-X-Kneel-FB9-2026-03-18-233711_OG_00001__000_20260827072918_f2_00001.mp4`
-- `/home/yuji/comfyui-runpod-data/output/og/2026-08-27/hourly/hourly__pp-catalog-default__src-FB9_GEX2__pp-3f38a1e6a2e5__src-hourly__pp-3f38a1e6a2e5__src-FB9_GE__00_20260827113622_f2_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2025-07-24/142117_OG_00001_variant1.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2025-07-24/142117_OG_00001_variant2.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2025-07-06/014819_OG_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2025-07-06/141641_OG_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2025-07-06/013356_OG_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2025-07-06/014952_OG_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2025-06-23/164225_OG_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2025-06-23/180752_OG_00001.mp4`
 
 ## Members
 
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2_OVERHEAD_A.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9_GEX2_OVERHEAD_B.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/legacy/archived/SB_extender_reconciled.json`
 
 ## Operator gate
 

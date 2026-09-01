@@ -195,6 +195,12 @@ def iter_artifacts(roots: Iterable[Path], max_files: Optional[int]) -> Iterator[
 def graph_fingerprint(workflow: Any) -> Optional[str]:
     if not is_litegraph_workflow(workflow):
         return None
+    try:
+        from shape_factory_vocab import graph_fingerprint_topology
+
+        return graph_fingerprint_topology(workflow, aliases=False)
+    except Exception:
+        pass
     nodes_by_id: dict[Any, str] = {}
     node_types: list[str] = []
     for node in workflow.get("nodes") or []:

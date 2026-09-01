@@ -1,19 +1,18 @@
 # prop_025
 
 - **status:** `pending_review`
-- **IO guess:** `None` · profile `None` · role `standalone`
-- **fingerprint:** `c04b48489d4f05b3…`
-- **members:** 2
-- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/WAN-cowgirl1A.json`
+- **IO guess:** `I2V` · profile `still_prompt` · role `origin`
+- **fingerprint:** `0a035eb1531fee1b…`
+- **members:** 1
+- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA5L-1.prompt_schedule.json`
 
-## Sample videos
+## Sample videos (by fingerprint, not output name)
 
-_none found by brand heuristic — locate manually_
+_none in exemplar index — run `shape_factory_family_discovery.py index-exemplars`_
 
 ## Members
 
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/WAN-cowgirl1A.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/WAN-cowgirl1A_FIXED.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA5L-1.prompt_schedule.json`
 
 ## Operator gate
 

@@ -4216,6 +4216,9 @@ export function WorkProductsApp() {
         subtitle="Set up jobs that seed factories — recent outputs, construction, trim, and queue"
         actions={
           <>
+            <a className="pipeline-tray-link" href="/family-ab" title="Exemplar-locked family compare">
+              Family A/B
+            </a>
             <label className="pipeline-tray-switch" title="Worktrays coming soon — Recent is the default working set">
               <span>Working set</span>
               <select value="recent" aria-label="Workbench working set" disabled>

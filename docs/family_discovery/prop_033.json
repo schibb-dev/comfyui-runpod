@@ -2,29 +2,30 @@
   "id": "prop_033",
   "status": "pending_review",
   "proposed_family_slug": null,
-  "fingerprint": "0220a5a5b105119fc3e9934ab78dc822ad988ba7b70370d59d81c737549f589e",
-  "io_guess": null,
-  "primary_input_guess": null,
-  "input_profile_guess": null,
-  "chain_role_guess": "standalone",
+  "fingerprint": "253c97e6323fef37636059b70558081394ce6a69643c627c67578eb79b7bb8db",
+  "io_guess": "I2V",
+  "primary_input_guess": "still",
+  "input_profile_guess": "still_prompt",
+  "chain_role_guess": "origin",
   "member_count": 1,
   "representative": {
     "source": "user",
-    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/MissPoundA.json",
-    "name": "MissPoundA.json",
+    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/WAN/Base/IMG to VIDEO.json",
+    "name": "IMG to VIDEO.json",
     "stem": null,
-    "node_count": 73
+    "node_count": 67
   },
   "members": [
     {
       "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/MissPoundA.json",
-      "name": "MissPoundA.json",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/WAN/Base/IMG to VIDEO.json",
+      "name": "IMG to VIDEO.json",
       "stem": null,
-      "node_count": 73
+      "node_count": 67
     }
   ],
   "sample_videos": [],
+  "sample_source": "fingerprint_exemplars",
   "quarantine_notes": [],
   "nearest_enrolled": null,
   "operator_decision": null,

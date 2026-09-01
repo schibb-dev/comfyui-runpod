@@ -2,7 +2,7 @@
   "id": "prop_035",
   "status": "pending_review",
   "proposed_family_slug": null,
-  "fingerprint": "043675092cef386100d9fbcd7909ed29550103dba36903e9511a594f544e506e",
+  "fingerprint": "2aa8cfe5975250e0412a5bfa6a2a386e8e431630bea00abf9231e52146b74fc4",
   "io_guess": "I2V",
   "primary_input_guess": "still",
   "input_profile_guess": "still_prompt",
@@ -10,21 +10,22 @@
   "member_count": 1,
   "representative": {
     "source": "user",
-    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/simple_test.json",
-    "name": "simple_test.json",
+    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/current/video-generation/FaceBlast8K_modified.json",
+    "name": "FaceBlast8K_modified.json",
     "stem": null,
-    "node_count": 3
+    "node_count": 74
   },
   "members": [
     {
       "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/simple_test.json",
-      "name": "simple_test.json",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/current/video-generation/FaceBlast8K_modified.json",
+      "name": "FaceBlast8K_modified.json",
       "stem": null,
-      "node_count": 3
+      "node_count": 74
     }
   ],
   "sample_videos": [],
+  "sample_source": "fingerprint_exemplars",
   "quarantine_notes": [],
   "nearest_enrolled": null,
   "operator_decision": null,

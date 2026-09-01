@@ -49,6 +49,19 @@ python3 workspace/scripts/shape_factory.py markers set \
   --content-id <sha256> --key note.review --value "check seams" --source human
 ```
 
+## Family A/B keys
+
+Written by `shape_factory.py ab-judge` (and queued jobs stamp construction `ab_pair_id`):
+
+| Key | Values | Source |
+|-----|--------|--------|
+| `ab.pair_id` | `ab_<hex>` | `job` |
+| `ab.slot` | `a` \| `b` | `job` |
+| `ab.disposition` | `no_distinction` \| `keep_as_variant` \| `improve_base` \| `new_family` \| `inconclusive` | `human` |
+| `ab.observed_effect` | short operator phrase (e.g. `more frenetic`) | `human` |
+
+UI: `/family-ab`. Shared compare stage: `workspace/experiments_ui/web/src/ui/compare/MediaCompareStage.tsx`.
+
 ## HTTP
 
 - `GET /api/shape-factory/markers?content_id=…`

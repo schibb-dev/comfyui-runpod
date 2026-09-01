@@ -2,17 +2,17 @@
 
 - **status:** `pending_review`
 - **IO guess:** `I2V` · profile `still_prompt` · role `origin`
-- **fingerprint:** `02932c632861ae60…`
+- **fingerprint:** `27a32a218ac4101b…`
 - **members:** 1
-- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/wan_i2v_pov_missionary_v1.1_workflow.json`
+- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/current/character-generation/2_pass_pose_worship.json`
 
-## Sample videos
+## Sample videos (by fingerprint, not output name)
 
-_none found by brand heuristic — locate manually_
+_none in exemplar index — run `shape_factory_family_discovery.py index-exemplars`_
 
 ## Members
 
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/wan_i2v_pov_missionary_v1.1_workflow.json`
+- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/current/character-generation/2_pass_pose_worship.json`
 
 ## Operator gate
 

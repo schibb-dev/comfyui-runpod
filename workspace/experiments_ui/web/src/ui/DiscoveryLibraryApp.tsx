@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import {
+  adoptFromEmbed,
   fetchDiscoveryEmbedApiPrompt,
   fetchDiscoveryLibrary,
   fetchDiscoveryLibraryItem,
@@ -8,7 +9,7 @@ import {
 } from "./api";
 import type { ShapeFactoryClip } from "./api";
 import { formatUnixMtime, formatIsoDateTime } from "./locale";
-import { isLineageInputStill, lineageSummaryHref, parseDiscoveryDeepLinkRelpath, workbenchHrefForMedia } from "./discoveryDeepLink";
+import { isLineageInputStill, lineageSummaryHref, parseDiscoveryDeepLinkPrefix, parseDiscoveryDeepLinkRelpath, workbenchHrefForMedia } from "./discoveryDeepLink";
 import { APPETITE_ROW_GLYPH, appetiteRowTitle, discoveryRatingsRollupFromResponse } from "./discoveryRatingsRollup";
 import { DiscoveryAssetLineagePanel } from "./DiscoveryAssetLineagePanel";
 import { DiscoveryAssetRatingsPanel } from "./DiscoveryAssetRatingsPanel";
@@ -1023,6 +1024,37 @@ function DiscoveryItemMetaBody({
   const play = discoveryPlayUrl(it);
   const thumb = discoveryThumbUrl(it);
   const stillItem = !play && (isRasterImage(it.relpath) || isRasterImage(it.name) || it.library === "input");
+  const [adoptBusy, setAdoptBusy] = useState(false);
+  const [adoptMsg, setAdoptMsg] = useState<string | null>(null);
+
+  async function onAdoptToWorkbench() {
+    const rel = String(it.video_relpath || it.relpath || "").trim();
+    if (!rel) return;
+    setAdoptBusy(true);
+    setAdoptMsg(null);
+    try {
+      const res = await adoptFromEmbed({ relpath: rel });
+      if (res.ok && res.workbench_href) {
+        const note = res.already_indexed
+          ? `Already indexed as ${res.job_key}`
+          : `Adopted as ${res.family_slug} · ${res.job_key}`;
+        setAdoptMsg(note);
+        window.location.href = res.workbench_href;
+        return;
+      }
+      const families = (res.match?.matches || []).map((m) => m.family_slug).filter(Boolean);
+      if (res.error === "ambiguous_shape_match" || res.match?.error === "ambiguous_shape_match") {
+        setAdoptMsg(`Ambiguous template match: ${families.join(", ") || "multiple families"} — confirm family later.`);
+      } else {
+        setAdoptMsg(res.detail || res.error || res.match?.detail || "No unique enrolled template match.");
+      }
+    } catch (e: any) {
+      setAdoptMsg(String(e?.message || e));
+    } finally {
+      setAdoptBusy(false);
+    }
+  }
+
   return (
     <>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
@@ -1047,6 +1079,15 @@ function DiscoveryItemMetaBody({
         <button
           type="button"
           className="discovery-exemplar-meta-btn"
+          disabled={adoptBusy || stillItem}
+          onClick={() => void onAdoptToWorkbench()}
+          title="If embed matches one enrolled shape, mint a Workbench job from bindings/prompt"
+        >
+          {adoptBusy ? "Adopting…" : "Adopt to Workbench"}
+        </button>
+        <button
+          type="button"
+          className="discovery-exemplar-meta-btn"
           onClick={() => (exemplarMember ? onGoToExemplarLibrary() : onSendToExemplarLibrary())}
           title={
             exemplarMember
@@ -1057,6 +1098,9 @@ function DiscoveryItemMetaBody({
           {exemplarMember ? "In Exemplar library" : "Send to Exemplar library"}
         </button>
       </div>
+      {adoptMsg ? (
+        <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>{adoptMsg}</div>
+      ) : null}
       {it.video_relpath ? (
         <div className="mono" style={{ fontSize: 12, color: "var(--muted)", wordBreak: "break-all", marginBottom: 4 }}>
           Video: {it.video_relpath}
@@ -3118,6 +3162,7 @@ function DiscoveryLibraryInner() {
   const [qApplied, setQApplied] = useState("");
   const [sinceDays, setSinceDays] = useState(0);
   const [library, setLibrary] = useState<"all" | "og" | "wip">("all");
+  const [pathPrefix, setPathPrefix] = useState(() => parseDiscoveryDeepLinkPrefix() || "");
   const [savedOnly, setSavedOnly] = useState(false);
   const [data, setData] = useState<DiscoveryLibraryResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -3177,11 +3222,13 @@ function DiscoveryLibraryInner() {
       else setLoading(true);
       setErr("");
       try {
+        const browsingFolder = Boolean(pathPrefix);
         const res = await fetchDiscoveryLibrary({
           refresh,
           q: qApplied || undefined,
-          since_days: sinceDays > 0 ? sinceDays : undefined,
+          since_days: browsingFolder ? undefined : sinceDays > 0 ? sinceDays : undefined,
           library,
+          path_prefix: pathPrefix || undefined,
           limit: 1200,
         });
         setData(res);
@@ -3192,12 +3239,30 @@ function DiscoveryLibraryInner() {
         else setLoading(false);
       }
     },
-    [qApplied, sinceDays, library]
+    [qApplied, sinceDays, library, pathPrefix]
   );
 
   useEffect(() => {
     void load(false);
   }, [load]);
+
+  useEffect(() => {
+    if (library === "all" || !pathPrefix) return;
+    if (!pathPrefix.startsWith(`${library}/`) && pathPrefix !== library) {
+      setPathPrefix("");
+    }
+  }, [library, pathPrefix]);
+
+  useEffect(() => {
+    const sp = new URLSearchParams(window.location.search);
+    const cur = (sp.get("prefix") || "").trim().replace(/^\/+/, "").replace(/\\/g, "/");
+    if (cur === (pathPrefix || "")) return;
+    if (pathPrefix) sp.set("prefix", pathPrefix);
+    else sp.delete("prefix");
+    const qs = sp.toString();
+    const next = `${window.location.pathname}${qs ? `?${qs}` : ""}${window.location.hash || ""}`;
+    window.history.replaceState(null, "", next);
+  }, [pathPrefix]);
 
   useEffect(() => {
     if (pollMin <= 0) return;
@@ -3671,7 +3736,10 @@ function DiscoveryLibraryInner() {
         <span style={{ fontSize: 12, color: "var(--muted)" }}>Search path / name</span>
         <input type="text" value={qInput} onChange={(e) => setQInput(e.target.value)} placeholder="Substring…" autoComplete="off" />
       </label>
-      <label style={{ display: "flex", flexDirection: "column", gap: 4, width: 120 }}>
+      <label
+        style={{ display: "flex", flexDirection: "column", gap: 4, width: 120 }}
+        title={pathPrefix ? "Ignored while browsing a folder" : undefined}
+      >
         <span style={{ fontSize: 12, color: "var(--muted)" }}>Last N days</span>
         <input
           type="number"
@@ -3680,6 +3748,7 @@ function DiscoveryLibraryInner() {
           value={sinceDays || ""}
           onChange={(e) => setSinceDays(Math.max(0, Number(e.target.value) || 0))}
           placeholder="0 = all"
+          disabled={Boolean(pathPrefix)}
         />
       </label>
       <label style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 100 }}>
@@ -3734,6 +3803,65 @@ function DiscoveryLibraryInner() {
     </>
   );
 
+  const folderSegments = useMemo(() => (pathPrefix ? pathPrefix.split("/").filter(Boolean) : []), [pathPrefix]);
+  const folderBrowseBlock = (
+    <div className="discovery-folder-browse" aria-label="Browse by folder">
+      <nav className="discovery-folder-crumbs" aria-label="Folder path">
+        <button
+          type="button"
+          className={"discovery-folder-crumb" + (!pathPrefix ? " discovery-folder-crumb--current" : "")}
+          onClick={() => setPathPrefix("")}
+          disabled={!pathPrefix}
+        >
+          All
+        </button>
+        {folderSegments.map((seg, i) => {
+          const crumbPrefix = folderSegments.slice(0, i + 1).join("/");
+          const isCurrent = i === folderSegments.length - 1;
+          return (
+            <React.Fragment key={crumbPrefix}>
+              <span className="discovery-folder-crumb-sep" aria-hidden>
+                /
+              </span>
+              <button
+                type="button"
+                className={"discovery-folder-crumb" + (isCurrent ? " discovery-folder-crumb--current" : "")}
+                onClick={() => setPathPrefix(crumbPrefix)}
+                disabled={isCurrent}
+              >
+                {seg}
+              </button>
+            </React.Fragment>
+          );
+        })}
+      </nav>
+      {(data?.folders?.length || 0) > 0 ? (
+        <div className="discovery-folder-children" role="list">
+          {(data?.folders || []).map((f) => (
+            <button
+              key={f.path_prefix}
+              type="button"
+              role="listitem"
+              className="discovery-folder-child"
+              onClick={() => setPathPrefix(f.path_prefix)}
+              title={f.path_prefix}
+            >
+              <span className="discovery-folder-child__name">{f.name}</span>
+              <span className="discovery-folder-child__count mono">{f.item_count}</span>
+            </button>
+          ))}
+        </div>
+      ) : pathPrefix ? (
+        <div className="discovery-folder-empty muted">
+          No subfolders
+          {typeof data?.files_in_folder === "number" && data.files_in_folder > 0
+            ? ` · ${data.files_in_folder} file${data.files_in_folder === 1 ? "" : "s"} here`
+            : ""}
+        </div>
+      ) : null}
+    </div>
+  );
+
   if (isPhone) {
     return (
       <div className="discovery-screen">
@@ -3761,6 +3889,7 @@ function DiscoveryLibraryInner() {
           <div className="discovery-phone-filters-panel" hidden={!phoneFiltersOpen}>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>{filtersBlock}</div>
           </div>
+          {folderBrowseBlock}
 
           {err ? (
             <div style={{ color: "var(--bad)", fontSize: 14, flexShrink: 0 }} role="alert">
@@ -3867,6 +3996,7 @@ function DiscoveryLibraryInner() {
         </header>
 
         <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", flexShrink: 0 }}>{filtersBlock}</div>
+        {folderBrowseBlock}
 
         <label
           style={{

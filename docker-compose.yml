@@ -51,6 +51,9 @@ services:
       - ./custom_nodes.yaml:/workspace/custom_nodes.yaml:ro
       # Scripts directory for bootstrap and utilities
       - ./scripts:/workspace/scripts:ro
+      # Family discovery review cards (Workflow Explorer). Prefer this over a
+      # workspace/ copy; recreate the container after adding to pick up the mount.
+      - ./docs:/workspace/docs
       # Catalog (shapes/pools/pipelines/chains) stays read-only; runtime under
       # shape_factory/ (jobs, schedule, quarantine, dismissals, logs) is writable.
       - ./.data:/workspace/.data:ro

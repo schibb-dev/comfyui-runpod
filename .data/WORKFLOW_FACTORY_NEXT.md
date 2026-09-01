@@ -2,6 +2,10 @@
 
 Locked decisions (2026-07-03): install `/workflow/convert`, JSON pool index, pipeline FB9_GEX2→FACIAL, layered queue, shape_id + family_slug.
 
+**Family A/B (2026-08-30):** Exemplar-locked compare of any two enrolled families. Entry: Workbench-adjacent `/family-ab` (or CLI `shape_factory.py ab-queue --from-job … --family-b …`). Shared Pair/Slide chrome: `MediaCompareStage`. Judgment is distinction-first (`no_distinction` / `keep_as_variant` / `improve_base` / `new_family` / `inconclusive`) with `observed_effect` (e.g. “more frenetic”) — not a quality winner. Manifests under `.data/shape_factory/ab_experiments/`; markers `ab.pair_id` / `ab.slot` / `ab.disposition` / `ab.observed_effect`.
+
+**Adopt from embed — easy case (2026-08-31):** If a Library video’s companion PNG UI workflow matches **exactly one** enrolled shape (mode-insensitive lite fingerprint), mint a Workbench job from reconstructed bindings/prompt (`origin: adopt_embed`) and deep-link `/workbench?job=…`. Library button **Adopt to Workbench**; CLI `shape_factory.py adopt-from-output --relpath …`. Ambiguous / no-match refused (no silent family pick). Already-indexed outputs just open the existing job.
+
 **Next session focus:** optional hourly pick by `rating_effective` (after G); Discovery index watcher — see [`docs/RATINGS_V1_PLAN.md`](../docs/RATINGS_V1_PLAN.md). **Hourly ruleset utility** (policy + clip ★/newer + ledger/UI): [`docs/HOURLY_UTILITY_PLAN.md`](../docs/HOURLY_UTILITY_PLAN.md).
 
 **Deferred (2026-08-03):** Work Products **Re-run** creates a new identical job but does not stamp the old interrupted/error job. Next: on Re-run, write `submit.rerun_job_key` + `submit.rerun_at` on the source job (keep status as `interrupted`/`error`; optional UI badge `re-run → …`).

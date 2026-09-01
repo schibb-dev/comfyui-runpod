@@ -2,29 +2,30 @@
   "id": "prop_040",
   "status": "pending_review",
   "proposed_family_slug": null,
-  "fingerprint": "0a7f5a63bb6f5cbdc6b68ba710f1c2625a466706df8bbfa2aeabf1d6aac33fdf",
-  "io_guess": "V2V",
-  "primary_input_guess": "video",
-  "input_profile_guess": "video_prompt",
-  "chain_role_guess": "extend",
+  "fingerprint": "37051fd38f9dc464767bc0918b88bef2dc85997ab15be8d070609b38af44f770",
+  "io_guess": "I2V",
+  "primary_input_guess": "still",
+  "input_profile_guess": "still_prompt",
+  "chain_role_guess": "origin",
   "member_count": 1,
   "representative": {
     "source": "user",
-    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/wan21I2vNativeGGUFSelf_V21Singlesamp/Interpolation_Upscaler.json",
-    "name": "Interpolation_Upscaler.json",
+    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/Native-I2V-60FPS.json",
+    "name": "Native-I2V-60FPS.json",
     "stem": null,
-    "node_count": 17
+    "node_count": 60
   },
   "members": [
     {
       "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/wan21I2vNativeGGUFSelf_V21Singlesamp/Interpolation_Upscaler.json",
-      "name": "Interpolation_Upscaler.json",
+      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/Native-I2V-60FPS.json",
+      "name": "Native-I2V-60FPS.json",
       "stem": null,
-      "node_count": 17
+      "node_count": 60
     }
   ],
   "sample_videos": [],
+  "sample_source": "fingerprint_exemplars",
   "quarantine_notes": [],
   "nearest_enrolled": null,
   "operator_decision": null,
