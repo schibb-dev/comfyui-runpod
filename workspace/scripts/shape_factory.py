@@ -1966,7 +1966,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
                 base_members=members,
                 data_root=data_root,
                 workspace_root=default_workspace_root(),
-                output_root=default_output_root(),
+                output_root=(data_root / "output"),
             )
             members = list(merged.get("members") or members)
         if not members:
