@@ -18037,8 +18037,43 @@ tr.disabled:hover td {
   background: rgba(0, 0, 0, 0.25);
   color: inherit;
 }
-.work-product-params-editor__value {
-  font-size: 13px;
+.work-product-loras-editor__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+.work-product-loras-editor__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 6.5rem;
+  gap: 8px 12px;
+  align-items: center;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.18);
+}
+.work-product-loras-editor__row.is-diff {
+  border-color: color-mix(in srgb, var(--accent, #6ea8fe) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent, #6ea8fe) 8%, transparent);
+}
+.work-product-loras-editor__on {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.work-product-loras-editor__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.work-product-loras-editor__strength {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
 }
 .still-gallery__thumb {
   width: 100%;

@@ -572,6 +572,12 @@ def update_job_timings_on_status(
             freeze_owned_prompt(job)
         except Exception:
             pass
+        try:
+            from shape_factory_owned_loras import freeze_owned_loras
+
+            freeze_owned_loras(job)
+        except Exception:
+            pass
 
     if isinstance(history, dict):
         prompt_graph = _history_prompt_graph(history)
@@ -4833,6 +4839,13 @@ def rebuild_job_workflow(
     if isinstance(dev_spec, dict) and dev_spec:
         apply_dev_tuning_ui(workflow, dev_spec)
 
+    try:
+        from shape_factory_owned_loras import apply_owned_loras_to_workflow
+
+        apply_owned_loras_to_workflow(job, workflow)
+    except Exception:
+        pass
+
     output_prefix = flatten_output_prefix(str(job.get("output_prefix") or ""))
     final_node_ids: set[int] = set()
     for prod in shape.get("produces") or []:
@@ -6523,6 +6536,167 @@ def update_pending_job_params(
         "changes": changes,
         "params_profile": profile,
     }
+
+
+def update_pending_job_owned_loras(
+    *,
+    data_root: Path,
+    entries: list,
+    job_key: Optional[str] = None,
+    job_path: Optional[Path] = None,
+    server: str = "",
+) -> dict[str, Any]:
+    """Patch ``job["loras"]`` + Power Lora widgets on a pre-Comfy factory job."""
+    from shape_factory_owned_loras import (
+        OwnedLorasFrozenError,
+        apply_owned_loras_to_workflow,
+        ensure_owned_loras_from_workflow,
+        merge_owned_loras,
+        normalize_entries,
+        owned_loras_to_profile,
+    )
+
+    data_root = Path(data_root).expanduser().resolve()
+    job_file: Optional[Path] = None
+    job: Optional[dict[str, Any]] = None
+
+    if job_path is not None:
+        jp = Path(job_path).expanduser()
+        if jp.is_file():
+            try:
+                loaded = json.loads(jp.read_text(encoding="utf-8"))
+            except Exception:
+                loaded = None
+            if isinstance(loaded, dict):
+                job_file, job = jp, loaded
+    if job is None and job_key:
+        job_file, job = find_job_by_key(data_root, str(job_key))
+    if job is None or job_file is None:
+        return {"ok": False, "error": "job_not_found", "job_key": job_key}
+
+    if hostify_job_paths(job):
+        atomic_write_json(job_file, job)
+
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    status = str(submit.get("status") or "").strip().lower()
+    pid = str(submit.get("prompt_id") or "").strip()
+    key = str(job.get("job_key") or job_file.stem.replace(".job", ""))
+
+    if status_is_on_comfy(status, pid) or not status_is_pending_editable(status):
+        return {
+            "ok": False,
+            "error": "not_pending",
+            "job_key": key,
+            "status": status or "unknown",
+            "prompt_id": pid or None,
+            "detail": "Unqueue first — only pending/editing (pre-Comfy) jobs can edit LoRAs.",
+        }
+
+    if pid and server:
+        try:
+            running_ids, pending_ids = queue_prompt_id_buckets(str(server).rstrip("/"), timeout_s=10)
+        except Exception:
+            running_ids, pending_ids = set(), set()
+        if pid in running_ids or pid in pending_ids:
+            return {
+                "ok": False,
+                "error": "still_on_comfy",
+                "job_key": key,
+                "prompt_id": pid,
+                "detail": "Prompt is still on Comfy; Unqueue first.",
+            }
+
+    cleaned = normalize_entries(entries)
+    if not cleaned:
+        return {"ok": False, "error": "missing_loras", "job_key": key}
+
+    ensure_owned_loras_from_workflow(job, data_root=data_root)
+    try:
+        owned = merge_owned_loras(job, cleaned)
+    except OwnedLorasFrozenError as exc:
+        return {"ok": False, "error": "loras_frozen", "job_key": key, "detail": str(exc)}
+
+    workflow_path = ensure_job_workflow_path(job, data_root=data_root)
+    if not workflow_path.is_file():
+        return {
+            "ok": False,
+            "error": "workflow_missing",
+            "job_key": key,
+            "workflow_path": str(workflow_path),
+        }
+    workflow = read_json(workflow_path)
+    if not is_litegraph_workflow(workflow):
+        return {"ok": False, "error": "not_litegraph", "job_key": key}
+
+    changes = apply_owned_loras_to_workflow(job, workflow)
+    atomic_write_json(workflow_path, workflow)
+    job["generated_workflow_path"] = str(workflow_path)
+
+    prompt_candidates = [job_file.with_name(job_file.stem.replace(".job", "") + ".prompt.json")]
+    submit_prompt = str(submit.get("prompt_path") or "").strip()
+    if submit_prompt:
+        prompt_candidates.append(Path(submit_prompt).expanduser())
+    prompt_cleared = False
+    for p in prompt_candidates:
+        try:
+            if p.is_file():
+                p.unlink()
+                prompt_cleared = True
+        except Exception:
+            continue
+
+    atomic_write_json(job_file, job)
+    profile = owned_loras_to_profile(job, data_root=data_root, job_path=job_file)
+    return {
+        "ok": True,
+        "job_key": key,
+        "job_path": str(job_file),
+        "status": status or "pending",
+        "prompt_cleared": prompt_cleared,
+        "loras": owned,
+        "changes": changes,
+        "loras_profile": profile,
+    }
+
+
+def promote_job_loras_to_catalog(
+    *,
+    data_root: Path,
+    mode: str = "overwrite",
+    job_key: Optional[str] = None,
+    job_path: Optional[Path] = None,
+    entries: Optional[list] = None,
+) -> dict[str, Any]:
+    """Write job LoRA stack into the catalog readable (overwrite+bak or fork)."""
+    from shape_factory_owned_loras import promote_loras_to_catalog
+
+    data_root = Path(data_root).expanduser().resolve()
+    job_file: Optional[Path] = None
+    job: Optional[dict[str, Any]] = None
+
+    if job_path is not None:
+        jp = Path(job_path).expanduser()
+        if jp.is_file():
+            try:
+                loaded = json.loads(jp.read_text(encoding="utf-8"))
+            except Exception:
+                loaded = None
+            if isinstance(loaded, dict):
+                job_file, job = jp, loaded
+    if job is None and job_key:
+        job_file, job = find_job_by_key(data_root, str(job_key))
+    if job is None or job_file is None:
+        return {"ok": False, "error": "job_not_found", "job_key": job_key}
+
+    key = str(job.get("job_key") or job_file.stem.replace(".job", ""))
+    res = promote_loras_to_catalog(
+        data_root=data_root,
+        job=job,
+        mode=mode,
+        entries=entries,
+    )
+    res["job_key"] = key
+    return res
 
 
 def promote_job_params_to_catalog(

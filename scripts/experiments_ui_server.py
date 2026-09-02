@@ -2633,6 +2633,27 @@ def _shape_factory_adopt_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dic
     )
 
 
+def _shape_factory_claim_queue_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /api/shape-factory/claim-from-queue — mint Workbench job from Comfy prompt_id."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_adopt import claim_queue_prompt_as_job  # type: ignore
+
+    prompt_id = str(body.get("prompt_id") or "").strip()
+    if not prompt_id:
+        raise ValueError("prompt_id required")
+    return claim_queue_prompt_as_job(
+        prompt_id=prompt_id,
+        repo_root=_repo_root(),
+        output_root=cfg.output_root,
+        workspace_root=cfg.workspace_root,
+        comfy_server=str(cfg.comfy_server),
+        family_slug=str(body.get("family_slug") or body.get("family") or "").strip() or None,
+        dry_run=bool(body.get("dry_run") or False),
+    )
+
+
 def _shape_factory_derive_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
     d = _workspace_scripts_dir()
     if d.is_dir() and str(d) not in sys.path:
@@ -2856,6 +2877,31 @@ def _shape_factory_update_owned_params_payload(cfg: ServerConfig, body: Dict[str
     )
 
 
+def _shape_factory_update_owned_loras_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /api/shape-factory/update-owned-loras — patch Power LoRA stack on a pending job."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory import update_pending_job_owned_loras  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    job_key = str(body.get("job_key") or "").strip() or None
+    job_path_raw = str(body.get("job_path") or "").strip() or None
+    if not job_key and not job_path_raw:
+        raise ValueError("missing_job_key")
+    entries = body.get("entries")
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("missing_loras")
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    return update_pending_job_owned_loras(
+        data_root=data_root,
+        job_key=job_key,
+        job_path=Path(job_path_raw) if job_path_raw else None,
+        entries=entries,
+        server=str(cfg.comfy_server),
+    )
+
+
 def _shape_factory_update_owned_prompt_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
     """POST /api/shape-factory/update-owned-prompt — patch job-owned positive/negative."""
     d = _workspace_scripts_dir()
@@ -2887,11 +2933,15 @@ def _shape_factory_update_owned_prompt_payload(cfg: ServerConfig, body: Dict[str
 
 
 def _shape_factory_promote_template_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
-    """POST /api/shape-factory/promote-template — write job prompt/params into family library."""
+    """POST /api/shape-factory/promote-template — write job prompt/params/loras into family library."""
     d = _workspace_scripts_dir()
     if d.is_dir() and str(d) not in sys.path:
         sys.path.insert(0, str(d))
-    from shape_factory import promote_job_params_to_catalog, promote_job_prompt_to_library  # type: ignore
+    from shape_factory import (  # type: ignore
+        promote_job_loras_to_catalog,
+        promote_job_params_to_catalog,
+        promote_job_prompt_to_library,
+    )
     from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
 
     job_key = str(body.get("job_key") or "").strip() or None
@@ -2903,7 +2953,7 @@ def _shape_factory_promote_template_payload(cfg: ServerConfig, body: Dict[str, A
     fields = [f for f in fields if f]
     if not fields:
         fields = ["prompt"]
-    unsupported = [f for f in fields if f not in {"prompt", "params"}]
+    unsupported = [f for f in fields if f not in {"prompt", "params", "loras"}]
     if unsupported:
         raise ValueError("unsupported_fields")
     mode = str(body.get("mode") or "fork").strip().lower() or "fork"
@@ -2950,10 +3000,31 @@ def _shape_factory_promote_template_payload(cfg: ServerConfig, body: Dict[str, A
             out["error"] = params_res.get("error") or "params_promote_failed"
             out["detail"] = params_res.get("detail")
             return out
-        if "prompt" not in fields:
+        if "prompt" not in fields and "loras" not in fields:
             for k in ("mode", "path", "bak_path"):
                 if k in params_res:
                     out[k] = params_res[k]
+    if "loras" in fields:
+        loras_mode = mode if mode in {"fork", "overwrite"} else "overwrite"
+        if len(fields) == 1:
+            loras_mode = mode or "overwrite"
+        loras_res = promote_job_loras_to_catalog(
+            data_root=data_root,
+            job_key=job_key,
+            job_path=Path(job_path_raw) if job_path_raw else None,
+            mode=loras_mode,
+            entries=body.get("entries") if isinstance(body.get("entries"), list) else None,
+        )
+        out["results"]["loras"] = loras_res
+        if not loras_res.get("ok"):
+            out["ok"] = False
+            out["error"] = loras_res.get("error") or "loras_promote_failed"
+            out["detail"] = loras_res.get("detail")
+            return out
+        if len(fields) == 1:
+            for k in ("mode", "path", "bak_path"):
+                if k in loras_res:
+                    out[k] = loras_res[k]
     return out
 
 
@@ -12349,6 +12420,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_shape_factory_ab_queue_post()
         if path == "/api/shape-factory/adopt-from-embed":
             return self._handle_shape_factory_adopt_post()
+        if path == "/api/shape-factory/claim-from-queue":
+            return self._handle_shape_factory_claim_queue_post()
         if path.startswith("/api/shape-factory/ab-experiments/") and path.endswith("/judgment"):
             return self._handle_shape_factory_ab_judgment_post(path)
         if path == "/api/shape-factory/derive":
@@ -12371,6 +12444,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_shape_factory_update_owned_prompt_post()
         if path == "/api/shape-factory/update-owned-params":
             return self._handle_shape_factory_update_owned_params_post()
+        if path == "/api/shape-factory/update-owned-loras":
+            return self._handle_shape_factory_update_owned_loras_post()
         if path == "/api/shape-factory/promote-template":
             return self._handle_shape_factory_promote_template_post()
         if path == "/api/shape-factory/clips":
@@ -12649,6 +12724,21 @@ class Handler(BaseHTTPRequestHandler):
         status = 200 if payload.get("ok", True) else 400
         return _json_response(self, status, payload)
 
+    def _handle_shape_factory_claim_queue_post(self) -> None:
+        """POST /api/shape-factory/claim-from-queue — mint Workbench job from Comfy prompt_id."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _shape_factory_claim_queue_payload(cfg, body if isinstance(body, dict) else {})
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "claim_failed", "detail": str(e)})
+        status = 200 if payload.get("ok", True) else 400
+        return _json_response(self, status, payload)
+
     def _handle_shape_factory_derive_post(self) -> None:
         """POST /api/shape-factory/derive — rewire a prior job into a new combo."""
         cfg = self.server.cfg
@@ -12840,6 +12930,27 @@ class Handler(BaseHTTPRequestHandler):
                 self, 500, {"ok": False, "error": "shape_factory_update_owned_params_failed", "detail": str(e)}
             )
         if payload.get("error") in {"not_pending", "still_on_comfy"}:
+            return _json_response(self, 409, payload)
+        if payload.get("error") == "job_not_found":
+            return _json_response(self, 404, payload)
+        code = 200 if payload.get("ok", True) else 400
+        return _json_response(self, code, payload)
+
+    def _handle_shape_factory_update_owned_loras_post(self) -> None:
+        """POST /api/shape-factory/update-owned-loras — patch Power LoRA stack."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _shape_factory_update_owned_loras_payload(cfg, body if isinstance(body, dict) else {})
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except Exception as e:
+            return _json_response(
+                self, 500, {"ok": False, "error": "shape_factory_update_owned_loras_failed", "detail": str(e)}
+            )
+        if payload.get("error") in {"not_pending", "still_on_comfy", "loras_frozen"}:
             return _json_response(self, 409, payload)
         if payload.get("error") == "job_not_found":
             return _json_response(self, 404, payload)

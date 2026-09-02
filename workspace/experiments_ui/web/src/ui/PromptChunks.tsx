@@ -1,5 +1,5 @@
 import React from "react";
-import type { WorkProductParamsProfile, WorkProductPromptProfile, WorkProductPromptRow } from "./types";
+import type { WorkProductParamsProfile, WorkProductLorasProfile, WorkProductPromptProfile, WorkProductPromptRow } from "./types";
 
 export function clonePromptRows(
   rows: WorkProductPromptRow[] | undefined,
@@ -54,15 +54,18 @@ export function rowsFromRawText(text: string): WorkProductPromptRow[] {
 export function PromptSnowflakeChip({
   prompt,
   params,
+  loras,
   className,
 }: {
   prompt?: WorkProductPromptProfile | null;
   params?: WorkProductParamsProfile | null;
+  loras?: WorkProductLorasProfile | null;
   className?: string;
 }) {
   const promptFlake = Boolean(prompt?.snowflake);
   const paramsFlake = Boolean(params?.snowflake);
-  if (!promptFlake && !paramsFlake) return null;
+  const lorasFlake = Boolean(loras?.snowflake);
+  if (!promptFlake && !paramsFlake && !lorasFlake) return null;
   const seedName = prompt?.seed?.label || prompt?.seed?.basename || prompt?.basename || "template";
   const jobHash = String(prompt?.content_hash || "").slice(0, 10);
   const seedHash = String(prompt?.seed?.content_hash || "").slice(0, 10);
@@ -76,13 +79,14 @@ export function PromptSnowflakeChip({
         ? `params differ: ${paramDiffs.join(", ")}`
         : "params differ from template"
       : null,
+    lorasFlake ? "lora stack differs from template" : null,
   ]
     .filter(Boolean)
     .join(" · ");
   return (
     <span
       className={`work-product-badge work-product-badge--snowflake${className ? ` ${className}` : ""}`}
-      title={title || "Structurally edited from template (prompt or frames/steps/overlap)"}
+      title={title || "Structurally edited from template (prompt, params, or loras)"}
     >
       snowflake
     </span>

@@ -2213,6 +2213,24 @@ export type WorkProductParamsProfile = {
   keys?: string[];
 };
 
+export type WorkProductLoraEntry = {
+  lora: string;
+  on?: boolean;
+  strength?: number | null;
+  strengthTwo?: number | null;
+};
+
+export type WorkProductLorasProfile = {
+  current?: WorkProductLoraEntry[];
+  seed?: WorkProductLoraEntry[];
+  snowflake?: boolean;
+  node_id?: number | null;
+  template_path?: string | null;
+  content_hash?: string | null;
+  seed_hash?: string | null;
+  frozen?: boolean;
+};
+
 export type WorkProductShapeSlot = {
   slot?: string;
   role?: string;
@@ -2302,6 +2320,7 @@ export type WorkProductItem = {
   prompt_profile?: WorkProductPromptProfile | null;
   /** Simple run knobs vs template seed (frames/steps/overlap/seed). */
   params_profile?: WorkProductParamsProfile | null;
+  loras_profile?: WorkProductLorasProfile | null;
   shape_profile?: WorkProductShapeProfile | null;
   media_meta?: WorkProductMediaMeta | null;
   /** Compact run timing from job/sidecar (exec, queue wait, …). */

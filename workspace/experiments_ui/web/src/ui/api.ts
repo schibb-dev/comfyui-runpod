@@ -80,6 +80,7 @@ import type {
   FutureRunDraft,
   WorkProductPromptProfile,
   WorkProductParamsProfile,
+  WorkProductLorasProfile,
   WorkProductPromptRow,
   AssetAuditResponse,
   AssetRecoverResponse,
@@ -1671,6 +1672,47 @@ export async function updateShapeFactoryOwnedParams(
   return j;
 }
 
+export type ShapeFactoryLoraEntry = {
+  lora: string;
+  on?: boolean;
+  strength?: number | null;
+  strengthTwo?: number | null;
+};
+
+export type ShapeFactoryUpdateOwnedLorasRequest = {
+  job_key?: string;
+  job_path?: string;
+  entries: ShapeFactoryLoraEntry[];
+};
+
+export type ShapeFactoryUpdateOwnedLorasResponse = {
+  ok: boolean;
+  job_key?: string;
+  status?: string;
+  loras?: { entries?: ShapeFactoryLoraEntry[]; content_hash?: string; node_id?: number };
+  loras_profile?: WorkProductLorasProfile;
+  error?: string;
+  detail?: string;
+};
+
+export async function updateShapeFactoryOwnedLoras(
+  req: ShapeFactoryUpdateOwnedLorasRequest,
+): Promise<ShapeFactoryUpdateOwnedLorasResponse> {
+  const r = await fetch("/api/shape-factory/update-owned-loras", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryUpdateOwnedLorasResponse;
+  if (!r.ok || !j.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST /api/shape-factory/update-owned-loras failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
 export type ShapeFactoryPromoteTemplateRequest = {
   job_key?: string;
   job_path?: string;
@@ -1687,6 +1729,7 @@ export type ShapeFactoryPromoteTemplateRequest = {
     seed?: number;
     noise_seed?: number;
   };
+  entries?: ShapeFactoryLoraEntry[];
 };
 
 export type ShapeFactoryPromoteTemplateResponse = {
@@ -2597,6 +2640,38 @@ export async function adoptFromEmbed(body: {
   const json = (await r.json().catch(() => ({}))) as AdoptFromEmbedResponse;
   if (!r.ok && json.ok !== true) {
     throw new Error(json.detail || json.error || `adopt failed: ${r.status}`);
+  }
+  return json;
+}
+
+export type ClaimFromQueueResponse = {
+  ok: boolean;
+  claimed?: boolean;
+  already_indexed?: boolean;
+  dry_run?: boolean;
+  job_key?: string;
+  family_slug?: string;
+  job_path?: string;
+  prompt_id?: string;
+  workbench_href?: string;
+  recipe?: Record<string, unknown>;
+  error?: string;
+  detail?: string;
+};
+
+export async function claimShapeFactoryFromQueue(body: {
+  prompt_id: string;
+  family_slug?: string;
+  dry_run?: boolean;
+}): Promise<ClaimFromQueueResponse> {
+  const r = await fetch("/api/shape-factory/claim-from-queue", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const json = (await r.json().catch(() => ({}))) as ClaimFromQueueResponse;
+  if (!r.ok || json.ok === false) {
+    throw new Error(json.detail || json.error || `claim failed: ${r.status}`);
   }
   return json;
 }

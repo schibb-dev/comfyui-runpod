@@ -454,6 +454,17 @@ def adopt_output_easy(
     if prompt_path:
         evidence["prompt_profile_path"] = prompt_path
 
+    # Recover owned recipe deltas (prompt text, params, LoRAs) from the embed when present.
+    embed_wf, _, embed_ev = extract_embed_workflow(media_abs)
+    recipe = _attach_owned_recipe_from_sources(
+        job,
+        data_root=data_root,
+        ui_workflow=embed_wf if isinstance(embed_wf, dict) else None,
+        bindings=bindings,
+    )
+    evidence["recipe"] = recipe
+    evidence["embed_workflow"] = embed_ev
+
     job_path = data_root / "shape_factory" / "jobs" / slug / f"{job_key}.job.json"
     if dry_run:
         return {
@@ -522,6 +533,313 @@ def adopt_output_easy(
     }
 
 
+def _attach_owned_recipe_from_sources(
+    job: Dict[str, Any],
+    *,
+    data_root: Path,
+    ui_workflow: Optional[Dict[str, Any]] = None,
+    api_prompt: Optional[Dict[str, Any]] = None,
+    bindings: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Fill job-owned prompt / params / loras from embed UI workflow and/or API prompt."""
+    out: Dict[str, Any] = {"prompt": False, "params": False, "loras": False}
+
+    # Owned prompt from bindings or API CLIP text (best-effort via bindings recovery).
+    try:
+        from shape_factory_owned_prompt import (
+            ensure_owned_prompt_from_bindings,
+            get_owned_prompt,
+            merge_owned_prompt,
+        )
+
+        if get_owned_prompt(job) is None:
+            ensure_owned_prompt_from_bindings(job, data_root=data_root)
+        owned = get_owned_prompt(job)
+        if owned is None and isinstance(bindings, dict):
+            for row in bindings.values():
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("binding_type") or "") != "prompt_bundle":
+                    continue
+                pos = str(row.get("positive") or "")
+                neg = str(row.get("negative") or "")
+                if pos or neg:
+                    merge_owned_prompt(job, {"positive": pos, "negative": neg, "label": "adopt-recovered"})
+                    out["prompt"] = True
+                    break
+        elif owned is not None:
+            out["prompt"] = True
+    except Exception as exc:
+        out["prompt_error"] = str(exc)
+
+    # Params from UI workflow (LiteGraph) when available.
+    try:
+        from shape_factory_owned_params import extract_params_from_workflow
+
+        if isinstance(ui_workflow, dict):
+            params = extract_params_from_workflow(ui_workflow)
+            if params:
+                adhoc = job.get("adhoc_overrides") if isinstance(job.get("adhoc_overrides"), dict) else {}
+                adhoc = dict(adhoc)
+                prev = adhoc.get("parameters") if isinstance(adhoc.get("parameters"), dict) else {}
+                merged = dict(prev)
+                merged.update(params)
+                adhoc["parameters"] = merged
+                job["adhoc_overrides"] = adhoc
+                timings = job.get("timings") if isinstance(job.get("timings"), dict) else {}
+                timings = dict(timings)
+                wl = timings.get("workload") if isinstance(timings.get("workload"), dict) else {}
+                wl = dict(wl)
+                for k in ("frames", "steps", "overlap"):
+                    if k in params:
+                        wl[k] = params[k]
+                timings["workload"] = wl
+                job["timings"] = timings
+                out["params"] = True
+                out["params_values"] = params
+    except Exception as exc:
+        out["params_error"] = str(exc)
+
+    # LoRAs from UI workflow preferred; fall back to API prompt Power Lora inputs.
+    try:
+        from shape_factory_owned_loras import (
+            attach_content_hash,
+            extract_loras_from_api_prompt,
+            extract_loras_from_workflow,
+        )
+
+        entries: List[Dict[str, Any]] = []
+        node_id: Any = None
+        if isinstance(ui_workflow, dict):
+            entries, node_id = extract_loras_from_workflow(ui_workflow)
+        if not entries and isinstance(api_prompt, dict):
+            entries, node_id = extract_loras_from_api_prompt(api_prompt)
+            try:
+                node_id = int(node_id) if node_id is not None else None
+            except (TypeError, ValueError):
+                pass
+        if entries:
+            owned_l = {
+                "node_id": node_id,
+                "frozen": False,
+                "entries": entries,
+                "origin": "adopt_or_claim",
+            }
+            attach_content_hash(owned_l)
+            job["loras"] = owned_l
+            out["loras"] = True
+            out["loras_count"] = len(entries)
+    except Exception as exc:
+        out["loras_error"] = str(exc)
+
+    return out
+
+
+def claim_queue_prompt_as_job(
+    *,
+    prompt_id: str,
+    repo_root: Path,
+    output_root: Path,
+    workspace_root: Optional[Path],
+    comfy_server: str,
+    family_slug: Optional[str] = None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """
+    Mint a factory job from a live/history Comfy prompt so recipe edits survive OOM.
+
+    Fingerprints the API prompt (converted to a pseudo-litegraph when needed via
+    enrolled template match on workflow_name / family hint, else unique topo match
+    when a companion UI workflow is unavailable — API-only path uses family_slug
+    or unique enrolled match from any embedded workflow_name metadata).
+    """
+    from shape_factory_work_products import _comfy_queue_entries  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=repo_root)
+    pid = str(prompt_id or "").strip()
+    if not pid:
+        return {"ok": False, "error": "missing_prompt_id"}
+
+    # Already a factory job with this prompt_id?
+    found_path = None
+    found_job = None
+    jobs_root = data_root / "shape_factory" / "jobs"
+    if jobs_root.is_dir():
+        for path in jobs_root.glob("*/*.job.json"):
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(loaded, dict):
+                continue
+            submit = loaded.get("submit") if isinstance(loaded.get("submit"), dict) else {}
+            if str(submit.get("prompt_id") or "").strip() == pid:
+                found_path, found_job = path, loaded
+                break
+    if isinstance(found_job, dict) and found_path is not None:
+        return {
+            "ok": True,
+            "claimed": False,
+            "already_indexed": True,
+            "job_key": found_job.get("job_key"),
+            "family_slug": found_job.get("family_slug"),
+            "job_path": str(found_path),
+            "workbench_href": f"/workbench?job={found_job.get('job_key')}",
+            "detail": "Prompt already linked to a factory job.",
+        }
+
+    # Fetch queue + history for the prompt payload.
+    import urllib.request
+
+    server = str(comfy_server or "").rstrip("/")
+    if not server:
+        return {"ok": False, "error": "missing_comfy_server"}
+
+    api_prompt: Optional[Dict[str, Any]] = None
+    status = "queued"
+    job_key_hint = ""
+    try:
+        with urllib.request.urlopen(f"{server}/queue", timeout=10) as resp:
+            queue_doc = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        queue_doc = None
+        queue_err = str(exc)
+    else:
+        queue_err = None
+    if isinstance(queue_doc, dict):
+        for ent in _comfy_queue_entries(queue_doc.get("queue_running"), status="running") + _comfy_queue_entries(
+            queue_doc.get("queue_pending"), status="queued"
+        ):
+            if ent.get("prompt_id") == pid:
+                status = str(ent.get("status") or status)
+                job_key_hint = str(ent.get("job_key") or "")
+                prompt_obj = ent.get("prompt")
+                if isinstance(prompt_obj, dict):
+                    # Queue rows sometimes nest {prompt: {…nodes}} or are the node map itself.
+                    if any(isinstance(v, dict) and v.get("class_type") for v in prompt_obj.values()):
+                        api_prompt = prompt_obj
+                    elif isinstance(prompt_obj.get("prompt"), dict):
+                        api_prompt = prompt_obj.get("prompt")  # type: ignore[assignment]
+                break
+
+    if api_prompt is None:
+        try:
+            with urllib.request.urlopen(f"{server}/history/{pid}", timeout=15) as resp:
+                hist = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": "prompt_not_found",
+                "detail": f"Not on queue and history fetch failed: {exc}",
+                "queue_error": queue_err,
+            }
+        entry = hist.get(pid) if isinstance(hist, dict) else None
+        if not isinstance(entry, dict):
+            return {"ok": False, "error": "prompt_not_found", "detail": "Prompt not on queue or history."}
+        status = "complete"
+        prompt_field = entry.get("prompt")
+        # Comfy history prompt is often [number, prompt_id, prompt_dict, extra, outputs_ids]
+        if isinstance(prompt_field, list) and len(prompt_field) >= 3 and isinstance(prompt_field[2], dict):
+            api_prompt = prompt_field[2]
+        elif isinstance(prompt_field, dict):
+            api_prompt = prompt_field
+
+    if not isinstance(api_prompt, dict) or not api_prompt:
+        return {"ok": False, "error": "missing_api_prompt", "detail": "Could not load Comfy prompt graph."}
+
+    # Resolve family: explicit → unique enrolled match is not available for API-only
+    # without UI fingerprint; use family_slug or workflow_name hint.
+    slug = str(family_slug or "").strip()
+    if not slug and job_key_hint:
+        # factory job_keys are usually FAMILY__…
+        slug = job_key_hint.split("__", 1)[0].strip()
+    if not slug:
+        # Try extra_pnginfo / workflow_name keys inside prompt extras if present.
+        for node in api_prompt.values():
+            if not isinstance(node, dict):
+                continue
+            meta = node.get("_meta") if isinstance(node.get("_meta"), dict) else {}
+            title = str(meta.get("title") or "")
+            if title and title.upper() == title and "-" in title:
+                slug = title
+                break
+    if not slug:
+        return {
+            "ok": False,
+            "error": "family_required",
+            "detail": "Pass family_slug — API prompts cannot uniquely fingerprint without a UI workflow.",
+        }
+
+    shape_path = data_root / "shapes" / f"{slug}.shape.yaml"
+    shape_doc = _load_yaml(shape_path)
+    if not shape_doc:
+        return {"ok": False, "error": "shape_missing", "family_slug": slug, "shape_path": str(shape_path)}
+
+    stem = _slug(f"{slug}__claim__{pid[:12]}", 160)
+    job_key = stem
+    pools_path = data_root / "pools" / slug / "pools.yaml"
+    # Minimal synthetic job (no output yet — claim is for in-flight / history recovery).
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    job: Dict[str, Any] = {
+        "schema_version": "comfyui-runpod.shape-job.v0",
+        "origin": "claim_queue",
+        "created_at": now,
+        "family_slug": slug,
+        "shape_id": shape_doc.get("shape_id"),
+        "graph_hash": shape_doc.get("graph_hash"),
+        "shape_path": str(shape_path),
+        "template_path": str(shape_doc.get("template") or ""),
+        "pools_path": str(pools_path) if pools_path.is_file() else None,
+        "job_key": job_key,
+        "bindings": {},
+        "deposits": shape_doc.get("deposits") if isinstance(shape_doc.get("deposits"), dict) else {},
+        "submit": {
+            "status": status if status in {"queued", "running", "complete", "error"} else "queued",
+            "prompt_id": pid,
+            "prompt_source": "claim_queue",
+            "claimed_at": now,
+        },
+        "claim": {"prompt_id": pid, "comfy_server": server},
+        "warnings": [],
+    }
+
+    recipe = _attach_owned_recipe_from_sources(
+        job,
+        data_root=data_root,
+        api_prompt=api_prompt,
+        bindings=job.get("bindings") if isinstance(job.get("bindings"), dict) else {},
+    )
+
+    job_path = data_root / "shape_factory" / "jobs" / slug / f"{job_key}.job.json"
+    if dry_run:
+        return {
+            "ok": True,
+            "claimed": False,
+            "dry_run": True,
+            "job_key": job_key,
+            "family_slug": slug,
+            "job": job,
+            "recipe": recipe,
+            "workbench_href": f"/workbench?job={job_key}",
+        }
+
+    job_path.parent.mkdir(parents=True, exist_ok=True)
+    job_path.write_text(json.dumps(job, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return {
+        "ok": True,
+        "claimed": True,
+        "job_key": job_key,
+        "family_slug": slug,
+        "job_path": str(job_path),
+        "prompt_id": pid,
+        "status": status,
+        "recipe": recipe,
+        "workbench_href": f"/workbench?job={job_key}",
+    }
+
+
 def add_adopt_subparser(sub: Any) -> None:
     p = sub.add_parser(
         "adopt-from-output",
@@ -543,6 +861,18 @@ def add_adopt_subparser(sub: Any) -> None:
     )
     p.set_defaults(func=_cmd_adopt)
 
+    pc = sub.add_parser(
+        "claim-from-queue",
+        help="Mint a Workbench job from a Comfy prompt_id (queue/history) so recipe edits survive OOM",
+    )
+    pc.add_argument("--prompt-id", required=True)
+    pc.add_argument("--family", dest="family_slug", default=None, help="Family slug (required when not inferable)")
+    pc.add_argument("--server", default="http://127.0.0.1:8188")
+    pc.add_argument("--dry-run", action="store_true")
+    pc.add_argument("--output-root", default="/home/yuji/comfyui-runpod-data/output")
+    pc.add_argument("--workspace-root", default="/home/yuji/comfyui-runpod-data")
+    pc.set_defaults(func=_cmd_claim)
+
 
 def _cmd_adopt(args: argparse.Namespace) -> int:
     repo = Path(__file__).resolve().parents[2]
@@ -554,6 +884,21 @@ def _cmd_adopt(args: argparse.Namespace) -> int:
         family_slug=args.family_slug,
         dry_run=bool(args.dry_run),
         force=bool(args.force),
+    )
+    print(json.dumps(out, indent=2, ensure_ascii=False))
+    return 0 if out.get("ok") else 1
+
+
+def _cmd_claim(args: argparse.Namespace) -> int:
+    repo = Path(__file__).resolve().parents[2]
+    out = claim_queue_prompt_as_job(
+        prompt_id=str(args.prompt_id),
+        repo_root=repo,
+        output_root=Path(args.output_root),
+        workspace_root=Path(args.workspace_root),
+        comfy_server=str(args.server),
+        family_slug=args.family_slug,
+        dry_run=bool(args.dry_run),
     )
     print(json.dumps(out, indent=2, ensure_ascii=False))
     return 0 if out.get("ok") else 1

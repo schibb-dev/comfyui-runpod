@@ -1507,6 +1507,14 @@ def _work_product_item_from_job(
     except Exception:
         params_profile = None
 
+    loras_profile = None
+    try:
+        from shape_factory_owned_loras import owned_loras_to_profile
+
+        loras_profile = owned_loras_to_profile(job, data_root=data_root, job_path=path)
+    except Exception:
+        loras_profile = None
+
     construction = _synthesize_construction(job)
     status = str(
         status_override
@@ -1670,6 +1678,7 @@ def _work_product_item_from_job(
         "bindings": bindings_out,
         "prompt_profile": prompt_profile,
         "params_profile": params_profile,
+        "loras_profile": loras_profile,
         "shape_profile": shape_profile,
         "media_meta": media_meta or None,
         "timing": timing,

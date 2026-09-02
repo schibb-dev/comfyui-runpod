@@ -1,7 +1,7 @@
 import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createPortal } from "react-dom";
-import { discardShapeFactoryJob, fetchShapeFactoryWorkProducts, finishShapeFactoryEdit, promoteShapeFactoryTemplate, replayShapeFactory, unqueueShapeFactory, updatePendingShapeFactoryTrim, updateShapeFactoryOwnedParams, updateShapeFactoryOwnedPrompt } from "./api";
+import { discardShapeFactoryJob, fetchShapeFactoryWorkProducts, finishShapeFactoryEdit, claimShapeFactoryFromQueue, promoteShapeFactoryTemplate, replayShapeFactory, unqueueShapeFactory, updatePendingShapeFactoryTrim, updateShapeFactoryOwnedLoras, updateShapeFactoryOwnedParams, updateShapeFactoryOwnedPrompt } from "./api";
 import type { ShapeFactoryClip } from "./api";
 import { ClipBookmarksRail } from "./ClipBookmarksRail";
 import { ComfyLiveMetricsBar, ComfyLivePreview } from "./ComfyLivePreview";
@@ -47,6 +47,7 @@ import type {
   WorkProductDetailRow,
   WorkProductFamilyOption,
   WorkProductItem,
+  WorkProductLoraEntry,
   WorkProductParamsProfile,
   WorkProductParamsValues,
   WorkProductPromptProfile,
@@ -2960,6 +2961,238 @@ function WorkProductParamsEditor({
   );
 }
 
+function loraBasename(name: string): string {
+  const base = String(name || "").split(/[/\\]/).pop() || name;
+  return base.replace(/\.safetensors$/i, "");
+}
+
+function WorkProductLorasEditor({
+  item,
+  onCommitted,
+}: {
+  item: WorkProductItem;
+  onCommitted?: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const profile = item.loras_profile;
+  const editable = isJobTrimEditable(item);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<WorkProductLoraEntry[]>(() => [...(profile?.current || [])]);
+  const [dirty, setDirty] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [promoteOpen, setPromoteOpen] = useState(false);
+  const [promoteMode, setPromoteMode] = useState<"fork" | "overwrite">("overwrite");
+
+  useEffect(() => {
+    setDraft([...(profile?.current || [])]);
+    setDirty(false);
+    setMsg(null);
+    setEditing(false);
+  }, [item.job_key, profile?.snowflake, profile?.content_hash]);
+
+  const saveMut = useMutation({
+    mutationFn: updateShapeFactoryOwnedLoras,
+    onSuccess: async () => {
+      setDirty(false);
+      setEditing(false);
+      setMsg("Saved to job");
+      await queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductsRoot });
+      onCommitted?.();
+    },
+    onError: (e) => setMsg(e instanceof Error ? e.message : String(e)),
+  });
+  const promoteMut = useMutation({
+    mutationFn: promoteShapeFactoryTemplate,
+    onSuccess: async (res) => {
+      setPromoteOpen(false);
+      setMsg(
+        res.mode === "fork"
+          ? `Forked readable · ${String(res.path || "").split(/[/\\]/).pop() || "ok"}`
+          : `Overwrote template${res.bak_path ? " (+.bak)" : ""}`,
+      );
+      await queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductsRoot });
+      onCommitted?.();
+    },
+    onError: (e) => setMsg(e instanceof Error ? e.message : String(e)),
+  });
+
+  const current = profile?.current || [];
+  const seed = profile?.seed || [];
+  if (!current.length && !seed.length && !editable) return null;
+
+  const busy = saveMut.isPending || promoteMut.isPending;
+  const canPromote =
+    Boolean(profile?.snowflake && (isJobTrimEditable(item) || canPromoteJobPrompt(item))) && !editing;
+  const onCount = (editing ? draft : current).filter((e) => e.on !== false).length;
+  const hint =
+    (editing ? draft : current).length > 0
+      ? `${onCount}/${(editing ? draft : current).length} on`
+      : "no loras";
+
+  const setEntry = (idx: number, patch: Partial<WorkProductLoraEntry>) => {
+    setDraft((prev) => prev.map((row, i) => (i === idx ? { ...row, ...patch } : row)));
+    setDirty(true);
+  };
+
+  return (
+    <div className="work-product-prompt-editor work-product-loras-editor">
+      <details className="work-product-prompt-editor__section" open={Boolean(profile?.snowflake)}>
+        <summary className="work-product-prompt-editor__section-summary">
+          <span>LoRAs</span>
+          <span className="factory-muted">{hint}</span>
+          <PromptSnowflakeChip loras={profile} />
+        </summary>
+        <div className="work-product-prompt-editor__section-body">
+          <div className="work-product-prompt-editor__actions">
+            {editable ? (
+              <button
+                type="button"
+                className="drt-btn"
+                disabled={busy}
+                onClick={() => {
+                  if (editing) {
+                    setDraft([...(profile?.current || [])]);
+                    setDirty(false);
+                    setEditing(false);
+                  } else setEditing(true);
+                }}
+              >
+                {editing ? "Cancel" : "Edit"}
+              </button>
+            ) : null}
+            {editing ? (
+              <button
+                type="button"
+                className="drt-btn"
+                disabled={busy || !dirty}
+                onClick={() =>
+                  void saveMut.mutateAsync({
+                    job_key: item.job_key,
+                    job_path: item.job_path || undefined,
+                    entries: draft,
+                  })
+                }
+              >
+                Save to job
+              </button>
+            ) : null}
+            {canPromote ? (
+              <button type="button" className="drt-btn" disabled={busy} onClick={() => setPromoteOpen(true)}>
+                Promote…
+              </button>
+            ) : null}
+          </div>
+          <div className="work-product-loras-editor__list">
+            {(editing ? draft : current).map((row, idx) => {
+              const seedRow = seed[idx];
+              const changed =
+                Boolean(seedRow) &&
+                (Boolean(row.on) !== Boolean(seedRow?.on) ||
+                  Number(row.strength ?? NaN) !== Number(seedRow?.strength ?? NaN) ||
+                  String(row.lora || "") !== String(seedRow?.lora || ""));
+              return (
+                <div
+                  key={`${row.lora}-${idx}`}
+                  className={"work-product-loras-editor__row" + (changed ? " is-diff" : "")}
+                >
+                  <label className="work-product-loras-editor__on">
+                    <input
+                      type="checkbox"
+                      checked={row.on !== false}
+                      disabled={!editing || busy}
+                      onChange={(e) => setEntry(idx, { on: e.target.checked })}
+                    />
+                    <span className="work-product-loras-editor__name mono" title={row.lora}>
+                      {loraBasename(row.lora)}
+                    </span>
+                  </label>
+                  <label className="work-product-loras-editor__strength">
+                    <span className="work-product-params-editor__label">Str</span>
+                    {editing ? (
+                      <input
+                        type="number"
+                        step="0.05"
+                        className="work-product-params-editor__input"
+                        value={row.strength ?? ""}
+                        disabled={busy || row.on === false}
+                        onChange={(e) => {
+                          const n = Number(e.target.value);
+                          setEntry(idx, { strength: Number.isFinite(n) ? n : undefined });
+                        }}
+                      />
+                    ) : (
+                      <span className="work-product-params-editor__value mono">
+                        {row.strength != null ? row.strength : "—"}
+                        {changed && seedRow?.strength != null ? (
+                          <span className="factory-muted"> ← {seedRow.strength}</span>
+                        ) : null}
+                      </span>
+                    )}
+                  </label>
+                </div>
+              );
+            })}
+            {!current.length && !editing ? (
+              <p className="factory-muted">No Power LoRA slots on this job’s workflow.</p>
+            ) : null}
+          </div>
+          {msg ? <p className="factory-muted work-product-prompt-editor__msg">{msg}</p> : null}
+          {promoteOpen && canPromote ? (
+            <div className="work-product-prompt-editor__promote" role="dialog" aria-label="Promote LoRAs to catalog">
+              <p className="factory-muted">
+                Write this LoRA stack into the catalog readable. Overwrite keeps a .bak; fork writes a sibling file.
+              </p>
+              <div className="work-product-prompt-editor__promote-modes" role="radiogroup" aria-label="Promote mode">
+                <label>
+                  <input
+                    type="radio"
+                    name={`promote-loras-${item.job_key}`}
+                    checked={promoteMode === "overwrite"}
+                    onChange={() => setPromoteMode("overwrite")}
+                    disabled={busy}
+                  />{" "}
+                  Overwrite catalog template
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name={`promote-loras-${item.job_key}`}
+                    checked={promoteMode === "fork"}
+                    onChange={() => setPromoteMode("fork")}
+                    disabled={busy}
+                  />{" "}
+                  Save as new readable fork
+                </label>
+              </div>
+              <div className="work-product-prompt-editor__actions work-product-prompt-editor__actions--promote">
+                <button type="button" className="drt-btn" disabled={busy} onClick={() => setPromoteOpen(false)}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="drt-btn"
+                  disabled={busy}
+                  onClick={() =>
+                    void promoteMut.mutateAsync({
+                      job_key: item.job_key,
+                      job_path: item.job_path || undefined,
+                      fields: ["loras"],
+                      mode: promoteMode,
+                      entries: current,
+                    })
+                  }
+                >
+                  {promoteMode === "fork" ? "Fork readable" : "Overwrite template"}
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </details>
+    </div>
+  );
+}
+
 function workbenchAdvanceSubmitIntent(
   item: WorkProductItem,
   opts: {
@@ -3058,6 +3291,7 @@ function WorkProductQuickQueue({
       queryClient.invalidateQueries({ queryKey: queryKeys.queue.ledgerRoot }),
     ]);
   const unqueueMutation = useMutation({ mutationFn: unqueueShapeFactory });
+  const claimMutation = useMutation({ mutationFn: claimShapeFactoryFromQueue });
   const discardMutation = useMutation({ mutationFn: discardShapeFactoryJob });
   const finishEditMutation = useMutation({ mutationFn: finishShapeFactoryEdit });
   const replayMutation = useMutation({ mutationFn: replayShapeFactory });
@@ -3072,12 +3306,18 @@ function WorkProductQuickQueue({
 
   const mutationsBusy =
     unqueueMutation.isPending ||
+    claimMutation.isPending ||
     discardMutation.isPending ||
     finishEditMutation.isPending ||
     replayMutation.isPending;
   const isBusy = busy || mutationsBusy;
   const canRerun = Boolean(jobKey) && !isBusy;
   const canUnqueue = canUnqueueWorkProduct(item) && !isBusy;
+  const canClaim =
+    Boolean(item.live_from_comfy || isNonFactoryWorkProduct(item)) &&
+    Boolean(String(item.prompt_id || "").trim()) &&
+    !String(item.job_path || "").trim() &&
+    !isBusy;
   const canEditSubmit = canEditJobViaSubmit(item) && !isBusy;
   const isEditing = workProductStatusKey(item) === "editing";
   const editSubmitIntent = canEditSubmit
@@ -3134,6 +3374,43 @@ function WorkProductQuickQueue({
       }
       await invalidateWorkbench();
       await invalidateQueue();
+      onCommitted?.();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const claimToWorkbench = async () => {
+    const pid = String(item.prompt_id || "").trim();
+    if (!pid || isBusy) return;
+    const familyGuess = String(item.family_slug || "").trim();
+    let family = familyGuess;
+    if (!family) {
+      const typed = window.prompt(
+        "Claim as Workbench job — enter family slug (e.g. FB8VA5-ZOOMOUT):",
+        "",
+      );
+      family = String(typed || "").trim();
+      if (!family) return;
+    }
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await claimMutation.mutateAsync({
+        prompt_id: pid,
+        family_slug: family,
+      });
+      setMsg(
+        res.already_indexed
+          ? `Already a factory job · ${res.job_key || ""}`
+          : `Claimed · ${res.job_key || ""}${res.recipe?.loras ? " · loras recovered" : ""}`,
+      );
+      if (res.workbench_href) {
+        window.history.replaceState(null, "", res.workbench_href);
+      }
+      await invalidateWorkbench();
       onCommitted?.();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));
@@ -3460,6 +3737,20 @@ function WorkProductQuickQueue({
             </button>
           </>
         ) : null}
+        {canClaim ? (
+          <>
+            <span className="work-product-quick-queue__sep" aria-hidden="true" />
+            <button
+              type="button"
+              className="drt-btn"
+              disabled={!canClaim}
+              title="Mint a durable Workbench job from this Comfy prompt (prompt/params/LoRAs on disk)"
+              onClick={() => void claimToWorkbench()}
+            >
+              Claim
+            </button>
+          </>
+        ) : null}
         {canArchive ? (
           <>
             <span className="work-product-quick-queue__sep" aria-hidden="true" />
@@ -3764,6 +4055,7 @@ function WorkProductDetails({
       />
       <WorkProductPromptEditor item={item} onCommitted={onCommitted} />
       <WorkProductParamsEditor item={item} onCommitted={onCommitted} />
+      <WorkProductLorasEditor item={item} onCommitted={onCommitted} />
       <div className="work-product-details__groups">
         <WorkProductLineageSection
           item={item}
