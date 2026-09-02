@@ -22,6 +22,33 @@ import { APPETITE_ROW_GLYPH, appetiteRowTitle } from "./discoveryRatingsRollup";
 
 const PAGE = 96;
 const TAG_BATCH_DEFAULT = 12;
+const APPETITE_FILTER_KEY = "still-gallery.appetiteFilter";
+const SORT_KEY = "still-gallery.sort";
+
+type StillAppetiteFilter = "" | "any" | "fast_track" | "more" | "less" | "none";
+type StillSort = "newest" | "appetite";
+
+function readStoredAppetiteFilter(): StillAppetiteFilter {
+  try {
+    const raw = String(localStorage.getItem(APPETITE_FILTER_KEY) || "").trim().toLowerCase();
+    if (raw === "any" || raw === "fast_track" || raw === "more" || raw === "less" || raw === "none") {
+      return raw;
+    }
+  } catch {
+    /* ignore */
+  }
+  return "";
+}
+
+function readStoredSort(): StillSort {
+  try {
+    const raw = String(localStorage.getItem(SORT_KEY) || "").trim().toLowerCase();
+    if (raw === "appetite") return "appetite";
+  } catch {
+    /* ignore */
+  }
+  return "newest";
+}
 
 function stillMediaRelpath(it: InputCurationStillItem): string {
   const rel = String(it.relpath || "").trim().replace(/\\/g, "/");
@@ -72,6 +99,28 @@ export function StillGalleryApp() {
   });
   const [qDebounced, setQDebounced] = useState(q);
   const [tagFilter, setTagFilter] = useState("");
+  const [appetiteFilter, setAppetiteFilter] = useState<StillAppetiteFilter>(() => {
+    const fromUrl = String(new URLSearchParams(window.location.search).get("appetite") || "")
+      .trim()
+      .toLowerCase();
+    if (
+      fromUrl === "any" ||
+      fromUrl === "fast_track" ||
+      fromUrl === "more" ||
+      fromUrl === "less" ||
+      fromUrl === "none"
+    ) {
+      return fromUrl;
+    }
+    return readStoredAppetiteFilter();
+  });
+  const [sortMode, setSortMode] = useState<StillSort>(() => {
+    const fromUrl = String(new URLSearchParams(window.location.search).get("sort") || "")
+      .trim()
+      .toLowerCase();
+    if (fromUrl === "appetite") return "appetite";
+    return readStoredSort();
+  });
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   /** Paths in the multi-select set (includes focus when non-empty). */
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
@@ -96,9 +145,28 @@ export function StillGalleryApp() {
     return () => window.clearTimeout(t);
   }, [q]);
 
+  useEffect(() => {
+    try {
+      if (appetiteFilter) localStorage.setItem(APPETITE_FILTER_KEY, appetiteFilter);
+      else localStorage.removeItem(APPETITE_FILTER_KEY);
+    } catch {
+      /* ignore */
+    }
+  }, [appetiteFilter]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SORT_KEY, sortMode);
+    } catch {
+      /* ignore */
+    }
+  }, [sortMode]);
+
   const stillsKey = {
     q: qDebounced,
     tag: tagFilter.trim(),
+    appetite: appetiteFilter,
+    sort: sortMode,
     limit: PAGE,
   };
 
@@ -109,6 +177,8 @@ export function StillGalleryApp() {
       fetchShapeFactoryInputCurationStills({
         q: stillsKey.q || undefined,
         tag: stillsKey.tag || undefined,
+        appetite: stillsKey.appetite || undefined,
+        sort: stillsKey.sort || undefined,
         limit: PAGE,
         offset: pageParam,
       }),
@@ -305,15 +375,16 @@ export function StillGalleryApp() {
   ]);
 
   useEffect(() => {
-    if (!selected) return;
     const next = stillsHref({
-      contentId: selected.content_id || null,
-      relpath: stillMediaRelpath(selected) || null,
+      contentId: selected?.content_id || deep.contentId || null,
+      relpath: selected ? stillMediaRelpath(selected) || null : deep.relpath,
       q: qDebounced || null,
+      appetite: appetiteFilter || null,
+      sort: sortMode === "newest" ? null : sortMode,
     });
     if (`${window.location.pathname}${window.location.search}` === next) return;
     window.history.replaceState(null, "", next);
-  }, [selected, qDebounced]);
+  }, [selected, qDebounced, appetiteFilter, sortMode, deep.contentId, deep.relpath]);
 
   useEffect(() => {
     const el = sentinelRef.current;
@@ -658,6 +729,32 @@ export function StillGalleryApp() {
           placeholder="Filter tag…"
           aria-label="Filter by tag"
         />
+        <label className="still-gallery__opt">
+          <span className="factory-muted">Appetite</span>
+          <select
+            value={appetiteFilter}
+            onChange={(e) => setAppetiteFilter(e.target.value as StillAppetiteFilter)}
+            aria-label="Filter by appetite"
+          >
+            <option value="">All</option>
+            <option value="any">Marked</option>
+            <option value="fast_track">Fast-track</option>
+            <option value="more">More</option>
+            <option value="less">Less</option>
+            <option value="none">Unmarked</option>
+          </select>
+        </label>
+        <label className="still-gallery__opt">
+          <span className="factory-muted">Sort</span>
+          <select
+            value={sortMode}
+            onChange={(e) => setSortMode(e.target.value as StillSort)}
+            aria-label="Sort stills"
+          >
+            <option value="newest">Newest</option>
+            <option value="appetite">Appetite first</option>
+          </select>
+        </label>
         <span className="factory-muted still-gallery__count">{totalLabel}</span>
         {multiCount > 0 ? (
           <span className="still-gallery__multi-status" aria-live="polite">

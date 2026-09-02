@@ -389,6 +389,116 @@ def merged_source_stills(
     }
 
 
+def _normalize_still_appetite_filter(raw: str) -> str:
+    text = str(raw or "").strip().lower().replace("-", "_")
+    if text in {"", "all", "*"}:
+        return ""
+    if text in {"any", "marked", "set", "has"}:
+        return "any"
+    if text in {"none", "unmarked", "clear", "unset"}:
+        return "none"
+    if text in {"more", "fast_track", "less", "neutral"}:
+        return text
+    return ""
+
+
+def _normalize_still_sort(raw: str) -> str:
+    text = str(raw or "").strip().lower().replace("-", "_")
+    if text in {"appetite", "appetite_first", "appetite_desc"}:
+        return "appetite"
+    return "newest"
+
+
+def _still_appetite_lookup_maps(
+    appetite_doc: Optional[Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """Map basename / input-rel / raw key → appetite row for still gallery joins."""
+    out: Dict[str, Dict[str, Any]] = {}
+    if not isinstance(appetite_doc, dict):
+        return out
+    table = appetite_doc.get("by_output_relpath")
+    if not isinstance(table, dict):
+        return out
+    for key, row in table.items():
+        if not isinstance(row, dict):
+            continue
+        state = str(row.get("appetite") or "").strip()
+        if not state:
+            continue
+        k = str(key or "").replace("\\", "/").strip()
+        if not k:
+            continue
+        low = k.lower()
+        # Prefer input/ image marks; skip obvious output videos.
+        if low.endswith((".mp4", ".webm", ".mov")):
+            continue
+        if "/og/" in low or low.startswith("og/") or "/wip/" in low or low.startswith("wip/"):
+            continue
+        packed = {
+            "appetite": state,
+            "appetite_facet": str(row.get("facet") or row.get("appetite_facet") or "source").strip() or "source",
+            "updated_at": row.get("updated_at"),
+        }
+        out[k] = packed
+        bn = Path(k).name
+        if bn:
+            out[bn] = packed
+            out[f"input/{bn}"] = packed
+        if low.startswith("input/"):
+            out[k[len("input/") :]] = packed
+        elif "/input/" in low:
+            rel = k.split("/input/", 1)[-1].lstrip("/")
+            if rel:
+                out[rel] = packed
+                out[f"input/{rel}"] = packed
+    return out
+
+
+def _attach_still_appetite(
+    item: Dict[str, Any],
+    appetite_by_key: Dict[str, Dict[str, Any]],
+) -> None:
+    if not appetite_by_key or not isinstance(item, dict):
+        return
+    keys: List[str] = []
+    rel = str(item.get("relpath") or "").replace("\\", "/").strip()
+    bn = str(item.get("basename") or "").strip() or Path(str(item.get("path") or "")).name
+    raw_path = str(item.get("path") or "").replace("\\", "/").strip()
+    if rel:
+        keys.append(rel)
+        if not rel.lower().startswith("input/"):
+            keys.append(f"input/{rel}")
+    if bn:
+        keys.append(f"input/{bn}")
+        keys.append(bn)
+    if raw_path:
+        keys.append(raw_path)
+        if "/input/" in raw_path:
+            keys.append("input/" + raw_path.split("/input/", 1)[-1].lstrip("/"))
+    seen: set[str] = set()
+    for key in keys:
+        key = str(key or "").strip().replace("\\", "/")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        hit = appetite_by_key.get(key)
+        if isinstance(hit, dict) and hit.get("appetite"):
+            item["appetite"] = hit.get("appetite")
+            item["appetite_facet"] = hit.get("appetite_facet") or "source"
+            return
+
+
+def _still_appetite_matches(state: str, filt: str) -> bool:
+    if not filt:
+        return True
+    s = str(state or "").strip()
+    if filt == "any":
+        return s in {"more", "fast_track", "less", "neutral"}
+    if filt == "none":
+        return s not in {"more", "fast_track", "less", "neutral"}
+    return s == filt
+
+
 def list_catalog_stills(
     *,
     data_root: Path,
@@ -397,6 +507,9 @@ def list_catalog_stills(
     offset: int = 0,
     scan: bool = False,
     tag: str = "",
+    appetite: str = "",
+    sort: str = "newest",
+    appetite_doc: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     from input_still_catalog import (  # type: ignore
         default_catalog_path,
@@ -411,6 +524,10 @@ def list_catalog_stills(
     if scan:
         scan_input_stills(input_root=input_root, catalog_path=default_catalog_path(data_root=data_root))
     cat = default_catalog_path(data_root=data_root)
+    appetite_filt = _normalize_still_appetite_filter(appetite)
+    sort_mode = _normalize_still_sort(sort)
+    appetite_by_key = _still_appetite_lookup_maps(appetite_doc) if (appetite_filt or sort_mode == "appetite" or appetite_doc) else {}
+    need_appetite_join = bool(appetite_filt or sort_mode == "appetite" or appetite_by_key)
     if not cat.is_file():
         return {
             "ok": True,
@@ -419,6 +536,8 @@ def list_catalog_stills(
             "items": [],
             "count": 0,
             "total": 0,
+            "appetite": appetite_filt or None,
+            "sort": sort_mode,
         }
     lim = max(1, min(2000, int(limit or 200)))
     off = max(0, int(offset or 0))
@@ -468,14 +587,158 @@ def list_catalog_stills(
     seen_resolved: set[str] = set()
     sql_offset = 0
     batch = 400
-    need = off + lim
+    # Positive appetite filters are tiny vs the catalog — resolve marks first.
+    positive_appetite = appetite_filt in {"any", "more", "fast_track", "less", "neutral"}
+    # Appetite filter/sort needs a full filtered set before paging so totals stay honest.
+    collect_all = bool(appetite_filt or sort_mode == "appetite")
+    need = None if collect_all else (off + lim)
     exhausted = False
+
+    def _push_resolved(resolved: Path, *, catalog_path: str = "", mtime: float = 0.0, first_seen: float = 0.0, last_seen: float = 0.0, size: int = 0) -> bool:
+        nonlocal skipped_download_copies
+        if is_download_copy_name(resolved.name):
+            skipped_download_copies += 1
+            return False
+        resolved_key = str(resolved)
+        if resolved_key in seen_resolved:
+            skipped_download_copies += 1
+            return False
+        seen_resolved.add(resolved_key)
+        content_id = _extract_content_id(str(resolved)) or _extract_content_id(catalog_path)
+        if tagged_ids is not None and (not content_id or content_id not in tagged_ids):
+            return False
+        if qn:
+            hay = f"{resolved} {catalog_path} {resolved.name}".lower()
+            if qn not in hay:
+                return False
+        relpath = still_relpath_for_comfy(resolved, input_root=input_root)
+        meta = tags_items.get(str(content_id or "").lower()) if content_id else None
+        tags_list: List[str] = []
+        note = None
+        if isinstance(meta, dict):
+            tags_list = list(meta.get("tags") or [])
+            note = meta.get("note")
+        item = {
+            "path": str(resolved),
+            "catalog_path": catalog_path or str(resolved),
+            "basename": resolved.name,
+            "relpath": relpath,
+            "url": "/files/" + relpath.replace("\\", "/"),
+            "thumb_url": "/files/" + relpath.replace("\\", "/"),
+            "size": int(size or 0),
+            "mtime": float(mtime or 0.0),
+            "first_seen": float(first_seen or 0.0),
+            "last_seen": float(last_seen or 0.0),
+            "content_id": content_id,
+            "tags": tags_list,
+            "note": note,
+        }
+        if need_appetite_join:
+            _attach_still_appetite(item, appetite_by_key)
+            if not _still_appetite_matches(str(item.get("appetite") or ""), appetite_filt):
+                return False
+        try:
+            st = resolved.stat()
+            if not item["mtime"]:
+                item["mtime"] = float(st.st_mtime)
+            if not item["size"]:
+                item["size"] = int(st.st_size)
+            if not item["first_seen"]:
+                item["first_seen"] = float(st.st_mtime)
+            if not item["last_seen"]:
+                item["last_seen"] = float(st.st_mtime)
+        except OSError:
+            pass
+        items.append(item)
+        return True
+
+    if positive_appetite and isinstance(appetite_doc, dict):
+        table = appetite_doc.get("by_output_relpath")
+        if isinstance(table, dict):
+            for key, row in table.items():
+                if not isinstance(row, dict):
+                    continue
+                state = str(row.get("appetite") or "").strip()
+                if not _still_appetite_matches(state, appetite_filt):
+                    continue
+                k = str(key or "").replace("\\", "/").strip()
+                if not k:
+                    continue
+                low = k.lower()
+                if low.endswith((".mp4", ".webm", ".mov")):
+                    continue
+                if "/og/" in low or low.startswith("og/") or "/wip/" in low or low.startswith("wip/"):
+                    continue
+                candidates = [k]
+                if low.startswith("input/"):
+                    candidates.append(k.split("/", 1)[-1])
+                bn = Path(k).name
+                if bn:
+                    candidates.append(bn)
+                    candidates.append(f"input/{bn}")
+                resolved = None
+                for cand in candidates:
+                    resolved = resolve_catalog_still_path(cand, input_root=input_root)
+                    if resolved is not None:
+                        break
+                    try:
+                        p = Path(cand).expanduser()
+                        if not p.is_file() and low.startswith("input/"):
+                            p = input_root / cand.split("/", 1)[-1]
+                        elif not p.is_file() and bn:
+                            p = input_root / bn
+                        if p.is_file():
+                            resolved = p.resolve()
+                            break
+                    except OSError:
+                        continue
+                if resolved is None:
+                    skipped_missing += 1
+                    continue
+                _push_resolved(resolved, catalog_path=k)
+        if sort_mode == "appetite" or appetite_filt:
+            items.sort(
+                key=lambda it: (
+                    -_appetite_rank(str(it.get("appetite") or "")),
+                    -float(it.get("first_seen") or 0.0),
+                    -float(it.get("mtime") or 0.0),
+                    str(it.get("basename") or ""),
+                )
+            )
+        try:
+            from vision_still_tags import enrich_still_items  # type: ignore
+
+            enrich_still_items(items, data_root=data_root)
+        except Exception:
+            pass
+        total = len(items)
+        page = items[off : off + lim]
+        return {
+            "ok": True,
+            "catalog_path": str(cat),
+            "input_root": str(input_root),
+            "items": page,
+            "count": len(page),
+            "total": total,
+            "resolved_total": total,
+            "skipped_missing": skipped_missing,
+            "skipped_download_copies": skipped_download_copies,
+            "limit": lim,
+            "offset": off,
+            "next_offset": off + len(page),
+            "has_more": off + len(page) < total,
+            "tag": tag_n or None,
+            "appetite": appetite_filt or None,
+            "sort": sort_mode,
+        }
+
     con = sqlite3.connect(str(cat), timeout=30.0)
     con.row_factory = sqlite3.Row
     try:
         total = int(con.execute(f"SELECT COUNT(*) FROM stills {where}", tuple(args)).fetchone()[0])
-        # Walk catalog rows until we can fill offset+limit of *resolved* stills.
-        while len(items) < need and not exhausted:
+        # Walk catalog rows until we can fill offset+limit of *resolved* stills
+        # (or the full matching set when appetite filter/sort is active).
+        while (need is None or len(items) < need) and not exhausted:
             rows = con.execute(
                 f"""
                 SELECT path, size, mtime, first_seen, last_seen
@@ -497,44 +760,16 @@ def list_catalog_stills(
                 if resolved is None:
                     skipped_missing += 1
                     continue
-                # Accidental Windows/browser `` (1)`` / `` (2)`` re-downloads: omit from
-                # gallery (thumb URLs that strip the suffix 404 when only the copy exists).
-                if is_download_copy_name(resolved.name):
-                    skipped_download_copies += 1
+                if not _push_resolved(
+                    resolved,
+                    catalog_path=str(r["path"]),
+                    mtime=float(r["mtime"] or 0.0),
+                    first_seen=float(r["first_seen"] or 0.0),
+                    last_seen=float(r["last_seen"] or 0.0),
+                    size=int(r["size"] or 0),
+                ):
                     continue
-                resolved_key = str(resolved)
-                if resolved_key in seen_resolved:
-                    skipped_download_copies += 1
-                    continue
-                seen_resolved.add(resolved_key)
-                content_id = _extract_content_id(str(resolved)) or _extract_content_id(str(r["path"]))
-                if tagged_ids is not None and (not content_id or content_id not in tagged_ids):
-                    continue
-                relpath = still_relpath_for_comfy(resolved, input_root=input_root)
-                meta = tags_items.get(str(content_id or "").lower()) if content_id else None
-                tags_list: List[str] = []
-                note = None
-                if isinstance(meta, dict):
-                    tags_list = list(meta.get("tags") or [])
-                    note = meta.get("note")
-                items.append(
-                    {
-                        "path": str(resolved),
-                        "catalog_path": str(r["path"]),
-                        "basename": resolved.name,
-                        "relpath": relpath,
-                        "url": "/files/" + relpath.replace("\\", "/"),
-                        "thumb_url": "/files/" + relpath.replace("\\", "/"),
-                        "size": int(r["size"] or 0),
-                        "mtime": float(r["mtime"] or 0.0),
-                        "first_seen": float(r["first_seen"] or 0.0),
-                        "last_seen": float(r["last_seen"] or 0.0),
-                        "content_id": content_id,
-                        "tags": tags_list,
-                        "note": note,
-                    }
-                )
-                if len(items) >= need:
+                if need is not None and len(items) >= need:
                     break
     finally:
         con.close()
@@ -546,8 +781,28 @@ def list_catalog_stills(
     except Exception:
         pass
 
-    page = items[off : off + lim]
-    has_more = len(page) >= lim and (not exhausted or len(items) > off + lim)
+    if sort_mode == "appetite":
+        items.sort(
+            key=lambda it: (
+                -_appetite_rank(str(it.get("appetite") or "")),
+                -float(it.get("first_seen") or 0.0),
+                -float(it.get("mtime") or 0.0),
+                str(it.get("basename") or ""),
+            )
+        )
+
+    if collect_all:
+        total = len(items)
+        page = items[off : off + lim]
+        has_more = off + len(page) < total
+    else:
+        # Attach appetite onto the page even when not filtering/sorting by it.
+        if appetite_by_key:
+            for it in items:
+                if "appetite" not in it:
+                    _attach_still_appetite(it, appetite_by_key)
+        page = items[off : off + lim]
+        has_more = len(page) >= lim and (not exhausted or len(items) > off + lim)
 
     return {
         "ok": True,
@@ -564,6 +819,8 @@ def list_catalog_stills(
         "next_offset": off + len(page),
         "has_more": bool(has_more),
         "tag": tag_n or None,
+        "appetite": appetite_filt or None,
+        "sort": sort_mode,
     }
 
 

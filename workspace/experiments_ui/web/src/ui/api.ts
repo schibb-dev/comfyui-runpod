@@ -437,6 +437,8 @@ export async function fetchShapeFactoryInputCurationState(): Promise<InputCurati
 export async function fetchShapeFactoryInputCurationStills(opts?: {
   q?: string;
   tag?: string;
+  appetite?: string;
+  sort?: string;
   limit?: number;
   offset?: number;
   scan?: boolean;
@@ -444,6 +446,8 @@ export async function fetchShapeFactoryInputCurationStills(opts?: {
   const sp = new URLSearchParams();
   if (opts?.q?.trim()) sp.set("q", opts.q.trim());
   if (opts?.tag?.trim()) sp.set("tag", opts.tag.trim());
+  if (opts?.appetite?.trim()) sp.set("appetite", opts.appetite.trim());
+  if (opts?.sort?.trim()) sp.set("sort", opts.sort.trim());
   if (opts?.limit != null) sp.set("limit", String(opts.limit));
   if (opts?.offset != null) sp.set("offset", String(opts.offset));
   if (opts?.scan) sp.set("scan", "1");

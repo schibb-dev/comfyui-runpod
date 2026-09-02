@@ -18,8 +18,19 @@ export const queryKeys = {
       ["shapeFactory", "templatePromotions", opts || { includeExpired: false }] as const,
     inputCurationRoot: ["shapeFactory", "inputCuration"] as const,
     inputCurationState: ["shapeFactory", "inputCuration", "state"] as const,
-    inputCurationStills: (opts?: { q?: string; tag?: string; limit?: number }) =>
-      ["shapeFactory", "inputCuration", "stills", opts || { q: "", tag: "", limit: 96 }] as const,
+    inputCurationStills: (opts?: {
+      q?: string;
+      tag?: string;
+      appetite?: string;
+      sort?: string;
+      limit?: number;
+    }) =>
+      [
+        "shapeFactory",
+        "inputCuration",
+        "stills",
+        opts || { q: "", tag: "", appetite: "", sort: "newest", limit: 96 },
+      ] as const,
     inputCurationEffectiveSources: (familySlug: string) =>
       ["shapeFactory", "inputCuration", "effectiveSources", familySlug] as const,
     inputCurationAppetiteSeeds: (familySlug: string) =>

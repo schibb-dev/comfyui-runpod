@@ -17909,6 +17909,19 @@ tr.disabled:hover td {
 .still-gallery__search--tag {
   flex: 0 1 160px;
 }
+.still-gallery__opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.still-gallery__opt select {
+  padding: 6px 8px;
+  border: 1px solid var(--border, #444);
+  background: var(--panel, #16181f);
+  color: var(--text, #e7eaf3);
+  max-width: 140px;
+}
 .still-gallery__count {
   font-size: 12px;
 }

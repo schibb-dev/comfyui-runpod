@@ -39,6 +39,8 @@ export function stillsHref(opts?: {
   contentId?: string | null;
   relpath?: string | null;
   q?: string | null;
+  appetite?: string | null;
+  sort?: string | null;
 }): string {
   const sp = new URLSearchParams();
   const contentId = String(opts?.contentId || "").trim().toLowerCase();
@@ -49,6 +51,8 @@ export function stillsHref(opts?: {
       .replace(/\\/g, "/")
   );
   const q = stripDownloadCopySuffix(String(opts?.q || "").trim());
+  const appetite = String(opts?.appetite || "").trim().toLowerCase();
+  const sort = String(opts?.sort || "").trim().toLowerCase();
   if (contentId) sp.set("content_id", contentId);
   if (rel) sp.set("relpath", rel);
   if (q) sp.set("q", q);
@@ -58,6 +62,8 @@ export function stillsHref(opts?: {
   } else if (contentId && !q) {
     sp.set("q", contentId);
   }
+  if (appetite && appetite !== "all") sp.set("appetite", appetite);
+  if (sort && sort !== "newest") sp.set("sort", sort);
   const qs = sp.toString();
   return qs ? `/discovery/stills?${qs}` : "/discovery/stills";
 }
@@ -66,13 +72,17 @@ export function parseStillDeepLink(search: string = window.location.search): {
   contentId: string | null;
   relpath: string | null;
   q: string | null;
+  appetite: string | null;
+  sort: string | null;
 } {
   const sp = new URLSearchParams(search);
   const contentId = (sp.get("content_id") || "").trim().toLowerCase() || null;
   const relRaw = (sp.get("relpath") || "").trim().replace(/\\/g, "/").replace(/^\/+/, "");
   const relpath = relRaw || null;
   const q = (sp.get("q") || "").trim() || null;
-  return { contentId, relpath, q };
+  const appetite = (sp.get("appetite") || "").trim().toLowerCase() || null;
+  const sort = (sp.get("sort") || "").trim().toLowerCase() || null;
+  return { contentId, relpath, q, appetite, sort };
 }
 
 /** Build a Clips library URL, optionally selecting a clip / source video. */

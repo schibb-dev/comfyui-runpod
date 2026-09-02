@@ -3899,12 +3899,22 @@ def _shape_factory_input_curation_stills_payload(cfg: ServerConfig, q: Dict[str,
             break
     qtext = str((q.get("q") or [""])[0] or "").strip()
     tag = str((q.get("tag") or [""])[0] or "").strip()
+    appetite = str((q.get("appetite") or [""])[0] or "").strip()
+    sort = str((q.get("sort") or ["newest"])[0] or "newest").strip() or "newest"
     scan = str((q.get("scan") or ["0"])[0]).strip().lower() in {"1", "true", "yes"}
-    payload = list_catalog_stills(
-        data_root=data_root, q=qtext, limit=limit, offset=offset, scan=scan, tag=tag
-    )
     appetite_doc = _discovery_load_appetite_index(cfg)
-    # Quote file URLs properly for the browser; attach appetite for gallery tiles.
+    payload = list_catalog_stills(
+        data_root=data_root,
+        q=qtext,
+        limit=limit,
+        offset=offset,
+        scan=scan,
+        tag=tag,
+        appetite=appetite,
+        sort=sort,
+        appetite_doc=appetite_doc,
+    )
+    # Quote file URLs properly for the browser; backfill appetite if catalog join missed a key.
     for it in payload.get("items") or []:
         if not isinstance(it, dict):
             continue
@@ -3913,7 +3923,7 @@ def _shape_factory_input_curation_stills_payload(cfg: ServerConfig, q: Dict[str,
             quoted = "/files/" + urllib.parse.quote(rel, safe="/")
             it["url"] = quoted
             it["thumb_url"] = quoted
-        if appetite_doc:
+        if appetite_doc and not it.get("appetite"):
             ap = _discovery_appetite_for_item(appetite_doc, {"relpath": rel or it.get("basename")})
             if ap.get("appetite"):
                 it["appetite"] = ap.get("appetite")

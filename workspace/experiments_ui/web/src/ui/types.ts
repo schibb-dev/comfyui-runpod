@@ -2471,6 +2471,8 @@ export type InputCurationStillsResponse = {
   next_offset?: number;
   has_more?: boolean;
   tag?: string | null;
+  appetite?: string | null;
+  sort?: string | null;
   error?: string;
   detail?: string;
 };
