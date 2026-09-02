@@ -90,6 +90,7 @@ function LineageNodeCard({
   external = false,
   compact = false,
   resolveLibraryItem,
+  secondaryLink = "workbench",
 }: {
   item?: DiscoveryAssetLineageItemSummary;
   groupId: string;
@@ -100,6 +101,8 @@ function LineageNodeCard({
   /** Smaller pill for descendant outline lists. */
   compact?: boolean;
   resolveLibraryItem?: (s: DiscoveryAssetLineageItemSummary) => DiscoveryLibraryItem | null;
+  /** Companion link beside the primary open action. */
+  secondaryLink?: "workbench" | "library";
 }) {
   const summary: DiscoveryAssetLineageItemSummary = item ?? { group_id: groupId };
   const label = external ? externalInputLabel(item) : nodeLabel(item, groupId || "—");
@@ -113,14 +116,24 @@ function LineageNodeCard({
     name: str(item?.name) || null,
     groupId,
   });
-  const stillsUrl = external
-    ? lineageSummaryHref({
-        ...summary,
-        relpath: mediaRel || summary.relpath,
-        external: true,
-        library: "input",
-      })
-    : null;
+  const libraryUrl = lineageSummaryHref({
+    ...summary,
+    relpath: mediaRel || summary.relpath,
+    external: external || summary.external,
+    library: external ? summary.library || "input" : summary.library,
+  });
+  const stillsUrl = external ? libraryUrl : null;
+  const openPayload: DiscoveryAssetLineageItemSummary = {
+    ...summary,
+    relpath: str(item?.relpath) || str(item?.workspace_relpath) || summary.relpath,
+    external: external || undefined,
+    library: external ? summary.library || "input" : summary.library,
+  };
+  const primaryTitle = external
+    ? `Open in Stills: ${str(item?.relpath) || groupId}`
+    : secondaryLink === "library"
+      ? `Open in Workbench: ${str(item?.relpath) || groupId}`
+      : `Open in Library: ${str(item?.relpath) || groupId}`;
   return (
     <span className={"dal-node-wrap" + (layout === "chain" ? " dal-node-wrap--chain" : "")}>
       <button
@@ -132,15 +145,8 @@ function LineageNodeCard({
           (external ? " dal-node-card--external" : "") +
           (compact ? " dal-node-card--compact" : "")
         }
-        onClick={() =>
-          onOpen({
-            ...summary,
-            relpath: str(item?.relpath) || str(item?.workspace_relpath) || summary.relpath,
-            external: external || undefined,
-            library: external ? summary.library || "input" : summary.library,
-          })
-        }
-        title={external ? `Open in Stills: ${str(item?.relpath) || groupId}` : str(item?.relpath) || groupId}
+        onClick={() => onOpen(openPayload)}
+        title={primaryTitle}
       >
         <span className="dal-node-thumb-wrap" aria-hidden={thumb ? undefined : true}>
           {thumb ? (
@@ -167,6 +173,15 @@ function LineageNodeCard({
             onClick={(e) => e.stopPropagation()}
           >
             Stills
+          </a>
+        ) : secondaryLink === "library" ? (
+          <a
+            className="dal-node-workbench"
+            href={libraryUrl}
+            title="Open this asset in Discovery Library"
+            onClick={(e) => e.stopPropagation()}
+          >
+            Library
           </a>
         ) : (
           <a
@@ -233,12 +248,14 @@ function DescendantOutlineList({
   depth,
   onOpenSummary,
   resolveLibraryItem,
+  secondaryLink = "workbench",
 }: {
   nodes: DescendantOutlineNode[];
   /** 0 = direct descendants of seed (expanded by default); deeper rows start collapsed. */
   depth: number;
   onOpenSummary: (s: DiscoveryAssetLineageItemSummary) => void;
   resolveLibraryItem?: (s: DiscoveryAssetLineageItemSummary) => DiscoveryLibraryItem | null;
+  secondaryLink?: "workbench" | "library";
 }) {
   if (nodes.length === 0) return null;
   return (
@@ -250,6 +267,7 @@ function DescendantOutlineList({
           depth={depth}
           onOpenSummary={onOpenSummary}
           resolveLibraryItem={resolveLibraryItem}
+          secondaryLink={secondaryLink}
         />
       ))}
     </ul>
@@ -261,11 +279,13 @@ function DescendantOutlineRow({
   depth,
   onOpenSummary,
   resolveLibraryItem,
+  secondaryLink = "workbench",
 }: {
   node: DescendantOutlineNode;
   depth: number;
   onOpenSummary: (s: DiscoveryAssetLineageItemSummary) => void;
   resolveLibraryItem?: (s: DiscoveryAssetLineageItemSummary) => DiscoveryLibraryItem | null;
+  secondaryLink?: "workbench" | "library";
 }) {
   const hasKids = node.children.length > 0;
   const [expanded, setExpanded] = useState(depth === 0);
@@ -298,10 +318,17 @@ function DescendantOutlineRow({
           onOpen={onOpenSummary}
           compact
           resolveLibraryItem={resolveLibraryItem}
+          secondaryLink={secondaryLink}
         />
       </div>
       {hasKids && expanded ? (
-        <DescendantOutlineList nodes={node.children} depth={depth + 1} onOpenSummary={onOpenSummary} resolveLibraryItem={resolveLibraryItem} />
+        <DescendantOutlineList
+          nodes={node.children}
+          depth={depth + 1}
+          onOpenSummary={onOpenSummary}
+          resolveLibraryItem={resolveLibraryItem}
+          secondaryLink={secondaryLink}
+        />
       ) : null}
     </li>
   );
@@ -311,10 +338,16 @@ export function DiscoveryAssetLineagePanel({
   seedItem,
   onOpenSummary,
   resolveLibraryItem,
+  secondaryLink = "workbench",
+  onGraphExpanded,
 }: {
   seedItem: DiscoveryLibraryItem | null;
   onOpenSummary: (s: DiscoveryAssetLineageItemSummary) => void;
   resolveLibraryItem?: (s: DiscoveryAssetLineageItemSummary) => DiscoveryLibraryItem | null;
+  /** Companion link on each node: Workbench (Library context) or Library (Workbench context). */
+  secondaryLink?: "workbench" | "library";
+  /** Fired after backfill/refresh grows the graph so hosts can expand layout. */
+  onGraphExpanded?: () => void;
 }) {
   const [data, setData] = useState<DiscoveryAssetLineageResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -373,12 +406,13 @@ export function DiscoveryAssetLineagePanel({
         inferParents: false,
       });
       setData(refreshed);
+      onGraphExpanded?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBackfilling(false);
     }
-  }, [seedItem, backfilling]);
+  }, [seedItem, backfilling, onGraphExpanded]);
 
   useEffect(() => {
     setData(null);
@@ -515,6 +549,7 @@ export function DiscoveryAssetLineagePanel({
                           layout="chain"
                           external={row.external === true}
                           resolveLibraryItem={resolveLibraryItem}
+                          secondaryLink={secondaryLink}
                         />
                       </span>
                     </React.Fragment>
@@ -542,6 +577,7 @@ export function DiscoveryAssetLineagePanel({
                         groupId={gid}
                         onOpen={onOpenSummary}
                         resolveLibraryItem={resolveLibraryItem}
+                        secondaryLink={secondaryLink}
                       />
                     </li>
                   );
@@ -573,6 +609,7 @@ export function DiscoveryAssetLineagePanel({
                         onOpen={onOpenSummary}
                         compact
                         resolveLibraryItem={resolveLibraryItem}
+                        secondaryLink={secondaryLink}
                       />
                     </li>
                   );
@@ -585,6 +622,7 @@ export function DiscoveryAssetLineagePanel({
                   depth={0}
                   onOpenSummary={onOpenSummary}
                   resolveLibraryItem={resolveLibraryItem}
+                  secondaryLink={secondaryLink}
                 />
               </nav>
             )}

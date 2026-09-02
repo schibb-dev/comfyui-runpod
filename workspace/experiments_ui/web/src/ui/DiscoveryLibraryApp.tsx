@@ -3254,17 +3254,6 @@ function DiscoveryLibraryInner() {
   }, [library, pathPrefix]);
 
   useEffect(() => {
-    const sp = new URLSearchParams(window.location.search);
-    const cur = (sp.get("prefix") || "").trim().replace(/^\/+/, "").replace(/\\/g, "/");
-    if (cur === (pathPrefix || "")) return;
-    if (pathPrefix) sp.set("prefix", pathPrefix);
-    else sp.delete("prefix");
-    const qs = sp.toString();
-    const next = `${window.location.pathname}${qs ? `?${qs}` : ""}${window.location.hash || ""}`;
-    window.history.replaceState(null, "", next);
-  }, [pathPrefix]);
-
-  useEffect(() => {
     if (pollMin <= 0) return;
     const id = window.setInterval(() => {
       if (document.visibilityState === "hidden") return;
@@ -3305,6 +3294,50 @@ function DiscoveryLibraryInner() {
     if (!savedOnly) return items;
     return items.filter((it) => saved.has(discoveryItemKey(it)));
   }, [items, savedOnly, saved]);
+
+  useEffect(() => {
+    const sp = new URLSearchParams(window.location.search);
+    const curPrefix = (sp.get("prefix") || "").trim().replace(/^\/+/, "").replace(/\\/g, "/");
+    const curRel = (sp.get("relpath") || "").trim().replace(/^\/+/, "").replace(/\\/g, "/");
+
+    let selectedRel = "";
+    if (isPhone) {
+      const it =
+        phoneLineageJumpItem ||
+        (phoneViewerOpen && phoneFocusIndex != null ? displayed[phoneFocusIndex] : null);
+      selectedRel = String(it?.video_relpath || it?.relpath || "")
+        .trim()
+        .replace(/^\/+/, "")
+        .replace(/\\/g, "/");
+    } else if (desktopSelectedKey) {
+      const it =
+        lineageJumpItem && discoveryItemKey(lineageJumpItem) === desktopSelectedKey
+          ? lineageJumpItem
+          : displayed.find((x) => discoveryItemKey(x) === desktopSelectedKey);
+      selectedRel = String(it?.video_relpath || it?.relpath || "")
+        .trim()
+        .replace(/^\/+/, "")
+        .replace(/\\/g, "/");
+    }
+
+    if (curPrefix === (pathPrefix || "") && curRel === selectedRel) return;
+    if (pathPrefix) sp.set("prefix", pathPrefix);
+    else sp.delete("prefix");
+    if (selectedRel) sp.set("relpath", selectedRel);
+    else sp.delete("relpath");
+    const qs = sp.toString();
+    const next = `${window.location.pathname}${qs ? `?${qs}` : ""}${window.location.hash || ""}`;
+    window.history.replaceState(null, "", next);
+  }, [
+    pathPrefix,
+    desktopSelectedKey,
+    lineageJumpItem,
+    phoneFocusIndex,
+    phoneLineageJumpItem,
+    phoneViewerOpen,
+    displayed,
+    isPhone,
+  ]);
 
   const resolveSummaryToLibraryItem = useCallback(
     (s: DiscoveryAssetLineageItemSummary): DiscoveryLibraryItem | null => {
@@ -3471,8 +3504,7 @@ function DiscoveryLibraryInner() {
     deepLinkHandledRef.current = true;
     void openRatingsRelpath(rel).then((hit) => {
       if (!hit) {
-        setErr(`Discovery item not found: ${rel}`);
-        setQInput(rel.split("/").pop() || rel);
+        setErr(`Asset not found: ${rel}`);
         return;
       }
       setDeepLinkHitKey(hit);

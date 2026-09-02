@@ -91,12 +91,7 @@ function stillMatchesDeepLink(
 export function StillGalleryApp() {
   const queryClient = useQueryClient();
   const deep = useMemo(() => parseStillDeepLink(), []);
-  const [q, setQ] = useState(() => {
-    if (deep.q) return deep.q;
-    if (deep.contentId) return deep.contentId;
-    if (deep.relpath) return deep.relpath.split("/").pop() || deep.relpath;
-    return "";
-  });
+  const [q, setQ] = useState(() => deep.q || "");
   const [qDebounced, setQDebounced] = useState(q);
   const [tagFilter, setTagFilter] = useState("");
   const [appetiteFilter, setAppetiteFilter] = useState<StillAppetiteFilter>(() => {

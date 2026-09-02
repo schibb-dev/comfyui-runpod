@@ -34,7 +34,7 @@ export function discoveryLibraryFolderHref(pathPrefix?: string | null): string {
   return `/discovery?prefix=${encodeURIComponent(norm)}`;
 }
 
-/** Still gallery deep-link: prefer content_id, else relpath, else free-text q. */
+/** Still gallery deep-link: prefer content_id / relpath as the viewed resource; q is search only. */
 export function stillsHref(opts?: {
   contentId?: string | null;
   relpath?: string | null;
@@ -55,13 +55,8 @@ export function stillsHref(opts?: {
   const sort = String(opts?.sort || "").trim().toLowerCase();
   if (contentId) sp.set("content_id", contentId);
   if (rel) sp.set("relpath", rel);
+  // Only an explicit search query — never invent q from content_id/relpath.
   if (q) sp.set("q", q);
-  else if (!contentId && rel) {
-    const base = rel.split("/").pop() || rel;
-    if (base) sp.set("q", base);
-  } else if (contentId && !q) {
-    sp.set("q", contentId);
-  }
   if (appetite && appetite !== "all") sp.set("appetite", appetite);
   if (sort && sort !== "newest") sp.set("sort", sort);
   const qs = sp.toString();
@@ -297,7 +292,6 @@ export function submitOriginHref(
       href: stillsHref({
         relpath: stillRel,
         contentId: extractContentIdFromName(stillRel || media),
-        q: stillRel ? null : media,
       }),
       label: "Back to Stills",
     };
@@ -308,19 +302,25 @@ export function submitOriginHref(
   return null;
 }
 
-/** Workbench deep-link: prefer factory job_key, else prompt_id / free-text q. */
+/** Workbench deep-link: job / prompt_id / media are resource identity; q is search only. */
 export function workbenchHref(opts?: {
   jobKey?: string | null;
   promptId?: string | null;
+  media?: string | null;
   q?: string | null;
 }): string {
   const sp = new URLSearchParams();
   const job = String(opts?.jobKey || "").trim();
   const promptId = String(opts?.promptId || "").trim();
+  const media = String(opts?.media || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "");
   const q = String(opts?.q || "").trim();
   if (job) sp.set("job", job);
-  if (promptId) sp.set("prompt_id", promptId);
-  if (!job && !promptId && q) sp.set("q", q);
+  else if (promptId) sp.set("prompt_id", promptId);
+  if (media) sp.set("media", media);
+  if (q) sp.set("q", q);
   const qs = sp.toString();
   return qs ? `/workbench?${qs}` : "/workbench";
 }
@@ -391,13 +391,15 @@ export function lineageSummaryHref(s: {
     return stillsHref({
       contentId,
       relpath: inputRel,
-      q: contentId || (inputRel ? inputRel.split("/").pop() : null),
     });
   }
   return discoveryLibraryHref(raw || null);
 }
 
-/** Seed Workbench search from a library / lineage media path or basename. */
+/**
+ * Open Workbench focused on jobs that used / produced this media.
+ * Uses ``?media=`` as the viewed resource — never seeds the search box.
+ */
 export function workbenchHrefForMedia(opts: {
   relpath?: string | null;
   name?: string | null;
@@ -407,33 +409,39 @@ export function workbenchHrefForMedia(opts: {
     .trim()
     .replace(/\\/g, "/")
     .replace(/^\/+/, "");
+  if (rel) return workbenchHref({ media: rel });
   const name = String(opts.name || "").trim();
-  const base = (rel.split("/").pop() || name || "").trim();
-  let q = base;
-  if (q.includes(".")) {
-    const stem = q.replace(/\.[^.]+$/, "");
-    if (stem) q = stem;
+  const base = (name.split("/").pop() || name || "").trim();
+  let stem = base;
+  if (stem.includes(".")) {
+    const s = stem.replace(/\.[^.]+$/, "");
+    if (s) stem = s;
   }
-  if (!q) {
+  if (!stem) {
     const gid = String(opts.groupId || "").trim();
     const m = /^og:stem:(.+)$/i.exec(gid) || /^wip:stem:(.+)$/i.exec(gid);
-    if (m) q = m[1];
+    if (m) stem = m[1];
   }
-  return workbenchHref({ q: q || null });
+  return workbenchHref({ media: stem || null });
 }
 
 export function parseWorkbenchDeepLink(search: string = window.location.search): {
   job: string | null;
   promptId: string | null;
+  /** Explicit free-text search only (never filled from job/media). */
   q: string | null;
-  /** Value to seed the Workbench search box. */
-  filter: string | null;
+  /** Media path / basename to focus as a resource (``?media=``). */
+  media: string | null;
 } {
   const sp = new URLSearchParams(search);
   const job = (sp.get("job") || "").trim() || null;
   const promptId = (sp.get("prompt_id") || "").trim() || null;
   const q = (sp.get("q") || "").trim() || null;
-  return { job, promptId, q, filter: job || promptId || q };
+  const mediaRaw = (sp.get("media") || sp.get("media_relpath") || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "");
+  return { job, promptId, q, media: mediaRaw || null };
 }
 
 /** Queue deep-link: Comfy prompt_id and/or factory job_key. */
