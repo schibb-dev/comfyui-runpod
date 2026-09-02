@@ -17,44 +17,52 @@ export function normalizeAppetiteRelpath(raw: string | null | undefined): string
 }
 
 /**
- * Compact appetite mark for any workproduct surface (Workbench, Factory Map, …).
- * Same store as Rate queue / AssetInspector — biases this output for future use.
+ * Compact appetite mark for any workproduct / media surface (Workbench, Factory Map, Still Gallery, …).
+ * Same store as Rate queue / AssetInspector — biases this asset for future use.
  */
 export function WorkProductAppetiteStrip({
   relpath,
   jobKey,
   familySlug,
-  disabledHint = "Appetite needs an output path",
+  defaultFacet = "both",
+  disabledHint = "Appetite needs a media path",
+  onSaved,
 }: {
   relpath?: string | null;
   jobKey?: string | null;
   familySlug?: string | null;
+  /** Used when the asset has no recorded facet yet (stills default to ``source``). */
+  defaultFacet?: AppetiteFacet;
   disabledHint?: string;
+  onSaved?: (appetite: Appetite, facet: AppetiteFacet) => void;
 }) {
   const key = normalizeAppetiteRelpath(relpath);
   const [appetite, setAppetite] = useState<Appetite | null>(null);
-  const [facet, setFacet] = useState<AppetiteFacet>("both");
+  const [facet, setFacet] = useState<AppetiteFacet>(defaultFacet);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
 
   useEffect(() => {
     if (!key) {
       setAppetite(null);
-      setFacet("both");
+      setFacet(defaultFacet);
       setMsg("");
       return;
     }
     const seed = peekAssetRatings(key);
     if (seed) {
       setAppetite((seed.appetite as Appetite | null) ?? null);
-      setFacet((seed.appetite_facet as AppetiteFacet) || "both");
+      setFacet((seed.appetite_facet as AppetiteFacet) || defaultFacet);
+    } else {
+      setAppetite(null);
+      setFacet(defaultFacet);
     }
     let cancelled = false;
     void loadAssetRatings(key)
       .then((r) => {
         if (cancelled) return;
         setAppetite((r.appetite as Appetite | null) ?? null);
-        setFacet((r.appetite_facet as AppetiteFacet) || "both");
+        setFacet((r.appetite_facet as AppetiteFacet) || defaultFacet);
       })
       .catch(() => {
         /* keep seed / empty */
@@ -62,7 +70,7 @@ export function WorkProductAppetiteStrip({
     return () => {
       cancelled = true;
     };
-  }, [key]);
+  }, [key, defaultFacet]);
 
   const onSet = useCallback(
     async (state: Appetite, nextFacet: AppetiteFacet) => {
@@ -94,6 +102,7 @@ export function WorkProductAppetiteStrip({
         } else {
           setMsg(`${state} · ${nextFacet}`);
         }
+        onSaved?.(state, nextFacet);
         void revalidateAssetRatings(key).then((r) => {
           setAppetite((r.appetite as Appetite | null) ?? state);
           setFacet((r.appetite_facet as AppetiteFacet) || nextFacet);
@@ -107,7 +116,7 @@ export function WorkProductAppetiteStrip({
         setBusy(false);
       }
     },
-    [key, busy, appetite, facet, jobKey, familySlug],
+    [key, busy, appetite, facet, jobKey, familySlug, onSaved],
   );
 
   if (!key) {
@@ -119,7 +128,7 @@ export function WorkProductAppetiteStrip({
   }
 
   return (
-    <div className="wp-appetite-strip" aria-label="Appetite — do more with this workproduct">
+    <div className="wp-appetite-strip" aria-label="Appetite — do more with this">
       <AppetiteBar
         appetite={appetite}
         facet={facet}

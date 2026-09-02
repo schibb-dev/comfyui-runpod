@@ -16,7 +16,9 @@ import { parseStillDeepLink, stillsHref, buildSubmitDeepLink, discoveryLibraryHr
 import { PageHeader } from "./PageHeader";
 import { queryKeys } from "./queryKeys";
 import { SubmitComposerModal } from "./SubmitComposerModal";
+import { WorkProductAppetiteStrip } from "./WorkProductAppetiteStrip";
 import type { InputCurationCollection, InputCurationStillItem, StillTagEvent } from "./types";
+import { APPETITE_ROW_GLYPH, appetiteRowTitle } from "./discoveryRatingsRollup";
 
 const PAGE = 96;
 const TAG_BATCH_DEFAULT = 12;
@@ -698,6 +700,14 @@ export function StillGalleryApp() {
                   title={it.basename || it.path}
                 >
                   {checked ? <span className="still-gallery__check" aria-hidden="true" /> : null}
+                  {it.appetite ? (
+                    <span
+                      className={"still-gallery__appetite still-gallery__appetite--" + it.appetite}
+                      title={appetiteRowTitle(it.appetite, it.appetite_facet)}
+                    >
+                      {APPETITE_ROW_GLYPH[it.appetite]}
+                    </span>
+                  ) : null}
                   {src ? (
                     <img className="still-gallery__thumb" src={src} alt="" loading="lazy" />
                   ) : (
@@ -743,6 +753,21 @@ export function StillGalleryApp() {
                   />
                 ) : null}
                 <p className="mono still-gallery__path">{selectedRel}</p>
+                {selectedRel && multiCount <= 1 ? (
+                  <div className="still-gallery__appetite-panel">
+                    <WorkProductAppetiteStrip
+                      relpath={selectedRel}
+                      defaultFacet="source"
+                      disabledHint="Appetite needs an input/ path"
+                      onSaved={(appetite, facet) => {
+                        setMsg(`Appetite ${appetite} · ${facet}`);
+                        void queryClient.invalidateQueries({
+                          queryKey: queryKeys.shapeFactory.inputCurationRoot,
+                        });
+                      }}
+                    />
+                  </div>
+                ) : null}
                 <div className="still-gallery__launch" role="group" aria-label="Launch pad">
                   <button
                     type="button"

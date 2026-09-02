@@ -471,6 +471,13 @@ function MediaAssetInspector({
       ) : media.path ? (
         <div className="sfmap-detail-kv mono sfmap-detail-path">{media.path}</div>
       ) : null}
+      {discoveryRel && !mediaLooksLikeVideo(media) ? (
+        <WorkProductAppetiteStrip
+          relpath={discoveryRel}
+          defaultFacet={/^(input\/)/i.test(discoveryRel) ? "source" : "both"}
+          disabledHint="Appetite needs a media path"
+        />
+      ) : null}
       <div className="sfmap-detail-actions">
         {media.url ? (
           <button
