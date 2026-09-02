@@ -13666,6 +13666,39 @@ tr.disabled:hover td {
   transition: outline-color 0.9s ease;
 }
 
+.work-product-row--focused {
+  border-color: rgba(110, 168, 254, 0.65);
+  box-shadow: inset 3px 0 0 rgba(110, 168, 254, 0.9);
+}
+
+.work-products-focus-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px solid rgba(110, 168, 254, 0.35);
+  background: rgba(110, 168, 254, 0.08);
+}
+
+.work-products-focus-banner__text {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.work-products-focus-banner__label {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted, #9aa3b5);
+}
+
 .work-product-row__head {
   display: flex;
   flex-wrap: wrap;
@@ -14997,6 +15030,15 @@ tr.disabled:hover td {
   flex: 1 1 auto;
 }
 
+.work-product-prompt-editor__section-summary .work-product-badge {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+
+.work-product-prompt-editor__head .work-product-badge {
+  flex: 0 0 auto;
+}
+
 .work-product-prompt-editor__section-body {
   padding: 0 0 8px;
   max-height: 320px;
@@ -15393,9 +15435,9 @@ tr.disabled:hover td {
 
 .work-product-lineage-panel {
   padding: 4px 2px 8px;
-  max-height: min(420px, 50vh);
-  overflow: auto;
-  overscroll-behavior: contain;
+  /* Grow with backfilled provenance/siblings/descendants — do not clamp into a nested scroll box. */
+  max-height: none;
+  overflow: visible;
 }
 
 .work-product-lineage-empty {
@@ -17974,8 +18016,10 @@ tr.disabled:hover td {
   gap: 4px;
   font-size: 12px;
 }
-.work-product-params-editor__field.is-snowflake .work-product-params-editor__value,
-.work-product-params-editor__field.is-snowflake .work-product-params-editor__input {
+.work-product-params-editor__field.is-diff .work-product-params-editor__value,
+.work-product-params-editor__field.is-diff .work-product-params-editor__input {
+  border-color: color-mix(in srgb, var(--accent, #6ea8fe) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent, #6ea8fe) 10%, transparent);
   color: color-mix(in srgb, var(--accent, #7aa2ff) 80%, #fff);
 }
 .work-product-params-editor__label {

@@ -374,9 +374,6 @@ export function PromptPeekButton({ prompt, label }: { prompt: WorkProductPromptP
       >
         {label}
         <span className="work-product-json-link__tag">prompt</span>
-        {prompt.snowflake ? (
-          <span className="work-product-json-link__tag work-product-json-link__tag--snowflake">snowflake</span>
-        ) : null}
       </button>
       {open
         ? createPortal(

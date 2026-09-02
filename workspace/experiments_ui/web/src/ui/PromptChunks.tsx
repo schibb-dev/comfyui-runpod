@@ -1,5 +1,5 @@
 import React from "react";
-import type { WorkProductPromptProfile, WorkProductPromptRow } from "./types";
+import type { WorkProductParamsProfile, WorkProductPromptProfile, WorkProductPromptRow } from "./types";
 
 export function clonePromptRows(
   rows: WorkProductPromptRow[] | undefined,
@@ -53,24 +53,37 @@ export function rowsFromRawText(text: string): WorkProductPromptRow[] {
 
 export function PromptSnowflakeChip({
   prompt,
+  params,
   className,
 }: {
   prompt?: WorkProductPromptProfile | null;
+  params?: WorkProductParamsProfile | null;
   className?: string;
 }) {
-  if (!prompt?.snowflake) return null;
-  const seedName = prompt.seed?.label || prompt.seed?.basename || prompt.basename || "template";
-  const jobHash = String(prompt.content_hash || "").slice(0, 10);
-  const seedHash = String(prompt.seed?.content_hash || "").slice(0, 10);
+  const promptFlake = Boolean(prompt?.snowflake);
+  const paramsFlake = Boolean(params?.snowflake);
+  if (!promptFlake && !paramsFlake) return null;
+  const seedName = prompt?.seed?.label || prompt?.seed?.basename || prompt?.basename || "template";
+  const jobHash = String(prompt?.content_hash || "").slice(0, 10);
+  const seedHash = String(prompt?.seed?.content_hash || "").slice(0, 10);
+  const paramDiffs = Object.keys(params?.diffs || {}).filter((k) => k !== "seed");
   const title = [
-    `edited from ${seedName}`,
-    jobHash ? `job ${jobHash}` : null,
-    seedHash ? `seed ${seedHash}` : null,
+    promptFlake ? `prompt edited from ${seedName}` : null,
+    promptFlake && jobHash ? `job ${jobHash}` : null,
+    promptFlake && seedHash ? `seed ${seedHash}` : null,
+    paramsFlake
+      ? paramDiffs.length
+        ? `params differ: ${paramDiffs.join(", ")}`
+        : "params differ from template"
+      : null,
   ]
     .filter(Boolean)
     .join(" · ");
   return (
-    <span className={`work-product-badge work-product-badge--snowflake${className ? ` ${className}` : ""}`} title={title}>
+    <span
+      className={`work-product-badge work-product-badge--snowflake${className ? ` ${className}` : ""}`}
+      title={title || "Structurally edited from template (prompt or frames/steps/overlap)"}
+    >
       snowflake
     </span>
   );

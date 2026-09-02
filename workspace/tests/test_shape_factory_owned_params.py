@@ -43,6 +43,45 @@ class OwnedParamsProfileTests(unittest.TestCase):
         self.assertEqual(got.get("overlap"), 8)
         self.assertEqual(got.get("seed"), 42)
 
+    def test_seed_only_diff_is_not_snowflake(self) -> None:
+        from unittest.mock import patch
+
+        from shape_factory_owned_params import owned_params_to_profile
+
+        job = {"timings": {"workload": {"frames": 80, "steps": 20, "overlap": 8}}}
+        current = {"frames": 80, "steps": 20, "overlap": 8, "seed": 999}
+        seed = {"frames": 80, "steps": 20, "overlap": 8, "seed": 1}
+        with (
+            patch("shape_factory_owned_params.extract_job_current_params", return_value=current),
+            patch(
+                "shape_factory_owned_params.load_template_param_seed",
+                return_value=(seed, "tpl.workflow.json"),
+            ),
+        ):
+            profile = owned_params_to_profile(job, data_root=Path("."), job_path=None)
+        self.assertIn("seed", profile["diffs"])
+        self.assertEqual(set(profile["diffs"].keys()), {"seed"})
+        self.assertFalse(profile.get("snowflake"))
+
+    def test_frames_diff_is_snowflake(self) -> None:
+        from unittest.mock import patch
+
+        from shape_factory_owned_params import owned_params_to_profile
+
+        job = {"timings": {"workload": {"frames": 96, "steps": 20, "overlap": 8}}}
+        current = {"frames": 96, "steps": 20, "overlap": 8, "seed": 1}
+        seed = {"frames": 80, "steps": 20, "overlap": 8, "seed": 1}
+        with (
+            patch("shape_factory_owned_params.extract_job_current_params", return_value=current),
+            patch(
+                "shape_factory_owned_params.load_template_param_seed",
+                return_value=(seed, "tpl.workflow.json"),
+            ),
+        ):
+            profile = owned_params_to_profile(job, data_root=Path("."), job_path=None)
+        self.assertIn("frames", profile["diffs"])
+        self.assertTrue(profile.get("snowflake"))
+
 
 class UpdatePendingParamsTests(unittest.TestCase):
     def test_update_pending_job_params_patches_workflow(self) -> None:

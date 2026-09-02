@@ -30,7 +30,7 @@ import {
   vhsDefaultsToMarks,
 } from "./workProductTrim";
 import { useTrimPlaybackEnforcement, type TrimPlaybackMode } from "./useTrimPlayback";
-import { discoveryLibraryHref, extractContentIdFromName, parseWorkbenchDeepLink, stillsHref, buildSubmitDeepLink, lineageSummaryHref, type SubmitDeepLink } from "./discoveryDeepLink";
+import { discoveryLibraryHref, extractContentIdFromName, parseWorkbenchDeepLink, stillsHref, buildSubmitDeepLink, lineageSummaryHref, workbenchHref, workbenchHrefForMedia, isLineageInputStill, type SubmitDeepLink } from "./discoveryDeepLink";
 import { factoryMapFamilyHref } from "./factoryMapRoute";
 import { WorkProductAppetiteStrip } from "./WorkProductAppetiteStrip";
 import { DiscoveryAssetLineagePanel } from "./DiscoveryAssetLineagePanel";
@@ -540,6 +540,24 @@ function filterWorkProductsByName(items: WorkProductItem[], query: string): Work
   const q = query.trim().toLowerCase();
   if (!q) return items;
   return items.filter((it) => isLivePreviewItem(it) || workProductNameHaystack(it).includes(q));
+}
+
+function workProductMatchesMedia(item: WorkProductItem, media: string): boolean {
+  const needle = media.trim().toLowerCase().replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!needle) return false;
+  const hay = workProductNameHaystack(item);
+  if (hay.includes(needle)) return true;
+  const base = needle.split("/").pop() || needle;
+  if (base && base !== needle && hay.includes(base.toLowerCase())) return true;
+  const stem = base.includes(".") ? base.replace(/\.[^.]+$/, "") : "";
+  if (stem && hay.includes(stem.toLowerCase())) return true;
+  return false;
+}
+
+function filterWorkProductsByMedia(items: WorkProductItem[], media: string | null): WorkProductItem[] {
+  const m = String(media || "").trim();
+  if (!m) return items;
+  return items.filter((it) => isLivePreviewItem(it) || workProductMatchesMedia(it, m));
 }
 
 function statusFilterVisual(status: string): string {
@@ -2482,7 +2500,6 @@ function WorkProductPromptEditor({
         <span className="work-product-prompt-editor__name" title={prompt?.path || undefined}>
           {sourceLabel}
         </span>
-        <PromptSnowflakeChip prompt={prompt} />
         <span className="factory-muted work-product-prompt-editor__meta">
           {[
             hash || null,
@@ -2494,6 +2511,7 @@ function WorkProductPromptEditor({
             .filter(Boolean)
             .join(" · ")}
         </span>
+        <PromptSnowflakeChip prompt={prompt} />
         <div className="work-product-prompt-editor__actions">
           {prompt?.path ? <JsonPeekButton path={prompt.path} label="raw json" /> : null}
           {canDiff ? (
@@ -2779,7 +2797,8 @@ function WorkProductParamsEditor({
   const busy = saveMut.isPending || promoteMut.isPending;
   const canPromote =
     Boolean(profile?.snowflake && (isJobTrimEditable(item) || canPromoteJobPrompt(item))) && !editing;
-  const canDiff = Boolean(profile?.snowflake) && !editing;
+  // Any template delta (incl. RNG seed) can be inspected; promote stays snowflake-only.
+  const canDiff = Boolean(profile?.diffs && Object.keys(profile.diffs).length) && !editing;
 
   const setField = (key: keyof WorkProductParamsValues, raw: string) => {
     const next = { ...draft };
@@ -2796,17 +2815,10 @@ function WorkProductParamsEditor({
 
   return (
     <div className="work-product-prompt-editor work-product-params-editor">
-      <details className="work-product-prompt-editor__details" open={Boolean(profile?.snowflake)}>
-        <summary className="work-product-prompt-editor__summary">
-          <span className="work-product-prompt-editor__summary-title">
-            Params
-            {profile?.snowflake ? (
-              <span className="work-product-badge work-product-badge--snowflake" title="Differs from template seed">
-                snowflake
-              </span>
-            ) : null}
-          </span>
-          <span className="factory-muted work-product-prompt-editor__summary-meta">
+      <details className="work-product-prompt-editor__section" open={Boolean(profile?.snowflake)}>
+        <summary className="work-product-prompt-editor__section-summary">
+          <span>Params</span>
+          <span className="factory-muted">
             {[
               current.frames != null ? `frames ${current.frames}` : null,
               current.steps != null ? `steps ${current.steps}` : null,
@@ -2816,8 +2828,9 @@ function WorkProductParamsEditor({
               .filter(Boolean)
               .join(" · ") || "template defaults"}
           </span>
+          <PromptSnowflakeChip params={profile} />
         </summary>
-        <div className="work-product-prompt-editor__body">
+        <div className="work-product-prompt-editor__section-body">
           <div className="work-product-prompt-editor__actions">
             {editable ? (
               <button
@@ -2868,7 +2881,7 @@ function WorkProductParamsEditor({
               const seedVal = seed[key];
               const changed = jobVal != null && seedVal != null && jobVal !== seedVal;
               return (
-                <label key={key} className={"work-product-params-editor__field" + (changed ? " is-snowflake" : "")}>
+                <label key={key} className={"work-product-params-editor__field" + (changed ? " is-diff" : "")}>
                   <span className="work-product-params-editor__label">{label}</span>
                   {editing ? (
                     <input
@@ -3503,8 +3516,19 @@ function workProductLineageSeed(item: WorkProductItem): DiscoveryLibraryItem | n
   } as DiscoveryLibraryItem;
 }
 
-function openLineageSummaryInLibrary(s: DiscoveryAssetLineageItemSummary) {
-  window.location.assign(lineageSummaryHref(s));
+function openLineageSummaryInWorkbench(s: DiscoveryAssetLineageItemSummary) {
+  // Input stills → Stills viewer; og/wip ancestors → focused Workbench media view.
+  if (isLineageInputStill(s) || s.external === true) {
+    window.location.assign(lineageSummaryHref(s));
+    return;
+  }
+  window.location.assign(
+    workbenchHrefForMedia({
+      relpath: s.relpath || s.workspace_relpath || s.video_relpath || null,
+      name: s.name || null,
+      groupId: s.group_id || null,
+    }),
+  );
 }
 
 function WorkProductLineageSection({
@@ -3520,6 +3544,7 @@ function WorkProductLineageSection({
   const summary = seed
     ? String(seed.name || seed.relpath || "output")
     : "no output yet";
+  const panelRef = useRef<HTMLDivElement | null>(null);
 
   return (
     <details
@@ -3535,8 +3560,18 @@ function WorkProductLineageSection({
       </summary>
       {open ? (
         seed ? (
-          <div className="work-product-lineage-panel">
-            <DiscoveryAssetLineagePanel seedItem={seed} onOpenSummary={openLineageSummaryInLibrary} />
+          <div className="work-product-lineage-panel" ref={panelRef}>
+            <DiscoveryAssetLineagePanel
+              seedItem={seed}
+              onOpenSummary={openLineageSummaryInWorkbench}
+              secondaryLink="library"
+              onGraphExpanded={() => {
+                // After backfill adds nodes, bring the grown panel into view.
+                window.requestAnimationFrame(() => {
+                  panelRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+                });
+              }}
+            />
           </div>
         ) : (
           <p className="factory-muted work-product-lineage-empty">
@@ -3614,7 +3649,6 @@ function WorkProductDetails({
             {item.family_slug}
           </a>
         ) : null}
-        <PromptSnowflakeChip prompt={prompt} />
         {shape?.io_class ? (
           <span className="work-product-badge" title="IO class (station process)">
             {String(shape.io_class)}
@@ -3821,6 +3855,7 @@ function WorkProductRow({
   layout,
   families,
   extendFamilyDefaults,
+  focused,
   onCommitted,
   onOpenSubmit,
 }: {
@@ -3828,6 +3863,7 @@ function WorkProductRow({
   layout: RowLayout;
   families?: WorkProductFamilyOption[];
   extendFamilyDefaults?: Record<string, string>;
+  focused?: boolean;
   onCommitted?: () => void;
   onOpenSubmit?: (intent: SubmitDeepLink) => void;
 }) {
@@ -3857,7 +3893,7 @@ function WorkProductRow({
       data-prompt-id={item.prompt_id || undefined}
       className={`work-product-row work-product-row--${layout} work-product-row--status-${statusFilterVisual(
         item.status || "pending",
-      )}${isLivePreviewItem(item) ? " work-product-row--live" : ""}`}
+      )}${isLivePreviewItem(item) ? " work-product-row--live" : ""}${focused ? " work-product-row--focused" : ""}`}
     >
       <header
         className={`work-product-row__head${
@@ -3982,9 +4018,11 @@ export function WorkProductsApp() {
   const queryClient = useQueryClient();
   const [layout, setLayout] = useState<RowLayout>(() => loadLayout());
   const [sort, setSort] = useState<WorkProductSort>(() => loadSort());
-  const [nameQuery, setNameQuery] = useState(() => deepLink.filter || "");
-  const initialLimit = deepLink.filter ? 80 : 50;
-  const initialHourlyOnly = deepLink.filter ? false : loadHourlyOnly();
+  // Search box is only seeded from explicit ?q= — never from job/media identity.
+  const [nameQuery, setNameQuery] = useState(() => deepLink.q || "");
+  const hasResourceDeepLink = Boolean(deepLink.job || deepLink.promptId || deepLink.media);
+  const initialLimit = hasResourceDeepLink || deepLink.q ? 80 : 50;
+  const initialHourlyOnly = hasResourceDeepLink || deepLink.q ? false : loadHourlyOnly();
   const [limit, setLimit] = useState(() => initialLimit);
   const [hourlyOnly, setHourlyOnly] = useState(() => initialHourlyOnly);
   const [statusOff, setStatusOff] = useState<Set<string>>(() => loadStatusFilterOff());
@@ -3993,6 +4031,12 @@ export function WorkProductsApp() {
   const [clearFailedBusy, setClearFailedBusy] = useState(false);
   const [clearFailedMsg, setClearFailedMsg] = useState<string | null>(null);
   const [submitModalIntent, setSubmitModalIntent] = useState<SubmitDeepLink | null>(null);
+  /** First-class focused resource (job / prompt / media) — not a search string. */
+  const [focusJob, setFocusJob] = useState<string | null>(() => deepLink.job);
+  const [focusPromptId, setFocusPromptId] = useState<string | null>(() =>
+    deepLink.job ? null : deepLink.promptId,
+  );
+  const [focusMedia, setFocusMedia] = useState<string | null>(() => deepLink.media);
   const deepLinkScrolled = useRef(false);
   const bulkDiscardMutation = useMutation({ mutationFn: discardShapeFactoryJob });
   const queryState = useQuery({
@@ -4056,14 +4100,17 @@ export function WorkProductsApp() {
       sortWorkProducts(
         filterWorkProductsByDecodeVae(
           filterWorkProductsByMarker(
-            filterWorkProductsByStatus(filterWorkProductsByName(items, nameQuery), statusOff),
+            filterWorkProductsByStatus(
+              filterWorkProductsByMedia(filterWorkProductsByName(items, nameQuery), focusMedia),
+              statusOff,
+            ),
             markerOff,
           ),
           decodeVaeFilter,
         ),
         sort,
       ),
-    [items, nameQuery, sort, statusOff, markerOff, decodeVaeFilter],
+    [items, nameQuery, focusMedia, sort, statusOff, markerOff, decodeVaeFilter],
   );
 
   const failedVisible = useMemo(
@@ -4071,14 +4118,42 @@ export function WorkProductsApp() {
     [visibleItems],
   );
 
+  const focusedItem = useMemo(() => {
+    if (focusJob) {
+      return items.find((it) => String(it.job_key || "").trim() === focusJob) || null;
+    }
+    if (focusPromptId) {
+      return items.find((it) => String(it.prompt_id || "").trim() === focusPromptId) || null;
+    }
+    return null;
+  }, [items, focusJob, focusPromptId]);
+
+  const clearResourceFocus = () => {
+    setFocusJob(null);
+    setFocusPromptId(null);
+    setFocusMedia(null);
+    deepLinkScrolled.current = false;
+  };
+
+  // Keep the URL named after the focused resource (job / media), not the search box.
+  useEffect(() => {
+    const next = workbenchHref({
+      jobKey: focusJob,
+      promptId: focusJob ? null : focusPromptId,
+      media: focusMedia,
+      q: nameQuery.trim() || null,
+    });
+    if (`${window.location.pathname}${window.location.search}` === next) return;
+    window.history.replaceState(null, "", next);
+  }, [focusJob, focusPromptId, focusMedia, nameQuery]);
+
   useEffect(() => {
     if (deepLinkScrolled.current || loading) return;
-    const needleJob = String(deepLink.job || "").trim();
-    const needlePid = String(deepLink.promptId || "").trim();
-    const needleQ = String(deepLink.q || "").trim().toLowerCase();
-    if (!needleJob && !needlePid && !needleQ) return;
+    const needleJob = String(focusJob || "").trim();
+    const needlePid = String(focusPromptId || "").trim();
+    const needleMedia = String(focusMedia || "").trim().toLowerCase();
+    if (!needleJob && !needlePid && !needleMedia) return;
 
-    // Exact job / prompt_id against the full list (not just the filtered view).
     let match =
       (needleJob
         ? items.find((it) => String(it.job_key || "").trim() === needleJob)
@@ -4086,8 +4161,8 @@ export function WorkProductsApp() {
       (needlePid
         ? items.find((it) => String(it.prompt_id || "").trim() === needlePid)
         : undefined);
-    if (!match && needleQ) {
-      match = visibleItems.find((it) => workProductNameHaystack(it).includes(needleQ));
+    if (!match && needleMedia) {
+      match = visibleItems.find((it) => workProductMatchesMedia(it, needleMedia));
     }
     if (!match) return;
 
@@ -4096,7 +4171,7 @@ export function WorkProductsApp() {
         (match!.job_key && it.job_key === match!.job_key) ||
         (match!.prompt_id && it.prompt_id === match!.prompt_id),
     );
-    // Status/marker toggles may hide the target — clear them for exact deep links.
+    // Status/marker toggles may hide the target — clear them for exact job/prompt focus.
     if (!inVisible && (needleJob || needlePid)) {
       if (statusOff.size) {
         persistStatusFilterOff(new Set());
@@ -4114,15 +4189,16 @@ export function WorkProductsApp() {
     const el = document.getElementById(id);
     if (!el) return;
     deepLinkScrolled.current = true;
+    if (!focusJob && match.job_key) setFocusJob(String(match.job_key));
     window.requestAnimationFrame(() => {
       el.scrollIntoView({ behavior: "smooth", block: "start" });
       el.classList.add("work-product-row--deep-link");
       window.setTimeout(() => el.classList.remove("work-product-row--deep-link"), 2400);
     });
   }, [
-    deepLink.job,
-    deepLink.promptId,
-    deepLink.q,
+    focusJob,
+    focusPromptId,
+    focusMedia,
     items,
     loading,
     markerOff.size,
@@ -4216,9 +4292,6 @@ export function WorkProductsApp() {
         subtitle="Set up jobs that seed factories — recent outputs, construction, trim, and queue"
         actions={
           <>
-            <a className="pipeline-tray-link" href="/family-ab" title="Exemplar-locked family compare">
-              Family A/B
-            </a>
             <label className="pipeline-tray-switch" title="Worktrays coming soon — Recent is the default working set">
               <span>Working set</span>
               <select value="recent" aria-label="Workbench working set" disabled>
@@ -4450,6 +4523,34 @@ export function WorkProductsApp() {
       </div>
 
       <div className="work-products-scroll">
+        {focusJob || focusPromptId || focusMedia ? (
+          <div className="work-products-focus-banner" role="status">
+            <div className="work-products-focus-banner__text">
+              <span className="work-products-focus-banner__label">Viewing</span>
+              {focusJob ? (
+                <span className="mono" title={focusJob}>
+                  job {focusJob.length > 64 ? `${focusJob.slice(0, 28)}…${focusJob.slice(-20)}` : focusJob}
+                </span>
+              ) : null}
+              {!focusJob && focusPromptId ? (
+                <span className="mono" title={focusPromptId}>
+                  prompt {focusPromptId.slice(0, 12)}…
+                </span>
+              ) : null}
+              {focusMedia ? (
+                <span className="mono" title={focusMedia}>
+                  media {focusMedia}
+                </span>
+              ) : null}
+              {focusedItem?.family_slug ? (
+                <span className="factory-muted"> · {focusedItem.family_slug}</span>
+              ) : null}
+            </div>
+            <button type="button" className="drt-btn" onClick={clearResourceFocus}>
+              Clear focus
+            </button>
+          </div>
+        ) : null}
         {error ? <div className="work-products-error">{error}</div> : null}
         {loading && !items.length ? <div className="work-products-empty">Loading…</div> : null}
         {!loading && !error && !items.length ? (
@@ -4459,26 +4560,36 @@ export function WorkProductsApp() {
         ) : null}
         {!loading && !error && items.length && !visibleItems.length ? (
           <div className="work-products-empty">
-            {nameQuery.trim()
-              ? `No work products match “${nameQuery.trim()}”.`
-              : "No work products match the selected filters."}
+            {focusMedia
+              ? `No loaded work products reference “${focusMedia}”.`
+              : nameQuery.trim()
+                ? `No work products match “${nameQuery.trim()}”.`
+                : "No work products match the selected filters."}
           </div>
         ) : null}
 
         <div className="work-products-list">
-          {visibleItems.map((item) => (
-            <WorkProductRow
-              key={item.job_key}
-              item={item}
-              layout={layout}
-              families={families}
-              extendFamilyDefaults={extendFamilyDefaults}
-              onOpenSubmit={setSubmitModalIntent}
-              onCommitted={() => {
-                void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductsRoot });
-              }}
-            />
-          ))}
+          {visibleItems.map((item) => {
+            const isFocused = Boolean(
+              (focusJob && item.job_key === focusJob) ||
+                (focusPromptId && item.prompt_id === focusPromptId) ||
+                (focusMedia && workProductMatchesMedia(item, focusMedia)),
+            );
+            return (
+              <WorkProductRow
+                key={item.job_key}
+                item={item}
+                layout={layout}
+                families={families}
+                extendFamilyDefaults={extendFamilyDefaults}
+                focused={isFocused}
+                onOpenSubmit={setSubmitModalIntent}
+                onCommitted={() => {
+                  void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductsRoot });
+                }}
+              />
+            );
+          })}
         </div>
       </div>
       <SubmitComposerModal

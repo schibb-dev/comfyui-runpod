@@ -1,6 +1,8 @@
 """Job-owned simple params (Phase B): template seed vs instance snowflake.
 
-Mirrors owned-prompt snowflakes for frames / steps / overlap / seed.
+Mirrors owned-prompt snowflakes for frames / steps / overlap.
+RNG ``seed`` is tracked and editable but never counts as a snowflake — every
+run normally differs there.
 VHS skip/cap stays on the existing trim path.
 """
 
@@ -12,6 +14,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 PARAM_KEYS = ("frames", "steps", "overlap", "seed")
+# Structural / recipe knobs that warrant a snowflake. Exclude noise seed.
+SNOWFLAKE_PARAM_KEYS = ("frames", "steps", "overlap")
 
 
 def _coerce_int(raw: Any) -> Optional[int]:
@@ -212,8 +216,9 @@ def owned_params_to_profile(
         if cur is None or base is None:
             continue
         if cur != base:
-            snowflake = True
             diffs[key] = {"job": cur, "seed": base}
+            if key in SNOWFLAKE_PARAM_KEYS:
+                snowflake = True
     return {
         "current": current,
         "seed": seed,
