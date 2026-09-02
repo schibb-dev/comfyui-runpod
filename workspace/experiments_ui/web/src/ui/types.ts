@@ -1237,12 +1237,51 @@ export type FamilyDiscoveryIndexRow = {
   /** Fingerprint-matched exemplar clips available for review. */
   sample_count?: number | null;
   sample_target?: number | null;
+  fingerprint?: string | null;
+};
+
+export type FamilyDiscoveryMatchClass = "enrolled" | "catalog_only" | "unmatched" | string;
+
+export type FamilyDiscoveryClusterRow = {
+  id?: string | null;
+  fingerprint?: string;
+  member_count?: number;
+  covered?: boolean;
+  covered_by?: string | null;
+  io_guess?: string | null;
+  representative?: string | null;
+  video_count?: number;
+  prop_id?: string | null;
+  match_class?: string | null;
+};
+
+export type FamilyDiscoveryBucketRow = {
+  id?: string;
+  fingerprint: string;
+  match_class?: FamilyDiscoveryMatchClass;
+  label?: string | null;
+  video_count?: number;
+  prop_id?: string | null;
+};
+
+export type FamilyDiscoverySourceRow = {
+  key: string;
+  label?: string | null;
+  kind?: "image" | "video" | string | null;
+  video_count?: number;
+  bucket_count?: number;
 };
 
 export type FamilyDiscoverySampleVideo = {
   path?: string;
   name?: string;
   url?: string | null;
+  thumb_url?: string | null;
+  date?: string | null;
+  fingerprint?: string | null;
+  source_key?: string | null;
+  source_label?: string | null;
+  source_kind?: string | null;
   [key: string]: unknown;
 };
 
@@ -1294,6 +1333,35 @@ export type FamilyDiscoveryIndexResponse = {
   uncovered_clusters?: number;
   proposals: FamilyDiscoveryIndexRow[];
   enrolled_families?: string[];
+  clusters?: FamilyDiscoveryClusterRow[];
+  buckets?: FamilyDiscoveryBucketRow[];
+  sources?: FamilyDiscoverySourceRow[];
+  source_counts?: Record<string, number>;
+  bucket_counts?: Record<string, number>;
+  exemplar_index_ok?: boolean;
+  exemplar_generated_at?: string | null;
+  browse_error?: string;
+};
+
+export type FamilyDiscoveryGalleryResponse = {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  items: FamilyDiscoverySampleVideo[];
+  total: number;
+  offset: number;
+  limit: number;
+  sort?: string;
+  group_by_source?: boolean;
+  fingerprint?: string;
+  match_class?: string;
+  source?: string;
+  source_label?: string | null;
+  source_kind?: string | null;
+  label?: string | null;
+  total_count?: number;
+  bucket_count?: number;
+  index_ok?: boolean;
 };
 
 export type FamilyDiscoveryPropResponse = {
@@ -2356,6 +2424,8 @@ export type InputCurationStillItem = {
   provisional_tags?: string[];
   effective_tags?: string[];
   note?: string | null;
+  appetite?: Appetite | null;
+  appetite_facet?: AppetiteFacet | null;
 };
 
 export type InputCurationCollectionItem = {

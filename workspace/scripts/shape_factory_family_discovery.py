@@ -11,6 +11,7 @@ workflow embeds under ``output/og``), not by output basename / brand tokens.
 Usage:
   python3 shape_factory_family_discovery.py cluster [--write docs/family_discovery]
   python3 shape_factory_family_discovery.py index-exemplars [--output-root …]
+  python3 shape_factory_family_discovery.py backfill-proposals [--write docs/family_discovery]
   python3 shape_factory_family_discovery.py enroll --prop prop_003 --slug MyFamily ...
 """
 
@@ -23,7 +24,7 @@ import sys
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
@@ -59,6 +60,15 @@ SAMPLE_TARGET = 20
 
 NOISE_NAME_RE = re.compile(r"(?i)(^|[_-])(tune-|tunetest|TUNETEST)")
 _DATE_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_SOURCE_IMAGE_TYPES = frozenset({"LoadImage", "LoadImageWithFilename", "LoadImageWithFilename|pysssss"})
+_SOURCE_VIDEO_TYPES = frozenset(
+    {
+        "VHS_LoadVideo",
+        "VHS_LoadVideoPath",
+        "LoadVideo",
+        "LoadVideoPath",
+    }
+)
 
 
 def _utc() -> str:
@@ -254,16 +264,55 @@ def _sample_videos_for_fingerprint(
     if idx is None:
         idx = load_exemplar_index(index_path)
     bucket = (idx.get("fingerprints") or {}).get(fp) if isinstance(idx, dict) else None
-    if not isinstance(bucket, list):
-        return []
+    paths: List[str] = []
+    if isinstance(bucket, list):
+        paths = [str(x) for x in bucket]
+    elif isinstance(bucket, dict):
+        raw = bucket.get("samples") or bucket.get("paths") or []
+        if isinstance(raw, list):
+            paths = [str(x) for x in raw]
     out: List[str] = []
-    for raw in bucket:
+    for raw in paths:
         p = Path(str(raw))
         if p.is_file():
             out.append(str(p))
         if len(out) >= limit:
             break
     return out
+
+
+def _exemplar_bucket_paths(bucket: Any) -> List[str]:
+    """Normalize v2 list / v3 dict fingerprint buckets to a path list."""
+    if isinstance(bucket, list):
+        return [str(x) for x in bucket if x]
+    if isinstance(bucket, dict):
+        raw = bucket.get("paths") or bucket.get("samples") or []
+        if isinstance(raw, list):
+            return [str(x) for x in raw if x]
+    return []
+
+
+def _match_class_maps(
+    *,
+    shapes_dir: Path = DEFAULT_DATA / "shapes",
+    catalog_dir: Path = DEFAULT_CATALOG,
+) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+    """Topology fingerprint → enrolled / catalog meta (for exemplar annotations)."""
+    enrolled = _enrolled_fingerprints(shapes_dir)
+    catalog: Dict[str, Dict[str, Any]] = {}
+    if catalog_dir.is_dir():
+        for path in sorted(catalog_dir.glob("*-readable.json")):
+            if _is_noise(path):
+                continue
+            wf = load_workflow_json(path)
+            if not wf or not isinstance(wf.get("nodes"), list):
+                continue
+            try:
+                fp = graph_fingerprint_topology(wf)
+            except Exception:
+                continue
+            catalog.setdefault(fp, {"name": path.name, "path": str(path)})
+    return enrolled, catalog
 
 
 def _workflow_from_png(png: Path) -> Optional[Dict[str, Any]]:
@@ -277,6 +326,76 @@ def _workflow_from_png(png: Path) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _prompt_and_workflow_from_png(png: Path) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    try:
+        chunks = read_png_text_chunks(png)
+    except Exception:
+        return None, None
+    prompt, wf = extract_prompt_workflow_from_png_chunks(chunks)
+    pr = prompt if isinstance(prompt, dict) else None
+    ui = wf if isinstance(wf, dict) and isinstance(wf.get("nodes"), list) else None
+    return pr, ui
+
+
+def _normalize_source_key(raw: str) -> str:
+    name = Path(str(raw or "").replace("\\", "/").strip()).name.strip()
+    return name.lower() if name else ""
+
+
+def _primary_source_from_embed(
+    prompt: Optional[Dict[str, Any]], workflow: Optional[Dict[str, Any]]
+) -> Optional[Dict[str, str]]:
+    """Pick primary input media: prefer LoadImage*, else LoadVideo*/VHS_Load*."""
+    candidates: List[Tuple[int, str, str]] = []  # priority, kind, path
+
+    def _add(node_type: str, media: str) -> None:
+        media = str(media or "").strip()
+        if not media:
+            return
+        nt = str(node_type or "")
+        base = nt.split("|", 1)[0]
+        if nt in _SOURCE_IMAGE_TYPES or base in _SOURCE_IMAGE_TYPES or "LoadImage" in nt:
+            candidates.append((0, "image", media))
+        elif nt in _SOURCE_VIDEO_TYPES or base in _SOURCE_VIDEO_TYPES or "LoadVideo" in nt or nt.startswith("VHS_Load"):
+            candidates.append((1, "video", media))
+
+    if isinstance(prompt, dict):
+        for _nid, node in prompt.items():
+            if not isinstance(node, dict):
+                continue
+            ct = str(node.get("class_type") or "")
+            inputs = node.get("inputs") if isinstance(node.get("inputs"), dict) else {}
+            for key in ("image", "video", "video_path", "path", "filename"):
+                val = inputs.get(key)
+                if isinstance(val, str) and val.strip():
+                    _add(ct, val)
+                    break
+
+    if isinstance(workflow, dict):
+        for node in workflow.get("nodes") or []:
+            if not isinstance(node, dict):
+                continue
+            nt = str(node.get("type") or node.get("class_type") or "")
+            widgets = node.get("widgets_values")
+            if isinstance(widgets, list) and widgets and isinstance(widgets[0], str):
+                _add(nt, widgets[0])
+            elif isinstance(widgets, dict):
+                for key in ("image", "video", "video_path"):
+                    val = widgets.get(key)
+                    if isinstance(val, str) and val.strip():
+                        _add(nt, val)
+                        break
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda t: (t[0], t[2].lower()))
+    _prio, kind, media = candidates[0]
+    key = _normalize_source_key(media)
+    if not key:
+        return None
+    return {"key": key, "label": Path(media).name, "kind": kind, "raw": media}
+
+
 def build_exemplar_index(
     *,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
@@ -284,11 +403,14 @@ def build_exemplar_index(
     per_fp: int = SAMPLE_TARGET,
     stride: int = 1,
     years: Optional[List[str]] = None,
+    shapes_dir: Path = DEFAULT_DATA / "shapes",
+    catalog_dir: Path = DEFAULT_CATALOG,
 ) -> Dict[str, Any]:
     """
     Scan ``output/og/**/*.png`` workflow embeds → topology fingerprint → sibling ``.mp4``.
 
     Naming is ignored: differently named dumps with the same graph topology share a bucket.
+    Stores **all** paths per fingerprint (gallery), plus a short ``samples`` preview list.
     """
     og = Path(output_root) / "og"
     year_prefixes = tuple(years) if years else None
@@ -312,16 +434,22 @@ def build_exemplar_index(
     scanned = pngs[::stride]
     buckets: Dict[str, List[Tuple[float, str]]] = defaultdict(list)
     seen_mp4: Dict[str, Set[str]] = defaultdict(set)
+    # path → source meta (for gallery enrichment)
+    path_sources: Dict[str, Dict[str, str]] = {}
+    # source_key → list of (mtime, mp4, fingerprint)
+    source_rows: Dict[str, List[Tuple[float, str, str]]] = defaultdict(list)
+    source_meta: Dict[str, Dict[str, str]] = {}
     stats = {
         "png_candidates": len(pngs),
         "png_scanned": len(scanned),
         "with_workflow": 0,
         "with_mp4": 0,
+        "with_source": 0,
         "errors": 0,
     }
 
     for png in scanned:
-        wf = _workflow_from_png(png)
+        prompt, wf = _prompt_and_workflow_from_png(png)
         if not wf:
             continue
         try:
@@ -344,16 +472,64 @@ def build_exemplar_index(
             mtime = mp4.stat().st_mtime
         except Exception:
             mtime = 0.0
-        buckets[fp].append((mtime, str(mp4)))
+        buckets[fp].append((mtime, key))
         stats["with_mp4"] += 1
 
-    fingerprints: Dict[str, List[str]] = {}
+        src = _primary_source_from_embed(prompt, wf)
+        if src:
+            stats["with_source"] += 1
+            path_sources[key] = src
+            sk = src["key"]
+            source_meta.setdefault(sk, {"key": sk, "label": src["label"], "kind": src["kind"]})
+            source_rows[sk].append((mtime, key, fp))
+
+    enrolled, catalog = _match_class_maps(shapes_dir=shapes_dir, catalog_dir=catalog_dir)
+    sample_n = max(1, int(per_fp))
+    fingerprints: Dict[str, Dict[str, Any]] = {}
+    class_counts = {"enrolled": 0, "catalog_only": 0, "unmatched": 0}
     for fp, rows in buckets.items():
         rows.sort(key=lambda t: t[0], reverse=True)
-        fingerprints[fp] = [path for _, path in rows[: max(1, int(per_fp))]]
+        paths = [path for _, path in rows]
+        if fp in enrolled:
+            match_class = "enrolled"
+            label = enrolled[fp].get("family_slug")
+        elif fp in catalog:
+            match_class = "catalog_only"
+            label = catalog[fp].get("name")
+        else:
+            match_class = "unmatched"
+            label = None
+        class_counts[match_class] = class_counts.get(match_class, 0) + 1
+        fingerprints[fp] = {
+            "fingerprint": fp,
+            "match_class": match_class,
+            "label": label,
+            "total_count": len(paths),
+            "samples": paths[:sample_n],
+            "paths": paths,
+            "path_sources": {p: path_sources[p] for p in paths if p in path_sources},
+        }
+
+    sources: Dict[str, Dict[str, Any]] = {}
+    for sk, rows in source_rows.items():
+        rows.sort(key=lambda t: t[0], reverse=True)
+        meta = source_meta.get(sk) or {"key": sk, "label": sk, "kind": "unknown"}
+        by_fp: Dict[str, int] = defaultdict(int)
+        out_paths: List[str] = []
+        for _mt, path, fp in rows:
+            out_paths.append(path)
+            by_fp[fp] += 1
+        sources[sk] = {
+            **meta,
+            "total_count": len(out_paths),
+            "bucket_count": len(by_fp),
+            "by_fingerprint": dict(sorted(by_fp.items(), key=lambda kv: -kv[1])),
+            "paths": out_paths,
+            "samples": out_paths[:sample_n],
+        }
 
     payload = {
-        "schema_version": "comfyui-runpod.family-discovery-exemplars.v2",
+        "schema_version": "comfyui-runpod.family-discovery-exemplars.v4",
         "fingerprint_kind": "topology",
         "generated_at": _utc(),
         "output_root": str(output_root),
@@ -363,9 +539,13 @@ def build_exemplar_index(
         "counts": {
             **stats,
             "fingerprints": len(fingerprints),
-            "exemplars": sum(len(v) for v in fingerprints.values()),
+            "exemplars": sum(int(b.get("total_count") or 0) for b in fingerprints.values()),
+            "sample_exemplars": sum(len(b.get("samples") or []) for b in fingerprints.values()),
+            "sources": len(sources),
+            "by_match_class": class_counts,
         },
         "fingerprints": fingerprints,
+        "sources": sources,
     }
     index_path = Path(index_path)
     index_path.parent.mkdir(parents=True, exist_ok=True)
@@ -389,6 +569,284 @@ def load_exemplar_index(index_path: Path = DEFAULT_EXEMPLAR_INDEX) -> Dict[str, 
     obj["ok"] = True
     obj["path"] = str(path)
     return obj
+
+
+def _next_prop_id(existing_ids: Set[str]) -> str:
+    n = 1
+    while True:
+        pid = f"prop_{n:03d}"
+        if pid not in existing_ids:
+            return pid
+        n += 1
+        if n > 999:
+            raise RuntimeError("prop id space exhausted (prop_001–prop_999)")
+
+
+def _io_guess_from_sample_mp4(mp4_path: str) -> Dict[str, Any]:
+    png = Path(mp4_path).with_suffix(".png")
+    if not png.is_file():
+        return {}
+    wf = _workflow_from_png(png)
+    if not wf:
+        return {}
+    try:
+        return guess_io_from_workflow(wf) or {}
+    except Exception:
+        return {}
+
+
+def backfill_proposals_from_buckets(
+    *,
+    out_dir: Path = DEFAULT_OUT,
+    exemplar_index_path: Path = DEFAULT_EXEMPLAR_INDEX,
+    sample_limit: int = SAMPLE_TARGET,
+    include_enrolled: bool = False,
+    match_classes: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
+    """Create/update ``prop_*`` cards from exemplar video buckets (not workflow clusters).
+
+    Preserves operator fields on existing cards for the same fingerprint.
+    Default classes: ``unmatched`` + ``catalog_only`` (skip enrolled unless requested).
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    exemplar_idx = load_exemplar_index(exemplar_index_path)
+    fps_map = exemplar_idx.get("fingerprints") if isinstance(exemplar_idx.get("fingerprints"), dict) else {}
+
+    wanted = {str(x).strip().lower() for x in (match_classes or ("unmatched", "catalog_only")) if str(x).strip()}
+    if include_enrolled:
+        wanted.add("enrolled")
+
+    # Load existing props → fingerprint map (preserve judgments).
+    existing_by_fp: Dict[str, Dict[str, Any]] = {}
+    existing_ids: Set[str] = set()
+    for path in sorted(out_dir.glob("prop_*.json")):
+        try:
+            card = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(card, dict):
+            continue
+        pid = str(card.get("id") or path.stem).strip()
+        existing_ids.add(pid)
+        fp = str(card.get("fingerprint") or "").strip()
+        if fp and fp not in existing_by_fp:
+            existing_by_fp[fp] = card
+
+    buckets: List[Dict[str, Any]] = []
+    for fp, bucket in fps_map.items():
+        paths = _exemplar_bucket_paths(bucket)
+        if isinstance(bucket, dict):
+            match_class = str(bucket.get("match_class") or "unmatched")
+            label = bucket.get("label")
+            total = int(bucket.get("total_count") or len(paths))
+        else:
+            match_class = "unmatched"
+            label = None
+            total = len(paths)
+        if total <= 0:
+            continue
+        if match_class not in wanted:
+            continue
+        buckets.append(
+            {
+                "fingerprint": str(fp),
+                "match_class": match_class,
+                "label": label,
+                "total_count": total,
+                "paths": paths,
+            }
+        )
+    buckets.sort(key=lambda b: (-int(b["total_count"]), str(b["match_class"]), str(b["fingerprint"])))
+
+    created = 0
+    updated = 0
+    index_rows: List[Dict[str, Any]] = []
+    preserve_keys = (
+        "status",
+        "proposed_family_slug",
+        "nearest_enrolled",
+        "operator_decision",
+        "operator_notes",
+        "enrolled_at",
+        "enrolled_shape",
+        "quarantine_notes",
+    )
+
+    for b in buckets:
+        fp = b["fingerprint"]
+        paths: List[str] = list(b["paths"] or [])
+        samples = paths[: max(1, int(sample_limit))]
+        guess = _io_guess_from_sample_mp4(samples[0]) if samples else {}
+        rep_path = samples[0] if samples else None
+        rep = {
+            "source": "og_embed",
+            "path": rep_path,
+            "name": Path(rep_path).name if rep_path else None,
+            "stem": None,
+            "node_count": None,
+        }
+        members = [
+            {
+                "source": "og_embed",
+                "path": p,
+                "name": Path(p).name,
+                "stem": None,
+                "node_count": None,
+            }
+            for p in samples[:12]
+        ]
+
+        prev = existing_by_fp.get(fp)
+        if prev:
+            prop_id = str(prev.get("id") or "").strip()
+            if not prop_id:
+                prop_id = _next_prop_id(existing_ids)
+                existing_ids.add(prop_id)
+            updated += 1
+        else:
+            prop_id = _next_prop_id(existing_ids)
+            existing_ids.add(prop_id)
+            created += 1
+            prev = {}
+
+        card: Dict[str, Any] = {
+            "id": prop_id,
+            "status": "pending_review",
+            "proposed_family_slug": None,
+            "fingerprint": fp,
+            "match_class": b["match_class"],
+            "label": b.get("label"),
+            "video_count": b["total_count"],
+            "io_guess": guess.get("io_class"),
+            "primary_input_guess": guess.get("primary_input"),
+            "input_profile_guess": guess.get("input_profile"),
+            "chain_role_guess": guess.get("chain_role_guess"),
+            "member_count": len(members),
+            "representative": rep,
+            "members": members,
+            "sample_videos": samples,
+            "sample_source": "fingerprint_exemplars",
+            "source": "bucket_backfill",
+            "quarantine_notes": [],
+            "nearest_enrolled": None,
+            "operator_decision": None,
+            "operator_notes": None,
+        }
+        for k in preserve_keys:
+            if prev.get(k) is not None:
+                card[k] = prev[k]
+
+        path = out_dir / f"{prop_id}.json"
+        path.write_text(json.dumps(card, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+        md_lines = [
+            f"# {prop_id}",
+            "",
+            f"- **status:** `{card.get('status')}`",
+            f"- **IO guess:** `{card.get('io_guess')}` · profile `{card.get('input_profile_guess')}` · role `{card.get('chain_role_guess')}`",
+            f"- **fingerprint:** `{fp[:16]}…`",
+            f"- **match_class:** `{card.get('match_class')}`",
+            f"- **video_count:** {card.get('video_count')}",
+            f"- **label:** `{card.get('label') or '—'}`",
+            f"- **representative:** `{rep.get('name') or '—'}`",
+            "",
+            "## Sample videos (by fingerprint)",
+            "",
+        ]
+        md_lines.extend(f"- `{v}`" for v in samples)
+        md_lines.extend(
+            [
+                "",
+                "## Operator gate",
+                "",
+                "- [ ] new family — set `proposed_family_slug`",
+                "- [ ] merge into existing — note target slug",
+                "- [ ] skip",
+                "",
+            ]
+        )
+        (out_dir / f"{prop_id}.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+
+        index_rows.append(
+            {
+                "id": prop_id,
+                "io_guess": card.get("io_guess"),
+                "members": card.get("member_count"),
+                "representative": rep.get("name"),
+                "status": card.get("status"),
+                "fingerprint": fp,
+                "match_class": card.get("match_class"),
+                "video_count": card.get("video_count"),
+                "sample_count": len(samples),
+                "sample_target": int(sample_limit),
+            }
+        )
+
+    # Keep any existing non-bucket props that weren't rewritten? Prefer INDEX = bucket-backed only.
+    # Still list orphans (old cluster props with no bucket) at the end as pending with 0 videos —
+    # operator can skip. For clarity, INDEX is only backfilled rows (sorted by video_count).
+    index_rows.sort(
+        key=lambda r: (
+            0 if str(r.get("status") or "") == "pending_review" else 1,
+            -int(r.get("video_count") or 0),
+            str(r.get("id") or ""),
+        )
+    )
+
+    summary = {
+        "schema_version": "comfyui-runpod.family-discovery-index.v1",
+        "generated_at": _utc(),
+        "source": "bucket_backfill",
+        "cluster_report": "cluster_report.json",
+        "proposals": index_rows,
+        "covered_clusters": None,
+        "uncovered_clusters": None,
+        "bucket_proposal_counts": {
+            "created": created,
+            "updated": updated,
+            "total": len(index_rows),
+            "match_classes": sorted(wanted),
+        },
+        "exemplar_index": str(exemplar_index_path),
+        "review_instructions": (
+            "Proposals are backfilled from og video buckets (topology fingerprints with mp4s). "
+            "Watch samples, set status to new_family|merge|skip, then enroll via CLI."
+        ),
+    }
+    (out_dir / "INDEX.json").write_text(
+        json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    review_lines = [
+        "# Family discovery — operator review",
+        "",
+        f"Generated `{summary['generated_at']}` from **video buckets** (not workflow-only clusters).",
+        "",
+        f"- Proposals: **{len(index_rows)}** (created {created}, updated {updated})",
+        f"- Classes: {', '.join(sorted(wanted))}",
+        f"- Samples: up to **{sample_limit}** per prop from exemplar index",
+        "",
+        "## Proposal index",
+        "",
+        "| id | class | videos | samples | representative | status |",
+        "|----|-------|--------|---------|----------------|--------|",
+    ]
+    for row in index_rows:
+        review_lines.append(
+            f"| {row['id']} | {row.get('match_class') or '—'} | {row.get('video_count') or 0} | "
+            f"{row.get('sample_count') or 0} | `{row.get('representative') or '—'}` | {row.get('status')} |"
+        )
+    review_lines.append("")
+    (out_dir / "REVIEW.md").write_text("\n".join(review_lines) + "\n", encoding="utf-8")
+
+    return {
+        "ok": True,
+        "created": created,
+        "updated": updated,
+        "total": len(index_rows),
+        "out_dir": str(out_dir),
+        "match_classes": sorted(wanted),
+    }
 
 
 def write_proposal_cards(
@@ -778,6 +1236,25 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Optional date-dir prefixes e.g. 2025 2026 (default: all)",
     )
 
+    bp = sub.add_parser(
+        "backfill-proposals",
+        help="Create/update prop_* cards from og video buckets (preserves judgments)",
+    )
+    bp.add_argument("--write", type=Path, default=DEFAULT_OUT)
+    bp.add_argument("--exemplar-index", type=Path, default=DEFAULT_EXEMPLAR_INDEX)
+    bp.add_argument("--sample-limit", type=int, default=SAMPLE_TARGET)
+    bp.add_argument(
+        "--include-enrolled",
+        action="store_true",
+        help="Also create proposals for enrolled-matching buckets",
+    )
+    bp.add_argument(
+        "--classes",
+        nargs="*",
+        default=None,
+        help="Match classes to include (default: unmatched catalog_only)",
+    )
+
     e = sub.add_parser("enroll", help="Scaffold shape+pools from an approved prop card")
     e.add_argument("--prop", required=True, help="prop id (prop_001) or path to prop JSON")
     e.add_argument("--slug", required=True, help="family_slug to enroll")
@@ -823,6 +1300,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(json.dumps(payload.get("counts"), indent=2))
         print(f"wrote {payload.get('index_path')}")
         return 0
+
+    if args.cmd == "backfill-proposals":
+        result = backfill_proposals_from_buckets(
+            out_dir=args.write,
+            exemplar_index_path=args.exemplar_index,
+            sample_limit=args.sample_limit,
+            include_enrolled=bool(args.include_enrolled),
+            match_classes=args.classes,
+        )
+        print(json.dumps(result, indent=2))
+        return 0 if result.get("ok") else 1
 
     if args.cmd == "enroll":
         prop = Path(args.prop)

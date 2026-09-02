@@ -3,10 +3,12 @@
 - **status:** `pending_review`
 - **IO guess:** `V2V` · profile `video_prompt` · role `extend`
 - **fingerprint:** `3167911ea171a4e9…`
-- **members:** 1
-- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9/FB9-Gen-Extension.json`
+- **match_class:** `unmatched`
+- **video_count:** 12
+- **label:** `—`
+- **representative:** `FB9_GEX_2026-03-14_00008.mp4`
 
-## Sample videos (by fingerprint, not output name)
+## Sample videos (by fingerprint)
 
 - `/home/yuji/comfyui-runpod-data/output/og/2026-03-14/FB9_GEX_2026-03-14_00008.mp4`
 - `/home/yuji/comfyui-runpod-data/output/og/2026-03-14/FB9_GEX_2026-03-14_00007.mp4`
@@ -20,10 +22,6 @@
 - `/home/yuji/comfyui-runpod-data/output/og/2026-03-02/FB9_GEX_2026-03-02_00010.mp4`
 - `/home/yuji/comfyui-runpod-data/output/og/2026-03-02/FB9_GEX_2026-03-02_00009.mp4`
 - `/home/yuji/comfyui-runpod-data/output/og/2026-03-02/FB9_GEX_2026-03-02_00008.mp4`
-
-## Members
-
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB9/FB9-Gen-Extension.json`
 
 ## Operator gate
 

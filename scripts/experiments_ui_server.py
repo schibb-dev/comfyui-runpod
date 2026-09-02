@@ -931,7 +931,11 @@ def _discovery_index_health_path(path: Path) -> Path:
 
 
 def _discovery_resolve_media_file(cfg: "ServerConfig", relpath: Any) -> Optional[Path]:
-    """Resolve a relpath to an on-disk file under output_root or workspace_root (e.g. ``input/`` uploads)."""
+    """Resolve a relpath to an on-disk file under output_root, workspace_root, or bind input.
+
+    Comfy ``input/`` uploads often live under ``COMFYUI_BIND_INPUT_DIR`` (host data root),
+    not the empty ``workspace/input`` checkout tree.
+    """
     if not isinstance(relpath, str) or not relpath.strip():
         return None
     norm = _normalize_rel_posix(relpath.strip().lstrip("/"))
@@ -941,6 +945,29 @@ def _discovery_resolve_media_file(cfg: "ServerConfig", relpath: Any) -> Optional
         full = _safe_join(root, norm)
         if full is not None and full.is_file():
             return full
+    # input/<file> → bind input root (gallery / factory stills)
+    if norm.lower().startswith("input/"):
+        bn = Path(norm).name
+        if bn and bn not in {".", ".."} and "/" not in bn:
+            try:
+                d = _workspace_scripts_dir()
+                if d.is_dir() and str(d) not in sys.path:
+                    sys.path.insert(0, str(d))
+                from input_still_catalog import default_input_root  # type: ignore
+
+                cand = default_input_root() / bn
+                if cand.is_file():
+                    return cand.resolve()
+            except Exception:
+                pass
+            env = str(os.environ.get("COMFYUI_BIND_INPUT_DIR") or "").strip()
+            if env:
+                cand = Path(env).expanduser() / bn
+                if cand.is_file():
+                    try:
+                        return cand.resolve()
+                    except OSError:
+                        return cand
     return None
 
 
@@ -2425,9 +2452,10 @@ def _set_asset_appetite_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict
         raise ValueError("missing relpath")
     if "appetite" not in body:
         raise ValueError("missing appetite")
-    media_abs = _safe_join(cfg.output_root, rel)
+    norm = _normalize_rel_posix(rel.strip().lstrip("/")) or rel
+    media_abs = _discovery_resolve_media_file(cfg, norm)
     if media_abs is None:
-        raise ValueError("bad relpath")
+        raise ValueError("media_missing")
     d = _workspace_scripts_dir()
     if d.is_dir() and str(d) not in sys.path:
         sys.path.insert(0, str(d))
@@ -2438,14 +2466,14 @@ def _set_asset_appetite_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict
     og_root = _prefer_flat_library_dir(cfg.output_root, "og")
     saved = shape_factory_ratings.set_output_appetite(
         media_abs=media_abs,
-        media_relpath=rel,
+        media_relpath=norm,
         appetite=appetite,
         facet=facet,
         og_root=og_root,
         appetite_index_path=_discovery_appetite_index_path(cfg),
     )
     if appetite == "fast_track":
-        saved["queued"] = _fast_track_extend(cfg, rel, body)
+        saved["queued"] = _fast_track_extend(cfg, norm, body)
     return saved
 
 
@@ -3875,7 +3903,8 @@ def _shape_factory_input_curation_stills_payload(cfg: ServerConfig, q: Dict[str,
     payload = list_catalog_stills(
         data_root=data_root, q=qtext, limit=limit, offset=offset, scan=scan, tag=tag
     )
-    # Quote file URLs properly for the browser.
+    appetite_doc = _discovery_load_appetite_index(cfg)
+    # Quote file URLs properly for the browser; attach appetite for gallery tiles.
     for it in payload.get("items") or []:
         if not isinstance(it, dict):
             continue
@@ -3884,6 +3913,11 @@ def _shape_factory_input_curation_stills_payload(cfg: ServerConfig, q: Dict[str,
             quoted = "/files/" + urllib.parse.quote(rel, safe="/")
             it["url"] = quoted
             it["thumb_url"] = quoted
+        if appetite_doc:
+            ap = _discovery_appetite_for_item(appetite_doc, {"relpath": rel or it.get("basename")})
+            if ap.get("appetite"):
+                it["appetite"] = ap.get("appetite")
+                it["appetite_facet"] = ap.get("appetite_facet") or "source"
     payload["data_root"] = str(data_root)
     return payload
 
@@ -6005,7 +6039,7 @@ def _discovery_load_ratings_index(cfg: "ServerConfig") -> Optional[Dict[str, Any
 def _discovery_output_relpath_keys(item: Dict[str, Any]) -> List[str]:
     keys: List[str] = []
     seen: set = set()
-    for raw in (item.get("relpath"), item.get("video_relpath"), item.get("thumb_relpath")):
+    for raw in (item.get("relpath"), item.get("video_relpath"), item.get("thumb_relpath"), item.get("basename")):
         if not isinstance(raw, str) or not raw.strip():
             continue
         norm = _normalize_rel_posix(raw.strip())
@@ -6013,6 +6047,10 @@ def _discovery_output_relpath_keys(item: Dict[str, Any]) -> List[str]:
             continue
         seen.add(norm)
         keys.append(norm)
+        bn = Path(norm).name
+        if bn and bn not in seen:
+            seen.add(bn)
+            keys.append(bn)
         if norm.endswith(".mp4"):
             stem = norm[:-4]
             if stem not in seen:
@@ -6023,6 +6061,12 @@ def _discovery_output_relpath_keys(item: Dict[str, Any]) -> List[str]:
             if stem not in seen:
                 seen.add(stem)
                 keys.append(stem)
+        # input stills often stored as input/<file> or bare basename
+        if bn and not norm.lower().startswith("input/"):
+            ink = f"input/{bn}"
+            if ink not in seen:
+                seen.add(ink)
+                keys.append(ink)
     return keys
 
 
@@ -6154,10 +6198,22 @@ def _discovery_compute_asset_ratings(
 
     ratings_doc = _discovery_load_ratings_index(cfg)
     if not ratings_doc:
+        # Still allow appetite/disposition lookup for input stills / non-library media.
+        appetite_doc = _discovery_load_appetite_index(cfg)
+        appetite = _discovery_appetite_for_item(appetite_doc, {"relpath": rel})
+        disposition_doc = _discovery_load_disposition_index(cfg)
+        disp = _discovery_disposition_for_item(disposition_doc, {"relpath": rel})
         return {
-            "ok": False,
-            "error": "ratings_index_missing",
-            "detail": str(_discovery_ratings_index_path(cfg)),
+            "ok": True,
+            "query_relpath": rel,
+            "ratings_partial": True,
+            "error_detail": "ratings_index_missing",
+            "appetite": appetite.get("appetite"),
+            "appetite_facet": appetite.get("appetite_facet"),
+            "disposition_markers": disp.get("disposition_markers") or [],
+            "disposition_notes": disp.get("disposition_notes") or {},
+            "disposition_reason_detail": disp.get("disposition_reason_detail") or {},
+            "disposition_updated_at": disp.get("disposition_updated_at"),
         }
 
     item = _discovery_item_for_relpath(idx, rel)
@@ -8668,6 +8724,17 @@ def _family_discovery_remap_output_path(cfg: "ServerConfig", raw: Any) -> Option
     return p if p.exists() else None
 
 
+def _family_discovery_exemplar_bucket_paths(bucket: Any) -> List[str]:
+    """Normalize v2 list / v3 dict fingerprint buckets to path strings."""
+    if isinstance(bucket, list):
+        return [str(x) for x in bucket if x]
+    if isinstance(bucket, dict):
+        raw = bucket.get("paths") or bucket.get("samples") or []
+        if isinstance(raw, list):
+            return [str(x) for x in raw if x]
+    return []
+
+
 def _family_discovery_samples_for_fingerprint(
     cfg: "ServerConfig", fingerprint: str, *, limit: int = _FAMILY_DISCOVERY_SAMPLE_TARGET
 ) -> List[Path]:
@@ -8677,11 +8744,12 @@ def _family_discovery_samples_for_fingerprint(
         return []
     idx = _family_discovery_load_exemplar_index()
     bucket = (idx.get("fingerprints") or {}).get(fp)
-    if not isinstance(bucket, list):
+    paths = _family_discovery_exemplar_bucket_paths(bucket)
+    if not paths:
         return []
     out: List[Path] = []
     seen: set = set()
-    for raw in bucket:
+    for raw in paths:
         p = _family_discovery_remap_output_path(cfg, raw)
         if p is None or not p.is_file():
             continue
@@ -8696,6 +8764,348 @@ def _family_discovery_samples_for_fingerprint(
         if len(out) >= limit:
             break
     return out
+
+
+def _family_discovery_bucket_video_count(bucket: Any) -> int:
+    if isinstance(bucket, dict):
+        try:
+            return int(bucket.get("total_count") or 0)
+        except Exception:
+            pass
+        return len(_family_discovery_exemplar_bucket_paths(bucket))
+    if isinstance(bucket, list):
+        return len(bucket)
+    return 0
+
+
+def _family_discovery_cluster_report_path() -> Optional[Path]:
+    for base in _family_discovery_candidates():
+        p = base / "cluster_report.json"
+        if p.is_file():
+            return p
+    return None
+
+
+def _family_discovery_og_date_from_path(path: str) -> Optional[str]:
+    parts = Path(str(path or "")).parts
+    for part in parts:
+        if _FAMILY_DISCOVERY_DATE_DIR.match(part):
+            return part
+    return None
+
+
+def _family_discovery_gallery_payload(
+    cfg: "ServerConfig",
+    q: Dict[str, List[str]],
+) -> Dict[str, Any]:
+    """Paged gallery of mp4s for a fingerprint, source key, or unmatched match_class."""
+    fp = str((q.get("fingerprint") or [""])[0] or "").strip()
+    source_key = str((q.get("source") or [""])[0] or "").strip().lower()
+    match_class = str((q.get("match_class") or [""])[0] or "").strip().lower()
+    q_text = str((q.get("q") or [""])[0] or "").strip().lower()
+    date_pref = str((q.get("date") or [""])[0] or "").strip()
+    sort_by = str((q.get("sort") or ["newest"])[0] or "newest").strip().lower()
+    group_raw = str((q.get("group") or [""])[0] or "").strip().lower()
+    group_by_source = group_raw in {"1", "true", "yes", "source"}
+    if group_by_source and sort_by == "newest":
+        sort_by = "source"
+    try:
+        offset = max(0, int((q.get("offset") or ["0"])[0]))
+    except Exception:
+        offset = 0
+    try:
+        limit = int((q.get("limit") or ["48"])[0])
+    except Exception:
+        limit = 48
+    limit = max(1, min(200, limit))
+
+    idx = _family_discovery_load_exemplar_index()
+    fps_map = idx.get("fingerprints") if isinstance(idx.get("fingerprints"), dict) else {}
+    sources_map = idx.get("sources") if isinstance(idx.get("sources"), dict) else {}
+
+    # Build list of (raw_path, source_meta|None, fingerprint|None)
+    rows: List[Tuple[str, Optional[Dict[str, Any]], Optional[str]]] = []
+    meta: Dict[str, Any] = {}
+
+    if source_key:
+        bucket = sources_map.get(source_key)
+        if not isinstance(bucket, dict):
+            # try without forcing lower if already stored differently
+            bucket = sources_map.get(str((q.get("source") or [""])[0] or "").strip())
+        paths = _family_discovery_exemplar_bucket_paths(bucket) if bucket else []
+        # reverse-map fingerprint from sources.by_fingerprint membership via path scan
+        path_to_fp: Dict[str, str] = {}
+        for fpk, fb in fps_map.items():
+            for p in _family_discovery_exemplar_bucket_paths(fb):
+                path_to_fp.setdefault(p, str(fpk))
+        src_meta = None
+        if isinstance(bucket, dict):
+            src_meta = {
+                "key": bucket.get("key") or source_key,
+                "label": bucket.get("label"),
+                "kind": bucket.get("kind"),
+            }
+            meta = {
+                "source": source_key,
+                "source_label": bucket.get("label"),
+                "source_kind": bucket.get("kind"),
+                "total_count": bucket.get("total_count"),
+                "bucket_count": bucket.get("bucket_count"),
+            }
+        for raw in paths:
+            rows.append((raw, src_meta, path_to_fp.get(raw)))
+    elif fp:
+        bucket = fps_map.get(fp)
+        paths = _family_discovery_exemplar_bucket_paths(bucket)
+        path_sources = bucket.get("path_sources") if isinstance(bucket, dict) else None
+        if not isinstance(path_sources, dict):
+            path_sources = {}
+        if isinstance(bucket, dict):
+            meta = {
+                "fingerprint": fp,
+                "match_class": bucket.get("match_class"),
+                "label": bucket.get("label"),
+                "total_count": bucket.get("total_count"),
+            }
+        else:
+            meta = {"fingerprint": fp, "total_count": len(paths)}
+        for raw in paths:
+            sm = path_sources.get(raw) if isinstance(path_sources.get(raw), dict) else None
+            rows.append((raw, sm, fp))
+    elif match_class in {"unmatched", "enrolled", "catalog_only"}:
+        for k, bucket in fps_map.items():
+            b_class = "unmatched"
+            if isinstance(bucket, dict):
+                b_class = str(bucket.get("match_class") or "unmatched")
+            if b_class != match_class:
+                continue
+            path_sources = bucket.get("path_sources") if isinstance(bucket, dict) else {}
+            if not isinstance(path_sources, dict):
+                path_sources = {}
+            for p in _family_discovery_exemplar_bucket_paths(bucket):
+                sm = path_sources.get(p) if isinstance(path_sources.get(p), dict) else None
+                rows.append((p, sm, str(k)))
+        meta = {"match_class": match_class, "total_count": len(rows)}
+    else:
+        return {
+            "ok": False,
+            "error": "bad_query",
+            "detail": "Provide fingerprint=… or source=… or match_class=unmatched|enrolled|catalog_only",
+            "items": [],
+            "total": 0,
+            "offset": offset,
+            "limit": limit,
+        }
+
+    filtered: List[Tuple[str, Optional[Dict[str, Any]], Optional[str]]] = []
+    for raw, sm, fpk in rows:
+        name = Path(raw).name
+        if q_text and q_text not in name.lower() and q_text not in str(raw).lower():
+            src_l = str((sm or {}).get("label") or (sm or {}).get("key") or "").lower()
+            if q_text not in src_l:
+                continue
+        if date_pref:
+            d = _family_discovery_og_date_from_path(raw)
+            if not d or not d.startswith(date_pref):
+                continue
+        filtered.append((raw, sm, fpk))
+
+    if sort_by in {"source", "source_asc"}:
+        filtered.sort(
+            key=lambda t: (
+                str((t[1] or {}).get("label") or (t[1] or {}).get("key") or "\uffff").lower(),
+                Path(t[0]).name.lower(),
+            )
+        )
+    elif sort_by == "source_desc":
+        filtered.sort(
+            key=lambda t: (
+                str((t[1] or {}).get("label") or (t[1] or {}).get("key") or "").lower(),
+                Path(t[0]).name.lower(),
+            ),
+            reverse=True,
+        )
+    # else: keep newest-first order from index
+
+    total = len(filtered)
+    page = filtered[offset : offset + limit]
+    items: List[Dict[str, Any]] = []
+    for raw, sm, fpk in page:
+        p = _family_discovery_remap_output_path(cfg, raw)
+        abs_s = str(p) if p is not None else str(raw)
+        name = Path(abs_s).name
+        url = _family_discovery_abs_to_url(cfg, abs_s) if p is not None else None
+        thumb_url = None
+        if p is not None:
+            png = p.with_suffix(".png")
+            if png.is_file():
+                thumb_url = _family_discovery_abs_to_url(cfg, str(png))
+        item: Dict[str, Any] = {
+            "name": name,
+            "path": abs_s,
+            "url": url,
+            "thumb_url": thumb_url,
+            "date": _family_discovery_og_date_from_path(abs_s),
+            "fingerprint": fpk,
+        }
+        if isinstance(sm, dict):
+            item["source_key"] = sm.get("key")
+            item["source_label"] = sm.get("label")
+            item["source_kind"] = sm.get("kind")
+        items.append(item)
+
+    return {
+        "ok": True,
+        "items": items,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "sort": sort_by,
+        "group_by_source": group_by_source,
+        "index_ok": bool(idx.get("ok")),
+        **meta,
+    }
+
+
+def _family_discovery_browse_rows(cfg: "ServerConfig") -> Dict[str, Any]:
+    """Clusters (workflow corpus) + video buckets (exemplar index)."""
+    idx = _family_discovery_load_exemplar_index()
+    fps_map = idx.get("fingerprints") if isinstance(idx.get("fingerprints"), dict) else {}
+    video_by_fp = {str(k): _family_discovery_bucket_video_count(v) for k, v in fps_map.items()}
+
+    prop_by_fp: Dict[str, str] = {}
+    idx_path = _family_discovery_dir() / "INDEX.json"
+    if idx_path.is_file():
+        try:
+            index_obj = json.loads(idx_path.read_text(encoding="utf-8"))
+            for row in index_obj.get("proposals") or []:
+                if not isinstance(row, dict):
+                    continue
+                pid = str(row.get("id") or "").strip()
+                # fingerprint lives on prop card
+                ppath = _family_discovery_prop_path(pid)
+                if ppath and ppath.is_file():
+                    try:
+                        card = json.loads(ppath.read_text(encoding="utf-8"))
+                        cfp = str((card or {}).get("fingerprint") or "").strip()
+                        if cfp and pid:
+                            prop_by_fp[cfp] = pid
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    buckets: List[Dict[str, Any]] = []
+    for fp, bucket in fps_map.items():
+        if isinstance(bucket, dict):
+            match_class = str(bucket.get("match_class") or "unmatched")
+            label = bucket.get("label")
+            total = int(bucket.get("total_count") or len(_family_discovery_exemplar_bucket_paths(bucket)))
+        else:
+            match_class = "unmatched"
+            label = None
+            total = len(bucket) if isinstance(bucket, list) else 0
+        buckets.append(
+            {
+                "id": f"bucket_{fp[:12]}",
+                "fingerprint": fp,
+                "match_class": match_class,
+                "label": label,
+                "video_count": total,
+                "prop_id": prop_by_fp.get(fp),
+            }
+        )
+    buckets.sort(key=lambda r: (-int(r.get("video_count") or 0), str(r.get("match_class") or ""), str(r.get("fingerprint") or "")))
+
+    clusters: List[Dict[str, Any]] = []
+    cr_path = _family_discovery_cluster_report_path()
+    if cr_path is not None:
+        try:
+            report = json.loads(cr_path.read_text(encoding="utf-8"))
+        except Exception:
+            report = {}
+        for c in report.get("clusters") or []:
+            if not isinstance(c, dict):
+                continue
+            fp = str(c.get("fingerprint") or "").strip()
+            members = c.get("members") if isinstance(c.get("members"), list) else []
+            rep = members[0] if members else {}
+            covered = c.get("covered_by")
+            io = c.get("io_guess") if isinstance(c.get("io_guess"), dict) else {}
+            clusters.append(
+                {
+                    "id": f"cluster_{fp[:12]}" if fp else None,
+                    "fingerprint": fp,
+                    "member_count": len(members),
+                    "covered": bool(covered),
+                    "covered_by": (covered or {}).get("family_slug") if isinstance(covered, dict) else None,
+                    "io_guess": io.get("io_class"),
+                    "representative": (rep or {}).get("name") if isinstance(rep, dict) else None,
+                    "video_count": video_by_fp.get(fp, 0),
+                    "prop_id": prop_by_fp.get(fp),
+                    "match_class": (
+                        (fps_map.get(fp) or {}).get("match_class")
+                        if isinstance(fps_map.get(fp), dict)
+                        else ("covered" if covered else None)
+                    ),
+                }
+            )
+        clusters.sort(
+            key=lambda r: (
+                0 if not r.get("covered") else 1,
+                -int(r.get("video_count") or 0),
+                -int(r.get("member_count") or 0),
+                str(r.get("fingerprint") or ""),
+            )
+        )
+
+    class_counts = {"enrolled": 0, "catalog_only": 0, "unmatched": 0, "videos_enrolled": 0, "videos_catalog_only": 0, "videos_unmatched": 0}
+    for b in buckets:
+        mc = str(b.get("match_class") or "unmatched")
+        if mc in class_counts:
+            class_counts[mc] += 1
+            class_counts[f"videos_{mc}"] = class_counts.get(f"videos_{mc}", 0) + int(b.get("video_count") or 0)
+
+    sources_map = idx.get("sources") if isinstance(idx.get("sources"), dict) else {}
+    sources: List[Dict[str, Any]] = []
+    for sk, bucket in sources_map.items():
+        if not isinstance(bucket, dict):
+            continue
+        total = int(bucket.get("total_count") or len(_family_discovery_exemplar_bucket_paths(bucket)))
+        if total <= 0:
+            continue
+        sources.append(
+            {
+                "key": str(bucket.get("key") or sk),
+                "label": bucket.get("label") or str(sk),
+                "kind": bucket.get("kind") or "unknown",
+                "video_count": total,
+                "bucket_count": int(bucket.get("bucket_count") or 0),
+            }
+        )
+    sources.sort(
+        key=lambda r: (
+            -int(r.get("video_count") or 0),
+            -int(r.get("bucket_count") or 0),
+            str(r.get("label") or "").lower(),
+        )
+    )
+
+    return {
+        "clusters": clusters,
+        "buckets": buckets,
+        "sources": sources,
+        "source_counts": {
+            "sources": len(sources),
+            "videos_with_source": sum(int(s.get("video_count") or 0) for s in sources),
+            "images": sum(1 for s in sources if s.get("kind") == "image"),
+            "videos": sum(1 for s in sources if s.get("kind") == "video"),
+        },
+        "bucket_counts": class_counts,
+        "exemplar_index_ok": bool(idx.get("ok")),
+        "exemplar_generated_at": idx.get("generated_at"),
+        "cluster_report_path": str(cr_path) if cr_path else None,
+    }
 
 
 def _family_discovery_seed_embed_fingerprint(cfg: "ServerConfig", prop: Dict[str, Any]) -> Optional[str]:
@@ -9169,6 +9579,16 @@ def _family_discovery_load_index(cfg: Optional["ServerConfig"] = None) -> Dict[s
         "proposals": proposals,
         "enrolled_families": _family_discovery_enrolled_slugs(),
     }
+    if cfg is not None:
+        try:
+            browse = _family_discovery_browse_rows(cfg)
+            payload.update(browse)
+        except Exception as e:
+            payload["browse_error"] = str(e)
+            payload.setdefault("clusters", [])
+            payload.setdefault("buckets", [])
+            payload.setdefault("sources", [])
+            payload.setdefault("source_counts", {})
     if cache_key:
         _FAMILY_DISCOVERY_INDEX_CACHE["key"] = cache_key
         _FAMILY_DISCOVERY_INDEX_CACHE["payload"] = payload
@@ -11684,8 +12104,23 @@ class Handler(BaseHTTPRequestHandler):
                     self, 500, {"ok": False, "error": "family_discovery_index_failed", "detail": str(e)}
                 )
 
+        if path == "/api/workflow-explorer/family-discovery/gallery":
+            try:
+                return _json_response(self, 200, _family_discovery_gallery_payload(cfg, q))
+            except Exception as e:
+                return _json_response(
+                    self, 500, {"ok": False, "error": "family_discovery_gallery_failed", "detail": str(e)}
+                )
+
         if path.startswith("/api/workflow-explorer/family-discovery/"):
             prop_id = path[len("/api/workflow-explorer/family-discovery/") :].strip().strip("/")
+            if prop_id == "gallery":
+                try:
+                    return _json_response(self, 200, _family_discovery_gallery_payload(cfg, q))
+                except Exception as e:
+                    return _json_response(
+                        self, 500, {"ok": False, "error": "family_discovery_gallery_failed", "detail": str(e)}
+                    )
             try:
                 payload = _family_discovery_load_prop(cfg, prop_id)
             except Exception as e:

@@ -1,0 +1,95 @@
+{
+  "id": "prop_058",
+  "status": "pending_review",
+  "proposed_family_slug": null,
+  "fingerprint": "25f2fb36a79a92c7f82018a772d98c19435b0903d343741ec4fa6d6610fdac33",
+  "match_class": "unmatched",
+  "label": null,
+  "video_count": 8,
+  "io_guess": "V2V",
+  "primary_input_guess": "video",
+  "input_profile_guess": "video_prompt",
+  "chain_role_guess": "extend",
+  "member_count": 8,
+  "representative": {
+    "source": "og_embed",
+    "path": "/home/yuji/comfyui-runpod-data/output/og/2026-08-16/hourly/hourly__pp-44d2fee76968__src-X-Kneel-FB9-2026-04-25-095148_OG_00001__000_202608161121_FINAL_00001.mp4",
+    "name": "hourly__pp-44d2fee76968__src-X-Kneel-FB9-2026-04-25-095148_OG_00001__000_202608161121_FINAL_00001.mp4",
+    "stem": null,
+    "node_count": null
+  },
+  "members": [
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2026-08-16/hourly/hourly__pp-44d2fee76968__src-X-Kneel-FB9-2026-04-25-095148_OG_00001__000_202608161121_FINAL_00001.mp4",
+      "name": "hourly__pp-44d2fee76968__src-X-Kneel-FB9-2026-04-25-095148_OG_00001__000_202608161121_FINAL_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2026-08-16/hourly/hourly__pp-44d2fee76968__src-X-Kneel-FB9-2026-04-25-095148_OG_00001__000_202608161121_00001.mp4",
+      "name": "hourly__pp-44d2fee76968__src-X-Kneel-FB9-2026-04-25-095148_OG_00001__000_202608161121_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2026-08-16/hourly/hourly__pp-d8064f33e4fe__src-FB9_GEX2_COLORv2_2026-04-08_00006__000_202608160417_00001.mp4",
+      "name": "hourly__pp-d8064f33e4fe__src-FB9_GEX2_COLORv2_2026-04-08_00006__000_202608160417_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2026-08-15/hourly/hourly__pp-bee930b81bf2__src-FB9-GEX2-Overhead_2026-04-30_00012__000_202608160050_00001.mp4",
+      "name": "hourly__pp-bee930b81bf2__src-FB9-GEX2-Overhead_2026-04-30_00012__000_202608160050_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2026-08-15/hourly/hourly__pp-f880372d27b6__src-FB9_GEX2_2026-04-03_00001__000_202608151927_00001.mp4",
+      "name": "hourly__pp-f880372d27b6__src-FB9_GEX2_2026-04-03_00001__000_202608151927_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2026-08-15/hourly/hourly__pp-750bc8331d5a__src-X-Kneel-FB9-2026-03-23-151936_OG_00001__000_202608151621_00001.mp4",
+      "name": "hourly__pp-750bc8331d5a__src-X-Kneel-FB9-2026-03-23-151936_OG_00001__000_202608151621_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2026-08-15/hourly/hourly__pp-22cb86f15164__src-X-Kneel-FB9-2026-03-23-151936_OG_00001__000_202608151007_00001.mp4",
+      "name": "hourly__pp-22cb86f15164__src-X-Kneel-FB9-2026-03-23-151936_OG_00001__000_202608151007_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2026-08-14/hourly/hourly__pp-53b222613b2e__src-111859_OG_00001__000_202608141407_00001.mp4",
+      "name": "hourly__pp-53b222613b2e__src-111859_OG_00001__000_202608141407_00001.mp4",
+      "stem": null,
+      "node_count": null
+    }
+  ],
+  "sample_videos": [
+    "/home/yuji/comfyui-runpod-data/output/og/2026-08-16/hourly/hourly__pp-44d2fee76968__src-X-Kneel-FB9-2026-04-25-095148_OG_00001__000_202608161121_FINAL_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-08-16/hourly/hourly__pp-44d2fee76968__src-X-Kneel-FB9-2026-04-25-095148_OG_00001__000_202608161121_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-08-16/hourly/hourly__pp-d8064f33e4fe__src-FB9_GEX2_COLORv2_2026-04-08_00006__000_202608160417_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-08-15/hourly/hourly__pp-bee930b81bf2__src-FB9-GEX2-Overhead_2026-04-30_00012__000_202608160050_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-08-15/hourly/hourly__pp-f880372d27b6__src-FB9_GEX2_2026-04-03_00001__000_202608151927_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-08-15/hourly/hourly__pp-750bc8331d5a__src-X-Kneel-FB9-2026-03-23-151936_OG_00001__000_202608151621_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-08-15/hourly/hourly__pp-22cb86f15164__src-X-Kneel-FB9-2026-03-23-151936_OG_00001__000_202608151007_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-08-14/hourly/hourly__pp-53b222613b2e__src-111859_OG_00001__000_202608141407_00001.mp4"
+  ],
+  "sample_source": "fingerprint_exemplars",
+  "source": "bucket_backfill",
+  "quarantine_notes": [],
+  "nearest_enrolled": null,
+  "operator_decision": null,
+  "operator_notes": null
+}

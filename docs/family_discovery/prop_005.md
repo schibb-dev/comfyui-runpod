@@ -1,12 +1,14 @@
 # prop_005
 
 - **status:** `pending_review`
-- **IO guess:** `I2V` · profile `still_prompt` · role `origin`
+- **IO guess:** `None` · profile `None` · role `standalone`
 - **fingerprint:** `d2eaf23dfd5b6956…`
-- **members:** 1
-- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/141756_OG_00001-readable.json`
+- **match_class:** `catalog_only`
+- **video_count:** 1142
+- **label:** `141756_OG_00001-readable.json`
+- **representative:** `FB8VA_2026-01-13_192821_OG_00001.mp4`
 
-## Sample videos (by fingerprint, not output name)
+## Sample videos (by fingerprint)
 
 - `/home/yuji/comfyui-runpod-data/output/og/2026-01-13/FB8VA_2026-01-13_192821_OG_00001.mp4`
 - `/home/yuji/comfyui-runpod-data/output/og/2026-01-13/FB8VA_2026-01-13_192830_OG_00001.mp4`
@@ -28,10 +30,6 @@
 - `/home/yuji/comfyui-runpod-data/output/og/2026-01-12/FB8VA_2026-01-12_143821_OG_00001.mp4`
 - `/home/yuji/comfyui-runpod-data/output/og/2026-01-12/FB8VA_2026-01-12_143330_OG_00001.mp4`
 - `/home/yuji/comfyui-runpod-data/output/og/2026-01-12/FB8VA_2026-01-12_142452_OG_00001.mp4`
-
-## Members
-
-- [catalog] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/141756_OG_00001-readable.json`
 
 ## Operator gate
 

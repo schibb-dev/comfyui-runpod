@@ -36,6 +36,7 @@ import type {
   FamilyDiscoveryIndexResponse,
   FamilyDiscoveryPropResponse,
   FamilyDiscoveryPropPatch,
+  FamilyDiscoveryGalleryResponse,
   AbExperimentResponse,
   AbExperimentsListResponse,
   AbJudgmentRequest,
@@ -204,6 +205,35 @@ export async function fetchFamilyDiscoveryIndex(): Promise<FamilyDiscoveryIndexR
   const r = await fetch("/api/workflow-explorer/family-discovery");
   if (!r.ok) throw new Error(`GET /api/workflow-explorer/family-discovery failed: ${r.status}`);
   return (await r.json()) as FamilyDiscoveryIndexResponse;
+}
+
+export async function fetchFamilyDiscoveryGallery(opts: {
+  fingerprint?: string;
+  match_class?: string;
+  source?: string;
+  offset?: number;
+  limit?: number;
+  q?: string;
+  date?: string;
+  sort?: "newest" | "source" | "source_desc" | string;
+  group?: boolean | "source";
+}): Promise<FamilyDiscoveryGalleryResponse> {
+  const sp = new URLSearchParams();
+  if (opts.fingerprint) sp.set("fingerprint", opts.fingerprint);
+  if (opts.match_class) sp.set("match_class", opts.match_class);
+  if (opts.source) sp.set("source", opts.source);
+  if (typeof opts.offset === "number") sp.set("offset", String(opts.offset));
+  if (typeof opts.limit === "number") sp.set("limit", String(opts.limit));
+  if (opts.q) sp.set("q", opts.q);
+  if (opts.date) sp.set("date", opts.date);
+  if (opts.sort) sp.set("sort", opts.sort);
+  if (opts.group === true || opts.group === "source") sp.set("group", "source");
+  const r = await fetch(`/api/workflow-explorer/family-discovery/gallery?${sp.toString()}`);
+  const j = (await r.json().catch(() => ({}))) as FamilyDiscoveryGalleryResponse;
+  if (!r.ok || j.ok === false) {
+    throw new Error(j.error || j.detail || `GET family-discovery/gallery failed: ${r.status}`);
+  }
+  return j;
 }
 
 export async function fetchFamilyDiscoveryProp(propId: string): Promise<FamilyDiscoveryPropResponse> {

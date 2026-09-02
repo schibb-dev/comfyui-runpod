@@ -3,25 +3,105 @@
   "status": "pending_review",
   "proposed_family_slug": null,
   "fingerprint": "6148705420bf1b206a257607b1d77da4ead67ee12519cacc08473cb8f0a6accb",
-  "io_guess": "I2V",
-  "primary_input_guess": "still",
-  "input_profile_guess": "still_prompt",
-  "chain_role_guess": "origin",
-  "member_count": 1,
+  "match_class": "catalog_only",
+  "label": "103520_OG_00001-readable.json",
+  "video_count": 72,
+  "io_guess": null,
+  "primary_input_guess": null,
+  "input_profile_guess": null,
+  "chain_role_guess": "standalone",
+  "member_count": 12,
   "representative": {
-    "source": "catalog",
-    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/103520_OG_00001-readable.json",
-    "name": "103520_OG_00001-readable.json",
+    "source": "og_embed",
+    "path": "/home/yuji/comfyui-runpod-data/output/og/2025-11-11/194507_OG_00001.mp4",
+    "name": "194507_OG_00001.mp4",
     "stem": null,
-    "node_count": 74
+    "node_count": null
   },
   "members": [
     {
-      "source": "catalog",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/103520_OG_00001-readable.json",
-      "name": "103520_OG_00001-readable.json",
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-11-11/194507_OG_00001.mp4",
+      "name": "194507_OG_00001.mp4",
       "stem": null,
-      "node_count": 74
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-11-11/185108_OG_00001.mp4",
+      "name": "185108_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-11-11/185107_OG_00001.mp4",
+      "name": "185107_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-11-11/184912_OG_00001.mp4",
+      "name": "184912_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-11-11/184900_OG_00001.mp4",
+      "name": "184900_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-11-11/184845_OG_00001.mp4",
+      "name": "184845_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-11-11/184819_OG_00001.mp4",
+      "name": "184819_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-11-11/184750_OG_00001.mp4",
+      "name": "184750_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-11-11/184743_OG_00001.mp4",
+      "name": "184743_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-11-11/184734_OG_00001.mp4",
+      "name": "184734_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-11-11/184714_OG_00001.mp4",
+      "name": "184714_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-11-11/184456_OG_00001.mp4",
+      "name": "184456_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
     }
   ],
   "sample_videos": [
@@ -47,6 +127,7 @@
     "/home/yuji/comfyui-runpod-data/output/og/2025-11-11/185112_OG_00001.mp4"
   ],
   "sample_source": "fingerprint_exemplars",
+  "source": "bucket_backfill",
   "quarantine_notes": [],
   "nearest_enrolled": null,
   "operator_decision": null,

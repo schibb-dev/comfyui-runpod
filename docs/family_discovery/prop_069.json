@@ -1,0 +1,55 @@
+{
+  "id": "prop_069",
+  "status": "pending_review",
+  "proposed_family_slug": null,
+  "fingerprint": "c9693ad734e698dea36b4158ff84c25a6e9875155a2005ce82dbe7ca73fc9321",
+  "match_class": "unmatched",
+  "label": null,
+  "video_count": 3,
+  "io_guess": null,
+  "primary_input_guess": null,
+  "input_profile_guess": null,
+  "chain_role_guess": "standalone",
+  "member_count": 3,
+  "representative": {
+    "source": "og_embed",
+    "path": "/home/yuji/comfyui-runpod-data/output/og/2026-01-14/FB8VA4-2026-01-14-015451_OG_00001.mp4",
+    "name": "FB8VA4-2026-01-14-015451_OG_00001.mp4",
+    "stem": null,
+    "node_count": null
+  },
+  "members": [
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2026-01-14/FB8VA4-2026-01-14-015451_OG_00001.mp4",
+      "name": "FB8VA4-2026-01-14-015451_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2026-01-11/FB8VA4-2026-01-11-205318_OG_00001.mp4",
+      "name": "FB8VA4-2026-01-11-205318_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2026-01-11/FB8VA4-2026-01-11-204249_OG_00001.mp4",
+      "name": "FB8VA4-2026-01-11-204249_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    }
+  ],
+  "sample_videos": [
+    "/home/yuji/comfyui-runpod-data/output/og/2026-01-14/FB8VA4-2026-01-14-015451_OG_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-01-11/FB8VA4-2026-01-11-205318_OG_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2026-01-11/FB8VA4-2026-01-11-204249_OG_00001.mp4"
+  ],
+  "sample_source": "fingerprint_exemplars",
+  "source": "bucket_backfill",
+  "quarantine_notes": [],
+  "nearest_enrolled": null,
+  "operator_decision": null,
+  "operator_notes": null
+}

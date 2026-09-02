@@ -3,102 +3,105 @@
   "status": "pending_review",
   "proposed_family_slug": null,
   "fingerprint": "24d722a6bd18834126926cd0da726d3910ab834873a32be2805966f8f2bd7fce",
+  "match_class": "unmatched",
+  "label": null,
+  "video_count": 4117,
   "io_guess": "I2V",
   "primary_input_guess": "still",
   "input_profile_guess": "still_prompt",
   "chain_role_guess": "origin",
-  "member_count": 65,
+  "member_count": 12,
   "representative": {
-    "source": "user",
-    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA-mainline-readable.json",
-    "name": "FB8VA-mainline-readable.json",
+    "source": "og_embed",
+    "path": "/home/yuji/comfyui-runpod-data/output/og/2026-05-27/2026-05-27-102407_FaceBlastAStroke_OG_00001.mp4",
+    "name": "2026-05-27-102407_FaceBlastAStroke_OG_00001.mp4",
     "stem": null,
-    "node_count": 73
+    "node_count": null
   },
   "members": [
     {
-      "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA-mainline-readable.json",
-      "name": "FB8VA-mainline-readable.json",
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2026-05-27/2026-05-27-102407_FaceBlastAStroke_OG_00001.mp4",
+      "name": "2026-05-27-102407_FaceBlastAStroke_OG_00001.mp4",
       "stem": null,
-      "node_count": 73
+      "node_count": null
     },
     {
-      "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA-mainline-readable.workflow.json",
-      "name": "FB8VA-mainline-readable.workflow.json",
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2026-05-27/2026-05-27-102230_FaceBlastAStroke_OG_00001.mp4",
+      "name": "2026-05-27-102230_FaceBlastAStroke_OG_00001.mp4",
       "stem": null,
-      "node_count": 73
+      "node_count": null
     },
     {
-      "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FaceBlast8L.json",
-      "name": "FaceBlast8L.json",
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2026-05-27/2026-05-27-090107_FaceBlastAStroke_OG_00001.mp4",
+      "name": "2026-05-27-090107_FaceBlastAStroke_OG_00001.mp4",
       "stem": null,
-      "node_count": 73
+      "node_count": null
     },
     {
-      "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FaceBlast8M.json",
-      "name": "FaceBlast8M.json",
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00006.mp4",
+      "name": "FB8VA-mainline-readable_FINAL_00006.mp4",
       "stem": null,
-      "node_count": 73
+      "node_count": null
     },
     {
-      "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FaceBlast8N.json",
-      "name": "FaceBlast8N.json",
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00004.mp4",
+      "name": "FB8VA-mainline-readable_FINAL_00004.mp4",
       "stem": null,
-      "node_count": 73
+      "node_count": null
     },
     {
-      "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FaceBlast8O.json",
-      "name": "FaceBlast8O.json",
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00007.mp4",
+      "name": "FB8VA-mainline-readable_FINAL_00007.mp4",
       "stem": null,
-      "node_count": 73
+      "node_count": null
     },
     {
-      "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FaceBlastA.json",
-      "name": "FaceBlastA.json",
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00011.mp4",
+      "name": "FB8VA-mainline-readable_FINAL_00011.mp4",
       "stem": null,
-      "node_count": 73
+      "node_count": null
     },
     {
-      "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FaceBlastAStroke.json",
-      "name": "FaceBlastAStroke.json",
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00020.mp4",
+      "name": "FB8VA-mainline-readable_FINAL_00020.mp4",
       "stem": null,
-      "node_count": 73
+      "node_count": null
     },
     {
-      "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/MissPoundA.json",
-      "name": "MissPoundA.json",
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00012.mp4",
+      "name": "FB8VA-mainline-readable_FINAL_00012.mp4",
       "stem": null,
-      "node_count": 73
+      "node_count": null
     },
     {
-      "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/FLUX/GGUF/IMG to IMG.json",
-      "name": "IMG to IMG.json",
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00002.mp4",
+      "name": "FB8VA-mainline-readable_FINAL_00002.mp4",
       "stem": null,
-      "node_count": 73
+      "node_count": null
     },
     {
-      "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/WAN-C0wg1rlB.json",
-      "name": "WAN-C0wg1rlB.json",
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00014.mp4",
+      "name": "FB8VA-mainline-readable_FINAL_00014.mp4",
       "stem": null,
-      "node_count": 73
+      "node_count": null
     },
     {
-      "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/WAN-c0wg1rl.json",
-      "name": "WAN-c0wg1rl.json",
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00018.mp4",
+      "name": "FB8VA-mainline-readable_FINAL_00018.mp4",
       "stem": null,
-      "node_count": 73
+      "node_count": null
     }
   ],
   "sample_videos": [
@@ -124,6 +127,7 @@
     "/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00017.mp4"
   ],
   "sample_source": "fingerprint_exemplars",
+  "source": "bucket_backfill",
   "quarantine_notes": [],
   "nearest_enrolled": null,
   "operator_decision": null,

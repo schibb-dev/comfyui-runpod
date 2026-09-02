@@ -1,0 +1,63 @@
+{
+  "id": "prop_066",
+  "status": "pending_review",
+  "proposed_family_slug": null,
+  "fingerprint": "d5e227965fdc2c870a8d4f341ff21b4df8a663e90b6b937649d530145253431f",
+  "match_class": "unmatched",
+  "label": null,
+  "video_count": 4,
+  "io_guess": "I2V",
+  "primary_input_guess": "still",
+  "input_profile_guess": "still_prompt",
+  "chain_role_guess": "origin",
+  "member_count": 4,
+  "representative": {
+    "source": "og_embed",
+    "path": "/home/yuji/comfyui-runpod-data/output/og/2025-09-12/235635_OG_00001.mp4",
+    "name": "235635_OG_00001.mp4",
+    "stem": null,
+    "node_count": null
+  },
+  "members": [
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-09-12/235635_OG_00001.mp4",
+      "name": "235635_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-09-12/213101_OG_00001.mp4",
+      "name": "213101_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-09-12/204030_OG_00001.mp4",
+      "name": "204030_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-09-12/202627_OG_00001.mp4",
+      "name": "202627_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    }
+  ],
+  "sample_videos": [
+    "/home/yuji/comfyui-runpod-data/output/og/2025-09-12/235635_OG_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2025-09-12/213101_OG_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2025-09-12/204030_OG_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2025-09-12/202627_OG_00001.mp4"
+  ],
+  "sample_source": "fingerprint_exemplars",
+  "source": "bucket_backfill",
+  "quarantine_notes": [],
+  "nearest_enrolled": null,
+  "operator_decision": null,
+  "operator_notes": null
+}

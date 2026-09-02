@@ -3,53 +3,84 @@
   "status": "pending_review",
   "proposed_family_slug": null,
   "fingerprint": "e8ec45c9b5909974e1811c098278d2af81ec9750527cb1325a666e18077b74bc",
+  "match_class": "unmatched",
+  "label": null,
+  "video_count": 9,
   "io_guess": "V2V",
   "primary_input_guess": "video",
   "input_profile_guess": "video_prompt",
   "chain_role_guess": "extend",
-  "member_count": 5,
+  "member_count": 9,
   "representative": {
-    "source": "user",
-    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/EXPT-EXTENSION.json",
-    "name": "EXPT-EXTENSION.json",
+    "source": "og_embed",
+    "path": "/home/yuji/comfyui-runpod-data/output/og/2025-06-22/161432_OG_00001.mp4",
+    "name": "161432_OG_00001.mp4",
     "stem": null,
-    "node_count": 72
+    "node_count": null
   },
   "members": [
     {
-      "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/EXPT-EXTENSION.json",
-      "name": "EXPT-EXTENSION.json",
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-06-22/161432_OG_00001.mp4",
+      "name": "161432_OG_00001.mp4",
       "stem": null,
-      "node_count": 72
+      "node_count": null
     },
     {
-      "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA5-VIDEO EXTENSION.cleaned.json",
-      "name": "FB8VA5-VIDEO EXTENSION.cleaned.json",
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-06-23/144144_OG_00001.mp4",
+      "name": "144144_OG_00001.mp4",
       "stem": null,
-      "node_count": 72
+      "node_count": null
     },
     {
-      "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA5-VIDEO EXTENSION.json",
-      "name": "FB8VA5-VIDEO EXTENSION.json",
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-06-23/041712_OG_00001.mp4",
+      "name": "041712_OG_00001.mp4",
       "stem": null,
-      "node_count": 72
+      "node_count": null
     },
     {
-      "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/WAN/GGUF/VIDEO EXTENSION.json",
-      "name": "VIDEO EXTENSION.json",
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-06-23/043436_OG_00001.mp4",
+      "name": "043436_OG_00001.mp4",
       "stem": null,
-      "node_count": 72
+      "node_count": null
     },
     {
-      "source": "user",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/legacy/archived/SB-extender.json",
-      "name": "SB-extender.json",
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-06-23/042600_OG_00001.mp4",
+      "name": "042600_OG_00001.mp4",
       "stem": null,
-      "node_count": 72
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-06-23/041245_OG_00001.mp4",
+      "name": "041245_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-06-23/044442_OG_00001.mp4",
+      "name": "044442_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-06-23/051421_OG_00001.mp4",
+      "name": "051421_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-06-23/143017_OG_00001.mp4",
+      "name": "143017_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
     }
   ],
   "sample_videos": [
@@ -64,6 +95,7 @@
     "/home/yuji/comfyui-runpod-data/output/og/2025-06-23/143017_OG_00001.mp4"
   ],
   "sample_source": "fingerprint_exemplars",
+  "source": "bucket_backfill",
   "quarantine_notes": [],
   "nearest_enrolled": null,
   "operator_decision": null,

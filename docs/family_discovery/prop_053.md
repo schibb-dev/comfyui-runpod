@@ -1,0 +1,34 @@
+# prop_053
+
+- **status:** `pending_review`
+- **IO guess:** `VI2V` · profile `video_identity_still_prompt` · role `extend`
+- **fingerprint:** `7ae6a9d847fabecb…`
+- **match_class:** `unmatched`
+- **video_count:** 15
+- **label:** `—`
+- **representative:** `hourly__id-FB9_GEX2_FACIAL_2026-05-09_00001__pp-6e4c92cf1cae__src-FB9_GEX2_FACIAL_2026-05-09_00001__00_20260901101454_f2_00001.mp4`
+
+## Sample videos (by fingerprint)
+
+- `/home/yuji/comfyui-runpod-data/output/og/2026-09-01/hourly/hourly__id-FB9_GEX2_FACIAL_2026-05-09_00001__pp-6e4c92cf1cae__src-FB9_GEX2_FACIAL_2026-05-09_00001__00_20260901101454_f2_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-09-01/hourly/hourly__id-FB9_GEX2_FACIAL_2026-04-14_00002__pp-3c4f579ce763__src-FB9_GEX2_FACIAL_2026-04-14_00002__00_20260901063248_f0_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-08-31/hourly/hourly__id-FB9_GEX2_2026-04-04_00019__pp-22cb86f15164__src-FB9_GEX2_2026-04-04_00019__000_20260831180916_f0_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-08-31/hourly/hourly__id-FB9_GEX2_COLORv2_2026-04-10_00020__pp-24986c2b27ef__src-FB9_GEX2_COLORv2_2026-04-10_000__00_20260831144723_f0_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-08-31/hourly/hourly__id-FB9_GEX2_COLORv2_2026-04-10_00014__pp-4f1d744e2b7c__src-FB9_GEX2_COLORv2_2026-04-10_000__00_20260831134442_f2_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-08-30/hourly/hourly__id-FB9_GEX2_COLORv2_2026-04-10_00014__pp-4f1d744e2b7c__src-FB9_GEX2_COLORv2_2026-04-10_000__00_20260830114711_f1_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-08-29/hourly/hourly__id-FB9_GEX2_OVERHEAD_v2_2026-04-17_00008__pp-9c996c16c0d8__src-FB9_GEX2_OVERHEAD_v2_2026-0__00_20260829163325_f2_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-08-29/hourly/hourly__id-FB9_GEX2_FACIAL_2026-05-09_00001__pp-6e4c92cf1cae__src-FB9_GEX2_FACIAL_2026-05-09_00001__00_20260829101339_f1_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-08-29/hourly/hourly__id-FB9_GEX2_FACIAL_2026-04-30_00002__pp-99e90d6a4da3__src-FB9_GEX2_FACIAL_2026-04-30_00002__00_20260829083609_f0_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-08-14/hourly/hourly__id-FB9_GEX2_COLORv2_2026-04-09_00014__pp-48dbb5f422d8__src-FB9_GEX2_COLORv2_2026-04-09_000__000_202608140611_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-08-13/hourly/hourly__id-FB9_GEX2_FACIAL_2026-07-09_00012__pp-b0a105b1cad7__src-FB9_GEX2_FACIAL_2026-07-09_00012__000_202608140202_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-08-13/hourly/hourly__id-FB9_GEX2_FACIAL_2026-07-09_00012__pp-b0a105b1cad7__src-FB9_GEX2_FACIAL_2026-07-09_00012__000_202608131306_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-08-13/hourly/hourly__id-FB9_GEX2_2026-04-04_00024__pp-5ecf7d5d4cec__src-FB9_GEX2_2026-04-04_00024__000_202608130908_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-08-13/hourly/hourly__id-FB9_GEX2_OVERHEAD_v2_2026-04-17_00008__pp-9c996c16c0d8__src-FB9_GEX2_OVERHEAD_v2_2026-0__000_202608130540_00001.mp4`
+- `/home/yuji/comfyui-runpod-data/output/og/2026-08-12/hourly/hourly__id-FB9_GEX2_FACIAL_2026-06-08_00005__pp-c24fe734ba6c__src-FB9_GEX2_FACIAL_2026-06-08_00005__000_202608122101_00001.mp4`
+
+## Operator gate
+
+- [ ] new family — set `proposed_family_slug`
+- [ ] merge into existing — note target slug
+- [ ] skip
+

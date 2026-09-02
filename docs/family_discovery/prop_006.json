@@ -3,25 +3,105 @@
   "status": "pending_review",
   "proposed_family_slug": null,
   "fingerprint": "dc6787b6ffeb17ab4e2fd8d61899c1dee65775df85f8600f18795aa768725eb4",
-  "io_guess": "I2V",
-  "primary_input_guess": "still",
-  "input_profile_guess": "still_prompt",
-  "chain_role_guess": "origin",
-  "member_count": 1,
+  "match_class": "catalog_only",
+  "label": "2025-12-06-215827_filename_RAW_00001-readable.json",
+  "video_count": 66,
+  "io_guess": null,
+  "primary_input_guess": null,
+  "input_profile_guess": null,
+  "chain_role_guess": "standalone",
+  "member_count": 12,
   "representative": {
-    "source": "catalog",
-    "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/2025-12-06-215827_filename_RAW_00001-readable.json",
-    "name": "2025-12-06-215827_filename_RAW_00001-readable.json",
+    "source": "og_embed",
+    "path": "/home/yuji/comfyui-runpod-data/output/og/2025-12-07/2025-12-07_080702_OG_00001.mp4",
+    "name": "2025-12-07_080702_OG_00001.mp4",
     "stem": null,
-    "node_count": 74
+    "node_count": null
   },
   "members": [
     {
-      "source": "catalog",
-      "path": "/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/2025-12-06-215827_filename_RAW_00001-readable.json",
-      "name": "2025-12-06-215827_filename_RAW_00001-readable.json",
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-12-07/2025-12-07_080702_OG_00001.mp4",
+      "name": "2025-12-07_080702_OG_00001.mp4",
       "stem": null,
-      "node_count": 74
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-12-07/2025-12-07_014814_OG_00002.mp4",
+      "name": "2025-12-07_014814_OG_00002.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-12-07/2025-12-07_014814_OG_00001.mp4",
+      "name": "2025-12-07_014814_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-12-07/2025-12-07_031237_OG_00002.mp4",
+      "name": "2025-12-07_031237_OG_00002.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-12-07/2025-12-07_031237_OG_00001.mp4",
+      "name": "2025-12-07_031237_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-12-07/2025-12-07_031238_OG_00002.mp4",
+      "name": "2025-12-07_031238_OG_00002.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-12-07/2025-12-07_031238_OG_00001.mp4",
+      "name": "2025-12-07_031238_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-12-07/2025-12-07_031259_OG_00001.mp4",
+      "name": "2025-12-07_031259_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-12-07/2025-12-07_031300_OG_00001.mp4",
+      "name": "2025-12-07_031300_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-12-07/2025-12-07_031316_OG_00002.mp4",
+      "name": "2025-12-07_031316_OG_00002.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-12-07/2025-12-07_031316_OG_00001.mp4",
+      "name": "2025-12-07_031316_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-12-07/2025-12-07_031341_OG_00001.mp4",
+      "name": "2025-12-07_031341_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
     }
   ],
   "sample_videos": [
@@ -47,6 +127,7 @@
     "/home/yuji/comfyui-runpod-data/output/og/2025-12-07/2025-12-07_031427_OG_00001.mp4"
   ],
   "sample_source": "fingerprint_exemplars",
+  "source": "bucket_backfill",
   "quarantine_notes": [],
   "nearest_enrolled": null,
   "operator_decision": null,

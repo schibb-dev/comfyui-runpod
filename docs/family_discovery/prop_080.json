@@ -1,0 +1,39 @@
+{
+  "id": "prop_080",
+  "status": "pending_review",
+  "proposed_family_slug": null,
+  "fingerprint": "8a87ba3ec7d8cf121ba4a90b8778a72d36b0997828e3ceea13c8c2ab94aac559",
+  "match_class": "unmatched",
+  "label": null,
+  "video_count": 1,
+  "io_guess": "V2V",
+  "primary_input_guess": "video",
+  "input_profile_guess": "video_prompt",
+  "chain_role_guess": "extend",
+  "member_count": 1,
+  "representative": {
+    "source": "og_embed",
+    "path": "/home/yuji/comfyui-runpod-data/output/og/2026-01-06/FB8VB2_2026-01-06_002750_EXT_00001.mp4",
+    "name": "FB8VB2_2026-01-06_002750_EXT_00001.mp4",
+    "stem": null,
+    "node_count": null
+  },
+  "members": [
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2026-01-06/FB8VB2_2026-01-06_002750_EXT_00001.mp4",
+      "name": "FB8VB2_2026-01-06_002750_EXT_00001.mp4",
+      "stem": null,
+      "node_count": null
+    }
+  ],
+  "sample_videos": [
+    "/home/yuji/comfyui-runpod-data/output/og/2026-01-06/FB8VB2_2026-01-06_002750_EXT_00001.mp4"
+  ],
+  "sample_source": "fingerprint_exemplars",
+  "source": "bucket_backfill",
+  "quarantine_notes": [],
+  "nearest_enrolled": null,
+  "operator_decision": null,
+  "operator_notes": null
+}

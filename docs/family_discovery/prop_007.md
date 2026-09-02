@@ -3,10 +3,12 @@
 - **status:** `pending_review`
 - **IO guess:** `I2V` · profile `still_prompt` · role `origin`
 - **fingerprint:** `24d722a6bd188341…`
-- **members:** 65
-- **representative:** `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA-mainline-readable.json`
+- **match_class:** `unmatched`
+- **video_count:** 4117
+- **label:** `—`
+- **representative:** `2026-05-27-102407_FaceBlastAStroke_OG_00001.mp4`
 
-## Sample videos (by fingerprint, not output name)
+## Sample videos (by fingerprint)
 
 - `/home/yuji/comfyui-runpod-data/output/og/2026-05-27/2026-05-27-102407_FaceBlastAStroke_OG_00001.mp4`
 - `/home/yuji/comfyui-runpod-data/output/og/2026-05-27/2026-05-27-102230_FaceBlastAStroke_OG_00001.mp4`
@@ -28,21 +30,6 @@
 - `/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00003.mp4`
 - `/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00010.mp4`
 - `/home/yuji/comfyui-runpod-data/output/og/2026-05-17/FB8VA-mainline-readable_FINAL_00017.mp4`
-
-## Members
-
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA-mainline-readable.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FB8VA-mainline-readable.workflow.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FaceBlast8L.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FaceBlast8M.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FaceBlast8N.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FaceBlast8O.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FaceBlastA.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/FaceBlastAStroke.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/MissPoundA.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/UmeAiRT/FLUX/GGUF/IMG to IMG.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/WAN-C0wg1rlB.json`
-- [user] `/home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/WAN-c0wg1rl.json`
 
 ## Operator gate
 

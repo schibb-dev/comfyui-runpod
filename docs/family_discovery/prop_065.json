@@ -1,0 +1,63 @@
+{
+  "id": "prop_065",
+  "status": "pending_review",
+  "proposed_family_slug": null,
+  "fingerprint": "a69321e509655a8e13219a87996c41f734b23d4db04a229ea99361cefbbe4a82",
+  "match_class": "unmatched",
+  "label": null,
+  "video_count": 4,
+  "io_guess": null,
+  "primary_input_guess": null,
+  "input_profile_guess": null,
+  "chain_role_guess": "standalone",
+  "member_count": 4,
+  "representative": {
+    "source": "og_embed",
+    "path": "/home/yuji/comfyui-runpod-data/output/og/2025-11-12/020229_OG_00001.mp4",
+    "name": "020229_OG_00001.mp4",
+    "stem": null,
+    "node_count": null
+  },
+  "members": [
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-11-12/020229_OG_00001.mp4",
+      "name": "020229_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-11-12/020228_OG_00001.mp4",
+      "name": "020228_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-11-12/020226_OG_00001.mp4",
+      "name": "020226_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    },
+    {
+      "source": "og_embed",
+      "path": "/home/yuji/comfyui-runpod-data/output/og/2025-11-12/020224_OG_00001.mp4",
+      "name": "020224_OG_00001.mp4",
+      "stem": null,
+      "node_count": null
+    }
+  ],
+  "sample_videos": [
+    "/home/yuji/comfyui-runpod-data/output/og/2025-11-12/020229_OG_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2025-11-12/020228_OG_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2025-11-12/020226_OG_00001.mp4",
+    "/home/yuji/comfyui-runpod-data/output/og/2025-11-12/020224_OG_00001.mp4"
+  ],
+  "sample_source": "fingerprint_exemplars",
+  "source": "bucket_backfill",
+  "quarantine_notes": [],
+  "nearest_enrolled": null,
+  "operator_decision": null,
+  "operator_notes": null
+}
