@@ -184,6 +184,189 @@ def _still_recency_mult(
     return 1.0 + (boost - 1.0) * (1.0 - t)
 
 
+def _still_appetite_row(
+    path: str,
+    appetite_doc: Optional[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    """Lookup appetite for an input still (abs path, input/rel, or basename)."""
+    if not appetite_doc:
+        return None
+    raw = str(path or "").replace("\\", "/").strip()
+    if not raw:
+        return None
+    bn = Path(raw).name
+    keys: List[str] = []
+    if "/input/" in raw:
+        keys.append("input/" + raw.split("/input/", 1)[-1].lstrip("/"))
+    elif raw.lower().startswith("input/"):
+        keys.append(raw)
+    keys.extend([raw, f"input/{bn}", bn])
+    seen: set[str] = set()
+    for key in keys:
+        key = str(key or "").strip().replace("\\", "/")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        hit = lookup_output_appetite(key, appetite_doc)
+        if isinstance(hit, dict) and hit.get("appetite"):
+            return hit
+    return None
+
+
+def _still_appetite_state(
+    path: str,
+    appetite_doc: Optional[dict[str, Any]],
+) -> str:
+    row = _still_appetite_row(path, appetite_doc)
+    return str((row or {}).get("appetite") or "").strip()
+
+
+def _still_appetite_mult(
+    path: str,
+    *,
+    appetite_doc: Optional[dict[str, Any]] = None,
+) -> float:
+    """Boost/penalize input stills by direct appetite marks (More / Fast-track / Less)."""
+    if not _is_input_still(path):
+        return 1.0
+    doc = appetite_doc
+    if doc is None:
+        try:
+            doc = _load_appetite_index(_default_data_root())
+        except Exception:
+            doc = None
+    state = _still_appetite_state(path, doc)
+    if state == "fast_track":
+        return max(1.0, float(os.environ.get("HOURLY_STILL_APPETITE_FAST_TRACK_BOOST", "8.0")))
+    if state == "more":
+        return max(1.0, float(os.environ.get("HOURLY_STILL_APPETITE_MORE_BOOST", "4.0")))
+    if state == "less":
+        return max(0.0, float(os.environ.get("HOURLY_STILL_APPETITE_LESS_MULT", "0.15")))
+    return 1.0
+
+
+def _resolve_input_still_path(raw: str) -> Optional[Path]:
+    """Map appetite / catalog keys onto an existing input still file."""
+    text = str(raw or "").strip().replace("\\", "/")
+    if not text:
+        return None
+    try:
+        from input_still_catalog import default_input_root, resolve_catalog_still_path
+    except ImportError:
+        default_input_root = None  # type: ignore
+        resolve_catalog_still_path = None  # type: ignore
+    candidates: List[Path] = []
+    candidates.append(Path(text).expanduser())
+    bn = Path(text).name
+    if default_input_root is not None:
+        root = default_input_root()
+        if text.lower().startswith("input/"):
+            candidates.append(root / text.split("/", 1)[-1])
+        if "/input/" in text:
+            candidates.append(root / text.split("/input/", 1)[-1])
+        if bn:
+            candidates.append(root / bn)
+    if resolve_catalog_still_path is not None:
+        try:
+            hit = resolve_catalog_still_path(text)
+            if hit is not None:
+                candidates.append(Path(hit))
+        except Exception:
+            pass
+    seen: set[str] = set()
+    for cand in candidates:
+        try:
+            resolved = cand.expanduser().resolve()
+        except OSError:
+            resolved = cand
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        if resolved.is_file() and resolved.suffix.lower() in _INPUT_STILL_EXTS:
+            return resolved
+    return None
+
+
+def _appetite_marked_input_stills(
+    appetite_doc: Optional[dict[str, Any]],
+    *,
+    min_states: Tuple[str, ...] = ("more", "fast_track"),
+) -> List[Path]:
+    """Resolve high-appetite ``input/…`` marks into on-disk still paths."""
+    if not appetite_doc:
+        return []
+    table = appetite_doc.get("by_output_relpath")
+    if not isinstance(table, dict):
+        return []
+    wanted = {str(s).strip() for s in min_states if str(s).strip()}
+    out: List[Path] = []
+    seen: set[str] = set()
+    for key, row in table.items():
+        if not isinstance(row, dict):
+            continue
+        state = str(row.get("appetite") or "").strip()
+        if state not in wanted:
+            continue
+        k = str(key or "").replace("\\", "/").strip()
+        if not k:
+            continue
+        low = k.lower()
+        if low.endswith((".mp4", ".webm", ".mov")):
+            continue
+        if "/og/" in low or low.startswith("og/") or "/wip/" in low or low.startswith("wip/"):
+            continue
+        if not (low.startswith("input/") or Path(k).suffix.lower() in _INPUT_STILL_EXTS):
+            continue
+        path = _resolve_input_still_path(k)
+        if path is None:
+            continue
+        sk = str(path)
+        if sk in seen:
+            continue
+        seen.add(sk)
+        out.append(path)
+    return out
+
+
+def _expand_still_members_for_hourly(
+    members: List[Path],
+    *,
+    family: str,
+    data_root: Path,
+    appetite_doc: Optional[dict[str, Any]] = None,
+) -> List[Path]:
+    """Union pool stills with attached collections and high-appetite input marks."""
+    out = list(members)
+    try:
+        from shape_factory_input_curation import merged_source_stills
+    except Exception:
+        merged_source_stills = None  # type: ignore
+    if merged_source_stills is not None:
+        try:
+            merged = merged_source_stills(
+                family_slug=str(family or "").strip(),
+                base_members=out,
+                data_root=data_root,
+                workspace_root=_default_workspace_root(data_root),
+                output_root=_default_output_root(data_root),
+            )
+            out = list(merged.get("members") or out)
+        except Exception:
+            pass
+    hot = _appetite_marked_input_stills(appetite_doc)
+    if not hot:
+        return out
+    seen = {str(p) for p in out}
+    for path in hot:
+        sk = str(path)
+        if sk in seen:
+            continue
+        seen.add(sk)
+        out.append(path)
+    return out
+
+
 # i2v families should sample input/ stills, not clone the last hourly recipe.
 _FRESH_STILL_FAMILIES: Tuple[str, ...] = (
     "BounceDanceA",
@@ -365,7 +548,12 @@ def _still_popularity_mult(path: str, *, ratings_doc: Optional[dict[str, Any]] =
     return 1.0
 
 
-def _source_promotion_mult(path: str, *, family: str = "") -> float:
+def _source_promotion_mult(
+    path: str,
+    *,
+    family: str = "",
+    appetite_doc: Optional[dict[str, Any]] = None,
+) -> float:
     """Weight multiplier for preferred library sources (X-Kneel, 2025-era OG, stills)."""
     kneel_b = max(1.0, float(os.environ.get("HOURLY_KNEEL_SOURCE_BOOST", "2.5")))
     y2025_b = max(1.0, float(os.environ.get("HOURLY_2025_SOURCE_BOOST", "2.0")))
@@ -375,13 +563,19 @@ def _source_promotion_mult(path: str, *, family: str = "") -> float:
     if _is_2025_source(path):
         mult *= y2025_b
     mult *= _still_recency_mult(path, family=family)
+    mult *= _still_appetite_mult(path, appetite_doc=appetite_doc)
     # Popularity is for other families' older keepers; BounceDance should stay new-image first.
     if not _prefers_fresh_stills(family):
         mult *= _still_popularity_mult(path)
     return mult
 
 
-def _recipe_promotion_mult(recipe: dict[str, Any], *, family: str = "") -> float:
+def _recipe_promotion_mult(
+    recipe: dict[str, Any],
+    *,
+    family: str = "",
+    appetite_doc: Optional[dict[str, Any]] = None,
+) -> float:
     """Boost recipes whose source or output is an X-Kneel / 2025-era clip or a preferred still."""
     kneel_b = max(1.0, float(os.environ.get("HOURLY_KNEEL_SOURCE_BOOST", "2.5")))
     y2025_b = max(1.0, float(os.environ.get("HOURLY_2025_SOURCE_BOOST", "2.0")))
@@ -394,6 +588,7 @@ def _recipe_promotion_mult(recipe: dict[str, Any], *, family: str = "") -> float
     if any(_is_2025_source(p) for p in paths):
         mult *= y2025_b
     mult *= _still_recency_mult(src, family=fam)
+    mult *= _still_appetite_mult(src, appetite_doc=appetite_doc)
     if not _prefers_fresh_stills(fam):
         mult *= _still_popularity_mult(src)
     return mult
@@ -412,6 +607,11 @@ def _apply_source_promotion(
     star_cache: Dict[str, float] = {}
     clips_con = None
     areg_con = None
+    appetite_doc: Optional[dict[str, Any]] = None
+    try:
+        appetite_doc = _load_appetite_index(Path(data_root) if data_root is not None else _default_data_root())
+    except Exception:
+        appetite_doc = None
     try:
         if data_root is not None:
             try:
@@ -427,7 +627,7 @@ def _apply_source_promotion(
                 areg_con = None
 
         for i, (recipe, weight) in enumerate(zip(recipes, weights)):
-            mult = _recipe_promotion_mult(recipe, family=family)
+            mult = _recipe_promotion_mult(recipe, family=family, appetite_doc=appetite_doc)
             star_mult = 1.0
             if clips_con is not None and areg_con is not None:
                 src = _recipe_source_path(recipe)
@@ -2306,7 +2506,7 @@ def plan_hourly_derive(
         ck = normalize_combo_key(recipe.get("combo_key") or "")
         if ck in recent:
             weight *= 0.08
-        weight *= _recipe_promotion_mult(recipe, family=family)
+        weight *= _recipe_promotion_mult(recipe, family=family, appetite_doc=appetite_doc)
         weight *= _archive_age_spread_mult(recipe)
         seeds.append({"recipe": recipe, "info": info})
         weights.append(weight)
@@ -3005,20 +3205,41 @@ def _pick_input_still_from_members(
     rng: random.Random,
     family: str,
     recent_stills: set[str],
+    appetite_doc: Optional[dict[str, Any]] = None,
 ) -> Tuple[Path, Dict[str, Any]]:
-    """Weighted still pick; ~90% of draws restrict to HOURLY_RECENT_STILL_DAYS (default 7)."""
+    """Weighted still pick; ~90% of draws favor HOURLY_RECENT_STILL_DAYS (+ appetite punch-through)."""
     window_days = _weekly_still_window_days()
     weekly_share = _weekly_still_pick_share()
     prefer_weekly = rng.random() < weekly_share
+    if appetite_doc is None:
+        appetite_doc = _load_appetite_index(_default_data_root())
     weekly_members = [p for p in members if _still_within_days(str(p), window_days)]
-    pool = weekly_members if (prefer_weekly and weekly_members) else list(members)
+    appetite_hot = [
+        p
+        for p in members
+        if _still_appetite_state(str(p), appetite_doc) in {"more", "fast_track"}
+    ]
+    if prefer_weekly and weekly_members:
+        seen = {str(p) for p in weekly_members}
+        pool = list(weekly_members)
+        for path in appetite_hot:
+            sk = str(path)
+            if sk in seen:
+                continue
+            seen.add(sk)
+            pool.append(path)
+    else:
+        pool = list(members)
     old_w = max(0.0, float(os.environ.get("HOURLY_OLD_STILL_WEIGHT", "0.12")))
 
     weights: List[float] = []
     fresh_flags: List[bool] = []
     for path in pool:
-        w = _source_promotion_mult(str(path), family=family)
-        if not _still_within_days(str(path), window_days):
+        w = _source_promotion_mult(str(path), family=family, appetite_doc=appetite_doc)
+        state = _still_appetite_state(str(path), appetite_doc)
+        within = _still_within_days(str(path), window_days)
+        # High-appetite stills punch through the weekly window without the old-still penalty.
+        if not within and state not in {"more", "fast_track"}:
             w *= old_w
         used = bool(recent_stills) and _source_in_recent(str(path), recent_stills)
         if used:
@@ -3029,10 +3250,15 @@ def _pick_input_still_from_members(
         weights = [w if fresh else 0.0 for w, fresh in zip(weights, fresh_flags)]
     picked, _ = _weighted_choice(pool, weights, rng)  # type: ignore[arg-type]
     picked_path = Path(str(picked))
+    appetite_state = _still_appetite_state(str(picked_path), appetite_doc)
     meta = {
         "weekly_still_window_days": window_days,
         "weekly_still_preferred": prefer_weekly and bool(weekly_members),
         "weekly_still_picked": _still_within_days(str(picked_path), window_days),
+        "appetite_state": appetite_state or None,
+        "appetite_hot_in_pool": len(appetite_hot),
+        "still_pool_size": len(pool),
+        "still_members_size": len(members),
     }
     return picked_path, meta
 
@@ -3064,6 +3290,7 @@ def plan_pool_product_fallback(
     pools_doc = load_yaml(pools_path)
     req_by_slot = requires_by_slot(shape)
     pools = pools_doc.get("pools") if isinstance(pools_doc.get("pools"), dict) else {}
+    appetite_doc = _load_appetite_index(data_root)
 
     pool_paths: Dict[str, List[Path]] = {}
     for _name, pool_def in pools.items():
@@ -3076,6 +3303,13 @@ def plan_pool_product_fallback(
             members = list(resolve_pool_members(pool_def))
         except Exception:
             members = []
+        if any(_is_input_still(str(p)) for p in members) or slot == "source_still":
+            members = _expand_still_members_for_hourly(
+                members,
+                family=family,
+                data_root=data_root,
+                appetite_doc=appetite_doc,
+            )
         if members:
             pool_paths[slot] = members
 
@@ -3097,7 +3331,11 @@ def plan_pool_product_fallback(
     for slot, members in sorted(pool_paths.items()):
         if any(_is_input_still(str(p)) for p in members):
             picked, meta = _pick_input_still_from_members(
-                members, rng=rng, family=family, recent_stills=recent_stills
+                members,
+                rng=rng,
+                family=family,
+                recent_stills=recent_stills,
+                appetite_doc=appetite_doc,
             )
             picks[slot] = picked
             still_meta = meta
@@ -3187,7 +3425,7 @@ def plan_hourly_predicted_derive(
         ck = normalize_combo_key(recipe.get("combo_key") or "")
         if ck in recent:
             weight *= 0.08
-        weight *= _recipe_promotion_mult(recipe, family=family)
+        weight *= _recipe_promotion_mult(recipe, family=family, appetite_doc=appetite_doc)
         weight *= _archive_age_spread_mult(recipe)
         seeds.append({"recipe": recipe, "meta": meta})
         weights.append(weight)
