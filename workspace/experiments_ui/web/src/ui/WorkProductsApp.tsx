@@ -3790,21 +3790,61 @@ function WorkProductQuickQueue({
 }
 
 
-function workProductLineageSeed(item: WorkProductItem): DiscoveryLibraryItem | null {
-  const relpath = String(item.output_relpath || "").trim().replace(/\\/g, "/").replace(/^\/+/, "");
-  if (!relpath) return null;
-  const name = relpath.split("/").pop() || relpath;
+function lineageLibraryForRelpath(relpath: string): string {
+  const norm = relpath.replace(/\\/g, "/").replace(/^\/+/, "").toLowerCase();
+  if (norm.startsWith("input/") || isStillMediaPath(norm)) return "input";
+  if (norm.startsWith("wip/")) return "wip";
+  return "og";
+}
+
+/**
+ * Seed Discovery lineage from this job's output when present; otherwise from the
+ * known parent/source binding so pending/queued jobs still show ancestry.
+ */
+function workProductLineageSeed(item: WorkProductItem): {
+  seed: DiscoveryLibraryItem;
+  via: "output" | "source";
+} | null {
+  const outRel = String(item.output_relpath || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "");
+  if (outRel) {
+    const name = outRel.split("/").pop() || outRel;
+    return {
+      via: "output",
+      seed: {
+        group_id: undefined,
+        relpath: outRel,
+        library: lineageLibraryForRelpath(outRel),
+        name,
+        mtime: 0,
+        size: 0,
+        sha256: "",
+        url: item.output_url || "",
+        thumb_url: item.output_thumb_url || undefined,
+      } as DiscoveryLibraryItem,
+    };
+  }
+
+  const source = workbenchSourceBinding(item);
+  const srcRel = workbenchSourceMediaRelpath(item);
+  if (!srcRel) return null;
+  const name = srcRel.split("/").pop() || srcRel;
   return {
-    group_id: undefined,
-    relpath,
-    library: "og",
-    name,
-    mtime: 0,
-    size: 0,
-    sha256: "",
-    url: item.output_url || undefined,
-    thumb_url: item.output_thumb_url || undefined,
-  } as DiscoveryLibraryItem;
+    via: "source",
+    seed: {
+      group_id: undefined,
+      relpath: srcRel,
+      library: lineageLibraryForRelpath(srcRel),
+      name,
+      mtime: 0,
+      size: 0,
+      sha256: "",
+      url: source?.url || item.parent_output_url || "",
+      thumb_url: source?.thumb_url || item.parent_output_thumb_url || undefined,
+    } as DiscoveryLibraryItem,
+  };
 }
 
 function openLineageSummaryInWorkbench(s: DiscoveryAssetLineageItemSummary) {
@@ -3831,10 +3871,13 @@ function WorkProductLineageSection({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const seed = useMemo(() => workProductLineageSeed(item), [item]);
+  const seeded = useMemo(() => workProductLineageSeed(item), [item]);
+  const seed = seeded?.seed ?? null;
   const summary = seed
-    ? String(seed.name || seed.relpath || "output")
-    : "no output yet";
+    ? seeded?.via === "source"
+      ? `via source · ${String(seed.name || seed.relpath || "source")}`
+      : String(seed.name || seed.relpath || "output")
+    : "no source or output yet";
   const panelRef = useRef<HTMLDivElement | null>(null);
 
   return (
@@ -3852,6 +3895,11 @@ function WorkProductLineageSection({
       {open ? (
         seed ? (
           <div className="work-product-lineage-panel" ref={panelRef}>
+            {seeded?.via === "source" ? (
+              <p className="factory-muted work-product-lineage-empty" style={{ marginBottom: 8 }}>
+                No output yet — showing ancestry from this job’s source / parent.
+              </p>
+            ) : null}
             <DiscoveryAssetLineagePanel
               seedItem={seed}
               onOpenSummary={openLineageSummaryInWorkbench}
@@ -3866,7 +3914,7 @@ function WorkProductLineageSection({
           </div>
         ) : (
           <p className="factory-muted work-product-lineage-empty">
-            Lineage available once this job has an output.
+            Lineage needs an output or a recoverable source/parent binding.
           </p>
         )
       ) : null}
