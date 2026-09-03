@@ -20,6 +20,7 @@ INPUT_PROFILES = frozenset(
         "still_prompt",
         "video_prompt",
         "video_identity_still_prompt",
+        "video_only",
     }
 )
 CHAIN_ROLES = frozenset(
@@ -63,12 +64,14 @@ PROFILE_TO_IO = {
     "still_prompt": "I2V",
     "video_prompt": "V2V",
     "video_identity_still_prompt": "VI2V",
+    "video_only": "V2V",
 }
 
 PROFILE_TO_PRIMARY = {
     "still_prompt": "still",
     "video_prompt": "video",
     "video_identity_still_prompt": "video",
+    "video_only": "video",
 }
 
 # Expected required media slots per profile (soft check).
@@ -78,6 +81,7 @@ PROFILE_EXPECTED_SLOTS: Dict[str, frozenset[str]] = {
     "video_identity_still_prompt": frozenset(
         {"source_video", "identity_anchor", "prompt_profile"}
     ),
+    "video_only": frozenset({"source_video"}),
 }
 
 WAN_START_IMAGE_TYPES = frozenset({"WanImageToVideo", "WanImageToVideoMulti"})

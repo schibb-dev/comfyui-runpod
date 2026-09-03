@@ -158,6 +158,11 @@ def apply_shape_postprocess_ui(
     shape: dict[str, Any],
     job: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
+    role = str(shape.get("chain_role") or "").strip()
+    if role == "denouement" or isinstance(shape.get("delivery"), dict):
+        from shape_factory_delivery_postprocess import apply_shape_delivery_ui
+
+        return apply_shape_delivery_ui(workflow, shape, job)
     from shape_factory_generation_editorial import apply_shape_editorial_ui
 
     return apply_shape_editorial_ui(workflow, shape, job)
@@ -168,6 +173,11 @@ def apply_shape_postprocess_api(
     shape: dict[str, Any],
     job: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
+    role = str(shape.get("chain_role") or "").strip()
+    if role == "denouement" or isinstance(shape.get("delivery"), dict):
+        from shape_factory_delivery_postprocess import apply_shape_delivery_api
+
+        return apply_shape_delivery_api(prompt, shape, job)
     from shape_factory_generation_editorial import apply_shape_editorial_api
 
     return apply_shape_editorial_api(prompt, shape, job)

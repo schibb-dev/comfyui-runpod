@@ -1,0 +1,19 @@
+schema_version: comfyui-runpod.pools.v0
+shape: /home/yuji/src/comfyui-runpod/.data/shapes/delivery/wan-delivery-postprocess.shape.yaml
+
+pools:
+  source_video:
+    slot: source_video
+    description: >
+      Generation outputs eligible for delivery postprocess (opt-in pipelines / manual bind).
+    members:
+      - glob: /home/yuji/comfyui-runpod-data/output/og/**/*.mp4
+        limit: 500
+
+deposit_pools:
+  wan-delivery-postprocess_X_og:
+    slot: final_video
+    description: Delivery postprocess outputs (final_video)
+    seed_members:
+      - glob: /home/yuji/comfyui-runpod-data/output/og/**/wan-delivery-postprocess/**/*.mp4
+        limit: 200

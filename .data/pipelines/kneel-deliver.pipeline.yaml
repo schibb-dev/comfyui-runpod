@@ -1,0 +1,30 @@
+schema_version: comfyui-runpod.pipeline.v0
+pipeline_id: kneel-deliver
+description: >
+  Opt-in X-KNEEL-FB9 → delivery postprocess. Not on hourly drains.
+  Toggle color_match / upscale / interpolate on the delivery shape.
+input_guidance: still
+affinity: []
+
+steps:
+  - id: kneel
+    shape: /home/yuji/src/comfyui-runpod/.data/shapes/X-KNEEL-FB9.shape.yaml
+    pools: /home/yuji/src/comfyui-runpod/.data/pools/X-KNEEL-FB9/pools.yaml
+    pick: zip
+    deposits:
+      final_video: pool:X-KNEEL_X_og
+
+  - id: deliver
+    shape: /home/yuji/src/comfyui-runpod/.data/shapes/delivery/wan-delivery-postprocess.shape.yaml
+    pools: /home/yuji/src/comfyui-runpod/.data/pools/wan-delivery-postprocess/pools.yaml
+    pick: zip
+    binds_override:
+      source_video:
+        from: pool
+        pool: X-KNEEL_X_og
+        pick: last
+        index: /home/yuji/src/comfyui-runpod/.data/pools/X-KNEEL-FB9/index.json
+    deposits:
+      final_video: pool:wan-delivery-postprocess_X_og
+
+rules: []

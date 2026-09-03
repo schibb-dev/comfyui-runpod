@@ -11,7 +11,7 @@ Declared on every `*.shape.yaml`:
 | Field | Values | Meaning |
 |-------|--------|---------|
 | `primary_input` | `still` \| `video` | Feedstock class |
-| `input_profile` | `still_prompt` \| `video_prompt` \| `video_identity_still_prompt` | Slot contract |
+| `input_profile` | `still_prompt` \| `video_prompt` \| `video_identity_still_prompt` \| `video_only` | Slot contract |
 | `chain_role` | `origin` \| `extend` \| `mutate` \| `denouement` \| `standalone` | Role inside a pipeline |
 | `io_class` | `I2V` \| `V2V` \| `VI2V` \| … | Process class badge (derived from profile) |
 | `postprocess` | see [`docs/WORKFLOW_LAYERS.md`](../../docs/WORKFLOW_LAYERS.md) | Generation editorial (`color_match`, `merge_frames`) at generate time |
@@ -45,7 +45,7 @@ Legacy `EXT` in older names parses as `V2V` with an extend hint
 
 Reserved later tags: `II2V`, `IV2V`, `I2I`, `V2I`, `T2V`, `VV2V`.
 
-## Current enrollment (13)
+## Current enrollment (14)
 
 | Family | IO | Role | Profile |
 |--------|----|------|---------|
@@ -62,8 +62,9 @@ Reserved later tags: `II2V`, `IV2V`, `I2I`, `V2I`, `T2V`, `VV2V`.
 | FB9_GEX2 | V2V | extend | video_prompt |
 | FB9_GEX_FACIAL | V2V | extend | video_prompt |
 | FB9_GEX2_identity_anchor | VI2V | extend | video_identity_still_prompt |
+| wan-delivery-postprocess | V2V | denouement | video_only |
 
-`mutate` / `denouement` are reserved vocabulary — none assigned yet.
+`mutate` is reserved vocabulary — none assigned yet.
 
 ## Workflow layers
 
@@ -73,7 +74,7 @@ See [`docs/WORKFLOW_LAYERS.md`](../../docs/WORKFLOW_LAYERS.md) for the decision 
 
 **Graph hash remaps:** [`graph_hash_migration_delivery_postprocess_2026-09-03.yaml`](graph_hash_migration_delivery_postprocess_2026-09-03.yaml)
 
-**Delivery postprocess (deferred):** [`.data/shapes/delivery/README.md`](delivery/README.md)
+**Delivery postprocess (opt-in):** [`.data/shapes/delivery/README.md`](delivery/README.md)
 
 ## Related
 

@@ -27,8 +27,8 @@ optional delivery transforms you are not running in production.
 
 | Category | Where it lives | Effects | In production today |
 |----------|----------------|---------|---------------------|
-| **Delivery postprocess** | Separate shape + optional pipeline tail | RealESRGAN 4× upscale, RIFE frame interpolation | **Off** — remove from generation templates |
-| **Generation editorial** | Stays in the generation graph | ColorMatch, VHS_MergeImages, batch trim | **On** on extend lines where wired |
+| **Delivery postprocess** | Separate denouement shape + optional pipeline tail | ColorMatch, RealESRGAN 4×, RIFE | **Off by default** — opt-in via `delivery:` block |
+| **Generation editorial** | Stays in the generation graph | ColorMatch (extend), VHS_MergeImages, batch trim | **On** on extend lines where wired |
 
 ColorMatch on GEX extend uses in-graph frames (source vs generated). That is part of
 the extend **recipe**, not a delivery step. Same for merge/trim on long extend chains.
@@ -52,8 +52,8 @@ today, so nothing breaks by removing unused nodes first.
 
 The interim apply layer ([`shape_factory_generation_editorial.py`](../workspace/scripts/shape_factory_generation_editorial.py))
 sets **generation editorial** policy (`color_match`, `merge_frames`) on shapes that
-declare a `postprocess:` block. Delivery postprocess (upscale, RIFE) is **deferred** —
-see [`.data/shapes/delivery/README.md`](../.data/shapes/delivery/README.md).
+declare a `postprocess:` block. Delivery effects use a separate denouement workflow with
+a `delivery:` block — see [`.data/shapes/delivery/README.md`](../.data/shapes/delivery/README.md).
 
 ---
 
@@ -62,18 +62,22 @@ see [`.data/shapes/delivery/README.md`](../.data/shapes/delivery/README.md).
 | Layer | Controls | Shape touchpoint | Examples |
 |-------|----------|------------------|----------|
 | **Generation** | Model stack, latent size, LoRAs, editorial nodes, core topology | `template:` path (+ future `stack_profile`) | UNet, LoRAs, ColorMatch on extend, VHS_MergeImages |
-| **Delivery postprocess** | Optional video-in → video-out transforms | Future `*.postprocess.shape.yaml` + pipeline step | RealESRGAN, RIFE |
+| **Delivery postprocess** | Optional video-in → video-out transforms | `wan-delivery-postprocess` + `delivery:` toggles | ColorMatch, RealESRGAN, RIFE |
 | **Runtime** | Per-run tuning on a stable graph | `ui_defaults`, `dev-fast.yaml`, adhoc params, promote | frames, steps, overlap, seed, VHS clip window |
 
-### Delivery postprocess effects
+### Delivery postprocess (denouement workflow)
 
-| Step | Node type | Effect | Model weight |
-|------|-----------|--------|--------------|
-| Upscale | `ImageUpscaleWithModel` | Higher **resolution** (4×) | `RealESRGAN_x4plus.pth` |
-| Interpolate | `RIFE VFI` | More **frames**, smoother motion | `rife47.pth` |
+One graph (`wan-delivery-postprocess`), separate from generation. Each effect is an
+**optional component** toggled via the shape `delivery:` block (or per-job
+`adhoc_overrides.delivery`):
 
-Upscale and interpolation are **not** the same. A delivery station may expose either,
-both, or a small menu of postprocess shapes.
+| Key | Node type | Effect | Model weight |
+|-----|-----------|--------|--------------|
+| `color_match` | `ColorMatch` | Color transfer vs source | — |
+| `upscale` | `ImageUpscaleWithModel` | Higher **resolution** (4×) | `RealESRGAN_x4plus.pth` |
+| `interpolate` | `RIFE VFI` | More **frames**, smoother motion | `rife47.pth` |
+
+Apply module: [`shape_factory_delivery_postprocess.py`](../workspace/scripts/shape_factory_delivery_postprocess.py)
 
 ### Generation editorial (stays in generation graph)
 
@@ -99,20 +103,22 @@ Completed 2026-09-03 (commit `11bf7cb`):
 Catalog backups: `*.pre-delivery-strip.bak` beside each edited template under
 `comfyui-runpod-data/.../catalog/`.
 
-### Phase 2 — Delivery postprocess shape(s) — **deferred**
+### Phase 2 — Delivery postprocess shape(s) — **complete**
 
-**Upscale and RIFE are both deferred.** No delivery shapes enrolled; no pipeline tails
-on hourly drains.
+Completed 2026-09-03:
 
-Scaffolding only: [`.data/shapes/delivery/README.md`](../.data/shapes/delivery/README.md)
-(denouement contract + future shape sketch).
+- `video_only` input profile in [`shape_factory_vocab.py`](../workspace/scripts/shape_factory_vocab.py)
+- Catalog builder: [`build_delivery_catalogs.py`](../workspace/scripts/build_delivery_catalogs.py)
+- Enrolled denouement shape: `wan-delivery-postprocess`
+  ([`.data/shapes/delivery/`](../.data/shapes/delivery/))
+- Apply module: [`shape_factory_delivery_postprocess.py`](../workspace/scripts/shape_factory_delivery_postprocess.py)
+- Opt-in example pipeline: [`kneel-deliver.pipeline.yaml`](../.data/pipelines/kneel-deliver.pipeline.yaml)
 
-When needed, add separate catalog + shape per effect (`wan-delivery-upscale`,
-`wan-delivery-rife`), then opt-in pipeline step.
+**Not on hourly drains** — wire delivery explicitly when needed.
 
-### Phase 3 — Pipeline tail (opt-in) — **deferred**
+### Phase 3 — Pipeline tail (opt-in) — **partial**
 
-Same gate as Phase 2 — no pipeline tails until a delivery shape is enrolled.
+Example pipeline exists (`kneel-deliver`). Extend / GEX delivery tails remain manual until needed.
 
 Example when wired later:
 
@@ -124,9 +130,10 @@ steps:
     shape: …/FB9_GEX.shape.yaml
   # Optional — not on default hourly drains:
   - id: deliver
-    shape: …/wan-delivery-rife.shape.yaml   # or wan-delivery-upscale
+    shape: …/wan-delivery-postprocess.shape.yaml
     binds_override:
       source_video: { from: pool, pool: FB9_GEX_X_og, pick: last }
+    # delivery: { interpolate: true, upscale: false, color_match: false } on shape YAML
 ```
 
 Hourly drains stay generation-only until delivery shapes exist and are wired explicitly.
@@ -158,7 +165,7 @@ a different station or pipeline step.
 
 - Different `graph_hash` (identity anchor, VI2V vs V2V, different node types)
 - Different product lines run in parallel (origin I2V vs extend V2V)
-- Delivery postprocess recipes (upscale-only vs RIFE-only vs combined)
+- Delivery postprocess recipes (**one denouement graph**; toggle `color_match` / `upscale` / `interpolate`)
 
 **Default:** one canonical **generation** template per topology — not one per Q/fp variant.
 
@@ -213,8 +220,9 @@ per-job override via `adhoc_overrides.postprocess`.
 | Strip delivery nodes | [`workspace/scripts/strip_delivery_postprocess.py`](../workspace/scripts/strip_delivery_postprocess.py) | Done (Phase 1) |
 | Generate / submit wiring | [`workspace/scripts/shape_factory.py`](../workspace/scripts/shape_factory.py) | Done |
 | Hash migration record | [`.data/shapes/graph_hash_migration_delivery_postprocess_2026-09-03.yaml`](../.data/shapes/graph_hash_migration_delivery_postprocess_2026-09-03.yaml) | Done |
-| Delivery shape scaffold | [`.data/shapes/delivery/README.md`](../.data/shapes/delivery/README.md) | Deferred (upscale + RIFE) |
-| Pipeline tail | `.data/pipelines/` | Deferred |
+| Delivery apply | [`workspace/scripts/shape_factory_delivery_postprocess.py`](../workspace/scripts/shape_factory_delivery_postprocess.py) | Done |
+| Delivery shape | [`.data/shapes/delivery/`](../.data/shapes/delivery/) | Done |
+| Pipeline tail | `.data/pipelines/` | Partial (opt-in examples) |
 | Tests | [`workspace/tests/test_shape_factory_postprocess.py`](../workspace/tests/test_shape_factory_postprocess.py) | Done |
 
 ## Graph hash migration record (2026-09-03)

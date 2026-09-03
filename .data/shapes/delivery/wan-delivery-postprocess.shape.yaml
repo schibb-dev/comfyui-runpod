@@ -1,0 +1,40 @@
+schema_version: comfyui-runpod.shape.v0
+shape_id: wan-delivery-postprocess
+family_slug: wan-delivery-postprocess
+primary_input: video
+input_profile: video_only
+chain_role: denouement
+io_class: V2V
+graph_hash: 815baa4117a0b548159929ff5f53debeb3e9138841cfdb8e43ce2f141abf6e77
+template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/wan-delivery-postprocess-readable.json
+
+requires:
+  - slot: source_video
+    role: B
+    media: video
+    binding:
+      type: vhs_load_video_path
+      node_id: 10
+      field: video
+
+produces:
+  - slot: final_video
+    role: X
+    media: video
+    binding:
+      node_id: 40
+      node_type: VHS_VideoCombine
+
+deposits:
+  final_video:
+    to_pool: pool:wan-delivery-postprocess_X_og
+
+output_prefix_root: og/%date:yyyy-MM-dd%/wan-delivery-postprocess
+
+delivery:
+  profile_id: delivery-default
+  color_match: false
+  upscale: false
+  interpolate: false
+
+rules: []

@@ -21,6 +21,7 @@ affinity:  # soft dispatch hints
 | `bouncedance-to-gex` | BounceDanceA → GEX | I2V origin → V2V extend |
 | `faceblast-to-gex` | FB9-FaceBlast → GEX | I2V origin → V2V extend |
 | `kneel-to-gex` | X-KNEEL-FB9 → GEX | I2V origin → V2V extend |
+| `kneel-deliver` | X-KNEEL-FB9 → wan-delivery-postprocess | opt-in I2V → delivery (toggle upscale/RIFE/color) |
 | `fb9-april03-replay` | replay / archive | historical replay |
 
 Hourly informal pipelines (not YAML): facial drain, I2V→GEX drain, seed families —

@@ -227,6 +227,12 @@ class EnrolledShapesSmoke(unittest.TestCase):
             doc = yaml.safe_load(path.read_text(encoding="utf-8"))
             errs = validate_shape_vocab(doc)
             self.assertEqual(errs, [], msg=f"{path.name}: {errs}")
+        delivery = root / "delivery"
+        if delivery.is_dir():
+            for path in sorted(delivery.glob("*.shape.yaml")):
+                doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+                errs = validate_shape_vocab(doc)
+                self.assertEqual(errs, [], msg=f"delivery/{path.name}: {errs}")
 
 
 if __name__ == "__main__":
