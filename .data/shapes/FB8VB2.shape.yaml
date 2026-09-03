@@ -6,7 +6,7 @@ input_profile: still_prompt
 chain_role: origin
 io_class: I2V
 # start_image rewired to source_still (401); EXT VHS chain bypassed
-graph_hash: 7274e445e5d015173d6a5c608e458e5537feaeeb66d75c9ad753c11b1c90844c
+graph_hash: a0e7b29d5be86e0b6e0b61af9a5e9c881d3659a89b52550f1b3fb856c51e88b5
 template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/FB8VB2_2026-01-09_225941_EXT_00001-readable.json
 candidate: /home/yuji/src/comfyui-runpod/.data/template_candidates/FB8VB2_2026-01-09_225941_EXT_00001.candidate.json
 
@@ -40,5 +40,10 @@ deposits:
     to_pool: pool:FB8VB2_X_og
 
 output_prefix_root: og/%date:yyyy-MM-dd%/FB8VB2_shape
+
+postprocess:
+  profile_id: origin-default
+  color_match: true
+  merge_frames: false
 
 rules: []

@@ -5,7 +5,7 @@ primary_input: video
 input_profile: video_prompt
 chain_role: extend
 io_class: V2V
-graph_hash: 35f69ad119c7cbfb4ffe9c11d6bec544c38475868ea973a8e577001c99e52148
+graph_hash: abc50f33a4a181afac4f7afaad7e353ad22aa19d18f78aff9f55e05c6508fdd1
 template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/ASTONISH_FB9_GEX_2026-03-03_00023-2-readable.json
 candidate: /home/yuji/src/comfyui-runpod/.data/template_candidates/ASTONISH_FB9_GEX_2026-03-03_00023-2.candidate.json
 
@@ -39,5 +39,10 @@ deposits:
     to_pool: pool:ASTONISH_FB9_GEX_X_og
 
 output_prefix_root: og/%date:yyyy-MM-dd%/ASTONISH_FB9_GEX_shape
+
+postprocess:
+  profile_id: gex-extend-default
+  color_match: false
+  merge_frames: true
 
 rules: []

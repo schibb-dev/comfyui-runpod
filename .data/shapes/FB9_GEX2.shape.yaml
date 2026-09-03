@@ -5,7 +5,7 @@ primary_input: video
 input_profile: video_prompt
 chain_role: extend
 io_class: V2V
-graph_hash: 0ac755226924fd9875810eca4a7d6894fa288ed7ad95e1be180f0d6e38b31368
+graph_hash: 7e19934bd74d593ba85333599b6e305191a3dd13b495f2974bb019db8d4a33c5
 template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/FB9_GEX2-readable.json
 candidate: /home/yuji/src/comfyui-runpod/.data/template_candidates/FB9_GEX2.candidate.json
 
@@ -46,6 +46,11 @@ output_prefix_root: og/%date:yyyy-MM-dd%/FB9_GEX2_shape
 rules: []
 
 # Production default: reduce generation steps for this family.
+postprocess:
+  profile_id: gex-extend-default
+  color_match: true
+  merge_frames: true
+
 ui_defaults:
   profile_id: steps-25
   ui_nodes:

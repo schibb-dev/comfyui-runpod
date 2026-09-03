@@ -6,7 +6,7 @@ input_profile: still_prompt
 chain_role: origin
 io_class: I2V
 # Same Comfy graph as X-KNEEL-FB9; only the prompt pool differs (no clothing / no turning).
-graph_hash: 703420280442c9f158ffde91fb67637ebd235a930490fdf5a3b308b8f14d7104
+graph_hash: c51471eac0e40e3826305eba91c7b43fff901efd8266097aa0fc897805d76157
 template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/X-KNEEL-FB9-readable.json
 candidate: /home/yuji/src/comfyui-runpod/.data/template_candidates/X-KNEEL-FB9.candidate.json
 
@@ -40,5 +40,10 @@ deposits:
     to_pool: pool:X-KNEEL-bare_X_og
 
 output_prefix_root: og/%date:yyyy-MM-dd%/X-Kneel-FB9-bare_shape
+
+postprocess:
+  profile_id: origin-default
+  color_match: true
+  merge_frames: false
 
 rules: []

@@ -14,6 +14,7 @@ Declared on every `*.shape.yaml`:
 | `input_profile` | `still_prompt` \| `video_prompt` \| `video_identity_still_prompt` | Slot contract |
 | `chain_role` | `origin` \| `extend` \| `mutate` \| `denouement` \| `standalone` | Role inside a pipeline |
 | `io_class` | `I2V` \| `V2V` \| `VI2V` \| … | Process class badge (derived from profile) |
+| `postprocess` | see [`docs/WORKFLOW_LAYERS.md`](../../docs/WORKFLOW_LAYERS.md) | Upscale / interpolate / color match / merge policy applied at generate |
 
 These are **descriptive** — operators see badges now; automation can read them later.
 They are not a lockout / compatibility engine.
@@ -64,8 +65,15 @@ Reserved later tags: `II2V`, `IV2V`, `I2I`, `V2I`, `T2V`, `VV2V`.
 
 `mutate` / `denouement` are reserved vocabulary — none assigned yet.
 
+## Workflow layers
+
+Generation stack, postprocess policy, and runtime knobs are three separate concerns.
+See [`docs/WORKFLOW_LAYERS.md`](../../docs/WORKFLOW_LAYERS.md) for the decision tree
+(separate template vs controlled setting) and the `postprocess:` block schema.
+
 ## Related
 
 - Pipelines: [`.data/pipelines/`](../pipelines/) · catalog notes in [`CATALOG.md`](../pipelines/CATALOG.md)
 - Intent / metaphor: [`docs/WORKFLOW_INTENT.md`](../../docs/WORKFLOW_INTENT.md)
+- Layer model: [`docs/WORKFLOW_LAYERS.md`](../../docs/WORKFLOW_LAYERS.md)
 - Family discovery proposals: [`docs/family_discovery/`](../../docs/family_discovery/)

@@ -5,7 +5,7 @@ primary_input: still
 input_profile: still_prompt
 chain_role: origin
 io_class: I2V
-graph_hash: f7ca95b236948beabd32cbc5124f0804ddbd14da922e8c9f39c109874f1679c2
+graph_hash: 5b6cbadcc5dd8ffb85fbfbd2e2abdd5308629a5c9c0020e722367d1c6314ff1f
 template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/FB8VA5-ZOOMOUT-readable.json
 candidate: /home/yuji/src/comfyui-runpod/.data/template_candidates/FB8VA5-ZOOMOUT.candidate.json
 
@@ -39,6 +39,11 @@ deposits:
     to_pool: pool:FB8VA5-ZOOMOUT_X_og
 
 output_prefix_root: og/%date:yyyy-MM-dd%/FB8VA5-ZOOMOUT_shape
+
+postprocess:
+  profile_id: origin-default
+  color_match: true
+  merge_frames: false
 
 rules: []
 

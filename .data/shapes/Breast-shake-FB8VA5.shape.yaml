@@ -5,7 +5,7 @@ primary_input: still
 input_profile: still_prompt
 chain_role: origin
 io_class: I2V
-graph_hash: 08f9e237fbe0198adc80f40e2f940a40ec5c29a756f5a21a23c1eb14c2508dba
+graph_hash: f9810313bce676db701c4f1313d973018d623b260270503c1c3d8087204eaa12
 template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/Breast-shake-FB8VA5-readable.json
 candidate: /home/yuji/src/comfyui-runpod/.data/template_candidates/Breast-shake-FB8VA5.candidate.json
 
@@ -39,6 +39,11 @@ deposits:
     to_pool: pool:Breast-shake-FB8VA5_X_og
 
 output_prefix_root: og/%date:yyyy-MM-dd%/Breast-shake-FB8VA5_shape
+
+postprocess:
+  profile_id: origin-default
+  color_match: true
+  merge_frames: false
 
 rules: []
 

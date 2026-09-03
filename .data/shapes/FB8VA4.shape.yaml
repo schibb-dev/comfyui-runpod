@@ -5,7 +5,7 @@ primary_input: still
 input_profile: still_prompt
 chain_role: origin
 io_class: I2V
-graph_hash: 1548e3832fb923d62b88547c59581eb836583be0deb7bb87f7c95d14b17c84f0
+graph_hash: 9f872e075e342628043d89cbdb7fec00db8415a6eed6755f46f38ea724bb081d
 template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/FB8VA4-2026-01-11-224827_OG_00001-readable.json
 candidate: /home/yuji/src/comfyui-runpod/.data/template_candidates/FB8VA4-2026-01-11-224827_OG_00001.candidate.json
 
@@ -39,6 +39,11 @@ deposits:
     to_pool: pool:FB8VA4_X_og
 
 output_prefix_root: og/%date:yyyy-MM-dd%/FB8VA4_shape
+
+postprocess:
+  profile_id: origin-default
+  color_match: true
+  merge_frames: false
 
 rules: []
 

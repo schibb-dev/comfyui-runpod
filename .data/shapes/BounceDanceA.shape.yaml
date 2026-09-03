@@ -5,7 +5,7 @@ primary_input: still
 input_profile: still_prompt
 chain_role: origin
 io_class: I2V
-graph_hash: ff2bf962f6177d2c658bc78408337a97ac78fc4936f90e106789ea2b84c26442
+graph_hash: a1759a8ccc8fb6cfff46939ab809a98d4023d0e4756b0c45cc8b8f66725c016d
 template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/BounceDanceA-readable.json
 candidate: /home/yuji/src/comfyui-runpod/.data/template_candidates/BounceDanceA.candidate.json
 
@@ -39,5 +39,10 @@ deposits:
     to_pool: pool:BounceDanceA_X_og
 
 output_prefix_root: og/%date:yyyy-MM-dd%/BounceDanceA_shape
+
+postprocess:
+  profile_id: origin-default
+  color_match: true
+  merge_frames: false
 
 rules: []

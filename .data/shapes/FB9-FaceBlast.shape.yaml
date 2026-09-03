@@ -40,4 +40,9 @@ deposits:
 
 output_prefix_root: og/%date:yyyy-MM-dd%/FB9-FaceBlast_shape
 
+postprocess:
+  profile_id: origin-default
+  color_match: true
+  merge_frames: false
+
 rules: []

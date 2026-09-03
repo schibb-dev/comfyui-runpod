@@ -153,6 +153,26 @@ def apply_shape_ui_defaults_api(prompt: dict[str, Any], shape: dict[str, Any]) -
     return apply_dev_tuning_api(prompt, defaults)
 
 
+def apply_shape_postprocess_ui(
+    workflow: dict[str, Any],
+    shape: dict[str, Any],
+    job: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    from shape_factory_postprocess import apply_shape_postprocess_ui as _apply
+
+    return _apply(workflow, shape, job)
+
+
+def apply_shape_postprocess_api(
+    prompt: dict[str, Any],
+    shape: dict[str, Any],
+    job: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    from shape_factory_postprocess import apply_shape_postprocess_api as _apply
+
+    return _apply(prompt, shape, job)
+
+
 def resolve_dev_tuning(
     *,
     dev: bool,
@@ -1703,6 +1723,7 @@ def generate_job_for_picks(
     # Catalog templates bake authoring-clip skip/cap; rebound sources must not inherit them.
     zero_vhs_load_window_on_workflow(workflow)
     apply_shape_ui_defaults_ui(workflow, shape)
+    apply_shape_postprocess_ui(workflow, shape)
 
     warnings: list[str] = []
     bindings_meta: dict[str, Any] = {}
@@ -4528,6 +4549,7 @@ def resolve_prompt_for_job(
     # often still have input/<file> or a dead workspace/input host path).
     warnings.extend(_rebind_job_slots_to_ui_workflow(workflow, shape, job, data_root))
     apply_shape_ui_defaults_ui(workflow, shape)
+    apply_shape_postprocess_ui(workflow, shape, job)
     warnings.extend(repair_ui_workflow_for_submit(workflow))
     final_ids = _produce_node_ids(shape)
     queued = apply_queue_date_to_prefix(str(job.get("output_prefix") or ""))
@@ -4542,6 +4564,7 @@ def resolve_prompt_for_job(
         warnings.extend(sanitize_converted_prompt(workflow, prompt_obj))
         warnings.extend(apply_api_slot_bindings(prompt_obj, shape, job, data_root))
         apply_shape_ui_defaults_api(prompt_obj, shape)
+        apply_shape_postprocess_api(prompt_obj, shape, job)
         warnings.extend(
             enforce_no_stored_preview_outputs(workflow, prompt_obj, final_node_ids=final_ids or None)
         )
@@ -4568,6 +4591,7 @@ def resolve_prompt_for_job(
     warnings.extend(sanitize_converted_prompt(workflow, prompt))
     warnings.extend(apply_api_slot_bindings(prompt, shape, job, data_root))
     apply_shape_ui_defaults_api(prompt, shape)
+    apply_shape_postprocess_api(prompt, shape, job)
     warnings.extend(
         enforce_no_stored_preview_outputs(workflow, prompt, final_node_ids=final_ids or None)
     )
@@ -4833,6 +4857,7 @@ def rebuild_job_workflow(
         warnings.extend(apply_slot_binding(workflow, req, path, data_root))
 
     apply_shape_ui_defaults_ui(workflow, shape)
+    apply_shape_postprocess_ui(workflow, shape, job)
 
     dev_block = job.get("dev_tuning") if isinstance(job.get("dev_tuning"), dict) else {}
     dev_spec = dev_block.get("spec") if isinstance(dev_block.get("spec"), dict) else dev_block
