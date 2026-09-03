@@ -158,9 +158,9 @@ def apply_shape_postprocess_ui(
     shape: dict[str, Any],
     job: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    from shape_factory_postprocess import apply_shape_postprocess_ui as _apply
+    from shape_factory_generation_editorial import apply_shape_editorial_ui
 
-    return _apply(workflow, shape, job)
+    return apply_shape_editorial_ui(workflow, shape, job)
 
 
 def apply_shape_postprocess_api(
@@ -168,9 +168,9 @@ def apply_shape_postprocess_api(
     shape: dict[str, Any],
     job: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    from shape_factory_postprocess import apply_shape_postprocess_api as _apply
+    from shape_factory_generation_editorial import apply_shape_editorial_api
 
-    return _apply(prompt, shape, job)
+    return apply_shape_editorial_api(prompt, shape, job)
 
 
 def resolve_dev_tuning(

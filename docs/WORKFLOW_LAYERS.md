@@ -50,10 +50,10 @@ the extend **recipe**, not a delivery step. Same for merge/trim on long extend c
 Postprocess shapes and pipeline wiring can follow; production does not use upscale/RIFE
 today, so nothing breaks by removing unused nodes first.
 
-The interim `postprocess:` apply layer ([`shape_factory_postprocess.py`](../workspace/scripts/shape_factory_postprocess.py))
-was a bridge. After stripping, it applies only to **generation editorial**
-(`color_match`, `merge_frames`); `upscale` / `interpolate` keys become no-ops and are
-removed from shape YAML once catalogs are clean.
+The interim apply layer ([`shape_factory_generation_editorial.py`](../workspace/scripts/shape_factory_generation_editorial.py))
+sets **generation editorial** policy (`color_match`, `merge_frames`) on shapes that
+declare a `postprocess:` block. Delivery postprocess (upscale, RIFE) is **deferred** —
+see [`.data/shapes/delivery/README.md`](../.data/shapes/delivery/README.md).
 
 ---
 
@@ -86,53 +86,35 @@ both, or a small menu of postprocess shapes.
 
 ## Migration plan
 
-### Phase 1 — Strip delivery postprocess from generation catalogs (do now)
+### Phase 1 — Strip delivery postprocess from generation catalogs — **complete**
 
-**Scope — remove from origin (720p Q5) templates:**
+Completed 2026-09-03 (commit `11bf7cb`):
 
-- `UpscaleModelLoader`, `ImageUpscaleWithModel`, `RIFE VFI`
-- Supporting wiring only used by those branches
-- rgthree bypassers targeting **Upscaler** / **Interpolation** groups (if present)
+- Origin catalogs stripped (upscale/RIFE nodes + spurs); GEX bypassers removed
+- Shape `graph_hash` values updated; `upscale`/`interpolate` removed from shape YAML
+- Hash remap manifest:
+  [`.data/shapes/graph_hash_migration_delivery_postprocess_2026-09-03.yaml`](../.data/shapes/graph_hash_migration_delivery_postprocess_2026-09-03.yaml)
+- Editorial apply narrowed to [`shape_factory_generation_editorial.py`](../workspace/scripts/shape_factory_generation_editorial.py)
 
-**Affected catalogs:** one shared graph for X-KNEEL-FB9 + bare; plus BounceDanceA,
-Breast-shake-FB8VA5, FB8VA4, FB8VA5-ZOOMOUT, FB8VB2 (~6 files, ~8 enrolled shapes).
+Catalog backups: `*.pre-delivery-strip.bak` beside each edited template under
+`comfyui-runpod-data/.../catalog/`.
 
-**Scope — remove from extend (480p Q8) templates:**
+### Phase 2 — Delivery postprocess shape(s) — **deferred**
 
-- rgthree bypassers for **Upscaler** / **Interpolation** only (no upscale/RIFE nodes exist)
-- Keep ColorMatch, VHS_MergeImages, and other extend-recipe nodes
+**Upscale and RIFE are both deferred.** No delivery shapes enrolled; no pipeline tails
+on hourly drains.
 
-**Per template:**
+Scaffolding only: [`.data/shapes/delivery/README.md`](../.data/shapes/delivery/README.md)
+(denouement contract + future shape sketch).
 
-1. Edit catalog `*-readable.json` — delete nodes + rewire `final_video` path to skip post branch
-2. Recompute `graph_hash` → update matching `*.shape.yaml`
-3. `shape_factory validate --catalog --comfy-check` + quarantine release if needed
-4. Remove `upscale` / `interpolate` from shape `postprocess:` blocks
+When needed, add separate catalog + shape per effect (`wan-delivery-upscale`,
+`wan-delivery-rife`), then opt-in pipeline step.
 
-**Do not remove yet:** ColorMatch, VHS_MergeImages on GEX / origin where active.
+### Phase 3 — Pipeline tail (opt-in) — **deferred**
 
-### Phase 2 — Delivery postprocess shape(s) (when needed)
+Same gate as Phase 2 — no pipeline tails until a delivery shape is enrolled.
 
-Add one or more postprocess-only stations, e.g.:
-
-```yaml
-# Future: .data/shapes/wan-delivery-upscale.shape.yaml
-chain_role: denouement
-primary_input: video
-requires:
-  - slot: source_video
-    binding: { type: vhs_load_video_path, node_id: … }
-produces:
-  - slot: delivered_video
-    binding: { node_type: VHS_VideoCombine, node_id: … }
-```
-
-Candidate graphs: minimal VHS load → RealESRGAN **or** RIFE → VHS combine. Split into
-two shapes if you rarely run both.
-
-### Phase 3 — Pipeline tail (opt-in)
-
-Extend [`.data/pipelines/`](../.data/pipelines/) with an optional final step:
+Example when wired later:
 
 ```yaml
 steps:
@@ -141,20 +123,13 @@ steps:
   - id: gex
     shape: …/FB9_GEX.shape.yaml
   # Optional — not on default hourly drains:
-  - id: upscale
-    shape: …/wan-delivery-upscale.shape.yaml
+  - id: deliver
+    shape: …/wan-delivery-rife.shape.yaml   # or wan-delivery-upscale
     binds_override:
-      source_video: { from: prior_step, step: gex, slot: final_video }
+      source_video: { from: pool, pool: FB9_GEX_X_og, pick: last }
 ```
 
-Hourly drains stay generation-only until you explicitly add a delivery drain.
-
-### Phase 4 — Retire bridge code
-
-Once Phase 1 is complete for all enrolled families:
-
-- Drop `upscale` / `interpolate` from `shape_factory_postprocess.py` (or rename module to `generation_editorial.py`)
-- Inventory `embedded_postprocess` should only fire on legacy archived workflows, not catalog templates
+Hourly drains stay generation-only until delivery shapes exist and are wired explicitly.
 
 ---
 
@@ -195,16 +170,16 @@ a different station or pipeline step.
 
 ---
 
-## Generation editorial policy (`postprocess:` on shape, interim)
+## Generation editorial policy (`postprocess:` on shape)
 
-Until Phase 1 strips delivery nodes, shapes may still declare:
+The YAML key remains `postprocess:` for compatibility; it controls **editorial**
+nodes only (`color_match`, `merge_frames`). Delivery effects belong in Phase 2 shapes.
 
 ```yaml
 postprocess:
   profile_id: gex-extend-default
   color_match: true
   merge_frames: true
-  # upscale / interpolate — deprecated; remove after Phase 1 strip
 ```
 
 Factory apply sets node `mode`: `0` active, `2` bypass. Shape-level default; optional
@@ -234,9 +209,29 @@ per-job override via `adhoc_overrides.postprocess`.
 
 | Concern | Module | Status |
 |---------|--------|--------|
-| Generation editorial apply (interim) | [`workspace/scripts/shape_factory_postprocess.py`](../workspace/scripts/shape_factory_postprocess.py) | Done — narrow after Phase 1 |
+| Generation editorial apply | [`workspace/scripts/shape_factory_generation_editorial.py`](../workspace/scripts/shape_factory_generation_editorial.py) | Done |
+| Strip delivery nodes | [`workspace/scripts/strip_delivery_postprocess.py`](../workspace/scripts/strip_delivery_postprocess.py) | Done (Phase 1) |
 | Generate / submit wiring | [`workspace/scripts/shape_factory.py`](../workspace/scripts/shape_factory.py) | Done |
-| Strip delivery nodes from catalogs | [`workspace/scripts/strip_delivery_postprocess.py`](../workspace/scripts/strip_delivery_postprocess.py) | **Done** (Phase 1) |
-| Delivery postprocess shape(s) | `.data/shapes/wan-delivery-*.shape.yaml` | Phase 2 |
-| Pipeline tail | `.data/pipelines/*.pipeline.yaml` | Phase 3 |
-| Tests | [`workspace/tests/test_shape_factory_postprocess.py`](../workspace/tests/test_shape_factory_postprocess.py) | Done — extend after strip |
+| Hash migration record | [`.data/shapes/graph_hash_migration_delivery_postprocess_2026-09-03.yaml`](../.data/shapes/graph_hash_migration_delivery_postprocess_2026-09-03.yaml) | Done |
+| Delivery shape scaffold | [`.data/shapes/delivery/README.md`](../.data/shapes/delivery/README.md) | Deferred (upscale + RIFE) |
+| Pipeline tail | `.data/pipelines/` | Deferred |
+| Tests | [`workspace/tests/test_shape_factory_postprocess.py`](../workspace/tests/test_shape_factory_postprocess.py) | Done |
+
+## Graph hash migration record (2026-09-03)
+
+Phase 1 strip changed `graph_hash` on 12 enrolled families. Historical jobs and
+`by_graph_hash` ratings rollups still reference the **before** hashes.
+
+**Remap manifest:** [`.data/shapes/graph_hash_migration_delivery_postprocess_2026-09-03.yaml`](../.data/shapes/graph_hash_migration_delivery_postprocess_2026-09-03.yaml)
+
+- `hash_pairs` — unique `before` → `after` topology fingerprints (use for merging stats)
+- `enrolled_shapes` — per-family mapping with shape paths and templates
+- `other_catalogs_stripped` — non-enrolled catalog files also edited in the same pass
+
+Example remap when merging `by_graph_hash` aggregates:
+
+```python
+MIGRATION = yaml.safe_load(open(".../graph_hash_migration_delivery_postprocess_2026-09-03.yaml"))
+ALIAS = {p["before"]: p["after"] for p in MIGRATION["hash_pairs"]}
+canonical = ALIAS.get(gh, gh)  # fold old bucket into new
+```

@@ -14,7 +14,7 @@ Declared on every `*.shape.yaml`:
 | `input_profile` | `still_prompt` \| `video_prompt` \| `video_identity_still_prompt` | Slot contract |
 | `chain_role` | `origin` \| `extend` \| `mutate` \| `denouement` \| `standalone` | Role inside a pipeline |
 | `io_class` | `I2V` \| `V2V` \| `VI2V` \| … | Process class badge (derived from profile) |
-| `postprocess` | see [`docs/WORKFLOW_LAYERS.md`](../../docs/WORKFLOW_LAYERS.md) | Upscale / interpolate / color match / merge policy applied at generate |
+| `postprocess` | see [`docs/WORKFLOW_LAYERS.md`](../../docs/WORKFLOW_LAYERS.md) | Generation editorial (`color_match`, `merge_frames`) at generate time |
 
 These are **descriptive** — operators see badges now; automation can read them later.
 They are not a lockout / compatibility engine.
@@ -70,6 +70,10 @@ Reserved later tags: `II2V`, `IV2V`, `I2I`, `V2I`, `T2V`, `VV2V`.
 Generation stack, postprocess policy, and runtime knobs are three separate concerns.
 See [`docs/WORKFLOW_LAYERS.md`](../../docs/WORKFLOW_LAYERS.md) for the decision tree
 (separate template vs controlled setting) and the `postprocess:` block schema.
+
+**Graph hash remaps:** [`graph_hash_migration_delivery_postprocess_2026-09-03.yaml`](graph_hash_migration_delivery_postprocess_2026-09-03.yaml)
+
+**Delivery postprocess (deferred):** [`.data/shapes/delivery/README.md`](delivery/README.md)
 
 ## Related
 
