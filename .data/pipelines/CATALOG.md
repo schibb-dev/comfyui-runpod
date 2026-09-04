@@ -27,6 +27,8 @@ affinity:  # soft dispatch hints
 Hourly informal pipelines (not YAML): facial drain, I2V→GEX drain, seed families —
 see `shape_factory_hourly.py` / `docs/HOURLY_UTILITY_PLAN.md`.
 
+**Factory Map UI:** open `/factory-map/pipeline/<pipeline_id>` → **Run pipeline** (background when wait is on).
+
 ## Soft affinities (draft)
 
 - **Fresh still seed** → prefer I2V `origin` families (Kneel / FaceBlast / Bounce / …)
