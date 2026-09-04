@@ -8151,102 +8151,52 @@ def cmd_deposit(args: argparse.Namespace) -> int:
 
 
 def cmd_pipeline(args: argparse.Namespace) -> int:
-    pipeline_path = Path(args.pipeline).expanduser().resolve()
-    pipeline = load_yaml(pipeline_path)
-    steps = pipeline.get("steps") or []
-    if not isinstance(steps, list) or not steps:
-        raise RuntimeError(f"pipeline has no steps: {pipeline_path}")
+    from shape_factory_pipeline import run_pipeline
 
+    pipeline_path = Path(args.pipeline).expanduser().resolve()
+    run_state = getattr(args, "run_state", None)
+    run_log = getattr(args, "run_log", None)
+    result = run_pipeline(
+        pipeline_path=pipeline_path,
+        limit=int(args.limit or 1),
+        data_root=Path(args.data_root).expanduser().resolve(),
+        workflow_dir=Path(args.workflow_dir).expanduser().resolve(),
+        job_dir=Path(args.job_dir).expanduser().resolve(),
+        server=str(args.server),
+        client_id=str(args.client_id),
+        dry_run=bool(args.dry_run),
+        generate_only=bool(args.generate_only),
+        wait=bool(args.wait),
+        wait_timeout=int(args.wait_timeout),
+        poll=float(args.poll),
+        timeout=int(args.timeout),
+        convert_timeout=int(args.convert_timeout),
+        dev=bool(getattr(args, "dev", False)),
+        dev_tuning=getattr(args, "dev_tuning", None),
+        dev_frames=getattr(args, "dev_frames", None),
+        dev_steps=getattr(args, "dev_steps", None),
+        ignore_quarantine=bool(getattr(args, "ignore_quarantine", False)),
+        run_state_path=Path(run_state).expanduser().resolve() if run_state else None,
+        run_log_path=Path(run_log).expanduser().resolve() if run_log else None,
+    )
+
+    pipeline = load_yaml(pipeline_path)
     print(f"# Pipeline `{pipeline.get('pipeline_id') or pipeline_path.stem}`\n")
-    for step in steps:
+    for step in result.get("steps") or []:
         if not isinstance(step, dict):
             continue
-        step_id = str(step.get("id") or "?")
+        step_id = str(step.get("step_id") or "?")
         print(f"## step {step_id}")
-
-        gen_args = argparse.Namespace(
-            shape=step["shape"],
-            pools=step["pools"],
-            pick=str(step.get("pick") or "zip"),
-            limit=int(step.get("limit") or args.limit or 1),
-            pick_index=int(step.get("pick_index") or 0),
-            data_root=args.data_root,
-            workflow_dir=args.workflow_dir,
-            job_dir=args.job_dir,
-            binds_override=step.get("binds_override") if isinstance(step.get("binds_override"), dict) else None,
-            dev=bool(getattr(args, "dev", False)),
-            dev_tuning=getattr(args, "dev_tuning", None),
-            dev_frames=getattr(args, "dev_frames", None),
-            dev_steps=getattr(args, "dev_steps", None),
-            quarantine_path=getattr(args, "quarantine_path", str(DEFAULT_QUARANTINE_PATH)),
-            ignore_quarantine=bool(getattr(args, "ignore_quarantine", False)),
-        )
-        if cmd_generate(gen_args) != 0:
-            return 1
-
-        shape_doc = load_yaml(Path(step["shape"]).expanduser().resolve())
-        family = str(shape_doc.get("family_slug") or slug(Path(str(step["shape"])).stem.replace(".shape", ""), 80))
-
-        if not args.generate_only:
-            sub_args = argparse.Namespace(
-                family=family,
-                job=None,
-                jobs_dir=None,
-                job_dir=args.job_dir,
-                limit=gen_args.limit,
-                server=args.server,
-                client_id=args.client_id,
-                front=False,
-                force=False,
-                dry_run=args.dry_run,
-                data_root=args.data_root,
-                timeout=args.timeout,
-                convert_timeout=args.convert_timeout,
-                delay=0.0,
-                quarantine_path=getattr(args, "quarantine_path", str(DEFAULT_QUARANTINE_PATH)),
-                ignore_quarantine=bool(getattr(args, "ignore_quarantine", False)),
-            )
-            if cmd_submit(sub_args) != 0 and not args.dry_run:
-                return 1
-
-            if args.wait and not args.dry_run:
-                st_args = argparse.Namespace(
-                    family=family,
-                    job=None,
-                    jobs_dir=None,
-                    job_dir=args.job_dir,
-                    limit=gen_args.limit,
-                    server=args.server,
-                    data_root=args.data_root,
-                    wait=True,
-                    timeout=args.wait_timeout,
-                    poll=args.poll,
-                    deposit=False,
-                )
-                cmd_status(st_args)
-
-            if not args.dry_run:
-                pools_path = Path(step["pools"]).expanduser().resolve()
-                sync_args = argparse.Namespace(
-                    pools=str(pools_path),
-                    shape=step.get("shape"),
-                    index=None,
-                )
-                cmd_pool_sync(sync_args)
-
-                dep_args = argparse.Namespace(
-                    family=family,
-                    job=None,
-                    jobs_dir=None,
-                    job_dir=args.job_dir,
-                    limit=gen_args.limit,
-                    data_root=args.data_root,
-                    index=None,
-                    pools=str(pools_path),
-                )
-                cmd_deposit(dep_args)
-
+        if step.get("family_slug"):
+            print(f"family={step['family_slug']}")
+        for job in step.get("jobs") or []:
+            if isinstance(job, dict):
+                print(f"  job {job.get('job_key')} status={job.get('status')} prompt_id={job.get('prompt_id')}")
+        if step.get("error"):
+            print(f"  error={step['error']}", file=sys.stderr)
         print()
+    if not result.get("ok"):
+        return 1
     return 0
 
 
@@ -8423,7 +8373,28 @@ def build_parser() -> argparse.ArgumentParser:
     pipe_run.add_argument("--dev-steps", type=int, help="Override steps for pipeline steps")
     pipe_run.add_argument("--quarantine-path", default=str(DEFAULT_QUARANTINE_PATH))
     pipe_run.add_argument("--ignore-quarantine", action="store_true")
-    pipe_run.set_defaults(func=cmd_pipeline, dev=False, dev_tuning=None, dev_frames=None, dev_steps=None, ignore_quarantine=False)
+    pipe_run.add_argument(
+        "--run-state",
+        dest="run_state",
+        default=None,
+        help="JSON state file updated after each step (background UI runs)",
+    )
+    pipe_run.add_argument(
+        "--run-log",
+        dest="run_log",
+        default=None,
+        help="Append stdout/stderr log path (used with --run-state)",
+    )
+    pipe_run.set_defaults(
+        func=cmd_pipeline,
+        dev=False,
+        dev_tuning=None,
+        dev_frames=None,
+        dev_steps=None,
+        ignore_quarantine=False,
+        run_state=None,
+        run_log=None,
+    )
 
     timings = sub.add_parser("timings", help="List or summarize generation timings")
     timings_sub = timings.add_subparsers(dest="timings_cmd", required=True)
