@@ -44,6 +44,8 @@ import type {
   ShapeFactoryMapResponse,
   ShapeFactoryMapQueueRequest,
   ShapeFactoryMapQueueResponse,
+  ShapeFactoryPipelineRunGetResponse,
+  ShapeFactoryPipelineRunPostResponse,
   ShapeFactorySubmitAttemptsResponse,
   ShapeFactoryReplayRequest,
   ShapeFactoryReplayResponse,
@@ -897,6 +899,54 @@ export async function queueShapeFactoryCombo(req: ShapeFactoryMapQueueRequest): 
       pathHint: j.path_hint ? String(j.path_hint) : undefined,
       ts: j.ts ? String(j.ts) : undefined,
     });
+  }
+  return j;
+}
+
+export type ShapeFactoryPipelineRunRequest = {
+  pipeline_id?: string;
+  pipeline_path?: string;
+  limit?: number;
+  wait?: boolean;
+  wait_timeout?: number;
+  dev?: boolean;
+  dry_run?: boolean;
+  generate_only?: boolean;
+  background?: boolean;
+};
+
+export async function runShapeFactoryPipeline(
+  req: ShapeFactoryPipelineRunRequest,
+): Promise<ShapeFactoryPipelineRunPostResponse> {
+  const r = await fetch("/api/shape-factory/pipeline/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryPipelineRunPostResponse;
+  if (!r.ok || !j.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST /api/shape-factory/pipeline/run failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function fetchShapeFactoryPipelineRun(
+  runId: string,
+  opts?: { logLines?: number },
+): Promise<ShapeFactoryPipelineRunGetResponse> {
+  const sp = new URLSearchParams();
+  if (opts?.logLines != null) sp.set("log_lines", String(opts.logLines));
+  const qs = sp.toString();
+  const r = await fetch(`/api/shape-factory/pipeline/run/${encodeURIComponent(runId)}${qs ? `?${qs}` : ""}`);
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryPipelineRunGetResponse;
+  if (!r.ok || !j.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET /api/shape-factory/pipeline/run failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
   }
   return j;
 }

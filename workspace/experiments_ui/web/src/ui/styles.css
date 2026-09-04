@@ -8426,6 +8426,80 @@ tr.disabled:hover td {
   text-decoration: underline;
 }
 
+.sfmap-pipeline-run-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px 16px;
+  margin: 12px 0;
+}
+
+.sfmap-pipeline-run-form__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.sfmap-pipeline-run-form__field input[type="number"] {
+  width: 4.5rem;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.sfmap-pipeline-run-form__check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.sfmap-pipeline-run-status {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.sfmap-pipeline-run-status__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.sfmap-pipeline-run-log {
+  max-height: 220px;
+  overflow: auto;
+}
+
+.sfmap-pipeline-run-msg {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.sfmap-pipeline-run-steps {
+  margin: 10px 0 0;
+  padding-left: 1.2rem;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.sfmap-pipeline-run-cli {
+  margin-top: 12px;
+}
+
+.sfmap-pipeline-run-cli summary {
+  cursor: pointer;
+  font-size: 12px;
+}
+
 .sfmap-family-block {
   display: flex;
   flex-direction: column;

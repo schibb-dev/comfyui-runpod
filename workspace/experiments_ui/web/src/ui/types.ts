@@ -2034,6 +2034,62 @@ export type QueueLedgerEventsResponse = {
   detail?: string;
 };
 
+export type ShapeFactoryPipelineRunJob = {
+  job_key?: string;
+  family_slug?: string;
+  status?: string;
+  prompt_id?: string;
+  job_path?: string;
+};
+
+export type ShapeFactoryPipelineRunStep = {
+  step_id?: string;
+  ok?: boolean;
+  family_slug?: string | null;
+  jobs?: ShapeFactoryPipelineRunJob[];
+  error?: string | null;
+};
+
+export type ShapeFactoryPipelineRunResult = {
+  ok?: boolean;
+  pipeline_id?: string;
+  pipeline_path?: string;
+  steps?: ShapeFactoryPipelineRunStep[];
+  started_at?: string;
+  finished_at?: string;
+};
+
+export type ShapeFactoryPipelineRunPostResponse = {
+  ok: boolean;
+  mode?: "inline" | "background";
+  run_id?: string;
+  status?: string;
+  pipeline_id?: string;
+  pipeline_path?: string;
+  pid?: number;
+  result?: ShapeFactoryPipelineRunResult;
+  error?: string;
+  detail?: string;
+};
+
+export type ShapeFactoryPipelineRunGetResponse = {
+  ok: boolean;
+  run?: {
+    run_id?: string;
+    status?: string;
+    pipeline_id?: string;
+    pipeline_path?: string;
+    steps?: ShapeFactoryPipelineRunStep[];
+    started_at?: string;
+    finished_at?: string;
+    updated_at?: string;
+    log_path?: string;
+    error?: string;
+  };
+  log_tail?: string;
+  error?: string;
+};
+
 export type ShapeFactoryMapPipelineStep = {
   id?: string;
   shape?: string;

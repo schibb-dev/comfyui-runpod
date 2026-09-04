@@ -1910,6 +1910,31 @@ def _discovery_rating_sampler_payload(cfg: "ServerConfig", q: Dict[str, List[str
     return _enrich(session)
 
 
+_SHAPE_FACTORY_MAP_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_SHAPE_FACTORY_MAP_CACHE_TTL_S = 25.0
+_SHAPE_FACTORY_WORK_PRODUCTS_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_SHAPE_FACTORY_WORK_PRODUCTS_CACHE_TTL_S = 12.0
+
+
+def _clear_shape_factory_map_cache() -> None:
+    _SHAPE_FACTORY_MAP_CACHE.clear()
+    _SHAPE_FACTORY_WORK_PRODUCTS_CACHE.clear()
+
+
+def _shape_factory_map_cache_key(cfg: ServerConfig, q: Dict[str, List[str]]) -> str:
+    parts = [
+        ("members_limit", q.get("members_limit", [""])[0]),
+        ("jobs_limit", q.get("jobs_limit", [""])[0]),
+        ("jobs_per_family", q.get("jobs_per_family", [""])[0]),
+        ("projected_pairs_limit", q.get("projected_pairs_limit", [""])[0]),
+        ("family", q.get("family", [""])[0]),
+        ("skip_queue", q.get("skip_queue", [""])[0]),
+        ("output_root", str(cfg.output_root)),
+        ("comfy_server", str(cfg.comfy_server)),
+    ]
+    return json.dumps(parts, sort_keys=True)
+
+
 def _shape_factory_map_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
     d = _workspace_scripts_dir()
     if d.is_dir() and str(d) not in sys.path:
@@ -1980,6 +2005,17 @@ def _shape_factory_map_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Di
         workspace_root=cfg.workspace_root,
         file_exists=lambda rel: _discovery_rel_file_exists(cfg, rel),
     )
+
+
+def _shape_factory_map_payload_cached(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
+    key = _shape_factory_map_cache_key(cfg, q)
+    now = time.monotonic()
+    hit = _SHAPE_FACTORY_MAP_CACHE.get(key)
+    if hit and (now - hit[0]) < _SHAPE_FACTORY_MAP_CACHE_TTL_S:
+        return hit[1]
+    payload = _shape_factory_map_payload(cfg, q)
+    _SHAPE_FACTORY_MAP_CACHE[key] = (now, payload)
+    return payload
 
 
 def _asset_recovery_context(cfg: ServerConfig) -> Tuple[Any, Path, Optional[Path]]:
@@ -2490,6 +2526,102 @@ def _shape_factory_queue_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dic
         output_root=cfg.output_root,
         comfy_server=str(cfg.comfy_server),
     )
+
+
+def _shape_factory_pipeline_run_post_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+    from shape_factory_pipeline import (  # type: ignore
+        resolve_pipeline_path,
+        run_pipeline,
+        start_background_pipeline_run,
+    )
+
+    pipeline_id = str(body.get("pipeline_id") or "").strip()
+    pipeline_path_raw = str(body.get("pipeline_path") or "").strip()
+    if not pipeline_id and not pipeline_path_raw:
+        raise ValueError("pipeline_id or pipeline_path is required")
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    pipeline_path = resolve_pipeline_path(
+        data_root=data_root,
+        pipeline_id=pipeline_id,
+        pipeline_path=pipeline_path_raw,
+    )
+    limit = max(1, min(8, int(body.get("limit") or 1)))
+    wait = bool(body.get("wait"))
+    dry_run = bool(body.get("dry_run"))
+    generate_only = bool(body.get("generate_only"))
+    dev = bool(body.get("dev"))
+    ignore_quarantine = bool(body.get("ignore_quarantine"))
+    wait_timeout = max(60, min(86400, int(body.get("wait_timeout") or 7200)))
+    background = body.get("background")
+    if background is None:
+        background = wait
+    background = bool(background)
+
+    options = {
+        "pipeline_id": pipeline_id or pipeline_path.stem,
+        "limit": limit,
+        "wait": wait,
+        "wait_timeout": wait_timeout,
+        "dev": dev,
+        "dry_run": dry_run,
+        "generate_only": generate_only,
+        "ignore_quarantine": ignore_quarantine,
+    }
+
+    if background and wait and not dry_run:
+        started = start_background_pipeline_run(
+            pipeline_path=pipeline_path,
+            options=options,
+            data_root=data_root,
+            repo_root=_repo_root(),
+        )
+        return {
+            "ok": True,
+            "mode": "background",
+            "run_id": started.get("run_id"),
+            "status": started.get("status"),
+            "pipeline_id": started.get("pipeline_id"),
+            "pipeline_path": str(pipeline_path),
+            "pid": started.get("pid"),
+        }
+
+    result = run_pipeline(
+        pipeline_path=pipeline_path,
+        limit=limit,
+        data_root=data_root,
+        server=str(cfg.comfy_server),
+        dry_run=dry_run,
+        generate_only=generate_only,
+        wait=wait and not dry_run,
+        wait_timeout=wait_timeout,
+        dev=dev,
+        ignore_quarantine=ignore_quarantine,
+    )
+    return {
+        "ok": bool(result.get("ok")),
+        "mode": "inline",
+        "pipeline_id": result.get("pipeline_id"),
+        "pipeline_path": str(pipeline_path),
+        "result": result,
+    }
+
+
+def _shape_factory_pipeline_run_get_payload(cfg: ServerConfig, run_id: str, q: Dict[str, List[str]]) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+    from shape_factory_pipeline import get_pipeline_run_payload  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    log_lines = _safe_int((q.get("log_lines") or ["80"])[0]) or 80
+    log_lines = max(10, min(400, int(log_lines)))
+    return get_pipeline_run_payload(run_id, data_root=data_root, log_lines=log_lines)
 
 
 def _shape_factory_replay_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -4412,6 +4544,14 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
         limit = 40
     hourly_only = str((q.get("hourly_only") or ["1"])[0]).strip().lower() not in {"0", "false", "no"}
     family = str((q.get("family") or [""])[0]).strip() or None
+    cache_key = json.dumps(
+        [str(cfg.output_root), str(cfg.comfy_server), str(data_root), limit, hourly_only, family or ""],
+        sort_keys=True,
+    )
+    now = time.monotonic()
+    hit = _SHAPE_FACTORY_WORK_PRODUCTS_CACHE.get(cache_key)
+    if hit and (now - hit[0]) < _SHAPE_FACTORY_WORK_PRODUCTS_CACHE_TTL_S:
+        return hit[1]
 
     # Comfy /queue is canonical for in-flight. Reconcile job.json before listing so
     # the UI never shows ghost running/queued rows after clears/restarts.
@@ -4487,6 +4627,7 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
         attach_markers_to_work_products(items, output_root=cfg.output_root)
     except Exception:
         pass
+    _SHAPE_FACTORY_WORK_PRODUCTS_CACHE[cache_key] = (now, payload)
     return payload
 
 
@@ -11901,7 +12042,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/shape-factory/map":
             try:
-                payload = _shape_factory_map_payload(cfg, q)
+                payload = _shape_factory_map_payload_cached(cfg, q)
                 code = 200 if payload.get("ok") else 404
                 return _json_response(self, code, payload)
             except Exception as e:
@@ -12066,6 +12207,19 @@ class Handler(BaseHTTPRequestHandler):
                 return _json_response(
                     self, 500, {"ok": False, "error": "template_promotions_list_failed", "detail": str(e)}
                 )
+
+        if path.startswith("/api/shape-factory/pipeline/run/"):
+            run_id = path[len("/api/shape-factory/pipeline/run/") :].strip("/")
+            if not run_id:
+                return _json_response(self, 404, {"ok": False, "error": "missing_run_id"})
+            try:
+                payload = _shape_factory_pipeline_run_get_payload(cfg, run_id, q)
+            except Exception as e:
+                return _json_response(
+                    self, 500, {"ok": False, "error": "pipeline_run_status_failed", "detail": str(e)}
+                )
+            code = 200 if payload.get("ok") else 404
+            return _json_response(self, code, payload)
 
         if path == "/api/shape-factory/input-curation/stills":
             try:
@@ -12354,6 +12508,8 @@ class Handler(BaseHTTPRequestHandler):
         return _json_response(self, 404, {"error": "unknown_api_route", "path": path})
 
     def _handle_api_post(self, path: str) -> None:
+        if path.startswith("/api/shape-factory/"):
+            _clear_shape_factory_map_cache()
         if path == "/api/next-experiment":
             return self._handle_next_experiment()
         if path == "/api/create-experiment":
@@ -12414,6 +12570,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_family_discovery_prop_post(path)
         if path == "/api/shape-factory/queue":
             return self._handle_shape_factory_queue_post()
+        if path == "/api/shape-factory/pipeline/run":
+            return self._handle_shape_factory_pipeline_run_post()
         if path == "/api/shape-factory/replay":
             return self._handle_shape_factory_replay_post()
         if path == "/api/shape-factory/ab-queue":
@@ -13044,6 +13202,28 @@ class Handler(BaseHTTPRequestHandler):
         if isinstance(payload, dict) and _rec.get("attempt_id"):
             payload = {**payload, "attempt_id": _rec.get("attempt_id")}
         return _json_response(self, 200, payload)
+
+    def _handle_shape_factory_pipeline_run_post(self) -> None:
+        """POST /api/shape-factory/pipeline/run — run a multi-step pipeline (inline or background)."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _shape_factory_pipeline_run_post_payload(cfg, body if isinstance(body, dict) else {})
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except FileNotFoundError as e:
+            return _json_response(self, 404, {"ok": False, "error": "not_found", "detail": str(e)})
+        except RuntimeError as e:
+            qerr = _quarantine_runtime_error_payload(e)
+            if qerr is not None:
+                return _json_response(self, 409, qerr)
+            return _json_response(self, 502, {"ok": False, "error": "pipeline_run_failed", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "pipeline_run_failed", "detail": str(e)})
+        code = 200 if payload.get("ok", True) else 502
+        return _json_response(self, code, payload)
 
     def _read_request_json(self) -> Optional[Dict[str, Any]]:
         n = _safe_int(self.headers.get("Content-Length"))

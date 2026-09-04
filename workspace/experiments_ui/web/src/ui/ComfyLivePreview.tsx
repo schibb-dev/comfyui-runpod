@@ -2,6 +2,63 @@ import React, { useEffect, useRef, useState } from "react";
 import { comfyLivePreviewUrl, fetchComfyLiveStatus } from "./api";
 import type { ComfyLiveStatusItem } from "./types";
 
+const LIVE_STATUS_POLL_MS = 2000;
+
+type LiveStatusListener = (item: ComfyLiveStatusItem | null) => void;
+const liveStatusListeners = new Map<string, Set<LiveStatusListener>>();
+let liveStatusTimer: number | null = null;
+
+function liveStatusIds(): string[] {
+  return [...liveStatusListeners.keys()].filter((id) => (liveStatusListeners.get(id)?.size || 0) > 0);
+}
+
+async function tickSharedLiveStatus() {
+  if (typeof document !== "undefined" && document.hidden) return;
+  const ids = liveStatusIds();
+  if (!ids.length) return;
+  try {
+    const res = await fetchComfyLiveStatus(ids);
+    const byId = new Map((res.items || []).map((it) => [String(it.prompt_id || ""), it]));
+    for (const id of ids) {
+      const item = byId.get(id) || null;
+      for (const cb of liveStatusListeners.get(id) || []) cb(item);
+    }
+  } catch {
+    /* ignore transient bridge errors while polling */
+  }
+}
+
+function ensureLiveStatusTimer() {
+  if (liveStatusTimer != null) return;
+  void tickSharedLiveStatus();
+  liveStatusTimer = window.setInterval(() => void tickSharedLiveStatus(), LIVE_STATUS_POLL_MS);
+}
+
+function stopLiveStatusTimerIfIdle() {
+  if (liveStatusIds().length) return;
+  if (liveStatusTimer != null) {
+    window.clearInterval(liveStatusTimer);
+    liveStatusTimer = null;
+  }
+}
+
+function subscribeLiveStatus(promptId: string, cb: LiveStatusListener): () => void {
+  const id = String(promptId || "").trim();
+  if (!id) return () => undefined;
+  let set = liveStatusListeners.get(id);
+  if (!set) {
+    set = new Set();
+    liveStatusListeners.set(id, set);
+  }
+  set.add(cb);
+  ensureLiveStatusTimer();
+  return () => {
+    set?.delete(cb);
+    if (set && set.size === 0) liveStatusListeners.delete(id);
+    stopLiveStatusTimerIfIdle();
+  };
+}
+
 function formatDuration(seconds: number | null | undefined): string {
   if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return "—";
   const s = Math.floor(seconds);
@@ -15,29 +72,21 @@ function useComfyLiveStatus(promptId: string) {
   const [status, setStatus] = useState<ComfyLiveStatusItem | null>(null);
   const [nowTick, setNowTick] = useState(() => Date.now());
 
+  useEffect(() => subscribeLiveStatus(promptId, setStatus), [promptId]);
+
   useEffect(() => {
-    let cancelled = false;
-    const tick = () => {
-      if (cancelled) return;
-      void fetchComfyLiveStatus([promptId])
-        .then((res) => {
-          if (cancelled) return;
-          const item = (res.items || []).find((x) => x.prompt_id === promptId) || null;
-          setStatus(item);
-        })
-        .catch(() => {
-          /* ignore transient bridge errors while polling */
-        });
+    const onVis = () => {
+      if (!document.hidden) setNowTick(Date.now());
     };
-    tick();
-    const id = window.setInterval(tick, 750);
-    const clock = window.setInterval(() => setNowTick(Date.now()), 1000);
+    document.addEventListener("visibilitychange", onVis);
+    const clock = window.setInterval(() => {
+      if (!document.hidden) setNowTick(Date.now());
+    }, 1000);
     return () => {
-      cancelled = true;
-      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
       window.clearInterval(clock);
     };
-  }, [promptId]);
+  }, []);
 
   return { status, nowTick };
 }
@@ -150,6 +199,7 @@ export function ComfyLivePreview({
     const running = status?.status === "running" || (status?.value != null && status?.finished_at == null);
     if (!running) return;
     const id = window.setInterval(() => {
+      if (document.hidden) return;
       setBust(Date.now());
     }, hasFrame && !imgFailed ? 2500 : 900);
     return () => window.clearInterval(id);
@@ -220,7 +270,7 @@ export function ComfyLivePreview({
     let cancelled = false;
     const start = performance.now();
     const draw = (t: number) => {
-      if (cancelled) return;
+      if (cancelled || document.hidden) return;
       const imgs = frameImgsRef.current;
       const keys = [...imgs.keys()].sort((a, b) => a - b);
       if (keys.length) {
@@ -249,9 +299,24 @@ export function ComfyLivePreview({
       }
       animRef.current = requestAnimationFrame(draw);
     };
-    animRef.current = requestAnimationFrame(draw);
+    const startLoop = () => {
+      if (cancelled || document.hidden) return;
+      if (animRef.current != null) cancelAnimationFrame(animRef.current);
+      animRef.current = requestAnimationFrame(draw);
+    };
+    const onVis = () => {
+      if (document.hidden) {
+        if (animRef.current != null) cancelAnimationFrame(animRef.current);
+        animRef.current = null;
+        return;
+      }
+      startLoop();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    startLoop();
     return () => {
       cancelled = true;
+      document.removeEventListener("visibilitychange", onVis);
       if (animRef.current != null) cancelAnimationFrame(animRef.current);
       animRef.current = null;
     };

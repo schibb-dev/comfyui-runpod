@@ -18,6 +18,7 @@ import {
   setShapeFactoryTemplatePromotion,
 } from "./api";
 import { SubmitQueueErrorPanel } from "./SubmitAttemptError";
+import { PipelineRunPanel } from "./PipelineRunPanel";
 import { AssetInspector, type InspectorAsset } from "./AssetInspector";
 import { buildQueueOverrides, FutureRunEditor } from "./factoryMapFutureRunEditor";
 import { discoveryLibraryHref, stillsHref } from "./discoveryDeepLink";
@@ -69,6 +70,22 @@ import type {
 } from "./types";
 
 const POLL_MS = 30_000;
+
+/** Only poll the heavy full map while queue/submit work is in flight. */
+function shapeFactoryMapHasActiveWork(data: ShapeFactoryMapResponse | undefined): boolean {
+  if (!data?.ok) return false;
+  if ((data.queue?.shape_factory_matches?.length ?? 0) > 0) return true;
+  if ((data.jobs?.inflight?.length ?? 0) > 0) return true;
+  if ((data.jobs?.pending_submit?.length ?? 0) > 0) return true;
+  if ((data.jobs?.active?.length ?? 0) > 0) return true;
+  const summary = data.jobs?.summary;
+  if (summary && typeof summary === "object") {
+    for (const k of ["pending", "queued", "running", "unknown"]) {
+      if (Number((summary as Record<string, number>)[k] ?? 0) > 0) return true;
+    }
+  }
+  return false;
+}
 
 /** Index/pipeline first paint: topology + light jobs, no Comfy / member thumbs / pairs. */
 const MAP_SLIM = {
@@ -1712,11 +1729,13 @@ function FactoryMapPipelineView({
   pipeline,
   pipelines,
   families,
+  onPipelineRan,
 }: {
   data: ShapeFactoryMapResponse;
   pipeline: ShapeFactoryMapPipeline;
   pipelines: ShapeFactoryMapPipeline[];
   families: ShapeFactoryMapFamily[];
+  onPipelineRan?: () => void;
 }) {
   const familiesBySlug = useMemo(() => {
     const m = new Map<string, ShapeFactoryMapFamily>();
@@ -1784,16 +1803,7 @@ function FactoryMapPipelineView({
           </div>
         </section>
 
-        <section className="sfmap-pipeline-detail__run">
-          <h3 className="sfmap-index-section__title">Run</h3>
-          <pre className="sfmap-pipeline-detail__cmd mono">
-            {`python3 shape_factory.py pipeline run --pipeline ${pipeline.path || `.data/pipelines/${pipelineId}.pipeline.yaml`}`}
-          </pre>
-          <p className="factory-muted sfmap-index-section__hint">
-            Runs each step in order: generate → submit → wait → deposit. Step 2+ uses binds_override to pull from
-            earlier deposit pools.
-          </p>
-        </section>
+        <PipelineRunPanel pipeline={pipeline} onRan={onPipelineRan} />
 
         {pipelineJobs.length > 0 ? (
           <section className="sfmap-pipeline-detail__jobs">
@@ -2095,6 +2105,7 @@ function InputCurationPanel({
   const queryClient = useQueryClient();
   const [panelOpen, setPanelOpen] = useState(Boolean(forceOpen));
   const [stillQ, setStillQ] = useState("");
+  const [stillQApplied, setStillQApplied] = useState("");
   const [selectedCollectionId, setSelectedCollectionId] = useState("");
   const [newCollectionName, setNewCollectionName] = useState("");
   const [selectedFamilySlug, setSelectedFamilySlug] = useState(String(preferredFamilySlug || ""));
@@ -2117,6 +2128,11 @@ function InputCurationPanel({
   }, [forceOpen]);
 
   useEffect(() => {
+    const t = window.setTimeout(() => setStillQApplied(stillQ.trim()), 400);
+    return () => window.clearTimeout(t);
+  }, [stillQ]);
+
+  useEffect(() => {
     const pref = String(preferredFamilySlug || "").trim();
     if (pref && sourceStillFamilies.includes(pref)) {
       setSelectedFamilySlug(pref);
@@ -2133,8 +2149,8 @@ function InputCurationPanel({
     refetchOnWindowFocus: false,
   });
   const stillsQuery = useQuery({
-    queryKey: queryKeys.shapeFactory.inputCurationStills({ q: stillQ, limit: 120 }),
-    queryFn: () => fetchShapeFactoryInputCurationStills({ q: stillQ, limit: 120 }),
+    queryKey: queryKeys.shapeFactory.inputCurationStills({ q: stillQApplied, limit: 120 }),
+    queryFn: () => fetchShapeFactoryInputCurationStills({ q: stillQApplied, limit: 120 }),
     enabled: panelOpen,
     staleTime: 20_000,
     refetchOnWindowFocus: false,
@@ -2989,7 +3005,7 @@ export function DiscoveryFactoryMapApp() {
 
   const fullKey =
     route.view === "family"
-      ? MAP_FAMILY_FULL
+      ? { ...MAP_FAMILY_FULL, family: route.familySlug }
       : MAP_INDEX_FULL;
 
   const fullQuery = useQuery({
@@ -3001,11 +3017,16 @@ export function DiscoveryFactoryMapApp() {
         jobs_per_family: fullKey.jobsPerFamily,
         skip_queue: fullKey.skipQueue,
         projected_pairs_limit: fullKey.projectedPairsLimit,
+        family: "family" in fullKey ? fullKey.family : undefined,
       }),
     // Index/pipeline: deepen after slim. Family: load rich map immediately (slim still warms nav).
     enabled: route.view === "family" || slimQuery.isSuccess || slimQuery.isError,
     staleTime: 30_000,
-    refetchInterval: POLL_MS,
+    refetchInterval: (query) => {
+      if (document.hidden) return false;
+      const data = query.state.data;
+      return shapeFactoryMapHasActiveWork(data) ? POLL_MS : false;
+    },
     refetchIntervalInBackground: false,
     placeholderData: (prev) => prev,
   });
@@ -3293,6 +3314,7 @@ export function DiscoveryFactoryMapApp() {
                 pipeline={activePipeline}
                 pipelines={pipelines}
                 families={families}
+                onPipelineRan={invalidateMap}
               />
             ) : (
               <div className="sfmap-not-found">

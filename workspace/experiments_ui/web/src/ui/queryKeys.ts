@@ -43,6 +43,8 @@ export const queryKeys = {
     submitAttemptsRoot: ["shapeFactory", "submitAttempts"] as const,
     submitAttempts: (opts?: { limit?: number; errorsOnly?: boolean; family?: string }) =>
       ["shapeFactory", "submitAttempts", opts || { limit: 12, errorsOnly: true }] as const,
+    pipelineRunRoot: ["shapeFactory", "pipelineRun"] as const,
+    pipelineRun: (runId: string) => ["shapeFactory", "pipelineRun", runId] as const,
   },
   queue: {
     root: ["queue"] as const,

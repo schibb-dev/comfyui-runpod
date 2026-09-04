@@ -279,18 +279,21 @@ fi
 AUTO_DOWNLOAD_KRITA_AI_MODELS="${AUTO_DOWNLOAD_KRITA_AI_MODELS:-false}"
 KRITA_DOWNLOAD_PRESET="${KRITA_DOWNLOAD_PRESET:---recommended}"
 if [[ "$AUTO_DOWNLOAD_KRITA_AI_MODELS" == "true" ]]; then
-  if [[ -f "$WORKSPACE_PATH/scripts/model_download_manifest.yaml" && -f "$WORKSPACE_PATH/scripts/download_models_manifest.py" ]]; then
-    echo "⬇️  Downloading Krita AI models (manifest profile krita_ai) into $COMFYUI_PATH/models"
-    python3 "$WORKSPACE_PATH/scripts/download_models_manifest.py" --profile krita_ai --models-dir "$COMFYUI_PATH/models" || true
-  else
-    echo "⚠️  AUTO_DOWNLOAD_KRITA_AI_MODELS=true but manifest downloader is missing in $WORKSPACE_PATH/scripts"
-  fi
-  if [[ -f /opt/krita-ai-diffusion/scripts/download_models.py ]]; then
-    echo "⬇️  Running Krita AI Diffusion download script (preset: $KRITA_DOWNLOAD_PRESET) into $COMFYUI_PATH"
-    ( cd /opt/krita-ai-diffusion && python3 scripts/download_models.py "$COMFYUI_PATH" $KRITA_DOWNLOAD_PRESET ) || true
-  else
-    echo "ℹ️  Krita download script not found at /opt/krita-ai-diffusion/scripts/download_models.py (skip)"
-  fi
+  # Background: multi-GB Krita model sets must not block ComfyUI / Experiments UI startup.
+  (
+    if [[ -f "$WORKSPACE_PATH/scripts/model_download_manifest.yaml" && -f "$WORKSPACE_PATH/scripts/download_models_manifest.py" ]]; then
+      echo "⬇️  Downloading Krita AI models (manifest profile krita_ai) into $COMFYUI_PATH/models (background)"
+      python3 "$WORKSPACE_PATH/scripts/download_models_manifest.py" --profile krita_ai --models-dir "$COMFYUI_PATH/models" || true
+    else
+      echo "⚠️  AUTO_DOWNLOAD_KRITA_AI_MODELS=true but manifest downloader is missing in $WORKSPACE_PATH/scripts"
+    fi
+    if [[ -f /opt/krita-ai-diffusion/scripts/download_models.py ]]; then
+      echo "⬇️  Running Krita AI Diffusion download script (preset: $KRITA_DOWNLOAD_PRESET) into $COMFYUI_PATH (background)"
+      ( cd /opt/krita-ai-diffusion && python3 scripts/download_models.py "$COMFYUI_PATH" $KRITA_DOWNLOAD_PRESET ) || true
+    else
+      echo "ℹ️  Krita download script not found at /opt/krita-ai-diffusion/scripts/download_models.py (skip)"
+    fi
+  ) &
 fi
 
 # Optional: model alias/fixups (non-fatal)

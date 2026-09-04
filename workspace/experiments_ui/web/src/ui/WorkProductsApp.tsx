@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createPortal } from "react-dom";
 import { discardShapeFactoryJob, fetchShapeFactoryWorkProducts, finishShapeFactoryEdit, claimShapeFactoryFromQueue, promoteShapeFactoryTemplate, replayShapeFactory, unqueueShapeFactory, updatePendingShapeFactoryTrim, updateShapeFactoryOwnedLoras, updateShapeFactoryOwnedParams, updateShapeFactoryOwnedPrompt } from "./api";
@@ -858,6 +858,55 @@ type InputTrimState = {
   warning: string | null;
   clampedDefault: boolean;
 };
+
+function useNearViewport(rootMarginPx = 900): { ref: React.RefObject<HTMLDivElement | null>; near: boolean } {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [near, setNear] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const io = new IntersectionObserver(([entry]) => setNear(Boolean(entry?.isIntersecting)), {
+      root: null,
+      rootMargin: `${rootMarginPx}px 0px`,
+      threshold: 0,
+    });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [rootMarginPx]);
+  return { ref, near };
+}
+
+function LazyWorkProductMedia({
+  item,
+  children,
+}: {
+  item: WorkProductItem;
+  children: React.ReactNode;
+}) {
+  const { ref, near } = useNearViewport(900);
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    if (near) setArmed(true);
+  }, [near]);
+  const preview = sourcePreviewUrls(item);
+  return (
+    <div ref={ref} className="work-product-viewer">
+      {armed ? (
+        children
+      ) : (
+        <div className="work-product-viewer__main">
+          <div className="work-product-viewer__empty" aria-hidden>
+            {preview.thumb ? (
+              <img className="work-product-live__img" src={preview.thumb} alt="" />
+            ) : (
+              <span className="factory-muted">Scroll to load media</span>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function emptyTrimState(fps = 18): InputTrimState {
   return {
@@ -4190,7 +4239,7 @@ function WorkProductDetails({
   );
 }
 
-function WorkProductRow({
+function WorkProductRowInner({
   item,
   layout,
   families,
@@ -4300,6 +4349,7 @@ function WorkProductRow({
         ) : null}
       </header>
       <div className="work-product-row__body">
+        <LazyWorkProductMedia item={item}>
         <WorkProductViewer
           item={item}
           outputTrim={outputTrim}
@@ -4338,6 +4388,7 @@ function WorkProductRow({
             if (intent && onOpenSubmit) onOpenSubmit(intent);
           }}
         />
+        </LazyWorkProductMedia>
         <WorkProductDetails
           item={item}
           families={families}
@@ -4352,6 +4403,8 @@ function WorkProductRow({
     </article>
   );
 }
+
+const WorkProductRow = React.memo(WorkProductRowInner);
 
 export function WorkProductsApp() {
   const deepLink = useMemo(() => parseWorkbenchDeepLink(), []);
@@ -4379,14 +4432,19 @@ export function WorkProductsApp() {
   const [focusMedia, setFocusMedia] = useState<string | null>(() => deepLink.media);
   const deepLinkScrolled = useRef(false);
   const bulkDiscardMutation = useMutation({ mutationFn: discardShapeFactoryJob });
+  const onRowCommitted = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductsRoot });
+  }, [queryClient]);
   const queryState = useQuery({
     queryKey: queryKeys.shapeFactory.workProducts({ limit, hourlyOnly, family: null }),
     queryFn: () => fetchShapeFactoryWorkProducts({ limit, hourlyOnly }),
     staleTime: 30_000,
     placeholderData: (prev) => prev,
     refetchInterval: (query) => {
+      if (typeof document !== "undefined" && document.hidden) return false;
       const rows = (query.state.data?.items || []) as WorkProductItem[];
-      return rows.some((it) => isLivePreviewItem(it)) ? 8000 : false;
+      // Live frames already poll /api/comfy/live-status. This only picks up completed outputs.
+      return rows.some((it) => isLivePreviewItem(it)) ? 30_000 : false;
     },
     refetchIntervalInBackground: false,
   });
@@ -4924,9 +4982,7 @@ export function WorkProductsApp() {
                 extendFamilyDefaults={extendFamilyDefaults}
                 focused={isFocused}
                 onOpenSubmit={setSubmitModalIntent}
-                onCommitted={() => {
-                  void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductsRoot });
-                }}
+                onCommitted={onRowCommitted}
               />
             );
           })}
