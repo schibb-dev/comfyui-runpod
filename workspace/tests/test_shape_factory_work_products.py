@@ -14,9 +14,11 @@ from shape_factory_work_products import (
     attach_live_comfy_queue,
     construction_from_plan,
     decode_prompt_markup,
+    get_work_product,
     is_extend_family_option,
     job_is_hourly_product,
     list_extend_family_defaults,
+    list_family_prompt_profiles,
     list_recent_work_products,
     list_shape_families,
     list_submit_family_sets,
@@ -268,6 +270,41 @@ class TestWorkProducts(unittest.TestCase):
             payload = list_recent_work_products(data_root=data, output_root=out, limit=10, hourly_only=True)
             self.assertEqual([it["job_key"] for it in payload["items"]], ["hourly__new", "hourly__old"])
 
+    def test_get_work_product_loads_job_outside_recent_window(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            data = root / "data"
+            out = root / "output"
+            jobs = data / "shape_factory" / "jobs" / "DEMO"
+            jobs.mkdir(parents=True)
+            out.mkdir(parents=True)
+            old = {
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "family_slug": "DEMO",
+                "job_key": "hourly__archive",
+                "pick_mode": "pool_product",
+                "submit": {"status": "complete", "prompt_id": "pid-archive"},
+            }
+            new = {
+                "created_at": "2026-07-14T12:00:00+00:00",
+                "family_slug": "DEMO",
+                "job_key": "hourly__fresh",
+                "submit": {"status": "complete"},
+            }
+            (jobs / "hourly__archive.job.json").write_text(json.dumps(old) + "\n", encoding="utf-8")
+            (jobs / "hourly__fresh.job.json").write_text(json.dumps(new) + "\n", encoding="utf-8")
+            recent = list_recent_work_products(data_root=data, output_root=out, limit=1, hourly_only=True)
+            self.assertEqual([it["job_key"] for it in recent["items"]], ["hourly__fresh"])
+            payload = get_work_product(data_root=data, output_root=out, job_key="hourly__archive")
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["item"]["job_key"], "hourly__archive")
+            self.assertEqual(payload["item"]["prompt_id"], "pid-archive")
+            by_pid = get_work_product(data_root=data, output_root=out, prompt_id="pid-archive")
+            self.assertEqual(by_pid["item"]["job_key"], "hourly__archive")
+            missing = get_work_product(data_root=data, output_root=out, job_key="no-such-job")
+            self.assertFalse(missing["ok"])
+            self.assertEqual(missing["error"], "not_found")
+
     def test_shape_view_parses_contract(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -394,6 +431,7 @@ class TestWorkProducts(unittest.TestCase):
             fams = list_shape_families(data)
             slugs = {f["slug"] for f in fams}
             self.assertEqual(slugs, {"Alpha", "Beta"})
+            self.assertNotIn("prompt_profiles", fams[0])
 
             out = root / "output"
             jobs = data / "shape_factory" / "jobs" / "Alpha"
@@ -414,6 +452,32 @@ class TestWorkProducts(unittest.TestCase):
             self.assertIn("families", payload)
             self.assertEqual({f["slug"] for f in payload["families"]}, {"Alpha", "Beta"})
             self.assertEqual(payload.get("extend_family_defaults"), {})
+
+    def test_list_family_prompt_profiles_named_catalogs(self):
+        with tempfile.TemporaryDirectory() as td:
+            data = Path(td) / "data"
+            prompts = data / "pools" / "FB9_GEX" / "prompts"
+            replay = prompts / "_replay"
+            replay.mkdir(parents=True)
+            (prompts / "catalog-default.json").write_text(
+                '{"label": "catalog-default", "positive": "a", "negative": ""}\n',
+                encoding="utf-8",
+            )
+            (prompts / "catalog-faceblast-extend.json").write_text(
+                '{"label": "catalog-faceblast-extend", "positive": "b", "negative": ""}\n',
+                encoding="utf-8",
+            )
+            (replay / "deadbeef.json").write_text('{"label": "replay"}\n', encoding="utf-8")
+            rows = list_family_prompt_profiles(data, "FB9_GEX")
+            self.assertEqual([r["slug"] for r in rows], ["catalog-default", "catalog-faceblast-extend"])
+            shapes = data / "shapes"
+            shapes.mkdir(parents=True)
+            (shapes / "FB9_GEX.shape.yaml").write_text(
+                "family_slug: FB9_GEX\nshape_id: wan_v2v_gex\n",
+                encoding="utf-8",
+            )
+            fams = list_shape_families(data)
+            self.assertEqual(len(fams[0].get("prompt_profiles") or []), 2)
 
     def test_list_extend_family_defaults_from_pipeline(self):
         with tempfile.TemporaryDirectory() as td:

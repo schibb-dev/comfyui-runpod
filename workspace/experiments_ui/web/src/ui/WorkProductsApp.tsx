@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createPortal } from "react-dom";
-import { discardShapeFactoryJob, fetchShapeFactoryWorkProducts, finishShapeFactoryEdit, claimShapeFactoryFromQueue, promoteShapeFactoryTemplate, replayShapeFactory, unqueueShapeFactory, updatePendingShapeFactoryTrim, updateShapeFactoryOwnedLoras, updateShapeFactoryOwnedParams, updateShapeFactoryOwnedPrompt } from "./api";
+import { discardShapeFactoryJob, fetchShapeFactoryWorkProduct, fetchShapeFactoryWorkProducts, finishShapeFactoryEdit, claimShapeFactoryFromQueue, promoteShapeFactoryTemplate, replayShapeFactory, swapShapeFactoryFamily, unqueueShapeFactory, updatePendingShapeFactoryTrim, updateShapeFactoryOwnedLoras, updateShapeFactoryOwnedParams, updateShapeFactoryOwnedPrompt } from "./api";
 import type { ShapeFactoryClip } from "./api";
-import { ClipBookmarksRail } from "./ClipBookmarksRail";
+import { ClipBookmarksRail, pickDefaultClip } from "./ClipBookmarksRail";
 import { ComfyLiveMetricsBar, ComfyLivePreview } from "./ComfyLivePreview";
 import { PageHeader } from "./PageHeader";
 import { PipelineScreen } from "./PipelineScreen";
@@ -32,11 +32,12 @@ import {
 import { useTrimPlaybackEnforcement, type TrimPlaybackMode } from "./useTrimPlayback";
 import { discoveryLibraryHref, extractContentIdFromName, parseWorkbenchDeepLink, stillsHref, buildSubmitDeepLink, lineageSummaryHref, workbenchHref, workbenchHrefForMedia, isLineageInputStill, type SubmitDeepLink } from "./discoveryDeepLink";
 import { factoryMapFamilyHref } from "./factoryMapRoute";
+import { AppetitePreviewBadge, AppetitePreviewFrame } from "./AppetitePreviewBadge";
 import { WorkProductAppetiteStrip } from "./WorkProductAppetiteStrip";
 import { DiscoveryAssetLineagePanel } from "./DiscoveryAssetLineagePanel";
 import { SubmitComposerModal } from "./SubmitComposerModal";
-import { rememberFamiliesFromWorkProducts } from "./shapeFactorySessionCache";
-import { isStillMediaPath } from "./submitFamily";
+import { loadClipsForMedia, rememberFamiliesFromWorkProducts } from "./shapeFactorySessionCache";
+import { familySwapTargets, isStillMediaPath, pickDefaultSwapTarget } from "./submitFamily";
 import { queryKeys } from "./queryKeys";
 import type {
   DiscoveryAssetLineageItemSummary,
@@ -64,6 +65,7 @@ const HOURLY_ONLY_KEY = "work-products-hourly-only";
 const STATUS_FILTER_OFF_KEY = "work-products-status-filter-off";
 const MARKER_FILTER_OFF_KEY = "work-products-marker-filter-off";
 const DECODE_VAE_FILTER_KEY = "work-products-decode-vae-filter";
+const CHROME_KEY = "work-products-chrome-v2";
 
 type WorkProductSort = "created_desc" | "created_asc" | "family_asc" | "family_desc" | "status" | "pick_mode";
 type DecodeVaeFilter = "all" | "tiled" | "plain";
@@ -177,6 +179,28 @@ function loadHourlyOnly(): boolean {
 function persistHourlyOnly(hourlyOnly: boolean) {
   try {
     localStorage.setItem(HOURLY_ONLY_KEY, hourlyOnly ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadChrome(): { tools: boolean; filters: boolean } {
+  try {
+    const raw = localStorage.getItem(CHROME_KEY);
+    if (!raw) return { tools: false, filters: false };
+    const parsed = JSON.parse(raw) as { tools?: unknown; filters?: unknown };
+    return {
+      tools: parsed.tools === true,
+      filters: parsed.filters === true,
+    };
+  } catch {
+    return { tools: false, filters: false };
+  }
+}
+
+function persistChrome(next: { tools: boolean; filters: boolean }) {
+  try {
+    localStorage.setItem(CHROME_KEY, JSON.stringify(next));
   } catch {
     /* ignore */
   }
@@ -399,6 +423,14 @@ function isNonFactoryWorkProduct(item: WorkProductItem): boolean {
 function canUnqueueWorkProduct(item: WorkProductItem): boolean {
   if (workProductStatusKey(item) !== "queued") return false;
   return Boolean(String(item.prompt_id || "").trim());
+}
+
+/** Queued / pending jobs can be retargeted: replay as another family, then retire the old one. */
+function canSwapFamilyWorkProduct(item: WorkProductItem): boolean {
+  if (!String(item.job_key || "").trim()) return false;
+  if (isNonFactoryWorkProduct(item)) return false;
+  const s = workProductStatusKey(item);
+  return s === "queued" || s === "pending" || s === "editing" || s === "submitted";
 }
 
 /** Pending (pre-Comfy) factory jobs can be hard-deleted from the active set. */
@@ -752,6 +784,12 @@ function workbenchSourceBinding(item: WorkProductItem): WorkProductBinding | nul
   );
 }
 
+/** Job output the Workbench strip and list badge both rate. Never the source still. */
+function workbenchJobAppetiteRelpath(item: WorkProductItem): string | null {
+  const out = String(item.output_relpath || "").trim();
+  return out || null;
+}
+
 /** Relpath for advancing / submitting from this job's input (not its output). */
 function workbenchSourceMediaRelpath(item: WorkProductItem): string | null {
   const source = workbenchSourceBinding(item);
@@ -820,7 +858,7 @@ function WorkProductSourceThumbPreview({ item }: { item: WorkProductItem }) {
             src={video}
             muted
             playsInline
-            preload="metadata"
+            preload="none"
           />
         ) : (
           <div
@@ -843,6 +881,7 @@ function WorkProductSourceThumbPreview({ item }: { item: WorkProductItem }) {
         >
           {kind}
         </span>
+        <AppetitePreviewBadge relpath={workbenchSourceMediaRelpath(item) || item.output_relpath} />
       </div>
     </div>
   );
@@ -859,53 +898,8 @@ type InputTrimState = {
   clampedDefault: boolean;
 };
 
-function useNearViewport(rootMarginPx = 900): { ref: React.RefObject<HTMLDivElement | null>; near: boolean } {
-  const ref = useRef<HTMLDivElement | null>(null);
-  const [near, setNear] = useState(false);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const io = new IntersectionObserver(([entry]) => setNear(Boolean(entry?.isIntersecting)), {
-      root: null,
-      rootMargin: `${rootMarginPx}px 0px`,
-      threshold: 0,
-    });
-    io.observe(el);
-    return () => io.disconnect();
-  }, [rootMarginPx]);
-  return { ref, near };
-}
-
-function LazyWorkProductMedia({
-  item,
-  children,
-}: {
-  item: WorkProductItem;
-  children: React.ReactNode;
-}) {
-  const { ref, near } = useNearViewport(900);
-  const [armed, setArmed] = useState(false);
-  useEffect(() => {
-    if (near) setArmed(true);
-  }, [near]);
-  const preview = sourcePreviewUrls(item);
-  return (
-    <div ref={ref} className="work-product-viewer">
-      {armed ? (
-        children
-      ) : (
-        <div className="work-product-viewer__main">
-          <div className="work-product-viewer__empty" aria-hidden>
-            {preview.thumb ? (
-              <img className="work-product-live__img" src={preview.thumb} alt="" />
-            ) : (
-              <span className="factory-muted">Scroll to load media</span>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
+function workbenchJobDomId(jobKey: string | null | undefined): string {
+  return `workbench-job-${String(jobKey || "").replace(/[^\w.-]+/g, "_")}`;
 }
 
 function emptyTrimState(fps = 18): InputTrimState {
@@ -917,6 +911,82 @@ function emptyTrimState(fps = 18): InputTrimState {
     fps,
     warning: null,
     clampedDefault: false,
+  };
+}
+
+function trimHasMarks(state: Pick<InputTrimState, "markIn" | "markOut">): boolean {
+  return state.markIn != null || state.markOut != null;
+}
+
+function readMediaDuration(el: HTMLVideoElement | null | undefined, fallback = 0): number {
+  const d = el?.duration;
+  if (Number.isFinite(d) && (d as number) > 0) return d as number;
+  return fallback > 0 ? fallback : 0;
+}
+
+async function preferredWorkbenchTrim(opts: {
+  rel: string | null;
+  legacyKey: string;
+  defaults: { skip_first_frames: number; frame_load_cap: number };
+  durationHint: number;
+  fps: number;
+  seedFromAppliedVhs: boolean;
+}): Promise<{
+  markIn: number | null;
+  markOut: number | null;
+  dirty: boolean;
+  warning: string | null;
+  clampedDefault: boolean;
+  clip: ShapeFactoryClip | null;
+}> {
+  if (opts.rel) {
+    const saved = await loadDiscoveryTrimAsync(TRIM_CONTEXT_WORK_PRODUCTS, opts.rel, opts.legacyKey);
+    if (saved) {
+      return {
+        markIn: saved.in,
+        markOut: saved.out,
+        dirty: true,
+        warning: null,
+        clampedDefault: false,
+        clip: null,
+      };
+    }
+    try {
+      const def = pickDefaultClip(await loadClipsForMedia(opts.rel));
+      if (def) {
+        return {
+          markIn: def.mark_in_s,
+          markOut: def.mark_out_s,
+          dirty: false,
+          warning: null,
+          clampedDefault: false,
+          clip: def,
+        };
+      }
+    } catch {
+      /* clips are optional — fall through */
+    }
+  }
+  const nontrivial =
+    Number(opts.defaults.skip_first_frames || 0) > 0 || Number(opts.defaults.frame_load_cap || 0) > 0;
+  if (opts.seedFromAppliedVhs && nontrivial && opts.durationHint > 0) {
+    const seeded = vhsDefaultsToMarks(opts.defaults, opts.durationHint, opts.fps);
+    return {
+      markIn: seeded.markIn,
+      markOut: seeded.markOut,
+      dirty: false,
+      warning: seeded.warning,
+      clampedDefault: seeded.clamped,
+      clip: null,
+    };
+  }
+  return {
+    markIn: null,
+    markOut: null,
+    dirty: false,
+    warning: null,
+    clampedDefault: false,
+    clip: null,
   };
 }
 
@@ -966,8 +1036,8 @@ function WorkProductViewer({
   item: WorkProductItem;
   outputTrim: InputTrimState;
   sourceTrim: InputTrimState;
-  onOutputTrimChange: (next: InputTrimState) => void;
-  onSourceTrimChange: (next: InputTrimState) => void;
+  onOutputTrimChange: React.Dispatch<React.SetStateAction<InputTrimState>>;
+  onSourceTrimChange: React.Dispatch<React.SetStateAction<InputTrimState>>;
   outputDefaults: { skip_first_frames: number; frame_load_cap: number };
   selectedClipId?: string | null;
   onSelectClip?: (clip: ShapeFactoryClip | null) => void;
@@ -1001,6 +1071,7 @@ function WorkProductViewer({
   const [sourceTime, setSourceTime] = useState(0);
   const [outputMode, setOutputMode] = useState<TrimPlaybackMode>("repeat");
   const [sourceMode, setSourceMode] = useState<TrimPlaybackMode>("repeat");
+  const [outputClipId, setOutputClipId] = useState<string | null>(null);
   const fps = parseFps(item.media_meta?.fps, 18);
   const construction = item.construction && typeof item.construction === "object" ? item.construction : {};
   const generationBands = originGenerationBands({
@@ -1011,7 +1082,6 @@ function WorkProductViewer({
     outputFrameCount: Number(item.media_meta?.frame_count),
     overlapFrames: Number(item.timing?.overlap ?? construction.overlap),
   });
-  const trimEditable = isJobTrimEditable(item);
   const pendingJobTrim = canUpdatePendingJobTrim(item);
   const pendingTrimTimerRef = useRef<number | null>(null);
   const queryClient = useQueryClient();
@@ -1058,6 +1128,21 @@ function WorkProductViewer({
     }, 450);
   };
 
+  useEffect(() => {
+    const outDur = readMediaDuration(outputVideoRef.current, 0);
+    if (outDur > 0) {
+      onOutputTrimChange((prev) =>
+        Math.abs(prev.duration - outDur) > 0.05 ? { ...prev, duration: outDur } : prev,
+      );
+    }
+    const srcDur = readMediaDuration(sourceVideoRef.current, 0);
+    if (srcDur > 0) {
+      onSourceTrimChange((prev) =>
+        Math.abs(prev.duration - srcDur) > 0.05 ? { ...prev, duration: srcDur } : prev,
+      );
+    }
+  }, [videoUrl, sourceUrl, queuedSourcePlayUrl, onOutputTrimChange, onSourceTrimChange]);
+
   useTrimPlaybackEnforcement(outputVideoRef, {
     mediaKey: outputRel || item.job_key,
     markIn: outputTrim.markIn,
@@ -1078,66 +1163,47 @@ function WorkProductViewer({
     const boot = async (
       rel: string | null,
       defaults: { skip_first_frames: number; frame_load_cap: number },
-      apply: (s: InputTrimState) => void,
+      apply: React.Dispatch<React.SetStateAction<InputTrimState>>,
       key: string,
       durationHint: number,
-      /** When false, leave marks unset (full file) unless a saved sidecar exists. */
-      seedFromDefaults: boolean,
+      seedFromAppliedVhs: boolean,
+      onClip: (clip: ShapeFactoryClip | null) => void,
     ) => {
-      let markIn: number | null = null;
-      let markOut: number | null = null;
-      let dirty = false;
-      if (rel) {
-        const saved = await loadDiscoveryTrimAsync(TRIM_CONTEXT_WORK_PRODUCTS, rel, key);
-        if (saved) {
-          markIn = saved.in;
-          markOut = saved.out;
-          dirty = true;
-        }
-      }
+      const pref = await preferredWorkbenchTrim({
+        rel,
+        legacyKey: key,
+        defaults,
+        durationHint,
+        fps,
+        seedFromAppliedVhs,
+      });
       if (cancelled) return;
-      if (!dirty) {
-        const nontrivial =
-          Number(defaults.skip_first_frames || 0) > 0 || Number(defaults.frame_load_cap || 0) > 0;
-        if (seedFromDefaults && nontrivial && durationHint > 0) {
-          const seeded = vhsDefaultsToMarks(defaults, durationHint, fps);
-          apply({
-            markIn: seeded.markIn,
-            markOut: seeded.markOut,
-            dirty: false,
-            duration: durationHint,
-            fps,
-            warning: seeded.warning,
-            clampedDefault: seeded.clamped,
-          });
-        } else {
-          // New generations / full-file jobs: do not paint catalog template fossils
-          // (e.g. FB9_GEX skip=85) as if this media were already trimmed.
-          apply({
-            markIn: null,
-            markOut: null,
-            dirty: false,
-            duration: durationHint,
-            fps,
-            warning: null,
-            clampedDefault: false,
-          });
+      apply((prev) => {
+        if (prev.dirty || trimHasMarks(prev)) {
+          const d = durationHint > 0 ? durationHint : prev.duration;
+          return d > 0 && Math.abs(prev.duration - d) > 0.05 ? { ...prev, duration: d } : prev;
         }
-      } else {
-        apply({
-          markIn,
-          markOut,
-          dirty: true,
+        return {
+          markIn: pref.markIn,
+          markOut: pref.markOut,
+          dirty: pref.dirty,
           duration: durationHint,
           fps,
-          warning: null,
-          clampedDefault: false,
-        });
-      }
+          warning: pref.warning,
+          clampedDefault: pref.clampedDefault,
+        };
+      });
+      if (pref.clip) onClip(pref.clip);
     };
-    // Output: show saved sidecar only — never seed extend-family template skip/cap.
-    void boot(outputRel, outputDefaults, onOutputTrimChange, `wp-out:${item.job_key}`, Number(item.media_meta?.duration) || 0, false);
-    // Source: seed only from this job's applied window when nontrivial.
+    void boot(
+      outputRel,
+      outputDefaults,
+      onOutputTrimChange,
+      `wp-out:${item.job_key}`,
+      Number(item.media_meta?.duration) || 0,
+      false,
+      (clip) => setOutputClipId(clip.clip_id),
+    );
     void boot(
       queuedSourceRel || sourceRel,
       sourceDefaults,
@@ -1145,6 +1211,7 @@ function WorkProductViewer({
       `wp-src:${item.job_key}`,
       0,
       true,
+      (clip) => onSelectClip?.(clip),
     );
     return () => {
       cancelled = true;
@@ -1164,21 +1231,47 @@ function WorkProductViewer({
 
   const onMeta = (
     el: HTMLVideoElement,
-    _defaults: { skip_first_frames: number; frame_load_cap: number },
-    current: InputTrimState,
-    apply: (s: InputTrimState) => void,
+    defaults: { skip_first_frames: number; frame_load_cap: number },
+    apply: React.Dispatch<React.SetStateAction<InputTrimState>>,
     rel: string | null,
     legacyKey: string,
+    seedFromAppliedVhs: boolean,
+    onClip?: (clip: ShapeFactoryClip) => void,
   ) => {
-    const duration = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : current.duration;
+    const duration = readMediaDuration(el, 0);
     if (!(duration > 0)) return;
-    // Only refresh duration from the element. Do not invent trim marks from family
-    // template defaults when the user has not set / saved a window.
-    if (Math.abs(current.duration - duration) > 0.05) {
-      apply({ ...current, duration });
-    }
-    void rel;
-    void legacyKey;
+    apply((current) => {
+      if (current.dirty || trimHasMarks(current)) {
+        return Math.abs(current.duration - duration) > 0.05 ? { ...current, duration } : current;
+      }
+      return current.duration > 0 && Math.abs(current.duration - duration) <= 0.05
+        ? current
+        : { ...current, duration };
+    });
+    void preferredWorkbenchTrim({
+      rel,
+      legacyKey,
+      defaults,
+      durationHint: duration,
+      fps,
+      seedFromAppliedVhs,
+    }).then((pref) => {
+      apply((current) => {
+        if (current.dirty || trimHasMarks(current)) {
+          return Math.abs(current.duration - duration) > 0.05 ? { ...current, duration } : current;
+        }
+        return {
+          markIn: pref.markIn,
+          markOut: pref.markOut,
+          dirty: pref.dirty,
+          duration,
+          fps,
+          warning: pref.warning,
+          clampedDefault: pref.clampedDefault,
+        };
+      });
+      if (pref.clip) onClip?.(pref.clip);
+    });
   };
 
   const persistTrim = (
@@ -1191,7 +1284,7 @@ function WorkProductViewer({
     },
   ) => {
     if (!(next.duration > 0)) return;
-    if (next.dirty) {
+    if (next.dirty || trimHasMarks(next)) {
       void persistDiscoveryTrimAsync({
         context: TRIM_CONTEXT_WORK_PRODUCTS,
         mediaRelpath: rel,
@@ -1201,7 +1294,24 @@ function WorkProductViewer({
         duration: next.duration,
       });
     }
-    if (opts?.updatePendingJob && opts.defaults) schedulePendingJobTrimUpdate(next, opts.defaults);
+    if (opts?.updatePendingJob && pendingJobTrim && opts.defaults) {
+      schedulePendingJobTrimUpdate(next, opts.defaults);
+    }
+  };
+
+  const applyDefaultSourceClip = (clip: ShapeFactoryClip) => {
+    if (!selectedClipId) onSelectClip?.(clip);
+    onSourceTrimChange((prev) => {
+      if (prev.dirty || trimHasMarks(prev)) return prev;
+      return {
+        ...prev,
+        markIn: clip.mark_in_s,
+        markOut: clip.mark_out_s,
+        dirty: false,
+        warning: null,
+        clampedDefault: false,
+      };
+    });
   };
 
   return (
@@ -1209,19 +1319,40 @@ function WorkProductViewer({
       <div className="work-product-viewer__main">
         {videoUrl ? (
           <>
-            <video
-              ref={outputVideoRef}
-              className="work-product-viewer__video"
-              src={videoUrl}
-              poster={thumbUrl || undefined}
-              controls
-              playsInline
-              preload="metadata"
-              onTimeUpdate={(e) => setOutputTime(e.currentTarget.currentTime || 0)}
-              onLoadedMetadata={(e) =>
-                onMeta(e.currentTarget, outputDefaults, outputTrim, onOutputTrimChange, outputRel, `wp-out:${item.job_key}`)
-              }
-            />
+            <AppetitePreviewFrame relpath={outputRel}>
+              <video
+                ref={outputVideoRef}
+                className="work-product-viewer__video"
+                src={videoUrl}
+                poster={thumbUrl || undefined}
+                controls
+                playsInline
+                preload="metadata"
+                onTimeUpdate={(e) => setOutputTime(e.currentTarget.currentTime || 0)}
+                onLoadedMetadata={(e) =>
+                  onMeta(
+                    e.currentTarget,
+                    outputDefaults,
+                    onOutputTrimChange,
+                    outputRel,
+                    `wp-out:${item.job_key}`,
+                    false,
+                    (clip) => setOutputClipId(clip.clip_id),
+                  )
+                }
+                onLoadedData={(e) =>
+                  onMeta(
+                    e.currentTarget,
+                    outputDefaults,
+                    onOutputTrimChange,
+                    outputRel,
+                    `wp-out:${item.job_key}`,
+                    false,
+                    (clip) => setOutputClipId(clip.clip_id),
+                  )
+                }
+              />
+            </AppetitePreviewFrame>
             <VideoTrimControls
               className="work-product-viewer__trim"
               videoRef={outputVideoRef}
@@ -1237,14 +1368,32 @@ function WorkProductViewer({
               onSeek={setOutputTime}
               onSyncTime={setOutputTime}
               onMarkInChange={(v) => {
-                const next = { ...outputTrim, markIn: v, dirty: true, warning: null, clampedDefault: false };
-                onOutputTrimChange(next);
-                persistTrim(next, outputRel, `wp-out:${item.job_key}`);
+                onOutputTrimChange((prev) => {
+                  const next = {
+                    ...prev,
+                    markIn: v,
+                    dirty: true,
+                    warning: null,
+                    clampedDefault: false,
+                    duration: readMediaDuration(outputVideoRef.current, prev.duration),
+                  };
+                  persistTrim(next, outputRel, `wp-out:${item.job_key}`);
+                  return next;
+                });
               }}
               onMarkOutChange={(v) => {
-                const next = { ...outputTrim, markOut: v, dirty: true, warning: null, clampedDefault: false };
-                onOutputTrimChange(next);
-                persistTrim(next, outputRel, `wp-out:${item.job_key}`);
+                onOutputTrimChange((prev) => {
+                  const next = {
+                    ...prev,
+                    markOut: v,
+                    dirty: true,
+                    warning: null,
+                    clampedDefault: false,
+                    duration: readMediaDuration(outputVideoRef.current, prev.duration),
+                  };
+                  persistTrim(next, outputRel, `wp-out:${item.job_key}`);
+                  return next;
+                });
               }}
               onModeChange={setOutputMode}
               onClear={() => {
@@ -1273,6 +1422,46 @@ function WorkProductViewer({
                 {outputTrim.warning}
               </p>
             ) : null}
+            <ClipBookmarksRail
+              mediaRelpath={outputRel}
+              duration={outputTrim.duration}
+              markIn={outputTrim.markIn}
+              markOut={outputTrim.markOut}
+              trimEditable
+              origin="workbench"
+              selectedClipId={outputClipId}
+              onSelectClip={(clip) => setOutputClipId(clip?.clip_id || null)}
+              onDefaultClip={(clip) => {
+                setOutputClipId((id) => id || clip.clip_id);
+                onOutputTrimChange((prev) => {
+                  if (prev.dirty || trimHasMarks(prev)) return prev;
+                  return {
+                    ...prev,
+                    markIn: clip.mark_in_s,
+                    markOut: clip.mark_out_s,
+                    dirty: false,
+                    warning: null,
+                    clampedDefault: false,
+                  };
+                });
+              }}
+              onApplyClip={(mi, mo, clip) => {
+                onOutputTrimChange((prev) => {
+                  const next = {
+                    ...prev,
+                    markIn: mi,
+                    markOut: mo,
+                    dirty: true,
+                    warning: null,
+                    clampedDefault: false,
+                    duration: readMediaDuration(outputVideoRef.current, prev.duration),
+                  };
+                  persistTrim(next, outputRel, `wp-out:${item.job_key}`);
+                  return next;
+                });
+                setOutputClipId(clip?.clip_id || null);
+              }}
+            />
           </>
         ) : showRunningLive ? (
           <div className="work-product-viewer__live-plus-source">
@@ -1281,6 +1470,7 @@ function WorkProductViewer({
               promptId={promptId}
               submittedAt={item.submitted_at || item.created_at}
               showMetrics={false}
+              appetiteRelpath={outputRel || workbenchSourceMediaRelpath(item)}
             />
             {previewUrls.thumb ? (
               <div className="work-product-viewer__live-source" title={previewUrls.label}>
@@ -1290,6 +1480,7 @@ function WorkProductViewer({
                   alt={previewUrls.label || "source"}
                 />
                 <span className="work-product-live__badge work-product-live__badge--queued">source</span>
+                <AppetitePreviewBadge relpath={workbenchSourceMediaRelpath(item)} />
               </div>
             ) : null}
           </div>
@@ -1310,10 +1501,22 @@ function WorkProductViewer({
                   onMeta(
                     e.currentTarget,
                     sourceDefaults,
-                    sourceTrim,
                     onSourceTrimChange,
                     queuedSourceRel,
                     `wp-src:${item.job_key}`,
+                    true,
+                    (clip) => onSelectClip?.(clip),
+                  )
+                }
+                onLoadedData={(e) =>
+                  onMeta(
+                    e.currentTarget,
+                    sourceDefaults,
+                    onSourceTrimChange,
+                    queuedSourceRel,
+                    `wp-src:${item.job_key}`,
+                    true,
+                    (clip) => onSelectClip?.(clip),
                   )
                 }
               />
@@ -1325,6 +1528,7 @@ function WorkProductViewer({
                   {queuedStatusMeta.label}
                 </span>
               ) : null}
+              <AppetitePreviewBadge relpath={queuedSourceRel} />
             </div>
             <VideoTrimControls
               className="work-product-viewer__trim"
@@ -1336,30 +1540,44 @@ function WorkProductViewer({
               mode={sourceMode}
               mediaSyncKey={queuedSourceRel || `src:${item.job_key}`}
               size="default"
-              readOnly={!trimEditable}
               onSeek={setSourceTime}
               onSyncTime={setSourceTime}
               onMarkInChange={(v) => {
-                if (!trimEditable) return;
-                const next = { ...sourceTrim, markIn: v, dirty: true, warning: null, clampedDefault: false };
-                onSourceTrimChange(next);
-                persistTrim(next, queuedSourceRel, `wp-src:${item.job_key}`, {
-                  updatePendingJob: true,
-                  defaults: sourceDefaults,
+                onSourceTrimChange((prev) => {
+                  const next = {
+                    ...prev,
+                    markIn: v,
+                    dirty: true,
+                    warning: null,
+                    clampedDefault: false,
+                    duration: readMediaDuration(sourceVideoRef.current, prev.duration),
+                  };
+                  persistTrim(next, queuedSourceRel, `wp-src:${item.job_key}`, {
+                    updatePendingJob: pendingJobTrim,
+                    defaults: sourceDefaults,
+                  });
+                  return next;
                 });
               }}
               onMarkOutChange={(v) => {
-                if (!trimEditable) return;
-                const next = { ...sourceTrim, markOut: v, dirty: true, warning: null, clampedDefault: false };
-                onSourceTrimChange(next);
-                persistTrim(next, queuedSourceRel, `wp-src:${item.job_key}`, {
-                  updatePendingJob: true,
-                  defaults: sourceDefaults,
+                onSourceTrimChange((prev) => {
+                  const next = {
+                    ...prev,
+                    markOut: v,
+                    dirty: true,
+                    warning: null,
+                    clampedDefault: false,
+                    duration: readMediaDuration(sourceVideoRef.current, prev.duration),
+                  };
+                  persistTrim(next, queuedSourceRel, `wp-src:${item.job_key}`, {
+                    updatePendingJob: pendingJobTrim,
+                    defaults: sourceDefaults,
+                  });
+                  return next;
                 });
               }}
               onModeChange={setSourceMode}
               onClear={() => {
-                if (!trimEditable) return;
                 const next: InputTrimState = {
                   markIn: null,
                   markOut: null,
@@ -1391,33 +1609,39 @@ function WorkProductViewer({
               duration={sourceTrim.duration}
               markIn={sourceTrim.markIn}
               markOut={sourceTrim.markOut}
-              trimEditable={trimEditable}
+              trimEditable
               origin="workbench"
               selectedClipId={selectedClipId}
               onSelectClip={onSelectClip}
               onUseForExtend={onUseForExtend}
-              onApplyClip={(mi, mo) => {
-                if (!trimEditable) return;
-                const next = {
-                  ...sourceTrim,
-                  markIn: mi,
-                  markOut: mo,
-                  dirty: true,
-                  warning: null,
-                  clampedDefault: false,
-                };
-                onSourceTrimChange(next);
-                persistTrim(next, queuedSourceRel, `wp-src:${item.job_key}`, {
-                  updatePendingJob: true,
-                  defaults: sourceDefaults,
+              onDefaultClip={applyDefaultSourceClip}
+              onApplyClip={(mi, mo, clip) => {
+                onSourceTrimChange((prev) => {
+                  const next = {
+                    ...prev,
+                    markIn: mi,
+                    markOut: mo,
+                    dirty: true,
+                    warning: null,
+                    clampedDefault: false,
+                    duration: readMediaDuration(sourceVideoRef.current, prev.duration),
+                  };
+                  persistTrim(next, queuedSourceRel, `wp-src:${item.job_key}`, {
+                    updatePendingJob: pendingJobTrim,
+                    defaults: sourceDefaults,
+                  });
+                  return next;
                 });
+                onSelectClip?.(clip || null);
               }}
             />
           </div>
         ) : showSourceThumb ? (
           <WorkProductSourceThumbPreview item={item} />
         ) : thumbUrl ? (
-          <img className="work-product-viewer__img" src={thumbUrl} alt={item.job_key} />
+          <AppetitePreviewFrame relpath={outputRel}>
+            <img className="work-product-viewer__img" src={thumbUrl} alt={item.job_key} />
+          </AppetitePreviewFrame>
         ) : (
           <div className="work-product-viewer__empty">No output yet ({item.status || "pending"})</div>
         )}
@@ -1426,20 +1650,41 @@ function WorkProductViewer({
         <div className="work-product-viewer__source" title={source?.basename || "source"}>
           {sourceUrl ? (
             <>
-              <video
-                ref={sourceVideoRef}
-                className="work-product-viewer__source-video"
-                src={sourceUrl}
-                poster={sourceThumb || undefined}
-                controls
-                playsInline
-                muted
-                preload="metadata"
+              <AppetitePreviewFrame relpath={sourceRel}>
+                <video
+                  ref={sourceVideoRef}
+                  className="work-product-viewer__source-video"
+                  src={sourceUrl}
+                  poster={sourceThumb || undefined}
+                  controls
+                  playsInline
+                  muted
+                  preload="metadata"
                 onTimeUpdate={(e) => setSourceTime(e.currentTarget.currentTime || 0)}
                 onLoadedMetadata={(e) =>
-                  onMeta(e.currentTarget, sourceDefaults, sourceTrim, onSourceTrimChange, sourceRel, `wp-src:${item.job_key}`)
+                  onMeta(
+                    e.currentTarget,
+                    sourceDefaults,
+                    onSourceTrimChange,
+                    sourceRel,
+                    `wp-src:${item.job_key}`,
+                    true,
+                    (clip) => onSelectClip?.(clip),
+                  )
                 }
-              />
+                onLoadedData={(e) =>
+                  onMeta(
+                    e.currentTarget,
+                    sourceDefaults,
+                    onSourceTrimChange,
+                    sourceRel,
+                    `wp-src:${item.job_key}`,
+                    true,
+                    (clip) => onSelectClip?.(clip),
+                  )
+                }
+                />
+              </AppetitePreviewFrame>
               <VideoTrimControls
                 className="work-product-viewer__trim"
                 videoRef={sourceVideoRef}
@@ -1450,30 +1695,44 @@ function WorkProductViewer({
                 mode={sourceMode}
                 mediaSyncKey={sourceRel || `src:${item.job_key}`}
                 size="default"
-                readOnly={!trimEditable}
                 onSeek={setSourceTime}
                 onSyncTime={setSourceTime}
                 onMarkInChange={(v) => {
-                  if (!trimEditable) return;
-                  const next = { ...sourceTrim, markIn: v, dirty: true, warning: null, clampedDefault: false };
-                  onSourceTrimChange(next);
-                  persistTrim(next, sourceRel, `wp-src:${item.job_key}`, {
-                    updatePendingJob: true,
-                    defaults: sourceDefaults,
+                  onSourceTrimChange((prev) => {
+                    const next = {
+                      ...prev,
+                      markIn: v,
+                      dirty: true,
+                      warning: null,
+                      clampedDefault: false,
+                      duration: readMediaDuration(sourceVideoRef.current, prev.duration),
+                    };
+                    persistTrim(next, sourceRel, `wp-src:${item.job_key}`, {
+                      updatePendingJob: pendingJobTrim,
+                      defaults: sourceDefaults,
+                    });
+                    return next;
                   });
                 }}
                 onMarkOutChange={(v) => {
-                  if (!trimEditable) return;
-                  const next = { ...sourceTrim, markOut: v, dirty: true, warning: null, clampedDefault: false };
-                  onSourceTrimChange(next);
-                  persistTrim(next, sourceRel, `wp-src:${item.job_key}`, {
-                    updatePendingJob: true,
-                    defaults: sourceDefaults,
+                  onSourceTrimChange((prev) => {
+                    const next = {
+                      ...prev,
+                      markOut: v,
+                      dirty: true,
+                      warning: null,
+                      clampedDefault: false,
+                      duration: readMediaDuration(sourceVideoRef.current, prev.duration),
+                    };
+                    persistTrim(next, sourceRel, `wp-src:${item.job_key}`, {
+                      updatePendingJob: pendingJobTrim,
+                      defaults: sourceDefaults,
+                    });
+                    return next;
                   });
                 }}
                 onModeChange={setSourceMode}
                 onClear={() => {
-                  if (!trimEditable) return;
                   const next: InputTrimState = {
                     markIn: null,
                     markOut: null,
@@ -1505,31 +1764,37 @@ function WorkProductViewer({
                 duration={sourceTrim.duration}
                 markIn={sourceTrim.markIn}
                 markOut={sourceTrim.markOut}
-                trimEditable={trimEditable}
+                trimEditable
                 origin="workbench"
                 selectedClipId={selectedClipId}
                 onSelectClip={onSelectClip}
                 onUseForExtend={onUseForExtend}
-                onApplyClip={(mi, mo) => {
-                  if (!trimEditable) return;
-                  const next = {
-                    ...sourceTrim,
-                    markIn: mi,
-                    markOut: mo,
-                    dirty: true,
-                    warning: null,
-                    clampedDefault: false,
-                  };
-                  onSourceTrimChange(next);
-                  persistTrim(next, sourceRel, `wp-src:${item.job_key}`, {
-                    updatePendingJob: true,
-                    defaults: sourceDefaults,
+                onDefaultClip={applyDefaultSourceClip}
+                onApplyClip={(mi, mo, clip) => {
+                  onSourceTrimChange((prev) => {
+                    const next = {
+                      ...prev,
+                      markIn: mi,
+                      markOut: mo,
+                      dirty: true,
+                      warning: null,
+                      clampedDefault: false,
+                      duration: readMediaDuration(sourceVideoRef.current, prev.duration),
+                    };
+                    persistTrim(next, sourceRel, `wp-src:${item.job_key}`, {
+                      updatePendingJob: pendingJobTrim,
+                      defaults: sourceDefaults,
+                    });
+                    return next;
                   });
+                  onSelectClip?.(clip || null);
                 }}
               />
             </>
           ) : sourceThumb ? (
-            <img className="work-product-viewer__source-img" src={sourceThumb} alt={source?.basename || "source"} />
+            <AppetitePreviewFrame relpath={sourceRel}>
+              <img className="work-product-viewer__source-img" src={sourceThumb} alt={source?.basename || "source"} />
+            </AppetitePreviewFrame>
           ) : null}
         </div>
       )}
@@ -3304,12 +3569,14 @@ function workbenchSourceSubmitIntent(
 
 function WorkProductQuickQueue({
   item,
+  families,
   extendFamilyDefaults,
   outputTrim,
   sourceTrim,
   sourceClipId,
   onCommitted,
   onOpenSubmit,
+  onFocusJobKey,
 }: {
   item: WorkProductItem;
   families?: WorkProductFamilyOption[];
@@ -3319,6 +3586,7 @@ function WorkProductQuickQueue({
   sourceClipId?: string | null;
   onCommitted?: () => void;
   onOpenSubmit?: (intent: SubmitDeepLink) => void;
+  onFocusJobKey?: (jobKey: string) => void;
 }) {
   const open = item.work_items_open || [];
   const extendOpen = openPoolItem(open, "extend");
@@ -3344,21 +3612,36 @@ function WorkProductQuickQueue({
   const discardMutation = useMutation({ mutationFn: discardShapeFactoryJob });
   const finishEditMutation = useMutation({ mutationFn: finishShapeFactoryEdit });
   const replayMutation = useMutation({ mutationFn: replayShapeFactory });
+  const swapMutation = useMutation({ mutationFn: swapShapeFactoryFamily });
+  const currentFamily = String(item.family_slug || "").trim();
+  const swapTargets = useMemo(
+    () => familySwapTargets(families || [], currentFamily),
+    [families, currentFamily],
+  );
+  const [rerunFamily, setRerunFamily] = useState(currentFamily);
   const [rerunTrimMode, setRerunTrimMode] = useState<"job" | "edited">(() =>
     sourceTrim.dirty || sourceTrim.clampedDefault ? "edited" : "job",
   );
   const [rerunSeedMode, setRerunSeedMode] = useState<"same" | "new">("new");
 
   useEffect(() => {
+    setRerunFamily(currentFamily);
+  }, [item.job_key, currentFamily]);
+
+  useEffect(() => {
     if (sourceTrim.dirty || sourceTrim.clampedDefault) setRerunTrimMode("edited");
   }, [sourceTrim.dirty, sourceTrim.clampedDefault]);
+
+  const familyChanged = Boolean(rerunFamily && currentFamily && rerunFamily !== currentFamily);
+  const swapInstead = familyChanged && canSwapFamilyWorkProduct(item);
 
   const mutationsBusy =
     unqueueMutation.isPending ||
     claimMutation.isPending ||
     discardMutation.isPending ||
     finishEditMutation.isPending ||
-    replayMutation.isPending;
+    replayMutation.isPending ||
+    swapMutation.isPending;
   const isBusy = busy || mutationsBusy;
   const canRerun = Boolean(jobKey) && !isBusy;
   const canUnqueue = canUnqueueWorkProduct(item) && !isBusy;
@@ -3547,6 +3830,15 @@ function WorkProductQuickQueue({
 
   const rerun = async (when: "now" | "later") => {
     if (!jobKey || isBusy) return;
+    const targetFamily = String(rerunFamily || currentFamily || "").trim();
+    if (swapInstead) {
+      const ok = window.confirm(
+        `Swap this ${workProductStatusKey(item)} job to ${targetFamily}?\n\n` +
+          `A new ${targetFamily} job is queued (trim ${rerunTrimMode} · seed ${rerunSeedMode}). ` +
+          `The current ${currentFamily || "family"} job is unqueued and removed so it cannot start.`,
+      );
+      if (!ok) return;
+    }
     setBusy(true);
     setMsg("");
     try {
@@ -3561,9 +3853,43 @@ function WorkProductQuickQueue({
         overrides = fromTrim.overrides;
         warning = fromTrim.warning;
       }
+      if (swapInstead) {
+        const res = await swapMutation.mutateAsync({
+          job_key: jobKey,
+          family_slug: targetFamily,
+          replace: true,
+          front: when === "now",
+          seed_mode: rerunSeedMode,
+          overrides,
+        });
+        const row = (res.items || []).find((it) => it.ok) || (res.items || [])[0];
+        const nextKey = String(row?.replay?.job_key || "").trim();
+        const pid = String(row?.replay?.prompt_id || "").trim();
+        const fail = !res.ok
+          ? row?.detail || row?.error || res.detail || res.error || "swap failed"
+          : null;
+        setMsg(
+          [
+            fail
+              ? `Swap ${when} failed${fail ? ` · ${fail}` : ""}`
+              : nextKey
+                ? `Swapped ${when}→${targetFamily} · ${nextKey}${pid ? ` · ${pid}` : ""}`
+                : `Swapped ${when}→${targetFamily}`,
+            `trim ${rerunTrimMode}`,
+            warning,
+          ]
+            .filter(Boolean)
+            .join(" · "),
+        );
+        await invalidateWorkbench();
+        await invalidateQueue();
+        onCommitted?.();
+        if (nextKey) onFocusJobKey?.(nextKey);
+        return;
+      }
       const res = await replayMutation.mutateAsync({
         job_key: jobKey,
-        family_slug: String(item.family_slug || "").trim() || undefined,
+        family_slug: targetFamily || undefined,
         extend: false,
         front: when === "now",
         seed_mode: rerunSeedMode,
@@ -3580,6 +3906,7 @@ function WorkProductQuickQueue({
             : res.seed_mode === "same_missing"
               ? "seed same (missing — template)"
               : null;
+      const familyLabel = familyChanged ? `as ${targetFamily}` : null;
       setMsg(
         [
           nextKey
@@ -3587,6 +3914,7 @@ function WorkProductQuickQueue({
             : pid
               ? `Re-run ${when} queued · ${pid}`
               : `Re-run ${when} queued`,
+          familyLabel,
           `trim ${rerunTrimMode}`,
           seedLabel,
           clampMsg,
@@ -3597,6 +3925,7 @@ function WorkProductQuickQueue({
       await invalidateWorkbench();
       await invalidateQueue();
       onCommitted?.();
+      if (nextKey) onFocusJobKey?.(nextKey);
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));
     } finally {
@@ -3653,9 +3982,42 @@ function WorkProductQuickQueue({
         {openBadge(varyOpen, "Vary")}
         {openBadge(deriveOpen, "Derive")}
         <span className="work-product-quick-queue__sep" aria-hidden="true" />
-        <span className="work-product-quick-queue__label" title="New job from this recipe — trim and seed are independent">
-          Re-run
+        <span
+          className="work-product-quick-queue__label"
+          title={
+            swapInstead
+              ? "Retarget this waiting job to another family, then retire the old one"
+              : "New job from this recipe — trim, seed, and family are independent"
+          }
+        >
+          {swapInstead ? "Swap" : "Re-run"}
         </span>
+        {currentFamily || swapTargets.length ? (
+          <label className="work-product-rerun-opts work-product-rerun-opts--family">
+            <span className="work-product-rerun-opts__label">Family</span>
+            <select
+              className="work-product-family-select"
+              value={rerunFamily || currentFamily}
+              disabled={isBusy || (!swapTargets.length && !currentFamily)}
+              aria-label="Family for re-run or swap"
+              title={
+                swapInstead
+                  ? `Swap queued ${currentFamily} → ${rerunFamily}`
+                  : familyChanged
+                    ? `Re-run as ${rerunFamily} (keeps this job)`
+                    : "Same family, or pick a compatible one"
+              }
+              onChange={(e) => setRerunFamily(e.target.value)}
+            >
+              {currentFamily ? <option value={currentFamily}>{currentFamily}</option> : null}
+              {swapTargets.map((f) => (
+                <option key={f.slug} value={f.slug}>
+                  {f.slug}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         <div className="work-product-rerun-opts" role="group" aria-label="Re-run trim">
           <span className="work-product-rerun-opts__label">Trim</span>
           <div className="segmented work-product-rerun-opts__seg">
@@ -3705,20 +4067,28 @@ function WorkProductQuickQueue({
         <button
           type="button"
           className="drt-btn work-product-quick-queue__rerun"
-          disabled={!canRerun}
-          title={`New job · trim ${rerunTrimMode} · seed ${rerunSeedMode} · front of queue`}
+          disabled={!canRerun || (familyChanged && !rerunFamily)}
+          title={
+            swapInstead
+              ? `Swap to ${rerunFamily} · trim ${rerunTrimMode} · seed ${rerunSeedMode} · front of queue · retire this job`
+              : `New job${familyChanged ? ` as ${rerunFamily}` : ""} · trim ${rerunTrimMode} · seed ${rerunSeedMode} · front of queue`
+          }
           onClick={() => void rerun("now")}
         >
-          Now
+          {swapInstead ? "Swap now" : "Now"}
         </button>
         <button
           type="button"
           className="drt-btn work-product-quick-queue__rerun"
-          disabled={!canRerun}
-          title={`New job · trim ${rerunTrimMode} · seed ${rerunSeedMode} · normal priority`}
+          disabled={!canRerun || (familyChanged && !rerunFamily)}
+          title={
+            swapInstead
+              ? `Swap to ${rerunFamily} · trim ${rerunTrimMode} · seed ${rerunSeedMode} · normal priority · retire this job`
+              : `New job${familyChanged ? ` as ${rerunFamily}` : ""} · trim ${rerunTrimMode} · seed ${rerunSeedMode} · normal priority`
+          }
           onClick={() => void rerun("later")}
         >
-          Later
+          {swapInstead ? "Swap later" : "Later"}
         </button>
         {canEditSubmit && editSubmitIntent ? (
           <>
@@ -3980,6 +4350,7 @@ function WorkProductDetails({
   sourceClipId,
   onCommitted,
   onOpenSubmit,
+  onFocusJobKey,
 }: {
   item: WorkProductItem;
   families?: WorkProductFamilyOption[];
@@ -3989,6 +4360,7 @@ function WorkProductDetails({
   sourceClipId?: string | null;
   onCommitted?: () => void;
   onOpenSubmit?: (intent: SubmitDeepLink) => void;
+  onFocusJobKey?: (jobKey: string) => void;
 }) {
   const prompt = item.prompt_profile;
   const groups = useMemo(() => {
@@ -4131,7 +4503,7 @@ function WorkProductDetails({
       ) : null}
       <FlowEventTimeline item={item} />
       <WorkProductAppetiteStrip
-        relpath={item.output_relpath}
+        relpath={workbenchJobAppetiteRelpath(item)}
         jobKey={item.job_key}
         familySlug={item.family_slug}
         disabledHint={
@@ -4149,6 +4521,7 @@ function WorkProductDetails({
         sourceClipId={sourceClipId}
         onCommitted={onCommitted}
         onOpenSubmit={onOpenSubmit}
+        onFocusJobKey={onFocusJobKey}
       />
       <WorkProductPromptEditor item={item} onCommitted={onCommitted} />
       <WorkProductParamsEditor item={item} onCommitted={onCommitted} />
@@ -4239,22 +4612,102 @@ function WorkProductDetails({
   );
 }
 
+function workProductMatchesFocus(
+  item: WorkProductItem,
+  jobKey: string | null,
+  promptId: string | null,
+): boolean {
+  if (jobKey && String(item.job_key || "").trim() === jobKey) return true;
+  if (promptId && String(item.prompt_id || "").trim() === promptId) return true;
+  return false;
+}
+
+function WorkProductIndexRow({
+  item,
+  selected,
+  onSelect,
+}: {
+  item: WorkProductItem;
+  selected: boolean;
+  onSelect: (item: WorkProductItem) => void;
+}) {
+  const thumb = item.output_thumb_url || sourcePreviewUrls(item).thumb;
+  const status = statusFilterVisual(item.status || "pending");
+  const timing = timingHeadline(item);
+  const thumbMeta = isSourceThumbPreviewItem(item) ? sourceThumbPreviewMeta(item) : null;
+  return (
+    <button
+      type="button"
+      id={workbenchJobDomId(item.job_key)}
+      role="option"
+      aria-selected={selected}
+      data-job-key={item.job_key || undefined}
+      data-prompt-id={item.prompt_id || undefined}
+      className={`work-product-index-row work-product-index-row--status-${status}${
+        selected ? " is-selected" : ""
+      }${isLivePreviewItem(item) ? " is-live" : ""}`}
+      onClick={() => onSelect(item)}
+    >
+      <span className="work-product-index-row__thumb">
+        {thumb ? (
+          <img src={thumb} alt="" />
+        ) : (
+          <span className="work-product-index-row__thumb-empty" aria-hidden>
+            {isRunningLiveItem(item) ? "live" : "—"}
+          </span>
+        )}
+      </span>
+      <span className="work-product-index-row__meta">
+        <span className="work-product-index-row__title">
+          <strong>{item.family_slug || "job"}</strong>
+          {item.is_hourly ? (
+            <span className="work-product-badge work-product-badge--hourly" title="Produced by the hourly planner">
+              Hourly
+            </span>
+          ) : null}
+          {isRunningLiveItem(item) ? (
+            <span className="work-product-badge work-product-badge--live-run">live</span>
+          ) : thumbMeta ? (
+            <span className={`work-product-badge work-product-badge--live-${thumbMeta.visual}`}>{thumbMeta.label}</span>
+          ) : null}
+          <span className={`work-product-index-row__status work-product-index-row__status--${status}`}>
+            {item.status || "pending"}
+          </span>
+        </span>
+        <span className="work-product-index-row__sub">
+          {formatRelativeAge(item.created_at)}
+          {timing ? ` · ${timing.text}` : ""}
+        </span>
+        <code className="work-product-index-row__key" title={item.job_key}>
+          {item.job_key}
+        </code>
+      </span>
+      <AppetitePreviewBadge
+        relpath={workbenchJobAppetiteRelpath(item)}
+        size="sm"
+        jobKey={item.job_key}
+        familySlug={item.family_slug}
+      />
+    </button>
+  );
+}
+
 function WorkProductRowInner({
   item,
   layout,
   families,
   extendFamilyDefaults,
-  focused,
   onCommitted,
   onOpenSubmit,
+  onFocusJobKey,
 }: {
   item: WorkProductItem;
   layout: RowLayout;
   families?: WorkProductFamilyOption[];
   extendFamilyDefaults?: Record<string, string>;
-  focused?: boolean;
   onCommitted?: () => void;
   onOpenSubmit?: (intent: SubmitDeepLink) => void;
+  onFocusJobKey?: (jobKey: string) => void;
 }) {
   const thumbMeta = isSourceThumbPreviewItem(item) ? sourceThumbPreviewMeta(item) : null;
   const thumbBadgeClass = thumbMeta ? `work-product-badge--live-${thumbMeta.visual}` : "";
@@ -4277,12 +4730,11 @@ function WorkProductRowInner({
 
   return (
     <article
-      id={`workbench-job-${String(item.job_key || "").replace(/[^\w.-]+/g, "_")}`}
       data-job-key={item.job_key || undefined}
       data-prompt-id={item.prompt_id || undefined}
       className={`work-product-row work-product-row--${layout} work-product-row--status-${statusFilterVisual(
         item.status || "pending",
-      )}${isLivePreviewItem(item) ? " work-product-row--live" : ""}${focused ? " work-product-row--focused" : ""}`}
+      )}${isLivePreviewItem(item) ? " work-product-row--live" : ""}`}
     >
       <header
         className={`work-product-row__head${
@@ -4349,7 +4801,6 @@ function WorkProductRowInner({
         ) : null}
       </header>
       <div className="work-product-row__body">
-        <LazyWorkProductMedia item={item}>
         <WorkProductViewer
           item={item}
           outputTrim={outputTrim}
@@ -4388,7 +4839,6 @@ function WorkProductRowInner({
             if (intent && onOpenSubmit) onOpenSubmit(intent);
           }}
         />
-        </LazyWorkProductMedia>
         <WorkProductDetails
           item={item}
           families={families}
@@ -4398,13 +4848,185 @@ function WorkProductRowInner({
           sourceClipId={selectedClipId}
           onCommitted={onCommitted}
           onOpenSubmit={onOpenSubmit}
+          onFocusJobKey={onFocusJobKey}
         />
       </div>
     </article>
   );
 }
 
-const WorkProductRow = React.memo(WorkProductRowInner);
+function workProductRowPropsEqual(
+  prev: Readonly<React.ComponentProps<typeof WorkProductRowInner>>,
+  next: Readonly<React.ComponentProps<typeof WorkProductRowInner>>,
+): boolean {
+  if (prev.layout !== next.layout) return false;
+  if (
+    prev.onCommitted !== next.onCommitted ||
+    prev.onOpenSubmit !== next.onOpenSubmit ||
+    prev.onFocusJobKey !== next.onFocusJobKey
+  ) {
+    return false;
+  }
+  const a = prev.item;
+  const b = next.item;
+  return (
+    a.job_key === b.job_key &&
+    a.status === b.status &&
+    a.output_url === b.output_url &&
+    a.output_relpath === b.output_relpath &&
+    a.prompt_id === b.prompt_id &&
+    a.error === b.error &&
+    a.created_at === b.created_at &&
+    a.live_from_comfy === b.live_from_comfy
+  );
+}
+
+const WorkProductRow = React.memo(WorkProductRowInner, workProductRowPropsEqual);
+
+function WorkbenchIndexFamilySwap({
+  families,
+  items,
+  disabled,
+  onSwapped,
+}: {
+  families: WorkProductFamilyOption[];
+  items: WorkProductItem[];
+  disabled?: boolean;
+  onSwapped?: (nextJobKey: string | null, summary: string) => void;
+}) {
+  const swappable = useMemo(
+    () => items.filter((it) => canSwapFamilyWorkProduct(it) && String(it.family_slug || "").trim()),
+    [items],
+  );
+  const fromSlugs = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const it of swappable) {
+      const slug = String(it.family_slug || "").trim();
+      if (!slug || seen.has(slug)) continue;
+      if (!familySwapTargets(families, slug).length) continue;
+      seen.add(slug);
+      out.push(slug);
+    }
+    return out;
+  }, [swappable, families]);
+  const [fromSlug, setFromSlug] = useState("");
+  const [toSlug, setToSlug] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const resolvedFrom = fromSlugs.includes(fromSlug) ? fromSlug : fromSlugs[0] || "";
+  const toOptions = useMemo(
+    () => familySwapTargets(families, resolvedFrom),
+    [families, resolvedFrom],
+  );
+  const preferredTo = pickDefaultSwapTarget(families, resolvedFrom);
+  const resolvedTo = toOptions.some((f) => f.slug === toSlug)
+    ? toSlug
+    : preferredTo || toOptions[0]?.slug || "";
+
+  useEffect(() => {
+    if (fromSlug !== resolvedFrom) setFromSlug(resolvedFrom);
+  }, [fromSlug, resolvedFrom]);
+  useEffect(() => {
+    if (toSlug !== resolvedTo) setToSlug(resolvedTo);
+  }, [toSlug, resolvedTo]);
+
+  const targets = swappable.filter((it) => String(it.family_slug || "").trim() === resolvedFrom);
+  if (!fromSlugs.length || !resolvedFrom || !resolvedTo) return null;
+
+  const swapBulk = async (when: "now" | "later") => {
+    const keys = targets.map((it) => String(it.job_key || "").trim()).filter(Boolean);
+    if (!keys.length || busy || disabled) return;
+    const ok = window.confirm(
+      `Swap ${keys.length} ${resolvedFrom} job${keys.length === 1 ? "" : "s"} to ${resolvedTo}?\n\n` +
+        `Each is replayed as ${resolvedTo} (same seed), then the old job is unqueued and removed. ` +
+        `Running jobs are skipped.`,
+    );
+    if (!ok) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await swapShapeFactoryFamily({
+        job_keys: keys,
+        family_slug: resolvedTo,
+        replace: true,
+        front: when === "now",
+        seed_mode: "same",
+      });
+      const firstNew = (res.items || [])
+        .map((it) => String(it.replay?.job_key || "").trim())
+        .find(Boolean) || null;
+      const summary = res.failed
+        ? `Swapped ${res.swapped || 0}/${keys.length} → ${resolvedTo} · ${res.failed} failed`
+        : `Swapped ${res.swapped || 0} → ${resolvedTo}`;
+      setMsg(summary);
+      onSwapped?.(firstNew, summary);
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="work-products-index__swap" role="group" aria-label="Swap family for queued jobs">
+      <span className="work-products-index__swap-label">Swap</span>
+      <select
+        className="work-product-family-select"
+        value={resolvedFrom}
+        disabled={busy || disabled}
+        aria-label="Family to swap from"
+        onChange={(e) => setFromSlug(e.target.value)}
+      >
+        {fromSlugs.map((slug) => (
+          <option key={slug} value={slug}>
+            {slug} ({swappable.filter((it) => it.family_slug === slug).length})
+          </option>
+        ))}
+      </select>
+      <span className="work-products-index__swap-arrow" aria-hidden>
+        →
+      </span>
+      <select
+        className="work-product-family-select"
+        value={resolvedTo}
+        disabled={busy || disabled}
+        aria-label="Family to swap to"
+        onChange={(e) => setToSlug(e.target.value)}
+      >
+        {toOptions.map((f) => (
+          <option key={f.slug} value={f.slug}>
+            {f.slug}
+          </option>
+        ))}
+      </select>
+      <button
+        type="button"
+        className="drt-btn"
+        disabled={busy || disabled || !targets.length}
+        title={`Replay ${targets.length} as ${resolvedTo} now, then retire the old jobs`}
+        onClick={() => void swapBulk("now")}
+      >
+        {busy ? "…" : `Now (${targets.length})`}
+      </button>
+      <button
+        type="button"
+        className="drt-btn"
+        disabled={busy || disabled || !targets.length}
+        title={`Replay ${targets.length} as ${resolvedTo} later, then retire the old jobs`}
+        onClick={() => void swapBulk("later")}
+      >
+        Later
+      </button>
+      {msg ? (
+        <span className="work-products-index__swap-msg" title={msg}>
+          {msg}
+        </span>
+      ) : null}
+    </div>
+  );
+}
 
 export function WorkProductsApp() {
   const deepLink = useMemo(() => parseWorkbenchDeepLink(), []);
@@ -4414,7 +5036,7 @@ export function WorkProductsApp() {
   // Search box is only seeded from explicit ?q= — never from job/media identity.
   const [nameQuery, setNameQuery] = useState(() => deepLink.q || "");
   const hasResourceDeepLink = Boolean(deepLink.job || deepLink.promptId || deepLink.media);
-  const initialLimit = hasResourceDeepLink || deepLink.q ? 80 : 50;
+  const initialLimit = hasResourceDeepLink || deepLink.q ? 40 : 24;
   const initialHourlyOnly = hasResourceDeepLink || deepLink.q ? false : loadHourlyOnly();
   const [limit, setLimit] = useState(() => initialLimit);
   const [hourlyOnly, setHourlyOnly] = useState(() => initialHourlyOnly);
@@ -4430,11 +5052,27 @@ export function WorkProductsApp() {
     deepLink.job ? null : deepLink.promptId,
   );
   const [focusMedia, setFocusMedia] = useState<string | null>(() => deepLink.media);
+  /** Job/prompt deep-links start with the index collapsed; browse starts open. */
+  const arrivedViaItemDeepLink = Boolean(deepLink.job || deepLink.promptId);
+  const [listOpen, setListOpen] = useState(() => !arrivedViaItemDeepLink);
+  const [toolsOpen, setToolsOpen] = useState(() => Boolean(deepLink.q) || loadChrome().tools);
+  const [filtersOpen, setFiltersOpen] = useState(() => loadChrome().filters);
   const deepLinkScrolled = useRef(false);
+  const toggleJobList = useCallback(() => setListOpen((open) => !open), []);
+  const showJobList = useCallback(() => setListOpen(true), []);
+  const hideJobList = useCallback(() => setListOpen(false), []);
   const bulkDiscardMutation = useMutation({ mutationFn: discardShapeFactoryJob });
   const onRowCommitted = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductsRoot });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductRoot });
   }, [queryClient]);
+  const focusJobKey = useCallback((jobKey: string) => {
+    const key = String(jobKey || "").trim();
+    if (!key) return;
+    setFocusJob(key);
+    setFocusPromptId(null);
+    window.history.replaceState(null, "", workbenchHref({ jobKey: key }));
+  }, []);
   const queryState = useQuery({
     queryKey: queryKeys.shapeFactory.workProducts({ limit, hourlyOnly, family: null }),
     queryFn: () => fetchShapeFactoryWorkProducts({ limit, hourlyOnly }),
@@ -4449,19 +5087,64 @@ export function WorkProductsApp() {
     refetchIntervalInBackground: false,
   });
   const items = queryState.data?.items || [];
-  const families = queryState.data?.families || [];
-  const extendFamilyDefaults = queryState.data?.extend_family_defaults || {};
+  const recentHit = useMemo(
+    () => items.find((it) => workProductMatchesFocus(it, focusJob, focusPromptId)) || null,
+    [items, focusJob, focusPromptId],
+  );
+  const listSettled = !queryState.isLoading || Boolean(queryState.error);
+  const historyQuery = useQuery({
+    queryKey: queryKeys.shapeFactory.workProduct({
+      jobKey: focusJob,
+      promptId: focusJob ? null : focusPromptId,
+    }),
+    queryFn: () =>
+      fetchShapeFactoryWorkProduct({
+        jobKey: focusJob,
+        promptId: focusJob ? null : focusPromptId,
+      }),
+    enabled:
+      arrivedViaItemDeepLink &&
+      Boolean(focusJob || focusPromptId) &&
+      !recentHit &&
+      listSettled,
+    staleTime: 30_000,
+  });
+  const historyItem = historyQuery.data?.ok ? historyQuery.data.item || null : null;
+  const focusedItem = recentHit || historyItem || null;
+  const families = queryState.data?.families || historyQuery.data?.families || [];
+  const extendFamilyDefaults =
+    queryState.data?.extend_family_defaults || historyQuery.data?.extend_family_defaults || {};
   const loading = queryState.isLoading;
   const refreshing = queryState.isFetching && !queryState.isLoading;
   const error = queryState.error instanceof Error ? queryState.error.message : null;
+  const historyResolved =
+    Boolean(recentHit) ||
+    !arrivedViaItemDeepLink ||
+    historyQuery.isFetched ||
+    historyQuery.isError;
+  const focusedLoading =
+    !listOpen &&
+    Boolean(focusJob || focusPromptId) &&
+    !focusedItem &&
+    (!listSettled || !historyResolved);
+  const focusedMissing =
+    !listOpen &&
+    Boolean(focusJob || focusPromptId) &&
+    !focusedItem &&
+    listSettled &&
+    historyResolved &&
+    (historyQuery.data?.error === "not_found" || historyQuery.isError);
 
   useEffect(() => {
-    if (!queryState.data) return;
+    const fams = queryState.data?.families || historyQuery.data?.families;
+    const defaults =
+      queryState.data?.extend_family_defaults || historyQuery.data?.extend_family_defaults;
+    if (!fams && !defaults) return;
     rememberFamiliesFromWorkProducts({
-      families: queryState.data.families || [],
-      extend_family_defaults: queryState.data.extend_family_defaults || {},
+      families: fams || [],
+      extend_family_defaults: defaults || {},
     });
-  }, [queryState.data]);
+  }, [queryState.data, historyQuery.data]);
 
   const statusCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -4493,57 +5176,107 @@ export function WorkProductsApp() {
     return collectAvailableMarkers([...keys].map((pick_mode) => ({ pick_mode }) as WorkProductItem));
   }, [markerCounts, markerOff]);
 
-  const visibleItems = useMemo(
-    () =>
-      sortWorkProducts(
-        filterWorkProductsByDecodeVae(
-          filterWorkProductsByMarker(
-            filterWorkProductsByStatus(
-              filterWorkProductsByMedia(filterWorkProductsByName(items, nameQuery), focusMedia),
-              statusOff,
-            ),
-            markerOff,
+  const visibleItems = useMemo(() => {
+    const rows = sortWorkProducts(
+      filterWorkProductsByDecodeVae(
+        filterWorkProductsByMarker(
+          filterWorkProductsByStatus(
+            filterWorkProductsByMedia(filterWorkProductsByName(items, nameQuery), focusMedia),
+            statusOff,
           ),
-          decodeVaeFilter,
+          markerOff,
         ),
-        sort,
+        decodeVaeFilter,
       ),
-    [items, nameQuery, focusMedia, sort, statusOff, markerOff, decodeVaeFilter],
-  );
+      sort,
+    );
+    if (!focusedItem) return rows;
+    if (rows.some((it) => workProductMatchesFocus(it, focusedItem.job_key || null, focusedItem.prompt_id || null))) {
+      return rows;
+    }
+    return [focusedItem, ...rows];
+  }, [items, nameQuery, focusMedia, sort, statusOff, markerOff, decodeVaeFilter, focusedItem]);
 
   const failedVisible = useMemo(
     () => visibleItems.filter((it) => canArchiveTerminalWorkProduct(it)),
     [visibleItems],
   );
 
-  const focusedItem = useMemo(() => {
-    if (focusJob) {
-      return items.find((it) => String(it.job_key || "").trim() === focusJob) || null;
-    }
-    if (focusPromptId) {
-      return items.find((it) => String(it.prompt_id || "").trim() === focusPromptId) || null;
-    }
-    return null;
-  }, [items, focusJob, focusPromptId]);
+  const selectedItem = useMemo(() => {
+    if (!listOpen) return focusedItem;
+    const hit = visibleItems.find((it) => workProductMatchesFocus(it, focusJob, focusPromptId));
+    if (hit) return hit;
+    return visibleItems[0] || focusedItem || null;
+  }, [visibleItems, focusJob, focusPromptId, listOpen, focusedItem]);
 
-  const clearResourceFocus = () => {
-    setFocusJob(null);
+  const selectItem = useCallback((item: WorkProductItem) => {
+    const key = String(item.job_key || "").trim();
+    if (key) setFocusJob(key);
     setFocusPromptId(null);
-    setFocusMedia(null);
-    deepLinkScrolled.current = false;
+    deepLinkScrolled.current = true;
+  }, []);
+
+  useEffect(() => {
+    const key = String(selectedItem?.job_key || "").trim();
+    if (!key || key === focusJob) return;
+    const focusedVisible = Boolean(
+      focusJob && visibleItems.some((it) => String(it.job_key || "").trim() === focusJob),
+    );
+    if (focusedVisible) return;
+    const focusedLoaded = Boolean(
+      focusJob && items.some((it) => String(it.job_key || "").trim() === focusJob),
+    );
+    if (focusJob && !focusedLoaded) return;
+    setFocusJob(key);
+    setFocusPromptId(null);
+  }, [selectedItem, focusJob, items, visibleItems]);
+
+  useEffect(() => {
+    if (!listOpen) return;
+    const key = String(selectedItem?.job_key || "").trim();
+    if (!key) return;
+    const el = document.getElementById(workbenchJobDomId(key));
+    el?.scrollIntoView({ block: "nearest" });
+  }, [selectedItem?.job_key, listOpen]);
+
+  useEffect(() => {
+    if (listOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (submitModalIntent) return;
+      e.preventDefault();
+      showJobList();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [listOpen, showJobList, submitModalIntent]);
+
+  const onIndexKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Home" && e.key !== "End") return;
+    if (!visibleItems.length) return;
+    e.preventDefault();
+    const idx = selectedItem
+      ? visibleItems.findIndex((it) => it.job_key && it.job_key === selectedItem.job_key)
+      : -1;
+    let next = 0;
+    if (e.key === "ArrowDown") next = Math.min(visibleItems.length - 1, Math.max(0, idx) + 1);
+    else if (e.key === "ArrowUp") next = Math.max(0, idx < 0 ? 0 : idx - 1);
+    else if (e.key === "End") next = visibleItems.length - 1;
+    const hit = visibleItems[next];
+    if (hit) selectItem(hit);
   };
 
   // Keep the URL named after the focused resource (job / media), not the search box.
   useEffect(() => {
     const next = workbenchHref({
-      jobKey: focusJob,
-      promptId: focusJob ? null : focusPromptId,
+      jobKey: listOpen && !arrivedViaItemDeepLink ? null : focusJob,
+      promptId: listOpen && !arrivedViaItemDeepLink ? null : focusJob ? null : focusPromptId,
       media: focusMedia,
       q: nameQuery.trim() || null,
     });
     if (`${window.location.pathname}${window.location.search}` === next) return;
     window.history.replaceState(null, "", next);
-  }, [focusJob, focusPromptId, focusMedia, nameQuery]);
+  }, [arrivedViaItemDeepLink, focusJob, focusPromptId, focusMedia, listOpen, nameQuery]);
 
   useEffect(() => {
     if (deepLinkScrolled.current || loading) return;
@@ -4583,21 +5316,22 @@ export function WorkProductsApp() {
     }
     if (!inVisible) return;
 
-    const id = `workbench-job-${String(match.job_key || "").replace(/[^\w.-]+/g, "_")}`;
-    const el = document.getElementById(id);
-    if (!el) return;
     deepLinkScrolled.current = true;
     if (!focusJob && match.job_key) setFocusJob(String(match.job_key));
+    if (!listOpen) return;
     window.requestAnimationFrame(() => {
-      el.scrollIntoView({ behavior: "smooth", block: "start" });
-      el.classList.add("work-product-row--deep-link");
-      window.setTimeout(() => el.classList.remove("work-product-row--deep-link"), 2400);
+      const el = document.getElementById(workbenchJobDomId(match.job_key));
+      if (!el) return;
+      el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      el.classList.add("work-product-index-row--deep-link");
+      window.setTimeout(() => el.classList.remove("work-product-index-row--deep-link"), 2400);
     });
   }, [
     focusJob,
     focusPromptId,
     focusMedia,
     items,
+    listOpen,
     loading,
     markerOff.size,
     statusOff.size,
@@ -4687,83 +5421,55 @@ export function WorkProductsApp() {
     <PipelineScreen className="work-products">
       <PageHeader
         title="Workbench"
-        subtitle="Set up jobs that seed factories — recent outputs, construction, trim, and queue"
         actions={
           <>
-            <label className="pipeline-tray-switch" title="Worktrays coming soon — Recent is the default working set">
-              <span>Working set</span>
-              <select value="recent" aria-label="Workbench working set" disabled>
-                <option value="recent">Recent</option>
-              </select>
-            </label>
-            <label className="work-products-search">
-              <span className="work-products-search__label">Search</span>
-              <input
-                type="search"
-                value={nameQuery}
-                onChange={(e) => setNameQuery(e.target.value)}
-                placeholder="Family or job key…"
-                aria-label="Filter work products by name"
-              />
-            </label>
-            <label className="work-products-limit">
-              Show
-              <select
-                value={limit}
-                onChange={(e) => setLimit(Number(e.target.value))}
-                aria-label="How many recent work products to load"
-              >
-                {[20, 30, 50, 80, 120].map((n) => (
-                  <option key={n} value={n}>
-                    {n}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="work-products-limit">
-              Sort
-              <select
-                value={sort}
-                onChange={(e) => {
-                  const next = e.target.value as WorkProductSort;
-                  setSort(next);
-                  persistSort(next);
-                }}
-                aria-label="Sort work products"
-                title="Live previews always stay on top"
-              >
-                {SORT_OPTIONS.map((o) => (
-                  <option key={o.id} value={o.id}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <div className="discovery-preview-layout-switch" role="group" aria-label="Row layout">
-              <span className="discovery-preview-layout-switch__label">Layout</span>
-              <div className="segmented">
-                <button
-                  type="button"
-                  className={layout === "split" ? "is-active" : undefined}
-                  onClick={() => {
-                    setLayout("split");
-                    persistLayout("split");
-                  }}
-                >
-                  Side by side
-                </button>
-                <button
-                  type="button"
-                  className={layout === "stacked" ? "is-active" : undefined}
-                  onClick={() => {
-                    setLayout("stacked");
-                    persistLayout("stacked");
-                  }}
-                >
-                  Stacked
-                </button>
-              </div>
-            </div>
+            <button
+              type="button"
+              className={`work-products-chrome-toggle${toolsOpen || nameQuery.trim() ? " is-on" : ""}`}
+              aria-expanded={toolsOpen}
+              aria-controls="workbench-tools"
+              title={toolsOpen ? "Hide working set, search, and layout" : "Show working set, search, and layout"}
+              onClick={() => {
+                setToolsOpen((open) => {
+                  const next = !open;
+                  persistChrome({ tools: next, filters: filtersOpen });
+                  return next;
+                });
+              }}
+            >
+              Tools
+            </button>
+            <button
+              type="button"
+              className={`work-products-chrome-toggle${
+                filtersOpen || hourlyOnly || statusOff.size || markerOff.size || decodeVaeFilter !== "all"
+                  ? " is-on"
+                  : ""
+              }`}
+              aria-expanded={filtersOpen}
+              aria-controls="workbench-filters"
+              title={filtersOpen ? "Hide filter chips" : "Show filter chips"}
+              onClick={() => {
+                setFiltersOpen((open) => {
+                  const next = !open;
+                  persistChrome({ tools: toolsOpen, filters: next });
+                  return next;
+                });
+              }}
+            >
+              Filters
+            </button>
+            <button
+              type="button"
+              className="page-header__refresh"
+              onClick={toggleJobList}
+              disabled={listOpen && !selectedItem}
+              aria-expanded={listOpen}
+              aria-controls="workbench-jobs-index"
+              title={listOpen ? "Collapse the job list" : "Expand the job list (Esc)"}
+            >
+              {listOpen ? "Hide jobs" : "Show jobs"}
+            </button>
             <button
               type="button"
               className="page-header__refresh"
@@ -4778,7 +5484,7 @@ export function WorkProductsApp() {
               Refresh
               {refreshing ? <span className="page-header__sr-only">Updating</span> : null}
             </button>
-            {failedVisible.length ? (
+            {listOpen && failedVisible.length ? (
               <button
                 type="button"
                 className="work-products-clear-failed"
@@ -4799,7 +5505,77 @@ export function WorkProductsApp() {
           </>
         }
       />
-      <div className="work-products-status-filters pipeline-filter-row" role="group" aria-label="Work product filters">
+      {toolsOpen ? (
+        <div id="workbench-tools" className="work-products-tools" role="group" aria-label="Workbench tools">
+          <label className="pipeline-tray-switch" title="Worktrays coming soon — Recent is the default working set">
+            <span>Working set</span>
+            <select value="recent" aria-label="Workbench working set" disabled>
+              <option value="recent">Recent</option>
+            </select>
+          </label>
+          <label className="work-products-search" id="workbench-search">
+            <span className="work-products-search__label">Search</span>
+            <input
+              type="search"
+              value={nameQuery}
+              onChange={(e) => setNameQuery(e.target.value)}
+              placeholder="Family or job key…"
+              aria-label="Filter work products by name"
+            />
+          </label>
+          <label className="work-products-limit">
+            Sort
+            <select
+              value={sort}
+              onChange={(e) => {
+                const next = e.target.value as WorkProductSort;
+                setSort(next);
+                persistSort(next);
+              }}
+              aria-label="Sort work products"
+              title="Live previews always stay on top"
+            >
+              {SORT_OPTIONS.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="discovery-preview-layout-switch" role="group" aria-label="Detail layout">
+            <span className="discovery-preview-layout-switch__label">Layout</span>
+            <div className="segmented">
+              <button
+                type="button"
+                className={layout === "split" ? "is-active" : undefined}
+                onClick={() => {
+                  setLayout("split");
+                  persistLayout("split");
+                }}
+              >
+                Side by side
+              </button>
+              <button
+                type="button"
+                className={layout === "stacked" ? "is-active" : undefined}
+                onClick={() => {
+                  setLayout("stacked");
+                  persistLayout("stacked");
+                }}
+              >
+                Stacked
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {listOpen && filtersOpen ? (
+      <div
+        id="workbench-filters"
+        className="work-products-status-filters pipeline-filter-row"
+        role="group"
+        aria-label="Work product filters"
+      >
         <button
           type="button"
           className={`work-products-status-toggle work-products-status-toggle--hourly${
@@ -4919,44 +5695,18 @@ export function WorkProductsApp() {
           </>
         ) : null}
       </div>
+      ) : null}
 
-      <div className="work-products-scroll">
-        {focusJob || focusPromptId || focusMedia ? (
-          <div className="work-products-focus-banner" role="status">
-            <div className="work-products-focus-banner__text">
-              <span className="work-products-focus-banner__label">Viewing</span>
-              {focusJob ? (
-                <span className="mono" title={focusJob}>
-                  job {focusJob.length > 64 ? `${focusJob.slice(0, 28)}…${focusJob.slice(-20)}` : focusJob}
-                </span>
-              ) : null}
-              {!focusJob && focusPromptId ? (
-                <span className="mono" title={focusPromptId}>
-                  prompt {focusPromptId.slice(0, 12)}…
-                </span>
-              ) : null}
-              {focusMedia ? (
-                <span className="mono" title={focusMedia}>
-                  media {focusMedia}
-                </span>
-              ) : null}
-              {focusedItem?.family_slug ? (
-                <span className="factory-muted"> · {focusedItem.family_slug}</span>
-              ) : null}
-            </div>
-            <button type="button" className="drt-btn" onClick={clearResourceFocus}>
-              Clear focus
-            </button>
-          </div>
-        ) : null}
-        {error ? <div className="work-products-error">{error}</div> : null}
-        {loading && !items.length ? <div className="work-products-empty">Loading…</div> : null}
-        {!loading && !error && !items.length ? (
+      <div className={`work-products-shell${listOpen ? "" : " work-products-shell--list-collapsed"}`}>
+        {error && listOpen ? <div className="work-products-error">{error}</div> : null}
+        {focusedLoading ? <div className="work-products-empty">Loading…</div> : null}
+        {loading && !items.length && listOpen ? <div className="work-products-empty">Loading…</div> : null}
+        {!loading && !error && !items.length && listOpen && !focusedItem ? (
           <div className="work-products-empty">
             {hourlyOnly ? "No hourly work products found." : "No work products found."}
           </div>
         ) : null}
-        {!loading && !error && items.length && !visibleItems.length ? (
+        {!loading && !error && items.length && !visibleItems.length && listOpen ? (
           <div className="work-products-empty">
             {focusMedia
               ? `No loaded work products reference “${focusMedia}”.`
@@ -4966,33 +5716,112 @@ export function WorkProductsApp() {
           </div>
         ) : null}
 
-        <div className="work-products-list">
-          {visibleItems.map((item) => {
-            const isFocused = Boolean(
-              (focusJob && item.job_key === focusJob) ||
-                (focusPromptId && item.prompt_id === focusPromptId) ||
-                (focusMedia && workProductMatchesMedia(item, focusMedia)),
-            );
-            return (
-              <WorkProductRow
-                key={item.job_key}
-                item={item}
-                layout={layout}
+        {listOpen && visibleItems.length ? (
+          <nav
+            id="workbench-jobs-index"
+            className="work-products-index"
+            aria-label="Workbench jobs"
+            onKeyDown={onIndexKeyDown}
+          >
+            <div className="work-products-index__toolbar">
+              <button
+                type="button"
+                className="work-products-index__collapse"
+                onClick={hideJobList}
+                disabled={!selectedItem}
+                title="Collapse the job list"
+                aria-expanded={true}
+                aria-controls="workbench-jobs-index"
+              >
+                ‹
+              </button>
+              <span className="work-products-index__toolbar-label">Jobs</span>
+              <label className="work-products-limit work-products-limit--index">
+                Show
+                <select
+                  value={limit}
+                  onChange={(e) => setLimit(Number(e.target.value))}
+                  aria-label="How many recent work products to load"
+                >
+                  {[20, 30, 50, 80, 120].map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <WorkbenchIndexFamilySwap
                 families={families}
-                extendFamilyDefaults={extendFamilyDefaults}
-                focused={isFocused}
-                onOpenSubmit={setSubmitModalIntent}
-                onCommitted={onRowCommitted}
+                items={visibleItems}
+                onSwapped={(nextKey) => {
+                  void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductsRoot });
+                  void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductRoot });
+                  void queryClient.invalidateQueries({ queryKey: queryKeys.queue.snapshot });
+                  void queryClient.invalidateQueries({ queryKey: queryKeys.queue.ledgerRoot });
+                  if (nextKey) focusJobKey(nextKey);
+                }}
               />
-            );
-          })}
-        </div>
+            </div>
+            <div className="work-products-index__list" role="listbox" aria-label="Recent jobs">
+              {visibleItems.map((item) => (
+                <WorkProductIndexRow
+                  key={item.job_key}
+                  item={item}
+                  selected={Boolean(selectedItem && item.job_key === selectedItem.job_key)}
+                  onSelect={selectItem}
+                />
+              ))}
+            </div>
+          </nav>
+        ) : !listOpen ? (
+          <button
+            type="button"
+            id="workbench-jobs-index"
+            className="work-products-index-rail"
+            onClick={showJobList}
+            title="Expand the job list (Esc)"
+            aria-expanded={false}
+          >
+            <span className="work-products-index-rail__chevron" aria-hidden>
+              ›
+            </span>
+            <span className="work-products-index-rail__label">Jobs</span>
+            {visibleItems.length || items.length ? (
+              <span className="work-products-index-rail__count">
+                {visibleItems.length || items.length}
+              </span>
+            ) : null}
+          </button>
+        ) : null}
+        {selectedItem ? (
+          <div className="work-products-detail">
+            <WorkProductRow
+              key={selectedItem.job_key}
+              item={selectedItem}
+              layout={layout}
+              families={families}
+              extendFamilyDefaults={extendFamilyDefaults}
+              onOpenSubmit={setSubmitModalIntent}
+              onCommitted={onRowCommitted}
+              onFocusJobKey={focusJobKey}
+            />
+          </div>
+        ) : focusedMissing ? (
+          <div className="work-products-empty">
+            This job isn’t in factory history.
+          </div>
+        ) : listOpen && visibleItems.length ? (
+          <div className="work-products-detail">
+            <div className="work-products-empty">Select a job from the list.</div>
+          </div>
+        ) : null}
       </div>
       <SubmitComposerModal
         intent={submitModalIntent}
         onClose={() => setSubmitModalIntent(null)}
         onSubmitted={() => {
           void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductsRoot });
+          void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductRoot });
           void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.submitAttemptsRoot });
         }}
       />

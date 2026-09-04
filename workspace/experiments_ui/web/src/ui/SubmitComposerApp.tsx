@@ -19,6 +19,7 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { RecentSubmitsPanel, SubmitQueueErrorPanel } from "./SubmitAttemptError";
 import { queryKeys } from "./queryKeys";
+import { AppetitePreviewFrame } from "./AppetitePreviewBadge";
 import { ClipBookmarksRail } from "./ClipBookmarksRail";
 import {
   clipsLibraryHref,
@@ -40,13 +41,20 @@ import {
   type FamiliesBootstrap,
 } from "./shapeFactorySessionCache";
 import {
+  familyPromptProfiles,
   isExtendFamilyOption,
   isI2VFamilyOption,
   isStillMediaPath,
   pickDefaultExtendFamily,
   pickDefaultI2VFamily,
+  pickDefaultPromptProfile,
+  promptProfileOptionLabel,
 } from "./submitFamily";
-import type { ShapeFactoryMapQueueOverrides, WorkProductFamilyOption } from "./types";
+import type {
+  ShapeFactoryMapQueueOverrides,
+  WorkProductFamilyOption,
+  WorkProductFamilyPromptProfile,
+} from "./types";
 import { VideoTrimControls, type VideoTrimPlaybackMode } from "./VideoTrimControls";
 import { useTrimPlaybackEnforcement } from "./useTrimPlayback";
 import { marksToVhsWindow } from "./workProductTrim";
@@ -249,6 +257,9 @@ function SubmitEditJobApp({
   const [finished, setFinished] = useState(false);
   const [sourcePathDraft, setSourcePathDraft] = useState("");
   const [promptProfileDraft, setPromptProfileDraft] = useState("");
+  const [editFamilies, setEditFamilies] = useState<WorkProductFamilyOption[]>(
+    () => peekFamiliesBootstrap()?.families || [],
+  );
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const releasedRef = useRef(false);
 
@@ -346,6 +357,14 @@ function SubmitEditJobApp({
       cancelled = true;
     };
   }, [editJob, refreshSnapshot]);
+
+  useEffect(() => {
+    void loadFamiliesBootstrap()
+      .then((boot) => setEditFamilies(boot.families || []))
+      .catch(() => {
+        /* keep cached / empty */
+      });
+  }, []);
 
   useEffect(() => {
     const sourceSlot = String(snap?.source?.slot || "").trim();
@@ -509,24 +528,28 @@ function SubmitEditJobApp({
           <div className="work-product-viewer">
             <div className="work-product-viewer__main">
               {isVideo && playUrl ? (
-                <video
-                  ref={videoRef}
-                  className="work-product-viewer__video"
-                  src={playUrl}
-                  poster={posterUrl || undefined}
-                  controls
-                  playsInline
-                  muted
-                  preload="metadata"
-                  onLoadedMetadata={(e) => {
-                    const d = e.currentTarget.duration;
-                    if (Number.isFinite(d) && d > 0) setVideoDuration(d);
-                    setCurrentTime(e.currentTarget.currentTime || 0);
-                  }}
-                  onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime || 0)}
-                />
+                <AppetitePreviewFrame relpath={mediaRelpath}>
+                  <video
+                    ref={videoRef}
+                    className="work-product-viewer__video"
+                    src={playUrl}
+                    poster={posterUrl || undefined}
+                    controls
+                    playsInline
+                    muted
+                    preload="metadata"
+                    onLoadedMetadata={(e) => {
+                      const d = e.currentTarget.duration;
+                      if (Number.isFinite(d) && d > 0) setVideoDuration(d);
+                      setCurrentTime(e.currentTarget.currentTime || 0);
+                    }}
+                    onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime || 0)}
+                  />
+                </AppetitePreviewFrame>
               ) : playUrl ? (
-                <img className="work-product-viewer__video" src={playUrl} alt="" />
+                <AppetitePreviewFrame relpath={mediaRelpath}>
+                  <img className="work-product-viewer__video" src={playUrl} alt="" />
+                </AppetitePreviewFrame>
               ) : (
                 <div className="work-product-viewer__empty">
                   {busy ? "Loading…" : "No source media on this job"}
@@ -623,21 +646,61 @@ function SubmitEditJobApp({
                 <label className="submit-composer__edit-binding">
                   <span>Prompt profile</span>
                   <div className="submit-composer__edit-binding-row">
-                    <input
-                      type="text"
-                      value={promptProfileDraft}
-                      disabled={busy || finished}
-                      onChange={(e) => setPromptProfileDraft(e.target.value)}
-                      placeholder="input/prompt-profiles/..."
-                    />
-                    <button
-                      type="button"
-                      className="drt-btn"
-                      disabled={busy || finished || !promptProfileDraft.trim()}
-                      onClick={() => void applyBindingEdit("prompt_profile", promptProfileDraft)}
-                    >
-                      Apply
-                    </button>
+                    {(() => {
+                      const profiles = familyPromptProfiles(editFamilies, String(snap?.family_slug || ""));
+                      const matched = profiles.find(
+                        (p) =>
+                          p.path === promptProfileDraft ||
+                          p.basename === promptProfileDraft.split(/[\\/]/).pop() ||
+                          p.slug === promptProfileDraft,
+                      );
+                      if (profiles.length) {
+                        return (
+                          <select
+                            value={matched?.path || promptProfileDraft}
+                            disabled={busy || finished}
+                            aria-label="Prompt profile"
+                            onChange={(e) => {
+                              const next = e.target.value;
+                              setPromptProfileDraft(next);
+                              void applyBindingEdit("prompt_profile", next);
+                            }}
+                          >
+                            {matched ? null : promptProfileDraft ? (
+                              <option value={promptProfileDraft}>
+                                {promptProfileDraft.split(/[\\/]/).pop() || promptProfileDraft}
+                              </option>
+                            ) : (
+                              <option value="">Select profile…</option>
+                            )}
+                            {profiles.map((p) => (
+                              <option key={p.path} value={p.path} title={p.path}>
+                                {promptProfileOptionLabel(p)}
+                              </option>
+                            ))}
+                          </select>
+                        );
+                      }
+                      return (
+                        <>
+                          <input
+                            type="text"
+                            value={promptProfileDraft}
+                            disabled={busy || finished}
+                            onChange={(e) => setPromptProfileDraft(e.target.value)}
+                            placeholder="pools/…/prompts/catalog-default.json"
+                          />
+                          <button
+                            type="button"
+                            className="drt-btn"
+                            disabled={busy || finished || !promptProfileDraft.trim()}
+                            onClick={() => void applyBindingEdit("prompt_profile", promptProfileDraft)}
+                          >
+                            Apply
+                          </button>
+                        </>
+                      );
+                    })()}
                   </div>
                 </label>
               ) : null}
@@ -694,7 +757,7 @@ function SubmitConstructionPreview({
   fromJob,
   ready,
 }: {
-  routes: { kind: string; family: string; shapeId: string | null }[];
+  routes: { kind: string; family: string; shapeId: string | null; promptProfile?: string | null }[];
   useLabel: string;
   useWindow: string | null;
   vhs: { skip: number; cap: number } | null;
@@ -743,9 +806,14 @@ function SubmitConstructionPreview({
             <span
               key={`${r.kind}:${r.family}`}
               className="work-product-badge"
-              title={r.shapeId ? `${r.kind} · shape ${r.shapeId}` : r.kind}
+              title={
+                [r.shapeId ? `${r.kind} · shape ${r.shapeId}` : r.kind, r.promptProfile || ""]
+                  .filter(Boolean)
+                  .join(" · ")
+              }
             >
               {r.kind}@{r.family || "?"}
+              {r.promptProfile ? ` · ${r.promptProfile}` : ""}
               {r.shapeId ? ` · ${r.shapeId}` : ""}
             </span>
           ))
@@ -872,6 +940,10 @@ function SubmitAdvanceComposerApp({
     if (!cachedFamiliesBoot) return "";
     return pickDefaultI2VFamily(cachedFamiliesBoot.families || [], intent.family);
   });
+  const [i2vPromptProfile, setI2vPromptProfile] = useState("");
+  const [extendPromptProfile, setExtendPromptProfile] = useState("");
+  const [varyPromptProfile, setVaryPromptProfile] = useState("");
+  const [derivePromptProfile, setDerivePromptProfile] = useState("");
 
   const duration =
     videoDuration > 0
@@ -1173,6 +1245,36 @@ function SubmitAdvanceComposerApp({
     return rows.length ? rows : families;
   }, [families, i2vFamily]);
 
+  const syncPromptSelection = useCallback(
+    (slug: string, prev: string) => {
+      const profiles = familyPromptProfiles(families, slug);
+      if (prev && profiles.some((p) => p.path === prev)) return prev;
+      return pickDefaultPromptProfile(profiles, {
+        familySlug: slug,
+        mediaRelpath: mediaRelpath || intent.mediaRelpath,
+        prefer: prev,
+      });
+    },
+    [families, intent.mediaRelpath, mediaRelpath],
+  );
+
+  useEffect(() => {
+    if (!isStill) return;
+    setI2vPromptProfile((prev) => syncPromptSelection(i2vFamily, prev));
+  }, [i2vFamily, isStill, syncPromptSelection]);
+
+  useEffect(() => {
+    setExtendPromptProfile((prev) => syncPromptSelection(extendFamily, prev));
+  }, [extendFamily, syncPromptSelection]);
+
+  useEffect(() => {
+    setVaryPromptProfile((prev) => syncPromptSelection(varyFamily, prev));
+  }, [syncPromptSelection, varyFamily]);
+
+  useEffect(() => {
+    setDerivePromptProfile((prev) => syncPromptSelection(deriveFamily, prev));
+  }, [deriveFamily, syncPromptSelection]);
+
   const canSubmit = isStill
     ? Boolean(mediaRelpath.trim()) && Boolean(i2vFamily) && !busy
     : Boolean(mediaRelpath.trim()) &&
@@ -1252,7 +1354,10 @@ function SubmitAdvanceComposerApp({
             : `input/${stillPath.split("/").pop() || stillPath}`;
         const res = await queueShapeFactoryCombo({
           family_slug: i2vFamily,
-          bindings: { source_still: bindingPath },
+          bindings: {
+            source_still: bindingPath,
+            ...(i2vPromptProfile ? { prompt_profile: i2vPromptProfile } : {}),
+          },
           front: when === "now",
           source_surface: "submit",
         });
@@ -1282,13 +1387,22 @@ function SubmitAdvanceComposerApp({
           stepId: "advance.extend",
           family: extendFamily,
           identityAnchor: identitySelectedPath || null,
+          promptProfile: extendPromptProfile || null,
         });
       }
       if (varyOn && varyFamily) {
-        routes.push({ stepId: "advance.vary", family: varyFamily });
+        routes.push({
+          stepId: "advance.vary",
+          family: varyFamily,
+          promptProfile: varyPromptProfile || null,
+        });
       }
       if (deriveOn && deriveFamily) {
-        routes.push({ stepId: "advance.derive", family: deriveFamily });
+        routes.push({
+          stepId: "advance.derive",
+          family: deriveFamily,
+          promptProfile: derivePromptProfile || null,
+        });
       }
       if (!routes.length) {
         setMsg("Select Extend, Vary, and/or Derive");
@@ -1381,6 +1495,39 @@ function SubmitAdvanceComposerApp({
     </label>
   );
 
+  const profileSelect = (
+    familySlug: string,
+    value: string,
+    onChange: (path: string) => void,
+    ariaPrefix: string,
+  ) => {
+    const profiles = familyPromptProfiles(families, familySlug);
+    if (!profiles.length) return null;
+    const known = profiles.some((p) => p.path === value);
+    return (
+      <label className="work-product-quick-queue__family-wrap">
+        <span className="work-product-quick-queue__family-label">Prompt</span>
+        <select
+          className="work-product-quick-queue__family"
+          value={known ? value : value || profiles[0]?.path || ""}
+          disabled={busy}
+          aria-label={`${ariaPrefix} prompt profile`}
+          title="Prompt catalog for this family’s C slot"
+          onChange={(e) => onChange(e.target.value)}
+        >
+          {known || !value ? null : (
+            <option value={value}>{value.split(/[\\/]/).pop() || value}</option>
+          )}
+          {profiles.map((p: WorkProductFamilyPromptProfile) => (
+            <option key={p.path} value={p.path} title={p.path}>
+              {promptProfileOptionLabel(p)}
+            </option>
+          ))}
+        </select>
+      </label>
+    );
+  };
+
   const hasIntent = hasSubmitIntent({
     mediaRelpath: mediaRelpath || intent.mediaRelpath,
     clipId: clipId || intent.clipId,
@@ -1399,12 +1546,18 @@ function SubmitAdvanceComposerApp({
   );
 
   const constructionPreview = useMemo(() => {
-    const routes: { kind: string; family: string; shapeId: string | null }[] = [];
+    const profileForFamily = (slug: string, path: string) => {
+      const hit = familyPromptProfiles(families, slug).find((p) => p.path === path);
+      const raw = hit?.slug || path.split(/[\\/]/).pop() || "";
+      return raw.replace(/\.json$/i, "").replace(/^catalog-/, "") || null;
+    };
+    const routes: { kind: string; family: string; shapeId: string | null; promptProfile?: string | null }[] = [];
     if (isStill) {
       routes.push({
         kind: "Seed",
         family: i2vFamily || "",
         shapeId: familyShapeId(families, i2vFamily),
+        promptProfile: i2vPromptProfile ? profileForFamily(i2vFamily, i2vPromptProfile) : null,
       });
     } else {
       if (extendOn) {
@@ -1412,6 +1565,7 @@ function SubmitAdvanceComposerApp({
           kind: "Extend",
           family: extendFamily || "",
           shapeId: familyShapeId(families, extendFamily),
+          promptProfile: extendPromptProfile ? profileForFamily(extendFamily, extendPromptProfile) : null,
         });
       }
       if (varyOn) {
@@ -1419,6 +1573,7 @@ function SubmitAdvanceComposerApp({
           kind: "Vary",
           family: varyFamily || "",
           shapeId: familyShapeId(families, varyFamily),
+          promptProfile: varyPromptProfile ? profileForFamily(varyFamily, varyPromptProfile) : null,
         });
       }
       if (deriveOn) {
@@ -1426,6 +1581,7 @@ function SubmitAdvanceComposerApp({
           kind: "Derive",
           family: deriveFamily || "",
           shapeId: familyShapeId(families, deriveFamily),
+          promptProfile: derivePromptProfile ? profileForFamily(deriveFamily, derivePromptProfile) : null,
         });
       }
     }
@@ -1508,10 +1664,13 @@ function SubmitAdvanceComposerApp({
     canSubmit,
     deriveFamily,
     deriveOn,
+    derivePromptProfile,
     extendFamily,
     extendOn,
+    extendPromptProfile,
     families,
     i2vFamily,
+    i2vPromptProfile,
     identityCandidates,
     identityLoading,
     identityNeeded,
@@ -1523,6 +1682,7 @@ function SubmitAdvanceComposerApp({
     mediaRelpath,
     varyFamily,
     varyOn,
+    varyPromptProfile,
     windowOk,
   ]);
 
@@ -1652,29 +1812,33 @@ function SubmitAdvanceComposerApp({
             <div className="work-product-viewer">
               <div className="work-product-viewer__main">
                 {playUrl && isStill ? (
-                  <img className="work-product-viewer__video" src={posterUrl || playUrl} alt="" />
+                  <AppetitePreviewFrame relpath={mediaRelpath}>
+                    <img className="work-product-viewer__video" src={posterUrl || playUrl} alt="" />
+                  </AppetitePreviewFrame>
                 ) : playUrl ? (
-                  <video
-                    ref={videoRef}
-                    className="work-product-viewer__video"
-                    src={playUrl}
-                    poster={posterUrl || undefined}
-                    controls
-                    playsInline
-                    muted
-                    preload="metadata"
-                    onLoadedMetadata={(e) => {
-                      const d = e.currentTarget.duration;
-                      if (Number.isFinite(d) && d > 0) setVideoDuration(d);
-                      setCurrentTime(e.currentTarget.currentTime || 0);
-                    }}
-                    onDurationChange={(e) => {
-                      const d = e.currentTarget.duration;
-                      if (Number.isFinite(d) && d > 0) setVideoDuration(d);
-                    }}
-                    onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime || 0)}
-                    onSeeked={(e) => setCurrentTime(e.currentTarget.currentTime || 0)}
-                  />
+                  <AppetitePreviewFrame relpath={mediaRelpath}>
+                    <video
+                      ref={videoRef}
+                      className="work-product-viewer__video"
+                      src={playUrl}
+                      poster={posterUrl || undefined}
+                      controls
+                      playsInline
+                      muted
+                      preload="metadata"
+                      onLoadedMetadata={(e) => {
+                        const d = e.currentTarget.duration;
+                        if (Number.isFinite(d) && d > 0) setVideoDuration(d);
+                        setCurrentTime(e.currentTarget.currentTime || 0);
+                      }}
+                      onDurationChange={(e) => {
+                        const d = e.currentTarget.duration;
+                        if (Number.isFinite(d) && d > 0) setVideoDuration(d);
+                      }}
+                      onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime || 0)}
+                      onSeeked={(e) => setCurrentTime(e.currentTarget.currentTime || 0)}
+                    />
+                  </AppetitePreviewFrame>
                 ) : (
                   <div className="work-product-viewer__empty">No media</div>
                 )}
@@ -1784,6 +1948,7 @@ function SubmitAdvanceComposerApp({
                       "Still → video origin family (Kneel / FaceBlast / Bounce…)",
                       i2vFamilyOpts,
                     )}
+                    {profileSelect(i2vFamily, i2vPromptProfile, setI2vPromptProfile, "I2V")}
                   </div>
                 </div>
               ) : (
@@ -1865,6 +2030,7 @@ function SubmitAdvanceComposerApp({
                           extendFamilyOpts,
                         )
                       : null}
+                    {extendOn ? profileSelect(extendFamily, extendPromptProfile, setExtendPromptProfile, "Extend") : null}
                     {varyOn
                       ? familySelect(
                           varyFamily,
@@ -1874,6 +2040,7 @@ function SubmitAdvanceComposerApp({
                           varyFamilyRows.length ? varyFamilyRows : familyOpts,
                         )
                       : null}
+                    {varyOn ? profileSelect(varyFamily, varyPromptProfile, setVaryPromptProfile, "Vary") : null}
                     {deriveOn
                       ? familySelect(
                           deriveFamily,
@@ -1883,6 +2050,7 @@ function SubmitAdvanceComposerApp({
                           deriveFamilyOpts,
                         )
                       : null}
+                    {deriveOn ? profileSelect(deriveFamily, derivePromptProfile, setDerivePromptProfile, "Derive") : null}
                   </div>
                 ) : (
                   <p className="work-product-quick-queue__hint">Select Extend, Vary, and/or Derive</p>

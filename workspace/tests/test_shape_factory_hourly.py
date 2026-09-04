@@ -687,10 +687,12 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
         self.assertIn("BounceDanceA", names)
         self.assertIn("FB9_GEX", names)
         self.assertIn("FB9_GEX2", names)
+        self.assertIn("X-KNEEL-FB9-bare", names)
         weights = dict(_DEFAULT_SEED_FAMILY_WEIGHTS)
         self.assertEqual(weights["FB9_GEX"], weights["FB9_GEX2"])
         i2v = {
             "FB9-FaceBlast",
+            "X-KNEEL-FB9-bare",
             "X-KNEEL-FB9",
             "BounceDanceA",
             "FB8VB2",
@@ -701,11 +703,12 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
         total_w = sum(w for _n, w in _DEFAULT_SEED_FAMILY_WEIGHTS)
         self.assertEqual(total_w, 100)
         self.assertGreaterEqual(i2v_w, 83)
-        self.assertEqual(max(weights.values()), weights["X-KNEEL-FB9"])
-        self.assertGreaterEqual(weights["X-KNEEL-FB9"], 32)
+        self.assertEqual(max(weights.values()), weights["X-KNEEL-FB9-bare"])
+        self.assertGreaterEqual(weights["X-KNEEL-FB9-bare"], 28)
+        self.assertLessEqual(weights["X-KNEEL-FB9"], 8)
         self.assertNotIn("FB8VA4", weights)
         picked = {select_seed_family(i) for i in range(200)}
-        self.assertIn("X-KNEEL-FB9", picked)
+        self.assertIn("X-KNEEL-FB9-bare", picked)
         self.assertTrue(picked & {"FB9-FaceBlast", "BounceDanceA", "FB8VB2"})
         self.assertTrue(picked & {"FB9_GEX", "FB9_GEX2"})
         self.assertNotIn("FB8VA4", picked)
@@ -969,7 +972,17 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
                 self.assertGreaterEqual(summary["seed_count"], 4)
                 self.assertGreaterEqual(summary["image_based_count"], 4)
                 families = set(summary["by_family"])
-                self.assertTrue(families & {"FB9_GEX_FACIAL", "FB9_GEX", "FB9-FaceBlast", "BounceDanceA", "X-KNEEL-FB9"})
+                self.assertTrue(
+                    families
+                    & {
+                        "FB9_GEX_FACIAL",
+                        "FB9_GEX",
+                        "FB9-FaceBlast",
+                        "BounceDanceA",
+                        "X-KNEEL-FB9-bare",
+                        "X-KNEEL-FB9",
+                    }
+                )
                 table = format_hourly_picks_table(result)
                 self.assertIn("Summary", table)
                 self.assertIn("FB9", table)

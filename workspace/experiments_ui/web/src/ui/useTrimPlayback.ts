@@ -143,16 +143,34 @@ export function useTrimPlaybackEnforcement(
       }
     };
 
+    const parkAtIn = () => {
+      const duration = readDuration();
+      const b = phoneTrimBounds(markIn, markOut, duration);
+      if (!b || !phoneTrimPlaybackActive(b, duration)) return;
+      if (!(b.in > 0.008)) return;
+      const t = v.currentTime;
+      const inside = t >= b.in - 1e-3 && t < b.out - 1e-3;
+      if (inside && !v.paused) return;
+      if (inside && v.paused && t > b.in + 0.05) return;
+      if (Math.abs(t - b.in) < 0.04) return;
+      v.currentTime = b.in;
+    };
+
     v.addEventListener("timeupdate", onTimeUpdate);
     v.addEventListener("ended", onEnded);
     v.addEventListener("play", onPlay);
     v.addEventListener("seeked", onSeeked);
+    v.addEventListener("loadedmetadata", parkAtIn);
+    v.addEventListener("loadeddata", parkAtIn);
+    if (v.readyState >= 1) parkAtIn();
     return () => {
       clearRewindSafety();
       v.removeEventListener("timeupdate", onTimeUpdate);
       v.removeEventListener("ended", onEnded);
       v.removeEventListener("play", onPlay);
       v.removeEventListener("seeked", onSeeked);
+      v.removeEventListener("loadedmetadata", parkAtIn);
+      v.removeEventListener("loadeddata", parkAtIn);
     };
   }, [videoRef, mediaKey, markIn, markOut, loop, enabled]);
 }

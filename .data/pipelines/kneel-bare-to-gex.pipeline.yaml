@@ -1,0 +1,29 @@
+schema_version: comfyui-runpod.pipeline.v0
+pipeline_id: kneel-bare-to-gex
+description: X-KNEEL-FB9-bare deposit → FB9_GEX (hourly i2v→GEX chain; Workbench Extend default)
+input_guidance: still
+affinity:
+  - when: still_seed_to_gex
+
+steps:
+  - id: kneel-bare
+    shape: /home/yuji/src/comfyui-runpod/.data/shapes/X-KNEEL-FB9-bare.shape.yaml
+    pools: /home/yuji/src/comfyui-runpod/.data/pools/X-KNEEL-FB9-bare/pools.yaml
+    pick: zip
+    deposits:
+      final_video: pool:X-KNEEL-bare_X_og
+
+  - id: gex
+    shape: /home/yuji/src/comfyui-runpod/.data/shapes/FB9_GEX.shape.yaml
+    pools: /home/yuji/src/comfyui-runpod/.data/pools/FB9_GEX/pools.yaml
+    pick: zip
+    binds_override:
+      source_video:
+        from: pool
+        pool: X-KNEEL-bare_X_og
+        pick: last
+        index: /home/yuji/src/comfyui-runpod/.data/pools/X-KNEEL-FB9-bare/index.json
+    deposits:
+      final_video: pool:FB9_GEX_X_og
+
+rules: []

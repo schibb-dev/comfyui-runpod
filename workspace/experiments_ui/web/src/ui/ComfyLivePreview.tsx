@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { AppetitePreviewBadge } from "./AppetitePreviewBadge";
 import { comfyLivePreviewUrl, fetchComfyLiveStatus } from "./api";
 import type { ComfyLiveStatusItem } from "./types";
 
@@ -170,11 +171,13 @@ export function ComfyLivePreview({
   submittedAt,
   className,
   showMetrics = true,
+  appetiteRelpath,
 }: {
   promptId: string;
   submittedAt?: string | null;
   className?: string;
   showMetrics?: boolean;
+  appetiteRelpath?: string | null;
 }) {
   const [bust, setBust] = useState(() => Date.now());
   const [hasFrame, setHasFrame] = useState(false);
@@ -378,6 +381,7 @@ export function ComfyLivePreview({
         <span className="work-product-live__badge" title={promptId}>
           live
         </span>
+        <AppetitePreviewBadge relpath={appetiteRelpath} />
       </div>
     </div>
   );

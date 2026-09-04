@@ -7,6 +7,7 @@ import {
   judgeAbExperiment,
   queueAbExperiment,
 } from "./api";
+import { AppetitePreviewBadge } from "./AppetitePreviewBadge";
 import { MediaCompareStage } from "./compare/MediaCompareStage";
 import type {
   AbCatalogDisposition,
@@ -91,6 +92,7 @@ function ExemplarPreview({ item, large }: { item: WorkProductItem | null; large?
     return (
       <div className="family-ab-exemplar-preview large">
         <video src={src} controls playsInline muted loop preload="metadata" />
+        <AppetitePreviewBadge relpath={item.output_relpath} />
       </div>
     );
   }
@@ -101,6 +103,7 @@ function ExemplarPreview({ item, large }: { item: WorkProductItem | null; large?
       ) : (
         <img src={src} alt={item.job_key} loading="lazy" />
       )}
+      <AppetitePreviewBadge relpath={item.output_relpath} size={large ? "default" : "sm"} />
     </div>
   );
 }

@@ -371,6 +371,7 @@ def _expand_still_members_for_hourly(
 _FRESH_STILL_FAMILIES: Tuple[str, ...] = (
     "BounceDanceA",
     "FB9-FaceBlast",
+    "X-KNEEL-FB9-bare",
     "X-KNEEL-FB9",
     # FB8VA4 quarantined 2026-08-21
     "FB8VB2",
@@ -2649,10 +2650,12 @@ def plan_hourly_derive(
 
 # Seed families for idle hourly ticks (weights sum to 100 by default).
 # Bias toward still+prompt (i2v) templates so input images get exercised.
-# X-KNEEL-FB9 is the primary image-based seed; FaceBlast/BounceDance remain secondary.
+# X-KNEEL-FB9-bare is the primary image-based seed (no clothing/turning beat);
+# plain X-KNEEL-FB9 is demoted to a residual. FaceBlast/BounceDance stay secondary.
 # Extension (v2v) seeds: FB9_GEX and FB9_GEX2 share equal weight (GEX2 restored after workflow fix).
 _DEFAULT_SEED_FAMILY_WEIGHTS: Tuple[Tuple[str, int], ...] = (
-    ("X-KNEEL-FB9", 35),
+    ("X-KNEEL-FB9-bare", 30),
+    ("X-KNEEL-FB9", 5),
     ("FB9-FaceBlast", 16),
     ("BounceDanceA", 16),
     ("FB9_GEX", 5),
@@ -2854,9 +2857,10 @@ def find_kneel_needing_gex2(
     return find_kneel_needing_consumer("FB9_GEX2", data_root=data_root, job_dir=job_dir)
 
 
-# Image/still (i2v) families that chain into FB9_GEX. X-KNEEL first (primary image
-# seed), then BounceDance / FaceBlast, then FB8 fillers when several are ready.
+# Image/still (i2v) families that chain into FB9_GEX. Bare Kneel first (primary
+# image seed), then leftover plain Kneel, BounceDance / FaceBlast, then FB8 fillers.
 _IMAGE_TO_GEX_FAMILIES: Tuple[str, ...] = (
+    "X-KNEEL-FB9-bare",
     "X-KNEEL-FB9",
     "BounceDanceA",
     "FB9-FaceBlast",

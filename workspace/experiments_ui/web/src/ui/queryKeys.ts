@@ -40,6 +40,9 @@ export const queryKeys = {
     workProductsRoot: ["shapeFactory", "workProducts"] as const,
     workProducts: (opts: { limit: number; hourlyOnly: boolean; family?: string | null }) =>
       ["shapeFactory", "workProducts", opts] as const,
+    workProductRoot: ["shapeFactory", "workProduct"] as const,
+    workProduct: (opts: { jobKey?: string | null; promptId?: string | null }) =>
+      ["shapeFactory", "workProduct", opts] as const,
     submitAttemptsRoot: ["shapeFactory", "submitAttempts"] as const,
     submitAttempts: (opts?: { limit?: number; errorsOnly?: boolean; family?: string }) =>
       ["shapeFactory", "submitAttempts", opts || { limit: 12, errorsOnly: true }] as const,

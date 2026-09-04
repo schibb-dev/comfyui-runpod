@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { AppetitePreviewFrame } from "./AppetitePreviewBadge";
 import { VideoTrimControls, type VideoTrimPlaybackMode } from "./VideoTrimControls";
 import { useTrimPlaybackEnforcement } from "./useTrimPlayback";
 import { parseFps, vhsDefaultsToMarks, type VhsDefaults } from "./workProductTrim";
@@ -19,11 +20,13 @@ export function PipelineMediaPlayer({
   fpsHint,
   markIn: markInProp,
   markOut: markOutProp,
+  appetiteRelpath,
 }: {
   videoUrl?: string | null;
   thumbUrl?: string | null;
   mediaKey?: string;
   alt?: string;
+  appetiteRelpath?: string | null;
   /** Kept for call-site compatibility; queue viewers are always non-editing. */
   readOnly?: boolean;
   className?: string;
@@ -84,11 +87,12 @@ export function PipelineMediaPlayer({
     return (
       <div className={["work-product-viewer", "pipeline-media-player", className].filter(Boolean).join(" ")}>
         <div className="work-product-viewer__main">
-          <video
-            ref={videoRef}
-            className="work-product-viewer__video"
-            src={videoUrl}
-            poster={thumbUrl || undefined}
+          <AppetitePreviewFrame relpath={appetiteRelpath}>
+            <video
+              ref={videoRef}
+              className="work-product-viewer__video"
+              src={videoUrl}
+              poster={thumbUrl || undefined}
             controls={!hasTrimIntent}
             playsInline
             muted
@@ -104,7 +108,8 @@ export function PipelineMediaPlayer({
             }}
             onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime || 0)}
             onSeeked={(e) => setCurrentTime(e.currentTarget.currentTime || 0)}
-          />
+            />
+          </AppetitePreviewFrame>
         </div>
         {hasTrimIntent ? (
           <>
@@ -140,7 +145,9 @@ export function PipelineMediaPlayer({
     return (
       <div className={["work-product-viewer", "pipeline-media-player", className].filter(Boolean).join(" ")}>
         <div className="work-product-viewer__main">
-          <img className="work-product-viewer__img" src={thumbUrl} alt={alt} />
+          <AppetitePreviewFrame relpath={appetiteRelpath}>
+            <img className="work-product-viewer__img" src={thumbUrl} alt={alt} />
+          </AppetitePreviewFrame>
         </div>
       </div>
     );

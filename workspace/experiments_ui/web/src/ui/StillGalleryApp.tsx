@@ -16,9 +16,9 @@ import { parseStillDeepLink, stillsHref, buildSubmitDeepLink, discoveryLibraryHr
 import { PageHeader } from "./PageHeader";
 import { queryKeys } from "./queryKeys";
 import { SubmitComposerModal } from "./SubmitComposerModal";
+import { AppetitePreviewBadge } from "./AppetitePreviewBadge";
 import { WorkProductAppetiteStrip } from "./WorkProductAppetiteStrip";
 import type { InputCurationCollection, InputCurationStillItem, StillTagEvent } from "./types";
-import { APPETITE_ROW_GLYPH, appetiteRowTitle } from "./discoveryRatingsRollup";
 
 const PAGE = 96;
 const TAG_BATCH_DEFAULT = 12;
@@ -792,14 +792,7 @@ export function StillGalleryApp() {
                   title={it.basename || it.path}
                 >
                   {checked ? <span className="still-gallery__check" aria-hidden="true" /> : null}
-                  {it.appetite ? (
-                    <span
-                      className={"still-gallery__appetite still-gallery__appetite--" + it.appetite}
-                      title={appetiteRowTitle(it.appetite, it.appetite_facet)}
-                    >
-                      {APPETITE_ROW_GLYPH[it.appetite]}
-                    </span>
-                  ) : null}
+                  <AppetitePreviewBadge relpath={it.relpath || it.path} />
                   {src ? (
                     <img className="still-gallery__thumb" src={src} alt="" loading="lazy" />
                   ) : (
@@ -838,11 +831,14 @@ export function StillGalleryApp() {
                   </p>
                 ) : null}
                 {selected.url || selected.thumb_url ? (
-                  <img
-                    className="still-gallery__preview"
-                    src={selected.url || selected.thumb_url}
-                    alt={selected.basename || ""}
-                  />
+                  <div className="still-gallery__preview-wrap">
+                    <img
+                      className="still-gallery__preview"
+                      src={selected.url || selected.thumb_url}
+                      alt={selected.basename || ""}
+                    />
+                    <AppetitePreviewBadge relpath={selectedRel} />
+                  </div>
                 ) : null}
                 <p className="mono still-gallery__path">{selectedRel}</p>
                 {selectedRel && multiCount <= 1 ? (

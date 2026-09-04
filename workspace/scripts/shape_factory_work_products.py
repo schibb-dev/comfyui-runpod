@@ -141,6 +141,9 @@ def list_shape_families(
                 )
             except Exception:
                 row["vhs_defaults"] = {"skip_first_frames": 0, "frame_load_cap": 0}
+        profiles = list_family_prompt_profiles(data_root, family_slug or slug)
+        if profiles:
+            row["prompt_profiles"] = profiles
         out.append(row)
     # Dedupe by slug (prefer first).
     seen: set[str] = set()
@@ -179,6 +182,52 @@ def is_extend_family_option(row: Dict[str, Any]) -> bool:
     return "v2v" in sid or "vi2v" in sid or "facial" in sid or "source" in sid or "identity" in sid
 
 
+def list_family_prompt_profiles(data_root: Path, family_slug: str) -> List[Dict[str, Any]]:
+    """Named prompt catalogs for a family (top-level ``prompts/*.json``, not ``_replay/``)."""
+    slug = str(family_slug or "").strip()
+    if not slug:
+        return []
+    prompts_dir = Path(data_root) / "pools" / slug / "prompts"
+    if not prompts_dir.is_dir():
+        return []
+    seen: set[str] = set()
+    rows: List[Dict[str, Any]] = []
+    for path in sorted(prompts_dir.glob("*.json")):
+        if not path.is_file():
+            continue
+        key = str(path.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        label = ""
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                label = str(raw.get("label") or "").strip()
+        except (OSError, json.JSONDecodeError, TypeError):
+            label = ""
+        stem = path.stem
+        rows.append(
+            {
+                "slug": stem,
+                "label": label or stem,
+                "basename": path.name,
+                "path": str(path.resolve()),
+            }
+        )
+
+    def _sort_key(row: Dict[str, Any]) -> Tuple[int, str]:
+        name = str(row.get("basename") or "")
+        if name == "catalog-default.json":
+            return (0, name)
+        if name.startswith("catalog-"):
+            return (1, name)
+        return (2, name)
+
+    rows.sort(key=_sort_key)
+    return rows
+
+
 def _shapes_pipelines_fingerprint(data_root: Path) -> str:
     """Cheap config stamp for client/session cache invalidation."""
     latest = 0.0
@@ -193,6 +242,14 @@ def _shapes_pipelines_fingerprint(data_root: Path) -> str:
                     count += 1
                 except OSError:
                     continue
+    pools = Path(data_root) / "pools"
+    if pools.is_dir():
+        for path in pools.glob("*/prompts/*.json"):
+            try:
+                latest = max(latest, float(path.stat().st_mtime))
+                count += 1
+            except OSError:
+                continue
     return f"{count}:{int(latest)}"
 
 
@@ -1698,6 +1755,128 @@ def _work_product_item_from_job(
             pass
     item["details"] = _detail_rows(item)
     return item
+
+
+def _find_job_file(
+    data_root: Path, *, job_key: Optional[str] = None, prompt_id: Optional[str] = None
+) -> Tuple[Optional[Path], Optional[Dict[str, Any]]]:
+    """Locate a factory job anywhere under ``jobs/`` — not limited to the recent window."""
+    jobs_root = Path(data_root) / "shape_factory" / "jobs"
+    if not jobs_root.is_dir():
+        return None, None
+    key = str(job_key or "").strip()
+    if key and ("/" in key or "\\" in key or key in {".", ".."}):
+        return None, None
+    if key:
+        for path in jobs_root.glob(f"**/{key}.job.json"):
+            try:
+                job = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if isinstance(job, dict):
+                return path, job
+    pid = str(prompt_id or "").strip()
+    if pid:
+        for path in jobs_root.rglob("*.job.json"):
+            try:
+                text = path.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            if pid not in text:
+                continue
+            try:
+                job = json.loads(text)
+            except Exception:
+                continue
+            if not isinstance(job, dict):
+                continue
+            submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+            if str(submit.get("prompt_id") or "").strip() == pid:
+                return path, job
+    return None, None
+
+
+def get_work_product(
+    *,
+    data_root: Path,
+    output_root: Path,
+    job_key: Optional[str] = None,
+    prompt_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Load one work product by job_key or prompt_id from the full jobs tree.
+
+    Used by Workbench deep-links. Recent-list limit / hourly_only do not apply.
+    """
+    data_root = data_root.resolve()
+    output_root = output_root.resolve()
+    jk = str(job_key or "").strip() or None
+    pid = str(prompt_id or "").strip() or None
+    if not jk and not pid:
+        return {"ok": False, "error": "missing_job_or_prompt"}
+
+    path, job = _find_job_file(data_root, job_key=jk, prompt_id=pid)
+    if path is None or job is None:
+        return {
+            "ok": False,
+            "error": "not_found",
+            "job_key": jk,
+            "prompt_id": pid,
+        }
+
+    work_items_doc = None
+    work_items_for_item = None
+    try:
+        from shape_factory_work_items import (  # type: ignore
+            default_work_items_index_path,
+            load_work_items_doc,
+            work_items_for_item as _work_items_for_item,
+        )
+
+        wi_path = output_root / "_status" / "work_items_index.json"
+        if not wi_path.is_file():
+            og = output_root / "og"
+            if og.is_dir():
+                wi_path = default_work_items_index_path(og)
+        if wi_path.is_file():
+            work_items_doc = load_work_items_doc(wi_path)
+            work_items_for_item = _work_items_for_item
+    except Exception:
+        work_items_doc = None
+        work_items_for_item = None
+
+    item = _work_product_item_from_job(
+        path,
+        job,
+        data_root=data_root,
+        output_root=output_root,
+        work_items_doc=work_items_doc,
+        work_items_for_item=work_items_for_item,
+    )
+    try:
+        from shape_factory_markers import attach_markers_to_work_products
+
+        attach_markers_to_work_products([item], output_root=output_root)
+    except Exception:
+        if isinstance(item, dict):
+            item.setdefault("markers", {})
+
+    families = list_shape_families(
+        data_root,
+        workspace_root=output_root.parent,
+        output_root=output_root,
+    )
+    return {
+        "ok": True,
+        "schema_version": "comfyui-runpod.work-product.v0",
+        "data_root": str(data_root),
+        "jobs_root": str(data_root / "shape_factory" / "jobs"),
+        "job_key": item.get("job_key"),
+        "prompt_id": item.get("prompt_id"),
+        "families": families,
+        "extend_family_defaults": list_extend_family_defaults(data_root),
+        "item": item,
+    }
 
 
 def list_recent_work_products(

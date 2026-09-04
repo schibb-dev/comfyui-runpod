@@ -747,6 +747,63 @@ class ShapeFactoryQueueTests(unittest.TestCase):
         self.assertNotIn("source_still", captured.get("bindings") or {})
         self.assertEqual((captured.get("bindings") or {}).get("source_video"), "/data/output/og/kneel_out.mp4")
 
+    def test_replay_honors_explicit_prompt_profile_binding(self) -> None:
+        from shape_factory_queue import replay_from_request_body
+
+        job = {
+            "job_key": "hourly__pp-catalog-default__still-abc",
+            "family_slug": "FB9-FaceBlast",
+            "bindings": {
+                "prompt_profile": {"path": "/data/pools/FB9-FaceBlast/prompts/catalog-default.json"},
+                "source_still": {"path": "/input/face.jpeg"},
+            },
+            "submit": {"outputs": ["/data/output/og/faceblast_out.mp4"], "status": "complete"},
+        }
+        captured: dict = {}
+
+        def fake_queue(**kwargs):
+            captured.update(kwargs)
+            return {"ok": True, "job_key": "ext", "pick_mode": kwargs.get("pick_mode")}
+
+        shape = {
+            "requires": [
+                {"slot": "source_video", "media": "video"},
+                {"slot": "prompt_profile", "binding": {"type": "prompt_bundle"}},
+            ]
+        }
+        chosen = "/data/pools/FB9_GEX/prompts/catalog-faceblast-extend.json"
+        with mock.patch("shape_factory_queue._find_job_doc", return_value=(job, Path("x.job.json"))), mock.patch(
+            "shape_factory_queue.load_yaml", return_value=shape
+        ), mock.patch(
+            "shape_factory_queue.resolve_or_recover_prompt_profile_binding",
+            side_effect=lambda bindings, **_k: (bindings, None),
+        ), mock.patch(
+            "shape_factory_queue._resolve_shape_path", return_value=Path("shape.yaml")
+        ), mock.patch(
+            "shape_factory_queue.queue_shape_factory_combo", side_effect=fake_queue
+        ), mock.patch(
+            "shape_factory_queue.resolve_vhs_window_overrides",
+            side_effect=lambda **kw: (kw.get("parameters") or {}, False),
+        ), mock.patch(
+            "shape_factory_queue.vhs_loader_defaults_for_shape",
+            return_value={"skip_first_frames": 0, "frame_load_cap": 0},
+        ):
+            out = replay_from_request_body(
+                {
+                    "job_key": job["job_key"],
+                    "family_slug": "FB9_GEX",
+                    "extend": True,
+                    "dry_run": True,
+                    "bindings": {"prompt_profile": chosen},
+                },
+                repo_root=REPO_ROOT,
+                workspace_root=REPO_ROOT / "workspace",
+                output_root=Path("/tmp"),
+                comfy_server="http://127.0.0.1:8188",
+            )
+        self.assertTrue(out.get("ok"), out)
+        self.assertEqual((captured.get("bindings") or {}).get("prompt_profile"), chosen)
+
     def test_cross_family_prompt_profile_remap_prefers_matching_label(self) -> None:
         from shape_factory_queue import _remap_prompt_profile_binding_for_family
 
@@ -1047,6 +1104,132 @@ class ShapeFactoryReplaySeedTests(unittest.TestCase):
             job_path=None,
         )
         self.assertEqual((seed_ex, mode_ex), (42, "explicit"))
+
+    def test_swap_family_replays_then_retires_queued_source(self) -> None:
+        from shape_factory_queue import swap_family_from_request_body
+
+        job = {
+            "job_key": "X-KNEEL-FB9__old",
+            "family_slug": "X-KNEEL-FB9",
+            "submit": {"status": "queued", "prompt_id": "pid-old"},
+        }
+        calls: list[str] = []
+
+        def fake_replay(body, **_kwargs):
+            self.assertEqual(body.get("family_slug"), "X-KNEEL-FB9-bare")
+            self.assertTrue(body.get("force"))
+            self.assertEqual(body.get("overrides"), {"parameters": {"seed": 7}})
+            return {"ok": True, "job_key": "X-KNEEL-FB9-bare__new", "prompt_id": "pid-new"}
+
+        def fake_mutate(**kwargs):
+            calls.append(str(kwargs.get("action")))
+            return {"ok": True, "action": kwargs.get("action")}
+
+        with mock.patch("shape_factory_queue._find_job_doc", return_value=(job, Path("old.job.json"))), mock.patch(
+            "shape_factory_queue.replay_from_request_body", side_effect=fake_replay
+        ), mock.patch(
+            "shape_factory_queue.resolve_shape_factory_data_root", return_value=Path("/tmp")
+        ), mock.patch(
+            "shape_factory_creation_control.mutate_job", side_effect=fake_mutate
+        ):
+            out = swap_family_from_request_body(
+                {
+                    "job_keys": ["X-KNEEL-FB9__old"],
+                    "family_slug": "X-KNEEL-FB9-bare",
+                    "front": True,
+                    "seed_mode": "same",
+                    "overrides": {"parameters": {"seed": 7}},
+                },
+                repo_root=REPO_ROOT,
+                workspace_root=REPO_ROOT / "workspace",
+                output_root=Path("/tmp"),
+                comfy_server="http://127.0.0.1:8188",
+            )
+        self.assertTrue(out.get("ok"), out)
+        self.assertEqual(out.get("swapped"), 1)
+        self.assertEqual(out.get("failed"), 0)
+        self.assertEqual(calls, ["unqueue_to_pending", "discard"])
+        row = out["items"][0]
+        self.assertEqual(row["replay"]["job_key"], "X-KNEEL-FB9-bare__new")
+        self.assertTrue(row.get("replaced"))
+
+    def test_swap_family_skips_running_and_same_family(self) -> None:
+        from shape_factory_queue import swap_family_from_request_body
+
+        running = {
+            "job_key": "run",
+            "family_slug": "X-KNEEL-FB9",
+            "submit": {"status": "running", "prompt_id": "pid-run"},
+        }
+        same = {
+            "job_key": "same",
+            "family_slug": "X-KNEEL-FB9-bare",
+            "submit": {"status": "queued", "prompt_id": "pid-same"},
+        }
+
+        def find(_root, key):
+            if key == "run":
+                return running, Path("run.job.json")
+            if key == "same":
+                return same, Path("same.job.json")
+            return None
+
+        with mock.patch("shape_factory_queue._find_job_doc", side_effect=find), mock.patch(
+            "shape_factory_queue.resolve_shape_factory_data_root", return_value=Path("/tmp")
+        ), mock.patch("shape_factory_queue.replay_from_request_body") as replay:
+            out = swap_family_from_request_body(
+                {"job_keys": ["run", "same"], "family_slug": "X-KNEEL-FB9-bare"},
+                repo_root=REPO_ROOT,
+                workspace_root=REPO_ROOT / "workspace",
+                output_root=Path("/tmp"),
+                comfy_server="http://127.0.0.1:8188",
+            )
+        replay.assert_not_called()
+        self.assertFalse(out.get("ok"))
+        self.assertEqual(out.get("failed"), 2)
+        errors = {it["job_key"]: it.get("error") for it in out["items"]}
+        self.assertEqual(errors["run"], "running")
+        self.assertEqual(errors["same"], "same_family")
+
+    def test_swap_family_refuses_complete_and_jobs_with_output(self) -> None:
+        from shape_factory_queue import swap_family_from_request_body
+
+        done = {
+            "job_key": "done",
+            "family_slug": "X-KNEEL-FB9",
+            "submit": {"status": "complete", "prompt_id": "pid-done"},
+        }
+        deposited = {
+            "job_key": "dep",
+            "family_slug": "X-KNEEL-FB9",
+            "submit": {"status": "queued", "prompt_id": "pid-dep", "outputs": ["/tmp/out.mp4"]},
+        }
+
+        def find(_root, key):
+            if key == "done":
+                return done, Path("done.job.json")
+            if key == "dep":
+                return deposited, Path("dep.job.json")
+            return None
+
+        with mock.patch("shape_factory_queue._find_job_doc", side_effect=find), mock.patch(
+            "shape_factory_queue.resolve_shape_factory_data_root", return_value=Path("/tmp")
+        ), mock.patch("shape_factory_queue.replay_from_request_body") as replay, mock.patch(
+            "shape_factory_creation_control.mutate_job"
+        ) as mutate:
+            out = swap_family_from_request_body(
+                {"job_keys": ["done", "dep"], "family_slug": "X-KNEEL-FB9-bare"},
+                repo_root=REPO_ROOT,
+                workspace_root=REPO_ROOT / "workspace",
+                output_root=Path("/tmp"),
+                comfy_server="http://127.0.0.1:8188",
+            )
+        replay.assert_not_called()
+        mutate.assert_not_called()
+        self.assertFalse(out.get("ok"))
+        errors = {it["job_key"]: it.get("error") for it in out["items"]}
+        self.assertEqual(errors["done"], "not_waiting")
+        self.assertEqual(errors["dep"], "not_waiting")
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from shape_factory import (
     DEFAULT_DATA_ROOT,
@@ -1632,6 +1632,24 @@ def _prompt_label_from_profile(path: Path) -> str:
     return str(raw.get("label") or "").strip()
 
 
+def _prompt_profile_path_from_spec(spec: Any) -> str:
+    if isinstance(spec, str):
+        return spec.strip()
+    if isinstance(spec, dict):
+        return str(spec.get("path") or spec.get("relpath") or "").strip()
+    return ""
+
+
+def _explicit_prompt_profile_from_body(body: Dict[str, Any]) -> str:
+    """Operator-chosen prompt_profile from Submit / run-step (bindings or top-level)."""
+    raw = body.get("bindings") if isinstance(body.get("bindings"), dict) else {}
+    if isinstance(raw, dict) and "prompt_profile" in raw:
+        path = _prompt_profile_path_from_spec(raw.get("prompt_profile"))
+        if path:
+            return path
+    return str(body.get("prompt_profile") or "").strip()
+
+
 def _pool_def_for_slot(pools_doc: Dict[str, Any], slot: str) -> Optional[Dict[str, Any]]:
     pools = pools_doc.get("pools") if isinstance(pools_doc.get("pools"), dict) else {}
     pool_def = pools.get(slot)
@@ -1763,10 +1781,14 @@ def queue_from_source_media(
     video_slot = _video_source_slot(shape, {}) or "source_video"
     bindings[video_slot] = str(media.resolve())
 
-    prompt_path = _first_pool_member_for_slot(pools_doc, "prompt_profile")
-    if prompt_path is None:
-        raise ValueError(f"no prompt_profile pool members for family {family!r}")
-    bindings["prompt_profile"] = str(prompt_path.resolve())
+    explicit_prompt = _explicit_prompt_profile_from_body(body)
+    if explicit_prompt:
+        bindings["prompt_profile"] = explicit_prompt
+    else:
+        prompt_path = _first_pool_member_for_slot(pools_doc, "prompt_profile")
+        if prompt_path is None:
+            raise ValueError(f"no prompt_profile pool members for family {family!r}")
+        bindings["prompt_profile"] = str(prompt_path.resolve())
 
     bindings, identity_meta = _resolve_identity_still_for_shape(
         shape=shape,
@@ -1863,7 +1885,8 @@ def replay_from_request_body(
     output_abs = ""
 
     request_bindings = body.get("bindings") if isinstance(body.get("bindings"), dict) else {}
-    explicit_prompt_binding = "prompt_profile" in request_bindings
+    explicit_prompt = _explicit_prompt_profile_from_body(body)
+    explicit_prompt_binding = bool(explicit_prompt)
     prompt_remap_meta: Optional[Dict[str, str]] = None
 
     if job_key:
@@ -1890,6 +1913,8 @@ def replay_from_request_body(
         # Failed/interrupted extends have no outputs — fall back to parent clip / body.
         if not output_abs and bool(body.get("extend")):
             output_abs = _extend_source_path(job, output_abs="", body=body, bindings=bindings)
+        if explicit_prompt:
+            bindings["prompt_profile"] = explicit_prompt
     else:
         job = None
         job_path = None
@@ -2065,6 +2090,212 @@ def replay_from_request_body(
     return result
 
 
+def _job_submit_status(job: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(job, dict):
+        return ""
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    return str(submit.get("status") or job.get("status") or "").strip().lower()
+
+
+# Only these may be retired by a family swap. Complete / deposited / failed jobs stay on disk.
+_SWAP_FAMILY_WAITING_STATUSES = frozenset({"queued", "pending", "editing", "submitted"})
+
+
+def _job_has_produced_output(job: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(job, dict):
+        return False
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    for bucket in (submit.get("outputs"), job.get("outputs")):
+        if isinstance(bucket, list) and any(str(x or "").strip() for x in bucket):
+            return True
+    deposit = job.get("deposit") if isinstance(job.get("deposit"), dict) else {}
+    videos = deposit.get("videos") if isinstance(deposit.get("videos"), list) else []
+    return any(str(x or "").strip() for x in videos)
+
+
+def _job_prompt_id(job: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(job, dict):
+        return ""
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    return str(submit.get("prompt_id") or "").strip()
+
+
+def swap_family_from_request_body(
+    body: Dict[str, Any],
+    *,
+    repo_root: Path,
+    workspace_root: Path,
+    output_root: Path,
+    comfy_server: str,
+) -> Dict[str, Any]:
+    """
+    Replay one or more jobs as another family, then retire the originals.
+
+    Queued Comfy prompts are unqueued first so the old family does not start.
+    The source job is then discarded (expunged) so Workbench is not left with
+    a pending leftover. Running jobs and finished jobs (complete / deposited /
+    failed, or any job that already produced output) are skipped — swap never
+    deletes a done work product.
+    """
+    from shape_factory_creation_control import mutate_job
+    from shape_factory_map import resolve_shape_factory_data_root
+
+    target = str(body.get("family_slug") or body.get("to_family") or "").strip()
+    if not target:
+        raise ValueError("family_slug is required")
+    keys: List[str] = []
+    raw_keys = body.get("job_keys")
+    if isinstance(raw_keys, list):
+        keys.extend(str(k).strip() for k in raw_keys if str(k or "").strip())
+    one = str(body.get("job_key") or "").strip()
+    if one and one not in keys:
+        keys.append(one)
+    if not keys:
+        raise ValueError("job_key is required")
+
+    replace = True if "replace" not in body else bool(body.get("replace"))
+    front = bool(body.get("front"))
+    seed_mode = str(body.get("seed_mode") or "same").strip() or "same"
+    data_root = resolve_shape_factory_data_root(repo_root=repo_root)
+
+    items: List[Dict[str, Any]] = []
+    for job_key in keys:
+        found = _find_job_doc(data_root, job_key)
+        if not found:
+            items.append({"ok": False, "job_key": job_key, "error": "not_found"})
+            continue
+        job, job_path = found
+        source_family = str(job.get("family_slug") or "").strip()
+        if source_family == target:
+            items.append(
+                {
+                    "ok": False,
+                    "job_key": job_key,
+                    "family_slug": source_family,
+                    "error": "same_family",
+                }
+            )
+            continue
+        status = _job_submit_status(job)
+        has_output = _job_has_produced_output(job)
+        waiting = status in _SWAP_FAMILY_WAITING_STATUSES or (not status and not has_output)
+        if status == "running":
+            items.append(
+                {
+                    "ok": False,
+                    "job_key": job_key,
+                    "family_slug": source_family,
+                    "error": "running",
+                    "detail": "Interrupt the running job before swapping its family",
+                }
+            )
+            continue
+        if not waiting or has_output:
+            items.append(
+                {
+                    "ok": False,
+                    "job_key": job_key,
+                    "family_slug": source_family,
+                    "error": "not_waiting",
+                    "detail": (
+                        "Swap only retires waiting jobs; finished jobs are kept. "
+                        "Use Re-run to copy this recipe as another family."
+                    ),
+                }
+            )
+            continue
+        try:
+            replay_body: Dict[str, Any] = {
+                "job_key": job_key,
+                "family_slug": target,
+                "extend": False,
+                "front": front,
+                "seed_mode": seed_mode,
+                "force": True,
+            }
+            overrides = body.get("overrides")
+            if isinstance(overrides, dict) and overrides:
+                replay_body["overrides"] = overrides
+            replayed = replay_from_request_body(
+                replay_body,
+                repo_root=repo_root,
+                workspace_root=workspace_root,
+                output_root=output_root,
+                comfy_server=comfy_server,
+            )
+        except Exception as e:
+            items.append(
+                {
+                    "ok": False,
+                    "job_key": job_key,
+                    "family_slug": source_family,
+                    "error": "replay_failed",
+                    "detail": str(e),
+                }
+            )
+            continue
+        if not isinstance(replayed, dict) or not replayed.get("ok", True):
+            items.append(
+                {
+                    "ok": False,
+                    "job_key": job_key,
+                    "family_slug": source_family,
+                    "error": "replay_failed",
+                    "detail": (replayed or {}).get("error") or (replayed or {}).get("detail"),
+                    "replay": replayed,
+                }
+            )
+            continue
+
+        row: Dict[str, Any] = {
+            "ok": True,
+            "job_key": job_key,
+            "family_slug": source_family,
+            "to_family": target,
+            "replay": replayed,
+            "replaced": False,
+        }
+        if replace:
+            pid = _job_prompt_id(job)
+            retired: Dict[str, Any] = {}
+            if pid:
+                retired["unqueue"] = mutate_job(
+                    action="unqueue_to_pending",
+                    prompt_id=pid,
+                    server=str(comfy_server),
+                    data_root=data_root,
+                    job_key=job_key,
+                    job_path=job_path,
+                    reason="family_swap",
+                    actor=str(body.get("actor") or "operator"),
+                    source_surface=str(body.get("source_surface") or "workbench"),
+                )
+            retired["discard"] = mutate_job(
+                action="discard",
+                data_root=data_root,
+                server=str(comfy_server),
+                job_key=job_key,
+                job_path=job_path,
+                expunge=True,
+                reason="family_swap",
+                actor=str(body.get("actor") or "operator"),
+                source_surface=str(body.get("source_surface") or "workbench"),
+            )
+            row["replaced"] = bool((retired.get("discard") or {}).get("ok"))
+            row["retire"] = retired
+        items.append(row)
+
+    swapped = sum(1 for it in items if it.get("ok"))
+    failed = len(items) - swapped
+    return {
+        "ok": failed == 0 and swapped > 0,
+        "to_family": target,
+        "swapped": swapped,
+        "failed": failed,
+        "items": items,
+    }
+
+
 def derive_from_request_body(
     body: Dict[str, Any],
     *,
@@ -2177,7 +2408,10 @@ def derive_from_request_body(
         raise ValueError("derive produced empty bindings")
     source_family = str(job.get("family_slug") or "").strip()
     prompt_remap_meta: Optional[Dict[str, str]] = None
-    if source_family and source_family != family_slug:
+    explicit_prompt = _explicit_prompt_profile_from_body(body)
+    if explicit_prompt:
+        bindings["prompt_profile"] = explicit_prompt
+    elif source_family and source_family != family_slug:
         bindings, prompt_remap_meta = _remap_prompt_profile_binding_for_family(
             bindings,
             data_root=data_root,

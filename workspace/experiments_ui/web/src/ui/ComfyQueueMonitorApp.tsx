@@ -539,13 +539,19 @@ function QueueItemRow({
       fpsHint={trim.fpsHint}
       markIn={trim.markIn}
       markOut={trim.markOut}
+      appetiteRelpath={item.input_media_relpath}
     />
   );
 
   const media =
     kind === "running" && pid ? (
       <div className="pipeline-row__media-stack">
-        <ComfyLivePreview promptId={pid} className="pipeline-row__live" showMetrics={false} />
+        <ComfyLivePreview
+          promptId={pid}
+          className="pipeline-row__live"
+          showMetrics={false}
+          appetiteRelpath={item.input_media_relpath}
+        />
         {sourcePlayer}
       </div>
     ) : (
@@ -707,6 +713,7 @@ function HistoryItemRow({ item, deepLinkHit }: { item: ComfyHistoryItem; deepLin
           mediaKey={`queue-hist:${item.prompt_id || libraryRel || title}`}
           alt={title}
           readOnly
+          appetiteRelpath={libraryRel || item.input_media_relpath}
         />
       }
       kindBadge={queueWorkflowKindBadge(item)}

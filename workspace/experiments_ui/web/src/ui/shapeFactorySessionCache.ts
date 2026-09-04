@@ -109,7 +109,21 @@ export async function loadFamiliesBootstrap(opts?: {
 }): Promise<FamiliesBootstrap> {
   const hit = getSessionListCache<FamiliesBootstrap>(FAMILIES_KEY);
   if (!opts?.force && hit && fresh(hit.fetchedAt, FAMILIES_TTL_MS) && hit.value.extend_families?.length) {
-    return hit.value;
+    const cachedHasProfiles = (hit.value.families || []).some((f) => (f.prompt_profiles || []).length);
+    if (cachedHasProfiles) {
+      // Refresh when the server fingerprint moved (new catalog / shape).
+      try {
+        const res = await fetchShapeFactoryFamilies();
+        if (!res.fingerprint || res.fingerprint === hit.value.fingerprint) {
+          return hit.value;
+        }
+        const payload = normalizeFamiliesBoot(res);
+        putFamiliesBootstrap(payload);
+        return payload;
+      } catch {
+        return hit.value;
+      }
+    }
   }
   const res = await fetchShapeFactoryFamilies();
   const payload = normalizeFamiliesBoot(res);

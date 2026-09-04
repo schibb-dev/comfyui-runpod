@@ -1,4 +1,5 @@
 import React from "react";
+import { AppetitePreviewBadge } from "./AppetitePreviewBadge";
 
 export type MediaAssetCardProps = {
   name: string;
@@ -51,6 +52,7 @@ export function MediaAssetCard({
         ) : (
           <span className="media-asset-card__thumb-placeholder">Asset</span>
         )}
+        <AppetitePreviewBadge relpath={path} size="sm" />
       </div>
       <div className="media-asset-card__body">
         <div className="media-asset-card__title">{name}</div>

@@ -49,6 +49,8 @@ import type {
   ShapeFactorySubmitAttemptsResponse,
   ShapeFactoryReplayRequest,
   ShapeFactoryReplayResponse,
+  ShapeFactorySwapFamilyRequest,
+  ShapeFactorySwapFamilyResponse,
   ShapeFactoryDeriveRequest,
   ShapeFactoryDeriveResponse,
   ShapeFactoryUnqueueRequest,
@@ -111,6 +113,7 @@ import type {
   WorkItemsCreateResponse,
   WorkItemsCancelResponse,
   WorkItemsPriorityResponse,
+  WorkProductResponse,
   WorkProductsResponse,
   ShapeFactoryFamiliesResponse,
   VisionSliceCaptionsResponse,
@@ -321,6 +324,28 @@ export async function fetchShapeFactoryFamilies(): Promise<ShapeFactoryFamiliesR
     const detail = [j.error, j.detail].filter(Boolean).join(": ");
     throw new Error(
       `GET /api/shape-factory/families failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function fetchShapeFactoryWorkProduct(opts: {
+  jobKey?: string | null;
+  promptId?: string | null;
+}): Promise<WorkProductResponse> {
+  const sp = new URLSearchParams();
+  if (opts.jobKey) sp.set("job_key", opts.jobKey);
+  else if (opts.promptId) sp.set("prompt_id", opts.promptId);
+  const qs = sp.toString();
+  const r = await fetch(`/api/shape-factory/work-product${qs ? `?${qs}` : ""}`);
+  const j = (await r.json().catch(() => ({}))) as WorkProductResponse;
+  if (r.status === 404 || j.error === "not_found") {
+    return { ok: false, error: "not_found", job_key: opts.jobKey, prompt_id: opts.promptId };
+  }
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET /api/shape-factory/work-product failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
     );
   }
   return j;
@@ -1125,6 +1150,8 @@ export async function runDispositionStep(body: {
   overrides?: ShapeFactoryMapQueueOverrides;
   identity_anchor?: string;
   source_still?: string;
+  prompt_profile?: string;
+  bindings?: Record<string, string>;
 }): Promise<RunDispositionStepResponse> {
   const r = await fetch("/api/discovery/asset-disposition/run-step", {
     method: "POST",
@@ -1287,6 +1314,7 @@ export type ComposeSubmitRoute = {
   stepId: string;
   family: string;
   identityAnchor?: string | null;
+  promptProfile?: string | null;
 };
 
 export type ComposeSubmitAdvanceRequest = {
@@ -1321,6 +1349,7 @@ export async function composeSubmitAdvance(req: ComposeSubmitAdvanceRequest): Pr
       stepId: String(r.stepId || "").trim() || "advance.extend",
       family: String(r.family || "").trim(),
       identityAnchor: r.identityAnchor ? String(r.identityAnchor).trim() : "",
+      promptProfile: r.promptProfile ? String(r.promptProfile).trim() : "",
     }))
     .filter((r) => r.family);
   if (!routes.length) throw new Error("composeSubmitAdvance: select Extend, Vary, and/or Derive with a family");
@@ -1349,6 +1378,9 @@ export async function composeSubmitAdvance(req: ComposeSubmitAdvanceRequest): Pr
       overrides: req.overrides,
       ...(route.stepId === "advance.extend" && route.identityAnchor
         ? { identity_anchor: route.identityAnchor }
+        : {}),
+      ...(route.promptProfile
+        ? { prompt_profile: route.promptProfile, bindings: { prompt_profile: route.promptProfile } }
         : {}),
     });
     const nested = (res.result as Record<string, unknown> | undefined) || {};
@@ -1487,6 +1519,24 @@ export async function recordBatchTriageComplete(body: { relpaths: string[] }): P
   if (!r.ok || j.ok === false) {
     const detail = [j.error, j.detail].filter(Boolean).join(": ");
     throw new Error(`POST /api/discovery/asset-triage/complete-batch failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
+}
+
+export async function swapShapeFactoryFamily(
+  req: ShapeFactorySwapFamilyRequest,
+): Promise<ShapeFactorySwapFamilyResponse> {
+  const r = await fetch("/api/shape-factory/swap-family", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  const j = (await r.json().catch(() => ({}))) as ShapeFactorySwapFamilyResponse & { error?: string; detail?: string };
+  if (!r.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST /api/shape-factory/swap-family failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
   }
   return j;
 }

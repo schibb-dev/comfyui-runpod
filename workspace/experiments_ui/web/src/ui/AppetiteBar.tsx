@@ -1,17 +1,17 @@
 import React from "react";
 import type { Appetite, AppetiteFacet } from "./types";
 
-const APPETITE_ORDER: { key: Appetite; label: string; short: string; glyph: string; hint: string }[] = [
+export const APPETITE_ORDER: { key: Appetite; label: string; short: string; glyph: string; hint: string }[] = [
   { key: "less", label: "Less", short: "z", glyph: "−", hint: "Steer away from this direction" },
   { key: "neutral", label: "Neutral", short: "x", glyph: "○", hint: "No strong pull either way" },
   { key: "more", label: "More", short: "c", glyph: "+", hint: "Want more work in this direction" },
-  { key: "fast_track", label: "Fast-track", short: "v", glyph: "»", hint: "Want more now — queues an Extend/derive immediately" },
+  { key: "fast_track", label: "Fast-track", short: "v", glyph: "»", hint: "Strong pin — hourly prefers this when it picks next" },
 ];
 
-const FACETS: { key: AppetiteFacet; label: string; hint: string }[] = [
-  { key: "both", label: "Both", hint: "Appetite for the whole result (source + look)" },
-  { key: "source", label: "Source", hint: "Appetite for the source material (steers derive sources)" },
-  { key: "processing", label: "Look", hint: "Appetite for the processing/look (prompt + lora)" },
+export const FACETS: { key: AppetiteFacet; label: string; glyph: string; hint: string }[] = [
+  { key: "both", label: "Both", glyph: "◎", hint: "Appetite for the whole result (source + look)" },
+  { key: "source", label: "Source", glyph: "◻", hint: "Appetite for the source material (steers derive sources)" },
+  { key: "processing", label: "Look", glyph: "✦", hint: "Appetite for the processing/look (prompt + lora)" },
 ];
 
 /** z/x/c/v map to appetite states; g cycles the facet. */
@@ -25,6 +25,7 @@ export function AppetiteBar({
   onSet,
   onFacetChange,
   embedded = false,
+  iconsOnly = false,
 }: {
   appetite: Appetite | null | undefined;
   facet: AppetiteFacet;
@@ -33,10 +34,20 @@ export function AppetiteBar({
   onFacetChange?: (facet: AppetiteFacet) => void;
   /** When true, omit the label row (parent supplies a matching judgment header). */
   embedded?: boolean;
+  /** Compact glyph-only buttons for preview popovers. */
+  iconsOnly?: boolean;
 }) {
   return (
-    <div className={"appetite-bar" + (embedded ? " appetite-bar--embedded" : "")} role="group" aria-label="Appetite — do more with this">
-      {!embedded ? (
+    <div
+      className={
+        "appetite-bar" +
+        (embedded ? " appetite-bar--embedded" : "") +
+        (iconsOnly ? " appetite-bar--icons" : "")
+      }
+      role="group"
+      aria-label="Appetite — do more with this"
+    >
+      {!embedded && !iconsOnly ? (
         <span className="appetite-bar-label" title="Direction (do more WITH this), separate from the quality star">
           Appetite
         </span>
@@ -65,13 +76,15 @@ export function AppetiteBar({
                   {a.glyph}
                 </span>
               </>
+            ) : iconsOnly ? (
+              <span aria-hidden="true">{a.glyph}</span>
             ) : (
               a.label
             )}
           </button>
         ))}
       </div>
-      {onFacetChange ? (
+      {onFacetChange && !iconsOnly ? (
         <div
           className={embedded ? "drq-rate-bar drq-rate-bar--facet" : "appetite-facet"}
           role="group"
@@ -90,7 +103,7 @@ export function AppetiteBar({
               aria-pressed={facet === f.key}
               onClick={() => onFacetChange(f.key)}
             >
-              {f.label}
+              {iconsOnly ? <span aria-hidden="true">{f.glyph}</span> : f.label}
             </button>
           ))}
         </div>

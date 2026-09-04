@@ -20,7 +20,8 @@ affinity:  # soft dispatch hints
 | `fb8va5-zoomout-to-fb9-gex-facial` | FB8VA5-ZOOMOUT → … → FACIAL | still origin then V2V |
 | `bouncedance-to-gex` | BounceDanceA → GEX | I2V origin → V2V extend |
 | `faceblast-to-gex` | FB9-FaceBlast → GEX | I2V origin → V2V extend |
-| `kneel-to-gex` | X-KNEEL-FB9 → GEX | I2V origin → V2V extend |
+| `kneel-bare-to-gex` | X-KNEEL-FB9-bare → GEX | primary I2V origin → V2V extend |
+| `kneel-to-gex` | X-KNEEL-FB9 → GEX | residual I2V origin → V2V extend |
 | `kneel-deliver` | X-KNEEL-FB9 → wan-delivery-postprocess | opt-in I2V → delivery (toggle upscale/RIFE/color) |
 | `fb9-april03-replay` | replay / archive | historical replay |
 

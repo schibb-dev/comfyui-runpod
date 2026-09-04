@@ -24,6 +24,7 @@ import { buildQueueOverrides, FutureRunEditor } from "./factoryMapFutureRunEdito
 import { discoveryLibraryHref, stillsHref } from "./discoveryDeepLink";
 import { MediaFullscreenModal, type MediaFullscreenPayload } from "./MediaFullscreenModal";
 import { formatIsoDateTime } from "./locale";
+import { AppetitePreviewBadge } from "./AppetitePreviewBadge";
 import { WorkProductAppetiteStrip, normalizeAppetiteRelpath } from "./WorkProductAppetiteStrip";
 import {
   buildSourceOutputPairs,
@@ -465,6 +466,7 @@ function MediaAssetInspector({
           }
         >
           <img src={media.thumb_url} alt="" loading="lazy" />
+          <AppetitePreviewBadge relpath={discoveryRel} />
         </button>
       ) : null}
       <div className="sfmap-detail-kv mono">{displayTitle}</div>
@@ -1221,6 +1223,7 @@ function PoolMemberThumbStrip({
             }}
           >
             <img src={src} alt="" loading="lazy" />
+            <AppetitePreviewBadge relpath={m.relpath || m.path} size="sm" />
           </button>
         );
       })}
@@ -2583,6 +2586,7 @@ function PairEnd({
     return (
       <div className="sfmap-pair-end">
         <img src={thumb} alt="" loading="lazy" />
+        <AppetitePreviewBadge relpath={media?.relpath || media?.path} size="sm" />
       </div>
     );
   }

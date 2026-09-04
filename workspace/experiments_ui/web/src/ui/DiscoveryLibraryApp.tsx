@@ -10,6 +10,7 @@ import {
 import type { ShapeFactoryClip } from "./api";
 import { formatUnixMtime, formatIsoDateTime } from "./locale";
 import { isLineageInputStill, lineageSummaryHref, parseDiscoveryDeepLinkPrefix, parseDiscoveryDeepLinkRelpath, workbenchHrefForMedia } from "./discoveryDeepLink";
+import { AppetitePreviewBadge } from "./AppetitePreviewBadge";
 import { APPETITE_ROW_GLYPH, appetiteRowTitle, discoveryRatingsRollupFromResponse } from "./discoveryRatingsRollup";
 import { DiscoveryAssetLineagePanel } from "./DiscoveryAssetLineagePanel";
 import { DiscoveryAssetRatingsPanel } from "./DiscoveryAssetRatingsPanel";
@@ -288,6 +289,7 @@ function DiscoveryMetaPanelInlineViewer({
         ) : (
           <div className="discovery-meta-inline-viewer__empty">No preview for this type</div>
         )}
+        <AppetitePreviewBadge relpath={it.relpath || it.video_relpath} />
       </div>
     </div>
   );
@@ -2977,6 +2979,7 @@ function DiscoveryDesktopPreview({
             ) : (
               <div style={{ color: "var(--muted)", textAlign: "center", padding: 16 }}>No preview for this type</div>
             )}
+            <AppetitePreviewBadge relpath={it?.relpath || it?.video_relpath} />
           </div>
           {playUrl ? (
             <VideoTrimControls

@@ -6,6 +6,7 @@ import {
   patchCachedAppetite,
   peekAssetRatings,
   revalidateAssetRatings,
+  subscribeAssetRatings,
 } from "./assetRatingsCache";
 import type { Appetite, AppetiteFacet } from "./types";
 
@@ -14,6 +15,59 @@ export function normalizeAppetiteRelpath(raw: string | null | undefined): string
     .trim()
     .replace(/\\/g, "/")
     .replace(/^\/+/, "");
+}
+
+function ratingsToAppetite(
+  relpath: string,
+  defaultFacet: AppetiteFacet,
+): { appetite: Appetite | null; facet: AppetiteFacet } {
+  const seed = peekAssetRatings(relpath);
+  return {
+    appetite: (seed?.appetite as Appetite | null) ?? null,
+    facet: (seed?.appetite_facet as AppetiteFacet) || defaultFacet,
+  };
+}
+
+function inferDefaultFacet(relpath: string): AppetiteFacet {
+  return /^(input\/)/i.test(relpath) ? "source" : "both";
+}
+
+/** Shared appetite read path so the preview badge and the Workbench strip stay in sync. */
+export function useAssetAppetite(
+  relpath?: string | null,
+  defaultFacet?: AppetiteFacet,
+): {
+  key: string;
+  appetite: Appetite | null;
+  facet: AppetiteFacet;
+} {
+  const key = normalizeAppetiteRelpath(relpath);
+  const fallbackFacet = defaultFacet || (key ? inferDefaultFacet(key) : "both");
+  const [, setTick] = useState(0);
+
+  useEffect(() => {
+    if (!key) return;
+    let cancelled = false;
+    const bump = () => {
+      if (!cancelled) setTick((n) => n + 1);
+    };
+    void loadAssetRatings(key)
+      .then(bump)
+      .catch(() => {
+        /* keep seed / empty */
+      });
+    const unsub = subscribeAssetRatings((changed) => {
+      if (changed === key) bump();
+    });
+    return () => {
+      cancelled = true;
+      unsub();
+    };
+  }, [key]);
+
+  if (!key) return { key, appetite: null, facet: fallbackFacet };
+  const { appetite, facet } = ratingsToAppetite(key, fallbackFacet);
+  return { key, appetite, facet };
 }
 
 /**
@@ -36,87 +90,41 @@ export function WorkProductAppetiteStrip({
   disabledHint?: string;
   onSaved?: (appetite: Appetite, facet: AppetiteFacet) => void;
 }) {
-  const key = normalizeAppetiteRelpath(relpath);
-  const [appetite, setAppetite] = useState<Appetite | null>(null);
-  const [facet, setFacet] = useState<AppetiteFacet>(defaultFacet);
+  const { key, appetite, facet } = useAssetAppetite(relpath, defaultFacet);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
-
-  useEffect(() => {
-    if (!key) {
-      setAppetite(null);
-      setFacet(defaultFacet);
-      setMsg("");
-      return;
-    }
-    const seed = peekAssetRatings(key);
-    if (seed) {
-      setAppetite((seed.appetite as Appetite | null) ?? null);
-      setFacet((seed.appetite_facet as AppetiteFacet) || defaultFacet);
-    } else {
-      setAppetite(null);
-      setFacet(defaultFacet);
-    }
-    let cancelled = false;
-    void loadAssetRatings(key)
-      .then((r) => {
-        if (cancelled) return;
-        setAppetite((r.appetite as Appetite | null) ?? null);
-        setFacet((r.appetite_facet as AppetiteFacet) || defaultFacet);
-      })
-      .catch(() => {
-        /* keep seed / empty */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [key, defaultFacet]);
+  const [facetOverride, setFacetOverride] = useState<AppetiteFacet | null>(null);
+  const shownFacet = facetOverride || facet;
 
   const onSet = useCallback(
     async (state: Appetite, nextFacet: AppetiteFacet) => {
       if (!key || busy) return;
       const prevAppetite = appetite;
-      const prevFacet = facet;
-      setAppetite(state);
-      setFacet(nextFacet);
+      const prevFacet = shownFacet;
+      setFacetOverride(nextFacet);
       patchCachedAppetite(key, state, nextFacet);
       setBusy(true);
       setMsg("");
       try {
-        const res = await setAssetAppetite({
+        await setAssetAppetite({
           relpath: key,
           appetite: state,
           facet: nextFacet,
           job_key: jobKey || undefined,
           family_slug: familySlug || undefined,
         });
-        if (state === "fast_track") {
-          const q = res.saved?.queued;
-          setMsg(
-            q?.ok
-              ? q.extend_fallback === "replay"
-                ? "Fast-tracked — queued replay"
-                : "Fast-tracked — queued Extend"
-              : `Fast-track saved (${q?.reason || "no queue context"})`,
-          );
-        } else {
-          setMsg(`${state} · ${nextFacet}`);
-        }
+        setMsg(`${state} · ${nextFacet}`);
         onSaved?.(state, nextFacet);
-        void revalidateAssetRatings(key).then((r) => {
-          setAppetite((r.appetite as Appetite | null) ?? state);
-          setFacet((r.appetite_facet as AppetiteFacet) || nextFacet);
-        });
+        void revalidateAssetRatings(key);
       } catch (e) {
-        setAppetite(prevAppetite);
-        setFacet(prevFacet);
+        setFacetOverride(null);
         patchCachedAppetite(key, prevAppetite, prevFacet);
         setMsg(e instanceof Error ? e.message : String(e));
       } finally {
         setBusy(false);
       }
     },
-    [key, busy, appetite, facet, jobKey, familySlug, onSaved],
+    [key, busy, appetite, shownFacet, jobKey, familySlug, onSaved],
   );
 
   if (!key) {
@@ -131,10 +139,10 @@ export function WorkProductAppetiteStrip({
     <div className="wp-appetite-strip" aria-label="Appetite — do more with this">
       <AppetiteBar
         appetite={appetite}
-        facet={facet}
+        facet={shownFacet}
         busy={busy}
         onSet={(state, f) => void onSet(state, f)}
-        onFacetChange={setFacet}
+        onFacetChange={setFacetOverride}
       />
       {msg ? <span className="wp-appetite-strip__msg factory-muted">{msg}</span> : null}
     </div>

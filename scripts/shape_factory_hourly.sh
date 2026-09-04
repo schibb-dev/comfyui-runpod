@@ -5,7 +5,7 @@
 # Priority when filling: occasionally GEX2→FACIAL (HOURLY_FACIAL_DRAIN_EVERY, default
 # every 6th cursor), then i2v→FB9_GEX on a steadier cadence (HOURLY_I2V_GEX_DRAIN_EVERY,
 # default every 3rd cursor — Kneel/BounceDance/FaceBlast/…), else seed.
-# Image seeds weight X-KNEEL-FB9 highest. HOURLY_SEED_OVER_CHAIN_SHARE (default 0.50)
+# Image seeds weight X-KNEEL-FB9-bare highest (plain X-KNEEL-FB9 is residual). HOURLY_SEED_OVER_CHAIN_SHARE (default 0.50)
 # can still skip facial on a facial-cadence tick. HOURLY_FACIAL_LOOKBACK_DAYS (default 14)
 # ignores ancient GEX2 jobs for facial drain.
 # sample_cursor advances on every fill tick (chain or seed) so cadences re-roll.
@@ -46,7 +46,7 @@ export HOURLY_I2V_GEX_DRAIN_EVERY
 export HOURLY_SKIP_STATUS HOURLY_MAINT_TIMEOUT_SEC HOURLY_STATUS_TIMEOUT_SEC
 
 # Families maintained every tick (deposit / submit / status).
-MAINT_FAMILIES=(FB9_GEX2 FB9_GEX2_identity_anchor FB9_GEX_FACIAL FB9_GEX X-KNEEL-FB9 FB9-FaceBlast BounceDanceA FB8VA4 FB8VB2 FB8VA5-ZOOMOUT Breast-shake-FB8VA5)
+MAINT_FAMILIES=(FB9_GEX2 FB9_GEX2_identity_anchor FB9_GEX_FACIAL FB9_GEX X-KNEEL-FB9-bare X-KNEEL-FB9 FB9-FaceBlast BounceDanceA FB8VA4 FB8VB2 FB8VA5-ZOOMOUT Breast-shake-FB8VA5)
 
 mkdir -p "$(dirname "$LOG")" "$(dirname "$STATE")"
 

@@ -10,6 +10,27 @@ import type {
 
 const cache = new Map<string, DiscoveryAssetRatingsResponse>();
 const inflight = new Map<string, Promise<DiscoveryAssetRatingsResponse>>();
+const listeners = new Set<(relpath: string) => void>();
+
+export function subscribeAssetRatings(listener: (relpath: string) => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+function notifyAssetRatings(relpath: string): void {
+  const key = relpath.trim();
+  if (!key) return;
+  for (const listener of listeners) listener(key);
+}
+
+function writeAssetRatings(relpath: string, ratings: DiscoveryAssetRatingsResponse): void {
+  const key = relpath.trim();
+  if (!key) return;
+  cache.set(key, ratings);
+  notifyAssetRatings(key);
+}
 
 export function peekAssetRatings(relpath: string): DiscoveryAssetRatingsResponse | undefined {
   const key = relpath.trim();
@@ -18,9 +39,7 @@ export function peekAssetRatings(relpath: string): DiscoveryAssetRatingsResponse
 }
 
 export function rememberAssetRatings(relpath: string, ratings: DiscoveryAssetRatingsResponse): void {
-  const key = relpath.trim();
-  if (!key) return;
-  cache.set(key, ratings);
+  writeAssetRatings(relpath, ratings);
 }
 
 export function patchAssetRatingsCache(
@@ -31,7 +50,7 @@ export function patchAssetRatingsCache(
   if (!key) return undefined;
   const prev = cache.get(key) ?? ({ ok: true, query_relpath: key } as DiscoveryAssetRatingsResponse);
   const next = { ...prev, ...patch, query_relpath: key };
-  cache.set(key, next);
+  writeAssetRatings(key, next);
   return next;
 }
 
@@ -95,7 +114,7 @@ export async function loadAssetRatings(relpath: string): Promise<DiscoveryAssetR
 
   const p = fetchDiscoveryAssetRatings(key)
     .then((r) => {
-      cache.set(key, r);
+      writeAssetRatings(key, r);
       return r;
     })
     .finally(() => {
@@ -115,7 +134,7 @@ export async function revalidateAssetRatings(relpath: string): Promise<Discovery
 
   const p = fetchDiscoveryAssetRatings(key)
     .then((r) => {
-      cache.set(key, r);
+      writeAssetRatings(key, r);
       return r;
     })
     .finally(() => {

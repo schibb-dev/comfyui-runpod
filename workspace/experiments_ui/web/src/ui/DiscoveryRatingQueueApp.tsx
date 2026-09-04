@@ -962,17 +962,8 @@ export function DiscoveryRatingQueueApp() {
       setAppetiteBusy(true);
       setCheckMsg("");
       try {
-        const res = await setAssetAppetite({ relpath: current.relpath, appetite: state, facet });
-        if (state === "fast_track") {
-          const q = res.saved?.queued;
-          if (q?.ok) {
-            setCheckMsg(q.extend_fallback === "replay" ? "Fast-tracked — queued replay" : "Fast-tracked — queued Extend");
-          } else {
-            setCheckMsg(`Fast-track saved (${q?.reason || "no queue context"})`);
-          }
-        } else {
-          setCheckMsg(`Appetite: ${state} · ${facet}`);
-        }
+        await setAssetAppetite({ relpath: current.relpath, appetite: state, facet });
+        setCheckMsg(`Appetite: ${state} · ${facet}`);
       } catch (e) {
         setAppetite(prevAppetite);
         setAppetiteFacet(prevFacet);

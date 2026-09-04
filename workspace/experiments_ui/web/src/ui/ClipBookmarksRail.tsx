@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useState } from "react";
-import { mutateShapeFactoryClip, type ShapeFactoryClip } from "./api";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { mutateShapeFactoryClip, type ShapeFactoryClip, type ShapeFactoryClipsListResponse } from "./api";
 import { loadClipsForMedia, peekClipsForMedia } from "./shapeFactorySessionCache";
 
 export function formatClipTimecode(sec: number): string {
@@ -18,17 +18,36 @@ function marksEqual(a: number, b: number): boolean {
   return Math.abs(a - b) < MARK_EPS;
 }
 
-/** Null in → 0; null out → duration (full-video ends). */
+/** Null in → 0; null out → duration (full-video ends). Explicit I/O can save without duration. */
 export function resolveClipMarks(
   markIn: number | null,
   markOut: number | null,
   duration: number,
 ): { markIn: number; markOut: number } | null {
+  const explicitIn = markIn != null && Number.isFinite(markIn);
+  const explicitOut = markOut != null && Number.isFinite(markOut);
+  if (explicitIn && explicitOut) {
+    const tin = Math.max(0, markIn as number);
+    const tout = duration > 0 ? Math.min(duration, markOut as number) : (markOut as number);
+    if (tout > tin + MIN_SPAN) return { markIn: tin, markOut: tout };
+    return null;
+  }
   if (!(duration > 0) || !Number.isFinite(duration)) return null;
-  const tin = Math.max(0, markIn == null || !Number.isFinite(markIn) ? 0 : markIn);
-  const tout = Math.min(duration, markOut == null || !Number.isFinite(markOut) ? duration : markOut);
+  const tin = Math.max(0, explicitIn ? (markIn as number) : 0);
+  const tout = Math.min(duration, explicitOut ? (markOut as number) : duration);
   if (!(tout > tin + MIN_SPAN)) return null;
   return { markIn: tin, markOut: tout };
+}
+
+export function pickDefaultClip(res: ShapeFactoryClipsListResponse | null | undefined): ShapeFactoryClip | null {
+  if (!res) return null;
+  const clips = res.clips || [];
+  const id = String(res.default_clip_id || "").trim();
+  if (id) {
+    const hit = clips.find((c) => c.clip_id === id);
+    if (hit) return hit;
+  }
+  return clips.find((c) => c.is_default) || null;
 }
 
 export type ClipBookmarksRailProps = {
@@ -43,6 +62,8 @@ export type ClipBookmarksRailProps = {
   selectedClipId?: string | null;
   onSelectClip?: (clip: ShapeFactoryClip | null) => void;
   onApplyClip: (markIn: number, markOut: number, clip?: ShapeFactoryClip) => void;
+  /** Fires once per media when a default clip exists — use to seed the displayed window. */
+  onDefaultClip?: (clip: ShapeFactoryClip) => void;
   onUseForExtend?: (clip: ShapeFactoryClip) => void;
   className?: string;
 };
@@ -58,6 +79,7 @@ export function ClipBookmarksRail({
   selectedClipId = null,
   onSelectClip,
   onApplyClip,
+  onDefaultClip,
   onUseForExtend,
   className,
 }: ClipBookmarksRailProps) {
@@ -65,6 +87,7 @@ export function ClipBookmarksRail({
   const [defaultId, setDefaultId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const defaultAnnouncedRef = useRef<string | null>(null);
 
   const applyClipsList = useCallback((res: { clips?: ShapeFactoryClip[]; default_clip_id?: string | null }) => {
     setClips(res.clips || []);
@@ -94,8 +117,18 @@ export function ClipBookmarksRail({
   );
 
   useEffect(() => {
+    defaultAnnouncedRef.current = null;
     void reload();
   }, [reload]);
+
+  useEffect(() => {
+    const def = pickDefaultClip({ clips, default_clip_id: defaultId, ok: true });
+    if (!def || !onDefaultClip) return;
+    const key = `${mediaRelpath || ""}:${def.clip_id}`;
+    if (defaultAnnouncedRef.current === key) return;
+    defaultAnnouncedRef.current = key;
+    onDefaultClip(def);
+  }, [clips, defaultId, mediaRelpath, onDefaultClip]);
 
   useEffect(() => {
     if (!selectedClipId) return;
@@ -107,7 +140,7 @@ export function ClipBookmarksRail({
   if (!mediaRelpath) return null;
 
   const resolved = resolveClipMarks(markIn, markOut, duration);
-  const canSave = Boolean(trimEditable && resolved);
+  const canSave = Boolean(resolved);
   const selected = selectedClipId ? clips.find((c) => c.clip_id === selectedClipId) || null : null;
   const selectedDirty = Boolean(
     selected &&
@@ -214,7 +247,10 @@ export function ClipBookmarksRail({
               })
                 .then((res) => {
                   void reload({ force: true });
-                  if (res.clip) onSelectClip?.(res.clip);
+                  if (res.clip) {
+                    onSelectClip?.(res.clip);
+                    onApplyClip(res.clip.mark_in_s, res.clip.mark_out_s, res.clip);
+                  }
                 })
                 .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
                 .finally(() => setBusy(false));
@@ -240,7 +276,10 @@ export function ClipBookmarksRail({
               })
                 .then((res) => {
                   void reload({ force: true });
-                  if (res.clip) onSelectClip?.(res.clip);
+                  if (res.clip) {
+                    onSelectClip?.(res.clip);
+                    onApplyClip(res.clip.mark_in_s, res.clip.mark_out_s, res.clip);
+                  }
                 })
                 .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
                 .finally(() => setBusy(false));

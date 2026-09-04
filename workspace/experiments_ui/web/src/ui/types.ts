@@ -942,7 +942,7 @@ export type SetAppetiteResponse = {
     cleared?: boolean;
     discovery_key?: string;
     short_key?: string;
-    /** Present when appetite === "fast_track": the immediate Extend/replay result. */
+    /** Legacy: appetite set used to queue an Extend; no longer populated. */
     queued?: {
       ok?: boolean;
       reason?: string;
@@ -1589,6 +1589,38 @@ export type ShapeFactoryReplayResponse = ShapeFactoryMapQueueResponse & {
     frame_load_cap?: number;
     frame_count?: number;
   };
+};
+
+/** POST /api/shape-factory/swap-family — replay job(s) as another family and retire the old queued ones. */
+export type ShapeFactorySwapFamilyRequest = {
+  job_key?: string;
+  job_keys?: string[];
+  family_slug: string;
+  replace?: boolean;
+  front?: boolean;
+  seed_mode?: "same" | "new";
+  overrides?: ShapeFactoryMapQueueOverrides;
+};
+
+export type ShapeFactorySwapFamilyItem = {
+  ok?: boolean;
+  job_key?: string;
+  family_slug?: string;
+  to_family?: string;
+  error?: string;
+  detail?: string;
+  replaced?: boolean;
+  replay?: ShapeFactoryReplayResponse;
+};
+
+export type ShapeFactorySwapFamilyResponse = {
+  ok: boolean;
+  to_family?: string;
+  swapped?: number;
+  failed?: number;
+  items?: ShapeFactorySwapFamilyItem[];
+  error?: string;
+  detail?: string;
 };
 
 /** POST /api/shape-factory/derive — rewire prompt and/or source from a seed job. */
@@ -2422,6 +2454,14 @@ export type WorkProductFamilyOption = {
     skip_first_frames?: number;
     frame_load_cap?: number;
   };
+  prompt_profiles?: WorkProductFamilyPromptProfile[];
+};
+
+export type WorkProductFamilyPromptProfile = {
+  slug: string;
+  label?: string | null;
+  basename?: string;
+  path: string;
 };
 
 /** GET /api/shape-factory/families — config-only picker bootstrap (no jobs/Comfy). */
@@ -2743,6 +2783,19 @@ export type WorkProductsResponse = {
   /** Source family → next pipeline-step family for Extend picker defaults. */
   extend_family_defaults?: Record<string, string>;
   items?: WorkProductItem[];
+};
+
+/** GET /api/shape-factory/work-product?job_key=… | ?prompt_id=… — one job from full history. */
+export type WorkProductResponse = {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  schema_version?: string;
+  job_key?: string | null;
+  prompt_id?: string | null;
+  families?: WorkProductFamilyOption[];
+  extend_family_defaults?: Record<string, string>;
+  item?: WorkProductItem;
 };
 
 /** GET /api/vision/slice-captions */

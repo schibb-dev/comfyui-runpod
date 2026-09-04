@@ -1,6 +1,6 @@
 /** Shared extend / I2V family defaults for Submit compose. */
 
-import type { WorkProductFamilyOption } from "./types";
+import type { WorkProductFamilyOption, WorkProductFamilyPromptProfile } from "./types";
 
 export const PREFERRED_EXTEND_FAMILIES = ["FB9_GEX2", "FB9_GEX_FACIAL", "FB9_GEX"] as const;
 export const PREFERRED_I2V_FAMILIES = [
@@ -111,10 +111,90 @@ export function pickDefaultExtendFamily(
   return first || slugs[0] || PREFERRED_EXTEND_FAMILIES[0];
 }
 
+/** Families that can take the same kind of input as `fromSlug` (I2V↔I2V, extend↔extend). */
+export function familySwapTargets(
+  families: WorkProductFamilyOption[],
+  fromSlug: string,
+): WorkProductFamilyOption[] {
+  const from = families.find((f) => f.slug === fromSlug);
+  return families.filter((f) => {
+    if (!f.slug || f.slug === fromSlug) return false;
+    if (!from) return true;
+    const fromI2v = isI2VFamilyOption(from);
+    const toI2v = isI2VFamilyOption(f);
+    if (fromI2v && toI2v) return true;
+    const fromExt = isExtendFamilyOption(from);
+    const toExt = isExtendFamilyOption(f);
+    if (fromExt && toExt) return true;
+    return false;
+  });
+}
+
+/** Sibling `-bare` / preferred I2V or extend family, else the first compatible target. */
+export function pickDefaultSwapTarget(
+  families: WorkProductFamilyOption[],
+  fromSlug: string,
+): string {
+  const slugs = familySwapTargets(families, fromSlug)
+    .map((f) => f.slug)
+    .filter(Boolean);
+  if (!slugs.length) return "";
+  const from = String(fromSlug || "").trim();
+  const bare = `${from}-bare`;
+  if (slugs.includes(bare)) return bare;
+  if (from.endsWith("-bare")) {
+    const base = from.slice(0, -"-bare".length);
+    if (slugs.includes(base)) return base;
+  }
+  for (const pref of PREFERRED_I2V_FAMILIES) {
+    if (pref !== from && slugs.includes(pref)) return pref;
+  }
+  for (const pref of PREFERRED_EXTEND_FAMILIES) {
+    if (pref !== from && slugs.includes(pref)) return pref;
+  }
+  return slugs[0];
+}
+
 /** True when a media path is a still (not a video Use). */
 export function isStillMediaPath(path?: string | null): boolean {
   const p = String(path || "").trim().toLowerCase();
   if (!p) return false;
   if (/\.(mp4|webm|mov|mkv)(\?|$)/i.test(p)) return false;
   return /\.(png|jpe?g|webp|gif)(\?|$)/i.test(p);
+}
+
+export function familyPromptProfiles(
+  families: WorkProductFamilyOption[],
+  slug: string,
+): WorkProductFamilyPromptProfile[] {
+  const hit = families.find((f) => f.slug === slug);
+  return Array.isArray(hit?.prompt_profiles) ? hit.prompt_profiles : [];
+}
+
+export function promptProfileOptionLabel(p: WorkProductFamilyPromptProfile): string {
+  const label = String(p.label || p.slug || p.basename || "").trim();
+  if (label.toLowerCase().startsWith("catalog-")) return label.slice("catalog-".length);
+  return label || p.basename || p.path;
+}
+
+export function pickDefaultPromptProfile(
+  profiles: WorkProductFamilyPromptProfile[],
+  opts?: { familySlug?: string | null; mediaRelpath?: string | null; prefer?: string | null },
+): string {
+  if (!profiles.length) return "";
+  const prefer = String(opts?.prefer || "").trim();
+  if (prefer) {
+    const hit = profiles.find(
+      (p) => p.path === prefer || p.slug === prefer || p.basename === prefer || p.label === prefer,
+    );
+    if (hit) return hit.path;
+  }
+  const family = String(opts?.familySlug || "").trim();
+  const media = String(opts?.mediaRelpath || "").toLowerCase();
+  if (family === "FB9_GEX" && /faceblast|face_blast/.test(media)) {
+    const ext = profiles.find((p) => p.slug === "catalog-faceblast-extend");
+    if (ext) return ext.path;
+  }
+  const def = profiles.find((p) => p.slug === "catalog-default" || p.basename === "catalog-default.json");
+  return (def || profiles[0]).path;
 }

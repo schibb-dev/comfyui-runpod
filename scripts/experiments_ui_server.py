@@ -2455,6 +2455,11 @@ def _fast_track_extend(cfg: "ServerConfig", rel: str, body: Dict[str, Any]) -> D
         for alias in ("identity_anchor", "source_still", "identity_still"):
             if alias in body and body.get(alias) not in (None, ""):
                 replay_body[alias] = body.get(alias)
+        bindings = body.get("bindings") if isinstance(body.get("bindings"), dict) else None
+        if bindings:
+            replay_body["bindings"] = bindings
+        elif body.get("prompt_profile") not in (None, ""):
+            replay_body["bindings"] = {"prompt_profile": body.get("prompt_profile")}
         # Submit / Library always know the clip being extended (``rel``). Parent
         # I2V jobs often complete without stamping submit.outputs / deposit.videos,
         # so forward the media path explicitly or Extend fails with
@@ -2508,8 +2513,6 @@ def _set_asset_appetite_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict
         og_root=og_root,
         appetite_index_path=_discovery_appetite_index_path(cfg),
     )
-    if appetite == "fast_track":
-        saved["queued"] = _fast_track_extend(cfg, norm, body)
     return saved
 
 
@@ -2622,6 +2625,21 @@ def _shape_factory_pipeline_run_get_payload(cfg: ServerConfig, run_id: str, q: D
     log_lines = _safe_int((q.get("log_lines") or ["80"])[0]) or 80
     log_lines = max(10, min(400, int(log_lines)))
     return get_pipeline_run_payload(run_id, data_root=data_root, log_lines=log_lines)
+
+
+def _shape_factory_swap_family_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_queue import swap_family_from_request_body  # type: ignore
+
+    return swap_family_from_request_body(
+        body,
+        repo_root=_repo_root(),
+        workspace_root=cfg.workspace_root,
+        output_root=cfg.output_root,
+        comfy_server=str(cfg.comfy_server),
+    )
 
 
 def _shape_factory_replay_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -4631,6 +4649,75 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
     return payload
 
 
+def _shape_factory_work_product_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
+    """GET /api/shape-factory/work-product?job_key=… | ?prompt_id=… — one job from full history."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+    from shape_factory_work_products import (  # type: ignore
+        attach_live_comfy_queue,
+        get_work_product,
+    )
+
+    job_key = str((q.get("job_key") or [""])[0]).strip() or None
+    prompt_id = str((q.get("prompt_id") or [""])[0]).strip() or None
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    payload = get_work_product(
+        data_root=data_root,
+        output_root=cfg.output_root,
+        job_key=job_key,
+        prompt_id=prompt_id,
+    )
+    if not payload.get("ok"):
+        return payload
+
+    item = payload.get("item") if isinstance(payload.get("item"), dict) else None
+    if item is None:
+        return payload
+
+    comfy = str(cfg.comfy_server).rstrip("/")
+    try:
+        queue_obj = _http_json("GET", f"{comfy}/queue", timeout_s=8)
+    except Exception:
+        queue_obj = None
+    if isinstance(queue_obj, dict) and "error" not in queue_obj:
+        wrapped = dict(payload)
+        wrapped["ok"] = True
+        wrapped["items"] = [item]
+        wrapped = attach_live_comfy_queue(
+            wrapped,
+            queue_running=queue_obj.get("queue_running"),
+            queue_pending=queue_obj.get("queue_pending"),
+            data_root=data_root,
+            output_root=cfg.output_root,
+        )
+        items = wrapped.get("items") if isinstance(wrapped.get("items"), list) else []
+        want_key = str(item.get("job_key") or job_key or "").strip()
+        want_pid = str(item.get("prompt_id") or prompt_id or "").strip()
+        hit = None
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            if want_key and str(it.get("job_key") or "").strip() == want_key:
+                hit = it
+                break
+            if want_pid and str(it.get("prompt_id") or "").strip() == want_pid:
+                hit = it
+                break
+        if hit is not None:
+            payload["item"] = hit
+            payload["job_key"] = hit.get("job_key")
+            payload["prompt_id"] = hit.get("prompt_id")
+    try:
+        from shape_factory_markers import attach_markers_to_work_products  # type: ignore
+
+        attach_markers_to_work_products([payload["item"]], output_root=cfg.output_root)
+    except Exception:
+        pass
+    return payload
+
+
 def _shape_factory_markers_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
     """GET /api/shape-factory/markers?content_id=… | ?key=&value="""
     d = _workspace_scripts_dir()
@@ -5543,6 +5630,11 @@ def _disposition_hook_runner(cfg: "ServerConfig", rel: str, body: Dict[str, Any]
             overrides = merged.get("overrides")
             if isinstance(overrides, dict) and overrides:
                 derive_body["overrides"] = overrides
+            bindings = merged.get("bindings") if isinstance(merged.get("bindings"), dict) else None
+            if bindings:
+                derive_body["bindings"] = bindings
+            elif merged.get("prompt_profile") not in (None, ""):
+                derive_body["bindings"] = {"prompt_profile": merged.get("prompt_profile")}
             try:
                 return _shape_factory_derive_payload(cfg, derive_body)
             except ValueError as e:
@@ -5566,6 +5658,11 @@ def _disposition_hook_runner(cfg: "ServerConfig", rel: str, body: Dict[str, Any]
         for alias in ("identity_anchor", "source_still", "identity_still"):
             if alias in merged and merged.get(alias) not in (None, ""):
                 replay_body[alias] = merged.get(alias)
+        bindings = merged.get("bindings") if isinstance(merged.get("bindings"), dict) else None
+        if bindings:
+            replay_body["bindings"] = bindings
+        elif merged.get("prompt_profile") not in (None, ""):
+            replay_body["bindings"] = {"prompt_profile": merged.get("prompt_profile")}
         if not replay_body.get("job_key"):
             fresh_body = dict(merged)
             if target:
@@ -5746,6 +5843,8 @@ def _run_asset_disposition_step_payload(cfg: ServerConfig, body: Dict[str, Any])
             "source_still",
             "identity_still",
             "overrides",
+            "prompt_profile",
+            "bindings",
         )
         if k in body
     }
@@ -6463,7 +6562,9 @@ def _discovery_compute_asset_ratings(
             "video_relpath": item.get("video_relpath"),
         }
     appetite_doc = _discovery_load_appetite_index(cfg)
-    appetite = _discovery_appetite_for_item(appetite_doc, item if isinstance(item, dict) else {"relpath": rel})
+    # Look up the queried file only. Using a related Discovery group would
+    # return a sibling video's appetite for stills / thumbs (looks random).
+    appetite = _discovery_appetite_for_item(appetite_doc, {"relpath": rel})
     payload["appetite"] = appetite.get("appetite")
     payload["appetite_facet"] = appetite.get("appetite_facet")
     disposition_doc = _discovery_load_disposition_index(cfg)
@@ -12067,6 +12168,17 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return _json_response(self, 500, {"ok": False, "error": "families_failed", "detail": str(e)})
 
+        if path == "/api/shape-factory/work-product":
+            try:
+                payload = _shape_factory_work_product_payload(cfg, q)
+                if payload.get("ok"):
+                    return _json_response(self, 200, payload)
+                err = str(payload.get("error") or "")
+                code = 400 if err == "missing_job_or_prompt" else 404 if err == "not_found" else 500
+                return _json_response(self, code, payload)
+            except Exception as e:
+                return _json_response(self, 500, {"ok": False, "error": "work_product_failed", "detail": str(e)})
+
         if path == "/api/shape-factory/work-products":
             try:
                 payload = _shape_factory_work_products_payload(cfg, q)
@@ -12574,6 +12686,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_shape_factory_pipeline_run_post()
         if path == "/api/shape-factory/replay":
             return self._handle_shape_factory_replay_post()
+        if path == "/api/shape-factory/swap-family":
+            return self._handle_shape_factory_swap_family_post()
         if path == "/api/shape-factory/ab-queue":
             return self._handle_shape_factory_ab_queue_post()
         if path == "/api/shape-factory/adopt-from-embed":
@@ -12797,6 +12911,27 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, 500, {"ok": False, "error": "vision_tag_judgment_failed", "detail": str(e)})
         code = 200 if payload.get("ok") else 400
         return _json_response(self, code, payload)
+
+    def _handle_shape_factory_swap_family_post(self) -> None:
+        """POST /api/shape-factory/swap-family — replay job(s) as another family and retire the old queued ones."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _shape_factory_swap_family_payload(cfg, body)
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except FileNotFoundError as e:
+            return _json_response(self, 404, {"ok": False, "error": "not_found", "detail": str(e)})
+        except RuntimeError as e:
+            qerr = _quarantine_runtime_error_payload(e)
+            if qerr is not None:
+                return _json_response(self, 409, qerr)
+            return _json_response(self, 502, {"ok": False, "error": "shape_factory_swap_family_failed", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "shape_factory_swap_family_failed", "detail": str(e)})
+        return _json_response(self, 200, payload)
 
     def _handle_shape_factory_replay_post(self) -> None:
         """POST /api/shape-factory/replay — re-run (or extend) a prior job/pair."""
@@ -14402,7 +14537,8 @@ class Handler(BaseHTTPRequestHandler):
             job_key?, family_slug? }
 
         Record a 'do more WITH this' appetite + facet in ratings.sqlite (survives
-        'ratings build'). fast_track also fires an immediate Extend (best-effort).
+        'ratings build'). fast_track is a stronger pin for hourly/natural pick;
+        it does not queue a job on save.
         """
         cfg = self.server.cfg
         obj = self._read_request_json()
@@ -15959,7 +16095,7 @@ def main() -> int:
     print(
         "[experiments-ui] comfy_live_routes=GET /api/comfy/live-preview, GET /api/comfy/live-status, GET /api/comfy/logs"
     )
-    print(        "[experiments-ui] shape_factory_routes=GET /api/shape-factory/map, GET /api/shape-factory/prompt-profile, GET /api/shape-factory/families, GET /api/shape-factory/work-products, GET /api/shape-factory/json-peek, GET /api/shape-factory/quarantine, GET /api/shape-factory/submit-attempts, POST /api/shape-factory/queue, POST /api/shape-factory/replay, POST /api/shape-factory/derive, POST /api/shape-factory/unqueue, POST /api/shape-factory/discard, POST /api/shape-factory/update-pending-trim, POST /api/shape-factory/quarantine/release")
+    print(        "[experiments-ui] shape_factory_routes=GET /api/shape-factory/map, GET /api/shape-factory/prompt-profile, GET /api/shape-factory/families, GET /api/shape-factory/work-products, GET /api/shape-factory/work-product, GET /api/shape-factory/json-peek, GET /api/shape-factory/quarantine, GET /api/shape-factory/submit-attempts, POST /api/shape-factory/queue, POST /api/shape-factory/replay, POST /api/shape-factory/swap-family, POST /api/shape-factory/derive, POST /api/shape-factory/unqueue, POST /api/shape-factory/discard, POST /api/shape-factory/update-pending-trim, POST /api/shape-factory/quarantine/release")
     server.serve_forever()
     return 0
 

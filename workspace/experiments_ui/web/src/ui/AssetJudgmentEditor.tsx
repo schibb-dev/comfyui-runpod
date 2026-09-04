@@ -200,19 +200,8 @@ export function AssetJudgmentEditor({
       setAppetiteBusy(true);
       setMsg("");
       try {
-        const res = await setAssetAppetite({ relpath, appetite: state, facet });
-        if (state === "fast_track") {
-          const q = res.saved?.queued;
-          setMsg(
-            q?.ok
-              ? q.extend_fallback === "replay"
-                ? "Fast-tracked — queued replay"
-                : "Fast-tracked — queued Extend"
-              : `Fast-track saved (${q?.reason || "no queue context"})`,
-          );
-        } else {
-          setMsg(`Appetite: ${state} · ${facet}`);
-        }
+        await setAssetAppetite({ relpath, appetite: state, facet });
+        setMsg(`Appetite: ${state} · ${facet}`);
         void refreshAfterSave();
       } catch (e) {
         setAppetite(prevAppetite);

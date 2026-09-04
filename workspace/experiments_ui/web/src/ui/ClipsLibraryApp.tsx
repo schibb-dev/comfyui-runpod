@@ -9,6 +9,7 @@ import {
   type ShapeFactoryClipDerivedItem,
   type ShapeFactoryClipsLibraryParent,
 } from "./api";
+import { AppetitePreviewBadge } from "./AppetitePreviewBadge";
 import { ClipBookmarksRail, formatClipTimecode } from "./ClipBookmarksRail";
 import { DiscoveryQueueFromClip } from "./DiscoveryQueueFromClip";
 import { discoveryLibraryHref, parseClipsDeepLink, workbenchHref } from "./discoveryDeepLink";
@@ -1094,6 +1095,7 @@ export function ClipsLibraryApp() {
                     >
                       <div className="clips-lib-card__thumb">
                         <ClipThumb relpath={p.media_relpath} markIn={0} />
+                        <AppetitePreviewBadge relpath={p.media_relpath} size="sm" />
                       </div>
                       <div className="clips-lib-card__body">
                         <div className="clips-lib-card__title">
@@ -1139,6 +1141,7 @@ export function ClipsLibraryApp() {
                     >
                       <div className="clips-lib-card__thumb">
                         <ClipThumb relpath={d.output_relpath} markIn={0} />
+                        <AppetitePreviewBadge relpath={d.output_relpath} size="sm" />
                       </div>
                       <div className="clips-lib-card__body">
                         <div className="clips-lib-card__title">
@@ -1185,6 +1188,7 @@ export function ClipsLibraryApp() {
                     >
                       <div className="clips-lib-card__thumb">
                         <ClipThumb relpath={c.media_relpath} markIn={c.mark_in_s} />
+                        <AppetitePreviewBadge relpath={c.media_relpath} size="sm" />
                       </div>
                       <div className="clips-lib-card__body">
                         <div className="clips-lib-card__title">
@@ -1312,6 +1316,7 @@ export function ClipsLibraryApp() {
                             autoPlay={videoAutoplay}
                             muted={videoAutoplay}
                           />
+                          <AppetitePreviewBadge relpath={derivedOutRel} />
                         </div>
                       </div>
                     </div>
@@ -1438,6 +1443,7 @@ export function ClipsLibraryApp() {
                         onTimeUpdate={(e) => setVideoTime(e.currentTarget.currentTime || 0)}
                         onSeeked={(e) => setVideoTime(e.currentTarget.currentTime || 0)}
                       />
+                      <AppetitePreviewBadge relpath={mediaRelpath} />
                     </div>
 
                     <VideoTrimControls
