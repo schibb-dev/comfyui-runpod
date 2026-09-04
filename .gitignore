@@ -83,7 +83,7 @@ workspace/comfyui-wan
 !.data/pools/*/
 !.data/pools/*/pools.yaml
 !.data/pools/*/prompts/
-!.data/pools/*/prompts/catalog-default.json
+!.data/pools/*/prompts/catalog-*.json
 !.data/pipelines/
 !.data/pipelines/**
 !.data/chains/

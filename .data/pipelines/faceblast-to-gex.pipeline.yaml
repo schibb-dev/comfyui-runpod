@@ -23,6 +23,9 @@ steps:
         pool: FB9-FaceBlast_X_og
         pick: last
         index: /home/yuji/src/comfyui-runpod/.data/pools/FB9-FaceBlast/index.json
+      prompt_profile:
+        from: path
+        path: /home/yuji/src/comfyui-runpod/.data/pools/FB9_GEX/prompts/catalog-faceblast-extend.json
     deposits:
       final_video: pool:FB9_GEX_X_og
 

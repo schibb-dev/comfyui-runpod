@@ -332,13 +332,17 @@ if [ -n "$NEED_I2V_KEY" ]; then
   NEED_I2V_VID=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('video') or '')" "$NEED_I2V_JSON")
   log "phase=gex_from_i2v — $NEED_I2V_FAM complete without GEX ($NEED_I2V_KEY)"
   BIND_I2V=$(mktemp --suffix=.yaml)
-  python3 - "$NEED_I2V_VID" "$BIND_I2V" <<'PY'
+  python3 - "$NEED_I2V_VID" "$NEED_I2V_FAM" "$BIND_I2V" "$REPO" <<'PY'
 import sys
 from pathlib import Path
-vid, out = sys.argv[1], Path(sys.argv[2])
-# Escape for YAML double-quoted scalar
+vid, fam, out, repo = sys.argv[1], sys.argv[2], Path(sys.argv[3]), Path(sys.argv[4])
 esc = vid.replace("\\", "\\\\").replace('"', '\\"')
-out.write_text(f'source_video:\n  from: path\n  path: "{esc}"\n', encoding="utf-8")
+lines = ['source_video:', '  from: path', f'  path: "{esc}"']
+if fam == "FB9-FaceBlast":
+    prompt = repo / ".data/pools/FB9_GEX/prompts/catalog-faceblast-extend.json"
+    pesc = str(prompt).replace("\\", "\\\\").replace('"', '\\"')
+    lines.extend(['prompt_profile:', '  from: path', f'  path: "{pesc}"'])
+out.write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
   (
     cd "$SCRIPTS"
