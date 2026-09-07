@@ -69,6 +69,10 @@ factory_pending_count() {
   cd "$SCRIPTS" && python3 shape_factory_hourly.py pending-count --jobs-dir "$JOBS_DIR"
 }
 
+hourly_pending_count() {
+  cd "$SCRIPTS" && python3 shape_factory_hourly.py hourly-pending-count --jobs-dir "$JOBS_DIR"
+}
+
 read_state() {
   if [ -f "$STATE" ]; then
     cat "$STATE"
@@ -95,11 +99,15 @@ queue_policy() {
   if [ -z "$fp" ]; then
     fp=$(factory_pending_count)
   fi
+  local hp
+  hp=$(hourly_pending_count)
   cd "$SCRIPTS" && python3 shape_factory_hourly.py queue-policy \
     --pending "$1" --factory-pending "$fp" \
+    --hourly-pending "$hp" \
     --schedule "$SCHEDULE" \
     --queue-min "$HOURLY_QUEUE_MIN" --queue-max "$HOURLY_QUEUE_MAX" \
     --pending-queue-max "$HOURLY_PENDING_MAX" \
+    --pending-hourly-min "$HOURLY_PENDING_MIN" \
     --submit-mode "$HOURLY_SUBMIT_MODE"
 }
 
@@ -114,6 +122,10 @@ mark_tick() {
 maybe_submit() {
   # Args: family destination
   local fam="$1" dest="$2"
+  if [ "${HOURLY_REFILL_ONLY:-0}" = "1" ]; then
+    log "left pending (refill) family=$fam"
+    return 0
+  fi
   if [ "$dest" = "comfy" ]; then
     python3 shape_factory.py submit --pending-only --family "$fam" >> "$LOG" 2>&1 || true
   else
@@ -151,18 +163,25 @@ SCHEDULE_DUE=$(policy_field "$SCHEDULE_JSON" due)
 HOURLY_QUEUE_MIN=$(python3 -c "import json,sys; print(int(json.loads(sys.argv[1])['schedule']['comfy_queue_min']))" "$SCHEDULE_JSON")
 HOURLY_QUEUE_MAX=$(python3 -c "import json,sys; print(int(json.loads(sys.argv[1])['schedule']['comfy_queue_max']))" "$SCHEDULE_JSON")
 HOURLY_PENDING_MAX=$(python3 -c "import json,sys; print(int(json.loads(sys.argv[1])['schedule']['pending_queue_max']))" "$SCHEDULE_JSON")
+HOURLY_PENDING_MIN=$(python3 -c "import json,sys; print(int(json.loads(sys.argv[1])['schedule'].get('pending_hourly_min', 5)))" "$SCHEDULE_JSON")
 HOURLY_SUBMIT_MODE=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['schedule']['submit_mode'])" "$SCHEDULE_JSON")
 HOURLY_INTERVAL=$(python3 -c "import json,sys; print(int(json.loads(sys.argv[1])['schedule']['interval_minutes']))" "$SCHEDULE_JSON")
 HOURLY_ENABLED=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['schedule'].get('enabled', True))" "$SCHEDULE_JSON")
 NEXT_DUE=$(policy_field "$SCHEDULE_JSON" next_due_at)
-export HOURLY_QUEUE_MIN HOURLY_QUEUE_MAX
+HOURLY_STILL_PROMO_UNTIL=$(python3 -c "import json,sys; print((json.loads(sys.argv[1]).get('still_promo') or {}).get('until') or '')" "$SCHEDULE_JSON")
+export HOURLY_QUEUE_MIN HOURLY_QUEUE_MAX HOURLY_PENDING_MIN
+if [ -n "${HOURLY_STILL_PROMO_UNTIL:-}" ]; then
+  export HOURLY_STILL_PROMO_UNTIL
+fi
+HOURLY_REFILL_ONLY="${HOURLY_REFILL_ONLY:-0}"
+HOURLY_OVERFLOW="${HOURLY_OVERFLOW:-0}"
 
 if [ "$HOURLY_ENABLED" != "True" ]; then
   log "skip — schedule disabled"
   exit 0
 fi
-if [ "$SCHEDULE_DUE" != "True" ]; then
-  log "skip — not due (interval=${HOURLY_INTERVAL}m next=$NEXT_DUE mode=$HOURLY_SUBMIT_MODE comfy_max=$HOURLY_QUEUE_MAX pending_max=$HOURLY_PENDING_MAX)"
+if [ "$HOURLY_REFILL_ONLY" != "1" ] && [ "$SCHEDULE_DUE" != "True" ]; then
+  log "skip — not due (interval=${HOURLY_INTERVAL}m next=$NEXT_DUE mode=$HOURLY_SUBMIT_MODE comfy_max=$HOURLY_QUEUE_MAX pending_max=$HOURLY_PENDING_MAX hourly_min=$HOURLY_PENDING_MIN)"
   exit 0
 fi
 
@@ -170,30 +189,37 @@ STATE_JSON=$(read_state)
 PHASE=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('phase','idle'))" "$STATE_JSON")
 CURSOR=$(python3 -c "import json,sys; print(int(json.loads(sys.argv[1]).get('sample_cursor',0)))" "$STATE_JSON")
 
-INBOX_JSON=$(cd "$SCRIPTS" && python3 ingest_windows_input_inbox.py --ensure --apply --inbox "${WINDOWS_INPUT_INBOX:-/mnt/e/comfyui-runpod-inbox}" --dest "${COMFYUI_BIND_INPUT_DIR:-/home/yuji/comfyui-runpod-data/input}" 2>>"$LOG" || true)
-log "windows-inbox ${INBOX_JSON:-failed}"
-STILL_SCAN=$(cd "$SCRIPTS" && python3 shape_factory_hourly.py input-stills-scan --data-root "$REPO/.data" 2>>"$LOG" || true)
-log "input-stills-scan ${STILL_SCAN:-failed}"
+if [ "$HOURLY_REFILL_ONLY" != "1" ]; then
+  INBOX_JSON=$(cd "$SCRIPTS" && python3 ingest_windows_input_inbox.py --ensure --apply --inbox "${WINDOWS_INPUT_INBOX:-/mnt/e/comfyui-runpod-inbox}" --dest "${COMFYUI_BIND_INPUT_DIR:-/home/yuji/comfyui-runpod-data/input}" 2>>"$LOG" || true)
+  log "windows-inbox ${INBOX_JSON:-failed}"
+  STILL_SCAN=$(cd "$SCRIPTS" && python3 shape_factory_hourly.py input-stills-scan --data-root "$REPO/.data" 2>>"$LOG" || true)
+  log "input-stills-scan ${STILL_SCAN:-failed}"
+fi
 
 # Fill first so heavy deposit/status cannot starve image-based seeds for hours.
 read -r RUN PEND < <(queue_counts)
 FACTORY_PENDING=$(factory_pending_count)
+HOURLY_PENDING=$(hourly_pending_count)
 POLICY_JSON=$(queue_policy "$PEND" "$FACTORY_PENDING")
 ADVANCE=$(policy_field "$POLICY_JSON" advance)
 REASON=$(policy_field "$POLICY_JSON" reason)
 DEST=$(policy_field "$POLICY_JSON" destination)
 SUBMIT_SLOTS=$(policy_field "$POLICY_JSON" submit_slots)
 SUBMIT_SLOTS=${SUBMIT_SLOTS:-0}
-log "comfy queue running=$RUN waiting=$PEND factory_pending=$FACTORY_PENDING min=$HOURLY_QUEUE_MIN max=$HOURLY_QUEUE_MAX pending_max=$HOURLY_PENDING_MAX mode=$HOURLY_SUBMIT_MODE advance=$ADVANCE dest=$DEST ($REASON)"
+log "comfy queue running=$RUN waiting=$PEND factory_pending=$FACTORY_PENDING hourly_pending=$HOURLY_PENDING hourly_min=$HOURLY_PENDING_MIN min=$HOURLY_QUEUE_MIN max=$HOURLY_QUEUE_MAX pending_max=$HOURLY_PENDING_MAX mode=$HOURLY_SUBMIT_MODE advance=$ADVANCE dest=$DEST ($REASON)"
 
 if [ "$ADVANCE" != "True" ]; then
+  if [ "$HOURLY_REFILL_ONLY" = "1" ]; then
+    log "refill skip — advance=false reason=$REASON hourly_pending=$HOURLY_PENDING hourly_min=$HOURLY_PENDING_MIN"
+    exit 0
+  fi
   log "skip hourly fill (phase=$PHASE reason=$REASON)"
   run_maintenance "$SUBMIT_SLOTS"
   mark_tick
   exit 0
 fi
 
-if [ "$ADVANCE_CHAIN" != "1" ]; then
+if [ "$HOURLY_REFILL_ONLY" != "1" ] && [ "$ADVANCE_CHAIN" != "1" ]; then
   log "ADVANCE_CHAIN=0 — maintenance only"
   run_maintenance "$SUBMIT_SLOTS"
   mark_tick
@@ -206,21 +232,29 @@ if [ "$DEV_CHAIN" = "1" ]; then dev_args+=(--dev); fi
 HOURLY_PREFIX_ROOT="${HOURLY_PREFIX_ROOT:-og/%date:yyyy-MM-dd%/hourly}"
 HOURLY_JOB_KEY_PREFIX="${HOURLY_JOB_KEY_PREFIX:-hourly}"
 
-# Repeat fills until Comfy waiting >= comfy_queue_min (or we cannot submit to Comfy).
+# Repeat fills until hourly pending >= pending_hourly_min and Comfy waiting >= min.
 FILLS=0
+HOURLY_TARGET=$HOURLY_PENDING_MIN
+if [ "$HOURLY_OVERFLOW" -gt 0 ]; then
+  HOURLY_TARGET=$((HOURLY_PENDING_MIN + HOURLY_OVERFLOW))
+fi
 MAX_FILLS="${HOURLY_MAX_FILLS_PER_TICK:-}"
 if [ -z "$MAX_FILLS" ]; then
-  MAX_FILLS=$HOURLY_QUEUE_MAX
+  MAX_FILLS=$((HOURLY_TARGET + HOURLY_QUEUE_MAX))
 fi
 if [ "$MAX_FILLS" -lt "$HOURLY_QUEUE_MIN" ]; then
   MAX_FILLS=$HOURLY_QUEUE_MIN
 fi
-log "fill loop start waiting=$PEND min=$HOURLY_QUEUE_MIN max_fills=$MAX_FILLS"
+if [ "$MAX_FILLS" -lt "$HOURLY_TARGET" ]; then
+  MAX_FILLS=$HOURLY_TARGET
+fi
+log "fill loop start waiting=$PEND min=$HOURLY_QUEUE_MIN hourly_pending=$HOURLY_PENDING hourly_target=$HOURLY_TARGET max_fills=$MAX_FILLS refill_only=$HOURLY_REFILL_ONLY"
 
 while true; do
   read -r RUN PEND < <(queue_counts) || true
   PEND=${PEND:-0}
   FACTORY_PENDING=$(factory_pending_count)
+  HOURLY_PENDING=$(hourly_pending_count)
   POLICY_JSON=$(queue_policy "$PEND" "$FACTORY_PENDING")
   ADVANCE=$(policy_field "$POLICY_JSON" advance)
   REASON=$(policy_field "$POLICY_JSON" reason)
@@ -228,20 +262,24 @@ while true; do
   SUBMIT_SLOTS=$(policy_field "$POLICY_JSON" submit_slots)
   SUBMIT_SLOTS=${SUBMIT_SLOTS:-0}
 
-  if [ "$PEND" -ge "$HOURLY_QUEUE_MIN" ]; then
-    log "fill loop done — waiting=$PEND >= min=$HOURLY_QUEUE_MIN fills=$FILLS"
+  if [ "$HOURLY_REFILL_ONLY" = "1" ] && [ "$HOURLY_PENDING" -ge "$HOURLY_TARGET" ]; then
+    log "fill loop done — hourly_pending=$HOURLY_PENDING >= target=$HOURLY_TARGET fills=$FILLS"
+    break
+  fi
+  if [ "$HOURLY_REFILL_ONLY" != "1" ] && [ "$PEND" -ge "$HOURLY_QUEUE_MIN" ] && [ "$HOURLY_PENDING" -ge "$HOURLY_PENDING_MIN" ]; then
+    log "fill loop done — waiting=$PEND >= min=$HOURLY_QUEUE_MIN hourly_pending=$HOURLY_PENDING >= hourly_min=$HOURLY_PENDING_MIN fills=$FILLS"
     break
   fi
   if [ "$ADVANCE" != "True" ]; then
-    log "fill loop stop — advance=false reason=$REASON waiting=$PEND fills=$FILLS"
+    log "fill loop stop — advance=false reason=$REASON waiting=$PEND hourly_pending=$HOURLY_PENDING fills=$FILLS"
     break
   fi
-  if [ "$DEST" != "comfy" ] && [ "$FILLS" -gt 0 ]; then
-    log "fill loop stop — dest=$DEST (cannot raise Comfy waiting; still $PEND < min=$HOURLY_QUEUE_MIN) fills=$FILLS"
+  if [ "$DEST" != "comfy" ] && [ "$FILLS" -gt 0 ] && [ "$HOURLY_PENDING" -ge "$HOURLY_TARGET" ]; then
+    log "fill loop stop — dest=$DEST hourly floor/target met ($HOURLY_PENDING >= $HOURLY_TARGET) fills=$FILLS"
     break
   fi
   if [ "$FILLS" -ge "$MAX_FILLS" ]; then
-    log "fill loop stop — hit max_fills=$MAX_FILLS waiting=$PEND min=$HOURLY_QUEUE_MIN"
+    log "fill loop stop — hit max_fills=$MAX_FILLS waiting=$PEND hourly_pending=$HOURLY_PENDING"
     break
   fi
 
@@ -318,7 +356,7 @@ PY
 fi
 
 # Phase 2: i2v/still-family complete without FB9_GEX child (FaceBlast, BounceDanceA, Kneel, …)
-NEED_I2V_JSON=$(cd "$SCRIPTS" && python3 shape_factory_hourly.py need-gex-from-i2v --data-root "$REPO/.data")
+NEED_I2V_JSON=$(cd "$SCRIPTS" && python3 shape_factory_hourly.py need-gex-from-i2v --data-root "$REPO/.data" --cursor "$CURSOR")
 NEED_I2V_KEY=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('job_key') or '')" "$NEED_I2V_JSON")
 if [ -n "$NEED_I2V_KEY" ]; then
   I2V_OK=$(cd "$SCRIPTS" && python3 -c "from shape_factory_hourly import want_i2v_gex_chain; import sys; print('1' if want_i2v_gex_chain(int(sys.argv[1])) else '0')" "$CURSOR")
@@ -332,14 +370,22 @@ if [ -n "$NEED_I2V_KEY" ]; then
   NEED_I2V_VID=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('video') or '')" "$NEED_I2V_JSON")
   log "phase=gex_from_i2v — $NEED_I2V_FAM complete without GEX ($NEED_I2V_KEY)"
   BIND_I2V=$(mktemp --suffix=.yaml)
-  python3 - "$NEED_I2V_VID" "$NEED_I2V_FAM" "$BIND_I2V" "$REPO" <<'PY'
+  python3 - "$NEED_I2V_VID" "$NEED_I2V_FAM" "$BIND_I2V" "$REPO" "$CURSOR" <<'PY'
 import sys
 from pathlib import Path
 vid, fam, out, repo = sys.argv[1], sys.argv[2], Path(sys.argv[3]), Path(sys.argv[4])
+cursor = int(sys.argv[5])
+sys.path.insert(0, str(repo / "workspace" / "scripts"))
+from shape_factory_hourly import pick_hourly_gex_catalog_prompt
 esc = vid.replace("\\", "\\\\").replace('"', '\\"')
 lines = ['source_video:', '  from: path', f'  path: "{esc}"']
-if fam == "FB9-FaceBlast":
-    prompt = repo / ".data/pools/FB9_GEX/prompts/catalog-faceblast-extend.json"
+prefer = "catalog-faceblast-extend" if fam == "FB9-FaceBlast" else None
+prompt = pick_hourly_gex_catalog_prompt(
+    cursor=cursor,
+    data_root=repo / ".data",
+    prefer_stem=prefer,
+)
+if prompt is not None:
     pesc = str(prompt).replace("\\", "\\\\").replace('"', '\\"')
     lines.extend(['prompt_profile:', '  from: path', f'  path: "{pesc}"'])
 out.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -474,13 +520,17 @@ if [ "$GEN_RC" != "0" ]; then
 else
   log "seed queued family=$FAMILY pick_mode=$PICK_MODE rating_kind=${RATING_KIND:-?} dest=$DEST (next cursor=$NEXT_CURSOR) fills=$FILLS"
 fi
-# If first fill spilled to factory pending (comfy already at max), don't spin.
-if [ "$DEST" != "comfy" ]; then
-  log "fill loop stop after pending spill fills=$FILLS"
+# Keep looping while the hourly pending floor/target is still short.
+if [ "$DEST" != "comfy" ] && [ "$HOURLY_PENDING" -ge "$HOURLY_TARGET" ]; then
+  log "fill loop stop after pending spill — hourly target met ($HOURLY_PENDING >= $HOURLY_TARGET) fills=$FILLS"
   break
 fi
 done
 
+if [ "$HOURLY_REFILL_ONLY" = "1" ]; then
+  log "refill finished fills=$FILLS hourly_pending=$(hourly_pending_count) target=$HOURLY_TARGET"
+  exit 0
+fi
 mark_tick
 log "fill loop finished fills=$FILLS"
 run_maintenance "$SUBMIT_SLOTS"

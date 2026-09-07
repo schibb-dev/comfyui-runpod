@@ -66,7 +66,7 @@ flowchart TB
 
 1. Resolve **Use** (clip → marks → full) + family + optional identity + priority.
 2. Create work-item route + run disposition step (`advance.extend`) / equivalent factory queue.
-3. **Submit now** (`front` / queue_now) vs **later** (pending for hourly / Workbench).
+3. **Queue / Next** land on the factory pending FIFO (primary). **Now / Later** skip pending and submit straight to Comfy (front / back). Hourly ticks keep an adjustable floor of hourly jobs on that FIFO (`pending_hourly_min`, default 5); drain refills if the count dips and only pulls overflow / operator jobs.
 4. Success: links to Workbench (`?job=`), Comfy Queue, and Back to origin when known.
 
 ## Construction preview

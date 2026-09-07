@@ -201,6 +201,86 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
         self.assertFalse(pend_full["advance"])
         self.assertEqual(pend_full["reason"], "pending_max")
 
+        # auto: refill hourlies onto pending before filling Comfy.
+        floor = queue_advance_decision(
+            pending=0,
+            queue_max=2,
+            factory_pending=1,
+            pending_queue_max=10,
+            pending_hourly_min=5,
+            hourly_pending=2,
+            submit_mode="auto",
+        )
+        self.assertTrue(floor["advance"])
+        self.assertEqual(floor["destination"], "pending")
+        self.assertEqual(floor["reason"], "hourly_pending_min")
+
+        # auto: floor met → Comfy room wins.
+        after = queue_advance_decision(
+            pending=0,
+            queue_max=2,
+            factory_pending=5,
+            pending_queue_max=10,
+            pending_hourly_min=5,
+            hourly_pending=5,
+            submit_mode="auto",
+        )
+        self.assertTrue(after["advance"])
+        self.assertEqual(after["destination"], "comfy")
+        self.assertEqual(after["reason"], "comfy_room")
+
+        # comfy mode ignores the pending hourly floor.
+        comfy_floor = queue_advance_decision(
+            pending=0,
+            queue_max=2,
+            factory_pending=0,
+            pending_hourly_min=5,
+            hourly_pending=0,
+            submit_mode="comfy",
+        )
+        self.assertEqual(comfy_floor["destination"], "comfy")
+
+    def test_pending_hourly_min_clamps_to_pending_max(self) -> None:
+        from shape_factory_hourly import normalize_hourly_schedule
+
+        sch = normalize_hourly_schedule({"pending_queue_max": 4, "pending_hourly_min": 9})
+        self.assertEqual(sch["pending_queue_max"], 4)
+        self.assertEqual(sch["pending_hourly_min"], 4)
+        empty = normalize_hourly_schedule({})
+        self.assertEqual(empty["pending_hourly_min"], 5)
+
+    def test_still_promo_window_forces_recent_image_starters(self) -> None:
+        import os
+        from datetime import datetime, timedelta, timezone
+
+        from shape_factory_hourly import (
+            _fresh_still_share,
+            _seed_family_weights,
+            _weekly_still_pick_share,
+            _weekly_still_window_days,
+            still_promo_active,
+        )
+
+        until = (datetime.now(tz=timezone.utc) + timedelta(hours=12)).isoformat()
+        prev = os.environ.get("HOURLY_STILL_PROMO_UNTIL")
+        try:
+            os.environ["HOURLY_STILL_PROMO_UNTIL"] = until
+            promo = still_promo_active()
+            self.assertIsNotNone(promo)
+            self.assertEqual(_weekly_still_pick_share(), 1.0)
+            self.assertLessEqual(_weekly_still_window_days(), 2.0)
+            self.assertEqual(_fresh_still_share("BounceDanceA"), 1.0)
+            weights = dict(_seed_family_weights())
+            self.assertGreater(weights["BounceDanceA"], 16)
+            self.assertEqual(weights["FB9_GEX"], 1)
+        finally:
+            if prev is None:
+                os.environ.pop("HOURLY_STILL_PROMO_UNTIL", None)
+            else:
+                os.environ["HOURLY_STILL_PROMO_UNTIL"] = prev
+        expired = still_promo_active(schedule={"still_promo_until": "2020-01-01T00:00:00+00:00"})
+        self.assertIsNone(expired)
+
     def test_hourly_schedule_due_and_mark(self) -> None:
         from datetime import datetime, timedelta, timezone
         from tempfile import TemporaryDirectory
@@ -1283,12 +1363,18 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
 
         prev_f = os.environ.get("HOURLY_FRESH_STILL_SHARE")
         prev_w = os.environ.get("HOURLY_WEEKLY_STILL_SHARE")
+        prev_p = os.environ.get("HOURLY_STILL_PROMO_UNTIL")
         try:
             os.environ.pop("HOURLY_FRESH_STILL_SHARE", None)
             os.environ.pop("HOURLY_WEEKLY_STILL_SHARE", None)
+            os.environ["HOURLY_STILL_PROMO_UNTIL"] = "off"
             self.assertAlmostEqual(_fresh_still_share("BounceDanceA"), 0.90)
             self.assertAlmostEqual(_weekly_still_pick_share(), 0.90)
         finally:
+            if prev_p is None:
+                os.environ.pop("HOURLY_STILL_PROMO_UNTIL", None)
+            else:
+                os.environ["HOURLY_STILL_PROMO_UNTIL"] = prev_p
             if prev_f is None:
                 os.environ.pop("HOURLY_FRESH_STILL_SHARE", None)
             else:
@@ -1500,13 +1586,19 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
             self.assertEqual(hit_facial.get("source_ref"), vid_g_parent)
             self.assertEqual(find_kneel_needing_gex2(job_dir=root), "kneel-k")
             self.assertEqual(find_kneel_needing_gex(job_dir=root), "kneel-k")
-            # X-KNEEL preferred over BounceDance / FaceBlast when all need GEX.
-            hit = find_i2v_needing_gex(job_dir=root)
+            # Cursor 0 still prefers Kneel; later cursors rotate to BounceDance / FaceBlast.
+            hit = find_i2v_needing_gex(job_dir=root, cursor=0)
             self.assertIsNotNone(hit)
             assert hit is not None
             self.assertEqual(hit.get("producer_family"), "X-KNEEL-FB9")
             self.assertEqual(hit.get("job_key"), "kneel-k")
             self.assertEqual(hit.get("video"), vid_k)
+            rot_bounce = find_i2v_needing_gex(job_dir=root, cursor=1)
+            assert rot_bounce is not None
+            self.assertEqual(rot_bounce.get("producer_family"), "BounceDanceA")
+            rot_fb = find_i2v_needing_gex(job_dir=root, cursor=2)
+            assert rot_fb is not None
+            self.assertEqual(rot_fb.get("producer_family"), "FB9-FaceBlast")
             (facial / "f.job.json").write_text(
                 json.dumps({"bindings": {"source_video": {"path": vid_g}}}),
                 encoding="utf-8",
@@ -1544,6 +1636,72 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
             )
             self.assertIsNone(find_kneel_needing_gex(job_dir=root))
             self.assertIsNone(find_i2v_needing_gex(job_dir=root))
+
+    def test_hourly_chain_backlogs_lists_waiting_parents(self) -> None:
+        import tempfile
+
+        from shape_factory_hourly import hourly_chain_backlogs
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            gex2 = root / "FB9_GEX2"
+            facial = root / "FB9_GEX_FACIAL"
+            kneel = root / "X-KNEEL-FB9"
+            faceblast = root / "FB9-FaceBlast"
+            for d in (gex2, facial, kneel, faceblast):
+                d.mkdir()
+            vid_g = "/home/yuji/comfyui-runpod-data/output/og/2026-03-02/gex2_out.mp4"
+            vid_k = "/home/yuji/comfyui-runpod-data/output/og/2026-03-02/kneel_out.mp4"
+            vid_fb = "/tmp/faceblast_out.mp4"
+            (gex2 / "a.job.json").write_text(
+                json.dumps(
+                    {
+                        "job_key": "gex2-a",
+                        "status": "complete",
+                        "deposit": {"videos": [vid_g]},
+                        "bindings": {"source_video": {"path": "/tmp/gex2_parent.mp4"}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (kneel / "k.job.json").write_text(
+                json.dumps(
+                    {
+                        "job_key": "kneel-k",
+                        "status": "complete",
+                        "deposit": {"videos": [vid_k]},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (faceblast / "fb.job.json").write_text(
+                json.dumps(
+                    {
+                        "job_key": "faceblast-1",
+                        "submit": {"status": "complete"},
+                        "deposit": {"videos": [vid_fb]},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            payload = hourly_chain_backlogs(job_dir=root, cursor=0)
+        self.assertTrue(payload.get("ok"))
+        chains = {c["id"]: c for c in payload.get("chains") or []}
+        i2v = chains["i2v_to_gex"]
+        facial = chains["gex2_to_facial"]
+        self.assertEqual(i2v["count"], 2)
+        self.assertEqual(i2v["by_family"].get("X-KNEEL-FB9"), 1)
+        self.assertEqual(i2v["by_family"].get("FB9-FaceBlast"), 1)
+        self.assertEqual(i2v["next"]["job_key"], "kneel-k")
+        self.assertIn("kneel_out.png", str(i2v["next"].get("thumb_url") or ""))
+        self.assertTrue(str(i2v["next"].get("thumb_url") or "").startswith("/files/"))
+        fb_item = next(it for it in i2v["items"] if it["job_key"] == "faceblast-1")
+        self.assertEqual((fb_item.get("pending_preview") or {}).get("family"), "FB9_GEX")
+        self.assertEqual((fb_item.get("pending_preview") or {}).get("prompt_slug"), "faceblast-extend")
+        self.assertEqual((i2v["next"].get("pending_preview") or {}).get("family"), "FB9_GEX")
+        self.assertEqual(facial["count"], 1)
+        self.assertEqual(facial["next"]["job_key"], "gex2-a")
+        self.assertIn("gex2_out.png", str(facial["next"].get("thumb_url") or ""))
 
     def test_top_of_hour_and_recent_five_star_multiplier(self) -> None:
         from datetime import datetime, timezone
@@ -1621,6 +1779,78 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
         self.assertEqual(plan.get("step"), "replay")
         self.assertTrue(plan.get("top_of_hour"))
         self.assertEqual(plan.get("combo_key"), replay["combo_key"])
+
+    def test_hourly_gex_catalog_prompt_uses_faceblast_without_i2v_parent(self) -> None:
+        import tempfile
+
+        from shape_factory_hourly import apply_hourly_gex_catalog_prompt, pick_hourly_gex_catalog_prompt
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            prompts = root / "pools" / "FB9_GEX" / "prompts"
+            jobs = root / "shape_factory" / "jobs" / "FB9_GEX"
+            prompts.mkdir(parents=True)
+            jobs.mkdir(parents=True)
+            default = prompts / "catalog-default.json"
+            faceblast = prompts / "catalog-faceblast-extend.json"
+            default.write_text(
+                json.dumps({"slug": "default", "name": "Default", "label": "catalog-default", "positive": "a"}),
+                encoding="utf-8",
+            )
+            faceblast.write_text(
+                json.dumps(
+                    {
+                        "slug": "faceblast-extend",
+                        "name": "FaceBlast extend",
+                        "label": "catalog-faceblast-extend",
+                        "positive": "b",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            picked = pick_hourly_gex_catalog_prompt(
+                cursor=0, data_root=root, job_dir=root / "shape_factory" / "jobs"
+            )
+            self.assertIsNotNone(picked)
+            assert picked is not None
+            self.assertEqual(picked.name, "catalog-faceblast-extend.json")
+            plan = apply_hourly_gex_catalog_prompt(
+                {
+                    "ok": True,
+                    "family": "FB9_GEX",
+                    "picks": {
+                        "source_video": "/tmp/clip.mp4",
+                        "prompt_profile": str(default),
+                    },
+                    "bindings_preview": {
+                        "source_video": "clip.mp4",
+                        "prompt_profile": "catalog-default.json",
+                    },
+                },
+                cursor=0,
+                data_root=root,
+                job_dir=root / "shape_factory" / "jobs",
+            )
+            self.assertEqual(Path(str(plan["picks"]["prompt_profile"])).name, "catalog-faceblast-extend.json")
+            self.assertEqual(plan.get("prompt_variant"), "catalog-faceblast-extend")
+            (jobs / "hourly__already.job.json").write_text(
+                json.dumps(
+                    {
+                        "job_key": "hourly__already",
+                        "family_slug": "FB9_GEX",
+                        "submit": {"status": "pending"},
+                        "bindings": {"prompt_profile": {"path": str(faceblast)}},
+                        "prompt": {"slug": "faceblast-extend", "label": "catalog-faceblast-extend"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            rotated = pick_hourly_gex_catalog_prompt(
+                cursor=0, data_root=root, job_dir=root / "shape_factory" / "jobs"
+            )
+            self.assertIsNotNone(rotated)
+            assert rotated is not None
+            self.assertEqual(rotated.name, "catalog-default.json")
 
     def test_source_promotion_detects_kneel_and_2025(self) -> None:
         from shape_factory_hourly import (

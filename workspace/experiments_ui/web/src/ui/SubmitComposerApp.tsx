@@ -17,6 +17,7 @@ import {
   type ShapeFactoryClip,
   type ShapeFactoryJobEditSnapshot,
 } from "./api";
+import { destinationForWhen, submitWhenLabel, type SubmitWhen } from "./workProductPendingQueue";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { RecentSubmitsPanel, SubmitQueueErrorPanel } from "./SubmitAttemptError";
 import { queryKeys } from "./queryKeys";
@@ -807,7 +808,7 @@ function SubmitConstructionPreview({
     path: string;
     thumbUrl: string | null;
   };
-  preferredWhen: "now" | "later";
+  preferredWhen: SubmitWhen;
   origin: string | null;
   fromJob: string | null;
   ready: ConstructionReady;
@@ -862,11 +863,21 @@ function SubmitConstructionPreview({
         )}
         <span
           className={`work-product-badge ${
-            preferredWhen === "now" ? "work-product-badge--front" : "work-product-badge--pending"
+            preferredWhen === "now"
+              ? "work-product-badge--front"
+              : preferredWhen === "later"
+                ? "work-product-badge--queued"
+                : "work-product-badge--pending"
           }`}
-          title="Intended priority (Now / Later buttons commit)"
+          title="Queue / Next land on the factory pending FIFO. Now / Later go straight to Comfy."
         >
-          {preferredWhen === "now" ? "now" : "later"}
+          {preferredWhen === "queue"
+            ? "queue"
+            : preferredWhen === "queue_next"
+              ? "next"
+              : preferredWhen === "now"
+                ? "now"
+                : "later"}
         </span>
       </div>
       <dl className="submit-composer__construction-list">
@@ -1105,8 +1116,8 @@ function SubmitAdvanceComposerApp({
     staleTime: 15_000,
     refetchOnWindowFocus: true,
   });
-  const [preferredWhen, setPreferredWhen] = useState<"now" | "later">(
-    () => (intent.when === "now" || intent.when === "later" ? intent.when : "later"),
+  const [preferredWhen, setPreferredWhen] = useState<SubmitWhen>(
+    () => (intent.when === "now" || intent.when === "later" ? intent.when : "queue"),
   );
 
   const cachedIdentity =
@@ -1397,7 +1408,7 @@ function SubmitAdvanceComposerApp({
     return { overrides, warning: win.warning };
   }, [activeClip?.clip_id, clipId, fps, genFrames, markIn, markOut, videoDuration, windowOk]);
 
-  const submit = async (when: "now" | "later") => {
+  const submit = async (when: SubmitWhen) => {
     if (!canSubmit) return;
     setPreferredWhen(when);
     setBusy(true);
@@ -1411,6 +1422,7 @@ function SubmitAdvanceComposerApp({
           stillPath.toLowerCase().startsWith("input/") || stillPath.includes("/")
             ? stillPath
             : `input/${stillPath.split("/").pop() || stillPath}`;
+        const dest = destinationForWhen(when);
         const res = await queueShapeFactoryCombo({
           family_slug: i2vFamily,
           bindings: {
@@ -1418,16 +1430,24 @@ function SubmitAdvanceComposerApp({
             ...(i2vPromptProfile ? { prompt_profile: i2vPromptProfile } : {}),
           },
           ...(genFrames != null ? { overrides: { parameters: { frames: genFrames } } } : {}),
-          front: when === "now",
+          front: dest.front,
+          destination: dest.destination,
+          pending_position: dest.pending_position,
           source_surface: "submit",
         });
         if (res.job_key) setLastJobKey(res.job_key);
+        const rank =
+          typeof res.pending_rank === "number" ? ` · #${res.pending_rank + 1}` : "";
         setMsg(
-          res.prompt_id
-            ? `Queued ${i2vFamily} · prompt ${res.prompt_id}`
-            : res.job_key
-              ? `Created ${res.job_key}${when === "later" ? " (pending)" : ""}`
-              : `Seeded ${i2vFamily}`,
+          dest.destination === "pending"
+            ? res.job_key
+              ? `${submitWhenLabel(when)} ${res.job_key}${rank}`
+              : `Seeded ${i2vFamily} (pending)`
+            : res.prompt_id
+              ? `Comfy ${submitWhenLabel(when).toLowerCase()} ${i2vFamily} · prompt ${res.prompt_id}`
+              : res.job_key
+                ? `Created ${res.job_key}`
+                : `Seeded ${i2vFamily}`,
         );
         void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.submitAttemptsRoot });
         if (res.job_key) {
@@ -1970,7 +1990,7 @@ function SubmitAdvanceComposerApp({
               ) : null}
               {isStill ? (
                 <p className="work-product-viewer__trim-warn factory-muted">
-                  Still seed — pick an I2V family and Submit now/later.
+                  Still seed — Queue lands on the factory FIFO. Now/Later go straight to Comfy.
                 </p>
               ) : null}
             </div>
@@ -1986,11 +2006,39 @@ function SubmitAdvanceComposerApp({
                     <button
                       type="button"
                       className={
+                        "drt-btn work-product-quick-queue__queue" +
+                        (preferredWhen === "queue" ? " submit-composer__when--preferred" : "")
+                      }
+                      disabled={!canSubmit}
+                      title="Add to the factory pending FIFO (drain sends it to Comfy in order)"
+                      onClick={() => void submit("queue")}
+                    >
+                      {busy && preferredWhen === "queue" ? "Queuing…" : "Queue"}
+                    </button>
+                    <button
+                      type="button"
+                      className={
+                        "drt-btn work-product-quick-queue__queue-next" +
+                        (preferredWhen === "queue_next" ? " submit-composer__when--preferred" : "")
+                      }
+                      disabled={!canSubmit}
+                      title="Insert at the front of the factory pending FIFO (next drain)"
+                      onClick={() => void submit("queue_next")}
+                    >
+                      {busy && preferredWhen === "queue_next" ? "Queuing…" : "Next"}
+                    </button>
+                    <span className="work-product-quick-queue__sep" aria-hidden="true" />
+                    <span className="work-product-quick-queue__label" title="Skip pending — submit directly to Comfy">
+                      Comfy
+                    </span>
+                    <button
+                      type="button"
+                      className={
                         "drt-btn work-product-quick-queue__now" +
                         (preferredWhen === "now" ? " submit-composer__when--preferred" : "")
                       }
                       disabled={!canSubmit}
-                      title="Generate and enqueue now"
+                      title="Skip pending — enqueue at the front of Comfy now"
                       onClick={() => void submit("now")}
                     >
                       {busy && preferredWhen === "now" ? "Submitting…" : "Now"}
@@ -2002,7 +2050,7 @@ function SubmitAdvanceComposerApp({
                         (preferredWhen === "later" ? " submit-composer__when--preferred" : "")
                       }
                       disabled={!canSubmit}
-                      title="Generate job for later / hourly"
+                      title="Skip pending — enqueue at the back of Comfy"
                       onClick={() => void submit("later")}
                     >
                       {busy && preferredWhen === "later" ? "Submitting…" : "Later"}
@@ -2071,11 +2119,39 @@ function SubmitAdvanceComposerApp({
                   <button
                     type="button"
                     className={
+                      "drt-btn work-product-quick-queue__queue" +
+                      (preferredWhen === "queue" ? " submit-composer__when--preferred" : "")
+                    }
+                    disabled={!canSubmit}
+                    title="Add checked routes to the factory pending FIFO"
+                    onClick={() => void submit("queue")}
+                  >
+                    {busy && preferredWhen === "queue" ? "Queuing…" : "Queue"}
+                  </button>
+                  <button
+                    type="button"
+                    className={
+                      "drt-btn work-product-quick-queue__queue-next" +
+                      (preferredWhen === "queue_next" ? " submit-composer__when--preferred" : "")
+                    }
+                    disabled={!canSubmit}
+                    title="Insert checked routes at the front of the factory pending FIFO"
+                    onClick={() => void submit("queue_next")}
+                  >
+                    {busy && preferredWhen === "queue_next" ? "Queuing…" : "Next"}
+                  </button>
+                  <span className="work-product-quick-queue__sep" aria-hidden="true" />
+                  <span className="work-product-quick-queue__label" title="Skip pending — submit directly to Comfy">
+                    Comfy
+                  </span>
+                  <button
+                    type="button"
+                    className={
                       "drt-btn work-product-quick-queue__now" +
                       (preferredWhen === "now" ? " submit-composer__when--preferred" : "")
                     }
                     disabled={!canSubmit}
-                    title="Commit checked routes at front of queue and enqueue now"
+                    title="Skip pending — commit checked routes at the front of Comfy"
                     onClick={() => void submit("now")}
                   >
                     {busy && preferredWhen === "now" ? "Submitting…" : "Now"}
@@ -2087,7 +2163,7 @@ function SubmitAdvanceComposerApp({
                       (preferredWhen === "later" ? " submit-composer__when--preferred" : "")
                     }
                     disabled={!canSubmit}
-                    title="Commit checked routes at normal priority"
+                    title="Skip pending — commit checked routes at the back of Comfy"
                     onClick={() => void submit("later")}
                   >
                     {busy && preferredWhen === "later" ? "Submitting…" : "Later"}

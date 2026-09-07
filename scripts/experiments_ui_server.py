@@ -2211,6 +2211,7 @@ def _hourly_schedule_payload(cfg: ServerConfig) -> Dict[str, Any]:
         sys.path.insert(0, str(d))
     from shape_factory_hourly import (  # type: ignore
         count_factory_pending_submit,
+        count_hourly_pending_submit,
         default_hourly_schedule_path,
         hourly_schedule_status,
     )
@@ -2229,16 +2230,31 @@ def _hourly_schedule_payload(cfg: ServerConfig) -> Dict[str, Any]:
     except Exception:
         pass
     factory_pending = None
+    factory_hourly_pending = None
     try:
         jobs_dir = data_root / "shape_factory" / "jobs"
         if jobs_dir.is_dir():
             factory_pending = count_factory_pending_submit(jobs_dir=jobs_dir)
+            factory_hourly_pending = count_hourly_pending_submit(jobs_dir=jobs_dir)
     except Exception:
         pass
     out["comfy_waiting"] = waiting
     out["comfy_running"] = running
     out["factory_pending"] = factory_pending
+    out["factory_hourly_pending"] = factory_hourly_pending
     return out
+
+
+def _hourly_chain_backlogs_payload() -> Dict[str, Any]:
+    """GET /api/shape-factory/hourly-backlogs — computed i2v→GEX and GEX2→FACIAL waiting lists."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_hourly import hourly_chain_backlogs  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    return hourly_chain_backlogs(data_root=data_root)
 
 
 def _hourly_schedule_set_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -2270,6 +2286,25 @@ def _hourly_schedule_set_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dic
         sch["comfy_queue_max"] = body.get("comfy_queue_max")
     if "pending_queue_max" in body:
         sch["pending_queue_max"] = body.get("pending_queue_max")
+    if "pending_hourly_min" in body:
+        sch["pending_hourly_min"] = body.get("pending_hourly_min")
+    if body.get("still_promo_clear"):
+        sch["still_promo_until"] = None
+    elif "still_promo_until" in body:
+        sch["still_promo_until"] = body.get("still_promo_until")
+    elif body.get("still_promo_hours") is not None:
+        try:
+            hours = max(0.0, float(body.get("still_promo_hours")))
+        except (TypeError, ValueError):
+            hours = 0.0
+        if hours <= 0:
+            sch["still_promo_until"] = None
+        else:
+            from datetime import datetime, timedelta, timezone
+
+            sch["still_promo_until"] = (
+                datetime.now(tz=timezone.utc).replace(microsecond=0) + timedelta(hours=hours)
+            ).isoformat()
     if body.get("mark_tick"):
         save = mark_hourly_tick(sch, path=path, data_root=data_root)
     else:
@@ -2278,7 +2313,7 @@ def _hourly_schedule_set_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dic
     status["saved"] = save
     # Attach live counts from GET helper.
     live = _hourly_schedule_payload(cfg)
-    for k in ("comfy_waiting", "comfy_running", "factory_pending"):
+    for k in ("comfy_waiting", "comfy_running", "factory_pending", "factory_hourly_pending"):
         if k in live:
             status[k] = live[k]
     return status
@@ -2847,6 +2882,37 @@ def _shape_factory_unqueue_payload(cfg: ServerConfig, body: Dict[str, Any]) -> D
         actor=actor,
         source_surface=source_surface,
     )
+
+
+def _shape_factory_pending_queue_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /api/shape-factory/pending-queue — list / move / reorder factory pending FIFO."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+    from shape_factory_pending_queue import (  # type: ignore
+        compact_pending_ranks,
+        jobs_dir_from_data_root,
+        move_pending_job,
+        reorder_pending_jobs,
+    )
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    jobs_dir = jobs_dir_from_data_root(data_root)
+    action = str(body.get("action") or "list").strip().lower()
+    if action == "list":
+        queue = compact_pending_ranks(jobs_dir=jobs_dir)
+        return {"ok": True, "action": "list", "count": len(queue), "queue": queue}
+    if action == "move":
+        return move_pending_job(
+            jobs_dir=jobs_dir,
+            job_key=str(body.get("job_key") or "").strip(),
+            delta=int(body.get("delta") or 0),
+        )
+    if action == "reorder":
+        keys = body.get("job_keys") if isinstance(body.get("job_keys"), list) else []
+        return reorder_pending_jobs(jobs_dir=jobs_dir, job_keys=[str(k) for k in keys])
+    raise ValueError("action must be list|move|reorder")
 
 
 def _shape_factory_discard_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -5624,6 +5690,10 @@ def _disposition_hook_runner(cfg: "ServerConfig", rel: str, body: Dict[str, Any]
                 derive_body["family_slug"] = target
             if merged.get("front"):
                 derive_body["front"] = True
+            if merged.get("destination"):
+                derive_body["destination"] = merged.get("destination")
+            if merged.get("pending_position"):
+                derive_body["pending_position"] = merged.get("pending_position")
             facet = str(merged.get("facet") or "").strip()
             if facet:
                 derive_body["facet"] = facet
@@ -5652,6 +5722,10 @@ def _disposition_hook_runner(cfg: "ServerConfig", rel: str, body: Dict[str, Any]
             replay_body["family_slug"] = target
         if merged.get("front"):
             replay_body["front"] = True
+        if merged.get("destination"):
+            replay_body["destination"] = merged.get("destination")
+        if merged.get("pending_position"):
+            replay_body["pending_position"] = merged.get("pending_position")
         overrides = merged.get("overrides")
         if isinstance(overrides, dict) and overrides:
             replay_body["overrides"] = overrides
@@ -5839,6 +5913,8 @@ def _run_asset_disposition_step_payload(cfg: ServerConfig, body: Dict[str, Any])
             "family",
             "facet",
             "front",
+            "destination",
+            "pending_position",
             "identity_anchor",
             "source_still",
             "identity_still",
@@ -12304,6 +12380,14 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return _json_response(self, 500, {"ok": False, "error": "hourly_schedule_failed", "detail": str(e)})
 
+        if path == "/api/shape-factory/hourly-backlogs":
+            try:
+                payload = _hourly_chain_backlogs_payload()
+                code = 200 if payload.get("ok") else 500
+                return _json_response(self, code, payload)
+            except Exception as e:
+                return _json_response(self, 500, {"ok": False, "error": "hourly_backlogs_failed", "detail": str(e)})
+
         if path == "/api/shape-factory/quarantine":
             try:
                 payload = _shape_factory_quarantine_list_payload(q)
@@ -12707,6 +12791,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_shape_factory_derive_post()
         if path == "/api/shape-factory/unqueue":
             return self._handle_shape_factory_unqueue_post()
+        if path == "/api/shape-factory/pending-queue":
+            return self._handle_shape_factory_pending_queue_post()
         if path == "/api/shape-factory/begin-edit":
             return self._handle_shape_factory_begin_edit_post()
         if path == "/api/shape-factory/finish-edit":
@@ -12754,7 +12840,7 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_shape_factory_hourly_schedule_post(self) -> None:
         """
         POST /api/shape-factory/hourly-schedule
-          { interval_minutes?, enabled?, submit_mode?, comfy_queue_min?, comfy_queue_max?, pending_queue_max?, mark_tick? }
+          { interval_minutes?, enabled?, submit_mode?, comfy_queue_min?, comfy_queue_max?, pending_queue_max?, pending_hourly_min?, mark_tick? }
         """
         cfg = self.server.cfg
         body = self._read_request_json()
@@ -13060,6 +13146,21 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, 500, {"ok": False, "error": "shape_factory_derive_failed", "detail": str(e)})
         status = 200 if payload.get("ok", True) else 400
         return _json_response(self, status, payload)
+
+    def _handle_shape_factory_pending_queue_post(self) -> None:
+        """POST /api/shape-factory/pending-queue — list / move / reorder factory pending FIFO."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _shape_factory_pending_queue_payload(cfg, body if isinstance(body, dict) else {})
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "shape_factory_pending_queue_failed", "detail": str(e)})
+        code = 200 if payload.get("ok", True) else 400
+        return _json_response(self, code, payload)
 
     def _handle_shape_factory_unqueue_post(self) -> None:
         """POST /api/shape-factory/unqueue — waiting-queue delete + demote factory job to pending."""

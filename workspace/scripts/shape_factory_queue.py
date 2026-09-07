@@ -25,6 +25,7 @@ from shape_factory import (
     resolve_pool_members,
     submit_job_file,
 )
+from shape_factory_pending_queue import parse_pending_position, parse_queue_destination
 from shape_factory_map import (
     _combo_key_from_slot_paths,
     normalize_combo_key,
@@ -1326,6 +1327,8 @@ def queue_shape_factory_combo(
     seed_mode: Optional[str] = None,
     seed_job: Optional[Dict[str, Any]] = None,
     seed_job_path: Optional[Path] = None,
+    destination: str = "comfy",
+    pending_position: str = "append",
 ) -> Dict[str, Any]:
     """
     Generate + submit one explicit slot binding combo.
@@ -1500,8 +1503,21 @@ def queue_shape_factory_combo(
         construction=construction,
     )
 
+    dest = str(destination or "comfy").strip().lower()
+    if dest not in {"pending", "comfy"}:
+        dest = "comfy"
+    pos = str(pending_position or "append").strip().lower()
+    if pos in {"front", "next", "head"}:
+        pos = "front"
+    else:
+        pos = "append"
+
     submit: Dict[str, Any]
-    if dry_run:
+    if dest == "pending" and not dry_run:
+        from shape_factory_pending_queue import enqueue_pending_job
+
+        submit = enqueue_pending_job(Path(gen["job_path"]), jobs_dir=job_dir, position=pos)
+    elif dry_run:
         submit = submit_job_file(
             gen["job_path"],
             server=str(comfy_server).rstrip("/"),
@@ -1528,6 +1544,9 @@ def queue_shape_factory_combo(
         "job_path": str(gen["job_path"]),
         "workflow_path": str(gen["workflow_path"]),
         "prompt_id": submit.get("prompt_id"),
+        "destination": dest,
+        "pending_rank": submit.get("pending_rank"),
+        "pending_count": submit.get("pending_count"),
         "dry_run": bool(dry_run),
         "skipped": bool(submit.get("skipped")),
         "overrides_applied": adhoc_meta or None,
@@ -1578,6 +1597,8 @@ def queue_from_request_body(
         dev=bool(body.get("dev") or False),
         force=bool(body.get("force") or False),
         overrides=_parse_overrides(body),
+        destination=parse_queue_destination(body),
+        pending_position=parse_pending_position(body),
     )
 
 
@@ -1832,6 +1853,8 @@ def queue_from_source_media(
         dev=bool(body.get("dev") or False),
         force=bool(body.get("force") or False),
         overrides=overrides,
+        destination=parse_queue_destination(body),
+        pending_position=parse_pending_position(body),
         pick_mode="adhoc",
         parent_output=str(media.resolve()),
         construction={
@@ -2069,6 +2092,8 @@ def replay_from_request_body(
         dev=bool(body.get("dev") or False),
         force=bool(body.get("force") or False),
         overrides=overrides,
+        destination=parse_queue_destination(body),
+        pending_position=parse_pending_position(body),
         pick_mode=pick_mode,
         parent_output=parent_output,
         construction=construction,
@@ -2210,6 +2235,8 @@ def swap_family_from_request_body(
                 "family_slug": target,
                 "extend": False,
                 "front": front,
+                "destination": parse_queue_destination(body),
+                "pending_position": parse_pending_position(body),
                 "seed_mode": seed_mode,
                 "force": True,
             }
@@ -2482,6 +2509,8 @@ def derive_from_request_body(
         dev=bool(body.get("dev") or False),
         force=bool(body.get("force") or False),
         overrides=overrides,
+        destination=parse_queue_destination(body),
+        pending_position=parse_pending_position(body),
         pick_mode=pick_mode,
         parent_output=parent_output,
         construction=construction,

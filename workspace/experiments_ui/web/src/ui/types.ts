@@ -1461,6 +1461,9 @@ export type ShapeFactoryMapQueueRequest = {
   combo_key?: string;
   bindings: Record<string, string>;
   front?: boolean;
+  /** ``pending`` = factory FIFO (Submit Queue). ``comfy`` = Now/Later bypass. */
+  destination?: "pending" | "comfy";
+  pending_position?: "append" | "front";
   dry_run?: boolean;
   /** Operator surface that initiated the queue (submit, factory-map, …). */
   source_surface?: string;
@@ -1530,6 +1533,9 @@ export type ShapeFactoryMapQueueResponse = {
   job_path?: string;
   workflow_path?: string;
   prompt_id?: string;
+  destination?: "pending" | "comfy";
+  pending_rank?: number | null;
+  pending_count?: number | null;
   dry_run?: boolean;
   skipped?: boolean;
 };
@@ -1570,6 +1576,8 @@ export type ShapeFactoryReplayRequest = {
   family_slug?: string;
   extend?: boolean;
   front?: boolean;
+  destination?: "pending" | "comfy";
+  pending_position?: "append" | "front";
   /** Hold job seed (`same`) or draw a new one (`new`). */
   seed_mode?: "same" | "new";
   overrides?: ShapeFactoryMapQueueOverrides;
@@ -1598,6 +1606,8 @@ export type ShapeFactorySwapFamilyRequest = {
   family_slug: string;
   replace?: boolean;
   front?: boolean;
+  destination?: "pending" | "comfy";
+  pending_position?: "append" | "front";
   seed_mode?: "same" | "new";
   overrides?: ShapeFactoryMapQueueOverrides;
 };
@@ -1926,6 +1936,57 @@ export type HomeSummaryResponse = {
   };
 };
 
+export type HourlyChainPendingPreview = {
+  family?: string;
+  step?: string;
+  destination?: string;
+  from_family?: string;
+  prompt_name?: string;
+  prompt_slug?: string;
+  prompt_label?: string;
+  prompt_excerpt?: string;
+  prompt_profile?: string;
+};
+
+export type HourlyChainBacklogItem = {
+  job_key?: string;
+  producer_family?: string;
+  consumer_family?: string;
+  video?: string;
+  video_name?: string;
+  video_relpath?: string;
+  video_url?: string;
+  thumb_url?: string;
+  source_ref?: string;
+  source_ref_name?: string;
+  next?: boolean;
+  pending_preview?: HourlyChainPendingPreview;
+};
+
+export type HourlyChainBacklog = {
+  id?: string;
+  label?: string;
+  producer_label?: string;
+  consumer_family?: string;
+  count?: number;
+  by_family?: Record<string, number>;
+  drain_every?: number;
+  due_this_cursor?: boolean;
+  lookback_days?: number | null;
+  lookback_note?: string;
+  next?: HourlyChainBacklogItem | null;
+  items?: HourlyChainBacklogItem[];
+};
+
+export type HourlyChainBacklogsResponse = {
+  ok?: boolean;
+  cursor?: number;
+  note?: string;
+  chains?: HourlyChainBacklog[];
+  error?: string;
+  detail?: string;
+};
+
 export type HourlySubmitMode = "auto" | "comfy" | "pending";
 
 export type HourlySchedule = {
@@ -1935,6 +1996,10 @@ export type HourlySchedule = {
   comfy_queue_min?: number;
   comfy_queue_max?: number;
   pending_queue_max?: number;
+  pending_hourly_min?: number;
+  still_promo_until?: string | null;
+  still_promo_window_days?: number;
+  still_promo_boost?: number;
   last_tick_at?: string | null;
   updated_at?: string | null;
 };
@@ -1951,6 +2016,13 @@ export type HourlyScheduleStatus = {
   comfy_waiting?: number | null;
   comfy_running?: number | null;
   factory_pending?: number | null;
+  factory_hourly_pending?: number | null;
+  still_promo?: {
+    until?: string | null;
+    window_days?: number;
+    boost?: number;
+    fresh_share?: number;
+  } | null;
   saved?: HourlySchedule;
   error?: string;
   detail?: string;
@@ -2398,6 +2470,10 @@ export type WorkProductItem = {
     reason?: string | null;
     ok?: boolean;
   }>;
+  /** 0-based place on the factory pending FIFO (0 = next drain). */
+  pending_rank?: number | null;
+  pending_index?: number | null;
+  pending_count?: number | null;
   /** Short Comfy/UI error (OOM, VHS load failure, interrupt reason, …). */
   error?: string | null;
   error_node?: string | null;

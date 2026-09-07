@@ -101,6 +101,7 @@ import type {
   RecordBatchTriageCompleteResponse,
   DispositionCatalogMarker,
   HomeSummaryResponse,
+  HourlyChainBacklogsResponse,
   HourlyScheduleStatus,
   HourlySubmitMode,
   QueueLedgerControlAction,
@@ -144,6 +145,18 @@ export async function fetchHomeSummary(): Promise<HomeSummaryResponse> {
   return j;
 }
 
+export async function fetchHourlyChainBacklogs(): Promise<HourlyChainBacklogsResponse> {
+  const r = await fetch("/api/shape-factory/hourly-backlogs");
+  const j = (await r.json().catch(() => ({}))) as HourlyChainBacklogsResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET /api/shape-factory/hourly-backlogs failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
 export async function fetchHourlySchedule(): Promise<HourlyScheduleStatus> {
   const r = await fetch("/api/shape-factory/hourly-schedule");
   const j = (await r.json().catch(() => ({}))) as HourlyScheduleStatus;
@@ -163,6 +176,7 @@ export async function setHourlySchedule(body: {
   comfy_queue_min?: number;
   comfy_queue_max?: number;
   pending_queue_max?: number;
+  pending_hourly_min?: number;
   mark_tick?: boolean;
 }): Promise<HourlyScheduleStatus> {
   const r = await fetch("/api/shape-factory/hourly-schedule", {
@@ -1147,6 +1161,8 @@ export async function runDispositionStep(body: {
   family_slug?: string;
   facet?: AppetiteFacet;
   front?: boolean;
+  destination?: "pending" | "comfy";
+  pending_position?: "append" | "front";
   overrides?: ShapeFactoryMapQueueOverrides;
   identity_anchor?: string;
   source_still?: string;
@@ -1319,7 +1335,7 @@ export type ComposeSubmitRoute = {
 
 export type ComposeSubmitAdvanceRequest = {
   mediaRelpath: string;
-  when: "now" | "later";
+  when: "queue" | "queue_next" | "now" | "later";
   routes: ComposeSubmitRoute[];
   overrides?: ShapeFactoryMapQueueOverrides;
   /** Seed job when advancing from Workbench / from_job deep-link. */
@@ -1328,7 +1344,7 @@ export type ComposeSubmitAdvanceRequest = {
 
 export type ComposeSubmitAdvanceResult = {
   ok: true;
-  when: "now" | "later";
+  when: "queue" | "queue_next" | "now" | "later";
   jobKeys: string[];
   workItemCount: number | null;
   message: string;
@@ -1353,7 +1369,16 @@ export async function composeSubmitAdvance(req: ComposeSubmitAdvanceRequest): Pr
     }))
     .filter((r) => r.family);
   if (!routes.length) throw new Error("composeSubmitAdvance: select Extend, Vary, and/or Derive with a family");
-  const when = req.when === "now" ? "now" : "later";
+  const when =
+    req.when === "now" || req.when === "later" || req.when === "queue" || req.when === "queue_next"
+      ? req.when
+      : "queue";
+  const dest =
+    when === "queue"
+      ? { destination: "pending" as const, pending_position: "append" as const, front: false }
+      : when === "queue_next"
+        ? { destination: "pending" as const, pending_position: "front" as const, front: false }
+        : { destination: "comfy" as const, front: when === "now" };
   const jobKeySeed = String(req.jobKey || "").trim() || undefined;
 
   const created = await createWorkItems({
@@ -1363,7 +1388,13 @@ export async function composeSubmitAdvance(req: ComposeSubmitAdvanceRequest): Pr
   });
 
   const parts: string[] = [
-    when === "now" ? "Submit now" : "Submit later",
+    when === "queue"
+      ? "Queued"
+      : when === "queue_next"
+        ? "Queued next"
+        : when === "now"
+          ? "Submit now"
+          : "Submit later",
     created.count != null ? `${created.count} route(s)` : null,
   ].filter(Boolean) as string[];
   const jobKeys: string[] = [];
@@ -1374,7 +1405,9 @@ export async function composeSubmitAdvance(req: ComposeSubmitAdvanceRequest): Pr
       step_id: route.stepId,
       family_slug: route.family,
       job_key: jobKeySeed,
-      front: when === "now",
+      front: dest.front,
+      destination: dest.destination,
+      pending_position: dest.pending_position,
       overrides: req.overrides,
       ...(route.stepId === "advance.extend" && route.identityAnchor
         ? { identity_anchor: route.identityAnchor }
@@ -1419,7 +1452,7 @@ export async function composeSubmitAdvance(req: ComposeSubmitAdvanceRequest): Pr
 export type ComposeSubmitExtendRequest = {
   mediaRelpath: string;
   family: string;
-  when: "now" | "later";
+  when: "queue" | "queue_next" | "now" | "later";
   overrides?: ShapeFactoryMapQueueOverrides;
   identityAnchor?: string | null;
   stepId?: string;
@@ -1428,7 +1461,7 @@ export type ComposeSubmitExtendRequest = {
 
 export type ComposeSubmitExtendResult = {
   ok: true;
-  when: "now" | "later";
+  when: "queue" | "queue_next" | "now" | "later";
   jobKey: string | null;
   workItemCount: number | null;
   freshCombo: boolean;
@@ -1613,6 +1646,32 @@ export async function beginShapeFactoryEdit(
     );
   }
   return j;
+}
+
+export async function movePendingQueue(req: {
+  job_key: string;
+  delta: number;
+}): Promise<{ ok: boolean; job_key?: string; pending_rank?: number; queue?: Array<{ job_key: string; pending_rank: number }> }> {
+  const r = await fetch("/api/shape-factory/pending-queue", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "move", job_key: req.job_key, delta: req.delta }),
+  });
+  const j = (await r.json().catch(() => ({}))) as {
+    ok?: boolean;
+    error?: string;
+    detail?: string;
+    job_key?: string;
+    pending_rank?: number;
+    queue?: Array<{ job_key: string; pending_rank: number }>;
+  };
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST /api/shape-factory/pending-queue failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return { ok: true, job_key: j.job_key, pending_rank: j.pending_rank, queue: j.queue };
 }
 
 export async function finishShapeFactoryEdit(

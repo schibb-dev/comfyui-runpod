@@ -133,7 +133,65 @@ def _still_age_days(path: str, *, now_ts: Optional[float] = None) -> Optional[fl
     return max(0.0, (now - added) / 86400.0)
 
 
+def still_promo_active(
+    *,
+    now: Optional[datetime] = None,
+    schedule: Optional[Dict[str, Any]] = None,
+    data_root: Optional[Path] = None,
+) -> Optional[Dict[str, Any]]:
+    """Time-boxed boost for recent input stills (image starters).
+
+    Schedule field ``still_promo_until`` or env ``HOURLY_STILL_PROMO_UNTIL``.
+    While active: 100% fresh-still share, shorter recency window, stronger boost,
+    and i2v seed families are weighted up.
+    """
+    ts = now or datetime.now(tz=timezone.utc)
+    env_until = os.environ.get("HOURLY_STILL_PROMO_UNTIL")
+    if (
+        schedule is None
+        and env_until is not None
+        and str(env_until).strip().lower() in {"", "0", "off", "none", "false"}
+    ):
+        return None
+    raw_until = str(env_until or "").strip()
+    window_days = None
+    boost = None
+    if not raw_until or raw_until.lower() in {"0", "off", "none", "false"}:
+        sch = schedule if isinstance(schedule, dict) else load_hourly_schedule(data_root=data_root)
+        raw_until = str(sch.get("still_promo_until") or "").strip()
+        try:
+            window_days = float(sch.get("still_promo_window_days") or 2)
+        except (TypeError, ValueError):
+            window_days = 2.0
+        try:
+            boost = float(sch.get("still_promo_boost") or 16)
+        except (TypeError, ValueError):
+            boost = 16.0
+    until = _parse_iso_ts(raw_until) if raw_until else None
+    if until is None or ts >= until:
+        return None
+    if window_days is None:
+        try:
+            window_days = float(os.environ.get("HOURLY_STILL_PROMO_WINDOW_DAYS") or 2)
+        except (TypeError, ValueError):
+            window_days = 2.0
+    if boost is None:
+        try:
+            boost = float(os.environ.get("HOURLY_STILL_PROMO_BOOST") or 16)
+        except (TypeError, ValueError):
+            boost = 16.0
+    return {
+        "until": until.isoformat(),
+        "window_days": max(0.1, min(14.0, window_days)),
+        "boost": max(1.0, min(50.0, boost)),
+        "fresh_share": 1.0,
+    }
+
+
 def _weekly_still_window_days() -> float:
+    promo = still_promo_active()
+    if promo:
+        return float(promo["window_days"])
     return max(0.1, float(os.environ.get("HOURLY_RECENT_STILL_DAYS", "7")))
 
 
@@ -146,6 +204,8 @@ def _still_within_days(path: str, window_days: float, *, now_ts: Optional[float]
 
 def _weekly_still_pick_share() -> float:
     """Fraction of pool_product still picks restricted to HOURLY_RECENT_STILL_DAYS window."""
+    if still_promo_active():
+        return 1.0
     raw = os.environ.get("HOURLY_WEEKLY_STILL_SHARE", "").strip()
     if not raw:
         raw = os.environ.get("HOURLY_FRESH_STILL_SHARE", "0.90")
@@ -166,9 +226,14 @@ def _still_recency_mult(
         return 1.0
     boost = max(1.0, float(os.environ.get("HOURLY_RECENT_STILL_BOOST", "6.0")))
     window_days = _weekly_still_window_days()
+    promo = still_promo_active()
+    if promo:
+        boost = max(boost, float(promo["boost"]))
     # i2v families chew through new inbox drops within the weekly window.
     if _prefers_fresh_stills(family):
         boost = max(boost, float(os.environ.get("HOURLY_BOUNCEDANCE_RECENT_STILL_BOOST", "13.0")))
+        if promo:
+            boost = max(boost, float(promo["boost"]))
         window_days = max(
             window_days,
             float(os.environ.get("HOURLY_BOUNCEDANCE_RECENT_STILL_DAYS", str(_weekly_still_window_days()))),
@@ -399,9 +464,12 @@ def _fresh_still_share(family: str) -> float:
     if not raw:
         raw = "0.90"
     try:
-        return max(0.0, min(1.0, float(raw)))
+        share = max(0.0, min(1.0, float(raw)))
     except ValueError:
-        return 0.90
+        share = 0.90
+    if still_promo_active() and _prefers_fresh_stills(family):
+        return 1.0
+    return share
 
 
 def _seed_over_chain_share() -> float:
@@ -411,9 +479,12 @@ def _seed_over_chain_share() -> float:
     """
     raw = os.environ.get("HOURLY_SEED_OVER_CHAIN_SHARE", "0.50").strip()
     try:
-        return max(0.0, min(1.0, float(raw)))
+        share = max(0.0, min(1.0, float(raw)))
     except ValueError:
-        return 0.50
+        share = 0.50
+    if still_promo_active():
+        return max(share, 0.80)
+    return share
 
 
 def want_seed_over_chain(cursor: int = 0) -> bool:
@@ -2681,22 +2752,36 @@ def _seed_family_weights() -> List[Tuple[str, int]]:
 
     raw = os.environ.get("HOURLY_SEED_FAMILIES", "").strip()
     if not raw:
-        return list(_DEFAULT_SEED_FAMILY_WEIGHTS)
-    out: List[Tuple[str, int]] = []
-    for part in raw.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        if ":" in part:
-            name, w_s = part.rsplit(":", 1)
-            try:
-                w = max(1, int(w_s))
-            except ValueError:
-                w = 1
-            out.append((name.strip(), w))
-        else:
-            out.append((part, 1))
-    return out or list(_DEFAULT_SEED_FAMILY_WEIGHTS)
+        out: List[Tuple[str, int]] = list(_DEFAULT_SEED_FAMILY_WEIGHTS)
+    else:
+        out = []
+        for part in raw.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if ":" in part:
+                name, w_s = part.rsplit(":", 1)
+                try:
+                    w = max(1, int(w_s))
+                except ValueError:
+                    w = 1
+                out.append((name.strip(), w))
+            else:
+                out.append((part, 1))
+        if not out:
+            out = list(_DEFAULT_SEED_FAMILY_WEIGHTS)
+    if still_promo_active():
+        boosted: List[Tuple[str, int]] = []
+        fresh = set(_FRESH_STILL_FAMILIES)
+        for fam, w in out:
+            if fam in fresh:
+                boosted.append((fam, max(1, int(w)) * 3))
+            elif fam in {"FB9_GEX", "FB9_GEX2"}:
+                boosted.append((fam, 1))
+            else:
+                boosted.append((fam, w))
+        return boosted
+    return out
 
 
 def select_seed_family(cursor: int = 0) -> str:
@@ -2959,20 +3044,284 @@ def list_i2v_needing_gex(
     return out
 
 
+def pick_i2v_needing_gex(
+    rows: List[Dict[str, Any]],
+    *,
+    cursor: int = 0,
+) -> Optional[Dict[str, Any]]:
+    """Choose one i2v→GEX parent, rotating among families that still need a child.
+
+    Preference order is ``_IMAGE_TO_GEX_FAMILIES``. Without rotation Kneel-bare
+    would consume every drain slot whenever any Kneel complete is waiting.
+    """
+    if not rows:
+        return None
+    present = {str(r.get("producer_family") or "") for r in rows}
+    present.discard("")
+    families = [f for f in _image_to_gex_families() if f in present]
+    extras = sorted(f for f in present if f not in families)
+    families.extend(extras)
+    if not families:
+        return rows[0]
+    fam = families[int(cursor) % len(families)]
+    for row in rows:
+        if str(row.get("producer_family") or "") == fam:
+            return row
+    return rows[0]
+
+
 def find_i2v_needing_gex(
     *,
     data_root: Optional[Path] = None,
     job_dir: Optional[Path] = None,
+    cursor: int = 0,
 ) -> Optional[Dict[str, Any]]:
     """
     Newest complete i2v/still-family deposit not yet used as an FB9_GEX source_video.
 
-    Prefers non-Kneel producers when several are ready (see ``_IMAGE_TO_GEX_FAMILIES`` order),
-    then newest job within that preference band.
+    Rotates among producer families that have backlog (see ``_IMAGE_TO_GEX_FAMILIES``)
+    using ``cursor`` so FaceBlast / BounceDance are not stuck behind Kneel.
     Returns ``{producer_family, job_key, video}`` or None.
     """
     cands = list_i2v_needing_gex(data_root=data_root, job_dir=job_dir)
-    return cands[0] if cands else None
+    return pick_i2v_needing_gex(cands, cursor=int(cursor))
+
+
+def _hourly_state_cursor(data_root: Path) -> int:
+    path = Path(data_root) / "shape_factory" / "hourly-state.json"
+    if not path.is_file():
+        return 0
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return 0
+    if not isinstance(doc, dict):
+        return 0
+    try:
+        return int(doc.get("sample_cursor") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _backlog_media_urls(path: str, *, data_root: Path) -> Dict[str, str]:
+    """Map a parent clip to ``/files/…`` preview URLs (companion PNG for video)."""
+    extra: Dict[str, str] = {}
+    raw = str(path or "").strip()
+    if not raw:
+        return extra
+    try:
+        from shape_factory_work_products import (  # type: ignore
+            _binding_media_relpath,
+            _file_url,
+            _thumb_rel_for_video,
+        )
+    except Exception:
+        return extra
+    rel = _binding_media_relpath(
+        raw,
+        data_root=data_root,
+        output_root=_default_output_root(data_root),
+    )
+    if not rel:
+        return extra
+    extra["video_relpath"] = rel
+    url = _file_url(rel)
+    if url:
+        extra["video_url"] = url
+    low = rel.lower()
+    if low.endswith((".mp4", ".webm", ".mov")):
+        thumb = _file_url(_thumb_rel_for_video(rel))
+        if thumb:
+            extra["thumb_url"] = thumb
+    elif url and low.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
+        extra["thumb_url"] = url
+    return extra
+
+
+def _catalog_prompt_meta(path: Optional[Path]) -> Dict[str, Any]:
+    if path is None or not path.is_file():
+        return {}
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        doc = {}
+    if not isinstance(doc, dict):
+        doc = {}
+    name = str(doc.get("name") or doc.get("label") or path.stem).strip()
+    slug = str(doc.get("slug") or "").strip()
+    if not slug:
+        try:
+            from shape_factory_owned_prompt import prompt_variant_slug
+
+            slug = str(prompt_variant_slug(None, name, doc.get("label"), path.stem) or path.stem)
+        except Exception:
+            slug = path.stem
+    pos = str(doc.get("positive") or "").strip()
+    lines = [ln.strip() for ln in pos.splitlines() if ln.strip()]
+    excerpt = " ".join(lines[:3])
+    if len(excerpt) > 280:
+        excerpt = excerpt[:277] + "…"
+    return {
+        "prompt_name": name,
+        "prompt_slug": slug,
+        "prompt_label": str(doc.get("label") or path.stem),
+        "prompt_excerpt": excerpt,
+        "prompt_profile": str(path.resolve()),
+    }
+
+
+def _pending_preview_for_row(
+    row: Dict[str, Any],
+    *,
+    chain_id: str,
+    data_root: Path,
+    cursor: int,
+    meta_cache: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    producer = str(row.get("producer_family") or "")
+    if chain_id == "gex2_to_facial":
+        family = "FB9_GEX_FACIAL"
+        catalogs = _catalog_prompt_paths(data_root, family)
+        prompt = catalogs[0] if catalogs else None
+        step = "chain_facial"
+    else:
+        family = "FB9_GEX"
+        prefer = "catalog-faceblast-extend" if producer == "FB9-FaceBlast" else None
+        prompt = pick_hourly_gex_catalog_prompt(
+            cursor=int(cursor),
+            data_root=data_root,
+            prefer_stem=prefer,
+        )
+        step = "chain_gex_from_i2v"
+    cache_key = str(prompt.resolve()) if prompt is not None else ""
+    if cache_key not in meta_cache:
+        meta_cache[cache_key] = _catalog_prompt_meta(prompt)
+    return {
+        "family": family,
+        "step": step,
+        "destination": "pending",
+        "from_family": producer,
+        **meta_cache[cache_key],
+    }
+
+
+def _backlog_item(
+    row: Dict[str, Any],
+    *,
+    next_key: Optional[str] = None,
+    data_root: Optional[Path] = None,
+    chain_id: str = "i2v_to_gex",
+    cursor: int = 0,
+    meta_cache: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    job_key = str(row.get("job_key") or "")
+    video = str(row.get("video") or "")
+    root = (data_root or _default_data_root()).resolve()
+    cache = meta_cache if meta_cache is not None else {}
+    out: Dict[str, Any] = {
+        "job_key": job_key,
+        "producer_family": str(row.get("producer_family") or ""),
+        "consumer_family": str(row.get("consumer_family") or ""),
+        "video": video,
+        "video_name": _path_basename(video),
+        "next": bool(next_key and job_key == next_key),
+        **_backlog_media_urls(video, data_root=root),
+        "pending_preview": _pending_preview_for_row(
+            row,
+            chain_id=chain_id,
+            data_root=root,
+            cursor=int(cursor),
+            meta_cache=cache,
+        ),
+    }
+    ref = str(row.get("source_ref") or "").strip()
+    if ref:
+        out["source_ref"] = ref
+        out["source_ref_name"] = _path_basename(ref)
+    return out
+
+
+def hourly_chain_backlogs(
+    *,
+    data_root: Optional[Path] = None,
+    job_dir: Optional[Path] = None,
+    cursor: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Computed hourly chain waiting lists (not the pending FIFO)."""
+    data_root = (data_root or _default_data_root()).resolve()
+    job_root = job_dir or _default_job_root(data_root)
+    cur = int(cursor) if cursor is not None else _hourly_state_cursor(data_root)
+
+    i2v_rows = list_i2v_needing_gex(data_root=data_root, job_dir=job_root)
+    i2v_next = pick_i2v_needing_gex(i2v_rows, cursor=cur)
+    i2v_next_key = str((i2v_next or {}).get("job_key") or "")
+    i2v_by: Dict[str, int] = {}
+    for row in i2v_rows:
+        fam = str(row.get("producer_family") or "?")
+        i2v_by[fam] = i2v_by.get(fam, 0) + 1
+
+    facial_rows = list_gex2_needing_facial(data_root=data_root, job_dir=job_root)
+    for row in facial_rows:
+        row.setdefault("producer_family", "FB9_GEX2")
+    facial_next = facial_rows[0] if facial_rows else None
+    facial_next_key = str((facial_next or {}).get("job_key") or "")
+    meta_cache: Dict[str, Dict[str, Any]] = {}
+
+    def _item(row: Optional[Dict[str, Any]], *, chain_id: str, next_key: str) -> Optional[Dict[str, Any]]:
+        if not row:
+            return None
+        return _backlog_item(
+            row,
+            next_key=next_key,
+            data_root=data_root,
+            chain_id=chain_id,
+            cursor=cur,
+            meta_cache=meta_cache,
+        )
+
+    return {
+        "ok": True,
+        "cursor": cur,
+        "note": (
+            "These are computed waiting lists: complete parents whose output is not yet "
+            "a child source. They are not the Workbench pending FIFO."
+        ),
+        "chains": [
+            {
+                "id": "i2v_to_gex",
+                "label": "i2v → FB9_GEX",
+                "producer_label": "complete Kneel / FaceBlast / BounceDance / FB8",
+                "consumer_family": "FB9_GEX",
+                "count": len(i2v_rows),
+                "by_family": i2v_by,
+                "drain_every": _i2v_gex_drain_every(),
+                "due_this_cursor": want_i2v_gex_chain(cur),
+                "lookback_days": None,
+                "lookback_note": "No age cull — old completes stay until a GEX job binds the video.",
+                "next": _item(i2v_next, chain_id="i2v_to_gex", next_key=i2v_next_key),
+                "items": [
+                    _item(row, chain_id="i2v_to_gex", next_key=i2v_next_key) or {} for row in i2v_rows
+                ],
+            },
+            {
+                "id": "gex2_to_facial",
+                "label": "GEX2 → FACIAL",
+                "producer_label": "complete FB9_GEX2",
+                "consumer_family": "FB9_GEX_FACIAL",
+                "count": len(facial_rows),
+                "by_family": {"FB9_GEX2": len(facial_rows)} if facial_rows else {},
+                "drain_every": _facial_drain_every(),
+                "due_this_cursor": want_facial_chain(cur) and not want_seed_over_chain(cur),
+                "lookback_days": _facial_lookback_days(),
+                "lookback_note": "Only GEX2 jobs within HOURLY_FACIAL_LOOKBACK_DAYS (default 14).",
+                "next": _item(facial_next, chain_id="gex2_to_facial", next_key=facial_next_key),
+                "items": [
+                    _item(row, chain_id="gex2_to_facial", next_key=facial_next_key) or {}
+                    for row in facial_rows
+                ],
+            },
+        ],
+    }
 
 
 def _path_basename(path: Any) -> str:
@@ -3094,16 +3443,26 @@ def simulate_hourly_picks(
                 }
             )
         elif i2v_q and want_i2v_gex_chain(cursor):
-            hit = i2v_q.pop(0)
+            hit = pick_i2v_needing_gex(i2v_q, cursor=cursor) or i2v_q[0]
+            i2v_q = [r for r in i2v_q if r is not hit]
+            producer = str(hit.get("producer_family") or "")
+            prompt = pick_hourly_gex_catalog_prompt(
+                cursor=cursor,
+                data_root=data_root,
+                job_dir=job_root,
+                prefer_stem="catalog-faceblast-extend" if producer == "FB9-FaceBlast" else None,
+            )
             pick.update(
                 {
                     "family": "FB9_GEX",
                     "pick_mode": "chain",
                     "step": "chain_gex_from_i2v",
                     "parent_job": hit.get("job_key"),
-                    "producer_family": hit.get("producer_family"),
+                    "producer_family": producer,
                     "source_video": hit.get("video"),
                     "source_still": None,
+                    "prompt_profile": str(prompt) if prompt else None,
+                    "prompt_variant": prompt.stem if prompt else None,
                 }
             )
         else:
@@ -3577,7 +3936,149 @@ def plan_hourly_predicted_derive(
     }
 
 
+def _catalog_prompt_paths(data_root: Path, family: str) -> List[Path]:
+    root = Path(data_root) / "pools" / family / "prompts"
+    if not root.is_dir():
+        return []
+    return sorted(p.resolve() for p in root.glob("catalog-*.json") if p.is_file())
+
+
+def _job_prompt_variant_slug(job: Dict[str, Any]) -> str:
+    try:
+        from shape_factory_owned_prompt import prompt_variant_slug
+    except Exception:
+        prompt_variant_slug = None  # type: ignore
+    owned = job.get("prompt") if isinstance(job.get("prompt"), dict) else {}
+    bindings = job.get("bindings") if isinstance(job.get("bindings"), dict) else {}
+    raw = bindings.get("prompt_profile")
+    path = ""
+    if isinstance(raw, dict):
+        path = str(raw.get("path") or "")
+    elif raw:
+        path = str(raw)
+    if prompt_variant_slug:
+        return str(
+            prompt_variant_slug(
+                owned.get("slug"),
+                owned.get("name"),
+                owned.get("label"),
+                path or owned.get("source_profile"),
+            )
+            or ""
+        )
+    blob = " ".join(str(part or "") for part in (owned.get("slug"), owned.get("label"), path))
+    if "faceblast" in blob.lower():
+        return "faceblast-extend"
+    return ""
+
+
+def _pending_hourly_prompt_slugs(*, job_dir: Path, family: str) -> Set[str]:
+    try:
+        from shape_factory_pending_queue import is_pending_queue_job
+    except Exception:
+        return set()
+    slugs: Set[str] = set()
+    fam_root = Path(job_dir) / family
+    if not fam_root.is_dir():
+        return slugs
+    for path in fam_root.glob("hourly__*.job.json"):
+        try:
+            job = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(job, dict) or not is_pending_queue_job(job):
+            continue
+        slug = _job_prompt_variant_slug(job)
+        if slug:
+            slugs.add(slug)
+    return slugs
+
+
+def pick_hourly_gex_catalog_prompt(
+    *,
+    cursor: int = 0,
+    data_root: Optional[Path] = None,
+    job_dir: Optional[Path] = None,
+    family: str = "FB9_GEX",
+    prefer_stem: Optional[str] = None,
+) -> Optional[Path]:
+    """Choose a ``catalog-*.json`` for V2V FB9_GEX hourlies.
+
+    FaceBlast extend is a prompt variant of GEX itself — it does not require an
+    i2v FB9-FaceBlast parent. If pending GEX hourlies have no faceblast-extend
+    yet, pick that catalog so the variant appears on the FIFO. Otherwise rotate
+    among catalogs by cursor.
+    """
+    data_root = (data_root or _default_data_root()).resolve()
+    catalogs = _catalog_prompt_paths(data_root, family)
+    if not catalogs:
+        return None
+    by_stem = {p.stem: p for p in catalogs}
+    if prefer_stem and prefer_stem in by_stem:
+        return by_stem[prefer_stem]
+    faceblast = by_stem.get("catalog-faceblast-extend")
+    job_root = job_dir or _default_job_root(data_root)
+    pending = _pending_hourly_prompt_slugs(job_dir=job_root, family=family)
+    if faceblast is not None and "faceblast-extend" not in pending:
+        return faceblast
+    return catalogs[int(cursor) % len(catalogs)]
+
+
+def apply_hourly_gex_catalog_prompt(
+    plan: Dict[str, Any],
+    *,
+    cursor: int,
+    data_root: Path,
+    job_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Pin FB9_GEX hourly plans onto a catalog variant (FaceBlast extend vs default)."""
+    if not isinstance(plan, dict) or not plan.get("ok"):
+        return plan
+    family = str(plan.get("family") or "")
+    if family != "FB9_GEX":
+        return plan
+    picks = plan.get("picks") if isinstance(plan.get("picks"), dict) else None
+    if not picks:
+        return plan
+    chosen = pick_hourly_gex_catalog_prompt(
+        cursor=int(cursor),
+        data_root=data_root,
+        job_dir=job_dir,
+        family=family,
+    )
+    if chosen is None:
+        return plan
+    next_plan = dict(plan)
+    next_picks = dict(picks)
+    next_picks["prompt_profile"] = str(chosen)
+    next_plan["picks"] = next_picks
+    preview = dict(next_plan.get("bindings_preview") or {}) if isinstance(next_plan.get("bindings_preview"), dict) else {}
+    preview["prompt_profile"] = chosen.name
+    next_plan["bindings_preview"] = preview
+    next_plan["combo_key"] = _combo_key_from_slot_paths(
+        {str(slot): str(path) for slot, path in sorted(next_picks.items())}
+    )
+    next_plan["prompt_variant"] = chosen.stem
+    return next_plan
+
+
 def plan_hourly_step(
+    *,
+    cursor: int = 0,
+    data_root: Optional[Path] = None,
+    job_dir: Optional[Path] = None,
+    family: str = "FB9_GEX2",
+) -> Dict[str, Any]:
+    data_root = (data_root or _default_data_root()).resolve()
+    plan = _plan_hourly_step_core(
+        cursor=cursor, data_root=data_root, job_dir=job_dir, family=family
+    )
+    return apply_hourly_gex_catalog_prompt(
+        plan, cursor=cursor, data_root=data_root, job_dir=job_dir
+    )
+
+
+def _plan_hourly_step_core(
     *,
     cursor: int = 0,
     data_root: Optional[Path] = None,
@@ -3738,8 +4239,15 @@ def predict_hourly_gex2(
             "ok": True,
         }
 
-    need_i2v = find_i2v_needing_gex(data_root=data_root, job_dir=job_root)
+    need_i2v = find_i2v_needing_gex(data_root=data_root, job_dir=job_root, cursor=cursor)
     if need_i2v and want_i2v_gex_chain(cursor):
+        producer = str(need_i2v.get("producer_family") or "")
+        prompt = pick_hourly_gex_catalog_prompt(
+            cursor=cursor,
+            data_root=data_root,
+            job_dir=job_root,
+            prefer_stem="catalog-faceblast-extend" if producer == "FB9-FaceBlast" else None,
+        )
         return {
             "cursor": cursor,
             "phase_if_idle": "gex_from_i2v",
@@ -3747,8 +4255,10 @@ def predict_hourly_gex2(
             "pick_mode": "chain",
             "step": "chain_gex_from_i2v",
             "parent_job": need_i2v.get("job_key"),
-            "producer_family": need_i2v.get("producer_family"),
+            "producer_family": producer,
             "source_video": need_i2v.get("video"),
+            "prompt_profile": str(prompt) if prompt else None,
+            "prompt_variant": prompt.stem if prompt else None,
             "ok": True,
         }
 
@@ -3876,6 +4386,10 @@ DEFAULT_HOURLY_SCHEDULE: Dict[str, Any] = {
     "comfy_queue_min": 1,
     "comfy_queue_max": 3,
     "pending_queue_max": 10,
+    "pending_hourly_min": 5,
+    "still_promo_until": None,
+    "still_promo_window_days": 2,
+    "still_promo_boost": 16,
     "last_tick_at": None,
     "updated_at": None,
 }
@@ -3935,11 +4449,32 @@ def normalize_hourly_schedule(raw: Optional[Dict[str, Any]] = None) -> Dict[str,
         pmax = int(src.get("pending_queue_max", out["pending_queue_max"]))
     except (TypeError, ValueError):
         pmax = int(out["pending_queue_max"])
+    try:
+        pmin = int(src.get("pending_hourly_min", out["pending_hourly_min"]))
+    except (TypeError, ValueError):
+        pmin = int(out["pending_hourly_min"])
     out["comfy_queue_min"] = max(0, min(20, cmin))
     out["comfy_queue_max"] = max(0, min(20, cmax))
     if out["comfy_queue_max"] < out["comfy_queue_min"]:
         out["comfy_queue_max"] = out["comfy_queue_min"]
     out["pending_queue_max"] = max(0, min(50, pmax))
+    out["pending_hourly_min"] = max(0, min(out["pending_queue_max"], pmin))
+    until = src.get("still_promo_until", out.get("still_promo_until"))
+    if until in (None, "", False):
+        out["still_promo_until"] = None
+    else:
+        parsed = _parse_iso_ts(until)
+        out["still_promo_until"] = parsed.isoformat() if parsed else None
+    try:
+        promo_days = float(src.get("still_promo_window_days", out["still_promo_window_days"]))
+    except (TypeError, ValueError):
+        promo_days = float(out["still_promo_window_days"])
+    try:
+        promo_boost = float(src.get("still_promo_boost", out["still_promo_boost"]))
+    except (TypeError, ValueError):
+        promo_boost = float(out["still_promo_boost"])
+    out["still_promo_window_days"] = max(0.1, min(14.0, promo_days))
+    out["still_promo_boost"] = max(1.0, min(50.0, promo_boost))
     out["last_tick_at"] = src.get("last_tick_at")
     out["updated_at"] = src.get("updated_at")
     return out
@@ -4023,6 +4558,7 @@ def hourly_schedule_status(
         "now": ts.isoformat(),
         "interval_presets": list(HOURLY_INTERVAL_PRESETS),
         "submit_modes": list(HOURLY_SUBMIT_MODES),
+        "still_promo": still_promo_active(now=ts, schedule=sch, data_root=data_root),
     }
 
 
@@ -4033,36 +4569,46 @@ def queue_advance_decision(
     queue_max: int = 3,
     factory_pending: int = 0,
     pending_queue_max: int = 10,
+    pending_hourly_min: int = 0,
+    hourly_pending: int = 0,
     submit_mode: str = "auto",
 ) -> Dict[str, Any]:
     """
     Whether the hourly tick should generate a fill job, and where it should land.
 
     Modes:
-      - auto: Comfy if waiting < queue_max; else factory pending if under pending_queue_max
-      - comfy: only when Comfy has room under queue_max
+      - auto: fill hourly pending floor first, then Comfy if waiting < queue_max,
+        else factory pending if under pending_queue_max
+      - comfy: only when Comfy has room under queue_max (no pending floor)
       - pending: only when factory pending is under pending_queue_max (never submit from tick)
 
     ``submit_slots`` is room under ``queue_max`` for maintenance/drain pushes.
     ``queue_min`` is retained for status/display; advance no longer requires below-min.
+    ``pending_hourly_min`` defaults to 0 here so callers that omit it keep the
+    old Comfy-first auto behavior; the schedule default is 5.
     """
     pending_i = max(0, int(pending))
     factory_pending_i = max(0, int(factory_pending))
+    hourly_pending_i = max(0, int(hourly_pending))
     queue_min_i = max(0, int(queue_min))
     queue_max_i = max(0, int(queue_max))
     pending_max_i = max(0, int(pending_queue_max))
+    hourly_min_i = max(0, min(pending_max_i, int(pending_hourly_min)))
     mode = str(submit_mode or "auto").strip().lower()
     if mode not in HOURLY_SUBMIT_MODES:
         mode = "auto"
     submit_slots = max(0, queue_max_i - pending_i)
     comfy_has_room = pending_i < queue_max_i
     pending_has_room = factory_pending_i < pending_max_i
+    hourly_floor_short = hourly_pending_i < hourly_min_i
     base = {
         "pending": pending_i,
         "factory_pending": factory_pending_i,
+        "hourly_pending": hourly_pending_i,
         "queue_min": queue_min_i,
         "queue_max": queue_max_i,
         "pending_queue_max": pending_max_i,
+        "pending_hourly_min": hourly_min_i,
         "submit_mode": mode,
         "submit_slots": submit_slots,
         "destination": "skip",
@@ -4085,6 +4631,9 @@ def queue_advance_decision(
             return _skip("at_max", submit_slots=0)
         return _go("comfy", "comfy_room")
 
+    if hourly_floor_short and pending_has_room:
+        return _go("pending", "hourly_pending_min")
+
     if mode == "pending":
         if not pending_has_room:
             return _skip("pending_max")
@@ -4096,6 +4645,25 @@ def queue_advance_decision(
     if pending_has_room:
         return _go("pending", "comfy_full_pending")
     return _skip("queues_full", submit_slots=0)
+
+
+def count_hourly_pending_submit(*, jobs_dir: Path) -> int:
+    """Count hourly jobs sitting on the factory pending FIFO."""
+    from shape_factory_pending_queue import count_hourly_pending_jobs
+
+    return count_hourly_pending_jobs(jobs_dir.expanduser().resolve())
+
+
+def pending_hourly_drain_min(*, submit_mode: Optional[str] = None, data_root: Optional[Path] = None) -> int:
+    """Hourly jobs drain must leave on the FIFO. ``0`` when mode is comfy-only."""
+    sch = load_hourly_schedule(data_root=data_root)
+    mode = str(submit_mode or sch.get("submit_mode") or "auto").strip().lower()
+    if mode == "comfy":
+        return 0
+    try:
+        return max(0, int(sch.get("pending_hourly_min") or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def count_factory_pending_submit(*, jobs_dir: Path) -> int:
@@ -4181,6 +4749,14 @@ def main() -> int:
         help="JSON: i2v/still-family job needing FB9_GEX child (or empty object)",
     )
     nk.add_argument("--data-root", type=Path, default=None)
+    nk.add_argument("--cursor", type=int, default=0)
+
+    bl = sub.add_parser(
+        "chain-backlogs",
+        help="JSON: computed i2v→GEX and GEX2→FACIAL waiting lists",
+    )
+    bl.add_argument("--data-root", type=Path, default=None)
+    bl.add_argument("--cursor", type=int, default=None)
 
     nkk = sub.add_parser("need-gex-from-kneel", help="Print Kneel job_key needing FB9_GEX child (or empty)")
     nkk.add_argument("--data-root", type=Path, default=None)
@@ -4211,6 +4787,8 @@ def main() -> int:
     qp.add_argument("--queue-min", type=int, default=None)
     qp.add_argument("--queue-max", type=int, default=None)
     qp.add_argument("--pending-queue-max", type=int, default=None)
+    qp.add_argument("--pending-hourly-min", type=int, default=None)
+    qp.add_argument("--hourly-pending", type=int, default=None)
     qp.add_argument(
         "--submit-mode",
         default=None,
@@ -4222,6 +4800,9 @@ def main() -> int:
 
     pc = sub.add_parser("pending-count", help="Count factory jobs awaiting submit")
     pc.add_argument("--jobs-dir", type=Path, required=True)
+
+    hpc = sub.add_parser("hourly-pending-count", help="Count hourly jobs on the factory pending FIFO")
+    hpc.add_argument("--jobs-dir", type=Path, required=True)
 
     iss = sub.add_parser(
         "input-stills-scan",
@@ -4244,6 +4825,15 @@ def main() -> int:
     sset.add_argument("--comfy-queue-min", type=int, default=None)
     sset.add_argument("--comfy-queue-max", type=int, default=None)
     sset.add_argument("--pending-queue-max", type=int, default=None)
+    sset.add_argument("--pending-hourly-min", type=int, default=None)
+    sset.add_argument(
+        "--still-promo-hours",
+        type=float,
+        default=None,
+        help="Promote recent image starters for this many hours from now",
+    )
+    sset.add_argument("--still-promo-until", type=str, default=None, help="ISO timestamp; empty clears")
+    sset.add_argument("--still-promo-clear", action="store_true", help="End the still promo window")
     sset.add_argument("--mark-tick", action="store_true", help="Set last_tick_at=now")
 
     args = p.parse_args()
@@ -4294,9 +4884,18 @@ def main() -> int:
         return 0
 
     if args.cmd == "need-gex-from-i2v":
-        hit = find_i2v_needing_gex(data_root=data_root)
+        hit = find_i2v_needing_gex(data_root=data_root, cursor=int(args.cursor or 0))
         print(json.dumps(hit or {}, ensure_ascii=False))
         return 0
+
+    if args.cmd == "chain-backlogs":
+        cur = args.cursor
+        out = hourly_chain_backlogs(
+            data_root=data_root,
+            cursor=int(cur) if cur is not None else None,
+        )
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0 if out.get("ok") else 1
 
     if args.cmd == "need-gex-from-kneel":
         key = find_kneel_needing_gex(data_root=data_root)
@@ -4324,6 +4923,11 @@ def main() -> int:
         print(n)
         return 0
 
+    if args.cmd == "hourly-pending-count":
+        n = count_hourly_pending_submit(jobs_dir=Path(args.jobs_dir))
+        print(n)
+        return 0
+
     if args.cmd == "schedule-status":
         out = hourly_schedule_status(path=args.schedule, data_root=data_root)
         print(json.dumps(out, ensure_ascii=False, indent=2))
@@ -4344,6 +4948,19 @@ def main() -> int:
             sch["comfy_queue_max"] = int(args.comfy_queue_max)
         if args.pending_queue_max is not None:
             sch["pending_queue_max"] = int(args.pending_queue_max)
+        if args.pending_hourly_min is not None:
+            sch["pending_hourly_min"] = int(args.pending_hourly_min)
+        if args.still_promo_clear:
+            sch["still_promo_until"] = None
+        elif args.still_promo_until is not None:
+            text = str(args.still_promo_until).strip()
+            sch["still_promo_until"] = text or None
+        elif args.still_promo_hours is not None:
+            hours = max(0.0, float(args.still_promo_hours))
+            if hours <= 0:
+                sch["still_promo_until"] = None
+            else:
+                sch["still_promo_until"] = (_utc_now() + timedelta(hours=hours)).isoformat()
         if args.mark_tick:
             sch = mark_hourly_tick(sch, path=path, data_root=data_root)
         else:
@@ -4361,6 +4978,17 @@ def main() -> int:
                 jobs_dir = DEFAULT_JOB_DIR
             factory_pending = count_factory_pending_submit(jobs_dir=Path(jobs_dir))
         sch = load_hourly_schedule(path=args.schedule, data_root=data_root)
+        hourly_pending = args.hourly_pending
+        if hourly_pending is None:
+            jobs_dir = args.jobs_dir
+            if jobs_dir is None:
+                from shape_factory import DEFAULT_JOB_DIR
+
+                jobs_dir = DEFAULT_JOB_DIR
+            try:
+                hourly_pending = count_hourly_pending_submit(jobs_dir=Path(jobs_dir))
+            except Exception:
+                hourly_pending = 0
         out = queue_advance_decision(
             pending=int(args.pending),
             queue_min=int(args.queue_min if args.queue_min is not None else sch["comfy_queue_min"]),
@@ -4369,6 +4997,10 @@ def main() -> int:
             pending_queue_max=int(
                 args.pending_queue_max if args.pending_queue_max is not None else sch["pending_queue_max"]
             ),
+            pending_hourly_min=int(
+                args.pending_hourly_min if args.pending_hourly_min is not None else sch["pending_hourly_min"]
+            ),
+            hourly_pending=int(hourly_pending),
             submit_mode=str(args.submit_mode or sch["submit_mode"]),
         )
         print(json.dumps(out, ensure_ascii=False, indent=2))

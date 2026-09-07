@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createPortal } from "react-dom";
-import { discardShapeFactoryJob, fetchShapeFactoryWorkProduct, fetchShapeFactoryWorkProducts, finishShapeFactoryEdit, claimShapeFactoryFromQueue, promoteShapeFactoryTemplate, replayShapeFactory, swapShapeFactoryFamily, unqueueShapeFactory, updatePendingShapeFactoryTrim, updateShapeFactoryOwnedLoras, updateShapeFactoryOwnedParams, updateShapeFactoryOwnedPrompt } from "./api";
+import { discardShapeFactoryJob, fetchShapeFactoryWorkProduct, fetchShapeFactoryWorkProducts, finishShapeFactoryEdit, claimShapeFactoryFromQueue, movePendingQueue, promoteShapeFactoryTemplate, replayShapeFactory, swapShapeFactoryFamily, unqueueShapeFactory, updatePendingShapeFactoryTrim, updateShapeFactoryOwnedLoras, updateShapeFactoryOwnedParams, updateShapeFactoryOwnedPrompt } from "./api";
+import { workProductListBucket } from "./workProductListSort";
+import { destinationForWhen, isPendingQueueItem, pendingQueueIndex, type SubmitWhen } from "./workProductPendingQueue";
 import type { ShapeFactoryClip } from "./api";
 import { ClipBookmarksRail, pickDefaultClip } from "./ClipBookmarksRail";
 import { ComfyLiveMetricsBar, ComfyLivePreview } from "./ComfyLivePreview";
@@ -533,11 +535,16 @@ function sourceThumbPreviewMeta(item: WorkProductItem): { label: string; visual:
 }
 
 function sortWorkProducts(items: WorkProductItem[], sort: WorkProductSort): WorkProductItem[] {
-  const live: WorkProductItem[] = [];
-  const rest: WorkProductItem[] = [];
+  const running: WorkProductItem[] = [];
+  const queued: WorkProductItem[] = [];
+  const pending: WorkProductItem[] = [];
+  const done: WorkProductItem[] = [];
   for (const it of items) {
-    if (isLivePreviewItem(it)) live.push(it);
-    else rest.push(it);
+    const bucket = workProductListBucket(workProductStatusKey(it));
+    if (bucket === "running") running.push(it);
+    else if (bucket === "queued") queued.push(it);
+    else if (bucket === "pending") pending.push(it);
+    else done.push(it);
   }
 
   const byRecentFirst = (a: WorkProductItem, b: WorkProductItem) => recencyMs(b) - recencyMs(a);
@@ -550,7 +557,7 @@ function sortWorkProducts(items: WorkProductItem[], sort: WorkProductSort): Work
       case "family_desc":
         return String(b.family_slug || "").localeCompare(String(a.family_slug || "")) || byRecentFirst(a, b);
       case "status":
-        return String(a.status || "").localeCompare(String(b.status || "")) || byRecentFirst(a, b);
+        return byRecentFirst(a, b);
       case "pick_mode":
         return (
           String(a.pick_mode || a.step || "").localeCompare(String(b.pick_mode || b.step || "")) ||
@@ -564,13 +571,11 @@ function sortWorkProducts(items: WorkProductItem[], sort: WorkProductSort): Work
     }
   };
 
-  live.sort((a, b) => {
-    const ar = String(a.status || "").toLowerCase() === "running" ? 0 : 1;
-    const br = String(b.status || "").toLowerCase() === "running" ? 0 : 1;
-    return ar - br || byRecentFirst(a, b);
-  });
-  rest.sort(cmp);
-  return [...live, ...rest];
+  running.sort(byRecentFirst);
+  queued.sort(byRecentFirst);
+  pending.sort((a, b) => pendingQueueIndex(a) - pendingQueueIndex(b) || recencyMs(a) - recencyMs(b));
+  done.sort(cmp);
+  return [...running, ...queued, ...pending, ...done];
 }
 
 function workProductNameHaystack(item: WorkProductItem): string {
@@ -3903,7 +3908,7 @@ function WorkProductQuickQueue({
     }
   };
 
-  const rerun = async (when: "now" | "later") => {
+  const rerun = async (when: SubmitWhen) => {
     if (!jobKey || isBusy) return;
     const targetFamily = String(rerunFamily || currentFamily || "").trim();
     if (swapInstead) {
@@ -3929,11 +3934,14 @@ function WorkProductQuickQueue({
         warning = fromTrim.warning;
       }
       if (swapInstead) {
+        const dest = destinationForWhen(when);
         const res = await swapMutation.mutateAsync({
           job_key: jobKey,
           family_slug: targetFamily,
           replace: true,
-          front: when === "now",
+          front: dest.front,
+          destination: dest.destination,
+          pending_position: dest.pending_position,
           seed_mode: rerunSeedMode,
           overrides,
         });
@@ -3962,11 +3970,14 @@ function WorkProductQuickQueue({
         if (nextKey) onFocusJobKey?.(nextKey);
         return;
       }
+      const dest = destinationForWhen(when);
       const res = await replayMutation.mutateAsync({
         job_key: jobKey,
         family_slug: targetFamily || undefined,
         extend: false,
-        front: when === "now",
+        front: dest.front,
+        destination: dest.destination,
+        pending_position: dest.pending_position,
         seed_mode: rerunSeedMode,
         overrides,
       });
@@ -4141,12 +4152,38 @@ function WorkProductQuickQueue({
         </div>
         <button
           type="button"
+          className="drt-btn work-product-quick-queue__queue"
+          disabled={!canRerun || (familyChanged && !rerunFamily)}
+          title={
+            swapInstead
+              ? `Swap to ${rerunFamily} onto the factory pending FIFO · retire this job`
+              : `New job${familyChanged ? ` as ${rerunFamily}` : ""} onto the factory pending FIFO`
+          }
+          onClick={() => void rerun("queue")}
+        >
+          {swapInstead ? "Swap queue" : "Queue"}
+        </button>
+        <button
+          type="button"
+          className="drt-btn work-product-quick-queue__queue-next"
+          disabled={!canRerun || (familyChanged && !rerunFamily)}
+          title="Insert at the front of the factory pending FIFO"
+          onClick={() => void rerun("queue_next")}
+        >
+          Next
+        </button>
+        <span className="work-product-quick-queue__sep" aria-hidden="true" />
+        <span className="work-product-quick-queue__label" title="Skip pending — submit directly to Comfy">
+          Comfy
+        </span>
+        <button
+          type="button"
           className="drt-btn work-product-quick-queue__rerun"
           disabled={!canRerun || (familyChanged && !rerunFamily)}
           title={
             swapInstead
-              ? `Swap to ${rerunFamily} · trim ${rerunTrimMode} · seed ${rerunSeedMode} · front of queue · retire this job`
-              : `New job${familyChanged ? ` as ${rerunFamily}` : ""} · trim ${rerunTrimMode} · seed ${rerunSeedMode} · front of queue`
+              ? `Swap to ${rerunFamily} · trim ${rerunTrimMode} · seed ${rerunSeedMode} · front of Comfy · retire this job`
+              : `New job${familyChanged ? ` as ${rerunFamily}` : ""} · trim ${rerunTrimMode} · seed ${rerunSeedMode} · front of Comfy`
           }
           onClick={() => void rerun("now")}
         >
@@ -4702,15 +4739,21 @@ function WorkProductIndexRow({
   item,
   selected,
   onSelect,
+  onMovePending,
+  movingPending,
 }: {
   item: WorkProductItem;
   selected: boolean;
   onSelect: (item: WorkProductItem) => void;
+  onMovePending?: (item: WorkProductItem, delta: number) => void;
+  movingPending?: boolean;
 }) {
   const thumb = item.output_thumb_url || sourcePreviewUrls(item).thumb;
   const status = statusFilterVisual(item.status || "pending");
   const timing = timingHeadline(item);
-  return (
+  const pendingPos = isPendingQueueItem(item) ? pendingQueueIndex(item) : Number.POSITIVE_INFINITY;
+  const canReorder = Number.isFinite(pendingPos) && typeof item.pending_count === "number";
+  const row = (
     <button
       type="button"
       id={workbenchJobDomId(item.job_key)}
@@ -4770,6 +4813,43 @@ function WorkProductIndexRow({
         familySlug={item.family_slug}
       />
     </button>
+  );
+  if (!canReorder) return row;
+  const idx = pendingPos;
+  const last = Math.max(0, (item.pending_count || 1) - 1);
+  return (
+    <div className="work-product-index-row-shell">
+      {row}
+      <div className="work-product-index-row__reorder" role="group" aria-label="Pending queue order">
+        <button
+          type="button"
+          className="work-product-index-row__reorder-btn"
+          disabled={movingPending || idx <= 0}
+          title="Move earlier (next to drain)"
+          onClick={(e) => {
+            e.stopPropagation();
+            onMovePending?.(item, -1);
+          }}
+        >
+          ▲
+        </button>
+        <span className="work-product-index-row__pos" title="Factory pending FIFO position">
+          {idx + 1}/{item.pending_count}
+        </span>
+        <button
+          type="button"
+          className="work-product-index-row__reorder-btn"
+          disabled={movingPending || idx >= last}
+          title="Move later"
+          onClick={(e) => {
+            e.stopPropagation();
+            onMovePending?.(item, 1);
+          }}
+        >
+          ▼
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -5144,6 +5224,13 @@ export function WorkProductsApp() {
   const showJobList = useCallback(() => setListOpen(true), []);
   const hideJobList = useCallback(() => setListOpen(false), []);
   const bulkDiscardMutation = useMutation({ mutationFn: discardShapeFactoryJob });
+  const pendingMoveMutation = useMutation({
+    mutationFn: movePendingQueue,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductsRoot });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductRoot });
+    },
+  });
   const onRowCommitted = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductsRoot });
     void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductRoot });
@@ -5658,7 +5745,7 @@ export function WorkProductsApp() {
                 persistSort(next);
               }}
               aria-label="Sort work products"
-              title="Live previews always stay on top"
+              title="Running, then queued, then pending. Complete and errors share the rest."
             >
               {SORT_OPTIONS.map((o) => (
                 <option key={o.id} value={o.id}>
@@ -5918,7 +6005,7 @@ export function WorkProductsApp() {
                     persistSort(next);
                   }}
                   aria-label="Sort work products"
-                  title="Newest is video generated time. Appetite sort puts unmarked outputs first. Live previews stay on top."
+                  title="Running, then queued, then pending. Complete and errors share the rest. Newest is video generated time."
                 >
                   {SORT_OPTIONS.map((o) => (
                     <option key={o.id} value={o.id}>
@@ -5946,6 +6033,12 @@ export function WorkProductsApp() {
                   item={item}
                   selected={Boolean(selectedItem && item.job_key === selectedItem.job_key)}
                   onSelect={selectItem}
+                  movingPending={pendingMoveMutation.isPending}
+                  onMovePending={(it, delta) => {
+                    const key = String(it.job_key || "").trim();
+                    if (!key) return;
+                    pendingMoveMutation.mutate({ job_key: key, delta });
+                  }}
                 />
               ))}
             </div>

@@ -8,7 +8,7 @@ History is a short window. **Files on disk win** after that window closes.
 
 | Status | Meaning | Next |
 |---|---|---|
-| `pending` | Job exists, not submitted (or unqueued back to edit). | Submit → `queued`. Discard if unused. |
+| `pending` | Job exists, not submitted (or unqueued back to edit). Factory FIFO (`submit.pending_rank`, 0 = next drain). Workbench ▲▼ reorders it. Hourly floor (`pending_hourly_min`, default 5) stays on this queue; drain refills if the hourly count dips and only submits overflow / Submit Queue jobs. | Drain / Now → `queued`. Discard if unused. |
 | `queued` | Prompt is in Comfy waiting. | Starts → `running`. Unqueue → `pending`. |
 | `running` | Prompt is the current Comfy execution. | Success → `complete`. Error → `error`. Cancel / Comfy dies with no file → `interrupted`. |
 | `complete` | Finished video exists (Comfy history **or** filesystem). | Deposit into the family pool. |

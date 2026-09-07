@@ -1859,6 +1859,12 @@ def _work_product_item_from_job(
         "graph_hash": job.get("graph_hash"),
         "output_prefix": job.get("output_prefix"),
         "status": status,
+        "pending_rank": (
+            submit.get("pending_rank")
+            if isinstance(submit.get("pending_rank"), (int, float))
+            and not isinstance(submit.get("pending_rank"), bool)
+            else None
+        ),
         "flow_state": normalize_flow_status(status),
         "flow_phase": flow_phase(status),
         "remediation_actions": list(remediation_actions(status, prompt_id=submit.get("prompt_id"))),
@@ -2049,6 +2055,9 @@ def list_recent_work_products(
     paths = list(iter_job_paths(jobs_root, hourly_only=hourly_only))
     # Newest-first by job created_at (not file mtime — deposit/backfill rewrites bump mtime).
     paths.sort(key=_job_recency_ts, reverse=True)
+    pending_scan = (
+        list(iter_job_paths(jobs_root, hourly_only=False)) if hourly_only else list(paths)
+    )
 
     work_items_doc = None
     work_items_for_item = None
@@ -2072,20 +2081,31 @@ def list_recent_work_products(
         work_items_doc = None
         work_items_for_item = None
 
-    items: List[Dict[str, Any]] = []
-    for path in paths:
-        if len(items) >= limit:
-            break
+    def _load_job(path: Path) -> Optional[Dict[str, Any]]:
         try:
             job = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
-            continue
+            return None
         if not isinstance(job, dict):
-            continue
+            return None
         fam = str(job.get("family_slug") or path.parent.name or "")
         if family and fam != family:
+            return None
+        return job
+
+    from shape_factory_pending_queue import attach_pending_queue_meta, is_pending_queue_job
+
+    pending_items: List[Dict[str, Any]] = []
+    seen_pending: set[str] = set()
+    for path in pending_scan:
+        job = _load_job(path)
+        if job is None or not is_pending_queue_job(job):
             continue
-        items.append(
+        key = str(job.get("job_key") or path.stem.replace(".job", ""))
+        if key in seen_pending:
+            continue
+        seen_pending.add(key)
+        pending_items.append(
             _work_product_item_from_job(
                 path,
                 job,
@@ -2095,6 +2115,25 @@ def list_recent_work_products(
                 work_items_for_item=work_items_for_item,
             )
         )
+    other_items: List[Dict[str, Any]] = []
+    for path in paths:
+        job = _load_job(path)
+        if job is None or is_pending_queue_job(job):
+            continue
+        other_items.append(
+            _work_product_item_from_job(
+                path,
+                job,
+                data_root=data_root,
+                output_root=output_root,
+                work_items_doc=work_items_doc,
+                work_items_for_item=work_items_for_item,
+            )
+        )
+        if len(other_items) >= limit:
+            break
+    items = pending_items + other_items
+    attach_pending_queue_meta(items)
 
     families = list_shape_families(
         data_root,

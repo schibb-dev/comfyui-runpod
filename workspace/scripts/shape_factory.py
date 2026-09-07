@@ -2135,6 +2135,13 @@ def cmd_generate(args: argparse.Namespace) -> int:
         print(f"job_metadata={result['job_path']}")
         for slot, meta in result["bindings"].items():
             print(f"  bind {slot} ({meta.get('role')}) <- `{Path(meta['path']).name}`")
+        try:
+            from shape_factory_pending_queue import enqueue_pending_job
+
+            enq = enqueue_pending_job(Path(result["job_path"]), jobs_dir=job_dir, position="append")
+            print(f"  pending_rank={enq.get('pending_rank')} pending_count={enq.get('pending_count')}")
+        except Exception as exc:
+            print(f"  pending_enqueue_failed: {exc}")
         generated += 1
 
     print(f"generated_jobs={generated}")
@@ -2195,13 +2202,15 @@ def iter_job_paths(args: argparse.Namespace, *, apply_limit: bool = True) -> lis
 
 def iter_pending_submit_job_paths(args: argparse.Namespace) -> list[Path]:
     """
-    Jobs eligible for ``--pending-only`` submit, newest first.
+    Jobs eligible for ``--pending-only`` submit, FIFO (pending_rank / created_at).
 
     ``--limit`` applies *after* filtering so already-submitted files do not
     consume the budget (hourly used to truncate alphabetically and never reach
     true pending jobs).
     """
-    candidates: list[tuple[float, Path]] = []
+    from shape_factory_pending_queue import pending_queue_sort_key
+
+    candidates: list[tuple[tuple[int, float, str], Path]] = []
     for path in iter_job_paths(args, apply_limit=False):
         try:
             job = json.loads(path.read_text(encoding="utf-8"))
@@ -2211,22 +2220,8 @@ def iter_pending_submit_job_paths(args: argparse.Namespace) -> list[Path]:
             continue
         if not job_pending_submit(job):
             continue
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            mtime = 0.0
-        created = 0.0
-        raw = job.get("created_at")
-        if isinstance(raw, str) and raw.strip():
-            try:
-                text = raw.strip()
-                if text.endswith("Z"):
-                    text = text[:-1] + "+00:00"
-                created = _dt.datetime.fromisoformat(text).timestamp()
-            except Exception:
-                created = 0.0
-        candidates.append((max(created, mtime), path))
-    candidates.sort(key=lambda row: row[0], reverse=True)
+        candidates.append((pending_queue_sort_key(job, path), path))
+    candidates.sort(key=lambda row: row[0])
     paths = [p for _, p in candidates]
     limit = getattr(args, "limit", None)
     if isinstance(limit, int) and limit > 0 and len(paths) > limit:
@@ -5285,6 +5280,20 @@ def submit_job_file(
     }
 
 
+def _jobs_root_for_submit(args: argparse.Namespace, sample: Optional[Path] = None) -> Path:
+    raw = getattr(args, "jobs_dir", None) or getattr(args, "job_dir", None)
+    if raw:
+        root = Path(str(raw)).expanduser().resolve()
+        if root.name != "jobs" and root.parent.name == "jobs":
+            return root.parent
+        return root
+    if sample is not None:
+        from shape_factory_pending_queue import jobs_dir_from_job_path
+
+        return jobs_dir_from_job_path(sample)
+    return Path(DEFAULT_JOB_DIR).expanduser().resolve()
+
+
 def cmd_submit(args: argparse.Namespace) -> int:
     pending_only = bool(getattr(args, "pending_only", False))
     job_paths = (
@@ -5292,6 +5301,28 @@ def cmd_submit(args: argparse.Namespace) -> int:
         if pending_only
         else iter_job_paths(args)
     )
+    if pending_only and job_paths and not getattr(args, "job", None):
+        try:
+            from shape_factory_hourly import pending_hourly_drain_min
+            from shape_factory_pending_queue import (
+                apply_hourly_pending_drain_floor,
+                count_hourly_pending_jobs,
+            )
+
+            min_keep = pending_hourly_drain_min()
+            if min_keep > 0:
+                root = _jobs_root_for_submit(args, job_paths[0])
+                kept = apply_hourly_pending_drain_floor(
+                    job_paths,
+                    pending_hourly_min=min_keep,
+                    hourly_pending_count=count_hourly_pending_jobs(root),
+                )
+                if not kept:
+                    print(f"skip (hourly_pending_min={min_keep})")
+                    return 0
+                job_paths = kept
+        except Exception:
+            pass
     if not job_paths:
         print("error: no job files found (use --job, --jobs-dir, or --family)", file=sys.stderr)
         return 1
@@ -5706,6 +5737,14 @@ def unqueue_to_pending(
 
     sidecar_action = _neutralize_submit_sidecar(job, previous_prompt_id=previous)
     atomic_write_json(job_file, job)
+    pending_rank = None
+    try:
+        from shape_factory_pending_queue import enqueue_pending_job, jobs_dir_from_data_root
+
+        enq = enqueue_pending_job(job_file, jobs_dir=jobs_dir_from_data_root(data_root), position="append")
+        pending_rank = enq.get("pending_rank")
+    except Exception:
+        pending_rank = None
 
     out = {
         "ok": True,
@@ -5715,6 +5754,7 @@ def unqueue_to_pending(
         "job_key": str(job.get("job_key") or job_file.stem.replace(".job", "")),
         "job_path": str(job_file),
         "status": "pending",
+        "pending_rank": pending_rank,
         "comfy_deleted": comfy_deleted,
         "submit_sidecar": sidecar_action,
     }
@@ -5941,11 +5981,21 @@ def finish_job_edit(
         submit["editing_finished_at"] = utc_now()
         submit["editing_finish_action"] = act
         atomic_write_json(job_file, job)
+        pending_rank = submit.get("pending_rank")
+        try:
+            from shape_factory_pending_queue import compact_pending_ranks, jobs_dir_from_data_root, job_pending_rank
+
+            compact_pending_ranks(jobs_dir=jobs_dir_from_data_root(data_root))
+            job2 = json.loads(job_file.read_text(encoding="utf-8"))
+            pending_rank = job_pending_rank(job2) if isinstance(job2, dict) else pending_rank
+        except Exception:
+            pass
         return {
             "ok": True,
             "job_key": key,
             "job_path": str(job_file),
             "status": "pending",
+            "pending_rank": pending_rank,
             "action": act,
         }
 
@@ -7362,6 +7412,12 @@ def discard_pending_job(
                         deleted.append(str(leftover))
                     except Exception:
                         continue
+        try:
+            from shape_factory_pending_queue import compact_pending_ranks, jobs_dir_from_data_root
+
+            compact_pending_ranks(jobs_dir=jobs_dir_from_data_root(data_root))
+        except Exception:
+            pass
         return {
             "ok": True,
             "job_key": key,
@@ -7406,6 +7462,13 @@ def discard_pending_job(
             continue
     discarded_job = _rename_discarded(job_file)
     renamed.append(str(discarded_job))
+
+    try:
+        from shape_factory_pending_queue import compact_pending_ranks, jobs_dir_from_data_root
+
+        compact_pending_ranks(jobs_dir=jobs_dir_from_data_root(data_root))
+    except Exception:
+        pass
 
     out_status = prev_status if preserve_submit else "abandoned"
     return {
