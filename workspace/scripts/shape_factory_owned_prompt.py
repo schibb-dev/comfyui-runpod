@@ -43,6 +43,8 @@ def fork_owned_prompt(
     positive: Any = "",
     negative: Any = "",
     label: Any = None,
+    name: Any = None,
+    slug: Any = None,
     source_profile: Optional[str] = None,
     frozen: bool = False,
 ) -> Dict[str, Any]:
@@ -53,6 +55,12 @@ def fork_owned_prompt(
     }
     if label is not None and str(label).strip() != "":
         out["label"] = label
+    display_name = str(name or "").strip()
+    if display_name:
+        out["name"] = display_name
+    variant_slug = prompt_variant_slug(slug, name, label, source_profile)
+    if variant_slug:
+        out["slug"] = variant_slug
     if source_profile:
         out["source_profile"] = str(source_profile)
     attach_content_hash(out)
@@ -68,6 +76,8 @@ def fork_owned_prompt_from_profile_doc(
         positive=doc.get("positive"),
         negative=doc.get("negative"),
         label=doc.get("label"),
+        name=doc.get("name"),
+        slug=doc.get("slug"),
         source_profile=source_profile,
         frozen=False,
     )
@@ -233,6 +243,23 @@ def owned_prompt_to_excerpt(
         out["seed"] = seed
         seed_hash = str(seed.get("content_hash") or "").strip()
         out["snowflake"] = bool(seed_hash and seed_hash != ch)
+    display_name = str(owned.get("name") or "").strip()
+    if not display_name and seed is not None:
+        display_name = str(seed.get("name") or "").strip()
+    if display_name:
+        out["name"] = display_name
+    variant_slug = prompt_variant_slug(
+        owned.get("slug"),
+        seed.get("slug") if seed else None,
+        owned.get("label"),
+        basename,
+        source,
+        seed.get("label") if seed else None,
+        seed.get("basename") if seed else None,
+        display_name,
+    )
+    if variant_slug:
+        out["slug"] = variant_slug
     return out
 
 
@@ -275,7 +302,7 @@ def _seed_baseline_from_source_profile(
         return None
     positive = str(doc.get("positive") or "")
     negative = str(doc.get("negative") or "")
-    return {
+    seed: Dict[str, Any] = {
         "path": str(path),
         "label": doc.get("label") or path.stem,
         "basename": path.name,
@@ -285,19 +312,72 @@ def _seed_baseline_from_source_profile(
         "negative_rows": decode_prompt_markup(negative),
         "content_hash": prompt_content_hash(positive, negative),
     }
+    display_name = str(doc.get("name") or "").strip()
+    if display_name:
+        seed["name"] = display_name
+    variant_slug = prompt_variant_slug(doc.get("slug"), doc.get("label"), path.stem, path.name, display_name)
+    if variant_slug:
+        seed["slug"] = variant_slug
+    return seed
 
 
-_SLUG_RE = re.compile(r"[^a-zA-Z0-9._-]+")
+_SLUG_RE = re.compile(r"[^a-z0-9._-]+")
+_SLUG_SEP_RE = re.compile(r"[_\s]+")
+_SLUG_DASH_RE = re.compile(r"-{2,}")
+_VARIANT_WRAPPERS = ("pp-catalog-", "catalog-", "prompt_profile-", "pp-")
+_RESERVED_VARIANT_SLUGS = frozenset({"default", "catalog-default"})
 
 
-def slugify_variant_label(label: str, *, fallback: str = "variant") -> str:
+def slugify_variant_label(label: str, *, fallback: str = "variant", reserved: bool = True) -> str:
+    """Kebab slug for a variant. Guided by catalog-/pp- file stems; not limited to them."""
     raw = str(label or "").strip() or fallback
-    slug = _SLUG_RE.sub("-", raw).strip("-._")
+    raw = _SLUG_SEP_RE.sub("-", raw)
+    slug = _SLUG_RE.sub("-", raw.lower()).strip("-._")
+    slug = _SLUG_DASH_RE.sub("-", slug)
     if not slug:
         slug = fallback
-    if slug.lower() == "catalog-default":
+    if reserved and slug in _RESERVED_VARIANT_SLUGS:
         slug = f"{fallback}-{utc_now_iso().replace(':', '').replace('-', '')[:15]}"
     return slug[:80]
+
+
+def prompt_variant_slug(*candidates: Any, fallback: str = "") -> str:
+    """Canonical variant slug (`default`, `faceblast-extend`, or any kebab id)."""
+    for cand in candidates:
+        got = _coerce_variant_slug(cand)
+        if got:
+            return got
+    return str(fallback or "").strip()
+
+
+def _coerce_variant_slug(raw: Any) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, dict):
+        seed = raw.get("seed") if isinstance(raw.get("seed"), dict) else {}
+        return prompt_variant_slug(
+            raw.get("slug"),
+            seed.get("slug") if seed else None,
+            raw.get("label"),
+            raw.get("basename"),
+            raw.get("path"),
+            seed.get("label") if seed else None,
+            seed.get("basename") if seed else None,
+            raw.get("name"),
+            seed.get("name") if seed else None,
+        )
+    text = str(raw).strip()
+    if not text:
+        return ""
+    text = text.replace("\\", "/").rsplit("/", 1)[-1]
+    if text.lower().endswith(".json"):
+        text = text[:-5]
+    lower = text.lower()
+    for prefix in _VARIANT_WRAPPERS:
+        if lower.startswith(prefix):
+            text = text[len(prefix) :]
+            break
+    return slugify_variant_label(text, fallback="", reserved=False)
 
 
 def family_prompts_dir(data_root: Path, family_slug: str) -> Path:
@@ -321,6 +401,7 @@ def build_library_prompt_doc(
     positive: str,
     negative: str,
     label: str,
+    name: Optional[str] = None,
     parent_path: Optional[str] = None,
     parent_variant_id: Optional[str] = None,
     promoted_from_job: Optional[str] = None,
@@ -336,6 +417,14 @@ def build_library_prompt_doc(
         "content_hash": prompt_content_hash(positive, negative),
         "created_at": utc_now_iso(),
     }
+    display_name = str(name or "").strip()
+    if not display_name and str(label or "").strip() and not str(label).lower().startswith("catalog-"):
+        display_name = str(label).strip()
+    if display_name:
+        doc["name"] = display_name
+    variant_slug = prompt_variant_slug(doc.get("slug"), display_name, label)
+    if variant_slug:
+        doc["slug"] = variant_slug
     if parent_path:
         doc["parent_path"] = str(parent_path)
     if parent_variant_id:

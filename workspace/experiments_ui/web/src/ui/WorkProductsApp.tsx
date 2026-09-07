@@ -33,11 +33,21 @@ import { useTrimPlaybackEnforcement, type TrimPlaybackMode } from "./useTrimPlay
 import { discoveryLibraryHref, extractContentIdFromName, parseWorkbenchDeepLink, stillsHref, buildSubmitDeepLink, lineageSummaryHref, workbenchHref, workbenchHrefForMedia, isLineageInputStill, type SubmitDeepLink } from "./discoveryDeepLink";
 import { factoryMapFamilyHref } from "./factoryMapRoute";
 import { AppetitePreviewBadge, AppetitePreviewFrame } from "./AppetitePreviewBadge";
-import { WorkProductAppetiteStrip } from "./WorkProductAppetiteStrip";
 import { DiscoveryAssetLineagePanel } from "./DiscoveryAssetLineagePanel";
 import { SubmitComposerModal } from "./SubmitComposerModal";
+import { useAssetRatingsTick, WorkProductAppetiteStrip } from "./WorkProductAppetiteStrip";
+import {
+  APPETITE_FILTER_KEYS,
+  APPETITE_FILTER_LABEL,
+  appetiteSortRank,
+  filterWorkProductsByAppetite,
+  workProductAppetiteKey,
+  workProductAppetiteRelpath,
+} from "./workProductAppetite";
+import { prefetchAssetRatings } from "./assetRatingsCache";
 import { loadClipsForMedia, rememberFamiliesFromWorkProducts } from "./shapeFactorySessionCache";
-import { familySwapTargets, isStillMediaPath, pickDefaultSwapTarget } from "./submitFamily";
+import { familySwapTargets, isDefaultPromptVariant, isStillMediaPath, jobPromptVariantName, jobPromptVariantSlug, pickDefaultSwapTarget, promptVariantName, promptVariantSlug } from "./submitFamily";
+import { recencyMs, recencyStamp } from "./workProductRecency";
 import { queryKeys } from "./queryKeys";
 import type {
   DiscoveryAssetLineageItemSummary,
@@ -59,7 +69,8 @@ import type {
 type RowLayout = "stacked" | "split";
 
 const LAYOUT_KEY = "work-products-row-layout";
-const SORT_KEY = "work-products-sort";
+const SORT_KEY = "work-products-sort-v3";
+const APPETITE_FILTER_OFF_KEY = "work-products-appetite-filter-off";
 const SECTION_OPEN_KEY = "work-products-section-open-v3";
 const HOURLY_ONLY_KEY = "work-products-hourly-only";
 const STATUS_FILTER_OFF_KEY = "work-products-status-filter-off";
@@ -67,7 +78,14 @@ const MARKER_FILTER_OFF_KEY = "work-products-marker-filter-off";
 const DECODE_VAE_FILTER_KEY = "work-products-decode-vae-filter";
 const CHROME_KEY = "work-products-chrome-v2";
 
-type WorkProductSort = "created_desc" | "created_asc" | "family_asc" | "family_desc" | "status" | "pick_mode";
+type WorkProductSort =
+  | "created_desc"
+  | "created_asc"
+  | "appetite"
+  | "family_asc"
+  | "family_desc"
+  | "status"
+  | "pick_mode";
 type DecodeVaeFilter = "all" | "tiled" | "plain";
 
 /** Display order for status filter toggles (unknown statuses sort after these). */
@@ -100,6 +118,7 @@ const MARKER_FILTER_ORDER = [
 const SORT_OPTIONS: Array<{ id: WorkProductSort; label: string }> = [
   { id: "created_desc", label: "Newest" },
   { id: "created_asc", label: "Oldest" },
+  { id: "appetite", label: "Appetite (unset first)" },
   { id: "family_asc", label: "Family A–Z" },
   { id: "family_desc", label: "Family Z–A" },
   { id: "status", label: "Status" },
@@ -220,6 +239,14 @@ function loadMarkerFilterOff(): Set<string> {
 
 function persistMarkerFilterOff(off: Set<string>) {
   persistStringSet(MARKER_FILTER_OFF_KEY, off);
+}
+
+function loadAppetiteFilterOff(): Set<string> {
+  return loadStringSet(APPETITE_FILTER_OFF_KEY);
+}
+
+function persistAppetiteFilterOff(off: Set<string>) {
+  persistStringSet(APPETITE_FILTER_OFF_KEY, off);
 }
 
 function loadStringSet(key: string): Set<string> {
@@ -448,7 +475,8 @@ function canDiscardPendingWorkProduct(item: WorkProductItem): boolean {
 
 /**
  * Terminal failures remain in Work Products as the failure record until archived/deleted.
- * Archive soft-renames to `.discarded` (forensics on disk; no restore UI).
+ * Interrupted means the prompt vanished from Comfy with no output file — not a
+ * finished render (those heal to complete). Archive soft-renames to `.discarded`.
  * History-only stubs (no .job.json) are dismissible the same way.
  */
 function canArchiveTerminalWorkProduct(item: WorkProductItem): boolean {
@@ -504,12 +532,6 @@ function sourceThumbPreviewMeta(item: WorkProductItem): { label: string; visual:
   return { label: s, visual: "pending" };
 }
 
-function createdMs(item: WorkProductItem): number {
-  if (!item.created_at) return 0;
-  const t = Date.parse(item.created_at);
-  return Number.isFinite(t) ? t : 0;
-}
-
 function sortWorkProducts(items: WorkProductItem[], sort: WorkProductSort): WorkProductItem[] {
   const live: WorkProductItem[] = [];
   const rest: WorkProductItem[] = [];
@@ -518,32 +540,34 @@ function sortWorkProducts(items: WorkProductItem[], sort: WorkProductSort): Work
     else rest.push(it);
   }
 
-  const byCreatedDesc = (a: WorkProductItem, b: WorkProductItem) => createdMs(b) - createdMs(a);
+  const byRecentFirst = (a: WorkProductItem, b: WorkProductItem) => recencyMs(b) - recencyMs(a);
   const cmp = (a: WorkProductItem, b: WorkProductItem): number => {
     switch (sort) {
       case "created_asc":
-        return createdMs(a) - createdMs(b);
+        return recencyMs(a) - recencyMs(b);
       case "family_asc":
-        return String(a.family_slug || "").localeCompare(String(b.family_slug || "")) || byCreatedDesc(a, b);
+        return String(a.family_slug || "").localeCompare(String(b.family_slug || "")) || byRecentFirst(a, b);
       case "family_desc":
-        return String(b.family_slug || "").localeCompare(String(a.family_slug || "")) || byCreatedDesc(a, b);
+        return String(b.family_slug || "").localeCompare(String(a.family_slug || "")) || byRecentFirst(a, b);
       case "status":
-        return String(a.status || "").localeCompare(String(b.status || "")) || byCreatedDesc(a, b);
+        return String(a.status || "").localeCompare(String(b.status || "")) || byRecentFirst(a, b);
       case "pick_mode":
         return (
           String(a.pick_mode || a.step || "").localeCompare(String(b.pick_mode || b.step || "")) ||
-          byCreatedDesc(a, b)
+          byRecentFirst(a, b)
         );
+      case "appetite":
+        return appetiteSortRank(a) - appetiteSortRank(b) || byRecentFirst(a, b);
       case "created_desc":
       default:
-        return byCreatedDesc(a, b);
+        return byRecentFirst(a, b);
     }
   };
 
   live.sort((a, b) => {
     const ar = String(a.status || "").toLowerCase() === "running" ? 0 : 1;
     const br = String(b.status || "").toLowerCase() === "running" ? 0 : 1;
-    return ar - br || byCreatedDesc(a, b);
+    return ar - br || byRecentFirst(a, b);
   });
   rest.sort(cmp);
   return [...live, ...rest];
@@ -593,6 +617,20 @@ function filterWorkProductsByMedia(items: WorkProductItem[], media: string | nul
   return items.filter((it) => isLivePreviewItem(it) || workProductMatchesMedia(it, m));
 }
 
+/** Operator-facing copy for interrupt reasons (see docs/JOB_STATUS_LIFECYCLE.md). */
+function interruptedStatusCopy(item: WorkProductItem): string {
+  const raw = String(item.error || "").trim();
+  if (raw === "missing_from_comfy_queue_and_history" || !raw) {
+    return "Lost from Comfy queue and history with no output file (restart, queue clear, or cancel). Replay or archive — not a finished render.";
+  }
+  return raw;
+}
+
+function workProductErrorCopy(item: WorkProductItem): string {
+  if (workProductStatusKey(item) === "interrupted") return interruptedStatusCopy(item);
+  return String(item.error || "").trim();
+}
+
 function statusFilterVisual(status: string): string {
   const s = status.toLowerCase();
   if (s === "running") return "running";
@@ -623,6 +661,12 @@ function markerFilterVisual(marker: string): string {
 
 function markerFilterButtonClass(marker: string, on: boolean): string {
   return `work-products-status-toggle work-products-status-toggle--${markerFilterVisual(marker)}${
+    on ? " is-on" : " is-off"
+  }`;
+}
+
+function appetiteFilterButtonClass(key: string, on: boolean): string {
+  return `work-products-status-toggle work-products-status-toggle--appetite-${key}${
     on ? " is-on" : " is-off"
   }`;
 }
@@ -868,9 +912,9 @@ function WorkProductSourceThumbPreview({ item }: { item: WorkProductItem }) {
               {visual === "error" ? "✕" : visual === "interrupted" ? "⊘" : "▣"}
             </span>
             <span>{emptyTitle} — source preview unavailable</span>
-            {item.error ? (
-              <span className="work-product-live__error-snip" title={item.error}>
-                {String(item.error).trim()}
+            {item.error || workProductStatusKey(item) === "interrupted" ? (
+              <span className="work-product-live__error-snip" title={workProductErrorCopy(item)}>
+                {workProductErrorCopy(item)}
               </span>
             ) : null}
           </div>
@@ -2690,6 +2734,33 @@ function shortContentHash(hash?: string | null): string {
   return h ? h.slice(0, 10) : "";
 }
 
+function PromptVariantBadge({
+  item,
+  title,
+}: {
+  item: { job_key?: string | null; prompt_profile?: WorkProductPromptProfile | null };
+  title?: string;
+}) {
+  const name = jobPromptVariantName(item);
+  const slug = promptVariantSlug(item.prompt_profile) || jobPromptVariantSlug(item.job_key);
+  if (!name && !slug) return null;
+  const isDefault = isDefaultPromptVariant(item.prompt_profile) || slug === "default";
+  const shown = name || slug;
+  const tip =
+    title ||
+    (slug && slug !== shown ? `${shown} · ${slug}` : isDefault ? `Default · ${slug || "default"}` : shown);
+  return (
+    <span
+      className={`work-product-badge work-product-badge--variant${
+        isDefault ? " work-product-badge--variant-default" : ""
+      }`}
+      title={tip}
+    >
+      {shown}
+    </span>
+  );
+}
+
 function WorkProductPromptEditor({
   item,
   onCommitted,
@@ -2760,7 +2831,7 @@ function WorkProductPromptEditor({
   if (!prompt && !editable) return null;
 
   const hash = shortContentHash(prompt?.content_hash);
-  const sourceLabel = prompt?.label || prompt?.basename || "owned prompt";
+  const sourceLabel = jobPromptVariantName(item) || prompt?.label || prompt?.basename || "owned prompt";
   const busy = saveMut.isPending || promoteMut.isPending;
   const canPromote = canPromoteJobPrompt(item) && !editing;
   const canDiff = Boolean(prompt?.snowflake && prompt?.seed) && !editing;
@@ -2820,7 +2891,7 @@ function WorkProductPromptEditor({
             hash || null,
             prompt?.frozen ? "frozen" : editable ? "editable" : null,
             prompt?.snowflake && prompt.seed
-              ? `from ${prompt.seed.label || prompt.seed.basename || "seed"}`
+              ? `from ${promptVariantName(prompt.seed) || prompt.seed.label || prompt.seed.basename || "seed"}`
               : null,
           ]
             .filter(Boolean)
@@ -2883,9 +2954,13 @@ function WorkProductPromptEditor({
               title="Copy this job's prompt into the family library after judging the output"
               onClick={() => {
                 setPromoteMode("fork");
-                setPromoteLabel(
-                  String(prompt?.label || item.family_slug || "variant").replace(/catalog-default/i, "variant"),
-                );
+                setPromoteLabel(() => {
+                  const slug = promptVariantSlug(item.prompt_profile) || jobPromptVariantSlug(item.job_key);
+                  if (slug && slug !== "default") return slug;
+                  const variantName = jobPromptVariantName(item);
+                  if (variantName && !isDefaultPromptVariant(variantName)) return variantName;
+                  return "variant";
+                });
                 setPromoteNote("");
                 setPromoteOpen(true);
               }}
@@ -4409,6 +4484,7 @@ function WorkProductDetails({
             {item.family_slug}
           </a>
         ) : null}
+        <PromptVariantBadge item={item} />
         {shape?.io_class ? (
           <span className="work-product-badge" title="IO class (station process)">
             {String(shape.io_class)}
@@ -4482,10 +4558,10 @@ function WorkProductDetails({
               : ""}
           </span>
         ) : null}
-        {item.status ? (
+        {item.status && !isSourceThumbPreviewItem(item) ? (
           <span
             className={`work-product-badge ${badgeClass(item.status)}`}
-            title={item.error || item.status}
+            title={workProductErrorCopy(item) || item.status}
           >
             {item.status}
           </span>
@@ -4496,9 +4572,9 @@ function WorkProductDetails({
           </span>
         ) : null}
       </div>
-      {item.error ? (
-        <div className="work-product-details__error" title={item.error}>
-          {item.error}
+      {item.error || workProductStatusKey(item) === "interrupted" ? (
+        <div className="work-product-details__error" title={workProductErrorCopy(item)}>
+          {workProductErrorCopy(item)}
         </div>
       ) : null}
       <FlowEventTimeline item={item} />
@@ -4634,7 +4710,6 @@ function WorkProductIndexRow({
   const thumb = item.output_thumb_url || sourcePreviewUrls(item).thumb;
   const status = statusFilterVisual(item.status || "pending");
   const timing = timingHeadline(item);
-  const thumbMeta = isSourceThumbPreviewItem(item) ? sourceThumbPreviewMeta(item) : null;
   return (
     <button
       type="button"
@@ -4660,6 +4735,7 @@ function WorkProductIndexRow({
       <span className="work-product-index-row__meta">
         <span className="work-product-index-row__title">
           <strong>{item.family_slug || "job"}</strong>
+          <PromptVariantBadge item={item} />
           {item.is_hourly ? (
             <span className="work-product-badge work-product-badge--hourly" title="Produced by the hourly planner">
               Hourly
@@ -4667,15 +4743,20 @@ function WorkProductIndexRow({
           ) : null}
           {isRunningLiveItem(item) ? (
             <span className="work-product-badge work-product-badge--live-run">live</span>
-          ) : thumbMeta ? (
-            <span className={`work-product-badge work-product-badge--live-${thumbMeta.visual}`}>{thumbMeta.label}</span>
           ) : null}
-          <span className={`work-product-index-row__status work-product-index-row__status--${status}`}>
+          <span
+            className={`work-product-index-row__status work-product-index-row__status--${status}`}
+            title={
+              status === "interrupted"
+                ? "Left Comfy queue/history with no output file. Finished videos are marked complete."
+                : undefined
+            }
+          >
             {item.status || "pending"}
           </span>
         </span>
-        <span className="work-product-index-row__sub">
-          {formatRelativeAge(item.created_at)}
+        <span className="work-product-index-row__sub" title={formatWhen(recencyStamp(item))}>
+          {formatRelativeAge(recencyStamp(item))}
           {timing ? ` · ${timing.text}` : ""}
         </span>
         <code className="work-product-index-row__key" title={item.job_key}>
@@ -4709,8 +4790,6 @@ function WorkProductRowInner({
   onOpenSubmit?: (intent: SubmitDeepLink) => void;
   onFocusJobKey?: (jobKey: string) => void;
 }) {
-  const thumbMeta = isSourceThumbPreviewItem(item) ? sourceThumbPreviewMeta(item) : null;
-  const thumbBadgeClass = thumbMeta ? `work-product-badge--live-${thumbMeta.visual}` : "";
   const successors = extendFamilyDefaults || {};
   const extendFamily = smartExtendFamily(item, successors);
   const outputDefaults = familyVhsDefaults(families, extendFamily || String(item.family_slug || ""));
@@ -4756,6 +4835,7 @@ function WorkProductRowInner({
             ) : (
               <strong>job</strong>
             )}
+            <PromptVariantBadge item={item} />
             {item.job_key && item.family_slug ? (
               <a
                 className="work-product-badge work-product-badge--link"
@@ -4772,10 +4852,10 @@ function WorkProductRowInner({
             ) : null}
             {isRunningLiveItem(item) ? (
               <span className="work-product-badge work-product-badge--live-run">live</span>
-            ) : thumbMeta ? (
-              <span className={`work-product-badge ${thumbBadgeClass}`}>{thumbMeta.label}</span>
             ) : null}
-            <span className="work-product-row__when">{formatWhen(item.created_at)}</span>
+            <span className="work-product-row__when" title="When the output video was generated">
+              {formatWhen(recencyStamp(item))}
+            </span>
             {(() => {
               const timing = timingHeadline(item);
               if (!timing) return null;
@@ -5042,6 +5122,8 @@ export function WorkProductsApp() {
   const [hourlyOnly, setHourlyOnly] = useState(() => initialHourlyOnly);
   const [statusOff, setStatusOff] = useState<Set<string>>(() => loadStatusFilterOff());
   const [markerOff, setMarkerOff] = useState<Set<string>>(() => loadMarkerFilterOff());
+  const [appetiteOff, setAppetiteOff] = useState<Set<string>>(() => loadAppetiteFilterOff());
+  const appetiteTick = useAssetRatingsTick();
   const [decodeVaeFilter, setDecodeVaeFilter] = useState<DecodeVaeFilter>(() => loadDecodeVaeFilter());
   const [clearFailedBusy, setClearFailedBusy] = useState(false);
   const [clearFailedMsg, setClearFailedMsg] = useState<string | null>(null);
@@ -5176,17 +5258,33 @@ export function WorkProductsApp() {
     return collectAvailableMarkers([...keys].map((pick_mode) => ({ pick_mode }) as WorkProductItem));
   }, [markerCounts, markerOff]);
 
+  const appetiteCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const it of items) {
+      const key = workProductAppetiteKey(it);
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    return counts;
+  }, [items, appetiteTick]);
+
+  useEffect(() => {
+    prefetchAssetRatings(items.map((it) => workProductAppetiteRelpath(it)).filter(Boolean));
+  }, [items]);
+
   const visibleItems = useMemo(() => {
     const rows = sortWorkProducts(
-      filterWorkProductsByDecodeVae(
-        filterWorkProductsByMarker(
-          filterWorkProductsByStatus(
-            filterWorkProductsByMedia(filterWorkProductsByName(items, nameQuery), focusMedia),
-            statusOff,
+      filterWorkProductsByAppetite(
+        filterWorkProductsByDecodeVae(
+          filterWorkProductsByMarker(
+            filterWorkProductsByStatus(
+              filterWorkProductsByMedia(filterWorkProductsByName(items, nameQuery), focusMedia),
+              statusOff,
+            ),
+            markerOff,
           ),
-          markerOff,
+          decodeVaeFilter,
         ),
-        decodeVaeFilter,
+        appetiteOff,
       ),
       sort,
     );
@@ -5195,7 +5293,7 @@ export function WorkProductsApp() {
       return rows;
     }
     return [focusedItem, ...rows];
-  }, [items, nameQuery, focusMedia, sort, statusOff, markerOff, decodeVaeFilter, focusedItem]);
+  }, [items, nameQuery, focusMedia, sort, statusOff, markerOff, decodeVaeFilter, appetiteOff, focusedItem, appetiteTick]);
 
   const failedVisible = useMemo(
     () => visibleItems.filter((it) => canArchiveTerminalWorkProduct(it)),
@@ -5312,6 +5410,10 @@ export function WorkProductsApp() {
         persistMarkerFilterOff(new Set());
         setMarkerOff(new Set());
       }
+      if (appetiteOff.size) {
+        persistAppetiteFilterOff(new Set());
+        setAppetiteOff(new Set());
+      }
       return;
     }
     if (!inVisible) return;
@@ -5335,6 +5437,7 @@ export function WorkProductsApp() {
     loading,
     markerOff.size,
     statusOff.size,
+    appetiteOff.size,
     visibleItems,
   ]);
 
@@ -5372,6 +5475,22 @@ export function WorkProductsApp() {
     setMarkerOff(next);
   };
 
+  const toggleAppetiteFilter = (key: string) => {
+    setAppetiteOff((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      persistAppetiteFilterOff(next);
+      return next;
+    });
+  };
+
+  const focusAppetiteFilter = (key: string) => {
+    const next = new Set(APPETITE_FILTER_KEYS.filter((k) => k !== key));
+    persistAppetiteFilterOff(next);
+    setAppetiteOff(next);
+  };
+
   const refresh = () => queryState.refetch();
 
   const clearFailedVisible = async () => {
@@ -5380,7 +5499,8 @@ export function WorkProductsApp() {
     const ok = window.confirm(
       `Permanently delete ${targets.length} failed job${targets.length === 1 ? "" : "s"} ` +
         `from the current Workbench list?\n\n` +
-        "Statuses: error, failed, interrupted, abandoned.\n" +
+        "Statuses: error, failed, interrupted (no output), abandoned.\n" +
+        "Interrupted with a finished video should have been healed to complete — skip those.\n" +
         "Deletes .job.json + sidecars. Media under output/ is kept.\n" +
         "Only the currently loaded/filtered rows are affected.",
     );
@@ -5442,7 +5562,12 @@ export function WorkProductsApp() {
             <button
               type="button"
               className={`work-products-chrome-toggle${
-                filtersOpen || hourlyOnly || statusOff.size || markerOff.size || decodeVaeFilter !== "all"
+                filtersOpen ||
+                hourlyOnly ||
+                statusOff.size ||
+                markerOff.size ||
+                appetiteOff.size ||
+                decodeVaeFilter !== "all"
                   ? " is-on"
                   : ""
               }`}
@@ -5629,6 +5754,39 @@ export function WorkProductsApp() {
           </>
         ) : null}
         <span className="work-products-status-filters__sep" aria-hidden="true" />
+        <div className="work-products-status-filters__group" role="group" aria-label="Filter by appetite">
+          {APPETITE_FILTER_KEYS.map((key) => {
+            const on = !appetiteOff.has(key);
+            const count = appetiteCounts.get(key) || 0;
+            const label = APPETITE_FILTER_LABEL[key];
+            return (
+              <button
+                key={`appetite-${key}`}
+                type="button"
+                className={appetiteFilterButtonClass(key, on)}
+                aria-pressed={on}
+                title={
+                  key === "unset"
+                    ? on
+                      ? `Showing unmarked outputs (${count}) — click to hide · double-click to show only unset`
+                      : `Hidden unmarked outputs (${count}) — click to show · double-click to show only unset`
+                    : on
+                      ? `Showing ${label} (${count}) — click to hide · double-click to show only this`
+                      : `Hidden ${label} (${count}) — click to show · double-click to show only this`
+                }
+                onClick={() => toggleAppetiteFilter(key)}
+                onDoubleClick={(e) => {
+                  e.preventDefault();
+                  focusAppetiteFilter(key);
+                }}
+              >
+                <span className="work-products-status-toggle__label">{label}</span>
+                <span className="work-products-status-toggle__count">{count}</span>
+              </button>
+            );
+          })}
+        </div>
+        <span className="work-products-status-filters__sep" aria-hidden="true" />
         <div className="work-products-status-filters__group" role="group" aria-label="Filter by VAE decode">
           {(["all", "tiled", "plain"] as DecodeVaeFilter[]).map((opt) => {
             const on = decodeVaeFilter === opt;
@@ -5746,6 +5904,25 @@ export function WorkProductsApp() {
                   {[20, 30, 50, 80, 120].map((n) => (
                     <option key={n} value={n}>
                       {n}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="work-products-limit work-products-limit--index">
+                Sort
+                <select
+                  value={sort}
+                  onChange={(e) => {
+                    const next = e.target.value as WorkProductSort;
+                    setSort(next);
+                    persistSort(next);
+                  }}
+                  aria-label="Sort work products"
+                  title="Newest is video generated time. Appetite sort puts unmarked outputs first. Live previews stay on top."
+                >
+                  {SORT_OPTIONS.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.label}
                     </option>
                   ))}
                 </select>

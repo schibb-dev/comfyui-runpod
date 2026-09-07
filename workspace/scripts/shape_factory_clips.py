@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import random
 import sqlite3
 import uuid
@@ -1131,9 +1132,12 @@ def pick_seed_clip(
     half_life_days: float = 14.0,
 ) -> Dict[str, Any]:
     """
-    Automation seed for a parent: starred (recency-weighted) → usable-trim sidecar → full.
+    Automation seed for a parent: default clip → other starred (recency) →
+    usable-trim sidecar → full file.
 
-    Unstarred bookmarks are never chosen here (human Queue-from-clip only).
+    Prefer the parent's default clip when one is set. Other starred clips are
+    the fallback seed. Unstarred bookmarks are never chosen here
+    (human Queue-from-clip only).
     """
     meta = dict(media_meta or {})
     fps = float(meta.get("fps") or 18.0)
@@ -1150,16 +1154,34 @@ def pick_seed_clip(
         frame_count = max(1, int(round(duration * fps)))
 
     parent = str(parent_content_id or "").strip() or None
+    if con is not None and parent:
+        default_id = get_default_clip_id(con, parent)
+        if default_id:
+            default_clip = get_clip(con, default_id)
+            if default_clip and not clip_is_deleted(default_clip):
+                tin, tout = clamp_marks(
+                    float(default_clip["mark_in_s"]),
+                    float(default_clip["mark_out_s"]),
+                    duration_s=duration or None,
+                )
+                return _use_dict_from_marks(
+                    source="starred",
+                    clip_id=str(default_clip["clip_id"]),
+                    tin=tin,
+                    tout=tout,
+                    duration=duration,
+                    fps=fps,
+                    frame_count=frame_count,
+                    pick_meta={
+                        "mode": "default",
+                        "starred_n": 1,
+                        "half_life_days": float(half_life_days),
+                    },
+                )
+
     starred: List[Dict[str, Any]] = []
     if con is not None and parent:
         starred = list_starred_clips(con, parent)
-        # Legacy: default with no star row (pre-migrate race) still counts as one unit.
-        if not starred:
-            default_id = get_default_clip_id(con, parent)
-            if default_id:
-                clip = get_clip(con, default_id)
-                if clip and not clip_is_deleted(clip):
-                    starred = [clip]
 
     if starred:
         now_ts = datetime.now(timezone.utc).timestamp()
@@ -1240,6 +1262,105 @@ def pick_seed_clip(
     }
 
 
+def _clipped_only_seed_boost() -> float:
+    """Mild hourly bias for parents that have clips but no default/★."""
+    raw = str(os.environ.get("HOURLY_CLIPPED_BOOST", "1.4") or "1.4").strip()
+    try:
+        return max(1.0, float(raw))
+    except (TypeError, ValueError):
+        return 1.4
+
+
+def _star_recency_mult(
+    clips: Sequence[Dict[str, Any]],
+    *,
+    half_life_days: float,
+    now_ts: Optional[float] = None,
+) -> float:
+    if not clips:
+        return 1.0
+    ts = float(now_ts) if now_ts is not None else datetime.now(timezone.utc).timestamp()
+    best = max(clip_recency_weight(c, now_ts=ts, half_life_days=half_life_days) for c in clips)
+    # Map weight in (0,1] → boost in [1.75, 3.0]
+    return 1.75 + 1.25 * min(1.0, float(best))
+
+
+def clip_seed_boost_detail(
+    con: Optional[sqlite3.Connection],
+    parent_content_id: Optional[str],
+    *,
+    half_life_days: float = 14.0,
+) -> Dict[str, Any]:
+    """
+    Hourly recipe weight bias for a parent video.
+
+    Ladder (multipliers stack with appetite / rating, not instead of them):
+      default clip → 1.75–3.0 (recency of that default)
+      other ★     → 1.75–3.0 (newest star recency)
+      any clip    → ``HOURLY_CLIPPED_BOOST`` (default 1.4)
+      unclipped   → 1.0
+
+    This is biased weighting only — unclipped parents stay in the lottery.
+    """
+    empty = {"mult": 1.0, "reason": "none", "clip_id": None}
+    if con is None:
+        return dict(empty)
+    parent = str(parent_content_id or "").strip()
+    if not parent:
+        return dict(empty)
+
+    default_id = get_default_clip_id(con, parent)
+    if default_id:
+        default_clip = get_clip(con, default_id)
+        if default_clip and not clip_is_deleted(default_clip):
+            return {
+                "mult": float(
+                    _star_recency_mult([default_clip], half_life_days=half_life_days)
+                ),
+                "reason": "default",
+                "clip_id": str(default_clip.get("clip_id") or default_id),
+            }
+
+    starred = list_starred_clips(con, parent)
+    if starred:
+        pick = max(
+            starred,
+            key=lambda c: (
+                str(c.get("updated_at") or ""),
+                str(c.get("created_at") or ""),
+                str(c.get("clip_id") or ""),
+            ),
+        )
+        return {
+            "mult": float(_star_recency_mult(starred, half_life_days=half_life_days)),
+            "reason": "starred",
+            "clip_id": str(pick.get("clip_id") or "") or None,
+        }
+
+    live = list_clips_for_parent(con, parent, include_deleted=False)
+    if live:
+        return {
+            "mult": float(_clipped_only_seed_boost()),
+            "reason": "clipped",
+            "clip_id": str(live[0].get("clip_id") or "") or None,
+        }
+    return dict(empty)
+
+
+def clip_seed_boost_for_parent(
+    con: Optional[sqlite3.Connection],
+    parent_content_id: Optional[str],
+    *,
+    half_life_days: float = 14.0,
+) -> float:
+    return float(
+        clip_seed_boost_detail(
+            con, parent_content_id, half_life_days=half_life_days
+        ).get("mult")
+        or 1.0
+    )
+
+
 def starred_seed_boost_for_parent(
     con: Optional[sqlite3.Connection],
     parent_content_id: Optional[str],
@@ -1249,26 +1370,12 @@ def starred_seed_boost_for_parent(
     """
     Hourly recipe weight multiplier for a parent asset.
 
-    1.0 when no ★; otherwise 1.75–3.0 scaled by newest star recency (newer → higher).
+    Prefer default, then other ★ (1.75–3.0 by recency), then any live clip
+    (mild ``HOURLY_CLIPPED_BOOST``), else 1.0. Unclipped stays eligible.
     """
-    if con is None:
-        return 1.0
-    parent = str(parent_content_id or "").strip()
-    if not parent:
-        return 1.0
-    starred = list_starred_clips(con, parent)
-    if not starred:
-        default_id = get_default_clip_id(con, parent)
-        if default_id:
-            clip = get_clip(con, default_id)
-            if clip and not clip_is_deleted(clip):
-                starred = [clip]
-    if not starred:
-        return 1.0
-    now_ts = datetime.now(timezone.utc).timestamp()
-    best = max(clip_recency_weight(c, now_ts=now_ts, half_life_days=half_life_days) for c in starred)
-    # Map weight in (0,1] → boost in [1.75, 3.0]
-    return 1.75 + 1.25 * min(1.0, float(best))
+    return clip_seed_boost_for_parent(
+        con, parent_content_id, half_life_days=half_life_days
+    )
 
 
 def _job_source_clip_id(job: Dict[str, Any]) -> Optional[str]:
@@ -1545,6 +1652,35 @@ def list_clip_derived_videos(
     }
 
 
+def _vhs_window_is_weak_full_file(win: Optional[Dict[str, Any]]) -> bool:
+    """
+    Bare ``skip=0,cap=0`` without marks is a UI race (duration unknown), not
+    an intentional full-file override. A default clip should still win.
+    """
+    if not isinstance(win, dict) or not win:
+        return True
+    has_marks = win.get("mark_in") not in (None, "") or win.get("mark_out") not in (None, "")
+    if has_marks:
+        return False
+    explicit_skip = win.get("skip_first_frames") not in (None, "")
+    explicit_cap = win.get("frame_load_cap") not in (None, "")
+    if not explicit_skip and not explicit_cap:
+        return True
+    try:
+        skip_v = int(win.get("skip_first_frames") or 0) if explicit_skip else 0
+    except (TypeError, ValueError):
+        skip_v = 0
+    try:
+        cap_v = int(win.get("frame_load_cap") or 0) if explicit_cap else 0
+    except (TypeError, ValueError):
+        cap_v = 0
+    if explicit_skip and skip_v == 0 and (not explicit_cap or cap_v == 0):
+        return True
+    if not explicit_skip and explicit_cap and cap_v == 0:
+        return True
+    return False
+
+
 def resolve_job_use_window(
     *,
     job: Optional[Dict[str, Any]] = None,
@@ -1559,9 +1695,11 @@ def resolve_job_use_window(
     """
     Resolve this run's use window.
 
-    Order: explicit job vhs_window → source_clip_id → starred (recency) /
-    usable-trim sidecar → full file. Unstarred bookmarks are not auto-picked.
-    Never reads catalog template skip/cap.
+    Order: explicit job vhs_window → source_clip_id → default clip → other
+    starred (recency) / usable-trim sidecar → full file. Unstarred bookmarks
+    are not auto-picked. Bare ``skip=0,cap=0`` without marks is not an
+    explicit window (UI race) — default clip still wins. Never reads catalog
+    template skip/cap.
     """
     meta = dict(media_meta or {})
     fps = float(meta.get("fps") or 18.0)
@@ -1585,6 +1723,8 @@ def resolve_job_use_window(
         or win.get("skip_first_frames") is not None
         or win.get("frame_load_cap") is not None
     )
+    if explicit_marks and _vhs_window_is_weak_full_file(win):
+        explicit_marks = False
 
     own_con = False
     if con is None and registry_path is not None:

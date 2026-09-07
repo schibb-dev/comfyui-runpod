@@ -11,6 +11,7 @@ import {
   queueShapeFactoryCombo,
   updatePendingShapeFactoryBinding,
   updatePendingShapeFactoryTrim,
+  updateShapeFactoryOwnedParams,
   type IdentityStillCandidate,
   type IdentityStillMintTarget,
   type ShapeFactoryClip,
@@ -41,6 +42,7 @@ import {
   type FamiliesBootstrap,
 } from "./shapeFactorySessionCache";
 import {
+  familyDefaultFrames,
   familyPromptProfiles,
   isExtendFamilyOption,
   isI2VFamilyOption,
@@ -49,12 +51,16 @@ import {
   pickDefaultI2VFamily,
   pickDefaultPromptProfile,
   promptProfileOptionLabel,
+  promptVariantName,
+  promptVariantSlug,
 } from "./submitFamily";
 import type {
   ShapeFactoryMapQueueOverrides,
   WorkProductFamilyOption,
   WorkProductFamilyPromptProfile,
 } from "./types";
+import { SubmitDurationField } from "./SubmitDurationField";
+import { formatSubmitDuration } from "./submitDuration";
 import { VideoTrimControls, type VideoTrimPlaybackMode } from "./VideoTrimControls";
 import { useTrimPlaybackEnforcement } from "./useTrimPlayback";
 import { marksToVhsWindow } from "./workProductTrim";
@@ -257,11 +263,13 @@ function SubmitEditJobApp({
   const [finished, setFinished] = useState(false);
   const [sourcePathDraft, setSourcePathDraft] = useState("");
   const [promptProfileDraft, setPromptProfileDraft] = useState("");
+  const [genFrames, setGenFrames] = useState<number | null>(null);
   const [editFamilies, setEditFamilies] = useState<WorkProductFamilyOption[]>(
     () => peekFamiliesBootstrap()?.families || [],
   );
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const releasedRef = useRef(false);
+  const persistFramesTimer = useRef<number | null>(null);
 
   const mediaRelpath = String(snap?.source?.relpath || "").trim();
   const playUrl = mediaRelpath ? filesUrl(mediaRelpath) : snap?.source?.url || null;
@@ -382,7 +390,9 @@ function SubmitEditJobApp({
         "",
     ).trim();
     setPromptProfileDraft(promptSeed);
-  }, [snap?.job_key, snap?.source?.slot, snap?.source?.path, snap?.source?.relpath, snap?.bindings]);
+    const framesSeed = snap?.params_profile?.current?.frames;
+    if (framesSeed != null && Number.isFinite(framesSeed)) setGenFrames(framesSeed);
+  }, [snap?.job_key, snap?.source?.slot, snap?.source?.path, snap?.source?.relpath, snap?.bindings, snap?.params_profile?.current?.frames]);
 
   useEffect(() => {
     const onUnload = () => {
@@ -404,7 +414,10 @@ function SubmitEditJobApp({
       }
     };
     window.addEventListener("pagehide", onUnload);
-    return () => window.removeEventListener("pagehide", onUnload);
+    return () => {
+      window.removeEventListener("pagehide", onUnload);
+      if (persistFramesTimer.current) window.clearTimeout(persistFramesTimer.current);
+    };
   }, [editJob, finished]);
 
   useTrimPlaybackEnforcement(videoRef, {
@@ -430,6 +443,23 @@ function SubmitEditJobApp({
     }).catch((err) => {
       console.warn("update-pending-trim failed", err);
     });
+  };
+
+  const persistFrames = (next: number | null) => {
+    const resolved = next ?? snap?.params_profile?.seed?.frames ?? null;
+    setGenFrames(resolved);
+    if (resolved == null || finished) return;
+    if (persistFramesTimer.current) window.clearTimeout(persistFramesTimer.current);
+    persistFramesTimer.current = window.setTimeout(() => {
+      void updateShapeFactoryOwnedParams({
+        job_key: editJob,
+        parameters: { frames: resolved },
+      })
+        .then(() => refreshSnapshot())
+        .catch((err) => {
+          setMsg(err instanceof Error ? err.message : String(err));
+        });
+    }, 350);
   };
 
   const applyBindingEdit = async (slot: "source_still" | "source_video" | "prompt_profile", value: string) => {
@@ -644,7 +674,7 @@ function SubmitEditJobApp({
               ) : null}
               {snap?.bindings?.prompt_profile ? (
                 <label className="submit-composer__edit-binding">
-                  <span>Prompt profile</span>
+                  <span>Variant</span>
                   <div className="submit-composer__edit-binding-row">
                     {(() => {
                       const profiles = familyPromptProfiles(editFamilies, String(snap?.family_slug || ""));
@@ -652,14 +682,16 @@ function SubmitEditJobApp({
                         (p) =>
                           p.path === promptProfileDraft ||
                           p.basename === promptProfileDraft.split(/[\\/]/).pop() ||
-                          p.slug === promptProfileDraft,
+                          p.file_stem === promptProfileDraft ||
+                          p.slug === promptProfileDraft ||
+                          promptVariantSlug(p) === promptVariantSlug(promptProfileDraft),
                       );
                       if (profiles.length) {
                         return (
                           <select
                             value={matched?.path || promptProfileDraft}
                             disabled={busy || finished}
-                            aria-label="Prompt profile"
+                            aria-label="Prompt variant"
                             onChange={(e) => {
                               const next = e.target.value;
                               setPromptProfileDraft(next);
@@ -704,6 +736,12 @@ function SubmitEditJobApp({
                   </div>
                 </label>
               ) : null}
+              <SubmitDurationField
+                frames={genFrames}
+                seedFrames={snap?.params_profile?.seed?.frames ?? snap?.params_profile?.current?.frames ?? null}
+                disabled={busy || finished}
+                onChange={persistFrames}
+              />
             </div>
             <div className="work-product-quick-queue__actions" role="group" aria-label="Finish edit">
               <button
@@ -751,6 +789,7 @@ function SubmitConstructionPreview({
   useWindow,
   vhs,
   vhsWarning,
+  durationLabel,
   identity,
   preferredWhen,
   origin,
@@ -762,6 +801,7 @@ function SubmitConstructionPreview({
   useWindow: string | null;
   vhs: { skip: number; cap: number } | null;
   vhsWarning: string | null;
+  durationLabel: string;
   identity: {
     mode: "off" | "loading" | "not_required" | "needed" | "set";
     path: string;
@@ -849,6 +889,12 @@ function SubmitConstructionPreview({
               "—"
             )}
             {vhsWarning ? <span className="submit-composer__construction-warn"> · {vhsWarning}</span> : null}
+          </dd>
+        </div>
+        <div className="submit-composer__construction-row">
+          <dt>Duration</dt>
+          <dd title="Wan generation length (parameters.frames). Empty uses the family or variant template.">
+            {durationLabel}
           </dd>
         </div>
         {identity.mode !== "off" ? (
@@ -944,6 +990,7 @@ function SubmitAdvanceComposerApp({
   const [extendPromptProfile, setExtendPromptProfile] = useState("");
   const [varyPromptProfile, setVaryPromptProfile] = useState("");
   const [derivePromptProfile, setDerivePromptProfile] = useState("");
+  const [genFrames, setGenFrames] = useState<number | null>(null);
 
   const duration =
     videoDuration > 0
@@ -1275,6 +1322,17 @@ function SubmitAdvanceComposerApp({
     setDerivePromptProfile((prev) => syncPromptSelection(deriveFamily, prev));
   }, [deriveFamily, syncPromptSelection]);
 
+  const durationFamily = isStill
+    ? i2vFamily
+    : extendOn && extendFamily
+      ? extendFamily
+      : varyOn && varyFamily
+        ? varyFamily
+        : deriveOn && deriveFamily
+          ? deriveFamily
+          : extendFamily || varyFamily || deriveFamily || i2vFamily;
+  const seedFrames = familyDefaultFrames(families, durationFamily);
+
   const canSubmit = isStill
     ? Boolean(mediaRelpath.trim()) && Boolean(i2vFamily) && !busy
     : Boolean(mediaRelpath.trim()) &&
@@ -1335,8 +1393,9 @@ function SubmitAdvanceComposerApp({
       },
     };
     if (activeClip?.clip_id || clipId) overrides.source_clip_id = activeClip?.clip_id || clipId;
+    if (genFrames != null) overrides.parameters = { ...overrides.parameters, frames: genFrames };
     return { overrides, warning: win.warning };
-  }, [activeClip?.clip_id, clipId, fps, markIn, markOut, videoDuration, windowOk]);
+  }, [activeClip?.clip_id, clipId, fps, genFrames, markIn, markOut, videoDuration, windowOk]);
 
   const submit = async (when: "now" | "later") => {
     if (!canSubmit) return;
@@ -1358,6 +1417,7 @@ function SubmitAdvanceComposerApp({
             source_still: bindingPath,
             ...(i2vPromptProfile ? { prompt_profile: i2vPromptProfile } : {}),
           },
+          ...(genFrames != null ? { overrides: { parameters: { frames: genFrames } } } : {}),
           front: when === "now",
           source_surface: "submit",
         });
@@ -1506,13 +1566,13 @@ function SubmitAdvanceComposerApp({
     const known = profiles.some((p) => p.path === value);
     return (
       <label className="work-product-quick-queue__family-wrap">
-        <span className="work-product-quick-queue__family-label">Prompt</span>
+        <span className="work-product-quick-queue__family-label">Variant</span>
         <select
           className="work-product-quick-queue__family"
           value={known ? value : value || profiles[0]?.path || ""}
           disabled={busy}
-          aria-label={`${ariaPrefix} prompt profile`}
-          title="Prompt catalog for this family’s C slot"
+          aria-label={`${ariaPrefix} prompt variant`}
+          title="Prompt variant for this family"
           onChange={(e) => onChange(e.target.value)}
         >
           {known || !value ? null : (
@@ -1548,8 +1608,7 @@ function SubmitAdvanceComposerApp({
   const constructionPreview = useMemo(() => {
     const profileForFamily = (slug: string, path: string) => {
       const hit = familyPromptProfiles(families, slug).find((p) => p.path === path);
-      const raw = hit?.slug || path.split(/[\\/]/).pop() || "";
-      return raw.replace(/\.json$/i, "").replace(/^catalog-/, "") || null;
+      return promptVariantName(hit || path) || null;
     };
     const routes: { kind: string; family: string; shapeId: string | null; promptProfile?: string | null }[] = [];
     if (isStill) {
@@ -1587,7 +1646,13 @@ function SubmitAdvanceComposerApp({
     }
 
     const { overrides, warning } = isStill
-      ? { overrides: undefined as ShapeFactoryMapQueueOverrides | undefined, warning: null as string | null }
+      ? {
+          overrides:
+            genFrames != null
+              ? ({ parameters: { frames: genFrames } } as ShapeFactoryMapQueueOverrides)
+              : undefined,
+          warning: null as string | null,
+        }
       : buildOverrides();
     const params = (overrides?.parameters || {}) as Record<string, unknown>;
     const vhs =
@@ -1649,6 +1714,7 @@ function SubmitAdvanceComposerApp({
       useWindow,
       vhs,
       vhsWarning: warning,
+      durationLabel: formatSubmitDuration(genFrames ?? seedFrames) || "family / variant default",
       identity: {
         mode: identityMode,
         path: identitySelectedPath,
@@ -1669,6 +1735,8 @@ function SubmitAdvanceComposerApp({
     extendOn,
     extendPromptProfile,
     families,
+    genFrames,
+    seedFrames,
     i2vFamily,
     i2vPromptProfile,
     identityCandidates,
@@ -1950,6 +2018,12 @@ function SubmitAdvanceComposerApp({
                     )}
                     {profileSelect(i2vFamily, i2vPromptProfile, setI2vPromptProfile, "I2V")}
                   </div>
+                  <SubmitDurationField
+                    frames={genFrames}
+                    seedFrames={seedFrames}
+                    disabled={busy}
+                    onChange={setGenFrames}
+                  />
                 </div>
               ) : (
               <div className="work-product-quick-queue" role="group" aria-label="Submit advance">
@@ -2055,6 +2129,12 @@ function SubmitAdvanceComposerApp({
                 ) : (
                   <p className="work-product-quick-queue__hint">Select Extend, Vary, and/or Derive</p>
                 )}
+                <SubmitDurationField
+                  frames={genFrames}
+                  seedFrames={seedFrames}
+                  disabled={busy}
+                  onChange={setGenFrames}
+                />
                 {extendOn && identityNeeded ? (
                   <div className="work-product-identity-still" aria-label="Identity still">
                     <div className="work-product-identity-still__head">
@@ -2115,6 +2195,7 @@ function SubmitAdvanceComposerApp({
                   useWindow={constructionPreview.useWindow}
                   vhs={constructionPreview.vhs}
                   vhsWarning={constructionPreview.vhsWarning}
+                  durationLabel={constructionPreview.durationLabel}
                   identity={constructionPreview.identity}
                   preferredWhen={preferredWhen}
                   origin={intent.origin}

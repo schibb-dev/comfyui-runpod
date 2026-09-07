@@ -125,6 +125,84 @@ class UpdatePendingParamsTests(unittest.TestCase):
             self.assertEqual(job2["adhoc_overrides"]["parameters"]["frames"], 96)
             self.assertEqual(job2["timings"]["workload"]["frames"], 96)
 
+    def test_update_pending_job_params_merges_string_ui_node_keys(self) -> None:
+        """JSON-roundtripped ui_nodes use str keys; adhoc patches used to add int keys."""
+        from shape_factory import update_pending_job_params
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            jobs = root / "jobs" / "demo"
+            jobs.mkdir(parents=True)
+            wf_path = jobs / "demo__2.workflow.json"
+            job_path = jobs / "demo__2.job.json"
+            wf = {
+                "nodes": [{"id": 84, "type": "mxSlider", "widgets_values": [81, 81, 0]}],
+                "links": [],
+            }
+            wf_path.write_text(json.dumps(wf), encoding="utf-8")
+            job = {
+                "job_key": "demo__2",
+                "family_slug": "DEMO",
+                "generated_workflow_path": str(wf_path),
+                "submit": {"status": "editing"},
+                "dev_tuning": {
+                    "spec": {
+                        "ui_nodes": {"84": {"type": "mxSlider", "widgets_values": [81, 81, 0]}},
+                    }
+                },
+                "adhoc_overrides": {"parameters": {"frames": 81}},
+            }
+            job_path.write_text(json.dumps(job), encoding="utf-8")
+
+            res = update_pending_job_params(
+                data_root=root,
+                job_path=job_path,
+                parameters={"frames": 65},
+            )
+            self.assertTrue(res.get("ok"), res)
+            job2 = json.loads(job_path.read_text(encoding="utf-8"))
+            self.assertEqual(job2["adhoc_overrides"]["parameters"]["frames"], 65)
+            self.assertEqual(
+                job2["dev_tuning"]["spec"]["ui_nodes"]["84"]["widgets_values"][1],
+                65,
+            )
+
+    def test_update_pending_job_params_patches_wan_length_without_slider_84(self) -> None:
+        from shape_factory import update_pending_job_params
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            jobs = root / "jobs" / "demo"
+            jobs.mkdir(parents=True)
+            wf_path = jobs / "demo__wan.workflow.json"
+            job_path = jobs / "demo__wan.job.json"
+            wf = {
+                "nodes": [
+                    {"id": 133, "type": "WanImageToVideo", "widgets_values": [1280, 720, 121, 1]},
+                    {"id": 82, "type": "mxSlider", "widgets_values": [20, 20, 0]},
+                ],
+                "links": [],
+            }
+            wf_path.write_text(json.dumps(wf), encoding="utf-8")
+            job = {
+                "job_key": "demo__wan",
+                "family_slug": "DEMO",
+                "generated_workflow_path": str(wf_path),
+                "submit": {"status": "editing"},
+            }
+            job_path.write_text(json.dumps(job), encoding="utf-8")
+
+            res = update_pending_job_params(
+                data_root=root,
+                job_path=job_path,
+                parameters={"frames": 65},
+            )
+            self.assertTrue(res.get("ok"), res)
+            updated = json.loads(wf_path.read_text(encoding="utf-8"))
+            wan = next(n for n in updated["nodes"] if n["id"] == 133)
+            self.assertEqual(wan["widgets_values"][2], 65)
+            self.assertEqual((res.get("params_profile") or {}).get("current", {}).get("frames"), 65)
+
 
 if __name__ == "__main__":
     unittest.main()

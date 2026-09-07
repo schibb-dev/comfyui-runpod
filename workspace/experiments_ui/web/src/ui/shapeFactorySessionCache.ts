@@ -21,7 +21,7 @@ export type FamiliesBootstrap = {
   fingerprint?: string;
 };
 
-const FAMILIES_KEY = "sf:families-bootstrap";
+const FAMILIES_KEY = "sf:families-bootstrap-v3";
 /** Config-only endpoint — long TTL; fingerprint still refreshes on soft reload. */
 const FAMILIES_TTL_MS = 60 * 60 * 1000;
 const CLIPS_TTL_MS = 5 * 60 * 1000;
@@ -110,7 +110,11 @@ export async function loadFamiliesBootstrap(opts?: {
   const hit = getSessionListCache<FamiliesBootstrap>(FAMILIES_KEY);
   if (!opts?.force && hit && fresh(hit.fetchedAt, FAMILIES_TTL_MS) && hit.value.extend_families?.length) {
     const cachedHasProfiles = (hit.value.families || []).some((f) => (f.prompt_profiles || []).length);
-    if (cachedHasProfiles) {
+    const cachedHasFrameDefaults = (hit.value.families || []).some((f) => {
+      const n = Number(f.params_defaults?.frames);
+      return Number.isFinite(n) && n > 0;
+    });
+    if (cachedHasProfiles && cachedHasFrameDefaults) {
       // Refresh when the server fingerprint moved (new catalog / shape).
       try {
         const res = await fetchShapeFactoryFamilies();

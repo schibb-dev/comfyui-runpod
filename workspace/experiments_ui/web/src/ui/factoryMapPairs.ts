@@ -1,3 +1,4 @@
+import { promptVariantName, promptVariantSlug } from "./submitFamily";
 import type {
   ShapeFactoryMapFamily,
   ShapeFactoryMapJob,
@@ -118,8 +119,10 @@ export function shortMediaLabel(name?: string | null, maxLen = 28): string {
 }
 
 function promptLabelIsUseful(raw?: string | null): boolean {
+  const slug = promptVariantSlug(raw);
+  if (!slug) return false;
+  if (slug === "default") return false;
   const stem = stemFromBasename(raw).toLowerCase();
-  if (!stem) return false;
   if (NON_DATA_PROMPT_LABELS.has(stem)) return false;
   if (stem.startsWith("pp-") && NON_DATA_PROMPT_LABELS.has(stem.slice(3))) return false;
   return true;
@@ -147,11 +150,12 @@ export function shortPairLabel(pair: SourceOutputPair): string {
   const promptFromBinding = stemFromBasename(pair.bindings?.prompt_profile?.basename);
   const jk = pair.jobKey || "";
   const promptFromKey = jk.match(/(?:pp|prompt_profile)-(.+?)__(?:src|source_video|still|id)/)?.[1] || "";
-  const prompt = promptLabelIsUseful(promptFromBinding)
+  const promptRaw = promptLabelIsUseful(promptFromBinding)
     ? stemFromBasename(promptFromBinding)
     : promptLabelIsUseful(promptFromKey)
       ? stemFromBasename(promptFromKey)
       : "";
+  const prompt = promptRaw ? promptVariantName(promptRaw) : "";
 
   if (src && prompt) return `${src} · ${prompt}`;
   if (src) return src;

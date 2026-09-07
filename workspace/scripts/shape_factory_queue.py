@@ -610,7 +610,7 @@ def build_adhoc_dev_tuning(parameters: Dict[str, Any], *, data_root: Path) -> Op
         if raw is None or raw == "":
             continue
         val = int(raw)
-        ui_nodes[int(node_id)] = {
+        ui_nodes[str(int(node_id))] = {
             "type": "mxSlider",
             "widgets_values": [val, val, 0],
         }

@@ -38,7 +38,23 @@ describe("shortPairLabel", () => {
       source: { basename: "clip_A.mp4" },
     });
     expect(label).toContain("clip_A");
-    expect(label).toContain("overhead-soft");
+    expect(label).toContain("Overhead soft");
+  });
+
+  it("shows a named catalog variant beside source", () => {
+    const label = shortPairLabel({
+      pairKey: "k",
+      gap: "none",
+      jobKey: "FB9_GEX__pp-catalog-faceblast-extend__src-hourly__pp-catalog-default__still-abc",
+      bindings: {
+        prompt_profile: { basename: "catalog-faceblast-extend.json" },
+        source_video: { basename: "clip_A.mp4" },
+      },
+      source: { basename: "clip_A.mp4" },
+    });
+    expect(label).toContain("clip_A");
+    expect(label).toContain("FaceBlast extend");
+    expect(label.toLowerCase()).not.toContain("catalog-default");
   });
 });
 

@@ -605,7 +605,7 @@ def _apply_source_promotion(
 ) -> List[float]:
     """Amplify Kneel / 2025-era / fresh-still recipes in weighted selection."""
     out: List[float] = []
-    star_cache: Dict[str, float] = {}
+    star_cache: Dict[str, dict[str, Any]] = {}
     clips_con = None
     areg_con = None
     appetite_doc: Optional[dict[str, Any]] = None
@@ -617,7 +617,7 @@ def _apply_source_promotion(
         if data_root is not None:
             try:
                 from shape_factory import default_asset_registry_path
-                from shape_factory_clips import connect_clips, starred_seed_boost_for_parent
+                from shape_factory_clips import clip_seed_boost_detail, connect_clips
                 import asset_registry as areg
 
                 reg = default_asset_registry_path(Path(data_root))
@@ -629,7 +629,7 @@ def _apply_source_promotion(
 
         for i, (recipe, weight) in enumerate(zip(recipes, weights)):
             mult = _recipe_promotion_mult(recipe, family=family, appetite_doc=appetite_doc)
-            star_mult = 1.0
+            clip_detail: dict[str, Any] = {"mult": 1.0, "reason": "none", "clip_id": None}
             if clips_con is not None and areg_con is not None:
                 src = _recipe_source_path(recipe)
                 if src:
@@ -657,12 +657,14 @@ def _apply_source_promotion(
                         except Exception:
                             parent = None
                         try:
-                            star_cache[src] = float(
-                                starred_seed_boost_for_parent(clips_con, parent)
-                            )
+                            star_cache[src] = clip_seed_boost_detail(clips_con, parent)
                         except Exception:
-                            star_cache[src] = 1.0
-                    star_mult = float(star_cache.get(src) or 1.0)
+                            star_cache[src] = {"mult": 1.0, "reason": "none", "clip_id": None}
+                    cached = star_cache.get(src)
+                    if isinstance(cached, dict):
+                        clip_detail = cached
+            star_mult = float(clip_detail.get("mult") or 1.0)
+            clip_reason = str(clip_detail.get("reason") or "none")
             combined = float(weight) * mult * star_mult
             out.append(combined)
             if weight_meta is not None and i < len(weight_meta) and isinstance(weight_meta[i], dict):
@@ -671,7 +673,13 @@ def _apply_source_promotion(
                     if mult != 1.0:
                         weight_meta[i]["source_promotion_mult"] = round(mult, 3)
                     if star_mult != 1.0:
+                        weight_meta[i]["clip_seed_mult"] = round(star_mult, 3)
+                        weight_meta[i]["clip_seed_reason"] = clip_reason
+                        # Alias kept for existing simulate / trail readers.
                         weight_meta[i]["starred_clip_mult"] = round(star_mult, 3)
+                        cid = str(clip_detail.get("clip_id") or "").strip()
+                        if cid:
+                            weight_meta[i]["clip_seed_id"] = cid
     finally:
         if clips_con is not None:
             try:

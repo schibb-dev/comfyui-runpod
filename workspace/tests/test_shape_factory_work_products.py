@@ -23,6 +23,9 @@ from shape_factory_work_products import (
     list_shape_families,
     list_submit_family_sets,
     prefer_target_family,
+    _job_finished_at,
+    _output_generated_at,
+    _work_product_item_from_job,
 )
 
 
@@ -237,6 +240,47 @@ class TestWorkProducts(unittest.TestCase):
             self.assertEqual(item.get("output_relpath"), "og/2026-08-16/hourly/job_FINAL_00024.mp4")
             self.assertNotIn("PREVIEW", str(item.get("output_relpath") or ""))
             self.assertNotIn("PREVIEW", str(item.get("output_thumb_url") or ""))
+
+    def test_finished_at_is_video_mtime_not_deposit(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td) / "output"
+            hourly = out / "og" / "2026-09-06" / "hourly"
+            hourly.mkdir(parents=True)
+            video = hourly / "job_00001.mp4"
+            video.write_bytes(b"mp4")
+            from datetime import datetime, timezone
+            import os
+
+            generated = datetime(2026, 9, 6, 17, 13, 5, tzinfo=timezone.utc).timestamp()
+            os.utime(video, (generated, generated))
+            jobs = Path(td) / "data" / "shape_factory" / "jobs" / "FB9_GEX"
+            jobs.mkdir(parents=True)
+            job = {
+                "family_slug": "FB9_GEX",
+                "job_key": "hourly__job",
+                "created_at": "2026-09-06T16:15:28+00:00",
+                "submit": {
+                    "status": "complete",
+                    "submitted_at": "2026-09-06T16:15:29+00:00",
+                    "outputs": [str(video)],
+                },
+                "deposit": {"deposited_at": "2026-09-06T20:58:24+00:00", "videos": [str(video)]},
+            }
+            item = _work_product_item_from_job(
+                jobs / "hourly__job.job.json",
+                job,
+                data_root=Path(td) / "data",
+                output_root=out,
+            )
+            self.assertEqual(item.get("finished_at"), "2026-09-06T17:13:05+00:00")
+            self.assertEqual(
+                _output_generated_at(output_root=out, output_rel=item.get("output_relpath")),
+                "2026-09-06T17:13:05+00:00",
+            )
+            self.assertEqual(
+                _job_finished_at(job, {}, output_root=out, output_rel=item.get("output_relpath")),
+                "2026-09-06T17:13:05+00:00",
+            )
 
     def test_list_recent_sorts_by_created_at_not_mtime(self):
         with tempfile.TemporaryDirectory() as td:
@@ -453,6 +497,35 @@ class TestWorkProducts(unittest.TestCase):
             self.assertEqual({f["slug"] for f in payload["families"]}, {"Alpha", "Beta"})
             self.assertEqual(payload.get("extend_family_defaults"), {})
 
+    def test_list_shape_families_includes_template_frames_default(self):
+        with tempfile.TemporaryDirectory() as td:
+            data = Path(td) / "data"
+            shapes = data / "shapes"
+            shapes.mkdir(parents=True)
+            wf_path = data / "template.workflow.json"
+            wf_path.write_text(
+                json.dumps(
+                    {
+                        "nodes": [
+                            {
+                                "id": 133,
+                                "type": "WanImageToVideo",
+                                "widgets_values": [1280, 720, 81, 1],
+                            }
+                        ],
+                        "links": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (shapes / "Demo.shape.yaml").write_text(
+                f"family_slug: Demo\nshape_id: demo\ntemplate: {wf_path}\n",
+                encoding="utf-8",
+            )
+            fams = list_shape_families(data)
+            self.assertEqual(len(fams), 1)
+            self.assertEqual((fams[0].get("params_defaults") or {}).get("frames"), 81)
+
     def test_list_family_prompt_profiles_named_catalogs(self):
         with tempfile.TemporaryDirectory() as td:
             data = Path(td) / "data"
@@ -464,12 +537,16 @@ class TestWorkProducts(unittest.TestCase):
                 encoding="utf-8",
             )
             (prompts / "catalog-faceblast-extend.json").write_text(
-                '{"label": "catalog-faceblast-extend", "positive": "b", "negative": ""}\n',
+                '{"name": "FaceBlast extend", "label": "catalog-faceblast-extend", "positive": "b", "negative": ""}\n',
                 encoding="utf-8",
             )
             (replay / "deadbeef.json").write_text('{"label": "replay"}\n', encoding="utf-8")
             rows = list_family_prompt_profiles(data, "FB9_GEX")
-            self.assertEqual([r["slug"] for r in rows], ["catalog-default", "catalog-faceblast-extend"])
+            self.assertEqual([r["slug"] for r in rows], ["default", "faceblast-extend"])
+            self.assertEqual(rows[0].get("file_stem"), "catalog-default")
+            self.assertEqual(rows[1].get("file_stem"), "catalog-faceblast-extend")
+            self.assertEqual(rows[1].get("name"), "FaceBlast extend")
+            self.assertNotIn("name", rows[0])
             shapes = data / "shapes"
             shapes.mkdir(parents=True)
             (shapes / "FB9_GEX.shape.yaml").write_text(
@@ -701,6 +778,53 @@ class TestWorkProducts(unittest.TestCase):
         self.assertIsNotNone(err)
         text = format_history_error_text(err)
         self.assertIn("no Comfy exception text", text)
+
+    def test_reconcile_heals_interrupted_when_mp4_exists(self):
+        from shape_factory_work_products import reconcile_inflight_jobs_with_comfy
+
+        with tempfile.TemporaryDirectory() as td:
+            data = Path(td)
+            jobs = data / "shape_factory" / "jobs" / "FB9_GEX"
+            jobs.mkdir(parents=True)
+            out = data / "output" / "og" / "2026-09-06"
+            out.mkdir(parents=True)
+            prefix = "og/2026-09-06/hourly__healed"
+            mp4 = out / "hourly__healed_00001.mp4"
+            mp4.write_bytes(b"ok")
+            key = "hourly__healed"
+            path = jobs / f"{key}.job.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "job_key": key,
+                        "family_slug": "FB9_GEX",
+                        "output_prefix": prefix,
+                        "submit": {
+                            "prompt_id": "old-pid",
+                            "status": "interrupted",
+                            "interrupted_reason": "missing_from_comfy_queue_and_history",
+                            "interrupted_at": "2026-09-06T16:06:41+00:00",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            summary = reconcile_inflight_jobs_with_comfy(
+                data_root=data,
+                comfy_server="http://example.invalid",
+                queue_running=[],
+                queue_pending=[],
+                persist=True,
+                auto_retry_oom=False,
+                output_root=data / "output",
+            )
+            self.assertGreaterEqual(int(summary.get("healed") or 0), 1)
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            submit = saved["submit"]
+            self.assertEqual(submit["status"], "complete")
+            self.assertEqual(submit.get("healed_from"), "interrupted")
+            self.assertNotIn("interrupted_reason", submit)
+            self.assertTrue(any(str(mp4) in str(p) for p in submit.get("outputs") or []))
 
     def test_reconcile_rebinds_interrupted_job_by_workflow_name(self):
         from shape_factory_work_products import reconcile_inflight_jobs_with_comfy

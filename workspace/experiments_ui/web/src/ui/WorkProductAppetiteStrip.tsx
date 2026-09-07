@@ -9,12 +9,14 @@ import {
   subscribeAssetRatings,
 } from "./assetRatingsCache";
 import type { Appetite, AppetiteFacet } from "./types";
+import { normalizeAppetiteRelpath } from "./workProductAppetite";
 
-export function normalizeAppetiteRelpath(raw: string | null | undefined): string {
-  return String(raw || "")
-    .trim()
-    .replace(/\\/g, "/")
-    .replace(/^\/+/, "");
+export { normalizeAppetiteRelpath };
+
+export function useAssetRatingsTick(): number {
+  const [tick, setTick] = useState(0);
+  useEffect(() => subscribeAssetRatings(() => setTick((n) => n + 1)), []);
+  return tick;
 }
 
 function ratingsToAppetite(

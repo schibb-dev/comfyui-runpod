@@ -11,6 +11,12 @@ export const PREFERRED_I2V_FAMILIES = [
 ] as const;
 
 /** Slug-only gate (I2V/still families are not video Extend targets). */
+export function familyDefaultFrames(families: WorkProductFamilyOption[], slug: string): number | null {
+  const hit = families.find((f) => f.slug === slug);
+  const n = Number(hit?.params_defaults?.frames);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+}
+
 export function isExtendFamilySlug(slug: string): boolean {
   const s = String(slug || "").trim();
   return Boolean(s);
@@ -171,10 +177,139 @@ export function familyPromptProfiles(
   return Array.isArray(hit?.prompt_profiles) ? hit.prompt_profiles : [];
 }
 
+const VARIANT_WORD_FIX: Record<string, string> = {
+  faceblast: "FaceBlast",
+  gex: "GEX",
+  gex2: "GEX2",
+  i2v: "I2V",
+  default: "Default",
+};
+
+const VARIANT_WRAPPERS = ["pp-catalog-", "catalog-", "prompt_profile-", "pp-"] as const;
+
+/** Kebab slug: lowercase, hyphen separators. Guided by catalog/pp stems; not limited to them. */
+export function slugifyPromptVariant(raw?: string | null): string {
+  let s = String(raw || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, "-")
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^[-._]+|[-._]+$/g, "");
+  return s.slice(0, 80);
+}
+
+/** Canonical variant slug (`default`, `faceblast-extend`, or any kebab id). */
+export function promptVariantSlug(input?: string | null | PromptVariantNameSource): string {
+  if (input && typeof input === "object") {
+    return (
+      promptVariantSlug(input.slug) ||
+      promptVariantSlug(input.seed?.slug) ||
+      promptVariantSlug(input.label) ||
+      promptVariantSlug(input.file_stem) ||
+      promptVariantSlug(input.basename) ||
+      promptVariantSlug(input.path) ||
+      promptVariantSlug(input.seed?.label) ||
+      promptVariantSlug(input.seed?.basename) ||
+      promptVariantSlug(input.name) ||
+      promptVariantSlug(input.seed?.name)
+    );
+  }
+  let s = String(input || "")
+    .trim()
+    .replace(/\\/g, "/");
+  if (s.includes("/")) s = s.split("/").pop() || s;
+  s = s.replace(/\.json$/i, "");
+  const lower = s.toLowerCase();
+  for (const prefix of VARIANT_WRAPPERS) {
+    if (lower.startsWith(prefix)) {
+      s = s.slice(prefix.length);
+      break;
+    }
+  }
+  return slugifyPromptVariant(s);
+}
+
+/** @deprecated use promptVariantSlug */
+export function promptVariantStem(raw?: string | null): string {
+  return promptVariantSlug(raw);
+}
+
+export function formatPromptVariantStem(stem: string): string {
+  const parts = String(stem || "")
+    .split(/[-_]+/)
+    .filter(Boolean);
+  if (!parts.length) return "";
+  return parts
+    .map((w) => VARIANT_WORD_FIX[w.toLowerCase()] || `${w.charAt(0).toUpperCase()}${w.slice(1).toLowerCase()}`)
+    .join(" ");
+}
+
+export type PromptVariantNameSource = {
+  name?: string | null;
+  label?: string | null;
+  slug?: string | null;
+  file_stem?: string | null;
+  basename?: string | null;
+  path?: string | null;
+  seed?: {
+    slug?: string | null;
+    name?: string | null;
+    label?: string | null;
+    basename?: string | null;
+  } | null;
+};
+
+/** Operator-facing variant name: JSON `name`, else formatted slug. */
+export function promptVariantName(input?: string | null | PromptVariantNameSource): string {
+  if (input && typeof input === "object") {
+    const named = String(input.name || input.seed?.name || "").trim();
+    if (named) return named;
+  }
+  const slug = promptVariantSlug(input);
+  return formatPromptVariantStem(slug) || slug;
+}
+
+/** This job's first `__pp-` / `__prompt_profile-` token (not a later source clip's). */
+export function jobPromptVariantSlug(jobKey?: string | null): string {
+  for (const part of String(jobKey || "").split("__")) {
+    const m = part.match(/^(?:pp|prompt_profile)-(.+)$/i);
+    if (m) return promptVariantSlug(m[1]);
+  }
+  return "";
+}
+
+/** @deprecated use jobPromptVariantSlug */
+export function jobPromptVariantStem(jobKey?: string | null): string {
+  return jobPromptVariantSlug(jobKey);
+}
+
+export function jobPromptVariantName(item: {
+  job_key?: string | null;
+  prompt_profile?: string | null | PromptVariantNameSource;
+}): string {
+  const fromProfile = promptVariantName(item.prompt_profile);
+  if (fromProfile) return fromProfile;
+  const slug = jobPromptVariantSlug(item.job_key);
+  return formatPromptVariantStem(slug) || slug;
+}
+
+export function isDefaultPromptVariant(input?: string | null | PromptVariantNameSource): boolean {
+  return promptVariantSlug(input) === "default";
+}
+
+export function isDefaultPromptVariantName(name?: string | null): boolean {
+  return isDefaultPromptVariant(name);
+}
+
 export function promptProfileOptionLabel(p: WorkProductFamilyPromptProfile): string {
-  const label = String(p.label || p.slug || p.basename || "").trim();
-  if (label.toLowerCase().startsWith("catalog-")) return label.slice("catalog-".length);
-  return label || p.basename || p.path;
+  return promptVariantName(p) || p.slug || p.basename || p.path;
+}
+
+function profileMatchesPrefer(p: WorkProductFamilyPromptProfile, prefer: string): boolean {
+  if (p.path === prefer || p.basename === prefer || p.file_stem === prefer || p.label === prefer) return true;
+  const want = promptVariantSlug(prefer);
+  return Boolean(want) && promptVariantSlug(p) === want;
 }
 
 export function pickDefaultPromptProfile(
@@ -184,17 +319,15 @@ export function pickDefaultPromptProfile(
   if (!profiles.length) return "";
   const prefer = String(opts?.prefer || "").trim();
   if (prefer) {
-    const hit = profiles.find(
-      (p) => p.path === prefer || p.slug === prefer || p.basename === prefer || p.label === prefer,
-    );
+    const hit = profiles.find((p) => profileMatchesPrefer(p, prefer));
     if (hit) return hit.path;
   }
   const family = String(opts?.familySlug || "").trim();
   const media = String(opts?.mediaRelpath || "").toLowerCase();
   if (family === "FB9_GEX" && /faceblast|face_blast/.test(media)) {
-    const ext = profiles.find((p) => p.slug === "catalog-faceblast-extend");
+    const ext = profiles.find((p) => promptVariantSlug(p) === "faceblast-extend");
     if (ext) return ext.path;
   }
-  const def = profiles.find((p) => p.slug === "catalog-default" || p.basename === "catalog-default.json");
+  const def = profiles.find((p) => promptVariantSlug(p) === "default" || p.basename === "catalog-default.json");
   return (def || profiles[0]).path;
 }

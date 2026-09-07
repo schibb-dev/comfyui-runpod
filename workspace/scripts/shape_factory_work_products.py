@@ -141,6 +141,18 @@ def list_shape_families(
                 )
             except Exception:
                 row["vhs_defaults"] = {"skip_first_frames": 0, "frame_load_cap": 0}
+        try:
+            from shape_factory_owned_params import _coerce_int, load_template_param_seed
+
+            seed, _ = load_template_param_seed(
+                {"shape_path": str(path), "template_path": doc.get("template")},
+                data_root=Path(data_root),
+            )
+            frames = _coerce_int(seed.get("frames") if isinstance(seed, dict) else None)
+            if frames is not None and frames > 0:
+                row["params_defaults"] = {"frames": frames}
+        except Exception:
+            pass
         profiles = list_family_prompt_profiles(data_root, family_slug or slug)
         if profiles:
             row["prompt_profiles"] = profiles
@@ -200,21 +212,37 @@ def list_family_prompt_profiles(data_root: Path, family_slug: str) -> List[Dict[
             continue
         seen.add(key)
         label = ""
+        name = ""
+        explicit_slug = ""
+        raw: Any = None
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(raw, dict):
                 label = str(raw.get("label") or "").strip()
+                name = str(raw.get("name") or "").strip()
+                explicit_slug = str(raw.get("slug") or "").strip()
         except (OSError, json.JSONDecodeError, TypeError):
             label = ""
+            name = ""
+            explicit_slug = ""
+            raw = None
         stem = path.stem
-        rows.append(
-            {
-                "slug": stem,
-                "label": label or stem,
-                "basename": path.name,
-                "path": str(path.resolve()),
-            }
-        )
+        try:
+            from shape_factory_owned_prompt import prompt_variant_slug
+
+            slug = prompt_variant_slug(explicit_slug, name, label, stem) or stem
+        except Exception:
+            slug = explicit_slug or stem
+        row: Dict[str, Any] = {
+            "slug": slug,
+            "file_stem": stem,
+            "label": label or stem,
+            "basename": path.name,
+            "path": str(path.resolve()),
+        }
+        if name:
+            row["name"] = name
+        rows.append(row)
 
     def _sort_key(row: Dict[str, Any]) -> Tuple[int, str]:
         name = str(row.get("basename") or "")
@@ -1050,6 +1078,17 @@ def _prompt_excerpt(
         "negative_rows": decode_prompt_markup(negative),
         "snowflake": False,
     }
+    display_name = str(doc.get("name") or "").strip()
+    if display_name:
+        out["name"] = display_name
+    try:
+        from shape_factory_owned_prompt import prompt_variant_slug
+
+        variant_slug = prompt_variant_slug(doc.get("slug"), display_name, doc.get("label"), p.stem)
+        if variant_slug:
+            out["slug"] = variant_slug
+    except Exception:
+        pass
     try:
         from shape_factory_owned_prompt import prompt_content_hash
 
@@ -1269,7 +1308,7 @@ def _detail_rows(item: Dict[str, Any]) -> List[Dict[str, Any]]:
     prompt = item.get("prompt_profile")
     if isinstance(prompt, dict):
         # Catalog name vs profile JSON — full positive/negative render via peek in the UI.
-        add("Prompt name", prompt.get("label"))
+        add("Prompt name", prompt.get("name") or prompt.get("label"))
         add(
             "Prompt profile",
             prompt.get("basename") or prompt.get("path"),
@@ -1311,19 +1350,113 @@ def _parse_created_at_ts(raw: Any) -> Optional[float]:
     """Parse job created_at / submitted_at ISO strings to a unix timestamp."""
     if raw is None or raw == "":
         return None
-    if isinstance(raw, (int, float)):
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
         return float(raw)
     text = str(raw).strip()
     if not text:
         return None
     try:
-        from datetime import datetime
-
         if text.endswith("Z"):
             text = text[:-1] + "+00:00"
         return datetime.fromisoformat(text).timestamp()
     except Exception:
         return None
+
+
+def _iso_from_unix(ts: float) -> str:
+    return datetime.fromtimestamp(float(ts), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+
+
+def _output_generated_at(
+    *,
+    output_root: Optional[Path] = None,
+    output_rel: Optional[str] = None,
+    outputs_abs: Optional[Iterable[str]] = None,
+) -> Optional[str]:
+    """Newest mp4/webm write time — when the video was generated on disk."""
+    latest: Optional[float] = None
+    paths: List[Path] = []
+    rel = str(output_rel or "").strip()
+    if rel and output_root is not None:
+        paths.append(Path(output_root) / rel)
+    for raw in outputs_abs or []:
+        s = str(raw or "").strip()
+        if s:
+            paths.append(Path(s))
+    video_ext = {".mp4", ".webm", ".mov", ".mkv"}
+    seen: set[str] = set()
+    for path in paths:
+        try:
+            resolved = path.resolve()
+        except Exception:
+            resolved = path
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if resolved.is_file() and resolved.suffix.lower() in video_ext:
+                mtime = float(resolved.stat().st_mtime)
+                latest = mtime if latest is None else max(latest, mtime)
+        except Exception:
+            continue
+    if latest is None:
+        return None
+    return _iso_from_unix(latest)
+
+
+def _job_finished_at(
+    job: Dict[str, Any],
+    timings: Optional[Dict[str, Any]] = None,
+    *,
+    output_root: Optional[Path] = None,
+    output_rel: Optional[str] = None,
+    outputs_abs: Optional[Iterable[str]] = None,
+) -> Optional[str]:
+    """When the video was generated — file mtime, then Comfy finish, never deposit."""
+    generated = _output_generated_at(
+        output_root=output_root,
+        output_rel=output_rel,
+        outputs_abs=outputs_abs,
+    )
+    if generated:
+        return generated
+    timings = timings if isinstance(timings, dict) else {}
+    if not timings:
+        inline = job.get("timings") if isinstance(job.get("timings"), dict) else {}
+        timings = inline
+    execution = timings.get("execution") if isinstance(timings.get("execution"), dict) else {}
+    raw = execution.get("finished_at")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    finished_ts = execution.get("finished_ts")
+    if isinstance(finished_ts, (int, float)) and not isinstance(finished_ts, bool) and finished_ts > 1_000_000_000:
+        return _iso_from_unix(float(finished_ts))
+
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    submitted_ts = _parse_created_at_ts(submit.get("submitted_at"))
+    if submitted_ts is None:
+        queue = timings.get("queue") if isinstance(timings.get("queue"), dict) else {}
+        qts = queue.get("submitted_ts")
+        if isinstance(qts, (int, float)) and not isinstance(qts, bool) and qts > 1_000_000_000:
+            submitted_ts = float(qts)
+
+    extra: Optional[float] = None
+    totals = timings.get("totals") if isinstance(timings.get("totals"), dict) else {}
+    wall = totals.get("submit_to_complete_sec")
+    if isinstance(wall, (int, float)) and not isinstance(wall, bool) and wall >= 0:
+        extra = float(wall)
+    else:
+        exec_sec = execution.get("sec")
+        queue = timings.get("queue") if isinstance(timings.get("queue"), dict) else {}
+        wait = queue.get("wait_sec")
+        if isinstance(exec_sec, (int, float)) and not isinstance(exec_sec, bool):
+            extra = float(exec_sec)
+            if isinstance(wait, (int, float)) and not isinstance(wait, bool) and wait > 0:
+                extra += float(wait)
+    if submitted_ts is not None and extra is not None:
+        return _iso_from_unix(submitted_ts + extra)
+    return None
 
 
 def _timings_sidecar_path(job_path: Path) -> Path:
@@ -1590,7 +1723,15 @@ def _work_product_item_from_job(
         except Exception:
             pass
     if not error_text and str(status).lower() == "interrupted":
-        error_text = str(submit.get("interrupted_reason") or "").strip() or None
+        reason = str(submit.get("interrupted_reason") or "").strip()
+        if reason == "missing_from_comfy_queue_and_history":
+            error_text = (
+                "Lost from Comfy queue and history with no output file "
+                "(restart, queue clear, or cancel). Replay or archive — "
+                "not a finished render."
+            )
+        else:
+            error_text = reason or None
     parent_output = job.get("parent_output") or construction.get("parent_output")
     parent_rel = _relpath_under(output_root, parent_output)
     parent_url = _file_url(parent_rel)
@@ -1724,6 +1865,13 @@ def _work_product_item_from_job(
         "flow_events": submit.get("flow_events") if isinstance(submit.get("flow_events"), list) else [],
         "prompt_id": submit.get("prompt_id"),
         "submitted_at": submit.get("submitted_at"),
+        "finished_at": _job_finished_at(
+            job,
+            timings,
+            output_root=output_root,
+            output_rel=output_rel,
+            outputs_abs=outputs_abs,
+        ),
         "deposited_at": deposit.get("deposited_at"),
         "error": error_text,
         "error_node": submit.get("error_node"),
@@ -2249,7 +2397,12 @@ def reconcile_inflight_jobs_with_comfy(
     Align factory ``job.json`` submit statuses with Comfy ``/queue`` (+ history).
 
     Comfy is canonical for queued/running. Jobs that claim in-flight but are gone
-    from both queue and history are marked interrupted (or complete/error via history).
+    from both queue and history become **complete** if an mp4 is already on disk,
+    otherwise **interrupted** (lost mid-run: restart, queue clear, or cancel).
+
+    Already-interrupted jobs are re-checked against the filesystem so a later
+    Workbench load can heal a mislabel. Ledger restore rebinds a new prompt_id
+    by ``job_key`` and returns the row to queued/running.
 
     When ``auto_retry_oom`` is true, extend jobs that fail with Comfy OOM spawn one
     shorter extend replay (see ``maybe_auto_retry_oom_extend``).
@@ -2257,6 +2410,8 @@ def reconcile_inflight_jobs_with_comfy(
     # Local import: shape_factory pulls heavier deps; keep work_products import light.
     from shape_factory import (  # type: ignore
         atomic_write_json,
+        discover_job_outputs,
+        promote_complete_from_outputs,
         queue_prompt_id_buckets,
         update_job_status_from_comfy,
     )
@@ -2281,6 +2436,7 @@ def reconcile_inflight_jobs_with_comfy(
         "pending_ids": len(pending_ids),
         "by_status": {},
         "oom_retries": 0,
+        "healed": 0,
     }
     if not jobs_root.is_dir():
         return summary
@@ -2335,7 +2491,27 @@ def reconcile_inflight_jobs_with_comfy(
             and not str(submit.get("error") or "").strip()
             and not in_comfy
         )
-        if not rebound and not in_comfy and before not in IN_FLIGHT_STATUSES and not needs_error_backfill:
+        if (
+            not rebound
+            and not in_comfy
+            and before not in IN_FLIGHT_STATUSES
+            and not needs_error_backfill
+        ):
+            # Interrupted is terminal only when no output exists. Filesystem heal
+            # avoids re-hitting Comfy /history for every old interrupt.
+            if before == "interrupted":
+                outputs = discover_job_outputs(job, data_root, output_root=oroot)
+                if outputs:
+                    promote_complete_from_outputs(job, outputs, healed_from="interrupted")
+                    summary["healed"] = int(summary.get("healed") or 0) + 1
+                    summary["updated"] = int(summary.get("updated") or 0) + 1
+                    by_status["complete"] = by_status.get("complete", 0) + 1
+                    if persist:
+                        try:
+                            atomic_write_json(path, job)
+                        except OSError:
+                            summary["ok"] = False
+                            summary["write_error"] = str(path)
             continue
         if not prompt_id:
             continue
@@ -2345,6 +2521,7 @@ def reconcile_inflight_jobs_with_comfy(
             job,
             server=server or "http://127.0.0.1:8188",
             data_root=data_root,
+            output_root=oroot,
             running_ids=running_ids,
             pending_ids=pending_ids,
         )

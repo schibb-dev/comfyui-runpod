@@ -8,6 +8,8 @@ Locked decisions (2026-07-03): install `/workflow/convert`, JSON pool index, pip
 
 **Next session focus:** optional hourly pick by `rating_effective` (after G); Discovery index watcher — see [`docs/RATINGS_V1_PLAN.md`](../docs/RATINGS_V1_PLAN.md). **Hourly ruleset utility** (policy + clip ★/newer + ledger/UI): [`docs/HOURLY_UTILITY_PLAN.md`](../docs/HOURLY_UTILITY_PLAN.md).
 
+**Job statuses:** [`docs/JOB_STATUS_LIFECYCLE.md`](../docs/JOB_STATUS_LIFECYCLE.md) — `interrupted` means lost from Comfy with **no** output; finished files heal to `complete`.
+
 **Deferred (2026-08-03):** Work Products **Re-run** creates a new identical job but does not stamp the old interrupted/error job. Next: on Re-run, write `submit.rerun_job_key` + `submit.rerun_at` on the source job (keep status as `interrupted`/`error`; optional UI badge `re-run → …`).
 
 **Plan (2026-08-20):** Hourly **facial backlog editor** — the GEX2→FACIAL drain set is derived (`list_gex2_needing_facial`), not a curated queue. Want a Workbench/Home surface to inspect, pin/skip, dedupe by source, and cull items (without inventing FACIAL children). Policy knobs today: `HOURLY_FACIAL_LOOKBACK_DAYS`, `HOURLY_SEED_OVER_CHAIN_SHARE`, **`HOURLY_FACIAL_DRAIN_EVERY` (default 6)**, **`HOURLY_I2V_GEX_DRAIN_EVERY` (default 3 — Kneel/FaceBlast/… → FB9_GEX)**. One-shot cull archive: `.data/shape_factory/jobs/_archive/facial_backlog_cull_*` (unique extras reinstated 2026-08-20; same-source dupes of keepers left archived).

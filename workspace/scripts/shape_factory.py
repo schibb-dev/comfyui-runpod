@@ -248,6 +248,32 @@ def apply_dev_tuning_ui(workflow: dict[str, Any], tuning: dict[str, Any]) -> dic
             node["widgets_values"] = copy.deepcopy(spec["widgets_values"])
             changes["ui_nodes"].append({"node_id": node_id, "widgets_values": node["widgets_values"]})
 
+    # I2V graphs often have no Frames mxSlider (node 84). Keep Wan length in sync
+    # so `parameters.frames` actually changes generation duration.
+    spec84 = ui_nodes.get(84) or ui_nodes.get("84")
+    frames_val = None
+    if isinstance(spec84, dict):
+        wv84 = spec84.get("widgets_values")
+        if isinstance(wv84, list) and wv84:
+            try:
+                frames_val = int(wv84[1] if len(wv84) > 1 else wv84[0])
+            except (TypeError, ValueError):
+                frames_val = None
+    if frames_val is not None:
+        for node in workflow.get("nodes") or []:
+            if not isinstance(node, dict) or str(node.get("type") or "") not in {
+                "WanImageToVideo",
+                "WanImageToVideoMulti",
+            }:
+                continue
+            widgets = node.get("widgets_values")
+            if not isinstance(widgets, list) or len(widgets) < 3:
+                continue
+            widgets = list(widgets)
+            widgets[2] = frames_val
+            node["widgets_values"] = widgets
+            changes["ui_nodes"].append({"node_id": node.get("id"), "wan_length": frames_val})
+
     vhs_spec = tuning.get("vhs_load_video_path") if isinstance(tuning.get("vhs_load_video_path"), dict) else {}
     frame_cap = vhs_spec.get("frame_load_cap")
     skip_first = vhs_spec.get("skip_first_frames")
@@ -1811,11 +1837,15 @@ def generate_job_for_picks(
             or params.get("mark_in") is not None
             or params.get("mark_out") is not None
         ):
-            draft_for_window["vhs_window"] = {
-                k: params[k]
-                for k in ("skip_first_frames", "frame_load_cap", "mark_in", "mark_out", "clip_id")
-                if k in params and params[k] is not None
-            }
+            from shape_factory_clips import _vhs_window_is_weak_full_file
+
+            # Bare skip=0,cap=0 without marks is a UI race — let default clip win.
+            if not _vhs_window_is_weak_full_file(params):
+                draft_for_window["vhs_window"] = {
+                    k: params[k]
+                    for k in ("skip_first_frames", "frame_load_cap", "mark_in", "mark_out", "clip_id")
+                    if k in params and params[k] is not None
+                }
         clip_ovr = adhoc_overrides.get("source_clip_id") or adhoc_overrides.get("clip_id")
         if clip_ovr:
             draft_for_window["source_clip_id"] = str(clip_ovr).strip()
@@ -3249,6 +3279,71 @@ def cmd_jobs_repair(args: argparse.Namespace) -> int:
         changes = result.get("changes") or []
         hint = "; ".join(changes) if changes else "ok"
         print(f"{result.get('job_key')}: status={result.get('status')} {hint}")
+    return 0
+
+
+def cmd_jobs_heal_interrupted(args: argparse.Namespace) -> int:
+    """Promote interrupted jobs that already have an mp4 to complete (optional deposit)."""
+    job_paths = iter_job_paths(args)
+    if not job_paths:
+        print("error: no job files found", file=sys.stderr)
+        return 1
+    data_root = Path(args.data_root).expanduser().resolve()
+    output_root = (
+        Path(args.output_root).expanduser().resolve()
+        if getattr(args, "output_root", None)
+        else (data_root / "output")
+    )
+    dry_run = bool(getattr(args, "dry_run", False))
+    healed = 0
+    kept = 0
+    healed_paths: list[Path] = []
+    print("# Shape factory heal interrupted\n")
+    for job_path in job_paths:
+        try:
+            job = json.loads(job_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(job, dict):
+            continue
+        submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+        status = str(submit.get("status") or "").strip().lower()
+        job_key = str(job.get("job_key") or job_path.stem)
+        if status != "interrupted":
+            continue
+        outputs = discover_job_outputs(job, data_root, output_root=output_root)
+        if not outputs:
+            print(f"keep {job_key} (no outputs)")
+            kept += 1
+            continue
+        if dry_run:
+            print(f"heal {job_key} -> complete outputs={len(outputs)} (dry-run)")
+            healed += 1
+            continue
+        promote_complete_from_outputs(job, outputs, healed_from="interrupted")
+        atomic_write_json(job_path, job)
+        print(f"heal {job_key} -> complete outputs={len(outputs)}")
+        healed += 1
+        healed_paths.append(job_path)
+    print(f"\nhealed={healed} still_interrupted={kept}")
+    if healed_paths and bool(getattr(args, "deposit", False)) and not dry_run:
+        rc = 0
+        for job_path in healed_paths:
+            dep_args = argparse.Namespace(
+                family=None,
+                job=str(job_path),
+                jobs_dir=None,
+                job_dir=getattr(args, "job_dir", None),
+                limit=None,
+                data_root=str(data_root),
+                index=None,
+                pools=None,
+                quiet=True,
+            )
+            dep_rc = cmd_deposit(dep_args)
+            if dep_rc:
+                rc = dep_rc
+        return rc
     return 0
 
 
@@ -5970,6 +6065,13 @@ def job_edit_snapshot(
             prompt_excerpt = owned_prompt_to_excerpt(owned, data_root=data_root)
     except Exception:
         prompt_excerpt = None
+    params_profile = None
+    try:
+        from shape_factory_owned_params import owned_params_to_profile
+
+        params_profile = owned_params_to_profile(job, data_root=data_root, job_path=job_file)
+    except Exception:
+        params_profile = None
     return {
         "ok": True,
         "job_key": key,
@@ -5988,6 +6090,8 @@ def job_edit_snapshot(
         "created_at": job.get("created_at"),
         "construction": job.get("construction") if isinstance(job.get("construction"), dict) else None,
         "prompt": prompt_excerpt,
+        # Same profile Workbench uses — first Submit tunable (frames) can later land on a variant.
+        "params_profile": params_profile,
     }
 
 
@@ -6525,10 +6629,13 @@ def update_pending_job_params(
     dev = dict(dev)
     spec = dict(dev.get("spec") if isinstance(dev.get("spec"), dict) else {})
     # Merge ui_nodes / noise_seed from this patch.
-    ui_prev = dict(spec.get("ui_nodes") if isinstance(spec.get("ui_nodes"), dict) else {})
+    ui_prev: dict[str, Any] = {}
+    raw_ui = spec.get("ui_nodes") if isinstance(spec.get("ui_nodes"), dict) else {}
+    for nid, node_spec in raw_ui.items():
+        ui_prev[str(nid)] = copy.deepcopy(node_spec)
     ui_new = tuning.get("ui_nodes") if isinstance(tuning.get("ui_nodes"), dict) else {}
     for nid, node_spec in ui_new.items():
-        ui_prev[nid] = copy.deepcopy(node_spec)
+        ui_prev[str(nid)] = copy.deepcopy(node_spec)
     spec["ui_nodes"] = ui_prev
     api_prev = dict(spec.get("api_nodes") if isinstance(spec.get("api_nodes"), dict) else {})
     api_new = tuning.get("api_nodes") if isinstance(tuning.get("api_nodes"), dict) else {}
@@ -7672,32 +7779,114 @@ def extract_history_output_paths(
     return sorted(paths)
 
 
-def discover_job_outputs(job: dict[str, Any], data_root: Path) -> list[Path]:
+def _output_prefix_search_bases(
+    prefix: str,
+    data_root: Path,
+    output_root: Optional[Path] = None,
+) -> list[Path]:
+    """Candidate ``<root>/<prefix>`` paths for a job's rendered files.
+
+    Workbench reconcile often passes the factory ``.data`` tree as ``data_root``.
+    Finished mp4s live under the Comfy output bind (``DEFAULT_DATA_ROOT/output``
+    or ``COMFYUI_BIND_OUTPUT_DIR``), so those roots are always searched too.
+    """
+    prefix = str(prefix or "").strip().strip("/")
+    if not prefix:
+        return []
+    bases: list[Path] = []
+    seen: set[str] = set()
+
+    def add(root: Optional[Path], *, also_output_child: bool) -> None:
+        if root is None:
+            return
+        try:
+            resolved = Path(root).expanduser().resolve()
+        except OSError:
+            return
+        candidates = [resolved / prefix]
+        if also_output_child:
+            candidates.append(resolved / "output" / prefix)
+        if prefix.startswith("output/"):
+            candidates.append(resolved / prefix[len("output/") :])
+        for cand in candidates:
+            try:
+                key = str(cand.resolve())
+            except OSError:
+                key = str(cand)
+            if key in seen:
+                continue
+            seen.add(key)
+            bases.append(Path(key))
+
+    add(Path(data_root), also_output_child=True)
+    add(Path(output_root) if output_root is not None else None, also_output_child=False)
+    env_out = os.environ.get("COMFYUI_BIND_OUTPUT_DIR", "").strip()
+    if env_out:
+        add(Path(env_out), also_output_child=False)
+    default_root = DEFAULT_DATA_ROOT.expanduser().resolve()
+    try:
+        given = Path(data_root).expanduser().resolve()
+    except OSError:
+        given = Path(data_root)
+    if default_root != given:
+        add(default_root, also_output_child=True)
+    return bases
+
+
+def discover_job_outputs(
+    job: dict[str, Any],
+    data_root: Path,
+    output_root: Optional[Path] = None,
+) -> list[Path]:
     prefix = str(job.get("output_prefix") or "").strip()
     if not prefix:
         return []
-    roots = [
-        host_dir_for_output_prefix(prefix, data_root),
-        (data_root / "output" / prefix).resolve(),
-        (data_root / prefix.lstrip("output/")).resolve() if prefix.startswith("output/") else None,
-    ]
     videos: list[Path] = []
     seen: set[str] = set()
-    for base in roots:
-        if base is None:
-            continue
+    for base in _output_prefix_search_bases(prefix, data_root, output_root=output_root):
         if base.is_dir():
             batch = sorted(p.resolve() for p in base.rglob("*.mp4") if p.is_file())
         else:
             parent = base.parent
             stem = base.name
-            batch = sorted(p.resolve() for p in parent.glob(f"{stem}*.mp4") if p.is_file()) if parent.is_dir() else []
+            batch = (
+                sorted(p.resolve() for p in parent.glob(f"{stem}*.mp4") if p.is_file())
+                if parent.is_dir()
+                else []
+            )
         for path in batch:
             key = str(path)
             if key not in seen:
                 seen.add(key)
                 videos.append(path)
     return videos
+
+
+def promote_complete_from_outputs(
+    job: dict[str, Any],
+    outputs: list[Path],
+    *,
+    healed_from: Optional[str] = None,
+) -> None:
+    """Mark a job complete from files on disk (history may already have rolled off)."""
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    job["submit"] = submit
+    submit["status"] = "complete"
+    submit["outputs"] = [str(p) for p in outputs]
+    submit["output_discovery"] = str(submit.get("output_discovery") or "filesystem")
+    if healed_from:
+        submit["healed_from"] = healed_from
+        prev_at = str(submit.get("interrupted_at") or "").strip()
+        prev_reason = str(submit.get("interrupted_reason") or "").strip()
+        if prev_at:
+            submit["healed_from_interrupted_at"] = prev_at
+        if prev_reason:
+            submit["healed_from_interrupted_reason"] = prev_reason
+    for k in ("interrupted_at", "interrupted_reason"):
+        submit.pop(k, None)
+    err = str(submit.get("error") or "")
+    if err.lower().startswith("interrupted"):
+        submit.pop("error", None)
 
 
 def deposit_targets_for_job(job: dict[str, Any]) -> dict[str, str]:
@@ -7771,6 +7960,7 @@ def update_job_status_from_comfy(
     running_ids: Optional[set[str]] = None,
     pending_ids: Optional[set[str]] = None,
     now: Optional[float] = None,
+    output_root: Optional[Path] = None,
 ) -> str:
     submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
     prompt_id = str(submit.get("prompt_id") or "").strip()
@@ -7801,11 +7991,12 @@ def update_job_status_from_comfy(
 
     history = fetch_comfy_history(server, prompt_id)
     if history is None:
-        outputs = discover_job_outputs(job, data_root)
+        outputs = discover_job_outputs(job, data_root, output_root=output_root)
         if outputs:
-            submit["status"] = "complete"
-            submit["outputs"] = [str(p) for p in outputs]
-            submit["output_discovery"] = "filesystem"
+            prev = str(submit.get("status") or "").strip().lower()
+            promote_complete_from_outputs(
+                job, outputs, healed_from="interrupted" if prev == "interrupted" else None
+            )
             update_job_timings_on_status(
                 job, status="complete", history=None, now=now_ts, data_root=data_root
             )
@@ -7815,7 +8006,8 @@ def update_job_status_from_comfy(
                 pass
             return "complete"
         if submit.get("status") in {"queued", "running", "unknown"}:
-            # Cleared/interrupted: gone from queue and history (e.g. Comfy restart).
+            # Gone from queue and history with no output file — restart, clear, or cancel.
+            # Not used when an mp4 already exists (that is complete; see above).
             submit["status"] = "interrupted"
             submit["interrupted_at"] = utc_now()
             submit["interrupted_reason"] = "missing_from_comfy_queue_and_history"
@@ -7851,7 +8043,7 @@ def update_job_status_from_comfy(
         submit["outputs"] = [str(p) for p in hist_outputs]
         submit["output_discovery"] = "comfy_history"
     else:
-        outputs = discover_job_outputs(job, data_root)
+        outputs = discover_job_outputs(job, data_root, output_root=output_root)
         if outputs:
             submit["outputs"] = [str(p) for p in outputs]
             submit["output_discovery"] = "filesystem"
@@ -8442,6 +8634,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Regenerate .prompt.json from workflow (applies UI link relink fix)",
     )
     jobs_repair.set_defaults(func=cmd_jobs_repair)
+    jobs_heal = jobs_sub.add_parser(
+        "heal-interrupted",
+        help="Mark interrupted jobs complete when their mp4 is already on disk; optional deposit",
+    )
+    jobs_heal.add_argument("--job", help="Single .job.json path")
+    jobs_heal.add_argument("--jobs-dir", help="Directory tree to scan for *.job.json")
+    jobs_heal.add_argument("--family", help="Family subfolder under --job-dir")
+    jobs_heal.add_argument("--job-dir", default=str(DEFAULT_JOB_DIR), help="Base job directory")
+    jobs_heal.add_argument("--limit", type=int, help="Max jobs")
+    jobs_heal.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT), help="Host Comfy bind data root")
+    jobs_heal.add_argument(
+        "--output-root",
+        help="Comfy output bind (default: <data-root>/output)",
+    )
+    jobs_heal.add_argument("--deposit", action="store_true", help="Deposit healed jobs into pool indexes")
+    jobs_heal.add_argument("--dry-run", action="store_true", help="Print what would be healed")
+    jobs_heal.set_defaults(func=cmd_jobs_heal_interrupted)
 
     val = sub.add_parser("validate", help="Validate workflows against Comfy node registry and convert/prompt checks")
     val.add_argument(

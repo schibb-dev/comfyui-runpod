@@ -18,6 +18,7 @@ import { PageHeader } from "./PageHeader";
 import { PipelineMediaPlayer, vhsWindowFromKeyParams } from "./PipelineMediaPlayer";
 import { PipelineFilterRow, PipelineList, PipelineScreen, PipelineScroll } from "./PipelineScreen";
 import { PromptPeekButton } from "./PromptPeek";
+import { jobPromptVariantName } from "./submitFamily";
 import { queryKeys } from "./queryKeys";
 import type {
   ComfyHistoryItem,
@@ -141,19 +142,23 @@ function queueGlanceRows(
   }
   {
     const promptLabel =
-      String(g.prompt_profile || item.prompt_profile?.basename || item.prompt_profile?.label || "").trim() ||
+      jobPromptVariantName({
+        job_key: item.job_key,
+        prompt_profile: item.prompt_profile || g.prompt_profile,
+      }) ||
+      String(g.prompt_profile || "").trim() ||
       null;
     const profile = item.prompt_profile;
     if (promptLabel && profile && !profile.missing) {
       rows.push({
         key: "prompt",
-        label: "Prompt",
+        label: "Variant",
         value: promptLabel,
-        title: profile.path || "Prompt profile",
+        title: profile.path || "Prompt variant",
         prompt: profile,
       });
     } else {
-      push("prompt", "Prompt", promptLabel, "Prompt profile");
+      push("prompt", "Variant", promptLabel, "Prompt variant");
     }
   }
   const source = g.source_name || (item.input_media_relpath ? basename(item.input_media_relpath) : "");

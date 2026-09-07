@@ -141,16 +141,21 @@ class JobEditTests(unittest.TestCase):
     def test_job_edit_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._write_job(
+            path = self._write_job(
                 root,
                 "job-s",
                 {"status": "editing", "editing_from_status": "pending"},
             )
+            job = json.loads(path.read_text(encoding="utf-8"))
+            job["adhoc_overrides"] = {"parameters": {"frames": 81}}
+            path.write_text(json.dumps(job), encoding="utf-8")
             snap = sf.job_edit_snapshot(data_root=root, job_key="job-s")
             self.assertTrue(snap.get("ok"), snap)
             self.assertEqual(snap.get("job_key"), "job-s")
             self.assertEqual(snap.get("status"), "editing")
             self.assertEqual(snap.get("family_slug"), "TestFam")
+            profile = snap.get("params_profile") or {}
+            self.assertEqual((profile.get("current") or {}).get("frames"), 81)
 
     def test_submit_job_file_pending_only_skips_editing(self) -> None:
         with tempfile.TemporaryDirectory() as td:

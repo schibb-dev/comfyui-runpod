@@ -85,6 +85,7 @@ class OwnedPromptTests(unittest.TestCase):
             doc = json.loads(fork_path.read_text(encoding="utf-8"))
             self.assertEqual(doc["positive"], "NEW")
             self.assertEqual(doc["promoted_from_job"], "demo__1")
+            self.assertEqual(doc.get("slug"), "evening-crane")
             self.assertIn("variant_id", doc)
             self.assertIn("content_hash", doc)
 
@@ -173,10 +174,17 @@ class OwnedPromptTests(unittest.TestCase):
     def test_owned_prompt_to_excerpt(self) -> None:
         from shape_factory_owned_prompt import fork_owned_prompt, owned_prompt_to_excerpt
 
-        owned = fork_owned_prompt(positive="(hi:1.2)", negative="", label="catalog-default")
+        owned = fork_owned_prompt(
+            positive="(hi:1.2)",
+            negative="",
+            label="catalog-faceblast-extend",
+            name="FaceBlast extend",
+        )
         ex = owned_prompt_to_excerpt(owned)
         self.assertTrue(ex.get("owned"))
-        self.assertEqual(ex.get("label"), "catalog-default")
+        self.assertEqual(ex.get("label"), "catalog-faceblast-extend")
+        self.assertEqual(ex.get("name"), "FaceBlast extend")
+        self.assertEqual(ex.get("slug"), "faceblast-extend")
         self.assertIn("positive_rows", ex)
         self.assertTrue(ex.get("content_hash"))
         self.assertFalse(ex.get("snowflake"))
@@ -204,7 +212,9 @@ class OwnedPromptTests(unittest.TestCase):
             root = Path(td)
             seed_path = root / "catalog-default.json"
             seed_path.write_text(
-                json.dumps({"label": "catalog-default", "positive": "SEED", "negative": "N"}),
+                json.dumps(
+                    {"name": "FaceBlast extend", "label": "catalog-default", "positive": "SEED", "negative": "N"}
+                ),
                 encoding="utf-8",
             )
             job = {
@@ -218,6 +228,7 @@ class OwnedPromptTests(unittest.TestCase):
             same = owned_prompt_to_excerpt(job["prompt"], data_root=root)
             self.assertFalse(same.get("snowflake"))
             self.assertEqual(same.get("seed", {}).get("positive"), "SEED")
+            self.assertEqual(same.get("name"), "FaceBlast extend")
 
             merge_owned_prompt(job, {"positive": "SNOW"})
             diverged = owned_prompt_to_excerpt(job["prompt"], data_root=root)
@@ -255,6 +266,24 @@ class OwnedPromptTests(unittest.TestCase):
             saved = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(saved["prompt"]["positive"], "(new clause:1.3)")
             self.assertEqual(saved["prompt"]["negative"], "neg")
+
+    def test_prompt_variant_slug_follows_catalog_patterns(self) -> None:
+        from shape_factory_owned_prompt import prompt_variant_slug, slugify_variant_label
+
+        self.assertEqual(prompt_variant_slug("catalog-default.json"), "default")
+        self.assertEqual(prompt_variant_slug("pp-catalog-faceblast-extend"), "faceblast-extend")
+        self.assertEqual(prompt_variant_slug("/pools/FB9_GEX/prompts/catalog-faceblast-extend.json"), "faceblast-extend")
+        self.assertEqual(prompt_variant_slug("FaceBlast extend"), "faceblast-extend")
+        self.assertEqual(prompt_variant_slug("overhead-soft.json"), "overhead-soft")
+        self.assertEqual(prompt_variant_slug("Some Fancy Name!"), "some-fancy-name")
+        self.assertEqual(
+            prompt_variant_slug({"slug": "my-custom", "label": "catalog-default", "name": "Nope"}),
+            "my-custom",
+        )
+        self.assertEqual(prompt_variant_slug({"label": "catalog-default"}), "default")
+        reserved = slugify_variant_label("Default", fallback="variant")
+        self.assertTrue(reserved.startswith("variant-"), reserved)
+        self.assertNotEqual(reserved, "default")
 
 
 if __name__ == "__main__":

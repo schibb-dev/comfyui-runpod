@@ -673,6 +673,136 @@ class TestShapeFactoryClips(unittest.TestCase):
             self.assertEqual(again["clips_created"], 0)
             self.assertGreaterEqual(again["skipped_dup"], 1)
 
+    def test_clip_seed_boost_ladder_clipped_default_unclipped(self) -> None:
+        from shape_factory_clips import (
+            clip_seed_boost_detail,
+            connect_clips,
+            create_clip,
+            set_default_clip,
+            starred_seed_boost_for_parent,
+        )
+
+        with _tmpdir() as td:
+            reg = Path(td) / "asset_registry.sqlite"
+            con = connect_clips(reg)
+            none_p = "n" * 64
+            clipped_p = "c" * 64
+            default_p = "d" * 64
+            create_clip(
+                con,
+                parent_content_id=clipped_p,
+                mark_in_s=0.5,
+                mark_out_s=2.0,
+                label="Bookmark",
+                duration_s=10.0,
+            )
+            default = create_clip(
+                con,
+                parent_content_id=default_p,
+                mark_in_s=1.0,
+                mark_out_s=3.0,
+                label="Default",
+                duration_s=10.0,
+            )
+            set_default_clip(con, default_p, default["clip_id"])
+
+            none = clip_seed_boost_detail(con, none_p)
+            clipped = clip_seed_boost_detail(con, clipped_p)
+            defaulted = clip_seed_boost_detail(con, default_p)
+
+            self.assertEqual(none["reason"], "none")
+            self.assertEqual(none["mult"], 1.0)
+            self.assertEqual(clipped["reason"], "clipped")
+            self.assertAlmostEqual(clipped["mult"], 1.4)
+            self.assertEqual(defaulted["reason"], "default")
+            self.assertGreaterEqual(defaulted["mult"], 1.75)
+            self.assertGreater(defaulted["mult"], clipped["mult"])
+            self.assertGreater(clipped["mult"], none["mult"])
+            self.assertEqual(
+                starred_seed_boost_for_parent(con, clipped_p),
+                clipped["mult"],
+            )
+            con.close()
+
+    def test_pick_seed_prefers_default_over_newer_star(self) -> None:
+        from shape_factory_clips import (
+            connect_clips,
+            create_clip,
+            pick_seed_clip,
+            set_default_clip,
+            star_clip,
+        )
+
+        with _tmpdir() as td:
+            reg = Path(td) / "asset_registry.sqlite"
+            con = connect_clips(reg)
+            parent = "h" * 64
+            default = create_clip(
+                con,
+                parent_content_id=parent,
+                mark_in_s=1.0,
+                mark_out_s=2.0,
+                label="Default",
+                origin="test",
+                duration_s=10.0,
+            )
+            newer = create_clip(
+                con,
+                parent_content_id=parent,
+                mark_in_s=3.0,
+                mark_out_s=4.0,
+                label="Newer star",
+                origin="test",
+                duration_s=10.0,
+            )
+            set_default_clip(con, parent, default["clip_id"])
+            star_clip(con, newer["clip_id"])
+            con.execute(
+                "UPDATE clips SET updated_at=? WHERE clip_id=?",
+                ("2099-01-01T00:00:00Z", newer["clip_id"]),
+            )
+            con.commit()
+            media = {"fps": 10.0, "frame_count": 100, "duration": 10.0}
+            picked = pick_seed_clip(con, parent, media_meta=media, rng=None)
+            self.assertEqual(picked["clip_id"], default["clip_id"])
+            self.assertEqual((picked.get("pick") or {}).get("mode"), "default")
+            self.assertEqual(picked["skip_first_frames"], 10)
+            self.assertEqual(picked["frame_load_cap"], 10)
+            con.close()
+
+    def test_weak_full_file_zeros_yield_to_default_clip(self) -> None:
+        from shape_factory_clips import (
+            connect_clips,
+            create_clip,
+            resolve_job_use_window,
+            set_default_clip,
+        )
+
+        with _tmpdir() as td:
+            reg = Path(td) / "asset_registry.sqlite"
+            con = connect_clips(reg)
+            parent = "i" * 64
+            clip = create_clip(
+                con,
+                parent_content_id=parent,
+                mark_in_s=1.0,
+                mark_out_s=3.0,
+                label="Default",
+                duration_s=10.0,
+            )
+            set_default_clip(con, parent, clip["clip_id"])
+            media = {"fps": 10.0, "frame_count": 100, "duration": 10.0}
+            use = resolve_job_use_window(
+                job={"vhs_window": {"skip_first_frames": 0, "frame_load_cap": 0}},
+                parent_content_id=parent,
+                media_meta=media,
+                con=con,
+            )
+            self.assertEqual(use["clip_id"], clip["clip_id"])
+            self.assertEqual(use["skip_first_frames"], 10)
+            self.assertEqual(use["frame_load_cap"], 20)
+            con.close()
+
     def test_multi_star_pick_prefers_newer_and_skips_unstarred(self) -> None:
         import random
 
@@ -682,6 +812,7 @@ class TestShapeFactoryClips(unittest.TestCase):
             list_starred_clip_ids,
             pick_seed_clip,
             resolve_job_use_window,
+            set_default_clip,
             star_clip,
             unstar_clip,
         )
@@ -719,6 +850,8 @@ class TestShapeFactoryClips(unittest.TestCase):
             )
             star_clip(con, old["clip_id"])
             star_clip(con, new["clip_id"])
+            # First star auto-defaults; recency among stars applies only with no default.
+            set_default_clip(con, parent, None)
             # Bump new clip updated_at so deterministic newest wins.
             con.execute(
                 "UPDATE clips SET updated_at=? WHERE clip_id=?",

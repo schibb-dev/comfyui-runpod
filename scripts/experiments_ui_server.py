@@ -11032,9 +11032,14 @@ def _queue_enrich_from_job(
                     )
                     if owned is not None:
                         prompt_profile = owned_prompt_to_excerpt(owned, data_root=data_root)
-                        label = str(owned.get("label") or "").strip()
-                        if label:
-                            glance["prompt_profile"] = label
+                        display = str(
+                            (prompt_profile or {}).get("name")
+                            or owned.get("name")
+                            or owned.get("label")
+                            or ""
+                        ).strip()
+                        if display:
+                            glance["prompt_profile"] = display
                         elif owned.get("source_profile"):
                             glance["prompt_profile"] = Path(str(owned["source_profile"])).name
                         if prompt_profile.get("snowflake"):
@@ -11063,7 +11068,9 @@ def _queue_enrich_from_job(
                 if owned is not None:
                     prompt_profile = owned_prompt_to_excerpt(owned, data_root=data_root)
                     glance["prompt_profile"] = str(
-                        owned.get("label")
+                        (prompt_profile or {}).get("name")
+                        or owned.get("name")
+                        or owned.get("label")
                         or Path(str(owned.get("source_profile") or "")).name
                         or "owned-prompt"
                     )
@@ -15977,6 +15984,25 @@ class Handler(BaseHTTPRequestHandler):
         target = _safe_join(static_dir, rel)
         if target is not None and target.exists() and target.is_file():
             return self._serve_static_file(rel)
+        # Missing hashed assets must 404. Falling back to index.html here
+        # served HTML as CSS/JS after a rebuild and left the app unstyled.
+        ext = Path(rel).suffix.lower()
+        if rel.startswith("assets/") or ext in {
+            ".css",
+            ".js",
+            ".mjs",
+            ".map",
+            ".woff",
+            ".woff2",
+            ".ttf",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+            ".svg",
+            ".ico",
+        }:
+            return _json_response(self, 404, {"error": "static_not_found", "relpath": rel})
         return self._serve_static_file("index.html")
 
     def _serve_static_file(self, rel: str) -> None:
@@ -15989,7 +16015,8 @@ class Handler(BaseHTTPRequestHandler):
         if not ctype:
             ctype = "application/octet-stream"
         try:
-            _stream_file(self, full, content_type=ctype, cache_control="no-cache", allow_ranges=True)
+            cache = "no-store" if rel == "index.html" or rel.endswith(".html") else "no-cache"
+            _stream_file(self, full, content_type=ctype, cache_control=cache, allow_ranges=True)
         except Exception as e:
             return _json_response(self, 500, {"error": "read_failed", "detail": str(e)})
 

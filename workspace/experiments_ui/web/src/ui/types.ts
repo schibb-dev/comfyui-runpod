@@ -1739,6 +1739,8 @@ export type ShapeFactoryJobEditSnapshot = {
   output_prefix?: string;
   created_at?: string;
   construction?: Record<string, unknown> | null;
+  /** Current vs template seed (frames/steps/overlap). First Submit tunable surface. */
+  params_profile?: WorkProductParamsProfile | null;
   error?: string;
   detail?: string;
 };
@@ -2255,6 +2257,10 @@ export type WorkProductPromptRow = {
 export type WorkProductPromptProfile = {
   path?: string;
   basename?: string;
+  /** Canonical variant slug (`default`, `faceblast-extend`, …). */
+  slug?: string | null;
+  /** Operator-facing variant name from catalog JSON (`name`). */
+  name?: string | null;
   label?: string | null;
   positive?: string;
   negative?: string;
@@ -2275,6 +2281,8 @@ export type WorkProductPromptProfile = {
   /** Seed template baseline for snowflake diff / lineage. */
   seed?: {
     path?: string;
+    slug?: string | null;
+    name?: string | null;
     label?: string | null;
     basename?: string;
     positive?: string;
@@ -2396,6 +2404,8 @@ export type WorkProductItem = {
   error_type?: string | null;
   prompt_id?: string | null;
   submitted_at?: string | null;
+  /** When the Comfy run finished (not deposit/heal time). */
+  finished_at?: string | null;
   deposited_at?: string | null;
   output_relpath?: string | null;
   output_url?: string | null;
@@ -2454,11 +2464,20 @@ export type WorkProductFamilyOption = {
     skip_first_frames?: number;
     frame_load_cap?: number;
   };
+  /** Shape/template seed knobs (Wan frames, …). Submit tunables populate from this. */
+  params_defaults?: {
+    frames?: number;
+  };
   prompt_profiles?: WorkProductFamilyPromptProfile[];
 };
 
 export type WorkProductFamilyPromptProfile = {
+  /** Canonical variant slug (`default`, `faceblast-extend`, …). */
   slug: string;
+  /** On-disk stem (`catalog-default`); wrappers are not the slug. */
+  file_stem?: string;
+  /** Operator-facing variant name from catalog JSON (`name`). */
+  name?: string | null;
   label?: string | null;
   basename?: string;
   path: string;

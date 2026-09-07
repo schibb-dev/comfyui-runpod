@@ -7,7 +7,7 @@ import { parseFps, vhsDefaultsToMarks, type VhsDefaults } from "./workProductTri
 /**
  * Workbench-style media preview for pipeline lists (Queue, etc.).
  * When VHS skip/cap are provided, playback is clamped to that window and a
- * readonly trim scrubber is shown (marks are not editable). Explicit markIn/markOut
+ * readonly scrubber shows the trim range plus repeat/stop (marks are not editable). Explicit markIn/markOut
  * (from factory vhs_window) are used when skip/cap are unset/zero.
  */
 export function PipelineMediaPlayer({

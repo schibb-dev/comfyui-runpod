@@ -47,6 +47,43 @@ class QueueStatusTests(unittest.TestCase):
         self.assertEqual(st, "queued")
         self.assertEqual(job["submit"]["status"], "queued")
 
+    def test_missing_history_with_output_file_is_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            factory = Path(td) / "factory"
+            comfy = Path(td) / "comfy"
+            (comfy / "output" / "og").mkdir(parents=True)
+            mp4 = comfy / "output" / "og" / "job_00001.mp4"
+            mp4.write_bytes(b"fake")
+            job = {
+                "submit": {"prompt_id": "gone", "status": "running"},
+                "output_prefix": "og/job",
+            }
+            with mock.patch.object(sf, "fetch_comfy_history", return_value=None):
+                st = sf.update_job_status_from_comfy(
+                    job,
+                    server="http://x",
+                    data_root=factory,
+                    output_root=comfy / "output",
+                    running_ids=set(),
+                    pending_ids=set(),
+                )
+            self.assertEqual(st, "complete")
+            self.assertEqual(job["submit"]["status"], "complete")
+            self.assertTrue(any(str(mp4) == p for p in job["submit"]["outputs"]))
+
+    def test_discover_outputs_searches_comfy_root_when_data_root_is_factory(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            factory = Path(td) / ".data"
+            comfy = Path(td) / "comfy-data"
+            dest = comfy / "output" / "og" / "2026-09-06"
+            dest.mkdir(parents=True)
+            mp4 = dest / "hourly__demo_00001.mp4"
+            mp4.write_bytes(b"x")
+            job = {"output_prefix": "og/2026-09-06/hourly__demo"}
+            with mock.patch.object(sf, "DEFAULT_DATA_ROOT", comfy):
+                found = sf.discover_job_outputs(job, factory)
+            self.assertEqual([p.resolve() for p in found], [mp4.resolve()])
+
     def test_missing_queue_and_history_becomes_interrupted(self) -> None:
         job = {"submit": {"prompt_id": "gone", "status": "running"}, "output_prefix": "og/nope"}
         with mock.patch.object(sf, "fetch_comfy_history", return_value=None), mock.patch.object(

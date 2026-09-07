@@ -337,40 +337,42 @@ function VideoTrimTimeline({
           aria-hidden
         />
       ) : null}
-      <div
-        className={
-          "video-trim-controls__handle video-trim-controls__handle--in" +
-          (readOnly ? " video-trim-controls__handle--readonly" : "") +
-          (drag === "in" ? " video-trim-controls__handle--dragging" : "")
-        }
-        style={{ left: `${inPct}%` }}
-        onPointerDown={startDrag("in")}
-        role="slider"
-        aria-label="Trim start"
-        aria-valuemin={0}
-        aria-valuemax={duration}
-        aria-valuenow={safeIn}
-        aria-disabled={disabled || readOnly}
-      >
-        <span />
-      </div>
-      <div
-        className={
-          "video-trim-controls__handle video-trim-controls__handle--out" +
-          (readOnly ? " video-trim-controls__handle--readonly" : "") +
-          (drag === "out" ? " video-trim-controls__handle--dragging" : "")
-        }
-        style={{ left: `${outPct}%` }}
-        onPointerDown={startDrag("out")}
-        role="slider"
-        aria-label="Trim end"
-        aria-valuemin={0}
-        aria-valuemax={duration}
-        aria-valuenow={safeOut}
-        aria-disabled={disabled || readOnly}
-      >
-        <span />
-      </div>
+      {readOnly ? null : (
+        <>
+          <div
+            className={
+              "video-trim-controls__handle video-trim-controls__handle--in" +
+              (drag === "in" ? " video-trim-controls__handle--dragging" : "")
+            }
+            style={{ left: `${inPct}%` }}
+            onPointerDown={startDrag("in")}
+            role="slider"
+            aria-label="Trim start"
+            aria-valuemin={0}
+            aria-valuemax={duration}
+            aria-valuenow={safeIn}
+            aria-disabled={disabled}
+          >
+            <span />
+          </div>
+          <div
+            className={
+              "video-trim-controls__handle video-trim-controls__handle--out" +
+              (drag === "out" ? " video-trim-controls__handle--dragging" : "")
+            }
+            style={{ left: `${outPct}%` }}
+            onPointerDown={startDrag("out")}
+            role="slider"
+            aria-label="Trim end"
+            aria-valuemin={0}
+            aria-valuemax={duration}
+            aria-valuenow={safeOut}
+            aria-disabled={disabled}
+          >
+            <span />
+          </div>
+        </>
+      )}
       <div
         className={
           "video-trim-controls__playhead" +
@@ -576,16 +578,22 @@ export function VideoTrimControls({
           onMarkOutChange={onMarkOutChange}
           onMarkScrubFreeze={setMarkScrubFreeze}
         />
-        <div className="video-trim-controls__actions" role="group" aria-label="Trim range options">
-          <button
-            type="button"
-            aria-label="Clear trim in and out"
-            title="Clear in/out"
-            disabled={!trimActive || readOnly}
-            onClick={onClear}
-          >
-            <IconClear />
-          </button>
+        <div
+          className="video-trim-controls__actions"
+          role="group"
+          aria-label={readOnly ? "Playback options" : "Trim range options"}
+        >
+          {readOnly ? null : (
+            <button
+              type="button"
+              aria-label="Clear trim in and out"
+              title="Clear in/out"
+              disabled={!trimActive}
+              onClick={onClear}
+            >
+              <IconClear />
+            </button>
+          )}
           <button
             type="button"
             className={"video-trim-controls__mode" + (mode === "repeat" ? " video-trim-controls__mode--repeat" : "")}
@@ -627,14 +635,16 @@ export function VideoTrimControls({
             </button>
           ) : null}
         </div>
-        <div className="video-trim-controls__io" role="group" aria-label="Set trim in and out">
-          <button type="button" disabled={disabled || readOnly} onClick={setInAtPlayhead} title="Set in at playhead">
-            I
-          </button>
-          <button type="button" disabled={disabled || readOnly} onClick={setOutAtPlayhead} title="Set out at playhead">
-            O
-          </button>
-        </div>
+        {readOnly ? null : (
+          <div className="video-trim-controls__io" role="group" aria-label="Set trim in and out">
+            <button type="button" disabled={disabled} onClick={setInAtPlayhead} title="Set in at playhead">
+              I
+            </button>
+            <button type="button" disabled={disabled} onClick={setOutAtPlayhead} title="Set out at playhead">
+              O
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
