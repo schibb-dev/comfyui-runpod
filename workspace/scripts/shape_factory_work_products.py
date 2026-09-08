@@ -2994,8 +2994,34 @@ def save_work_products_dismissals(
         "job_keys": sorted(set(str(x).strip() for x in (doc.get("job_keys") or []) if str(x).strip())),
         "entries": list(doc.get("entries") or [])[-500:],
     }
-    path.write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _replace_json_file(path, out)
     return path
+
+
+def _replace_json_file(path: Path, value: Dict[str, Any]) -> None:
+    """Write JSON via rename so we can replace a file we do not own in a writable dir.
+
+    Direct ``write_text`` fails with EACCES when ``work_products_dismissed.json`` is
+    root-owned 644 in an ubuntu-owned ``shape_factory/`` (common after a root probe).
+    """
+    payload = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(payload, encoding="utf-8")
+    try:
+        try:
+            tmp.replace(path)
+        except OSError:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            tmp.replace(path)
+    finally:
+        try:
+            if tmp.is_file():
+                tmp.unlink()
+        except OSError:
+            pass
 
 
 def is_work_product_dismissed(

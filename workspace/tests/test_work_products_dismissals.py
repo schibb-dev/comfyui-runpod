@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import support  # noqa: F401  — injects workspace/scripts onto sys.path
+
 _TMP_ROOT = Path("/dev/shm") if Path("/dev/shm").is_dir() else None
 
 
@@ -71,6 +73,39 @@ class TestWorkProductsDismissals(unittest.TestCase):
                 )
             finally:
                 sf.chmod(0o755)
+
+    def test_replaces_unwritable_existing_file_in_writable_dir(self) -> None:
+        from shape_factory_work_products import (
+            dismiss_history_work_product,
+            is_work_product_dismissed,
+            load_work_products_dismissals,
+        )
+
+        with _tmpdir() as td:
+            root = Path(td)
+            sf = root / "shape_factory"
+            jobs = sf / "jobs"
+            out = root / "output"
+            jobs.mkdir(parents=True)
+            (out / "_status").mkdir(parents=True)
+            stale = sf / "work_products_dismissed.json"
+            stale.write_text('{"prompt_ids":["old"],"job_keys":[],"entries":[]}\n', encoding="utf-8")
+            stale.chmod(0o444)
+            try:
+                res = dismiss_history_work_product(
+                    data_root=root,
+                    prompt_id="pid-new",
+                    job_key="job-new",
+                    output_root=out,
+                )
+                self.assertTrue(res.get("ok"), res)
+                doc = load_work_products_dismissals(root, output_root=out)
+                self.assertTrue(is_work_product_dismissed(doc, prompt_id="pid-new"))
+                self.assertTrue(is_work_product_dismissed(doc, prompt_id="old"))
+                self.assertIn("pid-new", stale.read_text(encoding="utf-8"))
+            finally:
+                if stale.is_file():
+                    stale.chmod(0o644)
 
 
 if __name__ == "__main__":
