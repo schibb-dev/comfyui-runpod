@@ -22,7 +22,7 @@ import {
   revalidateAssetRatings,
 } from "./assetRatingsCache";
 import { cachedEnsureThumbUrl, enqueueEnsureThumb } from "./ensureThumbQueue";
-import { AppetiteBar, APPETITE_FACET_CYCLE, APPETITE_KEYMAP } from "./AppetiteBar";
+import { AppetiteBar, APPETITE_KEYMAP } from "./AppetiteBar";
 import { DispositionBar, DispositionReasonsPanel, DispositionRouter } from "./DispositionBar";
 import { DispositionCatalogEditor } from "./DispositionCatalogEditor";
 import { DispositionStatusPanel } from "./DispositionStatusPanel";
@@ -55,7 +55,6 @@ import { QUALITY_AXES, QUALITY_AXIS_LABELS } from "./types";
 const QUEUE_LIMIT_KEY = "rating_queue_limit";
 const DEFAULT_QUEUE_LIMIT = 15;
 const QUEUE_LIMIT_OPTIONS = [5, 10, 15, 20, 25] as const;
-const APPETITE_FACET_KEY = "appetite_facet";
 const LOOP_PLAYBACK_KEY = "rating_queue_loop_playback";
 const SELECTION_MODE_KEY = "rating_selection_mode";
 const INCLUDE_DONE_KEY = "rating_include_done";
@@ -68,16 +67,6 @@ const SELECTION_MODES: { id: SelectionMode; label: string }[] = [
   { id: "search", label: "Search" },
   { id: "latest", label: "Latest" },
 ];
-
-function loadStickyFacet(): AppetiteFacet {
-  try {
-    const raw = localStorage.getItem(APPETITE_FACET_KEY);
-    if (raw === "both" || raw === "source" || raw === "processing") return raw;
-  } catch {
-    /* ignore */
-  }
-  return "both";
-}
 
 function loadQueueLimit(): number {
   try {
@@ -643,7 +632,7 @@ export function DiscoveryRatingQueueApp() {
   const dispositionToggleSeqRef = useRef(0);
   const [queueLimit, setQueueLimit] = useState(loadQueueLimit);
   const [appetite, setAppetite] = useState<Appetite | null>(null);
-  const [appetiteFacet, setAppetiteFacet] = useState<AppetiteFacet>(loadStickyFacet);
+  const [appetiteFacet, setAppetiteFacet] = useState<AppetiteFacet>("both");
   const [appetiteBusy, setAppetiteBusy] = useState(false);
   const [dispositionMarkers, setDispositionMarkers] = useState<string[]>([]);
   const [dispositionUpdatedAt, setDispositionUpdatedAt] = useState<string | null>(null);
@@ -929,15 +918,6 @@ export function DiscoveryRatingQueueApp() {
     goNext();
   }, [goNext]);
 
-  const setFacet = useCallback((f: AppetiteFacet) => {
-    setAppetiteFacet(f);
-    try {
-      localStorage.setItem(APPETITE_FACET_KEY, f);
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
   const toggleLoopPlayback = useCallback(() => {
     setLoopPlayback((prev) => {
       const next = !prev;
@@ -951,19 +931,21 @@ export function DiscoveryRatingQueueApp() {
   }, []);
 
   const setAppetiteCurrent = useCallback(
-    async (state: Appetite, facet: AppetiteFacet) => {
+    async (state: Appetite | "", facet: AppetiteFacet) => {
       if (!current || appetiteBusy) return;
+      if (!state && !appetite) return;
       const prevAppetite = appetite;
       const prevFacet = appetiteFacet;
-      setAppetite(state);
+      const next = state || null;
+      setAppetite(next);
       setAppetiteFacet(facet);
-      markBatchRated(current.relpath, qualityAxes, state);
-      patchCachedAppetite(current.relpath, state, facet);
+      markBatchRated(current.relpath, qualityAxes, next);
+      patchCachedAppetite(current.relpath, next, state ? facet : null);
       setAppetiteBusy(true);
       setCheckMsg("");
       try {
         await setAssetAppetite({ relpath: current.relpath, appetite: state, facet });
-        setCheckMsg(`Appetite: ${state} · ${facet}`);
+        setCheckMsg(state ? `Appetite: ${state}` : "Appetite unset");
       } catch (e) {
         setAppetite(prevAppetite);
         setAppetiteFacet(prevFacet);
@@ -1417,13 +1399,13 @@ export function DiscoveryRatingQueueApp() {
           const i = QUALITY_AXES.indexOf(prev);
           return QUALITY_AXES[(i + 1) % QUALITY_AXES.length];
         });
+      } else if (e.key === "n" || e.key === "N") {
+        e.preventDefault();
+        void setAppetiteCurrent("", appetiteFacet);
       } else if (e.key.toLowerCase() in APPETITE_KEYMAP) {
         e.preventDefault();
-        void setAppetiteCurrent(APPETITE_KEYMAP[e.key.toLowerCase()], appetiteFacet);
-      } else if (e.key === "g" || e.key === "G") {
-        e.preventDefault();
-        const i = APPETITE_FACET_CYCLE.indexOf(appetiteFacet);
-        setFacet(APPETITE_FACET_CYCLE[(i + 1) % APPETITE_FACET_CYCLE.length]);
+        const next = APPETITE_KEYMAP[e.key.toLowerCase()];
+        void setAppetiteCurrent(appetite === next ? "" : next, appetiteFacet);
       } else if (e.key === "l" || e.key === "L") {
         e.preventDefault();
         toggleLoopPlayback();
@@ -1431,7 +1413,7 @@ export function DiscoveryRatingQueueApp() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [goNext, goPrev, skipCurrent, rateCurrent, setAppetiteCurrent, appetiteFacet, setFacet, toggleLoopPlayback, activeQualityAxis]);
+  }, [goNext, goPrev, skipCurrent, rateCurrent, setAppetiteCurrent, appetite, appetiteFacet, toggleLoopPlayback, activeQualityAxis]);
 
   const stats = session?.stats;
   const ratedCount = useMemo(() => {
@@ -1543,8 +1525,7 @@ export function DiscoveryRatingQueueApp() {
             <span><kbd>1</kbd>–<kbd>5</kbd> active quality axis</span>
             <span><kbd>0</kbd> clear active axis</span>
             <span><kbd>q</kbd> cycle Subject / Render / Action</span>
-            <span><kbd>b</kbd><kbd>z</kbd><kbd>x</kbd><kbd>c</kbd><kbd>v</kbd> appetite</span>
-            <span><kbd>g</kbd> cycle facet</span>
+            <span><kbd>n</kbd><kbd>b</kbd><kbd>z</kbd><kbd>x</kbd><kbd>c</kbd><kbd>v</kbd> appetite</span>
             <span><kbd>←</kbd><kbd>→</kbd> prev / next (wraps)</span>
             <span><kbd>s</kbd> skip to next</span>
             <span><kbd>l</kbd> loop</span>
@@ -1768,7 +1749,6 @@ export function DiscoveryRatingQueueApp() {
                         facet={appetiteFacet}
                         busy={appetiteBusy}
                         onSet={(state, facet) => void setAppetiteCurrent(state, facet)}
-                        onFacetChange={setFacet}
                       />
                     </div>
 

@@ -6578,7 +6578,11 @@ def _discovery_appetite_for_item(appetite_doc: Optional[Dict[str, Any]], item: D
     for key in _discovery_output_relpath_keys(item):
         row = table.get(key)
         if isinstance(row, dict) and row.get("appetite"):
-            return {"appetite": row.get("appetite"), "appetite_facet": row.get("facet") or "both"}
+            return {
+                "appetite": row.get("appetite"),
+                "appetite_facet": row.get("facet") or "both",
+                "appetite_facet_status": "review",
+            }
     return {}
 
 
@@ -6709,6 +6713,7 @@ def _discovery_compute_asset_ratings(
             "error_detail": "ratings_index_missing",
             "appetite": appetite.get("appetite"),
             "appetite_facet": appetite.get("appetite_facet"),
+            "appetite_facet_status": "review",
             "disposition_markers": disp.get("disposition_markers") or [],
             "disposition_notes": disp.get("disposition_notes") or {},
             "disposition_reason_detail": disp.get("disposition_reason_detail") or {},
@@ -6745,6 +6750,7 @@ def _discovery_compute_asset_ratings(
     appetite = _discovery_appetite_for_item(appetite_doc, {"relpath": rel})
     payload["appetite"] = appetite.get("appetite")
     payload["appetite_facet"] = appetite.get("appetite_facet")
+    payload["appetite_facet_status"] = "review"
     disposition_doc = _discovery_load_disposition_index(cfg)
     disp = _discovery_disposition_for_item(disposition_doc, item if isinstance(item, dict) else {"relpath": rel})
     payload["disposition_markers"] = disp.get("disposition_markers") or []

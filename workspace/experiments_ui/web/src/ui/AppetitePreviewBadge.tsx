@@ -108,9 +108,12 @@ export function AppetitePreviewBadge({
   }, [open, appetite, facet, msg, size]);
 
   const onSet = useCallback(
-    async (state: Appetite, nextFacet: AppetiteFacet) => {
+    async (state: Appetite | "", nextFacet: AppetiteFacet) => {
       if (!key || busy) return;
-      patchCachedAppetite(key, state, nextFacet);
+      if (!state && !appetite) return;
+      const prevAppetite = appetite;
+      const prevFacet = facet;
+      patchCachedAppetite(key, state || null, state ? nextFacet : null);
       setBusy(true);
       setMsg("");
       try {
@@ -123,12 +126,13 @@ export function AppetitePreviewBadge({
         });
         void revalidateAssetRatings(key);
       } catch (e) {
+        patchCachedAppetite(key, prevAppetite, prevFacet);
         setMsg(e instanceof Error ? e.message : String(e));
       } finally {
         setBusy(false);
       }
     },
-    [key, busy, jobKey, familySlug],
+    [key, busy, jobKey, familySlug, facet, appetite],
   );
 
   if (!key) return null;
@@ -148,10 +152,10 @@ export function AppetitePreviewBadge({
         >
           <AppetiteBar
             appetite={appetite}
-            facet="both"
+            facet={facet}
             busy={busy}
             iconsOnly
-            onSet={(state) => void onSet(state, "both")}
+            onSet={(state) => void onSet(state, facet)}
           />
           {msg ? <p className="appetite-preview-popover__msg">{msg}</p> : null}
         </div>,
@@ -199,7 +203,7 @@ export function AppetitePreviewBadge({
   );
 }
 
-/** Positions an appetite badge over a preview frame. */
+/** Positions an appetite badge over a preview frame (Workbench, Queue, etc.). */
 export function AppetitePreviewFrame({
   relpath,
   size = "default",

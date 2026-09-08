@@ -1494,7 +1494,6 @@ function WorkProductViewer({
               promptId={promptId}
               submittedAt={item.submitted_at || item.created_at}
               showMetrics={false}
-              appetiteRelpath={outputRel || workbenchSourceMediaRelpath(item)}
             />
             {previewUrls.thumb ? (
               <div className="work-product-viewer__live-source" title={previewUrls.label}>
@@ -2381,7 +2380,7 @@ const DETAIL_GROUPS: DetailGroupDef[] = [
     title: "Appetite & hold",
     labels: [
       "Appetite",
-      "Appetite facet",
+      "Appetite facet (review)",
       "Appetite value",
       "Appetite evidence",
       "Tag affinity",
@@ -2618,7 +2617,7 @@ function detailGroupSummary(
   if (group.id === "appetite") {
     const bits = [
       rowVal(rows, "Appetite", "Appetite value"),
-      rowVal(rows, "Appetite facet"),
+      rowVal(rows, "Appetite facet (review)"),
       rowVal(rows, "Hold axis"),
     ].filter(Boolean);
     return bits.length ? bits.join(" · ") : `${rows.length} field${rows.length === 1 ? "" : "s"}`;
@@ -4807,12 +4806,14 @@ function WorkProductIndexRow({
           {item.job_key}
         </code>
       </span>
-      <AppetitePreviewBadge
-        relpath={workbenchJobAppetiteRelpath(item)}
-        size="sm"
-        jobKey={item.job_key}
-        familySlug={item.family_slug}
-      />
+      {isRunningLiveItem(item) ? null : (
+        <AppetitePreviewBadge
+          relpath={workbenchJobAppetiteRelpath(item)}
+          size="sm"
+          jobKey={item.job_key}
+          familySlug={item.family_slug}
+        />
+      )}
     </button>
   );
   if (!canReorder) return row;

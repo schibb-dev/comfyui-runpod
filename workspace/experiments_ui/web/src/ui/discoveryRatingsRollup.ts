@@ -37,9 +37,6 @@ export const APPETITE_ROW_LABEL: Record<Appetite, string> = {
   remove: "Remove",
 };
 
-export function appetiteRowTitle(appetite: Appetite, facet?: AppetiteFacet | null): string {
-  const facetLabel =
-    facet === "source" ? "source" : facet === "processing" ? "look" : facet === "both" ? "both" : "";
-  const base = `Appetite: ${APPETITE_ROW_LABEL[appetite]}`;
-  return facetLabel ? `${base} (${facetLabel})` : base;
+export function appetiteRowTitle(appetite: Appetite, _facet?: AppetiteFacet | null): string {
+  return `Appetite: ${APPETITE_ROW_LABEL[appetite]}`;
 }

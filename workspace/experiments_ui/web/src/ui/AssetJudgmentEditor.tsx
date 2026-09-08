@@ -190,18 +190,19 @@ export function AssetJudgmentEditor({
   );
 
   const setAppetiteState = useCallback(
-    async (state: Appetite, facet: AppetiteFacet) => {
+    async (state: Appetite | "", facet: AppetiteFacet) => {
       if (!relpath || appetiteBusy) return;
+      if (!state && !appetite) return;
       const prevAppetite = appetite;
       const prevFacet = appetiteFacet;
-      setAppetite(state);
+      setAppetite(state || null);
       setAppetiteFacet(facet);
-      patchCachedAppetite(relpath, state, facet);
+      patchCachedAppetite(relpath, state || null, state ? facet : null);
       setAppetiteBusy(true);
       setMsg("");
       try {
         await setAssetAppetite({ relpath, appetite: state, facet });
-        setMsg(`Appetite: ${state} · ${facet}`);
+        setMsg(state ? `Appetite: ${state}` : "Appetite unset");
         void refreshAfterSave();
       } catch (e) {
         setAppetite(prevAppetite);
@@ -313,7 +314,6 @@ export function AssetJudgmentEditor({
             facet={appetiteFacet}
             busy={appetiteBusy}
             onSet={(state, facet) => void setAppetiteState(state, facet)}
-            onFacetChange={setAppetiteFacet}
           />
         </div>
         {msg ? <p className="drq-rate-hint factory-muted drt-judgment-msg">{msg}</p> : null}
@@ -329,7 +329,6 @@ export function AssetJudgmentEditor({
         facet={appetiteFacet}
         busy={appetiteBusy}
         onSet={(state, facet) => void setAppetiteState(state, facet)}
-        onFacetChange={setAppetiteFacet}
       />
       {msg ? <span className="drq-rate-hint factory-muted">{msg}</span> : null}
     </div>

@@ -579,7 +579,6 @@ function QueueItemRow({
           promptId={pid}
           className="pipeline-row__live"
           showMetrics={false}
-          appetiteRelpath={item.input_media_relpath}
         />
         {sourcePlayer}
       </div>

@@ -40,13 +40,17 @@ export function AppetiteGlyph({ appetite }: { appetite: Appetite }) {
   return <>{g}</>;
 }
 
+/**
+ * @deprecated Up for review (2026-09-08). Operator UI no longer exposes both/source/look.
+ * Stored ``facet`` values remain for factory credit until that split is decided.
+ */
 export const FACETS: { key: AppetiteFacet; label: string; glyph: string; hint: string }[] = [
   { key: "both", label: "Both", glyph: "◎", hint: "Appetite for the whole result (source + look)" },
   { key: "source", label: "Source", glyph: "◻", hint: "Appetite for the source material (steers derive sources)" },
   { key: "processing", label: "Look", glyph: "✦", hint: "Appetite for the processing/look (prompt + lora)" },
 ];
 
-/** z/x/c/v/b map to appetite states (bar order is remove, then less…); g cycles the facet. */
+/** z/x/c/v/b map to appetite states (bar order is remove, then less…). */
 export const APPETITE_KEYMAP: Record<string, Appetite> = {
   z: "less",
   x: "neutral",
@@ -54,6 +58,7 @@ export const APPETITE_KEYMAP: Record<string, Appetite> = {
   v: "fast_track",
   b: "remove",
 };
+/** @deprecated Facet UI is retired; kept so leftover callers compile. */
 export const APPETITE_FACET_CYCLE: AppetiteFacet[] = ["both", "source", "processing"];
 
 export function AppetiteBar({
@@ -61,26 +66,27 @@ export function AppetiteBar({
   facet,
   busy,
   onSet,
-  onFacetChange,
   embedded = false,
   iconsOnly = false,
 }: {
   appetite: Appetite | null | undefined;
   facet: AppetiteFacet;
   busy?: boolean;
-  onSet: (state: Appetite, facet: AppetiteFacet) => void;
-  onFacetChange?: (facet: AppetiteFacet) => void;
+  onSet: (state: Appetite | "", facet: AppetiteFacet) => void;
   /** When true, omit the label row (parent supplies a matching judgment header). */
   embedded?: boolean;
-  /** Compact glyph-only buttons for preview popovers. */
+  /** Compact glyph-only buttons for preview popovers (no Appetite label). */
   iconsOnly?: boolean;
 }) {
+  const choose = (key: Appetite) => {
+    onSet(appetite === key ? "" : key, facet);
+  };
   return (
     <div
       className={
         "appetite-bar" +
         (embedded ? " appetite-bar--embedded" : "") +
-        (iconsOnly ? " appetite-bar--icons" : "")
+        (iconsOnly ? " appetite-bar--icons" : " appetite-bar--marks")
       }
       role="group"
       aria-label="Appetite — do more with this"
@@ -91,6 +97,30 @@ export function AppetiteBar({
         </span>
       ) : null}
       <div className={embedded ? "drq-rate-bar" : "appetite-btns"}>
+        <button
+          type="button"
+          className={
+            (embedded ? "drq-star-btn drq-appetite-tile " : "appetite-btn ") +
+            "appetite-btn--unset" +
+            (!appetite ? " appetite-btn--on" : "")
+          }
+          disabled={busy}
+          title="Unset: clear appetite"
+          aria-pressed={!appetite}
+          aria-label="Unset appetite"
+          onClick={() => onSet("", facet)}
+        >
+          {embedded ? (
+            <>
+              <span className="drq-star-btn__n">n</span>
+              <span className="drq-star-btn__glyph" aria-hidden="true">
+                ?
+              </span>
+            </>
+          ) : (
+            <span aria-hidden="true">?</span>
+          )}
+        </button>
         {APPETITE_ORDER.map((a) => (
           <button
             key={a.key}
@@ -105,7 +135,7 @@ export function AppetiteBar({
             title={`${a.label}: ${a.hint} (${a.short})`}
             aria-pressed={appetite === a.key}
             aria-label={`${a.label} appetite`}
-            onClick={() => onSet(a.key, facet)}
+            onClick={() => choose(a.key)}
           >
             {embedded ? (
               <>
@@ -114,40 +144,14 @@ export function AppetiteBar({
                   <AppetiteGlyph appetite={a.key} />
                 </span>
               </>
-            ) : iconsOnly ? (
+            ) : (
               <span aria-hidden="true">
                 <AppetiteGlyph appetite={a.key} />
               </span>
-            ) : (
-              a.label
             )}
           </button>
         ))}
       </div>
-      {onFacetChange && !iconsOnly ? (
-        <div
-          className={embedded ? "drq-rate-bar drq-rate-bar--facet" : "appetite-facet"}
-          role="group"
-          aria-label="Attribute appetite to"
-        >
-          {FACETS.map((f) => (
-            <button
-              key={f.key}
-              type="button"
-              className={
-                (embedded ? "drq-facet-btn" : "appetite-facet-btn") +
-                (facet === f.key ? (embedded ? " drq-facet-btn--on" : " appetite-facet-btn--on") : "")
-              }
-              disabled={busy}
-              title={`${f.hint} — press g to cycle`}
-              aria-pressed={facet === f.key}
-              onClick={() => onFacetChange(f.key)}
-            >
-              {iconsOnly ? <span aria-hidden="true">{f.glyph}</span> : f.label}
-            </button>
-          ))}
-        </div>
-      ) : null}
     </div>
   );
 }

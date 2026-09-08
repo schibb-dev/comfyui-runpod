@@ -1,7 +1,9 @@
 # Appetite similarity bias — technique track
 
 **Status:** stub (2026-08-29). Phase A shipped: mark appetite on Workbench + Factory Map
-inspectors ([`RATINGS_V1_PLAN.md`](./RATINGS_V1_PLAN.md)). This doc tracks **Phase B**:
+inspectors ([`RATINGS_V1_PLAN.md`](./RATINGS_V1_PLAN.md)). **Facet UI (both/source/look) is
+retired as of 2026-09-08** — stored `facet` is up for review; factory credit still reads it.
+This doc tracks **Phase B**:
 a mark on one workproduct should raise prior for **neighbors** and **similar recipes**,
 not only that `relpath`.
 

@@ -1261,7 +1261,7 @@ def _detail_rows(item: Dict[str, Any]) -> List[Dict[str, Any]]:
     add("Combo key", item.get("combo_key") or c.get("combo_key"))
     add("Cursor", c.get("cursor"))
     add("Appetite", c.get("appetite"))
-    add("Appetite facet", c.get("appetite_facet"))
+    add("Appetite facet (review)", c.get("appetite_facet"))
     add("Appetite value", c.get("appetite_value"))
     add("Appetite evidence", c.get("appetite_evidence"))
     add("Tag affinity", c.get("tag_affinity"))

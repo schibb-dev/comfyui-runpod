@@ -87,24 +87,22 @@ export function WorkProductAppetiteStrip({
   relpath?: string | null;
   jobKey?: string | null;
   familySlug?: string | null;
-  /** Used when the asset has no recorded facet yet (stills default to ``source``). */
+  /** Fallback facet when none is stored (stills still default to source). Facet is up for review. */
   defaultFacet?: AppetiteFacet;
   disabledHint?: string;
-  onSaved?: (appetite: Appetite, facet: AppetiteFacet) => void;
+  onSaved?: (appetite: Appetite | "", facet: AppetiteFacet) => void;
 }) {
   const { key, appetite, facet } = useAssetAppetite(relpath, defaultFacet);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
-  const [facetOverride, setFacetOverride] = useState<AppetiteFacet | null>(null);
-  const shownFacet = facetOverride || facet;
 
   const onSet = useCallback(
-    async (state: Appetite, nextFacet: AppetiteFacet) => {
+    async (state: Appetite | "", nextFacet: AppetiteFacet) => {
       if (!key || busy) return;
+      if (!state && !appetite) return;
       const prevAppetite = appetite;
-      const prevFacet = shownFacet;
-      setFacetOverride(nextFacet);
-      patchCachedAppetite(key, state, nextFacet);
+      const prevFacet = facet;
+      patchCachedAppetite(key, state || null, state ? nextFacet : null);
       setBusy(true);
       setMsg("");
       try {
@@ -115,18 +113,17 @@ export function WorkProductAppetiteStrip({
           job_key: jobKey || undefined,
           family_slug: familySlug || undefined,
         });
-        setMsg(`${state} · ${nextFacet}`);
+        setMsg(state || "unset");
         onSaved?.(state, nextFacet);
         void revalidateAssetRatings(key);
       } catch (e) {
-        setFacetOverride(null);
         patchCachedAppetite(key, prevAppetite, prevFacet);
         setMsg(e instanceof Error ? e.message : String(e));
       } finally {
         setBusy(false);
       }
     },
-    [key, busy, appetite, shownFacet, jobKey, familySlug, onSaved],
+    [key, busy, appetite, facet, jobKey, familySlug, onSaved],
   );
 
   if (!key) {
@@ -141,10 +138,9 @@ export function WorkProductAppetiteStrip({
     <div className="wp-appetite-strip" aria-label="Appetite — do more with this">
       <AppetiteBar
         appetite={appetite}
-        facet={shownFacet}
+        facet={facet}
         busy={busy}
         onSet={(state, f) => void onSet(state, f)}
-        onFacetChange={setFacetOverride}
       />
       {msg ? <span className="wp-appetite-strip__msg factory-muted">{msg}</span> : null}
     </div>

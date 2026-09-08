@@ -163,7 +163,7 @@ class TestWorkProducts(unittest.TestCase):
             self.assertTrue(str(item.get("output_url") or "").startswith("/files/"))
             labels = [r["label"] for r in item["details"]]
             self.assertIn("Pick mode", labels)
-            self.assertIn("Appetite facet", labels)
+            self.assertIn("Appetite facet (review)", labels)
             self.assertIn("Cursor", labels)
             binding = next(r for r in item["details"] if r["label"].startswith("Binding · prompt_profile"))
             self.assertIn("role=C", binding["value"])

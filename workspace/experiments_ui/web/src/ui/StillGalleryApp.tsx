@@ -849,8 +849,8 @@ export function StillGalleryApp() {
                       relpath={selectedRel}
                       defaultFacet="source"
                       disabledHint="Appetite needs an input/ path"
-                      onSaved={(appetite, facet) => {
-                        setMsg(`Appetite ${appetite} · ${facet}`);
+                      onSaved={(appetite) => {
+                        setMsg(`Appetite ${appetite}`);
                         void queryClient.invalidateQueries({
                           queryKey: queryKeys.shapeFactory.inputCurationRoot,
                         });

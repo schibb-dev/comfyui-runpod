@@ -11835,27 +11835,35 @@ tr.disabled:hover td {
   opacity: 0.55;
 }
 .drq-appetite-tile.appetite-btn--on {
-  color: #fff;
   border-color: transparent;
 }
 .drq-appetite-tile.appetite-btn--on .drq-star-btn__n,
 .drq-appetite-tile.appetite-btn--on .drq-star-btn__glyph {
-  color: #fff;
+  color: inherit;
 }
 .drq-appetite-tile.appetite-btn--less.appetite-btn--on {
   background: #7a3b3b;
+  color: #ffb4b4;
 }
 .drq-appetite-tile.appetite-btn--neutral.appetite-btn--on {
   background: #4b5563;
+  color: #e8edf4;
 }
 .drq-appetite-tile.appetite-btn--more.appetite-btn--on {
   background: #2f7d4f;
+  color: #b8ffcc;
 }
 .drq-appetite-tile.appetite-btn--fast_track.appetite-btn--on {
   background: #b8791f;
+  color: #ffe08a;
 }
 .drq-appetite-tile.appetite-btn--remove.appetite-btn--on {
   background: #5c1c1c;
+  color: #ff9d9d;
+}
+.drq-appetite-tile.appetite-btn--unset.appetite-btn--on {
+  background: rgba(90, 95, 105, 0.45);
+  color: #c5ccd6;
 }
 .drq-appetite-tile:hover:not(:disabled):not(.appetite-btn--on) {
   border-color: rgba(255, 255, 255, 0.22);
@@ -12480,23 +12488,31 @@ tr.disabled:hover td {
 }
 .appetite-btn--on {
   border-color: transparent;
-  color: #fff;
   font-weight: 600;
 }
 .appetite-btn--less.appetite-btn--on {
   background: #7a3b3b;
+  color: #ffb4b4;
 }
 .appetite-btn--neutral.appetite-btn--on {
   background: #4b5563;
+  color: #e8edf4;
 }
 .appetite-btn--more.appetite-btn--on {
   background: #2f7d4f;
+  color: #b8ffcc;
 }
 .appetite-btn--fast_track.appetite-btn--on {
   background: #b8791f;
+  color: #ffe08a;
 }
 .appetite-btn--remove.appetite-btn--on {
   background: #5c1c1c;
+  color: #ff9d9d;
+}
+.appetite-btn--unset.appetite-btn--on {
+  background: rgba(90, 95, 105, 0.45);
+  color: #c5ccd6;
 }
 .appetite-facet {
   margin-left: 4px;
@@ -15051,6 +15067,7 @@ button.home-backlog-linkish {
   gap: 2px;
   flex-wrap: nowrap;
 }
+.appetite-bar--marks .appetite-btn,
 .appetite-bar--icons .appetite-btn {
   min-width: 28px;
   height: 28px;
@@ -15058,6 +15075,11 @@ button.home-backlog-linkish {
   font-size: 14px;
   font-weight: 800;
   line-height: 1;
+}
+.appetite-bar--marks .appetite-remove-icon,
+.appetite-bar--icons .appetite-remove-icon {
+  width: 14px;
+  height: 14px;
 }
 .appetite-preview-popover {
   position: fixed;

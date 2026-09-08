@@ -622,7 +622,9 @@ export type DiscoveryAssetRatingsResponse = {
     source_n?: number;
   }>;
   appetite?: Appetite | null;
+  /** @deprecated Up for review — operator UI no longer sets this. */
   appetite_facet?: AppetiteFacet | null;
+  appetite_facet_status?: "review";
   disposition_markers?: string[];
   disposition_notes?: Record<string, string>;
   disposition_reason_detail?: Record<string, { modifiers?: string[]; note?: string }>;
@@ -666,6 +668,10 @@ export type DiscoveryAssetRatingsVerifyResponse = {
 
 /** Two-axis rating: appetite ("do more WITH this") is distinct from the quality star. */
 export type Appetite = "less" | "neutral" | "more" | "fast_track" | "remove";
+/**
+ * @deprecated Up for review (2026-09-08). Operator UI no longer exposes both/source/look.
+ * Stored values remain for factory credit routing until that split is decided.
+ */
 export type AppetiteFacet = "both" | "source" | "processing";
 
 /** GET /api/discovery/rating-sampler — heuristic queue of videos to rate next. */
@@ -1007,7 +1013,9 @@ export type SetAppetiteResponse = {
     ok?: boolean;
     relpath?: string;
     appetite?: Appetite | "";
+    /** @deprecated Up for review — operator UI no longer sets this. */
     facet?: AppetiteFacet | null;
+    facet_status?: "review";
     cleared?: boolean;
     discovery_key?: string;
     short_key?: string;

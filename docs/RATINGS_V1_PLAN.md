@@ -66,9 +66,10 @@ Stored on each `by_output_relpath` row as:
 Key properties:
 
 - **Separate store.** Appetite lives in `_status/appetite_index.json`, never in XMP, so it survives `ratings build` (which only rewrites `ratings_index.json`).
-- **Facet attribution.** Each appetite carries a `facet`: `both` (default), `source` (the material), or `processing` (the look — prompt + lora). Facet routes credit:
+- **Facet attribution (UP FOR REVIEW, 2026-09-08).** Operator UI no longer exposes `both` / `source` / `look`. Stored `facet` values remain and still route factory credit until we decide whether that split earns its keep:
   - `processing` / `both` → `by_pattern_appetite` (+ `by_tag_appetite` for prompt-derived tags).
   - `source` / `both` → `by_group_lineage_appetite` (credit walks lineage ancestors).
+  Rows and API payloads mark `facet_status` / `appetite_facet_status` as `review`.
 - **`fast_track` acts now.** Setting `fast_track` records the appetite **and** fires an immediate Extend (chain output → video slot) via the existing replay machinery; still-source families fall back to a plain replay.
 - **Hourly step is a dispatcher.** `plan-step` chooses **Replay** (quality-dominant) or **Derive** (appetite-dominant, facet-aware rewire) per cursor via `HOURLY_DERIVE_SHARE` (default `0.5`); `fast_track` seeds pin Derive.
 

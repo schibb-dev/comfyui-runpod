@@ -28,7 +28,12 @@ RATINGS_DB_FILENAME = "ratings.sqlite"
 # quality star ("do more OF this"). Ordinal, strongest first. ``remove`` is a
 # terminal hide-from-factory mark (not on the less→fast_track scale).
 APPETITE_STATES: Tuple[str, ...] = ("less", "neutral", "more", "fast_track", "remove")
+# UP FOR REVIEW (2026-09-08): operator UI no longer exposes both/source/look.
+# Stored ``facet`` values remain and factory credit still reads them. Do not
+# treat this as an active product surface until we decide whether source vs
+# look appetite still earns its keep.
 APPETITE_FACETS: Tuple[str, ...] = ("both", "source", "processing")
+APPETITE_FACET_STATUS = "review"
 
 # Quality is three explicit sub-axes; ``explicit`` is their rounded mean for XMP/legacy.
 QUALITY_AXES: Tuple[str, ...] = ("subject_beauty", "render_quality", "action_quality")
@@ -189,7 +194,11 @@ def path_blocks_factory(path: str, appetite_doc: Optional[Dict[str, Any]]) -> bo
 
 
 def normalize_appetite_facet(value: Any) -> str:
-    """Return a canonical appetite facet, defaulting to 'both'."""
+    """Return a canonical appetite facet, defaulting to 'both'.
+
+    UP FOR REVIEW: operator UI no longer sets this. Stored values still route
+    factory credit (source vs processing vs both).
+    """
     raw = str(value or "").strip().lower()
     if raw in ("look", "recipe", "process"):
         raw = "processing"
@@ -987,6 +996,7 @@ def _appetite_row_to_doc(row: Any) -> Dict[str, Any]:
     return {
         "appetite": appetite,
         "facet": facet,
+        "facet_status": APPETITE_FACET_STATUS,
         "score": float(score),
         "short_key": str(_row_get(row, "short_key") or ""),
         "updated_at": _row_get(row, "updated_at"),
@@ -1948,6 +1958,7 @@ def default_appetite_index_path(og_root: Path) -> Path:
 def _init_appetite_doc() -> Dict[str, Any]:
     return {
         "version": APPETITE_SCHEMA_VERSION,
+        "facet_status": APPETITE_FACET_STATUS,
         "updated_at": utc_now(),
         "by_output_relpath": {},
     }
@@ -2010,11 +2021,12 @@ def set_output_appetite(
     appetite_index_path: Path,
 ) -> Dict[str, Any]:
     """
-    Record an appetite ("do more WITH this") + facet for one output in ratings.sqlite.
+    Record an appetite ("do more WITH this") for one output in ratings.sqlite.
 
-    Appetite is a direction signal, stored separately from the XMP quality star so it
-    survives ``ratings build`` (which rewrites ratings rows / JSON export). ``appetite=""``
-    clears the row. Never touches XMP. Does not rewrite appetite_index.json on the click path.
+    ``facet`` is stored for compatibility (UP FOR REVIEW — operator UI retired
+    both/source/look). Appetite is a direction signal, stored separately from the
+    XMP quality star so it survives ``ratings build``. ``appetite=""`` clears the
+    row. Never touches XMP. Does not rewrite appetite_index.json on the click path.
     """
     from correlate_output_ratings import output_relpath_keys_from_xmp
 
@@ -2060,6 +2072,7 @@ def set_output_appetite(
         "relpath": media_relpath,
         "appetite": appetite,
         "facet": facet if appetite else None,
+        "facet_status": APPETITE_FACET_STATUS,
         "cleared": cleared,
         "discovery_key": discovery_key,
         "short_key": short_key,
