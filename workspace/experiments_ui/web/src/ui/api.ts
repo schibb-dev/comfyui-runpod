@@ -1379,6 +1379,7 @@ export type ComposeSubmitRoute = {
   family: string;
   identityAnchor?: string | null;
   promptProfile?: string | null;
+  promptOverride?: { label?: string; positive: string; negative: string } | null;
 };
 
 export type ComposeSubmitAdvanceRequest = {
@@ -1456,13 +1457,24 @@ export async function composeSubmitAdvance(req: ComposeSubmitAdvanceRequest): Pr
       front: dest.front,
       destination: dest.destination,
       pending_position: dest.pending_position,
-      overrides: req.overrides,
       ...(route.stepId === "advance.extend" && route.identityAnchor
         ? { identity_anchor: route.identityAnchor }
         : {}),
       ...(route.promptProfile
         ? { prompt_profile: route.promptProfile, bindings: { prompt_profile: route.promptProfile } }
         : {}),
+      overrides: {
+        ...(req.overrides || {}),
+        ...(route.promptOverride
+          ? {
+              prompt_profile: {
+                label: route.promptOverride.label,
+                positive: route.promptOverride.positive,
+                negative: route.promptOverride.negative,
+              },
+            }
+          : {}),
+      },
     });
     const nested = (res.result as Record<string, unknown> | undefined) || {};
     const nestedResult = (nested.result as Record<string, unknown> | undefined) || {};

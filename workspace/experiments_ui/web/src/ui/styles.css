@@ -15745,6 +15745,10 @@ button.home-backlog-linkish {
   min-width: 0;
 }
 
+.submit-composer__prompt {
+  margin-top: 0.55rem;
+}
+
 .submit-composer__tunables {
   display: flex;
   flex-wrap: wrap;

@@ -62,6 +62,7 @@ import type {
 } from "./types";
 import { SubmitDurationField } from "./SubmitDurationField";
 import { formatSubmitDuration } from "./submitDuration";
+import { SubmitPromptEditor, type SubmitPromptEditorHandle, type SubmitPromptOverride } from "./SubmitPromptEditor";
 import { VideoTrimControls, type VideoTrimPlaybackMode } from "./VideoTrimControls";
 import { useTrimPlaybackEnforcement } from "./useTrimPlayback";
 import { marksToVhsWindow } from "./workProductTrim";
@@ -271,6 +272,7 @@ function SubmitEditJobApp({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const releasedRef = useRef(false);
   const persistFramesTimer = useRef<number | null>(null);
+  const promptEditorRef = useRef<SubmitPromptEditorHandle | null>(null);
 
   const mediaRelpath = String(snap?.source?.relpath || "").trim();
   const playUrl = mediaRelpath ? filesUrl(mediaRelpath) : snap?.source?.url || null;
@@ -296,6 +298,11 @@ function SubmitEditJobApp({
       setBusy(true);
       setMsg(null);
       try {
+        const saved = await promptEditorRef.current?.flush();
+        if (saved === false) {
+          setBusy(false);
+          return;
+        }
         const res = await finishShapeFactoryEdit({
           job_key: editJob,
           action,
@@ -744,6 +751,16 @@ function SubmitEditJobApp({
                 onChange={persistFrames}
               />
             </div>
+            <SubmitPromptEditor
+              ref={promptEditorRef}
+              heading="Prompt"
+              prompt={snap?.prompt || null}
+              profilePath={promptProfileDraft || null}
+              jobKey={editJob}
+              jobPath={snap?.job_path || null}
+              disabled={busy || finished}
+              onJobSaved={() => void refreshSnapshot()}
+            />
             <div className="work-product-quick-queue__actions" role="group" aria-label="Finish edit">
               <button
                 type="button"
@@ -797,7 +814,7 @@ function SubmitConstructionPreview({
   fromJob,
   ready,
 }: {
-  routes: { kind: string; family: string; shapeId: string | null; promptProfile?: string | null }[];
+  routes: { kind: string; family: string; shapeId: string | null; promptProfile?: string | null; promptEdited?: boolean }[];
   useLabel: string;
   useWindow: string | null;
   vhs: { skip: number; cap: number } | null;
@@ -848,13 +865,14 @@ function SubmitConstructionPreview({
               key={`${r.kind}:${r.family}`}
               className="work-product-badge"
               title={
-                [r.shapeId ? `${r.kind} · shape ${r.shapeId}` : r.kind, r.promptProfile || ""]
+                [r.shapeId ? `${r.kind} · shape ${r.shapeId}` : r.kind, r.promptProfile || "", r.promptEdited ? "prompt edited" : ""]
                   .filter(Boolean)
                   .join(" · ")
               }
             >
               {r.kind}@{r.family || "?"}
               {r.promptProfile ? ` · ${r.promptProfile}` : ""}
+              {r.promptEdited ? " · edited" : ""}
               {r.shapeId ? ` · ${r.shapeId}` : ""}
             </span>
           ))
@@ -1001,6 +1019,10 @@ function SubmitAdvanceComposerApp({
   const [extendPromptProfile, setExtendPromptProfile] = useState("");
   const [varyPromptProfile, setVaryPromptProfile] = useState("");
   const [derivePromptProfile, setDerivePromptProfile] = useState("");
+  const [i2vPromptOverride, setI2vPromptOverride] = useState<SubmitPromptOverride | null>(null);
+  const [extendPromptOverride, setExtendPromptOverride] = useState<SubmitPromptOverride | null>(null);
+  const [varyPromptOverride, setVaryPromptOverride] = useState<SubmitPromptOverride | null>(null);
+  const [derivePromptOverride, setDerivePromptOverride] = useState<SubmitPromptOverride | null>(null);
   const [genFrames, setGenFrames] = useState<number | null>(null);
 
   const duration =
@@ -1429,7 +1451,14 @@ function SubmitAdvanceComposerApp({
             source_still: bindingPath,
             ...(i2vPromptProfile ? { prompt_profile: i2vPromptProfile } : {}),
           },
-          ...(genFrames != null ? { overrides: { parameters: { frames: genFrames } } } : {}),
+          ...(genFrames != null || i2vPromptOverride
+            ? {
+                overrides: {
+                  ...(genFrames != null ? { parameters: { frames: genFrames } } : {}),
+                  ...(i2vPromptOverride ? { prompt_profile: i2vPromptOverride } : {}),
+                },
+              }
+            : {}),
           front: dest.front,
           destination: dest.destination,
           pending_position: dest.pending_position,
@@ -1468,6 +1497,7 @@ function SubmitAdvanceComposerApp({
           family: extendFamily,
           identityAnchor: identitySelectedPath || null,
           promptProfile: extendPromptProfile || null,
+          promptOverride: extendPromptOverride,
         });
       }
       if (varyOn && varyFamily) {
@@ -1475,6 +1505,7 @@ function SubmitAdvanceComposerApp({
           stepId: "advance.vary",
           family: varyFamily,
           promptProfile: varyPromptProfile || null,
+          promptOverride: varyPromptOverride,
         });
       }
       if (deriveOn && deriveFamily) {
@@ -1482,6 +1513,7 @@ function SubmitAdvanceComposerApp({
           stepId: "advance.derive",
           family: deriveFamily,
           promptProfile: derivePromptProfile || null,
+          promptOverride: derivePromptOverride,
         });
       }
       if (!routes.length) {
@@ -1630,13 +1662,14 @@ function SubmitAdvanceComposerApp({
       const hit = familyPromptProfiles(families, slug).find((p) => p.path === path);
       return promptVariantName(hit || path) || null;
     };
-    const routes: { kind: string; family: string; shapeId: string | null; promptProfile?: string | null }[] = [];
+    const routes: { kind: string; family: string; shapeId: string | null; promptProfile?: string | null; promptEdited?: boolean }[] = [];
     if (isStill) {
       routes.push({
         kind: "Seed",
         family: i2vFamily || "",
         shapeId: familyShapeId(families, i2vFamily),
         promptProfile: i2vPromptProfile ? profileForFamily(i2vFamily, i2vPromptProfile) : null,
+        promptEdited: Boolean(i2vPromptOverride),
       });
     } else {
       if (extendOn) {
@@ -1645,6 +1678,7 @@ function SubmitAdvanceComposerApp({
           family: extendFamily || "",
           shapeId: familyShapeId(families, extendFamily),
           promptProfile: extendPromptProfile ? profileForFamily(extendFamily, extendPromptProfile) : null,
+          promptEdited: Boolean(extendPromptOverride),
         });
       }
       if (varyOn) {
@@ -1653,6 +1687,7 @@ function SubmitAdvanceComposerApp({
           family: varyFamily || "",
           shapeId: familyShapeId(families, varyFamily),
           promptProfile: varyPromptProfile ? profileForFamily(varyFamily, varyPromptProfile) : null,
+          promptEdited: Boolean(varyPromptOverride),
         });
       }
       if (deriveOn) {
@@ -1661,6 +1696,7 @@ function SubmitAdvanceComposerApp({
           family: deriveFamily || "",
           shapeId: familyShapeId(families, deriveFamily),
           promptProfile: derivePromptProfile ? profileForFamily(deriveFamily, derivePromptProfile) : null,
+          promptEdited: Boolean(derivePromptOverride),
         });
       }
     }
@@ -1750,14 +1786,17 @@ function SubmitAdvanceComposerApp({
     canSubmit,
     deriveFamily,
     deriveOn,
+    derivePromptOverride,
     derivePromptProfile,
     extendFamily,
     extendOn,
+    extendPromptOverride,
     extendPromptProfile,
     families,
     genFrames,
     seedFrames,
     i2vFamily,
+    i2vPromptOverride,
     i2vPromptProfile,
     identityCandidates,
     identityLoading,
@@ -1770,6 +1809,7 @@ function SubmitAdvanceComposerApp({
     mediaRelpath,
     varyFamily,
     varyOn,
+    varyPromptOverride,
     varyPromptProfile,
     windowOk,
   ]);
@@ -2072,6 +2112,13 @@ function SubmitAdvanceComposerApp({
                     disabled={busy}
                     onChange={setGenFrames}
                   />
+                  <SubmitPromptEditor
+                    key={i2vPromptProfile || i2vFamily || "i2v-prompt"}
+                    heading="Prompt"
+                    profilePath={i2vPromptProfile || null}
+                    disabled={busy}
+                    onOverrideChange={setI2vPromptOverride}
+                  />
                 </div>
               ) : (
               <div className="work-product-quick-queue" role="group" aria-label="Submit advance">
@@ -2211,6 +2258,33 @@ function SubmitAdvanceComposerApp({
                   disabled={busy}
                   onChange={setGenFrames}
                 />
+                {extendOn ? (
+                  <SubmitPromptEditor
+                    key={`extend:${extendPromptProfile || extendFamily}`}
+                    heading="Prompt · Extend"
+                    profilePath={extendPromptProfile || null}
+                    disabled={busy}
+                    onOverrideChange={setExtendPromptOverride}
+                  />
+                ) : null}
+                {varyOn ? (
+                  <SubmitPromptEditor
+                    key={`vary:${varyPromptProfile || varyFamily}`}
+                    heading="Prompt · Vary"
+                    profilePath={varyPromptProfile || null}
+                    disabled={busy}
+                    onOverrideChange={setVaryPromptOverride}
+                  />
+                ) : null}
+                {deriveOn ? (
+                  <SubmitPromptEditor
+                    key={`derive:${derivePromptProfile || deriveFamily}`}
+                    heading="Prompt · Derive"
+                    profilePath={derivePromptProfile || null}
+                    disabled={busy}
+                    onOverrideChange={setDerivePromptOverride}
+                  />
+                ) : null}
                 {extendOn && identityNeeded ? (
                   <div className="work-product-identity-still" aria-label="Identity still">
                     <div className="work-product-identity-still__head">

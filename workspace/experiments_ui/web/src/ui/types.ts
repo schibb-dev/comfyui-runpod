@@ -1819,6 +1819,8 @@ export type ShapeFactoryJobEditSnapshot = {
   output_prefix?: string;
   created_at?: string;
   construction?: Record<string, unknown> | null;
+  /** Owned prompt excerpt (same shape Workbench uses). */
+  prompt?: WorkProductPromptProfile | null;
   /** Current vs template seed (frames/steps/overlap). First Submit tunable surface. */
   params_profile?: WorkProductParamsProfile | null;
   error?: string;
