@@ -6,6 +6,7 @@ export const APPETITE_ORDER: { key: Appetite; label: string; short: string; glyp
   { key: "neutral", label: "Neutral", short: "x", glyph: "○", hint: "No strong pull either way" },
   { key: "more", label: "More", short: "c", glyph: "+", hint: "Want more work in this direction" },
   { key: "fast_track", label: "Fast-track", short: "v", glyph: "»", hint: "Strong pin — hourly prefers this when it picks next" },
+  { key: "remove", label: "Remove", short: "b", glyph: "✕", hint: "Hide from lists and factory jobs — review later for deletion" },
 ];
 
 export const FACETS: { key: AppetiteFacet; label: string; glyph: string; hint: string }[] = [
@@ -14,8 +15,14 @@ export const FACETS: { key: AppetiteFacet; label: string; glyph: string; hint: s
   { key: "processing", label: "Look", glyph: "✦", hint: "Appetite for the processing/look (prompt + lora)" },
 ];
 
-/** z/x/c/v map to appetite states; g cycles the facet. */
-export const APPETITE_KEYMAP: Record<string, Appetite> = { z: "less", x: "neutral", c: "more", v: "fast_track" };
+/** z/x/c/v/b map to appetite states; g cycles the facet. */
+export const APPETITE_KEYMAP: Record<string, Appetite> = {
+  z: "less",
+  x: "neutral",
+  c: "more",
+  v: "fast_track",
+  b: "remove",
+};
 export const APPETITE_FACET_CYCLE: AppetiteFacet[] = ["both", "source", "processing"];
 
 export function AppetiteBar({

@@ -34,6 +34,7 @@ export const APPETITE_ROW_GLYPH: Record<Appetite, string> = {
   neutral: "○",
   more: "+",
   fast_track: "»",
+  remove: "✕",
 };
 
 export const APPETITE_ROW_LABEL: Record<Appetite, string> = {
@@ -41,6 +42,7 @@ export const APPETITE_ROW_LABEL: Record<Appetite, string> = {
   neutral: "Neutral",
   more: "More",
   fast_track: "Fast-track",
+  remove: "Remove",
 };
 
 export function appetiteRowTitle(appetite: Appetite, facet?: AppetiteFacet | null): string {

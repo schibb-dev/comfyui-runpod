@@ -36,6 +36,7 @@ import { discoveryLibraryHref, extractContentIdFromName, parseWorkbenchDeepLink,
 import { factoryMapFamilyHref } from "./factoryMapRoute";
 import { AppetitePreviewBadge, AppetitePreviewFrame } from "./AppetitePreviewBadge";
 import { DiscoveryAssetLineagePanel } from "./DiscoveryAssetLineagePanel";
+import { RemoveReviewBanner } from "./RemoveReviewBanner";
 import { SubmitComposerModal } from "./SubmitComposerModal";
 import { useAssetRatingsTick, WorkProductAppetiteStrip } from "./WorkProductAppetiteStrip";
 import {
@@ -46,6 +47,7 @@ import {
   workProductAppetiteKey,
   workProductAppetiteRelpath,
 } from "./workProductAppetite";
+import { nextOffSetForGroupDoubleClick } from "./filterGroupDoubleClick";
 import { prefetchAssetRatings } from "./assetRatingsCache";
 import { loadClipsForMedia, rememberFamiliesFromWorkProducts } from "./shapeFactorySessionCache";
 import { familySwapTargets, isDefaultPromptVariant, isStillMediaPath, jobPromptVariantName, jobPromptVariantSlug, pickDefaultSwapTarget, promptVariantName, promptVariantSlug } from "./submitFamily";
@@ -72,13 +74,14 @@ type RowLayout = "stacked" | "split";
 
 const LAYOUT_KEY = "work-products-row-layout";
 const SORT_KEY = "work-products-sort-v3";
-const APPETITE_FILTER_OFF_KEY = "work-products-appetite-filter-off";
+const APPETITE_FILTER_OFF_KEY = "work-products-appetite-filter-off-v2";
+const APPETITE_FILTER_OFF_KEY_V1 = "work-products-appetite-filter-off";
 const SECTION_OPEN_KEY = "work-products-section-open-v3";
 const HOURLY_ONLY_KEY = "work-products-hourly-only";
 const STATUS_FILTER_OFF_KEY = "work-products-status-filter-off";
 const MARKER_FILTER_OFF_KEY = "work-products-marker-filter-off";
-const DECODE_VAE_FILTER_KEY = "work-products-decode-vae-filter";
 const CHROME_KEY = "work-products-chrome-v2";
+const FILTER_CHIP_DBLCLICK_HINT = "double-click to show only this · again to show all";
 
 type WorkProductSort =
   | "created_desc"
@@ -88,7 +91,6 @@ type WorkProductSort =
   | "family_desc"
   | "status"
   | "pick_mode";
-type DecodeVaeFilter = "all" | "tiled" | "plain";
 
 /** Display order for status filter toggles (unknown statuses sort after these). */
 const STATUS_FILTER_ORDER = [
@@ -244,7 +246,30 @@ function persistMarkerFilterOff(off: Set<string>) {
 }
 
 function loadAppetiteFilterOff(): Set<string> {
-  return loadStringSet(APPETITE_FILTER_OFF_KEY);
+  try {
+    const raw = localStorage.getItem(APPETITE_FILTER_OFF_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) {
+        return new Set(parsed.map((x) => String(x || "").toLowerCase().trim()).filter(Boolean));
+      }
+    }
+    const legacy = localStorage.getItem(APPETITE_FILTER_OFF_KEY_V1);
+    const off = new Set<string>(["remove"]);
+    if (legacy) {
+      const parsed = JSON.parse(legacy) as unknown;
+      if (Array.isArray(parsed)) {
+        for (const x of parsed) {
+          const k = String(x || "").toLowerCase().trim();
+          if (k) off.add(k);
+        }
+      }
+    }
+    persistAppetiteFilterOff(off);
+    return off;
+  } catch {
+    return new Set(["remove"]);
+  }
 }
 
 function persistAppetiteFilterOff(off: Set<string>) {
@@ -319,39 +344,6 @@ function filterWorkProductsByStatus(items: WorkProductItem[], statusOff: Set<str
 function filterWorkProductsByMarker(items: WorkProductItem[], markerOff: Set<string>): WorkProductItem[] {
   if (!markerOff.size) return items;
   return items.filter((it) => !markerOff.has(workProductMarkerKey(it)));
-}
-
-function loadDecodeVaeFilter(): DecodeVaeFilter {
-  try {
-    const v = localStorage.getItem(DECODE_VAE_FILTER_KEY);
-    if (v === "all" || v === "tiled" || v === "plain") return v;
-  } catch {
-    /* ignore */
-  }
-  return "all";
-}
-
-function persistDecodeVaeFilter(v: DecodeVaeFilter) {
-  try {
-    localStorage.setItem(DECODE_VAE_FILTER_KEY, v);
-  } catch {
-    /* ignore */
-  }
-}
-
-function workProductDecodeVae(item: WorkProductItem): string | null {
-  const raw = item.markers?.["decode.vae"];
-  if (raw == null) return null;
-  const v = String(raw).toLowerCase().trim();
-  return v || null;
-}
-
-function filterWorkProductsByDecodeVae(
-  items: WorkProductItem[],
-  filter: DecodeVaeFilter,
-): WorkProductItem[] {
-  if (filter === "all") return items;
-  return items.filter((it) => workProductDecodeVae(it) === filter);
 }
 
 function loadSectionOpen(): Record<string, boolean> {
@@ -5204,7 +5196,6 @@ export function WorkProductsApp() {
   const [markerOff, setMarkerOff] = useState<Set<string>>(() => loadMarkerFilterOff());
   const [appetiteOff, setAppetiteOff] = useState<Set<string>>(() => loadAppetiteFilterOff());
   const appetiteTick = useAssetRatingsTick();
-  const [decodeVaeFilter, setDecodeVaeFilter] = useState<DecodeVaeFilter>(() => loadDecodeVaeFilter());
   const [clearFailedBusy, setClearFailedBusy] = useState(false);
   const [clearFailedMsg, setClearFailedMsg] = useState<string | null>(null);
   const [submitModalIntent, setSubmitModalIntent] = useState<SubmitDeepLink | null>(null);
@@ -5349,6 +5340,7 @@ export function WorkProductsApp() {
     const counts = new Map<string, number>();
     for (const it of items) {
       const key = workProductAppetiteKey(it);
+      if (!key) continue;
       counts.set(key, (counts.get(key) || 0) + 1);
     }
     return counts;
@@ -5361,15 +5353,12 @@ export function WorkProductsApp() {
   const visibleItems = useMemo(() => {
     const rows = sortWorkProducts(
       filterWorkProductsByAppetite(
-        filterWorkProductsByDecodeVae(
-          filterWorkProductsByMarker(
-            filterWorkProductsByStatus(
-              filterWorkProductsByMedia(filterWorkProductsByName(items, nameQuery), focusMedia),
-              statusOff,
-            ),
-            markerOff,
+        filterWorkProductsByMarker(
+          filterWorkProductsByStatus(
+            filterWorkProductsByMedia(filterWorkProductsByName(items, nameQuery), focusMedia),
+            statusOff,
           ),
-          decodeVaeFilter,
+          markerOff,
         ),
         appetiteOff,
       ),
@@ -5380,7 +5369,7 @@ export function WorkProductsApp() {
       return rows;
     }
     return [focusedItem, ...rows];
-  }, [items, nameQuery, focusMedia, sort, statusOff, markerOff, decodeVaeFilter, appetiteOff, focusedItem, appetiteTick]);
+  }, [items, nameQuery, focusMedia, sort, statusOff, markerOff, appetiteOff, focusedItem, appetiteTick]);
 
   const failedVisible = useMemo(
     () => visibleItems.filter((it) => canArchiveTerminalWorkProduct(it)),
@@ -5538,9 +5527,9 @@ export function WorkProductsApp() {
     });
   };
 
-  /** Double-click: radio-style focus — only this status on within the status set. */
+  /** Double-click: solo this status, or restore the whole group if already soloed. */
   const focusStatusFilter = (status: string) => {
-    const next = new Set(availableStatuses.filter((s) => s !== status));
+    const next = nextOffSetForGroupDoubleClick(statusOff, availableStatuses, status);
     persistStatusFilterOff(next);
     setStatusOff(next);
   };
@@ -5555,9 +5544,9 @@ export function WorkProductsApp() {
     });
   };
 
-  /** Double-click: radio-style focus — only this pick-mode on within the marker set. */
+  /** Double-click: solo this pick-mode, or restore the whole group if already soloed. */
   const focusMarkerFilter = (marker: string) => {
-    const next = new Set(availableMarkers.filter((m) => m !== marker));
+    const next = nextOffSetForGroupDoubleClick(markerOff, availableMarkers, marker);
     persistMarkerFilterOff(next);
     setMarkerOff(next);
   };
@@ -5573,7 +5562,7 @@ export function WorkProductsApp() {
   };
 
   const focusAppetiteFilter = (key: string) => {
-    const next = new Set(APPETITE_FILTER_KEYS.filter((k) => k !== key));
+    const next = nextOffSetForGroupDoubleClick(appetiteOff, APPETITE_FILTER_KEYS, key);
     persistAppetiteFilterOff(next);
     setAppetiteOff(next);
   };
@@ -5653,8 +5642,7 @@ export function WorkProductsApp() {
                 hourlyOnly ||
                 statusOff.size ||
                 markerOff.size ||
-                appetiteOff.size ||
-                decodeVaeFilter !== "all"
+                appetiteOff.size
                   ? " is-on"
                   : ""
               }`}
@@ -5823,8 +5811,8 @@ export function WorkProductsApp() {
                     aria-pressed={on}
                     title={
                       on
-                        ? `Showing ${label} (${count}) — click to hide · double-click to show only this`
-                        : `Hidden ${label} (${count}) — click to show · double-click to show only this`
+                        ? `Showing ${label} (${count}) — click to hide · ${FILTER_CHIP_DBLCLICK_HINT}`
+                        : `Hidden ${label} (${count}) — click to show · ${FILTER_CHIP_DBLCLICK_HINT}`
                     }
                     onClick={() => toggleMarkerFilter(marker)}
                     onDoubleClick={(e) => {
@@ -5855,11 +5843,15 @@ export function WorkProductsApp() {
                 title={
                   key === "unset"
                     ? on
-                      ? `Showing unmarked outputs (${count}) — click to hide · double-click to show only unset`
-                      : `Hidden unmarked outputs (${count}) — click to show · double-click to show only unset`
+                      ? `Showing completed jobs with no appetite (${count}) — click to hide · ${FILTER_CHIP_DBLCLICK_HINT}`
+                      : `Hidden completed jobs with no appetite (${count}) — click to show · ${FILTER_CHIP_DBLCLICK_HINT}`
+                    : key === "remove"
+                      ? on
+                        ? `Showing remove-marked outputs (${count}) — hidden from factory · ${FILTER_CHIP_DBLCLICK_HINT}`
+                        : `Hidden remove-marked outputs (${count}) — click to review · ${FILTER_CHIP_DBLCLICK_HINT}`
                     : on
-                      ? `Showing ${label} (${count}) — click to hide · double-click to show only this`
-                      : `Hidden ${label} (${count}) — click to show · double-click to show only this`
+                      ? `Showing ${label} (${count}) — click to hide · ${FILTER_CHIP_DBLCLICK_HINT}`
+                      : `Hidden ${label} (${count}) — click to show · ${FILTER_CHIP_DBLCLICK_HINT}`
                 }
                 onClick={() => toggleAppetiteFilter(key)}
                 onDoubleClick={(e) => {
@@ -5868,40 +5860,6 @@ export function WorkProductsApp() {
                 }}
               >
                 <span className="work-products-status-toggle__label">{label}</span>
-                <span className="work-products-status-toggle__count">{count}</span>
-              </button>
-            );
-          })}
-        </div>
-        <span className="work-products-status-filters__sep" aria-hidden="true" />
-        <div className="work-products-status-filters__group" role="group" aria-label="Filter by VAE decode">
-          {(["all", "tiled", "plain"] as DecodeVaeFilter[]).map((opt) => {
-            const on = decodeVaeFilter === opt;
-            const count =
-              opt === "all"
-                ? items.length
-                : items.filter((it) => workProductDecodeVae(it) === opt).length;
-            return (
-              <button
-                key={`decode-vae-${opt}`}
-                type="button"
-                className={`work-products-status-toggle work-products-status-toggle--decode-vae${
-                  on ? " is-on" : " is-off"
-                }`}
-                aria-pressed={on}
-                title={
-                  opt === "all"
-                    ? "Show all decode modes"
-                    : `Show only decode.vae=${opt} (${count})`
-                }
-                onClick={() => {
-                  setDecodeVaeFilter(opt);
-                  persistDecodeVaeFilter(opt);
-                }}
-              >
-                <span className="work-products-status-toggle__label">
-                  {opt === "all" ? "vae:all" : `vae:${opt}`}
-                </span>
                 <span className="work-products-status-toggle__count">{count}</span>
               </button>
             );
@@ -5922,8 +5880,8 @@ export function WorkProductsApp() {
                     aria-pressed={on}
                     title={
                       on
-                        ? `Showing ${status} (${count}) — click to hide · double-click to show only this`
-                        : `Hidden ${status} (${count}) — click to show · double-click to show only this`
+                        ? `Showing ${status} (${count}) — click to hide · ${FILTER_CHIP_DBLCLICK_HINT}`
+                        : `Hidden ${status} (${count}) — click to show · ${FILTER_CHIP_DBLCLICK_HINT}`
                     }
                     onClick={() => toggleStatusFilter(status)}
                     onDoubleClick={(e) => {
@@ -5941,6 +5899,8 @@ export function WorkProductsApp() {
         ) : null}
       </div>
       ) : null}
+
+      <RemoveReviewBanner enabled={!appetiteOff.has("remove")} />
 
       <div className={`work-products-shell${listOpen ? "" : " work-products-shell--list-collapsed"}`}>
         {error && listOpen ? <div className="work-products-error">{error}</div> : null}

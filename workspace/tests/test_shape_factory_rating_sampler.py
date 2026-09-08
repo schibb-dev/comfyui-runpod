@@ -138,6 +138,15 @@ class RatingSamplerTests(unittest.TestCase):
         self.assertFalse(needs_rating_item(item, ratings_doc=ratings, appetite_doc=appetite))
         self.assertTrue(is_rating_complete(item, ratings_doc=ratings, appetite_doc=appetite))
 
+    def test_remove_appetite_never_needs_rating(self) -> None:
+        item = {"relpath": "output/og/2026-04-03/foo.mp4"}
+        appetite = {
+            "by_output_relpath": {
+                "output/og/2026-04-03/foo.mp4": {"appetite": "remove"},
+            }
+        }
+        self.assertFalse(needs_rating_item(item, ratings_doc={}, appetite_doc=appetite))
+
     def test_retired_never_needs_rating(self) -> None:
         item = {"relpath": "output/og/2026-04-03/foo.mp4"}
         disposition = {

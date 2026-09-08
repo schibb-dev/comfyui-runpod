@@ -454,6 +454,40 @@ def _keeper_output_rel(
     return None
 
 
+def _output_rel_exists(output_root: Path, rel: Optional[str]) -> bool:
+    text = str(rel or "").strip().replace("\\", "/").lstrip("/")
+    if not text:
+        return False
+    try:
+        return (Path(output_root) / text).is_file()
+    except OSError:
+        return False
+
+
+_FINISHED_WITHOUT_MEDIA_STATUSES = frozenset({"complete", "completed", "deposited"})
+
+
+def finished_work_product_missing_media(job: Dict[str, Any], item: Dict[str, Any]) -> bool:
+    """True when a finished job named an output that is no longer on disk."""
+    if str(item.get("output_relpath") or "").strip():
+        return False
+    status = str(item.get("status") or "").strip().lower()
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    if status not in _FINISHED_WITHOUT_MEDIA_STATUSES:
+        status = str(submit.get("status") or "").strip().lower()
+    if status not in _FINISHED_WITHOUT_MEDIA_STATUSES:
+        return False
+    deposit = job.get("deposit") if isinstance(job.get("deposit"), dict) else {}
+    named = False
+    for src in (submit.get("outputs"), deposit.get("videos")):
+        if isinstance(src, list) and any(str(x or "").strip() for x in src):
+            named = True
+            break
+    if not named and str(job.get("output_prefix") or "").strip():
+        named = True
+    return named
+
+
 def _file_url(rel: Optional[str]) -> Optional[str]:
     if not rel:
         return None
@@ -1642,7 +1676,10 @@ def _work_product_item_from_job(
                     outputs_abs.append(s)
 
     output_rel = _keeper_output_rel(outputs_abs, output_root=output_root, job=job)
-    # Fall back to output_prefix guess when submit hasn't recorded outputs yet.
+    if output_rel and not _output_rel_exists(output_root, output_rel):
+        output_rel = None
+    # Fall back to output_prefix guess when submit hasn't recorded outputs yet
+    # (or the recorded keeper was deleted).
     if not output_rel:
         prefix = str(job.get("output_prefix") or "").strip().replace("\\", "/")
         if prefix:
@@ -2120,16 +2157,17 @@ def list_recent_work_products(
         job = _load_job(path)
         if job is None or is_pending_queue_job(job):
             continue
-        other_items.append(
-            _work_product_item_from_job(
-                path,
-                job,
-                data_root=data_root,
-                output_root=output_root,
-                work_items_doc=work_items_doc,
-                work_items_for_item=work_items_for_item,
-            )
+        item = _work_product_item_from_job(
+            path,
+            job,
+            data_root=data_root,
+            output_root=output_root,
+            work_items_doc=work_items_doc,
+            work_items_for_item=work_items_for_item,
         )
+        if finished_work_product_missing_media(job, item):
+            continue
+        other_items.append(item)
         if len(other_items) >= limit:
             break
     items = pending_items + other_items

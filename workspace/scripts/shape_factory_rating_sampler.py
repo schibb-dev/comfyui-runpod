@@ -970,6 +970,14 @@ def needs_rating_item(
     """True when the rate queue should still show this clip (missing quality and/or appetite)."""
     if _is_retired_item(item, disposition_doc):
         return False
+    rel = str(item.get("relpath") or item.get("video_relpath") or "").strip().replace("\\", "/")
+    if rel and appetite_doc:
+        try:
+            from shape_factory_ratings import path_blocks_factory
+        except ImportError:
+            path_blocks_factory = None  # type: ignore
+        if path_blocks_factory is not None and path_blocks_factory(rel, appetite_doc):
+            return False
     return not is_rating_complete(
         item,
         ratings_doc=ratings_doc,

@@ -665,7 +665,7 @@ export type DiscoveryAssetRatingsVerifyResponse = {
 };
 
 /** Two-axis rating: appetite ("do more WITH this") is distinct from the quality star. */
-export type Appetite = "less" | "neutral" | "more" | "fast_track";
+export type Appetite = "less" | "neutral" | "more" | "fast_track" | "remove";
 export type AppetiteFacet = "both" | "source" | "processing";
 
 /** GET /api/discovery/rating-sampler — heuristic queue of videos to rate next. */
@@ -884,6 +884,75 @@ export type AssetAuditResponse = {
   scanned?: number;
   missing_count?: number;
   missing?: AssetAuditMissing[];
+};
+
+/** GET /api/discovery/asset-remove/review — read-only refs for appetite=remove assets. */
+export type AssetRemoveReviewJobRef = {
+  job_key?: string;
+  family?: string;
+  status?: string;
+  job_path?: string;
+};
+
+export type AssetRemoveReviewPoolRef = {
+  family?: string;
+  pool?: string;
+  path?: string;
+};
+
+export type AssetRemoveReviewItem = {
+  relpath: string;
+  appetite?: "remove";
+  facet?: string;
+  updated_at?: string | null;
+  purge_ready?: boolean;
+  blockers?: string[];
+  notes?: string[];
+  deletion?: string;
+  counts?: {
+    as_output_jobs?: number;
+    as_source_jobs?: number;
+    pool_memberships?: number;
+    inflight_source_jobs?: number;
+  };
+  as_output_jobs?: AssetRemoveReviewJobRef[];
+  as_source_jobs?: AssetRemoveReviewJobRef[];
+  inflight_source_jobs?: AssetRemoveReviewJobRef[];
+  pool_memberships?: AssetRemoveReviewPoolRef[];
+};
+
+export type AssetRemoveReviewResponse = {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  count?: number;
+  shown?: number;
+  purge_ready?: number;
+  has_references?: number;
+  deletion?: string;
+  items?: AssetRemoveReviewItem[];
+};
+
+export type AssetRemovePurgeResult = {
+  ok: boolean;
+  error?: string;
+  relpath?: string;
+  blockers?: string[];
+  deleted_files?: string[];
+  missing_files?: string[];
+  appetite_rows?: number;
+  rating_rows?: number;
+  deletion?: string;
+};
+
+export type AssetRemovePurgeResponse = {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  purged?: number;
+  failed?: number;
+  deletion?: string;
+  results?: AssetRemovePurgeResult[];
 };
 
 /** POST /api/discovery/asset-recover — locate/verify/place a source into input/. */

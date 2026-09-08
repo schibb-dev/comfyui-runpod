@@ -314,6 +314,37 @@ class TestWorkProducts(unittest.TestCase):
             payload = list_recent_work_products(data_root=data, output_root=out, limit=10, hourly_only=True)
             self.assertEqual([it["job_key"] for it in payload["items"]], ["hourly__new", "hourly__old"])
 
+    def test_list_recent_omits_finished_job_whose_output_was_deleted(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            data = root / "data"
+            out = root / "output"
+            jobs = data / "shape_factory" / "jobs" / "DEMO"
+            jobs.mkdir(parents=True)
+            media_dir = out / "og" / "2026-09-08" / "hourly"
+            media_dir.mkdir(parents=True)
+            gone = media_dir / "hourly__ghost_00001.mp4"
+            keep = media_dir / "hourly__keep_00001.mp4"
+            keep.write_bytes(b"ok")
+            ghost = {
+                "created_at": "2026-09-08T12:00:00+00:00",
+                "family_slug": "DEMO",
+                "job_key": "hourly__ghost",
+                "output_prefix": "og/2026-09-08/hourly/hourly__ghost",
+                "submit": {"status": "complete", "outputs": [str(gone)]},
+            }
+            live = {
+                "created_at": "2026-09-08T13:00:00+00:00",
+                "family_slug": "DEMO",
+                "job_key": "hourly__keep",
+                "output_prefix": "og/2026-09-08/hourly/hourly__keep",
+                "submit": {"status": "complete", "outputs": [str(keep)]},
+            }
+            (jobs / "hourly__ghost.job.json").write_text(json.dumps(ghost) + "\n", encoding="utf-8")
+            (jobs / "hourly__keep.job.json").write_text(json.dumps(live) + "\n", encoding="utf-8")
+            payload = list_recent_work_products(data_root=data, output_root=out, limit=10, hourly_only=True)
+            self.assertEqual([it["job_key"] for it in payload["items"]], ["hourly__keep"])
+
     def test_get_work_product_loads_job_outside_recent_window(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

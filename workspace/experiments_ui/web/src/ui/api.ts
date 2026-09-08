@@ -87,6 +87,8 @@ import type {
   WorkProductLorasProfile,
   WorkProductPromptRow,
   AssetAuditResponse,
+  AssetRemoveReviewResponse,
+  AssetRemovePurgeResponse,
   AssetRecoverResponse,
   SetAssetRatingResponse,
   SetAppetiteResponse,
@@ -1025,6 +1027,42 @@ export async function fetchAssetAudit(family: string): Promise<AssetAuditRespons
     const detail = [j.error, j.detail].filter(Boolean).join(": ");
     throw new Error(`GET /api/discovery/asset-audit failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
   }
+  return j;
+}
+
+export async function fetchAssetRemoveReview(opts?: { limit?: number }): Promise<AssetRemoveReviewResponse> {
+  const sp = new URLSearchParams();
+  if (opts?.limit != null) sp.set("limit", String(opts.limit));
+  const qs = sp.toString();
+  const r = await fetch(`/api/discovery/asset-remove/review${qs ? `?${qs}` : ""}`);
+  const j = (await r.json().catch(() => ({}))) as AssetRemoveReviewResponse & { error?: string; detail?: string };
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`GET /api/discovery/asset-remove/review failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  if (!Array.isArray(j.items)) j.items = [];
+  return j;
+}
+
+export async function purgeAssetRemove(body: {
+  relpath?: string;
+  relpaths?: string[];
+}): Promise<AssetRemovePurgeResponse> {
+  const r = await fetch("/api/discovery/asset-remove/purge", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as AssetRemovePurgeResponse & { error?: string; detail?: string };
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    const first = (j.results || []).find((row) => !row.ok);
+    const extra = first?.blockers?.join("; ") || first?.error || "";
+    throw new Error(
+      `POST /api/discovery/asset-remove/purge failed: ${r.status}${detail ? `: ${detail}` : ""}${extra ? ` (${extra})` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  if (!Array.isArray(j.results)) j.results = [];
   return j;
 }
 

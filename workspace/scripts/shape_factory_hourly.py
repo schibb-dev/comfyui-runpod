@@ -363,6 +363,8 @@ def _still_appetite_mult(
         return max(1.0, float(os.environ.get("HOURLY_STILL_APPETITE_MORE_BOOST", "4.0")))
     if state == "less":
         return max(0.0, float(os.environ.get("HOURLY_STILL_APPETITE_LESS_MULT", "0.15")))
+    if state == "remove":
+        return 0.0
     return 1.0
 
 
@@ -710,6 +712,12 @@ def _recipe_promotion_mult(
     fam = str(family or recipe.get("family") or "").strip()
     src = _recipe_source_path(recipe)
     paths = [src, str(recipe.get("output_path") or "")]
+    try:
+        from shape_factory_ratings import path_blocks_factory
+    except ImportError:
+        path_blocks_factory = None  # type: ignore
+    if path_blocks_factory is not None and any(path_blocks_factory(p, appetite_doc) for p in paths if p):
+        return 0.0
     mult = 1.0
     if any(_is_kneel_source(p) for p in paths):
         mult *= kneel_b
@@ -2631,6 +2639,9 @@ def plan_hourly_derive(
         if info.get("omit"):
             omit_count += 1
             continue
+        if str(info.get("appetite") or "").strip() == "remove":
+            omit_count += 1
+            continue
         value = info.get("value")
         if value is None or float(value) <= 2.5:  # only "more"/"fast_track" (above neutral)
             continue
@@ -3727,6 +3738,13 @@ def _pick_input_still_from_members(
     prefer_weekly = rng.random() < weekly_share
     if appetite_doc is None:
         appetite_doc = _load_appetite_index(_default_data_root())
+    members = [
+        p
+        for p in members
+        if _still_appetite_state(str(p), appetite_doc) != "remove"
+    ]
+    if not members:
+        raise ValueError("no eligible stills (all marked remove)")
     weekly_members = [p for p in members if _still_within_days(str(p), window_days)]
     appetite_hot = [
         p

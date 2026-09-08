@@ -25,8 +25,9 @@ RATINGS_DB_SCHEMA_VERSION = 1
 RATINGS_DB_FILENAME = "ratings.sqlite"
 
 # Appetite ("do more WITH this") is a second, direction axis distinct from the
-# quality star ("do more OF this"). Ordinal, strongest first.
-APPETITE_STATES: Tuple[str, ...] = ("less", "neutral", "more", "fast_track")
+# quality star ("do more OF this"). Ordinal, strongest first. ``remove`` is a
+# terminal hide-from-factory mark (not on the less→fast_track scale).
+APPETITE_STATES: Tuple[str, ...] = ("less", "neutral", "more", "fast_track", "remove")
 APPETITE_FACETS: Tuple[str, ...] = ("both", "source", "processing")
 
 # Quality is three explicit sub-axes; ``explicit`` is their rounded mean for XMP/legacy.
@@ -84,12 +85,14 @@ APPETITE_SCORE: Dict[str, float] = {
     "neutral": 2.5,
     "more": 4.0,
     "fast_track": 5.0,
+    "remove": 0.0,
 }
 APPETITE_MULT: Dict[str, float] = {
     "less": 0.1,
     "neutral": 1.0,
     "more": 2.5,
     "fast_track": 6.0,
+    "remove": 0.0,
 }
 
 
@@ -135,7 +138,54 @@ def normalize_appetite(value: Any) -> str:
         return ""
     if raw in ("fasttrack", "fast"):
         raw = "fast_track"
+    if raw in ("bin", "discard", "delete", "junk"):
+        raw = "remove"
     return raw if raw in APPETITE_STATES else ""
+
+
+def appetite_blocks_factory(value: Any) -> bool:
+    """True when this appetite mark must not seed or bind factory jobs."""
+    return normalize_appetite(value) == "remove"
+
+
+def path_appetite_state(path: str, appetite_doc: Optional[Dict[str, Any]]) -> str:
+    """Resolve appetite for a still or output path (basename / input/ / og/ keys)."""
+    if not appetite_doc:
+        return ""
+    row = lookup_output_appetite(path, appetite_doc)
+    if isinstance(row, dict):
+        st = normalize_appetite(row.get("appetite"))
+        if st:
+            return st
+    raw = str(path or "").replace("\\", "/").strip()
+    if not raw:
+        return ""
+    bn = Path(raw).name
+    extra: List[str] = []
+    if "/input/" in raw:
+        extra.append("input/" + raw.split("/input/", 1)[-1].lstrip("/"))
+    elif raw.lower().startswith("input/"):
+        extra.append(raw)
+    extra.extend([f"input/{bn}", bn])
+    table = appetite_doc.get("by_output_relpath") if isinstance(appetite_doc, dict) else None
+    if not isinstance(table, dict):
+        return ""
+    seen: set[str] = set()
+    for key in extra:
+        key = str(key or "").strip().replace("\\", "/")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        hit = table.get(key)
+        if isinstance(hit, dict):
+            st = normalize_appetite(hit.get("appetite"))
+            if st:
+                return st
+    return ""
+
+
+def path_blocks_factory(path: str, appetite_doc: Optional[Dict[str, Any]]) -> bool:
+    return appetite_blocks_factory(path_appetite_state(path, appetite_doc))
 
 
 def normalize_appetite_facet(value: Any) -> str:
@@ -1221,6 +1271,76 @@ def delete_appetite_row(
     )
     if commit:
         con.commit()
+
+
+def judgment_lookup_keys(relpath: str) -> List[str]:
+    """Path variants used to find rating/appetite rows for one asset."""
+    raw = str(relpath or "").replace("\\", "/").strip().lstrip("/")
+    if not raw:
+        return []
+    keys: List[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        text = str(value or "").replace("\\", "/").strip().lstrip("/")
+        if not text:
+            return
+        ident = text.lower()
+        if ident in seen:
+            return
+        seen.add(ident)
+        keys.append(text)
+
+    add(raw)
+    add(Path(raw).name)
+    low = raw.lower()
+    if "/og/" in low:
+        tail = raw.split("/og/", 1)[-1].lstrip("/")
+        add("og/" + tail)
+        add("output/og/" + tail)
+    elif low.startswith("og/"):
+        add("output/" + raw)
+    if "/input/" in low:
+        add("input/" + raw.split("/input/", 1)[-1].lstrip("/"))
+    elif low.startswith("input/"):
+        add(raw)
+        add(Path(raw).name)
+    for existing in list(keys):
+        p = Path(existing)
+        if p.suffix:
+            add(str(p.with_suffix("")).replace("\\", "/"))
+            add(p.name)
+            add(p.stem)
+    return keys
+
+
+def delete_judgment_for_relpath(appetite_index_path: Path, relpath: str) -> Dict[str, int]:
+    """Delete appetite + quality rows for one asset. Does not require the media file."""
+    keys = judgment_lookup_keys(relpath)
+    if not keys:
+        return {"appetite_rows": 0, "rating_rows": 0}
+    appetite_index_path = Path(appetite_index_path)
+    db_path = ratings_db_path_for_index(appetite_index_path)
+    con = open_ratings_db(
+        db_path,
+        ratings_json=_ratings_json_path_for_db(db_path),
+        appetite_json=appetite_index_path,
+    )
+    try:
+        placeholders = ",".join("?" for _ in keys)
+        where = (
+            f"asset_key IN ({placeholders}) OR short_key IN ({placeholders}) "
+            f"OR discovery_key IN ({placeholders})"
+        )
+        params = (*keys, *keys, *keys)
+        appetite_n = int(con.execute(f"SELECT COUNT(*) FROM appetite_row WHERE {where}", params).fetchone()[0])
+        rating_n = int(con.execute(f"SELECT COUNT(*) FROM rating_row WHERE {where}", params).fetchone()[0])
+        con.execute(f"DELETE FROM appetite_row WHERE {where}", params)
+        con.execute(f"DELETE FROM rating_row WHERE {where}", params)
+        con.commit()
+    finally:
+        con.close()
+    return {"appetite_rows": appetite_n, "rating_rows": rating_n}
 
 
 def fetch_rating_row(

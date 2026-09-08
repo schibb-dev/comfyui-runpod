@@ -1543,7 +1543,7 @@ export function DiscoveryRatingQueueApp() {
             <span><kbd>1</kbd>–<kbd>5</kbd> active quality axis</span>
             <span><kbd>0</kbd> clear active axis</span>
             <span><kbd>q</kbd> cycle Subject / Render / Action</span>
-            <span><kbd>z</kbd><kbd>x</kbd><kbd>c</kbd><kbd>v</kbd> appetite</span>
+            <span><kbd>z</kbd><kbd>x</kbd><kbd>c</kbd><kbd>v</kbd><kbd>b</kbd> appetite</span>
             <span><kbd>g</kbd> cycle facet</span>
             <span><kbd>←</kbd><kbd>→</kbd> prev / next (wraps)</span>
             <span><kbd>s</kbd> skip to next</span>

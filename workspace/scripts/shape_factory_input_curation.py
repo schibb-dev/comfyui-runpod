@@ -397,7 +397,7 @@ def _normalize_still_appetite_filter(raw: str) -> str:
         return "any"
     if text in {"none", "unmarked", "clear", "unset"}:
         return "none"
-    if text in {"more", "fast_track", "less", "neutral"}:
+    if text in {"more", "fast_track", "less", "neutral", "remove"}:
         return text
     return ""
 
@@ -489,13 +489,15 @@ def _attach_still_appetite(
 
 
 def _still_appetite_matches(state: str, filt: str) -> bool:
+    s = str(state or "").strip()
+    if s == "remove" and filt != "remove":
+        return False
     if not filt:
         return True
-    s = str(state or "").strip()
     if filt == "any":
         return s in {"more", "fast_track", "less", "neutral"}
     if filt == "none":
-        return s not in {"more", "fast_track", "less", "neutral"}
+        return s not in {"more", "fast_track", "less", "neutral", "remove"}
     return s == filt
 
 

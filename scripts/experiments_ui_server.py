@@ -2056,6 +2056,88 @@ def _asset_audit_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str
     )
 
 
+def _discovery_asset_remove_review_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
+    """GET /api/discovery/asset-remove/review — read-only refs for appetite=remove assets."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+    from shape_factory_remove_review import build_remove_review  # type: ignore
+
+    limit = 200
+    raw_limit = str((q.get("limit") or [""])[0] or "").strip()
+    if raw_limit:
+        try:
+            limit = max(0, min(2000, int(raw_limit)))
+        except ValueError:
+            return {"ok": False, "error": "bad_limit"}
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    return build_remove_review(
+        appetite_index_path=_discovery_appetite_index_path(cfg),
+        jobs_dir=data_root / "shape_factory" / "jobs",
+        pools_root=data_root / "pools",
+        limit=limit,
+    )
+
+
+def _remove_purge_search_roots(cfg: ServerConfig) -> List[Path]:
+    roots: List[Path] = [cfg.output_root, cfg.workspace_root]
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    try:
+        from input_still_catalog import default_input_root  # type: ignore
+
+        roots.append(default_input_root())
+    except Exception:
+        pass
+    env = str(os.environ.get("COMFYUI_BIND_INPUT_DIR") or "").strip()
+    if env:
+        roots.append(Path(env).expanduser())
+    return [p for p in roots if p]
+
+
+def _discovery_asset_remove_purge_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /api/discovery/asset-remove/purge — delete purge-ready remove-marked assets."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+    from shape_factory_remove_review import purge_remove_assets  # type: ignore
+
+    relpaths: List[str] = []
+    raw_one = str(body.get("relpath") or "").strip()
+    if raw_one:
+        relpaths.append(raw_one)
+    extra = body.get("relpaths")
+    if isinstance(extra, list):
+        for item in extra:
+            text = str(item or "").strip()
+            if text:
+                relpaths.append(text)
+    # de-dupe, preserve order
+    seen: set[str] = set()
+    ordered: List[str] = []
+    for rel in relpaths:
+        ident = rel.lower()
+        if ident in seen:
+            continue
+        seen.add(ident)
+        ordered.append(rel)
+    if not ordered:
+        return {"ok": False, "error": "missing_relpath"}
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    payload = purge_remove_assets(
+        ordered,
+        appetite_index_path=_discovery_appetite_index_path(cfg),
+        jobs_dir=data_root / "shape_factory" / "jobs",
+        pools_root=data_root / "pools",
+        search_roots=_remove_purge_search_roots(cfg),
+    )
+    _invalidate_ratings_caches(cfg)
+    return payload
+
+
 def _home_fresh_outputs(cfg: ServerConfig, limit: int = 12) -> List[Dict[str, Any]]:
     """Newest indexed outputs (og+wip), enriched with live URLs + rating rollup."""
     idx_path = cfg.discovery_index_path
@@ -12151,6 +12233,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_discovery_work_items_pool_get(q)
         if path == "/api/discovery/asset-audit":
             return self._handle_discovery_asset_audit_get(q)
+        if path == "/api/discovery/asset-remove/review":
+            return self._handle_discovery_asset_remove_review_get(q)
         if path == "/api/discovery/identity-still/candidates":
             return self._handle_discovery_identity_still_candidates_get(q)
 
@@ -12923,6 +13007,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_discovery_asset_ratings_set_post()
         if path == "/api/discovery/asset-appetite/set":
             return self._handle_discovery_asset_appetite_set_post()
+        if path == "/api/discovery/asset-remove/purge":
+            return self._handle_discovery_asset_remove_purge_post()
         if path == "/api/discovery/disposition-catalog":
             return self._handle_discovery_disposition_catalog_post()
         if path == "/api/discovery/asset-disposition/toggle":
@@ -14118,6 +14204,13 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(items_in, list):
             items_in = []
 
+        include_removed = False
+        for v in q.get("include_removed", []):
+            if str(v).strip().lower() in ("1", "true", "yes", "on"):
+                include_removed = True
+                break
+        appetite_hide_doc = None if include_removed else _discovery_load_appetite_index(cfg)
+
         now = time.time()
         # Folder browse is how operators reach deep dated trees — skip mtime window.
         since_cut = None
@@ -14132,6 +14225,15 @@ class Handler(BaseHTTPRequestHandler):
             if lib_filter != "all" and lib != lib_filter:
                 continue
             rp = str(it.get("relpath") or "")
+            if appetite_hide_doc:
+                try:
+                    from shape_factory_ratings import path_blocks_factory  # type: ignore
+
+                    vr = str(it.get("video_relpath") or "")
+                    if path_blocks_factory(rp or vr, appetite_hide_doc):
+                        continue
+                except Exception:
+                    pass
             nm = str(it.get("name") or "")
             if path_prefix:
                 cands = _discovery_item_relpath_candidates(it)
@@ -14604,6 +14706,27 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return _json_response(self, 500, {"ok": False, "error": "asset_audit_failed", "detail": str(e)})
         status = 200 if payload.get("ok") else 400
+        return _json_response(self, status, payload)
+
+    def _handle_discovery_asset_remove_review_get(self, q: Dict[str, List[str]]) -> None:
+        """GET /api/discovery/asset-remove/review — refs for appetite=remove; delete is ready-only."""
+        try:
+            payload = _discovery_asset_remove_review_payload(self.server.cfg, q)
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "asset_remove_review_failed", "detail": str(e)})
+        status = 200 if payload.get("ok") else 400
+        return _json_response(self, status, payload)
+
+    def _handle_discovery_asset_remove_purge_post(self) -> None:
+        """POST /api/discovery/asset-remove/purge { relpath } | { relpaths: [...] }."""
+        obj = self._read_request_json()
+        if obj is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _discovery_asset_remove_purge_payload(self.server.cfg, obj if isinstance(obj, dict) else {})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "asset_remove_purge_failed", "detail": str(e)})
+        status = 200 if payload.get("ok") else 409 if payload.get("error") or payload.get("failed") else 400
         return _json_response(self, status, payload)
 
     def _handle_home_summary_get(self, q: Dict[str, List[str]]) -> None:
@@ -16383,7 +16506,7 @@ def main() -> int:
         "[experiments-ui] discovery_routes=GET /api/discovery/library, /api/discovery/library/item, "
         "/api/discovery/trim, /api/discovery/embed-api-prompt, /api/discovery/workflow-facets, "
         "/api/discovery/asset-lineage, /api/discovery/asset-ratings, /api/discovery/asset-ratings/verify, "
-        "/api/discovery/rating-sampler, GET /api/discovery/asset-audit, POST /api/discovery/asset-recover, "
+        "/api/discovery/rating-sampler, GET /api/discovery/asset-audit, GET /api/discovery/asset-remove/review, POST /api/discovery/asset-remove/purge, POST /api/discovery/asset-recover, "
         "POST /api/discovery/ensure-thumb, "
         "POST /api/discovery/library/ensure, "
         "POST /api/discovery/asset-ratings/set, POST /api/discovery/asset-appetite/set, "

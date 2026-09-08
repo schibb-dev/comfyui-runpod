@@ -25,13 +25,13 @@ const TAG_BATCH_DEFAULT = 12;
 const APPETITE_FILTER_KEY = "still-gallery.appetiteFilter";
 const SORT_KEY = "still-gallery.sort";
 
-type StillAppetiteFilter = "" | "any" | "fast_track" | "more" | "less" | "none";
+type StillAppetiteFilter = "" | "any" | "fast_track" | "more" | "less" | "none" | "remove";
 type StillSort = "newest" | "appetite";
 
 function readStoredAppetiteFilter(): StillAppetiteFilter {
   try {
     const raw = String(localStorage.getItem(APPETITE_FILTER_KEY) || "").trim().toLowerCase();
-    if (raw === "any" || raw === "fast_track" || raw === "more" || raw === "less" || raw === "none") {
+    if (raw === "any" || raw === "fast_track" || raw === "more" || raw === "less" || raw === "none" || raw === "remove") {
       return raw;
     }
   } catch {
@@ -103,6 +103,7 @@ export function StillGalleryApp() {
       fromUrl === "fast_track" ||
       fromUrl === "more" ||
       fromUrl === "less" ||
+      fromUrl === "remove" ||
       fromUrl === "none"
     ) {
       return fromUrl;
@@ -736,6 +737,7 @@ export function StillGalleryApp() {
             <option value="fast_track">Fast-track</option>
             <option value="more">More</option>
             <option value="less">Less</option>
+            <option value="remove">Remove (review)</option>
             <option value="none">Unmarked</option>
           </select>
         </label>

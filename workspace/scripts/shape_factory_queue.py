@@ -1584,6 +1584,33 @@ def queue_from_request_body(
                     bindings[str(slot)] = path
 
     data_root = resolve_shape_factory_data_root(repo_root=repo_root)
+    if bindings:
+        try:
+            from shape_factory_ratings import (
+                default_appetite_index_path,
+                load_appetite_doc,
+                path_blocks_factory,
+            )
+
+            og_root = Path(output_root) / "og"
+            if not og_root.is_dir():
+                og_root = Path(output_root)
+            appetite_doc = load_appetite_doc(default_appetite_index_path(og_root))
+            blocked = [
+                f"{slot}={path}"
+                for slot, path in bindings.items()
+                if path and path_blocks_factory(path, appetite_doc)
+            ]
+            if blocked:
+                raise ValueError(
+                    "appetite_remove: marked remove, not eligible for factory jobs ("
+                    + ", ".join(blocked)
+                    + ")"
+                )
+        except ValueError:
+            raise
+        except Exception:
+            pass
     return queue_shape_factory_combo(
         family_slug=family_slug,
         bindings=bindings,

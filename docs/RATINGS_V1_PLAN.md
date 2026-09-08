@@ -36,7 +36,7 @@ A single 1–5 star conflates two different judgments. We split them:
 | Axis | Question | Store | Scale | Drives |
 |------|----------|-------|-------|--------|
 | **Quality** ("do more OF this") | Is this *well-executed*? | XMP `xmp:Rating` → `ratings_index.json` | 1–5 stars (see sub-axes) | **Replay** — reproduce the recipe |
-| **Appetite** ("do more WITH this") | Do I *want more of this direction* (even if rough)? | `appetite_index.json` | `less < neutral < more < fast_track` | **Derive/Extend** — build new descendants from it |
+| **Appetite** ("do more WITH this") | Do I *want more of this direction* (even if rough)? | `appetite_index.json` | `less < neutral < more < fast_track`, plus terminal **`remove`** (hide from lists/factory; [lifecycle](./APPETITE_REMOVE_LIFECYCLE.md) can delete when nothing else depends on it) | **Derive/Extend** — build new descendants from it |
 
 ### Quality sub-axes (added 2026-07-10)
 

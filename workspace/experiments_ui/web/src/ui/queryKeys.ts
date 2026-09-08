@@ -49,6 +49,9 @@ export const queryKeys = {
     pipelineRunRoot: ["shapeFactory", "pipelineRun"] as const,
     pipelineRun: (runId: string) => ["shapeFactory", "pipelineRun", runId] as const,
   },
+  discovery: {
+    assetRemoveReview: ["discovery", "assetRemoveReview"] as const,
+  },
   queue: {
     root: ["queue"] as const,
     snapshot: ["queue", "snapshot"] as const,
