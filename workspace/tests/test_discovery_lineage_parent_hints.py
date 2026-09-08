@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -185,6 +186,74 @@ class TestLineageParentHints(unittest.TestCase):
         self.assertFalse(
             self.m._discovery_source_string_references_media(
                 "og/other/FB9_GEX_2026-03-04_00001.mp4", keys
+            )
+        )
+
+    def test_factory_job_parent_paths_from_bindings(self):
+        job = {
+            "bindings": {
+                "source_video": {
+                    "path": "/data/output/og/2026-09-07/FB9_GEX_FACIAL_parent_00001.mp4",
+                },
+                "identity_anchor": {
+                    "path": "/data/output/og/2026-09-07/FB9_GEX_FACIAL_parent_00001.png",
+                },
+                "prompt_profile": {
+                    "path": "/data/pools/FB9_GEX2/prompts/catalog-default.json",
+                },
+            },
+            "parent_output": "/workspace/output/og/2026-09-07/FB9_GEX_FACIAL_parent_00001.mp4",
+            "construction": {
+                "parent_output": "/workspace/output/og/2026-09-07/FB9_GEX_FACIAL_parent_00001.mp4",
+                "identity_anchor": "/workspace/output/og/2026-09-07/FB9_GEX_FACIAL_parent_00001.png",
+                "replay_of_job_key": "FB9_GEX_FACIAL_parent",
+            },
+        }
+        got = self.m._discovery_factory_job_parent_path_strings(job)
+        self.assertIn("/data/output/og/2026-09-07/FB9_GEX_FACIAL_parent_00001.mp4", got)
+        self.assertIn("/data/output/og/2026-09-07/FB9_GEX_FACIAL_parent_00001.png", got)
+        self.assertIn("/workspace/output/og/2026-09-07/FB9_GEX_FACIAL_parent_00001.mp4", got)
+        self.assertTrue(all(not p.lower().endswith(".json") for p in got))
+        self.assertEqual(
+            got.count("/workspace/output/og/2026-09-07/FB9_GEX_FACIAL_parent_00001.mp4"),
+            1,
+        )
+
+    def test_factory_job_parent_paths_from_live_gex2_job(self):
+        job_path = (
+            REPO_ROOT
+            / ".data"
+            / "shape_factory"
+            / "jobs"
+            / "FB9_GEX2_identity_anchor"
+            / "FB9_GEX2_identity_anchor__id-FB9_GEX_FACIAL__pp-catalog-default__src-hourly__pp-catalog-default__still-e68b_ui1788826777.job.json"
+        )
+        if not job_path.is_file():
+            self.skipTest("example factory job not on disk")
+        job = json.loads(job_path.read_text(encoding="utf-8"))
+        got = self.m._discovery_factory_job_parent_path_strings(job)
+        self.assertTrue(any("FB9_GEX_FACIAL__" in p and p.lower().endswith(".mp4") for p in got))
+        self.assertTrue(any("FB9_GEX_FACIAL__" in p and p.lower().endswith(".png") for p in got))
+
+    def test_factory_binding_edge_not_spurious(self):
+        self.assertFalse(
+            self.m._discovery_lineage_edge_looks_spurious(
+                {
+                    "evidence": "factory_job_binding",
+                    "via_source_raw": "/data/output/og/parent_00001.mp4",
+                    "parent_group_id": "a",
+                    "child_group_id": "b",
+                }
+            )
+        )
+        self.assertTrue(
+            self.m._discovery_lineage_edge_looks_spurious(
+                {
+                    "evidence": "factory_job_binding",
+                    "via_source_raw": "output/og/2026-04-14/FB9_GEX2_2026-04-14",
+                    "parent_group_id": "a",
+                    "child_group_id": "b",
+                }
             )
         )
 

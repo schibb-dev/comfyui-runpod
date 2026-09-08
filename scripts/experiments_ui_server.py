@@ -6928,7 +6928,7 @@ def _discovery_lineage_edge_looks_spurious(e: Dict[str, Any]) -> bool:
     if evidence in {"workspace_input", "png_prompt_grep"}:
         return False
     via = str(e.get("via_source_raw") or "").strip()
-    if evidence == "png_prompt_source_path":
+    if evidence in {"png_prompt_source_path", "factory_job_binding"}:
         if not via:
             return True
         if not _discovery_path_has_media_ext(via):
@@ -7086,6 +7086,137 @@ def _discovery_find_item_by_output_relpath_prefix(idx: Dict[str, Any], hint_rel:
     return uniq[0]
 
 
+_FACTORY_PARENT_BINDING_SLOTS = (
+    "source_video",
+    "source_still",
+    "source_video_ref",
+    "identity_anchor",
+)
+
+
+def _discovery_factory_job_parent_path_strings(job: Dict[str, Any]) -> List[str]:
+    """Media paths a factory job already recorded as its parent (no PNG probe)."""
+    out: List[str] = []
+    seen: set = set()
+
+    def add(raw: Any) -> None:
+        if not isinstance(raw, str):
+            return
+        s = raw.strip()
+        if not s or s in seen:
+            return
+        low = s.lower().replace("\\", "/")
+        if low.endswith((".json", ".yaml", ".yml")):
+            return
+        if not _discovery_lineage_source_string_is_assetish(s) and not _discovery_path_has_media_ext(s):
+            return
+        seen.add(s)
+        out.append(s)
+
+    if not isinstance(job, dict):
+        return out
+    bindings = job.get("bindings") if isinstance(job.get("bindings"), dict) else {}
+    for slot in _FACTORY_PARENT_BINDING_SLOTS:
+        meta = bindings.get(slot)
+        if isinstance(meta, dict):
+            add(meta.get("path"))
+    add(job.get("parent_output"))
+    cons = job.get("construction") if isinstance(job.get("construction"), dict) else {}
+    add(cons.get("parent_output"))
+    add(cons.get("identity_anchor"))
+    return out
+
+
+def _discovery_lookup_factory_job_for_item(
+    cfg: "ServerConfig",
+    item: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Best-effort `.job.json` for a Discovery row (output → job_key index, then basename guess)."""
+    if not isinstance(item, dict):
+        return None
+    rels: List[str] = []
+    seen: set = set()
+    for k in ("relpath", "video_relpath", "thumb_relpath"):
+        v = item.get(k)
+        if not isinstance(v, str) or not v.strip():
+            continue
+        rel = _normalize_rel_posix(v.strip())
+        if not rel or rel in seen:
+            continue
+        seen.add(rel)
+        rels.append(rel)
+    if not rels:
+        return None
+    try:
+        d = _workspace_scripts_dir()
+        if d.is_dir() and str(d) not in sys.path:
+            sys.path.insert(0, str(d))
+        from shape_factory import find_job_by_key  # type: ignore
+        from shape_factory_queue import resolve_shape_factory_data_root  # type: ignore
+    except Exception:
+        return None
+    try:
+        data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    except Exception:
+        return None
+    for rel in rels:
+        try:
+            job_key, _family = _resolve_replay_job_from_relpath(cfg, rel, {})
+        except Exception:
+            job_key = ""
+        if not job_key:
+            continue
+        try:
+            _path, job = find_job_by_key(data_root, job_key)
+        except Exception:
+            continue
+        if isinstance(job, dict):
+            return job
+    return None
+
+
+def _discovery_factory_parent_hint_strings_for_item(
+    cfg: "ServerConfig",
+    item: Dict[str, Any],
+) -> List[str]:
+    try:
+        job = _discovery_lookup_factory_job_for_item(cfg, item)
+    except Exception:
+        return []
+    if not isinstance(job, dict):
+        return []
+    return _discovery_factory_job_parent_path_strings(job)
+
+
+def _discovery_ensure_indexed_parent_item(
+    cfg: "ServerConfig",
+    idx: Dict[str, Any],
+    rel: str,
+) -> Optional[Dict[str, Any]]:
+    """Tip a missing output into the Discovery index so a resolved parent can become an edge."""
+    norm = _normalize_rel_posix(str(rel or "").strip())
+    if not norm:
+        return None
+    pit = _discovery_item_for_relpath(idx, norm)
+    if isinstance(pit, dict):
+        return pit
+    if not _discovery_rel_file_exists(cfg, norm):
+        return None
+    try:
+        ens = _discovery_upsert_relpath(cfg, norm)
+    except Exception:
+        return None
+    if not ens.get("ok"):
+        return None
+    idx2 = _load_discovery_index_disk(cfg.discovery_index_path)
+    if not isinstance(idx2, dict):
+        return None
+    items = idx2.get("items")
+    if isinstance(items, list):
+        idx["items"] = items
+    return _discovery_item_for_relpath(idx, norm)
+
+
 def _discovery_resolve_lineage_parent_for_source(
     cfg: "ServerConfig",
     idx: Dict[str, Any],
@@ -7140,6 +7271,8 @@ def _discovery_resolve_lineage_parent_for_source(
                 if pit is None:
                     pit = _discovery_item_for_relpath(idx, out_rel)
                 resolved_rel = out_rel
+    if not isinstance(pit, dict) and resolved_rel:
+        pit = _discovery_ensure_indexed_parent_item(cfg, idx, resolved_rel)
     if not isinstance(pit, dict):
         return None, None, None
     pgid = str(pit.get("group_id") or "")
@@ -7157,7 +7290,7 @@ def _discovery_infer_lineage_session_edges(
     max_depth: int,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
-    Infer parent edges for one seed from embedded prompt paths (PNG facets).
+    Infer parent edges for one seed from PNG facets and factory job bindings.
     Returns (edges, external_source dicts).
     """
     edges: List[Dict[str, Any]] = []
@@ -7178,17 +7311,24 @@ def _discovery_infer_lineage_session_edges(
             continue
         processed_groups.add(gid)
 
+        strings: List[str] = []
         probe_rel = _discovery_lineage_facets_probe_relpath(item)
-        if not probe_rel:
+        if probe_rel:
+            try:
+                facets = _discovery_build_workflow_facets_payload(cfg, probe_rel)
+            except Exception:
+                facets = None
+            if isinstance(facets, dict) and facets.get("ok"):
+                strings = _discovery_extract_source_path_strings_from_facets_payload(facets)
+        png_strings = set(strings)
+        factory_strings: set = set()
+        for s in _discovery_factory_parent_hint_strings_for_item(cfg, item):
+            if s in png_strings or s in factory_strings:
+                continue
+            strings.append(s)
+            factory_strings.add(s)
+        if not strings:
             continue
-        try:
-            facets = _discovery_build_workflow_facets_payload(cfg, probe_rel)
-        except Exception:
-            continue
-        if not isinstance(facets, dict) or not facets.get("ok"):
-            continue
-
-        strings = _discovery_extract_source_path_strings_from_facets_payload(facets)
         parent_items: Dict[str, Dict[str, Any]] = {}
         for s in strings:
             pit, edge_rel, ext = _discovery_resolve_lineage_parent_for_source(
@@ -7222,7 +7362,9 @@ def _discovery_infer_lineage_session_edges(
                     "parent_group_id": pgid,
                     "via_source_raw": s,
                     "resolved_parent_relpath": edge_rel,
-                    "evidence": "png_prompt_source_path",
+                    "evidence": (
+                        "factory_job_binding" if s in factory_strings else "png_prompt_source_path"
+                    ),
                 }
             )
 
@@ -8261,20 +8403,31 @@ def _discovery_compute_asset_lineage(
             continue
         processed_groups.add(gid)
 
+        strings: List[str] = []
         probe_rel = _discovery_lineage_facets_probe_relpath(item)
         if not probe_rel:
             errors.append(f"missing_probe_relpath:{gid}")
+        else:
+            try:
+                facets = _discovery_build_workflow_facets_payload(cfg, probe_rel)
+            except Exception as e:
+                facets = None
+                errors.append(f"facets_failed:{gid}:{e}")
+            if isinstance(facets, dict) and facets.get("ok"):
+                strings = _discovery_extract_source_path_strings_from_facets_payload(facets)
+            elif isinstance(facets, dict):
+                errors.append(
+                    f"facets_not_ok:{gid}:{facets.get('error') if isinstance(facets, dict) else type(facets).__name__}"
+                )
+        png_strings = set(strings)
+        factory_strings: set = set()
+        for s in _discovery_factory_parent_hint_strings_for_item(cfg, item):
+            if s in png_strings or s in factory_strings:
+                continue
+            strings.append(s)
+            factory_strings.add(s)
+        if not strings:
             continue
-        try:
-            facets = _discovery_build_workflow_facets_payload(cfg, probe_rel)
-        except Exception as e:
-            errors.append(f"facets_failed:{gid}:{e}")
-            continue
-        if not isinstance(facets, dict) or not facets.get("ok"):
-            errors.append(f"facets_not_ok:{gid}:{facets.get('error') if isinstance(facets, dict) else type(facets).__name__}")
-            continue
-
-        strings = _discovery_extract_source_path_strings_from_facets_payload(facets if isinstance(facets, dict) else {})
         parent_items: Dict[str, Dict[str, Any]] = {}
         external_sources: List[Dict[str, Any]] = []
         unresolved_for_node: List[str] = []
@@ -8313,7 +8466,9 @@ def _discovery_compute_asset_lineage(
                     "parent_group_id": pgid,
                     "via_source_raw": s,
                     "resolved_parent_relpath": edge_rel,
-                    "evidence": "png_prompt_source_path",
+                    "evidence": (
+                        "factory_job_binding" if s in factory_strings else "png_prompt_source_path"
+                    ),
                 }
             )
 
@@ -8376,6 +8531,8 @@ def _discovery_compute_asset_lineage(
         "Parent links are inferred from LoadImage/LoadVideo* nodes in API-format prompts "
         "that feed a saved output (VHS_VideoCombine/Save* with save_output=True). "
         "Orphan loaders and preview-only branches are omitted.",
+        "When PNG metadata is missing, parent links also come from shape-factory job "
+        "bindings (source_video / source_still / identity_anchor / parent_output).",
         "provenance_chain is oldest → current; siblings / descendants read the merged session + discovery_lineage_edges.json graph.",
         "Use graph_only=1 after backfill for fast panel loads without re-probing PNG metadata.",
     ]
