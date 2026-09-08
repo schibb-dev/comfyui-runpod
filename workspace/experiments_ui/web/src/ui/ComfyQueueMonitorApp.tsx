@@ -17,6 +17,7 @@ import { discoveryLibraryHref, parseQueueDeepLink, queueHref, submitHref, workbe
 import { PageHeader } from "./PageHeader";
 import { PipelineMediaPlayer, vhsWindowFromKeyParams } from "./PipelineMediaPlayer";
 import { PipelineFilterRow, PipelineList, PipelineScreen, PipelineScroll } from "./PipelineScreen";
+import { nextQueueSectionShowForDoubleClick } from "./filterGroupDoubleClick";
 import { PromptPeekButton } from "./PromptPeek";
 import { jobPromptVariantName } from "./submitFamily";
 import { queryKeys } from "./queryKeys";
@@ -332,7 +333,7 @@ function StatusChip({
   count: number;
   on: boolean;
   onToggle: () => void;
-  /** Double-click: radio-style — only this chip on within its filter set. */
+  /** Double-click: radio-style — only this chip on; again restores the whole group. */
   onFocusSolo?: () => void;
 }) {
   return (
@@ -351,8 +352,8 @@ function StatusChip({
       }
       title={
         on
-          ? `Hide ${label}${onFocusSolo ? " · double-click to show only this" : ""}`
-          : `Show ${label}${onFocusSolo ? " · double-click to show only this" : ""}`
+          ? `Hide ${label}${onFocusSolo ? " · double-click to show only this · again to show all" : ""}`
+          : `Show ${label}${onFocusSolo ? " · double-click to show only this · again to show all" : ""}`
       }
     >
       <span className="work-products-status-toggle__label">{label}</span>
@@ -1571,7 +1572,7 @@ export function ComfyQueueMonitorApp() {
                 }}
                 onFocusSolo={() => {
                   setStatusFilter("all");
-                  setShow({ running: true, pending: false, history: false });
+                  setShow((s) => nextQueueSectionShowForDoubleClick(s, "running", statusFilter));
                 }}
               />
               <StatusChip
@@ -1585,7 +1586,7 @@ export function ComfyQueueMonitorApp() {
                 }}
                 onFocusSolo={() => {
                   setStatusFilter("all");
-                  setShow({ running: false, pending: true, history: false });
+                  setShow((s) => nextQueueSectionShowForDoubleClick(s, "pending", statusFilter));
                 }}
               />
               <StatusChip
@@ -1596,7 +1597,7 @@ export function ComfyQueueMonitorApp() {
                 onToggle={() => toggle("history")}
                 onFocusSolo={() => {
                   setStatusFilter("all");
-                  setShow({ running: false, pending: false, history: true });
+                  setShow((s) => nextQueueSectionShowForDoubleClick(s, "history", statusFilter));
                 }}
               />
               <button
@@ -1615,9 +1616,14 @@ export function ComfyQueueMonitorApp() {
                 }}
                 onDoubleClick={(e) => {
                   e.preventDefault();
-                  setErrorsFilter();
+                  if (statusFilter === "errors") {
+                    setStatusFilter("all");
+                    setShow({ running: true, pending: true, history: true });
+                  } else {
+                    setErrorsFilter();
+                  }
                 }}
-                title="Show only failed / interrupted history · double-click to focus errors"
+                title="Show only failed / interrupted history · double-click to focus errors · again to show all"
               >
                 <span className="work-products-status-toggle__label">errors</span>
                 <span className="work-products-status-toggle__count">{historyErrorCount}</span>

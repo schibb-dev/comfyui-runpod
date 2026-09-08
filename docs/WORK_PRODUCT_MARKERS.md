@@ -68,7 +68,7 @@ UI: `/family-ab`. Shared compare stage: `workspace/experiments_ui/web/src/ui/com
 - `GET /api/shape-factory/markers?key=decode.vae&value=tiled`
 - `POST /api/shape-factory/markers` `{ "content_id", "key", "value", "source?" }`
 
-Workbench lists attach `markers` (and `content_id` when known) on work-product rows; filter **vae:all / tiled / plain** is separate from pick-mode disposition toggles.
+Workbench lists attach `markers` (and `content_id` when known) on work-product rows (shown as badges). Pick-mode disposition chips are a separate filter.
 
 ## Out of scope (for now)
 
