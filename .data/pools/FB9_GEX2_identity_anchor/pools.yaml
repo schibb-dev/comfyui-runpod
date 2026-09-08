@@ -30,9 +30,9 @@ pools:
 
   prompt_profile:
     slot: prompt_profile
-    description: Reuse GEX2 prompt bundles for now
+    description: GEX2 catalogs (default + FaceBlast extend)
     members:
-      - dir: /workspace/.data/pools/FB9_GEX2/prompts
+      - dir: /workspace/.data/pools/FB9_GEX2_identity_anchor/prompts
         ext: [".json"]
 
 deposit_pools:

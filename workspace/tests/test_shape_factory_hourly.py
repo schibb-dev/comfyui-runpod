@@ -281,6 +281,119 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
         expired = still_promo_active(schedule={"still_promo_until": "2020-01-01T00:00:00+00:00"})
         self.assertIsNone(expired)
 
+    def test_faceblast_promo_pins_extend_catalog_not_i2v_family(self) -> None:
+        import os
+        import tempfile
+        from datetime import datetime, timedelta, timezone
+
+        from shape_factory_hourly import (
+            _DEFAULT_SEED_FAMILY_WEIGHTS,
+            _is_faceblast_extend_prompt,
+            _recipe_promotion_mult,
+            _recipe_uses_faceblast_extend_prompt,
+            _seed_family_weights,
+            faceblast_promo_active,
+            pick_hourly_gex_catalog_prompt,
+        )
+
+        self.assertTrue(_is_faceblast_extend_prompt("catalog-faceblast-extend.json"))
+        self.assertTrue(
+            _is_faceblast_extend_prompt("/data/pools/FB9_GEX/prompts/catalog-faceblast-extend.json")
+        )
+        self.assertFalse(_is_faceblast_extend_prompt("/output/FB9-FaceBlast/clip.mp4"))
+        self.assertFalse(_is_faceblast_extend_prompt("FB9-FaceBlast"))
+        self.assertFalse(
+            _recipe_uses_faceblast_extend_prompt(
+                {"family": "FB9-FaceBlast", "picks": {"source_video": "/tmp/FB9-FaceBlast/out.mp4"}}
+            )
+        )
+        self.assertTrue(
+            _recipe_uses_faceblast_extend_prompt(
+                {"picks": {"prompt_profile": "/data/pools/FB9_GEX/prompts/catalog-faceblast-extend.json"}}
+            )
+        )
+
+        until = (datetime.now(tz=timezone.utc) + timedelta(hours=12)).isoformat()
+        prev = os.environ.get("HOURLY_FACEBLAST_PROMO_UNTIL")
+        try:
+            os.environ["HOURLY_FACEBLAST_PROMO_UNTIL"] = until
+            promo = faceblast_promo_active()
+            self.assertIsNotNone(promo)
+            assert promo is not None
+            self.assertEqual(float(promo["boost"]), 16.0)
+            weights = dict(_seed_family_weights())
+            self.assertEqual(weights["FB9-FaceBlast"], dict(_DEFAULT_SEED_FAMILY_WEIGHTS)["FB9-FaceBlast"])
+            self.assertEqual(weights["FB9-FaceBlast"], 16)
+
+            plain = {"family": "BounceDanceA", "picks": {"source_video": "/tmp/plain.mp4"}}
+            i2v = {
+                "family": "FB9-FaceBlast",
+                "picks": {"source_video": "/tmp/FB9-FaceBlast/out.mp4"},
+                "output_path": "/tmp/FB9-FaceBlast/out.mp4",
+            }
+            extend = {
+                "family": "FB9_GEX",
+                "picks": {
+                    "source_video": "/tmp/plain.mp4",
+                    "prompt_profile": "/data/pools/FB9_GEX/prompts/catalog-faceblast-extend.json",
+                },
+            }
+            self.assertEqual(_recipe_promotion_mult(plain), _recipe_promotion_mult(i2v))
+            self.assertAlmostEqual(
+                _recipe_promotion_mult(extend),
+                _recipe_promotion_mult(plain) * float(promo["boost"]),
+            )
+
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                prompts = root / "pools" / "FB9_GEX" / "prompts"
+                jobs = root / "shape_factory" / "jobs" / "FB9_GEX"
+                prompts.mkdir(parents=True)
+                jobs.mkdir(parents=True)
+                default = prompts / "catalog-default.json"
+                faceblast = prompts / "catalog-faceblast-extend.json"
+                default.write_text(
+                    json.dumps({"slug": "default", "name": "Default", "label": "catalog-default"}),
+                    encoding="utf-8",
+                )
+                faceblast.write_text(
+                    json.dumps(
+                        {
+                            "slug": "faceblast-extend",
+                            "name": "FaceBlast extend",
+                            "label": "catalog-faceblast-extend",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                (jobs / "hourly__already.job.json").write_text(
+                    json.dumps(
+                        {
+                            "job_key": "hourly__already",
+                            "family_slug": "FB9_GEX",
+                            "submit": {"status": "pending"},
+                            "bindings": {"prompt_profile": {"path": str(faceblast)}},
+                            "prompt": {"slug": "faceblast-extend", "label": "catalog-faceblast-extend"},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                pinned = pick_hourly_gex_catalog_prompt(
+                    cursor=0, data_root=root, job_dir=root / "shape_factory" / "jobs"
+                )
+                self.assertIsNotNone(pinned)
+                assert pinned is not None
+                self.assertEqual(pinned.name, "catalog-faceblast-extend.json")
+        finally:
+            if prev is None:
+                os.environ.pop("HOURLY_FACEBLAST_PROMO_UNTIL", None)
+            else:
+                os.environ["HOURLY_FACEBLAST_PROMO_UNTIL"] = prev
+        expired = faceblast_promo_active(
+            schedule={"faceblast_promo_until": "2020-01-01T00:00:00+00:00"}
+        )
+        self.assertIsNone(expired)
+
     def test_hourly_schedule_due_and_mark(self) -> None:
         from datetime import datetime, timedelta, timezone
         from tempfile import TemporaryDirectory
@@ -1872,6 +1985,65 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
             self.assertIsNotNone(rotated)
             assert rotated is not None
             self.assertEqual(rotated.name, "catalog-default.json")
+
+    def test_hourly_gex2_catalog_prompt_uses_faceblast(self) -> None:
+        import tempfile
+
+        from shape_factory_hourly import apply_hourly_gex_catalog_prompt, pick_hourly_gex_catalog_prompt
+
+        for family in ("FB9_GEX2", "FB9_GEX2_identity_anchor"):
+            with self.subTest(family=family):
+                with tempfile.TemporaryDirectory() as td:
+                    root = Path(td)
+                    prompts = root / "pools" / family / "prompts"
+                    jobs = root / "shape_factory" / "jobs" / family
+                    prompts.mkdir(parents=True)
+                    jobs.mkdir(parents=True)
+                    default = prompts / "catalog-default.json"
+                    faceblast = prompts / "catalog-faceblast-extend.json"
+                    default.write_text(
+                        json.dumps({"slug": "default", "name": "Default", "label": "catalog-default", "positive": "a"}),
+                        encoding="utf-8",
+                    )
+                    faceblast.write_text(
+                        json.dumps(
+                            {
+                                "slug": "faceblast-extend",
+                                "name": "FaceBlast extend",
+                                "label": "catalog-faceblast-extend",
+                                "positive": "b",
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    picked = pick_hourly_gex_catalog_prompt(
+                        cursor=0,
+                        data_root=root,
+                        job_dir=root / "shape_factory" / "jobs",
+                        family=family,
+                    )
+                    self.assertIsNotNone(picked)
+                    assert picked is not None
+                    self.assertEqual(picked.name, "catalog-faceblast-extend.json")
+                    plan = apply_hourly_gex_catalog_prompt(
+                        {
+                            "ok": True,
+                            "family": family,
+                            "picks": {
+                                "source_video": "/tmp/clip.mp4",
+                                "prompt_profile": str(default),
+                            },
+                            "bindings_preview": {
+                                "source_video": "clip.mp4",
+                                "prompt_profile": "catalog-default.json",
+                            },
+                        },
+                        cursor=0,
+                        data_root=root,
+                        job_dir=root / "shape_factory" / "jobs",
+                    )
+                    self.assertEqual(Path(str(plan["picks"]["prompt_profile"])).name, "catalog-faceblast-extend.json")
+                    self.assertEqual(plan.get("prompt_variant"), "catalog-faceblast-extend")
 
     def test_source_promotion_detects_kneel_and_2025(self) -> None:
         from shape_factory_hourly import (

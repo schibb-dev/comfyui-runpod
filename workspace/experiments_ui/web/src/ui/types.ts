@@ -2003,6 +2003,8 @@ export type HourlySchedule = {
   still_promo_until?: string | null;
   still_promo_window_days?: number;
   still_promo_boost?: number;
+  faceblast_promo_until?: string | null;
+  faceblast_promo_boost?: number;
   last_tick_at?: string | null;
   updated_at?: string | null;
 };
@@ -2025,6 +2027,10 @@ export type HourlyScheduleStatus = {
     window_days?: number;
     boost?: number;
     fresh_share?: number;
+  } | null;
+  faceblast_promo?: {
+    until?: string | null;
+    boost?: number;
   } | null;
   saved?: HourlySchedule;
   error?: string;

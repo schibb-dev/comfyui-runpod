@@ -2305,6 +2305,25 @@ def _hourly_schedule_set_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dic
             sch["still_promo_until"] = (
                 datetime.now(tz=timezone.utc).replace(microsecond=0) + timedelta(hours=hours)
             ).isoformat()
+    if body.get("faceblast_promo_clear"):
+        sch["faceblast_promo_until"] = None
+    elif "faceblast_promo_until" in body:
+        sch["faceblast_promo_until"] = body.get("faceblast_promo_until")
+    elif body.get("faceblast_promo_hours") is not None:
+        try:
+            hours = max(0.0, float(body.get("faceblast_promo_hours")))
+        except (TypeError, ValueError):
+            hours = 0.0
+        if hours <= 0:
+            sch["faceblast_promo_until"] = None
+        else:
+            from datetime import datetime, timedelta, timezone
+
+            sch["faceblast_promo_until"] = (
+                datetime.now(tz=timezone.utc).replace(microsecond=0) + timedelta(hours=hours)
+            ).isoformat()
+    if body.get("faceblast_promo_boost") is not None:
+        sch["faceblast_promo_boost"] = body.get("faceblast_promo_boost")
     if body.get("mark_tick"):
         save = mark_hourly_tick(sch, path=path, data_root=data_root)
     else:

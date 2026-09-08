@@ -24,7 +24,7 @@ pools:
 
   prompt_profile:
     slot: prompt_profile
-    description: Prompt bundles (C slot) — independent of which video is chosen
+    description: Prompt bundles (C slot) — default and FaceBlast-extend catalogs
     members:
       - dir: /workspace/.data/pools/FB9_GEX2/prompts
         ext: [".json"]

@@ -176,6 +176,9 @@ function HourlyScheduleControls({
         {" · "}
         hourlies {num(initial?.factory_hourly_pending)}/{num(sch?.pending_hourly_min ?? hourlyMin)}
         {initial?.still_promo?.until ? ` · image starters promoted until ${formatDue(initial.still_promo.until)}` : ""}
+        {initial?.faceblast_promo?.until
+          ? ` · FaceBlast-extend prompts promoted until ${formatDue(initial.faceblast_promo.until)}`
+          : ""}
       </p>
       <p className="home-hourly-controls__hint factory-muted">{ruleHint}</p>
       {err ? <p className="home-hourly-controls__err">{err}</p> : null}

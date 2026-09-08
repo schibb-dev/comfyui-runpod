@@ -177,6 +177,10 @@ export async function setHourlySchedule(body: {
   comfy_queue_max?: number;
   pending_queue_max?: number;
   pending_hourly_min?: number;
+  faceblast_promo_hours?: number;
+  faceblast_promo_until?: string | null;
+  faceblast_promo_clear?: boolean;
+  faceblast_promo_boost?: number;
   mark_tick?: boolean;
 }): Promise<HourlyScheduleStatus> {
   const r = await fetch("/api/shape-factory/hourly-schedule", {

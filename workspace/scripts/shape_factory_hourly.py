@@ -58,6 +58,20 @@ def _is_kneel_source(path: str) -> bool:
     return bool(_KNEEL_SOURCE_RE.search(text) or _KNEEL_SOURCE_RE.search(Path(text).name))
 
 
+def _is_faceblast_extend_prompt(path: str) -> bool:
+    """True for ``catalog-faceblast-extend`` prompt files — not FB9-FaceBlast i2v media."""
+    text = str(path or "").replace("\\", "/").lower()
+    if not text:
+        return False
+    stem = Path(text).stem
+    return "faceblast-extend" in stem or "catalog-faceblast-extend" in text
+
+
+def _recipe_uses_faceblast_extend_prompt(recipe: dict[str, Any]) -> bool:
+    picks = recipe.get("picks") if isinstance(recipe.get("picks"), dict) else {}
+    return _is_faceblast_extend_prompt(str(picks.get("prompt_profile") or ""))
+
+
 def _is_2025_source(path: str) -> bool:
     text = str(path or "").replace("\\", "/")
     if not text:
@@ -185,6 +199,48 @@ def still_promo_active(
         "window_days": max(0.1, min(14.0, window_days)),
         "boost": max(1.0, min(50.0, boost)),
         "fresh_share": 1.0,
+    }
+
+
+def faceblast_promo_active(
+    *,
+    now: Optional[datetime] = None,
+    schedule: Optional[Dict[str, Any]] = None,
+    data_root: Optional[Path] = None,
+) -> Optional[Dict[str, Any]]:
+    """Time-boxed pin of faceblast-extend *prompt catalogs* on GEX / GEX2.
+
+    Does not change FB9-FaceBlast i2v seed weight. Schedule
+    ``faceblast_promo_until`` or env ``HOURLY_FACEBLAST_PROMO_UNTIL``.
+    """
+    ts = now or datetime.now(tz=timezone.utc)
+    env_until = os.environ.get("HOURLY_FACEBLAST_PROMO_UNTIL")
+    if (
+        schedule is None
+        and env_until is not None
+        and str(env_until).strip().lower() in {"", "0", "off", "none", "false"}
+    ):
+        return None
+    raw_until = str(env_until or "").strip()
+    boost = None
+    if not raw_until or raw_until.lower() in {"0", "off", "none", "false"}:
+        sch = schedule if isinstance(schedule, dict) else load_hourly_schedule(data_root=data_root)
+        raw_until = str(sch.get("faceblast_promo_until") or "").strip()
+        try:
+            boost = float(sch.get("faceblast_promo_boost") or 16)
+        except (TypeError, ValueError):
+            boost = 16.0
+    until = _parse_iso_ts(raw_until) if raw_until else None
+    if until is None or ts >= until:
+        return None
+    if boost is None:
+        try:
+            boost = float(os.environ.get("HOURLY_FACEBLAST_PROMO_BOOST") or 16)
+        except (TypeError, ValueError):
+            boost = 16.0
+    return {
+        "until": until.isoformat(),
+        "boost": max(1.0, min(50.0, boost)),
     }
 
 
@@ -663,6 +719,9 @@ def _recipe_promotion_mult(
     mult *= _still_appetite_mult(src, appetite_doc=appetite_doc)
     if not _prefers_fresh_stills(fam):
         mult *= _still_popularity_mult(src)
+    fb = faceblast_promo_active()
+    if fb and _recipe_uses_faceblast_extend_prompt(recipe):
+        mult *= float(fb.get("boost") or 16)
     return mult
 
 
@@ -2780,7 +2839,7 @@ def _seed_family_weights() -> List[Tuple[str, int]]:
                 boosted.append((fam, 1))
             else:
                 boosted.append((fam, w))
-        return boosted
+        out = boosted
     return out
 
 
@@ -3219,7 +3278,11 @@ def _pending_preview_for_row(
         step = "chain_facial"
     else:
         family = "FB9_GEX"
-        prefer = "catalog-faceblast-extend" if producer == "FB9-FaceBlast" else None
+        prefer = (
+            "catalog-faceblast-extend"
+            if producer == "FB9-FaceBlast" or faceblast_promo_active(data_root=data_root)
+            else None
+        )
         prompt = pick_hourly_gex_catalog_prompt(
             cursor=int(cursor),
             data_root=data_root,
@@ -3526,7 +3589,11 @@ def simulate_hourly_picks(
                 cursor=cursor,
                 data_root=data_root,
                 job_dir=job_root,
-                prefer_stem="catalog-faceblast-extend" if producer == "FB9-FaceBlast" else None,
+                prefer_stem=(
+                    "catalog-faceblast-extend"
+                    if producer == "FB9-FaceBlast" or faceblast_promo_active(data_root=data_root)
+                    else None
+                ),
             )
             pick.update(
                 {
@@ -4070,6 +4137,11 @@ def _pending_hourly_prompt_slugs(*, job_dir: Path, family: str) -> Set[str]:
     return slugs
 
 
+_HOURLY_FACEBLAST_CATALOG_FAMILIES = frozenset(
+    {"FB9_GEX", "FB9_GEX2", "FB9_GEX2_identity_anchor"}
+)
+
+
 def pick_hourly_gex_catalog_prompt(
     *,
     cursor: int = 0,
@@ -4078,12 +4150,12 @@ def pick_hourly_gex_catalog_prompt(
     family: str = "FB9_GEX",
     prefer_stem: Optional[str] = None,
 ) -> Optional[Path]:
-    """Choose a ``catalog-*.json`` for V2V FB9_GEX hourlies.
+    """Choose a ``catalog-*.json`` for V2V GEX / GEX2 hourlies.
 
-    FaceBlast extend is a prompt variant of GEX itself — it does not require an
-    i2v FB9-FaceBlast parent. If pending GEX hourlies have no faceblast-extend
-    yet, pick that catalog so the variant appears on the FIFO. Otherwise rotate
-    among catalogs by cursor.
+    FaceBlast extend is a prompt variant of the same graph — it does not require
+    an i2v FB9-FaceBlast parent. If pending hourlies for this family have no
+    faceblast-extend yet, pick that catalog so the variant appears on the FIFO.
+    Otherwise rotate among catalogs by cursor.
     """
     data_root = (data_root or _default_data_root()).resolve()
     catalogs = _catalog_prompt_paths(data_root, family)
@@ -4093,6 +4165,8 @@ def pick_hourly_gex_catalog_prompt(
     if prefer_stem and prefer_stem in by_stem:
         return by_stem[prefer_stem]
     faceblast = by_stem.get("catalog-faceblast-extend")
+    if faceblast is not None and faceblast_promo_active(data_root=data_root):
+        return faceblast
     job_root = job_dir or _default_job_root(data_root)
     pending = _pending_hourly_prompt_slugs(job_dir=job_root, family=family)
     if faceblast is not None and "faceblast-extend" not in pending:
@@ -4107,11 +4181,11 @@ def apply_hourly_gex_catalog_prompt(
     data_root: Path,
     job_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Pin FB9_GEX hourly plans onto a catalog variant (FaceBlast extend vs default)."""
+    """Pin GEX / GEX2 hourly plans onto a catalog variant (FaceBlast extend vs default)."""
     if not isinstance(plan, dict) or not plan.get("ok"):
         return plan
     family = str(plan.get("family") or "")
-    if family != "FB9_GEX":
+    if family not in _HOURLY_FACEBLAST_CATALOG_FAMILIES:
         return plan
     picks = plan.get("picks") if isinstance(plan.get("picks"), dict) else None
     if not picks:
@@ -4322,7 +4396,11 @@ def predict_hourly_gex2(
             cursor=cursor,
             data_root=data_root,
             job_dir=job_root,
-            prefer_stem="catalog-faceblast-extend" if producer == "FB9-FaceBlast" else None,
+            prefer_stem=(
+                "catalog-faceblast-extend"
+                if producer == "FB9-FaceBlast" or faceblast_promo_active(data_root=data_root)
+                else None
+            ),
         )
         return {
             "cursor": cursor,
@@ -4466,6 +4544,8 @@ DEFAULT_HOURLY_SCHEDULE: Dict[str, Any] = {
     "still_promo_until": None,
     "still_promo_window_days": 2,
     "still_promo_boost": 16,
+    "faceblast_promo_until": None,
+    "faceblast_promo_boost": 16,
     "last_tick_at": None,
     "updated_at": None,
 }
@@ -4551,6 +4631,17 @@ def normalize_hourly_schedule(raw: Optional[Dict[str, Any]] = None) -> Dict[str,
         promo_boost = float(out["still_promo_boost"])
     out["still_promo_window_days"] = max(0.1, min(14.0, promo_days))
     out["still_promo_boost"] = max(1.0, min(50.0, promo_boost))
+    fb_until = src.get("faceblast_promo_until", out.get("faceblast_promo_until"))
+    if fb_until in (None, "", False):
+        out["faceblast_promo_until"] = None
+    else:
+        fb_parsed = _parse_iso_ts(fb_until)
+        out["faceblast_promo_until"] = fb_parsed.isoformat() if fb_parsed else None
+    try:
+        fb_boost = float(src.get("faceblast_promo_boost", out["faceblast_promo_boost"]))
+    except (TypeError, ValueError):
+        fb_boost = float(out["faceblast_promo_boost"])
+    out["faceblast_promo_boost"] = max(1.0, min(50.0, fb_boost))
     out["last_tick_at"] = src.get("last_tick_at")
     out["updated_at"] = src.get("updated_at")
     return out
@@ -4635,6 +4726,7 @@ def hourly_schedule_status(
         "interval_presets": list(HOURLY_INTERVAL_PRESETS),
         "submit_modes": list(HOURLY_SUBMIT_MODES),
         "still_promo": still_promo_active(now=ts, schedule=sch, data_root=data_root),
+        "faceblast_promo": faceblast_promo_active(now=ts, schedule=sch, data_root=data_root),
     }
 
 
@@ -4910,6 +5002,15 @@ def main() -> int:
     )
     sset.add_argument("--still-promo-until", type=str, default=None, help="ISO timestamp; empty clears")
     sset.add_argument("--still-promo-clear", action="store_true", help="End the still promo window")
+    sset.add_argument(
+        "--faceblast-promo-hours",
+        type=float,
+        default=None,
+        help="Pin FaceBlast-extend prompt catalogs for this many hours (does not boost FB9-FaceBlast i2v)",
+    )
+    sset.add_argument("--faceblast-promo-until", type=str, default=None, help="ISO timestamp; empty clears")
+    sset.add_argument("--faceblast-promo-clear", action="store_true", help="End the FaceBlast-extend prompt promo")
+    sset.add_argument("--faceblast-promo-boost", type=float, default=None, help="Weight multiplier for faceblast-extend prompt recipes")
     sset.add_argument("--mark-tick", action="store_true", help="Set last_tick_at=now")
 
     args = p.parse_args()
@@ -5037,6 +5138,19 @@ def main() -> int:
                 sch["still_promo_until"] = None
             else:
                 sch["still_promo_until"] = (_utc_now() + timedelta(hours=hours)).isoformat()
+        if args.faceblast_promo_clear:
+            sch["faceblast_promo_until"] = None
+        elif args.faceblast_promo_until is not None:
+            text = str(args.faceblast_promo_until).strip()
+            sch["faceblast_promo_until"] = text or None
+        elif args.faceblast_promo_hours is not None:
+            hours = max(0.0, float(args.faceblast_promo_hours))
+            if hours <= 0:
+                sch["faceblast_promo_until"] = None
+            else:
+                sch["faceblast_promo_until"] = (_utc_now() + timedelta(hours=hours)).isoformat()
+        if getattr(args, "faceblast_promo_boost", None) is not None:
+            sch["faceblast_promo_boost"] = float(args.faceblast_promo_boost)
         if args.mark_tick:
             sch = mark_hourly_tick(sch, path=path, data_root=data_root)
         else:
