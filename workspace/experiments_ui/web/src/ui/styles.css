@@ -2330,6 +2330,9 @@ body {
   line-height: 1.2;
   text-align: center;
   border: 1px solid transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .discovery-row-appetite--less {
   color: #f08a8a;
@@ -2350,6 +2353,11 @@ body {
   color: #f4c145;
   background: rgba(244, 193, 69, 0.16);
   border-color: rgba(244, 193, 69, 0.4);
+}
+.discovery-row-appetite--remove {
+  color: #ff9d9d;
+  background: rgba(140, 40, 48, 0.22);
+  border-color: rgba(200, 80, 80, 0.4);
 }
 
 .drt-judgment {
@@ -12458,6 +12466,9 @@ tr.disabled:hover td {
   background: var(--panel-2, #1c1e24);
   color: var(--text, #ddd);
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   transition: background 0.1s ease, border-color 0.1s ease, color 0.1s ease;
 }
 .appetite-btn:hover:not(:disabled) {
@@ -14997,6 +15008,34 @@ button.home-backlog-linkish {
 }
 .appetite-preview-badge--fast_track {
   color: #f4c145;
+}
+.appetite-preview-badge--remove {
+  color: #ff9d9d;
+}
+.appetite-remove-icon {
+  display: block;
+  width: 1em;
+  height: 1em;
+}
+.drq-star-btn__glyph .appetite-remove-icon {
+  width: 16px;
+  height: 16px;
+}
+.appetite-bar--icons .appetite-remove-icon {
+  width: 14px;
+  height: 14px;
+}
+.appetite-preview-badge .appetite-remove-icon {
+  width: 12px;
+  height: 12px;
+}
+.appetite-preview-badge--sm .appetite-remove-icon {
+  width: 10px;
+  height: 10px;
+}
+.discovery-row-appetite .appetite-remove-icon {
+  width: 12px;
+  height: 12px;
 }
 .appetite-bar--icons {
   margin-top: 0;

@@ -29,14 +29,6 @@ export function discoveryRatingsRollupFromResponse(r: DiscoveryAssetRatingsRespo
   return out;
 }
 
-export const APPETITE_ROW_GLYPH: Record<Appetite, string> = {
-  less: "−",
-  neutral: "○",
-  more: "+",
-  fast_track: "»",
-  remove: "✕",
-};
-
 export const APPETITE_ROW_LABEL: Record<Appetite, string> = {
   less: "Less",
   neutral: "Neutral",

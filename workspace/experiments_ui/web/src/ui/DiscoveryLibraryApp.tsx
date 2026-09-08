@@ -11,7 +11,8 @@ import type { ShapeFactoryClip } from "./api";
 import { formatUnixMtime, formatIsoDateTime } from "./locale";
 import { isLineageInputStill, lineageSummaryHref, parseDiscoveryDeepLinkPrefix, parseDiscoveryDeepLinkRelpath, workbenchHrefForMedia } from "./discoveryDeepLink";
 import { AppetitePreviewBadge } from "./AppetitePreviewBadge";
-import { APPETITE_ROW_GLYPH, appetiteRowTitle, discoveryRatingsRollupFromResponse } from "./discoveryRatingsRollup";
+import { AppetiteGlyph } from "./AppetiteBar";
+import { appetiteRowTitle, discoveryRatingsRollupFromResponse } from "./discoveryRatingsRollup";
 import { DiscoveryAssetLineagePanel } from "./DiscoveryAssetLineagePanel";
 import { DiscoveryAssetRatingsPanel } from "./DiscoveryAssetRatingsPanel";
 import { ClipBookmarksRail } from "./ClipBookmarksRail";
@@ -1272,7 +1273,7 @@ function DiscoveryListThumbRow({
           className={"discovery-row-appetite discovery-row-appetite--" + it.ratings.appetite}
           title={appetiteRowTitle(it.ratings.appetite, it.ratings.appetite_facet)}
         >
-          {APPETITE_ROW_GLYPH[it.ratings.appetite]}
+          <AppetiteGlyph appetite={it.ratings.appetite} />
         </span>
       ) : null}
       <a

@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { fetchDiscoveryAssetRatings, postDiscoveryAssetRatingsVerify } from "./api";
 import { AssetJudgmentEditor } from "./AssetJudgmentEditor";
-import { APPETITE_ROW_GLYPH, appetiteRowTitle } from "./discoveryRatingsRollup";
+import { AppetiteGlyph } from "./AppetiteBar";
+import { appetiteRowTitle } from "./discoveryRatingsRollup";
 import { formatIsoDateTime } from "./locale";
 import type {
   DiscoveryAssetRatingsContributor,
@@ -374,7 +375,7 @@ export function DiscoveryAssetRatingsPanel({
                   className={"discovery-row-appetite discovery-row-appetite--" + data.appetite}
                   title={appetiteRowTitle(data.appetite, data.appetite_facet)}
                 >
-                  {APPETITE_ROW_GLYPH[data.appetite]}
+                  <AppetiteGlyph appetite={data.appetite} />
                 </span>
               ) : null}
               <span className="drt-muted mono">{str(seedItem.name) || seedItem.relpath}</span>

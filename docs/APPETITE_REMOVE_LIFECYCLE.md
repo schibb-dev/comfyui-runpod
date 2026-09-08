@@ -6,7 +6,7 @@
 
 ## Operator path
 
-1. Mark **Remove** (`b` / ✕) on Workbench, Rate queue, Library, or still gallery.
+1. Mark **Remove** (`b` / forbidden) on Workbench, Rate queue, Library, or still gallery.
 2. The row **disappears from default views**. Workbench’s remove chip starts **off**; turn it on to review.
 3. Change appetite (or clear it) to restore the asset to lists and factory eligibility.
 4. If the review says **no dependents**, **Delete** removes the file and its ratings.

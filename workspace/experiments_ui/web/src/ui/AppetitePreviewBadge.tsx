@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { setAssetAppetite } from "./api";
-import { AppetiteBar } from "./AppetiteBar";
+import { AppetiteBar, AppetiteGlyph } from "./AppetiteBar";
 import { patchCachedAppetite, revalidateAssetRatings } from "./assetRatingsCache";
-import { APPETITE_ROW_GLYPH, appetiteRowTitle } from "./discoveryRatingsRollup";
+import { appetiteRowTitle } from "./discoveryRatingsRollup";
 import type { Appetite, AppetiteFacet } from "./types";
 import { useAssetAppetite } from "./WorkProductAppetiteStrip";
 
@@ -192,7 +192,7 @@ export function AppetitePreviewBadge({
         aria-haspopup="dialog"
         aria-expanded={open}
       >
-        {appetite ? APPETITE_ROW_GLYPH[appetite] : UNSET_GLYPH}
+        {appetite ? <AppetiteGlyph appetite={appetite} /> : UNSET_GLYPH}
       </span>
       {popover}
     </span>

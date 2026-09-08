@@ -1,13 +1,44 @@
 import React from "react";
 import type { Appetite, AppetiteFacet } from "./types";
 
+/** Circle + one diagonal — forbidden / prohibition, not a close "X". */
+export function AppetiteRemoveIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={"appetite-remove-icon" + (className ? ` ${className}` : "")}
+      viewBox="0 0 16 16"
+      width="1em"
+      height="1em"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" strokeWidth="1.7" />
+      <line
+        x1="4.15"
+        y1="4.15"
+        x2="11.85"
+        y2="11.85"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 export const APPETITE_ORDER: { key: Appetite; label: string; short: string; glyph: string; hint: string }[] = [
+  { key: "remove", label: "Remove", short: "b", glyph: "⊘", hint: "Hide from lists and factory jobs — review later for deletion" },
   { key: "less", label: "Less", short: "z", glyph: "−", hint: "Steer away from this direction" },
   { key: "neutral", label: "Neutral", short: "x", glyph: "○", hint: "No strong pull either way" },
   { key: "more", label: "More", short: "c", glyph: "+", hint: "Want more work in this direction" },
   { key: "fast_track", label: "Fast-track", short: "v", glyph: "»", hint: "Strong pin — hourly prefers this when it picks next" },
-  { key: "remove", label: "Remove", short: "b", glyph: "✕", hint: "Hide from lists and factory jobs — review later for deletion" },
 ];
+
+export function AppetiteGlyph({ appetite }: { appetite: Appetite }) {
+  if (appetite === "remove") return <AppetiteRemoveIcon />;
+  const g = APPETITE_ORDER.find((a) => a.key === appetite)?.glyph;
+  return <>{g}</>;
+}
 
 export const FACETS: { key: AppetiteFacet; label: string; glyph: string; hint: string }[] = [
   { key: "both", label: "Both", glyph: "◎", hint: "Appetite for the whole result (source + look)" },
@@ -15,7 +46,7 @@ export const FACETS: { key: AppetiteFacet; label: string; glyph: string; hint: s
   { key: "processing", label: "Look", glyph: "✦", hint: "Appetite for the processing/look (prompt + lora)" },
 ];
 
-/** z/x/c/v/b map to appetite states; g cycles the facet. */
+/** z/x/c/v/b map to appetite states (bar order is remove, then less…); g cycles the facet. */
 export const APPETITE_KEYMAP: Record<string, Appetite> = {
   z: "less",
   x: "neutral",
@@ -80,11 +111,13 @@ export function AppetiteBar({
               <>
                 <span className="drq-star-btn__n">{a.short}</span>
                 <span className="drq-star-btn__glyph" aria-hidden="true">
-                  {a.glyph}
+                  <AppetiteGlyph appetite={a.key} />
                 </span>
               </>
             ) : iconsOnly ? (
-              <span aria-hidden="true">{a.glyph}</span>
+              <span aria-hidden="true">
+                <AppetiteGlyph appetite={a.key} />
+              </span>
             ) : (
               a.label
             )}

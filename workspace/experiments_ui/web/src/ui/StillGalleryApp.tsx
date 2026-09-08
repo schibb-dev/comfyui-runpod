@@ -734,10 +734,10 @@ export function StillGalleryApp() {
           >
             <option value="">All</option>
             <option value="any">Marked</option>
-            <option value="fast_track">Fast-track</option>
-            <option value="more">More</option>
-            <option value="less">Less</option>
             <option value="remove">Remove (review)</option>
+            <option value="less">Less</option>
+            <option value="more">More</option>
+            <option value="fast_track">Fast-track</option>
             <option value="none">Unmarked</option>
           </select>
         </label>

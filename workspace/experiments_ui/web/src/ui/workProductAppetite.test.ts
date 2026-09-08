@@ -75,6 +75,19 @@ describe("workProductAppetite", () => {
     ]);
   });
 
+  it("lists remove immediately left of less", () => {
+    const keys = [...APPETITE_FILTER_KEYS];
+    expect(keys.indexOf("remove")).toBe(keys.indexOf("less") - 1);
+  });
+
+  it("ranks remove immediately before less", () => {
+    patchCachedAppetite("og/rm.mp4", "remove", "both");
+    patchCachedAppetite("og/less.mp4", "less", "both");
+    const rm = { status: "complete", output_relpath: "og/rm.mp4" } as WorkProductItem;
+    const less = { status: "complete", output_relpath: "og/less.mp4" } as WorkProductItem;
+    expect(appetiteSortRank(rm)).toBeLessThan(appetiteSortRank(less));
+  });
+
   it("ranks completed unset before marked appetites, in-flight last", () => {
     patchCachedAppetite("og/more.mp4", "more", "both");
     const unset = { status: "complete", output_relpath: "og/none.mp4" } as WorkProductItem;

@@ -9,7 +9,7 @@ export function normalizeAppetiteRelpath(raw: string | null | undefined): string
     .replace(/^\/+/, "");
 }
 
-export const APPETITE_FILTER_KEYS = ["unset", "less", "neutral", "more", "fast_track", "remove"] as const;
+export const APPETITE_FILTER_KEYS = ["unset", "remove", "less", "neutral", "more", "fast_track"] as const;
 export type AppetiteFilterKey = (typeof APPETITE_FILTER_KEYS)[number];
 
 export const APPETITE_FILTER_LABEL: Record<AppetiteFilterKey, string> = {
@@ -21,14 +21,14 @@ export const APPETITE_FILTER_LABEL: Record<AppetiteFilterKey, string> = {
   remove: "remove",
 };
 
-/** Unset first — the usual hunt is “what still needs a mark”. */
+/** Unset first — the usual hunt is “what still needs a mark”. Remove sits with Less. */
 const APPETITE_SORT_RANK: Record<AppetiteFilterKey, number> = {
   unset: 0,
-  less: 1,
-  neutral: 2,
-  more: 3,
-  fast_track: 4,
-  remove: 5,
+  remove: 1,
+  less: 2,
+  neutral: 3,
+  more: 4,
+  fast_track: 5,
 };
 
 const ASSIGNED_APPETITE_KEYS = APPETITE_FILTER_KEYS.filter((k) => k !== "unset");
