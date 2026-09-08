@@ -13,6 +13,7 @@ import {
   setQueueLedgerControl,
 } from "./api";
 import { ComfyLiveMetricsBar, ComfyLivePreview } from "./ComfyLivePreview";
+import { ComfyUiLink } from "./comfyUiWindow";
 import { discoveryLibraryHref, parseQueueDeepLink, queueHref, submitHref, workbenchHref } from "./discoveryDeepLink";
 import { PageHeader } from "./PageHeader";
 import { PipelineMediaPlayer, vhsWindowFromKeyParams } from "./PipelineMediaPlayer";
@@ -91,6 +92,8 @@ type QueueGlanceRow = {
   value: string;
   title?: string;
   prompt?: WorkProductPromptProfile | null;
+  /** When set, the value is a named-window ComfyUI (or other) link. */
+  hrefKind?: "comfyui";
 };
 
 function queueGlanceRows(
@@ -167,7 +170,15 @@ function queueGlanceRows(
   push("identity", "Identity", g.identity_name || null);
   if (item.external) push("origin", "Origin", "external", "Not mapped to an experiments run");
   const jobKey = String(item.job_key || "").trim();
-  if (jobKey) push("job", "Job", jobKey);
+  if (jobKey) {
+    rows.push({
+      key: "job",
+      label: "Job",
+      value: jobKey,
+      title: "Open ComfyUI",
+      hrefKind: "comfyui",
+    });
+  }
 
   return rows;
 }
@@ -469,10 +480,22 @@ function QueuePipelineRow({
                 <div key={row.key} className="pipeline-row__glance-row">
                   <dt>{row.label}</dt>
                   <dd
-                    className={row.prompt ? "pipeline-row__glance-value--prompt" : "mono"}
+                    className={
+                      row.prompt
+                        ? "pipeline-row__glance-value--prompt"
+                        : row.hrefKind === "comfyui"
+                          ? "mono pipeline-row__glance-value--link"
+                          : "mono"
+                    }
                     title={row.prompt ? undefined : row.title || row.value}
                   >
-                    {row.prompt ? <PromptPeekButton prompt={row.prompt} label={row.value} /> : row.value}
+                    {row.prompt ? (
+                      <PromptPeekButton prompt={row.prompt} label={row.value} />
+                    ) : row.hrefKind === "comfyui" ? (
+                      <ComfyUiLink title="Open ComfyUI">{row.value}</ComfyUiLink>
+                    ) : (
+                      row.value
+                    )}
                   </dd>
                 </div>
               ))}

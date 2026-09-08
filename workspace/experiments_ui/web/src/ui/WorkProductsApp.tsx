@@ -32,6 +32,7 @@ import {
   vhsDefaultsToMarks,
 } from "./workProductTrim";
 import { useTrimPlaybackEnforcement, type TrimPlaybackMode } from "./useTrimPlayback";
+import { ComfyUiLink, comfyUiHostLabel } from "./comfyUiWindow";
 import { discoveryLibraryHref, extractContentIdFromName, parseWorkbenchDeepLink, stillsHref, buildSubmitDeepLink, lineageSummaryHref, workbenchHref, workbenchHrefForMedia, isLineageInputStill, type SubmitDeepLink } from "./discoveryDeepLink";
 import { factoryMapFamilyHref } from "./factoryMapRoute";
 import { AppetitePreviewBadge, AppetitePreviewFrame } from "./AppetitePreviewBadge";
@@ -145,6 +146,7 @@ const SORT_OPTIONS: Array<{ id: WorkProductSort; label: string }> = [
 /** Property panels start collapsed; summary line stays visible on the header. */
 const DEFAULT_SECTION_OPEN: Record<string, boolean> = {
   prompt: false,
+  comfyui: true,
   run: false,
   timing: false,
   plan: false,
@@ -2226,6 +2228,13 @@ function DetailValue({
   if ((row.label === "Prompt profile" || row.label === "Prompt file" || row.peek === "prompt") && prompt) {
     return <PromptPeekButton prompt={prompt} label={row.value} />;
   }
+  if (row.peek === "comfyui") {
+    return (
+      <ComfyUiLink className="work-product-details__comfyui-link" title="Open ComfyUI">
+        {row.value}
+      </ComfyUiLink>
+    );
+  }
   if (row.json_path) {
     // Binding rows may include role=… — keep letter, explain via tooltip.
     const hasRole = /role=[A-Za-z]/.test(row.value);
@@ -2298,6 +2307,19 @@ type DetailGroupDef = {
 const DETAIL_GROUPS: DetailGroupDef[] = [
   // Prompt positive/negative live in WorkProductPromptEditor — do not duplicate here.
   {
+    id: "comfyui",
+    title: "ComfyUI",
+    kv: true,
+    labels: [
+      "Page",
+      "Comfy prompt ID",
+      "Comfy submit JSON",
+      // Legacy labels (older API).
+      "Prompt id",
+      "Submit prompt JSON",
+    ],
+  },
+  {
     id: "run",
     title: "Run",
     kv: true,
@@ -2307,12 +2329,7 @@ const DETAIL_GROUPS: DetailGroupDef[] = [
       "Seed mode",
       "Job key",
       "Job file",
-      "Comfy prompt ID",
-      "Comfy submit JSON",
       "Output prefix",
-      // Legacy labels (older API).
-      "Prompt id",
-      "Submit prompt JSON",
     ],
   },
   {
@@ -2413,7 +2430,10 @@ function groupDetailRows(rows: WorkProductDetailRow[]): Array<{
   rows: WorkProductDetailRow[];
   compact?: { title?: string; rows: WorkProductDetailRow[] };
 }> {
-  const remaining = rows.filter((r) => !DETAIL_CHIP_LABELS.has(r.label));
+  const remaining = [
+    { label: "Page", value: comfyUiHostLabel(), peek: "comfyui" },
+    ...rows.filter((r) => !DETAIL_CHIP_LABELS.has(r.label)),
+  ];
   const used = new Set<WorkProductDetailRow>();
   const groups: Array<{
     id: string;
@@ -2553,6 +2573,13 @@ function detailGroupSummary(
   if (group.id === "bindings") {
     return <BindingGroupSummaryLinks rows={group.rows} bindings={item.bindings} />;
   }
+  if (group.id === "comfyui") {
+    return (
+      <ComfyUiLink className="work-product-details__group-summary-link" title="Open ComfyUI">
+        Open
+      </ComfyUiLink>
+    );
+  }
   if (group.id === "run") {
     const bits = [
       rowVal(rows, "Seed") ? `seed ${rowVal(rows, "Seed")}` : null,
@@ -2604,6 +2631,7 @@ function detailGroupSummary(
 /** Friendlier display labels for the Run / Selection collections. */
 const DETAIL_LABELS: Record<string, string> = {
   Created: "Created",
+  Page: "Page",
   "Job key": "Job key",
   "Job file": "Job file",
   "Comfy prompt ID": "Comfy prompt ID",

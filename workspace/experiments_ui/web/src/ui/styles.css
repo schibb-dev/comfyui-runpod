@@ -13749,6 +13749,15 @@ button.home-backlog-linkish {
   white-space: normal;
 }
 
+.pipeline-row__glance-row dd.pipeline-row__glance-value--link a {
+  color: var(--accent, #5aa2ff);
+  text-decoration: none;
+}
+
+.pipeline-row__glance-row dd.pipeline-row__glance-value--link a:hover {
+  text-decoration: underline;
+}
+
 .pipeline-row__detail-line {
   margin: 0;
   font-size: 13px;
@@ -16855,6 +16864,15 @@ button.home-backlog-linkish {
 }
 
 .work-product-details__group-summary-link:hover {
+  text-decoration: underline;
+}
+
+.work-product-details__comfyui-link {
+  color: var(--accent, #5aa2ff);
+  text-decoration: none;
+}
+
+.work-product-details__comfyui-link:hover {
   text-decoration: underline;
 }
 

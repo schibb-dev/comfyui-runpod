@@ -11,18 +11,24 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * repo-root `.env`. Mirror `scripts/experiments-ui-dev.mjs`: read `EXPERIMENTS_UI_PROXY_TARGET`
  * from `<repo>/.env` so Vite proxies /api to the same backend as the launcher.
  */
-function hydrateExperimentsUiProxyTargetFromRepoDotenv(): void {
-  if (process.env.EXPERIMENTS_UI_PROXY_TARGET?.trim()) return;
+function hydrateRepoDotenvKey(key: string): void {
+  if (process.env[key]?.trim()) return;
   const envPath = path.resolve(__dirname, "../../../.env");
   if (!fs.existsSync(envPath)) return;
   const text = fs.readFileSync(envPath, "utf8");
+  const re = new RegExp(`^\\s*${key}\\s*=\\s*(.+)$`);
   for (const line of text.split(/\r?\n/)) {
-    const m = line.match(/^\s*EXPERIMENTS_UI_PROXY_TARGET\s*=\s*(.+)$/);
+    const m = line.match(re);
     if (m) {
-      process.env.EXPERIMENTS_UI_PROXY_TARGET = m[1].trim().replace(/^["']|["']$/g, "");
+      process.env[key] = m[1].trim().replace(/^["']|["']$/g, "");
       return;
     }
   }
+}
+
+function hydrateExperimentsUiProxyTargetFromRepoDotenv(): void {
+  hydrateRepoDotenvKey("EXPERIMENTS_UI_PROXY_TARGET");
+  hydrateRepoDotenvKey("COMFYUI_HOST_PORT");
 }
 
 /**
@@ -79,6 +85,9 @@ export default defineConfig(({ mode }) => {
   return {
     define: {
       __DEV_EXPERIMENTS_PROXY_TARGET__: JSON.stringify(mode === "development" ? apiTarget : ""),
+      __COMFYUI_HOST_PORT__: JSON.stringify(
+        (process.env.COMFYUI_HOST_PORT || env.COMFYUI_HOST_PORT || "8188").trim() || "8188",
+      ),
     },
     plugins: [react()],
     server: {
