@@ -3070,6 +3070,39 @@ def pick_i2v_needing_gex(
     return rows[0]
 
 
+def _upcoming_due_cursors(start: int, due_fn, *, n: int) -> List[int]:
+    """Next ``n`` cursors (including ``start``) where ``due_fn(cursor)`` is true."""
+    out: List[int] = []
+    c = int(start)
+    limit = c + max(int(n) * 24, 48)
+    while c <= limit and len(out) < max(0, int(n)):
+        if due_fn(c):
+            out.append(c)
+        c += 1
+    return out
+
+
+def pick_n_i2v_needing_gex(
+    rows: List[Dict[str, Any]],
+    *,
+    cursor: int = 0,
+    n: int = 5,
+) -> List[Dict[str, Any]]:
+    """Simulate the next ``n`` i2v→GEX chain drains (family rotation, no repeats)."""
+    remaining = list(rows)
+    out: List[Dict[str, Any]] = []
+    for pick_cursor in _upcoming_due_cursors(cursor, want_i2v_gex_chain, n=n):
+        hit = pick_i2v_needing_gex(remaining, cursor=pick_cursor)
+        if not hit:
+            break
+        row = dict(hit)
+        row["pick_cursor"] = int(pick_cursor)
+        out.append(row)
+        key = str(hit.get("job_key") or "")
+        remaining = [r for r in remaining if str(r.get("job_key") or "") != key]
+    return out
+
+
 def find_i2v_needing_gex(
     *,
     data_root: Optional[Path] = None,
@@ -3209,6 +3242,7 @@ def _backlog_item(
     row: Dict[str, Any],
     *,
     next_key: Optional[str] = None,
+    next_rank: Optional[int] = None,
     data_root: Optional[Path] = None,
     chain_id: str = "i2v_to_gex",
     cursor: int = 0,
@@ -3218,13 +3252,14 @@ def _backlog_item(
     video = str(row.get("video") or "")
     root = (data_root or _default_data_root()).resolve()
     cache = meta_cache if meta_cache is not None else {}
+    rank = int(next_rank) if next_rank else (1 if next_key and job_key == next_key else 0)
     out: Dict[str, Any] = {
         "job_key": job_key,
         "producer_family": str(row.get("producer_family") or ""),
         "consumer_family": str(row.get("consumer_family") or ""),
         "video": video,
         "video_name": _path_basename(video),
-        "next": bool(next_key and job_key == next_key),
+        "next": bool(rank == 1 or (next_key and job_key == next_key)),
         **_backlog_media_urls(video, data_root=root),
         "pending_preview": _pending_preview_for_row(
             row,
@@ -3234,6 +3269,14 @@ def _backlog_item(
             meta_cache=cache,
         ),
     }
+    if rank > 0:
+        out["next_rank"] = rank
+    pick_cursor = row.get("pick_cursor")
+    if pick_cursor is not None:
+        try:
+            out["pick_cursor"] = int(pick_cursor)
+        except (TypeError, ValueError):
+            pass
     ref = str(row.get("source_ref") or "").strip()
     if ref:
         out["source_ref"] = ref
@@ -3253,7 +3296,14 @@ def hourly_chain_backlogs(
     cur = int(cursor) if cursor is not None else _hourly_state_cursor(data_root)
 
     i2v_rows = list_i2v_needing_gex(data_root=data_root, job_dir=job_root)
-    i2v_next = pick_i2v_needing_gex(i2v_rows, cursor=cur)
+    i2v_nexts = pick_n_i2v_needing_gex(i2v_rows, cursor=cur, n=5)
+    i2v_next = i2v_nexts[0] if i2v_nexts else None
+    i2v_ranks = {str(r.get("job_key") or ""): i + 1 for i, r in enumerate(i2v_nexts)}
+    i2v_pick_cursors = {
+        str(r.get("job_key") or ""): int(r["pick_cursor"])
+        for r in i2v_nexts
+        if r.get("job_key") and r.get("pick_cursor") is not None
+    }
     i2v_next_key = str((i2v_next or {}).get("job_key") or "")
     i2v_by: Dict[str, int] = {}
     for row in i2v_rows:
@@ -3263,19 +3313,32 @@ def hourly_chain_backlogs(
     facial_rows = list_gex2_needing_facial(data_root=data_root, job_dir=job_root)
     for row in facial_rows:
         row.setdefault("producer_family", "FB9_GEX2")
-    facial_next = facial_rows[0] if facial_rows else None
+    facial_nexts = list(facial_rows[:5])
+    facial_next = facial_nexts[0] if facial_nexts else None
+    facial_ranks = {str(r.get("job_key") or ""): i + 1 for i, r in enumerate(facial_nexts)}
     facial_next_key = str((facial_next or {}).get("job_key") or "")
     meta_cache: Dict[str, Dict[str, Any]] = {}
 
-    def _item(row: Optional[Dict[str, Any]], *, chain_id: str, next_key: str) -> Optional[Dict[str, Any]]:
+    def _item(
+        row: Optional[Dict[str, Any]],
+        *,
+        chain_id: str,
+        next_key: str,
+        ranks: Optional[Dict[str, int]] = None,
+    ) -> Optional[Dict[str, Any]]:
         if not row:
             return None
+        key = str(row.get("job_key") or "")
+        preview_cursor = cur
+        if chain_id == "i2v_to_gex" and key in i2v_pick_cursors:
+            preview_cursor = i2v_pick_cursors[key]
         return _backlog_item(
             row,
             next_key=next_key,
+            next_rank=(ranks or {}).get(key),
             data_root=data_root,
             chain_id=chain_id,
-            cursor=cur,
+            cursor=preview_cursor,
             meta_cache=meta_cache,
         )
 
@@ -3298,9 +3361,14 @@ def hourly_chain_backlogs(
                 "due_this_cursor": want_i2v_gex_chain(cur),
                 "lookback_days": None,
                 "lookback_note": "No age cull — old completes stay until a GEX job binds the video.",
-                "next": _item(i2v_next, chain_id="i2v_to_gex", next_key=i2v_next_key),
+                "next": _item(i2v_next, chain_id="i2v_to_gex", next_key=i2v_next_key, ranks=i2v_ranks),
+                "next_picks": [
+                    _item(row, chain_id="i2v_to_gex", next_key=i2v_next_key, ranks=i2v_ranks) or {}
+                    for row in i2v_nexts
+                ],
                 "items": [
-                    _item(row, chain_id="i2v_to_gex", next_key=i2v_next_key) or {} for row in i2v_rows
+                    _item(row, chain_id="i2v_to_gex", next_key=i2v_next_key, ranks=i2v_ranks) or {}
+                    for row in i2v_rows
                 ],
             },
             {
@@ -3314,9 +3382,17 @@ def hourly_chain_backlogs(
                 "due_this_cursor": want_facial_chain(cur) and not want_seed_over_chain(cur),
                 "lookback_days": _facial_lookback_days(),
                 "lookback_note": "Only GEX2 jobs within HOURLY_FACIAL_LOOKBACK_DAYS (default 14).",
-                "next": _item(facial_next, chain_id="gex2_to_facial", next_key=facial_next_key),
+                "next": _item(
+                    facial_next, chain_id="gex2_to_facial", next_key=facial_next_key, ranks=facial_ranks
+                ),
+                "next_picks": [
+                    _item(row, chain_id="gex2_to_facial", next_key=facial_next_key, ranks=facial_ranks)
+                    or {}
+                    for row in facial_nexts
+                ],
                 "items": [
-                    _item(row, chain_id="gex2_to_facial", next_key=facial_next_key) or {}
+                    _item(row, chain_id="gex2_to_facial", next_key=facial_next_key, ranks=facial_ranks)
+                    or {}
                     for row in facial_rows
                 ],
             },

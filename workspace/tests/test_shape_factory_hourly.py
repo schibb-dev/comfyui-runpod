@@ -1637,6 +1637,24 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
             self.assertIsNone(find_kneel_needing_gex(job_dir=root))
             self.assertIsNone(find_i2v_needing_gex(job_dir=root))
 
+    def test_pick_n_i2v_needing_gex_rotates_without_repeats(self) -> None:
+        from shape_factory_hourly import pick_n_i2v_needing_gex
+
+        rows = [
+            {"producer_family": "X-KNEEL-FB9-bare", "job_key": "bare-1"},
+            {"producer_family": "X-KNEEL-FB9", "job_key": "kneel-1"},
+            {"producer_family": "BounceDanceA", "job_key": "bounce-1"},
+            {"producer_family": "FB9-FaceBlast", "job_key": "fb-1"},
+            {"producer_family": "FB8VA5-ZOOMOUT", "job_key": "zoom-1"},
+            {"producer_family": "X-KNEEL-FB9", "job_key": "kneel-2"},
+        ]
+        picks = pick_n_i2v_needing_gex(rows, cursor=0, n=5)
+        keys = [p["job_key"] for p in picks]
+        self.assertEqual(len(keys), 5)
+        self.assertEqual(len(set(keys)), 5)
+        self.assertEqual(keys[0], "bare-1")
+        self.assertEqual([p["pick_cursor"] for p in picks], [0, 3, 6, 9, 12])
+
     def test_hourly_chain_backlogs_lists_waiting_parents(self) -> None:
         import tempfile
 
@@ -1693,6 +1711,9 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
         self.assertEqual(i2v["by_family"].get("X-KNEEL-FB9"), 1)
         self.assertEqual(i2v["by_family"].get("FB9-FaceBlast"), 1)
         self.assertEqual(i2v["next"]["job_key"], "kneel-k")
+        self.assertEqual([p["job_key"] for p in i2v.get("next_picks") or []], ["kneel-k", "faceblast-1"])
+        self.assertEqual((i2v["next_picks"][0] or {}).get("next_rank"), 1)
+        self.assertEqual((i2v["next_picks"][1] or {}).get("next_rank"), 2)
         self.assertIn("kneel_out.png", str(i2v["next"].get("thumb_url") or ""))
         self.assertTrue(str(i2v["next"].get("thumb_url") or "").startswith("/files/"))
         fb_item = next(it for it in i2v["items"] if it["job_key"] == "faceblast-1")

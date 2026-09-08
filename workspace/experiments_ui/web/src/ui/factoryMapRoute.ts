@@ -1,5 +1,6 @@
 export type FactoryMapRoute =
   | { view: "index" }
+  | { view: "hourlies" }
   | { view: "family"; familySlug: string }
   | { view: "pipeline"; pipelineId: string };
 
@@ -16,16 +17,19 @@ export type FactoryMapFamilyFocusOpts = {
 
 const PREFIX = "/discovery/factory-map";
 const PIPELINE_PREFIX = `${PREFIX}/pipeline/`;
+const HOURLIES_SLUGS = new Set(["hourlies", "hourly"]);
 
 export function parseFactoryMapRoute(pathname: string = window.location.pathname): FactoryMapRoute {
   const path = (pathname || "/").replace(/\/+$/, "") || "/";
   if (path === PREFIX) return { view: "index" };
+  if (path === `${PREFIX}/hourlies` || path === `${PREFIX}/hourly`) return { view: "hourlies" };
   if (path.startsWith(PIPELINE_PREFIX)) {
     const pipelineId = decodeURIComponent(path.slice(PIPELINE_PREFIX.length)).split("/")[0]?.trim();
     if (pipelineId) return { view: "pipeline", pipelineId };
   }
   if (path.startsWith(`${PREFIX}/`)) {
     const slug = decodeURIComponent(path.slice(PREFIX.length + 1)).split("/")[0]?.trim();
+    if (slug && HOURLIES_SLUGS.has(slug)) return { view: "hourlies" };
     if (slug && slug !== "pipeline") return { view: "family", familySlug: slug };
   }
   return { view: "index" };
@@ -46,6 +50,10 @@ export function parseFactoryMapFocus(hash: string = typeof window !== "undefined
     return jobKey ? { kind: "job", jobKey } : null;
   }
   return null;
+}
+
+export function factoryMapHourliesHref(): string {
+  return `${PREFIX}/hourlies`;
 }
 
 export function factoryMapIndexHref(opts?: { focus?: "curation"; familySlug?: string }): string {

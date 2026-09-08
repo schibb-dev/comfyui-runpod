@@ -36,6 +36,7 @@ import {
 } from "./factoryMapPairs";
 import {
   factoryMapFamilyHref,
+  factoryMapHourliesHref,
   factoryMapIndexHref,
   factoryMapPipelineHref,
   familySlugFromShapePath,
@@ -55,6 +56,7 @@ import {
   type FactoryMapIndexContext,
 } from "./factoryMapSummaries";
 import { queryKeys } from "./queryKeys";
+import { HourlyFactoryPanel } from "./HourlyFactoryPanel";
 import { peekFamiliesBootstrap } from "./shapeFactorySessionCache";
 import type {
   ShapeFactoryMapDepositPool,
@@ -211,6 +213,7 @@ function FactoryMapShell({
 }) {
   const isFamily = route.view === "family";
   const isPipeline = route.view === "pipeline";
+  const isHourlies = route.view === "hourlies";
   return (
     <div className="discovery-screen">
       <div className="panel discovery-panel discovery-factory-map-root">
@@ -220,7 +223,9 @@ function FactoryMapShell({
               Factory map
             </h1>
             <p className="factory-muted" style={{ margin: "4px 0 0" }}>
-              Shape families — pools, jobs, and queue observation
+              {isHourlies
+                ? "Hourlies — cadence, pending floor, and chain backlogs"
+                : "Shape families — pools, jobs, and queue observation"}
             </p>
             {isFamily ? (
               <nav className="sfmap-breadcrumb" aria-label="Factory map breadcrumb">
@@ -233,6 +238,12 @@ function FactoryMapShell({
                 <a href={factoryMapIndexHref()}>All families</a>
                 <span aria-hidden="true">/</span>
                 <span className="sfmap-breadcrumb__current">{route.pipelineId}</span>
+              </nav>
+            ) : isHourlies ? (
+              <nav className="sfmap-breadcrumb" aria-label="Factory map breadcrumb">
+                <a href={factoryMapIndexHref()}>All families</a>
+                <span aria-hidden="true">/</span>
+                <span className="sfmap-breadcrumb__current">Hourlies</span>
               </nav>
             ) : null}
           </div>
@@ -304,6 +315,27 @@ function FactoryMapFamilyNav({
           </a>
         );
       })}
+    </nav>
+  );
+}
+
+function FactoryMapSectionNav({ active }: { active: "families" | "hourlies" }) {
+  return (
+    <nav className="sfmap-section-nav" aria-label="Factory sections">
+      <a
+        href={factoryMapIndexHref()}
+        className={`sfmap-section-nav__link${active === "families" ? " sfmap-section-nav__link--active" : ""}`}
+        aria-current={active === "families" ? "page" : undefined}
+      >
+        Families
+      </a>
+      <a
+        href={factoryMapHourliesHref()}
+        className={`sfmap-section-nav__link${active === "hourlies" ? " sfmap-section-nav__link--active" : ""}`}
+        aria-current={active === "hourlies" ? "page" : undefined}
+      >
+        Hourlies
+      </a>
     </nav>
   );
 }
@@ -1767,6 +1799,7 @@ function FactoryMapPipelineView({
 
   return (
     <>
+      <FactoryMapSectionNav active="families" />
       <FactoryMapFamilyNav families={families} />
       <FactoryMapPipelineNav pipelines={pipelines} activeId={pipelineId} />
 
@@ -2473,6 +2506,7 @@ function FactoryMapIndexView({
 
   return (
     <>
+      <FactoryMapSectionNav active="families" />
       <FactoryMapFamilyNav families={families} />
       {pipelines.length > 0 ? <FactoryMapPipelineNav pipelines={pipelines} /> : null}
 
@@ -2508,7 +2542,8 @@ function FactoryMapIndexView({
         <div className="sfmap-hourly-banner">
           <strong>Hourly next (if idle):</strong> {hourly.sample_id || "—"} · pick {hourly.pick_index} ·{" "}
           {hourly.gex2_prompt}
-          {hourly.note ? <span className="factory-muted"> — {hourly.note}</span> : null}
+          {hourly.note ? <span className="factory-muted"> — {hourly.note}</span> : null}{" "}
+          <a href={factoryMapHourliesHref()}>Open Hourlies →</a>
         </div>
       ) : null}
 
@@ -2844,6 +2879,7 @@ function FactoryMapFamilyView({
 
   return (
     <>
+      <FactoryMapSectionNav active="families" />
       <FactoryMapFamilyNav families={families} activeSlug={family.family_slug} />
 
       <div className="sfmap-family-block">
@@ -2973,6 +3009,7 @@ export function DiscoveryFactoryMapApp() {
   const shapeFactoryMutationCount = useIsMutating();
   const [route, setRoute] = useState<FactoryMapRoute>(() => parseFactoryMapRoute());
   const [mapFocus, setMapFocus] = useState<FactoryMapFocus | null>(() => parseFactoryMapFocus());
+  const [hourlyTick, setHourlyTick] = useState(0);
   const warmFamilies = useMemo(() => warmFamiliesFromBootstrap(), []);
 
   useEffect(() => {
@@ -3024,7 +3061,9 @@ export function DiscoveryFactoryMapApp() {
         family: "family" in fullKey ? fullKey.family : undefined,
       }),
     // Index/pipeline: deepen after slim. Family: load rich map immediately (slim still warms nav).
-    enabled: route.view === "family" || slimQuery.isSuccess || slimQuery.isError,
+    enabled:
+      route.view === "family" ||
+      (route.view !== "hourlies" && (slimQuery.isSuccess || slimQuery.isError)),
     staleTime: 30_000,
     refetchInterval: (query) => {
       if (document.hidden) return false;
@@ -3062,7 +3101,7 @@ export function DiscoveryFactoryMapApp() {
           jobs: { total: 0, items: [], summary: {} },
         }
       : null;
-  const loading = !data && (slimQuery.isLoading || fullQuery.isLoading);
+  const loading = route.view !== "hourlies" && !data && (slimQuery.isLoading || fullQuery.isLoading);
   const showingSlim =
     wantsSlimFirst && Boolean(slimQuery.data?.ok) && !(fullQuery.data?.ok);
   const deepening = showingSlim && fullQuery.isFetching;
@@ -3279,7 +3318,10 @@ export function DiscoveryFactoryMapApp() {
       loading={loading}
       refreshing={refreshing || deepening}
       statusLine={statusLine}
-      onRefresh={() => void reload()}
+      onRefresh={() => {
+        setHourlyTick((n) => n + 1);
+        void reload();
+      }}
     >
       {error ? (
         <div className="factory-error" role="alert">
@@ -3293,7 +3335,12 @@ export function DiscoveryFactoryMapApp() {
       ) : null}
 
       <div className="discovery-factory-map-scroll">
-        {data?.ok ? (
+        {route.view === "hourlies" ? (
+          <>
+            <FactoryMapSectionNav active="hourlies" />
+            <HourlyFactoryPanel refreshToken={hourlyTick} />
+          </>
+        ) : data?.ok ? (
           route.view === "index" ? (
             <FactoryMapIndexView
               data={data}

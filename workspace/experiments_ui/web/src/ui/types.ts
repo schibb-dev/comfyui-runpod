@@ -1960,6 +1960,8 @@ export type HourlyChainBacklogItem = {
   source_ref?: string;
   source_ref_name?: string;
   next?: boolean;
+  next_rank?: number;
+  pick_cursor?: number;
   pending_preview?: HourlyChainPendingPreview;
 };
 
@@ -1975,6 +1977,7 @@ export type HourlyChainBacklog = {
   lookback_days?: number | null;
   lookback_note?: string;
   next?: HourlyChainBacklogItem | null;
+  next_picks?: HourlyChainBacklogItem[];
   items?: HourlyChainBacklogItem[];
 };
 

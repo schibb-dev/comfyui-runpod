@@ -46,7 +46,7 @@ export const APP_ROUTES: AppRoute[] = [
   { id: "library", path: "/discovery", label: "Library", hint: "Search and find indexed media", group: "pipeline" },
   { id: "stills", path: "/discovery/stills", label: "Stills", hint: "Input still gallery · collections · I2V launch", group: "pipeline" },
   { id: "clips", path: "/discovery/clips", label: "Clips", hint: "Browse clip bookmarks across parents", group: "pipeline" },
-  { id: "factory", path: "/discovery/factory-map", label: "Factory", hint: "Manage shape families · recover / replay", group: "pipeline" },
+  { id: "factory", path: "/discovery/factory-map", label: "Factory", hint: "Families, hourlies, recover / replay", group: "pipeline" },
   { id: "rate", path: "/discovery/rate", label: "Rating", hint: "Rating bootstrap queue", group: "pipeline" },
   {
     id: "submit",
