@@ -2183,6 +2183,10 @@ def swap_family_from_request_body(
     """
     Replay one or more jobs as another family, then retire the originals.
 
+    The Workbench Jobs-list Swap control is hidden pending a better UX (2026-09-08).
+    Retargeting queued work is still useful — review that surface and, if needed,
+    these replay-then-retire mechanics.
+
     Queued Comfy prompts are unqueued first so the old family does not start.
     The source job is then discarded (expunged) so Workbench is not left with
     a pending leftover. Running jobs and finished jobs (complete / deposited /

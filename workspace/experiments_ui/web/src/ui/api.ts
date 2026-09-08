@@ -1598,6 +1598,7 @@ export async function recordBatchTriageComplete(body: { relpaths: string[] }): P
   return j;
 }
 
+/** Retarget queued jobs to another family. Jobs-list Swap UI is hidden pending a better UX. */
 export async function swapShapeFactoryFamily(
   req: ShapeFactorySwapFamilyRequest,
 ): Promise<ShapeFactorySwapFamilyResponse> {

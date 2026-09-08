@@ -2764,6 +2764,7 @@ def _shape_factory_pipeline_run_get_payload(cfg: ServerConfig, run_id: str, q: D
 
 
 def _shape_factory_swap_family_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Family retarget. Jobs-list Swap UI is hidden pending a better UX; review surface/mechanics."""
     d = _workspace_scripts_dir()
     if d.is_dir() and str(d) not in sys.path:
         sys.path.insert(0, str(d))
@@ -13268,7 +13269,10 @@ class Handler(BaseHTTPRequestHandler):
         return _json_response(self, code, payload)
 
     def _handle_shape_factory_swap_family_post(self) -> None:
-        """POST /api/shape-factory/swap-family — replay job(s) as another family and retire the old queued ones."""
+        """POST /api/shape-factory/swap-family — replay job(s) as another family and retire the old queued ones.
+
+        Jobs-list Swap UI is hidden pending a better UX; review the surface and maybe these mechanics.
+        """
         cfg = self.server.cfg
         body = self._read_request_json()
         if body is None:

@@ -50,7 +50,7 @@ import {
 import { nextOffSetForGroupDoubleClick } from "./filterGroupDoubleClick";
 import { prefetchAssetRatings } from "./assetRatingsCache";
 import { loadClipsForMedia, rememberFamiliesFromWorkProducts } from "./shapeFactorySessionCache";
-import { familySwapTargets, isDefaultPromptVariant, isStillMediaPath, jobPromptVariantName, jobPromptVariantSlug, pickDefaultSwapTarget, promptVariantName, promptVariantSlug } from "./submitFamily";
+import { familySwapTargets, isDefaultPromptVariant, isStillMediaPath, jobPromptVariantName, jobPromptVariantSlug, promptVariantName, promptVariantSlug } from "./submitFamily";
 import { recencyMs, recencyStamp } from "./workProductRecency";
 import { queryKeys } from "./queryKeys";
 import type {
@@ -446,7 +446,13 @@ function canUnqueueWorkProduct(item: WorkProductItem): boolean {
   return Boolean(String(item.prompt_id || "").trim());
 }
 
-/** Queued / pending jobs can be retargeted: replay as another family, then retire the old one. */
+/**
+ * Queued / pending jobs can be retargeted: replay as another family, then retire the old one.
+ *
+ * The Jobs-list bulk Swap control is hidden pending a better UX; per-job Swap
+ * (re-run with another family) still uses this. Review the surface and maybe
+ * the replay-then-retire mechanics — not whether retargeting is useful.
+ */
 function canSwapFamilyWorkProduct(item: WorkProductItem): boolean {
   if (!String(item.job_key || "").trim()) return false;
   if (isNonFactoryWorkProduct(item)) return false;
@@ -5035,150 +5041,9 @@ function workProductRowPropsEqual(
 
 const WorkProductRow = React.memo(WorkProductRowInner, workProductRowPropsEqual);
 
-function WorkbenchIndexFamilySwap({
-  families,
-  items,
-  disabled,
-  onSwapped,
-}: {
-  families: WorkProductFamilyOption[];
-  items: WorkProductItem[];
-  disabled?: boolean;
-  onSwapped?: (nextJobKey: string | null, summary: string) => void;
-}) {
-  const swappable = useMemo(
-    () => items.filter((it) => canSwapFamilyWorkProduct(it) && String(it.family_slug || "").trim()),
-    [items],
-  );
-  const fromSlugs = useMemo(() => {
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const it of swappable) {
-      const slug = String(it.family_slug || "").trim();
-      if (!slug || seen.has(slug)) continue;
-      if (!familySwapTargets(families, slug).length) continue;
-      seen.add(slug);
-      out.push(slug);
-    }
-    return out;
-  }, [swappable, families]);
-  const [fromSlug, setFromSlug] = useState("");
-  const [toSlug, setToSlug] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-
-  const resolvedFrom = fromSlugs.includes(fromSlug) ? fromSlug : fromSlugs[0] || "";
-  const toOptions = useMemo(
-    () => familySwapTargets(families, resolvedFrom),
-    [families, resolvedFrom],
-  );
-  const preferredTo = pickDefaultSwapTarget(families, resolvedFrom);
-  const resolvedTo = toOptions.some((f) => f.slug === toSlug)
-    ? toSlug
-    : preferredTo || toOptions[0]?.slug || "";
-
-  useEffect(() => {
-    if (fromSlug !== resolvedFrom) setFromSlug(resolvedFrom);
-  }, [fromSlug, resolvedFrom]);
-  useEffect(() => {
-    if (toSlug !== resolvedTo) setToSlug(resolvedTo);
-  }, [toSlug, resolvedTo]);
-
-  const targets = swappable.filter((it) => String(it.family_slug || "").trim() === resolvedFrom);
-  if (!fromSlugs.length || !resolvedFrom || !resolvedTo) return null;
-
-  const swapBulk = async (when: "now" | "later") => {
-    const keys = targets.map((it) => String(it.job_key || "").trim()).filter(Boolean);
-    if (!keys.length || busy || disabled) return;
-    const ok = window.confirm(
-      `Swap ${keys.length} ${resolvedFrom} job${keys.length === 1 ? "" : "s"} to ${resolvedTo}?\n\n` +
-        `Each is replayed as ${resolvedTo} (same seed), then the old job is unqueued and removed. ` +
-        `Running jobs are skipped.`,
-    );
-    if (!ok) return;
-    setBusy(true);
-    setMsg(null);
-    try {
-      const res = await swapShapeFactoryFamily({
-        job_keys: keys,
-        family_slug: resolvedTo,
-        replace: true,
-        front: when === "now",
-        seed_mode: "same",
-      });
-      const firstNew = (res.items || [])
-        .map((it) => String(it.replay?.job_key || "").trim())
-        .find(Boolean) || null;
-      const summary = res.failed
-        ? `Swapped ${res.swapped || 0}/${keys.length} → ${resolvedTo} · ${res.failed} failed`
-        : `Swapped ${res.swapped || 0} → ${resolvedTo}`;
-      setMsg(summary);
-      onSwapped?.(firstNew, summary);
-    } catch (e) {
-      setMsg(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="work-products-index__swap" role="group" aria-label="Swap family for queued jobs">
-      <span className="work-products-index__swap-label">Swap</span>
-      <select
-        className="work-product-family-select"
-        value={resolvedFrom}
-        disabled={busy || disabled}
-        aria-label="Family to swap from"
-        onChange={(e) => setFromSlug(e.target.value)}
-      >
-        {fromSlugs.map((slug) => (
-          <option key={slug} value={slug}>
-            {slug} ({swappable.filter((it) => it.family_slug === slug).length})
-          </option>
-        ))}
-      </select>
-      <span className="work-products-index__swap-arrow" aria-hidden>
-        →
-      </span>
-      <select
-        className="work-product-family-select"
-        value={resolvedTo}
-        disabled={busy || disabled}
-        aria-label="Family to swap to"
-        onChange={(e) => setToSlug(e.target.value)}
-      >
-        {toOptions.map((f) => (
-          <option key={f.slug} value={f.slug}>
-            {f.slug}
-          </option>
-        ))}
-      </select>
-      <button
-        type="button"
-        className="drt-btn"
-        disabled={busy || disabled || !targets.length}
-        title={`Replay ${targets.length} as ${resolvedTo} now, then retire the old jobs`}
-        onClick={() => void swapBulk("now")}
-      >
-        {busy ? "…" : `Now (${targets.length})`}
-      </button>
-      <button
-        type="button"
-        className="drt-btn"
-        disabled={busy || disabled || !targets.length}
-        title={`Replay ${targets.length} as ${resolvedTo} later, then retire the old jobs`}
-        onClick={() => void swapBulk("later")}
-      >
-        Later
-      </button>
-      {msg ? (
-        <span className="work-products-index__swap-msg" title={msg}>
-          {msg}
-        </span>
-      ) : null}
-    </div>
-  );
-}
+// Jobs-list bulk Swap UI is hidden (2026-09-08) pending a better UX. Family
+// retarget is still useful (API + per-job Swap when re-run family changes).
+// Review the surface and maybe replay-then-retire mechanics.
 
 export function WorkProductsApp() {
   const deepLink = useMemo(() => parseWorkbenchDeepLink(), []);
@@ -5974,17 +5839,6 @@ export function WorkProductsApp() {
                   ))}
                 </select>
               </label>
-              <WorkbenchIndexFamilySwap
-                families={families}
-                items={visibleItems}
-                onSwapped={(nextKey) => {
-                  void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductsRoot });
-                  void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductRoot });
-                  void queryClient.invalidateQueries({ queryKey: queryKeys.queue.snapshot });
-                  void queryClient.invalidateQueries({ queryKey: queryKeys.queue.ledgerRoot });
-                  if (nextKey) focusJobKey(nextKey);
-                }}
-              />
             </div>
             <div className="work-products-index__list" role="listbox" aria-label="Recent jobs">
               {visibleItems.map((item) => (

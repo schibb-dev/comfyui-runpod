@@ -1668,7 +1668,8 @@ export type ShapeFactoryReplayResponse = ShapeFactoryMapQueueResponse & {
   };
 };
 
-/** POST /api/shape-factory/swap-family — replay job(s) as another family and retire the old queued ones. */
+/** POST /api/shape-factory/swap-family — replay job(s) as another family and retire the old queued ones.
+ * Jobs-list Swap UI is hidden pending a better UX; review the surface and maybe these mechanics. */
 export type ShapeFactorySwapFamilyRequest = {
   job_key?: string;
   job_keys?: string[];
