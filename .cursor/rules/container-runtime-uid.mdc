@@ -1,0 +1,17 @@
+---
+description: Write container runtime data as ubuntu (uid 1000), not root
+alwaysApply: true
+---
+
+# Container runtime uid
+
+ComfyUI and Experiments UI inside `comfyui0-runpod` run as **uid 1000** (`ubuntu`).
+`docker exec` without `-u` is **root**. Root-created files under
+`.data/shape_factory/` stay `root:root` `644`; ubuntu then gets EACCES on update
+(Workbench discard, hourly JSON, sqlite).
+
+- Use `docker exec -u ubuntu comfyui0-runpod …` (or `-u 1000`) for anything that
+  writes `/workspace/.data/shape_factory/**`.
+- Do not create or edit that tree as root.
+- If a file is already root-owned: `chown ubuntu:ubuntu` it, or as root in the
+  container run `/workspace/scripts/reclaim_runtime_ownership.sh`.

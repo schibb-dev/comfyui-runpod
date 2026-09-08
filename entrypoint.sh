@@ -82,6 +82,11 @@ normalize_bind_mount_input_output() {
 
 normalize_bind_mount_input_output
 
+# Root-owned leftovers under the RW factory bind (docker exec without -u ubuntu).
+if [[ -x "$WORKSPACE_PATH/scripts/reclaim_runtime_ownership.sh" ]]; then
+  "$WORKSPACE_PATH/scripts/reclaim_runtime_ownership.sh" || true
+fi
+
 # Make workflows visible to the pysssss workflow picker (Custom-Scripts):
 # pysssss defaults to scanning: $COMFYUI_PATH/pysssss-workflows
 # Our repo stores workflows in: $WORKSPACE_PATH/workflows

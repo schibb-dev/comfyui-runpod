@@ -245,7 +245,9 @@ If you run **Vite on the host** with the proxy target set to `http://127.0.0.1:8
 - Host workflow: **`npm run ui:dev:start`** (watched API + Vite) or **`npm run ui:dev:all`** (API + Vite, no watch) via `scripts/experiments-ui-dev.mjs`; both start the API on **`127.0.0.1:8791`**. Vite’s default proxy targets **8791** (`workspace/experiments_ui/web/vite.config.ts`).
 - Container workflow: `scripts/dev_experiments_ui_container.ps1` sets `EXPERIMENTS_UI_PROXY_TARGET=http://127.0.0.1:8790` so Vite inside the container talks to the in-container API.
 
-After changing `experiments_ui_server.py`, restart the ComfyUI container so the background Experiments UI picks up the script: `docker compose restart comfyui`.
+After changing `experiments_ui_server.py`, restart only that process (do not restart the whole Comfy container): kill and respawn `python3 /workspace/scripts/experiments_ui_server.py` as user `ubuntu`.
+
+**Permission denied (EACCES) on `.data/shape_factory/*.json`:** the file is `root:root` from a `docker exec` that ran as root. UI/hourly run as uid 1000. Fix: `docker exec -u 0 comfyui0-runpod /workspace/scripts/reclaim_runtime_ownership.sh`. Prefer `docker exec -u ubuntu` for later writes.
 
 ---
 

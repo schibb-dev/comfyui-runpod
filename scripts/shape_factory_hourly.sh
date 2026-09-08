@@ -52,6 +52,19 @@ mkdir -p "$(dirname "$LOG")" "$(dirname "$STATE")"
 
 log() { echo "$(date -Is) $*" | tee -a "$LOG"; }
 
+# Cheap reclaim of root-owned factory runtime files (docker exec default is root).
+# Silent unless it actually chowned something; details go to ownership-reclaim.log.
+if command -v docker >/dev/null 2>&1; then
+  _reclaim_out="$(docker exec -u 0 comfyui0-runpod /workspace/scripts/reclaim_runtime_ownership.sh 2>&1)" || true
+  if [[ -n "${_reclaim_out}" ]]; then
+    while IFS= read -r _line; do
+      [[ -n "$_line" ]] || continue
+      log "ownership: $_line"
+    done <<<"$_reclaim_out"
+  fi
+  unset _reclaim_out _line
+fi
+
 queue_counts() {
   local qf
   qf=$(mktemp)
