@@ -222,6 +222,251 @@ function familyShapeId(families: WorkProductFamilyOption[], slug: string): strin
   return sid || null;
 }
 
+function FamilySelect({
+  value,
+  onChange,
+  label,
+  title,
+  opts,
+  disabled,
+}: {
+  value: string;
+  onChange: (slug: string) => void;
+  label: string;
+  title: string;
+  opts: WorkProductFamilyOption[];
+  disabled?: boolean;
+}) {
+  return (
+    <label className="work-product-quick-queue__family-wrap">
+      <span className="work-product-quick-queue__family-label">{label}</span>
+      <select
+        className="work-product-quick-queue__family"
+        value={value}
+        disabled={disabled || !opts.length}
+        aria-label={`${label} target family`}
+        title={title}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        {opts.length === 0 ? <option value="">Loading…</option> : null}
+        {value && !opts.some((f) => f.slug === value) ? <option value={value}>{value}</option> : null}
+        {opts.map((f) => {
+          const promoScope = String(f.promotion?.scope || "").trim();
+          const promoSuffix = promoScope === "temporary" ? " [TEMP]" : promoScope === "long_term" ? " [DEFAULT]" : "";
+          return (
+            <option key={f.slug} value={f.slug}>
+              {f.slug}
+              {promoSuffix}
+            </option>
+          );
+        })}
+      </select>
+    </label>
+  );
+}
+
+function ProfileSelect({
+  familySlug,
+  value,
+  onChange,
+  ariaPrefix,
+  families,
+  disabled,
+}: {
+  familySlug: string;
+  value: string;
+  onChange: (path: string) => void;
+  ariaPrefix: string;
+  families: WorkProductFamilyOption[];
+  disabled?: boolean;
+}) {
+  const profiles = familyPromptProfiles(families, familySlug);
+  if (!profiles.length && !value) return null;
+  const known = profiles.some((p) => p.path === value);
+  return (
+    <label className="work-product-quick-queue__family-wrap">
+      <span className="work-product-quick-queue__family-label">Variant</span>
+      <select
+        className="work-product-quick-queue__family"
+        value={known ? value : value || profiles[0]?.path || ""}
+        disabled={disabled}
+        aria-label={`${ariaPrefix} prompt variant`}
+        title="Prompt variant for this family"
+        onChange={(e) => onChange(e.target.value)}
+      >
+        {known || !value ? null : <option value={value}>{value.split(/[\\/]/).pop() || value}</option>}
+        {profiles.map((p: WorkProductFamilyPromptProfile) => (
+          <option key={p.path} value={p.path} title={p.path}>
+            {promptProfileOptionLabel(p)}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function IdentityStillPicker({
+  loading,
+  selectedPath,
+  selectedId,
+  candidates,
+  mintTargets,
+  mintBusy,
+  disabled,
+  onSelect,
+  onMint,
+}: {
+  loading: boolean;
+  selectedPath: string;
+  selectedId: string;
+  candidates: IdentityStillCandidate[];
+  mintTargets: IdentityStillMintTarget[];
+  mintBusy: boolean;
+  disabled?: boolean;
+  onSelect: (candidate: IdentityStillCandidate) => void;
+  onMint: (target: IdentityStillMintTarget) => void;
+}) {
+  return (
+    <div className="work-product-identity-still" aria-label="Identity still">
+      <div className="work-product-identity-still__head">
+        <span className="work-product-quick-queue__label">Identity</span>
+        {loading ? <span className="work-product-quick-queue__hint">Loading…</span> : null}
+        {!loading && selectedPath ? (
+          <span className="work-product-quick-queue__hint" title={selectedPath}>
+            selected
+          </span>
+        ) : null}
+        {!loading && !selectedPath ? (
+          <span className="work-product-quick-queue__hint">pick or mint a still</span>
+        ) : null}
+      </div>
+      {candidates.length ? (
+        <div className="work-product-identity-still__strip" role="listbox">
+          {candidates.slice(0, 8).map((c) => {
+            const selected = selectedId === c.id || selectedPath === c.path;
+            return (
+              <IdentityStillThumbButton
+                key={c.id || c.path}
+                candidate={c}
+                selected={selected}
+                disabled={disabled}
+                onSelect={() => onSelect(c)}
+              />
+            );
+          })}
+        </div>
+      ) : (
+        <p className="work-product-quick-queue__hint">No identity still yet — mint a frame or pick another family.</p>
+      )}
+      {mintTargets.length ? (
+        <div className="work-product-identity-still__mints">
+          {mintTargets.slice(0, 3).map((t) => (
+            <button
+              key={`${t.video_relpath || t.video_path}-${t.lineage_depth}`}
+              type="button"
+              className="drt-btn work-product-identity-still__mint"
+              disabled={disabled || mintBusy}
+              onClick={() => onMint(t)}
+            >
+              {mintBusy ? "Minting…" : t.label || "First frame"}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function editRouteKind(snap: ShapeFactoryJobEditSnapshot | null, isStill: boolean): string {
+  const cons = snap?.construction && typeof snap.construction === "object" ? snap.construction : {};
+  const step = String(cons.derive_action || cons.step || cons.pick_mode || "").trim().toLowerCase();
+  if (step === "extend" || step === "advance.extend") return "Extend";
+  if (step === "vary" || step === "advance.vary") return "Vary";
+  if (step === "derive" || step === "advance.derive") return "Derive";
+  if (step === "seed" || step === "i2v" || step === "product" || step === "still") return "Seed";
+  if (isStill || snap?.source?.slot === "source_still") return "Seed";
+  return "Edit";
+}
+
+function identityBindingSlot(snap: ShapeFactoryJobEditSnapshot | null): "identity_anchor" | "identity_still" {
+  const bindings = snap?.bindings || {};
+  if (bindings.identity_anchor) return "identity_anchor";
+  if (bindings.identity_still) return "identity_still";
+  return "identity_anchor";
+}
+
+function SubmitWhenRow({
+  preferredWhen,
+  busy,
+  canSubmit,
+  disabled,
+  onSubmit,
+  pendingLabel,
+  comfyLabel,
+  extra,
+}: {
+  preferredWhen: SubmitWhen;
+  busy: boolean;
+  canSubmit: boolean;
+  disabled?: boolean;
+  onSubmit: (when: SubmitWhen) => void;
+  pendingLabel: string;
+  comfyLabel: string;
+  extra?: React.ReactNode;
+}) {
+  const locked = disabled || !canSubmit;
+  return (
+    <div className="work-product-quick-queue__row">
+      <span className="work-product-quick-queue__label" title={pendingLabel}>
+        {pendingLabel}
+      </span>
+      <button
+        type="button"
+        className={"drt-btn work-product-quick-queue__queue" + (preferredWhen === "queue" ? " submit-composer__when--preferred" : "")}
+        disabled={locked}
+        title="Add to the factory pending FIFO (drain sends it to Comfy in order)"
+        onClick={() => onSubmit("queue")}
+      >
+        {busy && preferredWhen === "queue" ? "Queuing…" : "Queue"}
+      </button>
+      <button
+        type="button"
+        className={
+          "drt-btn work-product-quick-queue__queue-next" + (preferredWhen === "queue_next" ? " submit-composer__when--preferred" : "")
+        }
+        disabled={locked}
+        title="Insert at the front of the factory pending FIFO (next drain)"
+        onClick={() => onSubmit("queue_next")}
+      >
+        {busy && preferredWhen === "queue_next" ? "Queuing…" : "Next"}
+      </button>
+      <span className="work-product-quick-queue__sep" aria-hidden="true" />
+      <span className="work-product-quick-queue__label" title="Skip pending — submit directly to Comfy">
+        Comfy
+      </span>
+      <button
+        type="button"
+        className={"drt-btn work-product-quick-queue__now" + (preferredWhen === "now" ? " submit-composer__when--preferred" : "")}
+        disabled={locked}
+        title="Skip pending — enqueue at the front of Comfy now"
+        onClick={() => onSubmit("now")}
+      >
+        {busy && preferredWhen === "now" ? "Submitting…" : "Now"}
+      </button>
+      <button
+        type="button"
+        className={"drt-btn work-product-quick-queue__later" + (preferredWhen === "later" ? " submit-composer__when--preferred" : "")}
+        disabled={locked}
+        title="Skip pending — enqueue at the back of Comfy"
+        onClick={() => onSubmit("later")}
+      >
+        {busy && preferredWhen === "later" ? "Submitting…" : "Later"}
+      </button>
+      {extra}
+    </div>
+  );
+}
+
 function readStickyIdentity(): string {
   try {
     return String(window.sessionStorage.getItem("submit_sticky_identity") || "").trim();
@@ -251,10 +496,12 @@ function SubmitEditJobApp({
   onClose?: () => void;
 }) {
   const isModal = presentation === "modal";
+  const [layout, setLayout] = useState<RowLayout>(() => loadLayout());
   const [busy, setBusy] = useState(false);
   const [bootError, setBootError] = useState<string | null>(null);
   const [snap, setSnap] = useState<ShapeFactoryJobEditSnapshot | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<Error | null>(null);
   const [markIn, setMarkIn] = useState<number | null>(null);
   const [markOut, setMarkOut] = useState<number | null>(null);
   const [clipId, setClipId] = useState("");
@@ -266,21 +513,60 @@ function SubmitEditJobApp({
   const [sourcePathDraft, setSourcePathDraft] = useState("");
   const [promptProfileDraft, setPromptProfileDraft] = useState("");
   const [genFrames, setGenFrames] = useState<number | null>(null);
+  const [promptDirty, setPromptDirty] = useState(false);
+  const [preferredWhen, setPreferredWhen] = useState<SubmitWhen>("queue");
   const [editFamilies, setEditFamilies] = useState<WorkProductFamilyOption[]>(
     () => peekFamiliesBootstrap()?.families || [],
   );
+  const [identityNeeded, setIdentityNeeded] = useState(false);
+  const [identityLoading, setIdentityLoading] = useState(false);
+  const [identityCandidates, setIdentityCandidates] = useState<IdentityStillCandidate[]>([]);
+  const [identityMintTargets, setIdentityMintTargets] = useState<IdentityStillMintTarget[]>([]);
+  const [identitySelectedPath, setIdentitySelectedPath] = useState("");
+  const [identitySelectedId, setIdentitySelectedId] = useState("");
+  const [identityMintBusy, setIdentityMintBusy] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const releasedRef = useRef(false);
   const persistFramesTimer = useRef<number | null>(null);
   const promptEditorRef = useRef<SubmitPromptEditorHandle | null>(null);
+  const queryClient = useQueryClient();
+  const recentSubmitsQuery = useQuery({
+    queryKey: queryKeys.shapeFactory.submitAttempts({ limit: 12, errorsOnly: false }),
+    queryFn: () => fetchShapeFactorySubmitAttempts({ limit: 12, errorsOnly: false }),
+    staleTime: 15_000,
+    refetchOnWindowFocus: true,
+  });
 
   const mediaRelpath = String(snap?.source?.relpath || "").trim();
   const playUrl = mediaRelpath ? filesUrl(mediaRelpath) : snap?.source?.url || null;
   const posterUrl = mediaRelpath ? thumbUrlForMedia(mediaRelpath) : snap?.source?.thumb_url || null;
-  const isVideo = Boolean(playUrl && /\.(mp4|webm|mov|mkv)(\?|$)/i.test(playUrl));
+  const isStill = Boolean(
+    snap?.source?.slot === "source_still" || (playUrl && isStillMediaPath(mediaRelpath || playUrl)),
+  );
+  const isVideo = Boolean(playUrl && !isStill && /\.(mp4|webm|mov|mkv)(\?|$)/i.test(playUrl));
   const duration =
     videoDuration > 0 ? videoDuration : Math.max(markOut ?? 0, markIn ?? 0, 0);
   const fps = 18;
+  const familySlug = String(snap?.family_slug || "").trim();
+  const seedFrames =
+    snap?.params_profile?.seed?.frames ??
+    snap?.params_profile?.current?.frames ??
+    familyDefaultFrames(editFamilies, familySlug);
+  const windowOk =
+    isStill ||
+    (markIn != null &&
+      markOut != null &&
+      Number.isFinite(markIn) &&
+      Number.isFinite(markOut) &&
+      markOut > markIn + 0.05);
+  const identitySlot = identityBindingSlot(snap);
+  const canFinish =
+    Boolean(snap) &&
+    !busy &&
+    !finished &&
+    windowOk &&
+    !(identityNeeded && identityLoading) &&
+    !(identityNeeded && !identitySelectedPath);
 
   const originBack = useMemo(
     () =>
@@ -293,10 +579,11 @@ function SubmitEditJobApp({
   );
 
   const releaseEdit = useCallback(
-    async (action: "later" | "cancel" | "now", opts?: { front?: boolean; navigate?: boolean }) => {
+    async (action: "later" | "cancel" | "now", opts?: { front?: boolean; pendingPosition?: "append" | "front"; navigate?: boolean }) => {
       if (releasedRef.current && action !== "now") return;
       setBusy(true);
       setMsg(null);
+      setSubmitError(null);
       try {
         const saved = await promptEditorRef.current?.flush();
         if (saved === false) {
@@ -307,33 +594,53 @@ function SubmitEditJobApp({
           job_key: editJob,
           action,
           front: opts?.front,
+          pending_position: opts?.pendingPosition,
           actor: "operator",
           reason: `finish_edit:${action}`,
           source_surface: "submit_edit",
         });
         releasedRef.current = true;
         setFinished(true);
+        const rank = typeof res.pending_rank === "number" ? ` · #${res.pending_rank + 1}` : "";
         setMsg(
           action === "now"
-            ? `Queued · ${res.prompt_id || res.job_key || editJob}`
+            ? opts?.front
+              ? `Now · ${res.prompt_id || res.job_key || editJob}`
+              : `Later · ${res.prompt_id || res.job_key || editJob}`
             : action === "later"
-              ? "Saved for later (pending)"
+              ? opts?.pendingPosition === "front"
+                ? `Next ${res.job_key || editJob}${rank}`
+                : `Queue ${res.job_key || editJob}${rank}`
               : "Edit cancelled (pending)",
         );
-        if (opts?.navigate !== false && !isModal) {
-          window.setTimeout(() => {
-            window.location.href = originBack.href;
-          }, action === "now" ? 600 : 200);
-        } else if (isModal && onClose && opts?.navigate !== false) {
-          window.setTimeout(() => onClose(), action === "now" ? 600 : 200);
+        void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.submitAttemptsRoot });
+        if (opts?.navigate !== false && isModal && onClose && action === "cancel") {
+          window.setTimeout(() => onClose(), 200);
         }
       } catch (e) {
-        setMsg(e instanceof Error ? e.message : String(e));
+        const err = e instanceof Error ? e : new Error(String(e));
+        setSubmitError(err);
+        setMsg(null);
+        void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.submitAttemptsRoot });
       } finally {
         setBusy(false);
       }
     },
-    [editJob, isModal, onClose, originBack.href],
+    [editJob, isModal, onClose, queryClient],
+  );
+
+  const finishWhen = useCallback(
+    (when: SubmitWhen) => {
+      if (!canFinish) return;
+      setPreferredWhen(when);
+      const dest = destinationForWhen(when);
+      if (dest.destination === "pending") {
+        void releaseEdit("later", { pendingPosition: dest.pending_position || "append" });
+        return;
+      }
+      void releaseEdit("now", { front: dest.front });
+    },
+    [canFinish, releaseEdit],
   );
 
   const refreshSnapshot = useCallback(async () => {
@@ -400,6 +707,13 @@ function SubmitEditJobApp({
     setPromptProfileDraft(promptSeed);
     const framesSeed = snap?.params_profile?.current?.frames;
     if (framesSeed != null && Number.isFinite(framesSeed)) setGenFrames(framesSeed);
+    const ident =
+      snap?.bindings?.identity_anchor || snap?.bindings?.identity_still || null;
+    const identPath = String(ident?.relpath || ident?.path || "").trim();
+    if (identPath) {
+      setIdentitySelectedPath(identPath);
+      setIdentitySelectedId("");
+    }
   }, [snap?.job_key, snap?.source?.slot, snap?.source?.path, snap?.source?.relpath, snap?.bindings, snap?.params_profile?.current?.frames]);
 
   useEffect(() => {
@@ -436,6 +750,52 @@ function SubmitEditJobApp({
     enabled: Boolean(isVideo && playUrl),
   });
 
+  useEffect(() => {
+    const rel = mediaRelpath.trim();
+    const slug = familySlug;
+    if (!rel || !slug) {
+      setIdentityNeeded(false);
+      setIdentityCandidates([]);
+      setIdentityMintTargets([]);
+      return;
+    }
+    let cancelled = false;
+    const opts = { relpath: rel, family_slug: slug, job_key: editJob };
+    const cached = peekIdentityStill(opts);
+    if (cached) {
+      setIdentityNeeded(Boolean(cached.needed));
+      setIdentityCandidates(Array.isArray(cached.candidates) ? cached.candidates : []);
+      setIdentityMintTargets(Array.isArray(cached.mint_targets) ? cached.mint_targets : []);
+      setIdentityLoading(false);
+    } else {
+      setIdentityLoading(true);
+    }
+    void loadIdentityStillCandidates(opts)
+      .then((res) => {
+        if (cancelled) return;
+        setIdentityNeeded(Boolean(res.needed));
+        const cands = Array.isArray(res.candidates) ? res.candidates : [];
+        setIdentityCandidates(cands);
+        setIdentityMintTargets(Array.isArray(res.mint_targets) ? res.mint_targets : []);
+        if (identitySelectedPath) {
+          const hit = cands.find((c) => c.path === identitySelectedPath || c.relpath === identitySelectedPath);
+          if (hit) setIdentitySelectedId(hit.id || "");
+        }
+      })
+      .catch(() => {
+        if (cancelled || cached) return;
+        setIdentityNeeded(false);
+        setIdentityCandidates([]);
+        setIdentityMintTargets([]);
+      })
+      .finally(() => {
+        if (!cancelled) setIdentityLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [editFamilies, editJob, familySlug, identitySelectedPath, mediaRelpath]);
+
   const persistTrim = (nextIn: number | null, nextOut: number | null) => {
     if (!(duration > 0)) return;
     const win = marksToVhsWindow(nextIn, nextOut, duration, fps, null);
@@ -454,7 +814,7 @@ function SubmitEditJobApp({
   };
 
   const persistFrames = (next: number | null) => {
-    const resolved = next ?? snap?.params_profile?.seed?.frames ?? null;
+    const resolved = next ?? seedFrames ?? null;
     setGenFrames(resolved);
     if (resolved == null || finished) return;
     if (persistFramesTimer.current) window.clearTimeout(persistFramesTimer.current);
@@ -470,7 +830,7 @@ function SubmitEditJobApp({
     }, 350);
   };
 
-  const applyBindingEdit = async (slot: "source_still" | "source_video" | "prompt_profile", value: string) => {
+  const applyBindingEdit = async (slot: string, value: string) => {
     const trimmed = String(value || "").trim();
     if (!trimmed || busy || finished) return;
     setBusy(true);
@@ -493,9 +853,157 @@ function SubmitEditJobApp({
     }
   };
 
+  const applyIdentity = async (path: string, id?: string) => {
+    const trimmed = String(path || "").trim();
+    if (!trimmed || busy || finished) return;
+    setIdentitySelectedPath(trimmed);
+    setIdentitySelectedId(id || "");
+    try {
+      await updatePendingShapeFactoryBinding({
+        job_key: editJob,
+        slot: identitySlot,
+        path: trimmed,
+        actor: "operator",
+        reason: `binding_adjustment:${identitySlot}`,
+        source_surface: "submit_edit",
+      });
+      await refreshSnapshot();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const mintIdentity = async (target: IdentityStillMintTarget) => {
+    if (identityMintBusy || busy || finished) return;
+    setIdentityMintBusy(true);
+    setMsg(null);
+    try {
+      const res = await mintIdentityStill({
+        video_relpath: target.video_relpath,
+        video_path: target.video_path,
+        at: target.at || "start",
+      });
+      const cand = res.candidate;
+      if (cand?.path) {
+        invalidateIdentityStill({
+          relpath: mediaRelpath.trim(),
+          family_slug: familySlug || undefined,
+          job_key: editJob,
+        });
+        setIdentityCandidates((prev) => {
+          if (prev.some((c) => c.id === cand.id || c.path === cand.path)) return prev;
+          return [cand, ...prev];
+        });
+        await applyIdentity(cand.path, cand.id);
+        setMsg(`Minted identity still · ${cand.relpath || cand.path}`);
+      }
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setIdentityMintBusy(false);
+    }
+  };
+
+  const familyOpts = useMemo(() => {
+    const rows = [...editFamilies];
+    if (familySlug && !rows.some((f) => f.slug === familySlug)) rows.unshift({ slug: familySlug });
+    return rows;
+  }, [editFamilies, familySlug]);
+
+  const constructionPreview = useMemo(() => {
+    const kind = editRouteKind(snap, isStill);
+    const hit = familyPromptProfiles(editFamilies, familySlug).find(
+      (p) =>
+        p.path === promptProfileDraft ||
+        p.basename === promptProfileDraft.split(/[\\/]/).pop() ||
+        promptVariantSlug(p) === promptVariantSlug(promptProfileDraft),
+    );
+    const win =
+      !isStill && windowOk && markIn != null && markOut != null
+        ? marksToVhsWindow(markIn, markOut, duration, fps, null)
+        : null;
+    const identityCand =
+      identityCandidates.find((c) => c.id === identitySelectedId || c.path === identitySelectedPath) || null;
+    let identityMode: "off" | "loading" | "not_required" | "needed" | "set" = "off";
+    if (!isStill && (identityNeeded || identityLoading || identitySelectedPath)) {
+      if (identityLoading) identityMode = "loading";
+      else if (!identityNeeded) identityMode = identitySelectedPath ? "set" : "not_required";
+      else if (identitySelectedPath) identityMode = "set";
+      else identityMode = "needed";
+    }
+    const blockers: string[] = [];
+    if (!snap) blockers.push("loading");
+    if (!isStill && !windowOk) blockers.push("set Use window");
+    if (identityNeeded && identityLoading) blockers.push("identity loading");
+    if (identityNeeded && !identitySelectedPath) blockers.push("pick identity");
+    if (busy) blockers.push("saving");
+    if (finished) blockers.push("finished");
+    const ready: ConstructionReady = canFinish
+      ? { ok: true, label: "Ready", detail: null }
+      : {
+          ok: false,
+          label: blockers[0] ? `Blocked · ${blockers[0]}` : "Blocked",
+          detail: blockers.join(" · ") || null,
+        };
+    return {
+      routes: [
+        {
+          kind,
+          family: familySlug,
+          shapeId: familyShapeId(editFamilies, familySlug),
+          promptProfile: hit ? promptVariantName(hit) : promptProfileDraft ? basenamePath(promptProfileDraft) : null,
+          promptEdited: promptDirty,
+        },
+      ],
+      useLabel: isStill ? "Still (full image)" : activeClip ? `Clip · ${activeClip.label || activeClip.clip_id}` : windowOk ? "Scrubber window" : "No Use window",
+      useWindow: !isStill && windowOk && markIn != null && markOut != null ? `${formatTc(markIn)}–${formatTc(markOut)}` : null,
+      vhs: win ? { skip: win.skip_first_frames, cap: win.frame_load_cap } : null,
+      vhsWarning: win?.warning || null,
+      durationLabel: formatSubmitDuration(genFrames ?? seedFrames) || "family / variant default",
+      identity: {
+        mode: identityMode,
+        path: identitySelectedPath,
+        thumbUrl: identityCand?.thumb_url || identityCand?.url || snap?.bindings?.[identitySlot]?.thumb_url || null,
+      },
+      ready,
+    };
+  }, [
+    activeClip,
+    busy,
+    canFinish,
+    duration,
+    editFamilies,
+    familySlug,
+    finished,
+    fps,
+    genFrames,
+    identityCandidates,
+    identityLoading,
+    identityNeeded,
+    identitySelectedId,
+    identitySelectedPath,
+    identitySlot,
+    isStill,
+    markIn,
+    markOut,
+    promptDirty,
+    promptProfileDraft,
+    seedFrames,
+    snap,
+    windowOk,
+  ]);
+
+  const closeOrCancel = () => {
+    if (releasedRef.current || finished) {
+      if (isModal && onClose) onClose();
+      return;
+    }
+    void releaseEdit("cancel");
+  };
+
   if (bootError) {
     return (
-      <div className={`submit-composer${isModal ? " submit-composer--modal" : ""}`}>
+      <div className={`layout submit-composer panel${isModal ? " submit-composer--modal" : ""}`}>
         <PageHeader
           title="Edit job"
           subtitle={editJob}
@@ -517,55 +1025,95 @@ function SubmitEditJobApp({
   }
 
   return (
-    <div className={`submit-composer${isModal ? " submit-composer--modal" : ""}`}>
+    <div className={`layout submit-composer panel${isModal ? " submit-composer--modal" : ""}`}>
       <PageHeader
         title="Edit job"
-        subtitle={`${snap?.family_slug || "…"} · ${editJob}`}
+        subtitle={`${familySlug || "…"} · ${editJob}`}
         actions={
-          isModal && onClose ? (
-            <button
-              type="button"
-              className="drt-btn"
-              onClick={() => {
-                if (releasedRef.current || finished) {
-                  onClose();
-                  return;
-                }
-                void releaseEdit("cancel");
-              }}
-            >
-              Close
-            </button>
-          ) : (
-            <a
-              className="drt-btn"
-              href={originBack.href}
-              onClick={(e) => {
-                if (releasedRef.current || finished) return;
-                e.preventDefault();
-                void releaseEdit("cancel");
-              }}
-            >
-              {originBack.label}
-            </a>
-          )
+          <div className="submit-composer__header-actions">
+            {isModal && onClose ? (
+              <button type="button" className="drt-btn" onClick={closeOrCancel}>
+                Close
+              </button>
+            ) : (
+              <a
+                className="drt-btn"
+                href={originBack.href}
+                onClick={(e) => {
+                  if (releasedRef.current || finished) return;
+                  e.preventDefault();
+                  void releaseEdit("cancel");
+                }}
+              >
+                {originBack.label}
+              </a>
+            )}
+            <div className="discovery-preview-layout-switch" role="group" aria-label="Edit layout">
+              <span className="discovery-preview-layout-switch__label">Layout</span>
+              <div className="segmented">
+                <button
+                  type="button"
+                  className={layout === "split" ? "seg-btn active" : "seg-btn"}
+                  onClick={() => {
+                    setLayout("split");
+                    persistLayout("split");
+                  }}
+                >
+                  Side by side
+                </button>
+                <button
+                  type="button"
+                  className={layout === "stacked" ? "seg-btn active" : "seg-btn"}
+                  onClick={() => {
+                    setLayout("stacked");
+                    persistLayout("stacked");
+                  }}
+                >
+                  Stacked
+                </button>
+              </div>
+            </div>
+          </div>
         }
       />
-      <div className="work-product-row work-product-row--split submit-composer__stage" aria-label="Edit job">
+      <div className={`work-product-row work-product-row--${layout} submit-composer__stage`} aria-label="Edit job">
         <div className="work-product-row__head">
           <div className="work-product-row__head-main">
             <div className="work-product-row__title">
               <span className="work-product-badge work-product-badge--pending">editing</span>
-              <strong>{snap?.family_slug || "job"}</strong>
+              <strong>{familySlug || "job"}</strong>
             </div>
             <code className="work-product-row__key">{editJob}</code>
+          </div>
+          <div className="submit-composer__links">
+            {mediaRelpath ? (
+              <a className="drt-btn" href={discoveryLibraryHref(mediaRelpath)}>
+                Library
+              </a>
+            ) : null}
+            {mediaRelpath ? (
+              <a
+                className="drt-btn"
+                href={clipsLibraryHref({
+                  mediaRelpath,
+                  clipId: clipId || activeClip?.clip_id,
+                  view: "by_source",
+                })}
+              >
+                Clips
+              </a>
+            ) : null}
           </div>
         </div>
 
         <div className="work-product-row__body">
           <div className="work-product-viewer">
             <div className="work-product-viewer__main">
-              {isVideo && playUrl ? (
+              {playUrl && isStill ? (
+                <AppetitePreviewFrame relpath={mediaRelpath}>
+                  <img className="work-product-viewer__video" src={posterUrl || playUrl} alt="" />
+                </AppetitePreviewFrame>
+              ) : isVideo && playUrl ? (
                 <AppetitePreviewFrame relpath={mediaRelpath}>
                   <video
                     ref={videoRef}
@@ -581,12 +1129,13 @@ function SubmitEditJobApp({
                       if (Number.isFinite(d) && d > 0) setVideoDuration(d);
                       setCurrentTime(e.currentTarget.currentTime || 0);
                     }}
+                    onDurationChange={(e) => {
+                      const d = e.currentTarget.duration;
+                      if (Number.isFinite(d) && d > 0) setVideoDuration(d);
+                    }}
                     onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime || 0)}
+                    onSeeked={(e) => setCurrentTime(e.currentTarget.currentTime || 0)}
                   />
-                </AppetitePreviewFrame>
-              ) : playUrl ? (
-                <AppetitePreviewFrame relpath={mediaRelpath}>
-                  <img className="work-product-viewer__video" src={playUrl} alt="" />
                 </AppetitePreviewFrame>
               ) : (
                 <div className="work-product-viewer__empty">
@@ -595,36 +1144,41 @@ function SubmitEditJobApp({
               )}
             </div>
             {isVideo && playUrl ? (
-              <VideoTrimControls
-                className="work-product-viewer__trim"
-                videoRef={videoRef}
-                currentTime={currentTime}
-                duration={duration}
-                markIn={markIn}
-                markOut={markOut}
-                mode={trimMode}
-                mediaSyncKey={mediaRelpath || editJob}
-                onSeek={(t) => {
-                  const v = videoRef.current;
-                  if (v) v.currentTime = t;
-                  setCurrentTime(t);
-                }}
-                onSyncTime={setCurrentTime}
-                onMarkInChange={(v) => {
-                  setMarkIn(v);
-                  persistTrim(v, markOut);
-                }}
-                onMarkOutChange={(v) => {
-                  setMarkOut(v);
-                  persistTrim(markIn, v);
-                }}
-                onModeChange={setTrimMode}
-                onClear={() => {
-                  setMarkIn(null);
-                  setMarkOut(null);
-                  persistTrim(null, null);
-                }}
-              />
+              <>
+                <VideoTrimControls
+                  className="work-product-viewer__trim"
+                  videoRef={videoRef}
+                  currentTime={currentTime}
+                  duration={duration}
+                  markIn={markIn}
+                  markOut={markOut}
+                  mode={trimMode}
+                  mediaSyncKey={mediaRelpath || editJob}
+                  onSeek={(t) => {
+                    const v = videoRef.current;
+                    if (v) v.currentTime = t;
+                    setCurrentTime(t);
+                  }}
+                  onSyncTime={setCurrentTime}
+                  onMarkInChange={(v) => {
+                    setMarkIn(v);
+                    persistTrim(v, markOut);
+                  }}
+                  onMarkOutChange={(v) => {
+                    setMarkOut(v);
+                    persistTrim(markIn, v);
+                  }}
+                  onModeChange={setTrimMode}
+                  onClear={() => {
+                    setMarkIn(null);
+                    setMarkOut(null);
+                    persistTrim(null, null);
+                  }}
+                />
+                {!windowOk ? (
+                  <p className="work-product-viewer__trim-warn">Set mark in/out or pick a clip for Use.</p>
+                ) : null}
+              </>
             ) : null}
             {isVideo && mediaRelpath ? (
               <ClipBookmarksRail
@@ -652,105 +1206,57 @@ function SubmitEditJobApp({
             ) : null}
           </div>
 
-          <div className="work-product-quick-queue">
-            <p className="factory-muted">
-              Editing this run in place. Pending drain will not queue it until you finish.
-              {activeClip ? ` · clip ${activeClip.clip_id}` : ""}
-            </p>
-            <div className="submit-composer__edit-bindings">
-              {snap?.source?.slot === "source_still" || snap?.source?.slot === "source_video" ? (
-                <label className="submit-composer__edit-binding">
-                  <span>Source ({snap?.source?.slot})</span>
-                  <div className="submit-composer__edit-binding-row">
-                    <input
-                      type="text"
-                      value={sourcePathDraft}
-                      disabled={busy || finished}
-                      onChange={(e) => setSourcePathDraft(e.target.value)}
-                      placeholder={snap?.source?.path || "input/foo.jpeg"}
-                    />
-                    <button
-                      type="button"
-                      className="drt-btn"
-                      disabled={busy || finished || !sourcePathDraft.trim()}
-                      onClick={() => void applyBindingEdit(snap?.source?.slot as "source_still" | "source_video", sourcePathDraft)}
-                    >
-                      Apply
-                    </button>
-                  </div>
-                </label>
-              ) : null}
-              {snap?.bindings?.prompt_profile ? (
-                <label className="submit-composer__edit-binding">
-                  <span>Variant</span>
-                  <div className="submit-composer__edit-binding-row">
-                    {(() => {
-                      const profiles = familyPromptProfiles(editFamilies, String(snap?.family_slug || ""));
-                      const matched = profiles.find(
-                        (p) =>
-                          p.path === promptProfileDraft ||
-                          p.basename === promptProfileDraft.split(/[\\/]/).pop() ||
-                          p.file_stem === promptProfileDraft ||
-                          p.slug === promptProfileDraft ||
-                          promptVariantSlug(p) === promptVariantSlug(promptProfileDraft),
-                      );
-                      if (profiles.length) {
-                        return (
-                          <select
-                            value={matched?.path || promptProfileDraft}
-                            disabled={busy || finished}
-                            aria-label="Prompt variant"
-                            onChange={(e) => {
-                              const next = e.target.value;
-                              setPromptProfileDraft(next);
-                              void applyBindingEdit("prompt_profile", next);
-                            }}
-                          >
-                            {matched ? null : promptProfileDraft ? (
-                              <option value={promptProfileDraft}>
-                                {promptProfileDraft.split(/[\\/]/).pop() || promptProfileDraft}
-                              </option>
-                            ) : (
-                              <option value="">Select profile…</option>
-                            )}
-                            {profiles.map((p) => (
-                              <option key={p.path} value={p.path} title={p.path}>
-                                {promptProfileOptionLabel(p)}
-                              </option>
-                            ))}
-                          </select>
-                        );
-                      }
-                      return (
-                        <>
-                          <input
-                            type="text"
-                            value={promptProfileDraft}
-                            disabled={busy || finished}
-                            onChange={(e) => setPromptProfileDraft(e.target.value)}
-                            placeholder="pools/…/prompts/catalog-default.json"
-                          />
-                          <button
-                            type="button"
-                            className="drt-btn"
-                            disabled={busy || finished || !promptProfileDraft.trim()}
-                            onClick={() => void applyBindingEdit("prompt_profile", promptProfileDraft)}
-                          >
-                            Apply
-                          </button>
-                        </>
-                      );
-                    })()}
-                  </div>
-                </label>
-              ) : null}
-              <SubmitDurationField
-                frames={genFrames}
-                seedFrames={snap?.params_profile?.seed?.frames ?? snap?.params_profile?.current?.frames ?? null}
+          <div className="work-product-quick-queue" role="group" aria-label="Edit job">
+            <SubmitWhenRow
+              preferredWhen={preferredWhen}
+              busy={busy}
+              canSubmit={canFinish}
+              disabled={finished}
+              onSubmit={finishWhen}
+              pendingLabel={isStill ? "Seed" : editRouteKind(snap, isStill)}
+              comfyLabel="Comfy"
+              extra={
+                <>
+                  <span className="work-product-quick-queue__sep" aria-hidden="true" />
+                  <button
+                    type="button"
+                    className="drt-btn"
+                    disabled={busy || finished}
+                    title="Release the edit lock and leave this job pending"
+                    onClick={() => void releaseEdit("cancel")}
+                  >
+                    Cancel
+                  </button>
+                </>
+              }
+            />
+            <div className="work-product-quick-queue__families">
+              <FamilySelect
+                value={familySlug}
+                onChange={() => undefined}
+                label={isStill ? "I2V family" : editRouteKind(snap, isStill)}
+                title="Family is locked to this job — compose a new route to change family"
+                opts={familyOpts}
+                disabled
+              />
+              <ProfileSelect
+                familySlug={familySlug}
+                value={promptProfileDraft}
+                onChange={(next) => {
+                  setPromptProfileDraft(next);
+                  void applyBindingEdit("prompt_profile", next);
+                }}
+                ariaPrefix={isStill ? "I2V" : editRouteKind(snap, isStill)}
+                families={editFamilies}
                 disabled={busy || finished}
-                onChange={persistFrames}
               />
             </div>
+            <SubmitDurationField
+              frames={genFrames}
+              seedFrames={seedFrames}
+              disabled={busy || finished}
+              onChange={persistFrames}
+            />
             <SubmitPromptEditor
               ref={promptEditorRef}
               heading="Prompt"
@@ -759,35 +1265,84 @@ function SubmitEditJobApp({
               jobKey={editJob}
               jobPath={snap?.job_path || null}
               disabled={busy || finished}
+              onDirtyChange={setPromptDirty}
               onJobSaved={() => void refreshSnapshot()}
             />
-            <div className="work-product-quick-queue__actions" role="group" aria-label="Finish edit">
-              <button
-                type="button"
-                className="drt-btn"
+            {identityNeeded ? (
+              <IdentityStillPicker
+                loading={identityLoading}
+                selectedPath={identitySelectedPath}
+                selectedId={identitySelectedId}
+                candidates={identityCandidates}
+                mintTargets={identityMintTargets}
+                mintBusy={identityMintBusy}
                 disabled={busy || finished}
-                onClick={() => void releaseEdit("now")}
-              >
-                Queue now
-              </button>
-              <button
-                type="button"
-                className="drt-btn"
-                disabled={busy || finished}
-                onClick={() => void releaseEdit("later")}
-              >
-                Save for later
-              </button>
-              <button
-                type="button"
-                className="drt-btn"
-                disabled={busy || finished}
-                onClick={() => void releaseEdit("cancel")}
-              >
-                Cancel
-              </button>
-            </div>
-            {msg ? <p className="factory-muted">{msg}</p> : null}
+                onSelect={(c) => void applyIdentity(c.path, c.id)}
+                onMint={(t) => void mintIdentity(t)}
+              />
+            ) : null}
+            {snap?.source?.slot === "source_still" || snap?.source?.slot === "source_video" ? (
+              <label className="submit-composer__edit-binding">
+                <span>Source ({snap?.source?.slot})</span>
+                <div className="submit-composer__edit-binding-row">
+                  <input
+                    type="text"
+                    value={sourcePathDraft}
+                    disabled={busy || finished}
+                    onChange={(e) => setSourcePathDraft(e.target.value)}
+                    placeholder={snap?.source?.path || "input/foo.jpeg"}
+                  />
+                  <button
+                    type="button"
+                    className="drt-btn"
+                    disabled={busy || finished || !sourcePathDraft.trim()}
+                    onClick={() => void applyBindingEdit(String(snap?.source?.slot || ""), sourcePathDraft)}
+                  >
+                    Apply
+                  </button>
+                </div>
+              </label>
+            ) : null}
+            <SubmitConstructionPreview
+              routes={constructionPreview.routes}
+              useLabel={constructionPreview.useLabel}
+              useWindow={constructionPreview.useWindow}
+              vhs={constructionPreview.vhs}
+              vhsWarning={constructionPreview.vhsWarning}
+              durationLabel={constructionPreview.durationLabel}
+              identity={constructionPreview.identity}
+              preferredWhen={preferredWhen}
+              origin={origin}
+              fromJob={editJob}
+              ready={constructionPreview.ready}
+            />
+            {submitError ? <SubmitQueueErrorPanel error={submitError} /> : null}
+            {msg ? (
+              <p className="work-product-quick-queue__msg work-product-quick-queue__msg--ok" title={msg}>
+                {msg}
+              </p>
+            ) : null}
+            <RecentSubmitsPanel items={recentSubmitsQuery.data?.items || []} />
+            {finished ? (
+              <div className="submit-composer__links">
+                {isModal && onClose ? (
+                  <button type="button" className="drt-btn" onClick={onClose}>
+                    Done
+                  </button>
+                ) : null}
+                <a className="drt-btn" href={workbenchHref({ jobKey: editJob })}>
+                  Open in Workbench
+                </a>
+                <a className="drt-btn" href={queueHref({ jobKey: editJob })}>
+                  Open Queue
+                </a>
+                {!isModal ? (
+                  <a className="drt-btn" href={originBack.href}>
+                    {originBack.label}
+                  </a>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </div>
       </div>
@@ -1582,29 +2137,7 @@ function SubmitAdvanceComposerApp({
     title: string,
     opts: WorkProductFamilyOption[] = familyOpts,
   ) => (
-    <label className="work-product-quick-queue__family-wrap">
-      <span className="work-product-quick-queue__family-label">{label}</span>
-      <select
-        className="work-product-quick-queue__family"
-        value={value}
-        disabled={busy || !opts.length}
-        aria-label={`${label} target family`}
-        title={title}
-        onChange={(e) => onChange(e.target.value)}
-      >
-        {opts.length === 0 ? <option value="">Loading…</option> : null}
-        {opts.map((f) => {
-          const promoScope = String(f.promotion?.scope || "").trim();
-          const promoSuffix = promoScope === "temporary" ? " [TEMP]" : promoScope === "long_term" ? " [DEFAULT]" : "";
-          return (
-            <option key={f.slug} value={f.slug}>
-              {f.slug}
-              {promoSuffix}
-            </option>
-          );
-        })}
-      </select>
-    </label>
+    <FamilySelect value={value} onChange={onChange} label={label} title={title} opts={opts} disabled={busy} />
   );
 
   const profileSelect = (
@@ -1612,33 +2145,16 @@ function SubmitAdvanceComposerApp({
     value: string,
     onChange: (path: string) => void,
     ariaPrefix: string,
-  ) => {
-    const profiles = familyPromptProfiles(families, familySlug);
-    if (!profiles.length) return null;
-    const known = profiles.some((p) => p.path === value);
-    return (
-      <label className="work-product-quick-queue__family-wrap">
-        <span className="work-product-quick-queue__family-label">Variant</span>
-        <select
-          className="work-product-quick-queue__family"
-          value={known ? value : value || profiles[0]?.path || ""}
-          disabled={busy}
-          aria-label={`${ariaPrefix} prompt variant`}
-          title="Prompt variant for this family"
-          onChange={(e) => onChange(e.target.value)}
-        >
-          {known || !value ? null : (
-            <option value={value}>{value.split(/[\\/]/).pop() || value}</option>
-          )}
-          {profiles.map((p: WorkProductFamilyPromptProfile) => (
-            <option key={p.path} value={p.path} title={p.path}>
-              {promptProfileOptionLabel(p)}
-            </option>
-          ))}
-        </select>
-      </label>
-    );
-  };
+  ) => (
+    <ProfileSelect
+      familySlug={familySlug}
+      value={value}
+      onChange={onChange}
+      ariaPrefix={ariaPrefix}
+      families={families}
+      disabled={busy}
+    />
+  );
 
   const hasIntent = hasSubmitIntent({
     mediaRelpath: mediaRelpath || intent.mediaRelpath,
@@ -2286,56 +2802,20 @@ function SubmitAdvanceComposerApp({
                   />
                 ) : null}
                 {extendOn && identityNeeded ? (
-                  <div className="work-product-identity-still" aria-label="Identity still">
-                    <div className="work-product-identity-still__head">
-                      <span className="work-product-quick-queue__label">Identity</span>
-                      {identityLoading ? <span className="work-product-quick-queue__hint">Loading…</span> : null}
-                      {!identityLoading && identitySelectedPath ? (
-                        <span className="work-product-quick-queue__hint" title={identitySelectedPath}>
-                          selected
-                        </span>
-                      ) : null}
-                      {!identityLoading && !identitySelectedPath ? (
-                        <span className="work-product-quick-queue__hint">pick or mint a still</span>
-                      ) : null}
-                    </div>
-                    {identityCandidates.length ? (
-                      <div className="work-product-identity-still__strip" role="listbox">
-                        {identityCandidates.slice(0, 8).map((c) => {
-                          const selected = identitySelectedId === c.id || identitySelectedPath === c.path;
-                          return (
-                            <IdentityStillThumbButton
-                              key={c.id || c.path}
-                              candidate={c}
-                              selected={selected}
-                              disabled={busy}
-                              onSelect={() => {
-                                setIdentitySelectedPath(c.path);
-                                setIdentitySelectedId(c.id);
-                              }}
-                            />
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <p className="work-product-quick-queue__hint">No identity still yet — mint a frame or pick another family.</p>
-                    )}
-                    {identityMintTargets.length ? (
-                      <div className="work-product-identity-still__mints">
-                        {identityMintTargets.slice(0, 3).map((t) => (
-                          <button
-                            key={`${t.video_relpath || t.video_path}-${t.lineage_depth}`}
-                            type="button"
-                            className="drt-btn work-product-identity-still__mint"
-                            disabled={busy || identityMintBusy}
-                            onClick={() => void mintIdentity(t)}
-                          >
-                            {identityMintBusy ? "Minting…" : t.label || "First frame"}
-                          </button>
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
+                  <IdentityStillPicker
+                    loading={identityLoading}
+                    selectedPath={identitySelectedPath}
+                    selectedId={identitySelectedId}
+                    candidates={identityCandidates}
+                    mintTargets={identityMintTargets}
+                    mintBusy={identityMintBusy}
+                    disabled={busy}
+                    onSelect={(c) => {
+                      setIdentitySelectedPath(c.path);
+                      setIdentitySelectedId(c.id);
+                    }}
+                    onMint={(t) => void mintIdentity(t)}
+                  />
                 ) : null}
               </div>
               )}

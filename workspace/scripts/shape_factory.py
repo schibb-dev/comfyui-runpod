@@ -5939,6 +5939,7 @@ def finish_job_edit(
     job_key: Optional[str] = None,
     job_path: Optional[Path] = None,
     front: bool = False,
+    pending_position: str = "append",
     dry_run: bool = False,
     convert_timeout: int = 90,
     timeout: int = 120,
@@ -5947,6 +5948,7 @@ def finish_job_edit(
     Release the edit lock.
 
     ``later`` / ``cancel`` → ``pending`` (drain may pick up).
+    ``later`` + ``pending_position=front`` → same, then jump to the head of FIFO.
     ``now`` → submit this job to Comfy (same job_key; not an advance child).
     """
     data_root = Path(data_root).expanduser().resolve()
@@ -5982,12 +5984,25 @@ def finish_job_edit(
         submit["editing_finish_action"] = act
         atomic_write_json(job_file, job)
         pending_rank = submit.get("pending_rank")
+        pos = "append"
         try:
-            from shape_factory_pending_queue import compact_pending_ranks, jobs_dir_from_data_root, job_pending_rank
+            from shape_factory_pending_queue import (
+                compact_pending_ranks,
+                enqueue_pending_job,
+                jobs_dir_from_data_root,
+                job_pending_rank,
+                parse_pending_position,
+            )
 
-            compact_pending_ranks(jobs_dir=jobs_dir_from_data_root(data_root))
-            job2 = json.loads(job_file.read_text(encoding="utf-8"))
-            pending_rank = job_pending_rank(job2) if isinstance(job2, dict) else pending_rank
+            jobs_dir = jobs_dir_from_data_root(data_root)
+            pos = parse_pending_position(position=pending_position)
+            if act == "later" and pos == "front":
+                enq = enqueue_pending_job(job_file, jobs_dir=jobs_dir, position="front")
+                pending_rank = enq.get("pending_rank", pending_rank)
+            else:
+                compact_pending_ranks(jobs_dir=jobs_dir)
+                job2 = json.loads(job_file.read_text(encoding="utf-8"))
+                pending_rank = job_pending_rank(job2) if isinstance(job2, dict) else pending_rank
         except Exception:
             pass
         return {
@@ -5996,6 +6011,7 @@ def finish_job_edit(
             "job_path": str(job_file),
             "status": "pending",
             "pending_rank": pending_rank,
+            "pending_position": pos if act == "later" else None,
             "action": act,
         }
 
@@ -6389,14 +6405,20 @@ def update_pending_job_binding_path(
         return {"ok": False, "error": "missing_binding_path", "job_key": key, "slot": slot_s}
 
     bindings = job.get("bindings") if isinstance(job.get("bindings"), dict) else {}
+    if not isinstance(bindings, dict):
+        bindings = {}
+        job["bindings"] = bindings
     if not isinstance(bindings.get(slot_s), dict):
-        return {
-            "ok": False,
-            "error": "unknown_binding_slot",
-            "job_key": key,
-            "slot": slot_s,
-            "known_slots": sorted(str(s) for s in bindings.keys()),
-        }
+        if slot_s in {"identity_anchor", "identity_still"}:
+            bindings[slot_s] = {"role": slot_s}
+        else:
+            return {
+                "ok": False,
+                "error": "unknown_binding_slot",
+                "job_key": key,
+                "slot": slot_s,
+                "known_slots": sorted(str(s) for s in bindings.keys()),
+            }
 
     try:
         asset_path = resolve_job_asset_path(raw_path, data_root=data_root)

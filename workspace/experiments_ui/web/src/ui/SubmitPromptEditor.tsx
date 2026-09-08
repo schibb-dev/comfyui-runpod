@@ -56,10 +56,11 @@ export const SubmitPromptEditor = forwardRef<
     disabled?: boolean;
     /** Compose: emit override only while dirty. Edit-job uses Save / flush. */
     onOverrideChange?: (override: SubmitPromptOverride | null) => void;
+    onDirtyChange?: (dirty: boolean) => void;
     onJobSaved?: () => void;
   }
 >(function SubmitPromptEditor(
-  { heading = "Prompt", profilePath, prompt, jobKey, jobPath, disabled, onOverrideChange, onJobSaved },
+  { heading = "Prompt", profilePath, prompt, jobKey, jobPath, disabled, onOverrideChange, onDirtyChange, onJobSaved },
   ref,
 ) {
   const persistJob = Boolean(jobKey);
@@ -148,7 +149,8 @@ export const SubmitPromptEditor = forwardRef<
 
   useEffect(() => {
     setDirty(currentDirty);
-  }, [currentDirty]);
+    onDirtyChange?.(currentDirty);
+  }, [currentDirty, onDirtyChange]);
 
   useEffect(() => {
     if (persistJob) return;

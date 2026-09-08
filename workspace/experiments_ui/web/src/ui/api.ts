@@ -1415,6 +1415,7 @@ export async function composeSubmitAdvance(req: ComposeSubmitAdvanceRequest): Pr
       family: String(r.family || "").trim(),
       identityAnchor: r.identityAnchor ? String(r.identityAnchor).trim() : "",
       promptProfile: r.promptProfile ? String(r.promptProfile).trim() : "",
+      promptOverride: r.promptOverride || null,
     }))
     .filter((r) => r.family);
   if (!routes.length) throw new Error("composeSubmitAdvance: select Extend, Vary, and/or Derive with a family");

@@ -3401,6 +3401,7 @@ def _shape_factory_finish_edit_payload(cfg: ServerConfig, body: Dict[str, Any]) 
         job_key=job_key,
         job_path=Path(job_path_raw) if job_path_raw else None,
         front=bool(body.get("front") or False),
+        pending_position=str(body.get("pending_position") or "append"),
         dry_run=bool(body.get("dry_run") or False),
         actor=actor,
         reason=reason,

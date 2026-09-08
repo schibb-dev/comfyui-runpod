@@ -21,7 +21,7 @@ import shape_factory as sf
 class JobEditTests(unittest.TestCase):
     def _write_job(self, root: Path, key: str, submit: dict) -> Path:
         fam = root / "shape_factory" / "jobs" / "TestFam"
-        fam.mkdir(parents=True)
+        fam.mkdir(parents=True, exist_ok=True)
         path = fam / f"{key}.job.json"
         job = {
             "job_key": key,
@@ -118,6 +118,27 @@ class JobEditTests(unittest.TestCase):
             cancel = sf.finish_job_edit(data_root=root, action="cancel", job_key="job-e")
             self.assertTrue(cancel.get("ok"), cancel)
             self.assertEqual(cancel.get("status"), "pending")
+
+    def test_finish_edit_later_front_jumps_fifo(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write_job(root, "job-a", {"status": "pending", "pending_rank": 0})
+            self._write_job(root, "job-b", {"status": "editing", "pending_rank": 1})
+            res = sf.finish_job_edit(
+                data_root=root,
+                action="later",
+                pending_position="front",
+                job_key="job-b",
+            )
+            self.assertTrue(res.get("ok"), res)
+            self.assertEqual(res.get("pending_position"), "front")
+            self.assertEqual(res.get("pending_rank"), 0)
+            _pa, job_a = sf.find_job_by_key(root, "job-a")
+            _pb, job_b = sf.find_job_by_key(root, "job-b")
+            assert job_a is not None and job_b is not None
+            self.assertEqual(job_b["submit"]["status"], "pending")
+            self.assertEqual(job_b["submit"].get("pending_rank"), 0)
+            self.assertEqual(job_a["submit"].get("pending_rank"), 1)
 
     def test_finish_edit_now_calls_submit(self) -> None:
         with tempfile.TemporaryDirectory() as td:

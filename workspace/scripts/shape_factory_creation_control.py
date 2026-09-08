@@ -69,6 +69,7 @@ def mutate_job(
     timeout_s: int = 15,
     finish_action: str = "later",
     front: bool = False,
+    pending_position: str = "append",
     dry_run: bool = False,
     expunge: bool = False,
     prompt_id: Optional[str] = None,
@@ -124,6 +125,7 @@ def mutate_job(
             job_key=job_key,
             job_path=job_path,
             front=front,
+            pending_position=pending_position,
             dry_run=dry_run,
         )
         out["control"] = control

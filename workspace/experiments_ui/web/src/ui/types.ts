@@ -1780,6 +1780,7 @@ export type ShapeFactoryFinishEditRequest = {
   job_path?: string;
   action: "later" | "cancel" | "now";
   front?: boolean;
+  pending_position?: "append" | "front";
   actor?: string;
   reason?: string;
   source_surface?: string;
@@ -1792,6 +1793,8 @@ export type ShapeFactoryFinishEditResponse = {
   status?: string;
   action?: string;
   prompt_id?: string;
+  pending_rank?: number;
+  pending_position?: "append" | "front" | null;
   error?: string;
   detail?: string;
   submit?: Record<string, unknown>;
