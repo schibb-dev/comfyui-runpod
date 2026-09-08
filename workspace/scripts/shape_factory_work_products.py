@@ -1948,10 +1948,22 @@ def _work_product_item_from_job(
     return item
 
 
+def _job_record_is_discarded(path: Optional[Path], job: Optional[Dict[str, Any]]) -> bool:
+    if path is not None and ".job.json.discarded" in path.name:
+        return True
+    if not isinstance(job, dict):
+        return False
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    return bool(submit.get("discarded"))
+
+
 def _find_job_file(
     data_root: Path, *, job_key: Optional[str] = None, prompt_id: Optional[str] = None
 ) -> Tuple[Optional[Path], Optional[Dict[str, Any]]]:
-    """Locate a factory job anywhere under ``jobs/`` — not limited to the recent window."""
+    """Locate a factory job anywhere under ``jobs/`` — not limited to the recent window.
+
+    Live ``*.job.json`` wins. If none, ``*.job.json.discarded*`` (purge archive).
+    """
     jobs_root = Path(data_root) / "shape_factory" / "jobs"
     if not jobs_root.is_dir():
         return None, None
@@ -1960,6 +1972,14 @@ def _find_job_file(
         return None, None
     if key:
         for path in jobs_root.glob(f"**/{key}.job.json"):
+            try:
+                job = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if isinstance(job, dict):
+                return path, job
+        discarded_hits = sorted(jobs_root.glob(f"**/{key}.job.json.discarded*"))
+        for path in discarded_hits:
             try:
                 job = json.loads(path.read_text(encoding="utf-8"))
             except Exception:
@@ -2013,6 +2033,15 @@ def get_work_product(
             "error": "not_found",
             "job_key": jk,
             "prompt_id": pid,
+        }
+    if _job_record_is_discarded(path, job):
+        submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+        return {
+            "ok": False,
+            "error": "deleted",
+            "job_key": jk or str(job.get("job_key") or "").strip() or None,
+            "prompt_id": pid or str(submit.get("prompt_id") or "").strip() or None,
+            "discard_reason": str(submit.get("discard_reason") or "").strip() or None,
         }
 
     work_items_doc = None

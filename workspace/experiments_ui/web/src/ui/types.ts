@@ -2967,6 +2967,7 @@ export type WorkProductResponse = {
   schema_version?: string;
   job_key?: string | null;
   prompt_id?: string | null;
+  discard_reason?: string | null;
   families?: WorkProductFamilyOption[];
   extend_family_defaults?: Record<string, string>;
   item?: WorkProductItem;

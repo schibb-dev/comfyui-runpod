@@ -12518,7 +12518,7 @@ class Handler(BaseHTTPRequestHandler):
                 if payload.get("ok"):
                     return _json_response(self, 200, payload)
                 err = str(payload.get("error") or "")
-                code = 400 if err == "missing_job_or_prompt" else 404 if err == "not_found" else 500
+                code = 400 if err == "missing_job_or_prompt" else 404 if err in ("not_found", "deleted") else 500
                 return _json_response(self, code, payload)
             except Exception as e:
                 return _json_response(self, 500, {"ok": False, "error": "work_product_failed", "detail": str(e)})

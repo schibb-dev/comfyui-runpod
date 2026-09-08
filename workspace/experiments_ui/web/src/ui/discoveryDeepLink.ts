@@ -397,7 +397,7 @@ export function lineageSummaryHref(s: {
 }
 
 /**
- * Open Workbench focused on jobs that used / produced this media.
+ * Open Workbench focused on the job that produced this media.
  * Uses ``?media=`` as the viewed resource — never seeds the search box.
  */
 export function workbenchHrefForMedia(opts: {

@@ -359,8 +359,14 @@ export async function fetchShapeFactoryWorkProduct(opts: {
   const qs = sp.toString();
   const r = await fetch(`/api/shape-factory/work-product${qs ? `?${qs}` : ""}`);
   const j = (await r.json().catch(() => ({}))) as WorkProductResponse;
-  if (r.status === 404 || j.error === "not_found") {
-    return { ok: false, error: "not_found", job_key: opts.jobKey, prompt_id: opts.promptId };
+  if (r.status === 404 || j.error === "not_found" || j.error === "deleted") {
+    return {
+      ok: false,
+      error: j.error === "deleted" ? "deleted" : "not_found",
+      job_key: opts.jobKey,
+      prompt_id: opts.promptId,
+      discard_reason: j.discard_reason,
+    };
   }
   if (!r.ok || j.ok === false) {
     const detail = [j.error, j.detail].filter(Boolean).join(": ");

@@ -48,6 +48,19 @@ import {
   workProductAppetiteRelpath,
 } from "./workProductAppetite";
 import { nextOffSetForGroupDoubleClick } from "./filterGroupDoubleClick";
+import {
+  filterWorkProductsByMedia,
+  inferJobKeyFromMediaPath,
+  isMediaOutputOfJob,
+  mediaFocusLabel,
+  pickBestMediaMatch,
+  probeMediaFileExists,
+  workProductMatchesMedia,
+  workProductMediaHaystack,
+  workProductMediaRelation,
+  focusedGoneMessage,
+  type FocusedGoneReason,
+} from "./workProductMediaFocus";
 import { prefetchAssetRatings } from "./assetRatingsCache";
 import { loadClipsForMedia, rememberFamiliesFromWorkProducts } from "./shapeFactorySessionCache";
 import { familySwapTargets, isDefaultPromptVariant, isStillMediaPath, jobPromptVariantName, jobPromptVariantSlug, promptVariantName, promptVariantSlug } from "./submitFamily";
@@ -499,7 +512,7 @@ function isRunningLiveItem(item: WorkProductItem): boolean {
   return Boolean(item.prompt_id) || Boolean(item.live_from_comfy);
 }
 
-/** Queued/pending/submitted — pin + quiet refresh (still expected to finish). */
+/** Queued/pending/submitted — quiet list refresh while still expected to finish. */
 function isWaitingPreviewItem(item: WorkProductItem): boolean {
   if (item.output_url || isRunningLiveItem(item)) return false;
   return isInFlightStatus(item.status);
@@ -576,48 +589,10 @@ function sortWorkProducts(items: WorkProductItem[], sort: WorkProductSort): Work
   return [...running, ...queued, ...pending, ...done];
 }
 
-function workProductNameHaystack(item: WorkProductItem): string {
-  const parts: string[] = [
-    item.family_slug || "",
-    item.job_key || "",
-    item.status || "",
-    item.prompt_id || "",
-    item.output_relpath || "",
-    item.parent_output_relpath || "",
-    item.parent_output || "",
-  ];
-  const bindings = item.bindings;
-  if (bindings && typeof bindings === "object") {
-    for (const b of Object.values(bindings)) {
-      if (!b || typeof b !== "object") continue;
-      parts.push(b.relpath || "", b.basename || "", b.path || "");
-    }
-  }
-  return parts.filter(Boolean).join(" ").toLowerCase();
-}
-
 function filterWorkProductsByName(items: WorkProductItem[], query: string): WorkProductItem[] {
   const q = query.trim().toLowerCase();
   if (!q) return items;
-  return items.filter((it) => isLivePreviewItem(it) || workProductNameHaystack(it).includes(q));
-}
-
-function workProductMatchesMedia(item: WorkProductItem, media: string): boolean {
-  const needle = media.trim().toLowerCase().replace(/\\/g, "/").replace(/^\/+/, "");
-  if (!needle) return false;
-  const hay = workProductNameHaystack(item);
-  if (hay.includes(needle)) return true;
-  const base = needle.split("/").pop() || needle;
-  if (base && base !== needle && hay.includes(base.toLowerCase())) return true;
-  const stem = base.includes(".") ? base.replace(/\.[^.]+$/, "") : "";
-  if (stem && hay.includes(stem.toLowerCase())) return true;
-  return false;
-}
-
-function filterWorkProductsByMedia(items: WorkProductItem[], media: string | null): WorkProductItem[] {
-  const m = String(media || "").trim();
-  if (!m) return items;
-  return items.filter((it) => isLivePreviewItem(it) || workProductMatchesMedia(it, m));
+  return items.filter((it) => workProductMediaHaystack(it).includes(q));
 }
 
 /** Operator-facing copy for interrupt reasons (see docs/JOB_STATUS_LIFECYCLE.md). */
@@ -5070,15 +5045,26 @@ export function WorkProductsApp() {
     deepLink.job ? null : deepLink.promptId,
   );
   const [focusMedia, setFocusMedia] = useState<string | null>(() => deepLink.media);
-  /** Job/prompt deep-links start with the index collapsed; browse starts open. */
-  const arrivedViaItemDeepLink = Boolean(deepLink.job || deepLink.promptId);
-  const [listOpen, setListOpen] = useState(() => !arrivedViaItemDeepLink);
+  /** Resource deep-links (job / prompt / media) start pinned + list collapsed. */
+  const [focusPinned, setFocusPinned] = useState(() => hasResourceDeepLink);
+  const [listOpen, setListOpen] = useState(() => !hasResourceDeepLink);
   const [toolsOpen, setToolsOpen] = useState(() => Boolean(deepLink.q) || loadChrome().tools);
   const [filtersOpen, setFiltersOpen] = useState(() => loadChrome().filters);
   const deepLinkScrolled = useRef(false);
+  /** Operator clicked a job in a media-focused list — stop snapping to the producer. */
+  const mediaPickTouched = useRef(false);
   const toggleJobList = useCallback(() => setListOpen((open) => !open), []);
   const showJobList = useCallback(() => setListOpen(true), []);
   const hideJobList = useCallback(() => setListOpen(false), []);
+  const clearResourceFocus = useCallback(() => {
+    setFocusPinned(false);
+    setFocusMedia(null);
+    setFocusPromptId(null);
+    mediaPickTouched.current = true;
+    setListOpen(true);
+    setHourlyOnly(loadHourlyOnly());
+    window.history.replaceState(null, "", workbenchHref({ q: nameQuery.trim() || null }));
+  }, [nameQuery]);
   const bulkDiscardMutation = useMutation({ mutationFn: discardShapeFactoryJob });
   const pendingMoveMutation = useMutation({
     mutationFn: movePendingQueue,
@@ -5112,30 +5098,67 @@ export function WorkProductsApp() {
     refetchIntervalInBackground: false,
   });
   const items = queryState.data?.items || [];
-  const recentHit = useMemo(
-    () => items.find((it) => workProductMatchesFocus(it, focusJob, focusPromptId)) || null,
-    [items, focusJob, focusPromptId],
+  const mediaProducerKey = useMemo(
+    () => (focusMedia ? inferJobKeyFromMediaPath(focusMedia) : null),
+    [focusMedia],
   );
+  const historyLookupJobKey = focusPinned
+    ? deepLink.job
+      ? focusJob
+      : focusMedia
+        ? mediaProducerKey
+        : focusJob
+    : null;
+  const historyLookupPromptId =
+    focusPinned && !historyLookupJobKey ? focusPromptId : null;
+  const recentHit = useMemo(() => {
+    if (historyLookupJobKey || historyLookupPromptId) {
+      const hit = items.find((it) =>
+        workProductMatchesFocus(it, historyLookupJobKey, historyLookupPromptId),
+      );
+      if (hit) return hit;
+    }
+    if (focusMedia) {
+      return items.find((it) => isMediaOutputOfJob(it, focusMedia)) || null;
+    }
+    return items.find((it) => workProductMatchesFocus(it, focusJob, focusPromptId)) || null;
+  }, [
+    items,
+    historyLookupJobKey,
+    historyLookupPromptId,
+    focusMedia,
+    focusJob,
+    focusPromptId,
+  ]);
   const listSettled = !queryState.isLoading || Boolean(queryState.error);
   const historyQuery = useQuery({
     queryKey: queryKeys.shapeFactory.workProduct({
-      jobKey: focusJob,
-      promptId: focusJob ? null : focusPromptId,
+      jobKey: historyLookupJobKey,
+      promptId: historyLookupJobKey ? null : historyLookupPromptId,
     }),
     queryFn: () =>
       fetchShapeFactoryWorkProduct({
-        jobKey: focusJob,
-        promptId: focusJob ? null : focusPromptId,
+        jobKey: historyLookupJobKey,
+        promptId: historyLookupJobKey ? null : historyLookupPromptId,
       }),
     enabled:
-      arrivedViaItemDeepLink &&
-      Boolean(focusJob || focusPromptId) &&
+      focusPinned &&
+      Boolean(historyLookupJobKey || historyLookupPromptId) &&
       !recentHit &&
       listSettled,
     staleTime: 30_000,
   });
   const historyItem = historyQuery.data?.ok ? historyQuery.data.item || null : null;
   const focusedItem = recentHit || historyItem || null;
+  const historyError = String(historyQuery.data?.error || "").trim();
+  const mediaProbe = useQuery({
+    queryKey: ["workbench", "mediaExists", focusMedia] as const,
+    queryFn: () => probeMediaFileExists(String(focusMedia || "")),
+    enabled: Boolean(focusPinned && focusMedia),
+    staleTime: 15_000,
+  });
+  const mediaProbePending = Boolean(focusPinned && focusMedia && mediaProbe.isPending);
+  const mediaMissing = Boolean(focusPinned && focusMedia && mediaProbe.isSuccess && mediaProbe.data === false);
   const families = queryState.data?.families || historyQuery.data?.families || [];
   const extendFamilyDefaults =
     queryState.data?.extend_family_defaults || historyQuery.data?.extend_family_defaults || {};
@@ -5144,21 +5167,33 @@ export function WorkProductsApp() {
   const error = queryState.error instanceof Error ? queryState.error.message : null;
   const historyResolved =
     Boolean(recentHit) ||
-    !arrivedViaItemDeepLink ||
+    !focusPinned ||
+    !(historyLookupJobKey || historyLookupPromptId) ||
     historyQuery.isFetched ||
     historyQuery.isError;
   const focusedLoading =
     !listOpen &&
-    Boolean(focusJob || focusPromptId) &&
-    !focusedItem &&
-    (!listSettled || !historyResolved);
-  const focusedMissing =
-    !listOpen &&
-    Boolean(focusJob || focusPromptId) &&
-    !focusedItem &&
-    listSettled &&
-    historyResolved &&
-    (historyQuery.data?.error === "not_found" || historyQuery.isError);
+    focusPinned &&
+    (mediaProbePending ||
+      (Boolean(historyLookupJobKey || historyLookupPromptId) &&
+        !focusedItem &&
+        !mediaMissing &&
+        (!listSettled || !historyResolved)));
+  const focusedGoneReason: FocusedGoneReason | null = (() => {
+    if (!focusPinned || focusedLoading) return null;
+    if (historyError === "deleted") return "deleted";
+    if (mediaMissing) return "missing";
+    if (
+      Boolean(deepLink.job || deepLink.promptId) &&
+      !focusedItem &&
+      listSettled &&
+      historyResolved &&
+      (historyError === "not_found" || historyQuery.isError)
+    ) {
+      return "missing";
+    }
+    return null;
+  })();
 
   useEffect(() => {
     const fams = queryState.data?.families || historyQuery.data?.families;
@@ -5216,25 +5251,36 @@ export function WorkProductsApp() {
   }, [items]);
 
   const visibleItems = useMemo(() => {
+    const named = filterWorkProductsByName(items, nameQuery);
+    const mediaRows = mediaMissing
+      ? []
+      : filterWorkProductsByMedia(named, focusMedia, { producersOnly: Boolean(focusMedia) });
     const rows = sortWorkProducts(
       filterWorkProductsByAppetite(
-        filterWorkProductsByMarker(
-          filterWorkProductsByStatus(
-            filterWorkProductsByMedia(filterWorkProductsByName(items, nameQuery), focusMedia),
-            statusOff,
-          ),
-          markerOff,
-        ),
+        filterWorkProductsByMarker(filterWorkProductsByStatus(mediaRows, statusOff), markerOff),
         appetiteOff,
       ),
       sort,
     );
+    if (mediaMissing) return rows;
     if (!focusedItem) return rows;
+    if (focusMedia && !isMediaOutputOfJob(focusedItem, focusMedia)) return rows;
     if (rows.some((it) => workProductMatchesFocus(it, focusedItem.job_key || null, focusedItem.prompt_id || null))) {
       return rows;
     }
     return [focusedItem, ...rows];
-  }, [items, nameQuery, focusMedia, sort, statusOff, markerOff, appetiteOff, focusedItem, appetiteTick]);
+  }, [
+    items,
+    nameQuery,
+    focusMedia,
+    mediaMissing,
+    sort,
+    statusOff,
+    markerOff,
+    appetiteOff,
+    focusedItem,
+    appetiteTick,
+  ]);
 
   const failedVisible = useMemo(
     () => visibleItems.filter((it) => canArchiveTerminalWorkProduct(it)),
@@ -5242,22 +5288,55 @@ export function WorkProductsApp() {
   );
 
   const selectedItem = useMemo(() => {
-    if (!listOpen) return focusedItem;
-    const hit = visibleItems.find((it) => workProductMatchesFocus(it, focusJob, focusPromptId));
-    if (hit) return hit;
+    if (mediaProbePending && !mediaPickTouched.current) return null;
+    if (mediaMissing && !mediaPickTouched.current) return null;
+    if (focusedGoneReason && !mediaPickTouched.current && !focusMedia) return null;
+
+    const jobHit =
+      visibleItems.find((it) => workProductMatchesFocus(it, focusJob, focusPromptId)) ||
+      (focusedItem && workProductMatchesFocus(focusedItem, focusJob, focusPromptId) ? focusedItem : null);
+
+    if (focusMedia && !mediaPickTouched.current) {
+      const bestVisible = pickBestMediaMatch(visibleItems, focusMedia);
+      const historyMatch =
+        focusedItem && workProductMatchesMedia(focusedItem, focusMedia) ? focusedItem : null;
+      const producer =
+        (historyMatch && isMediaOutputOfJob(historyMatch, focusMedia) ? historyMatch : null) ||
+        (bestVisible && isMediaOutputOfJob(bestVisible, focusMedia) ? bestVisible : null);
+      if (focusedLoading) return producer;
+      const pick = producer || historyMatch || bestVisible;
+      if (!listOpen) return pick;
+      if (pick) return pick;
+    }
+
+    if (!listOpen) return jobHit || focusedItem;
+    if (jobHit) return jobHit;
     return visibleItems[0] || focusedItem || null;
-  }, [visibleItems, focusJob, focusPromptId, listOpen, focusedItem]);
+  }, [
+    visibleItems,
+    focusJob,
+    focusPromptId,
+    listOpen,
+    focusedItem,
+    focusMedia,
+    focusedLoading,
+    mediaMissing,
+    mediaProbePending,
+    focusedGoneReason,
+  ]);
 
   const selectItem = useCallback((item: WorkProductItem) => {
     const key = String(item.job_key || "").trim();
     if (key) setFocusJob(key);
     setFocusPromptId(null);
+    mediaPickTouched.current = true;
     deepLinkScrolled.current = true;
   }, []);
 
   useEffect(() => {
     const key = String(selectedItem?.job_key || "").trim();
     if (!key || key === focusJob) return;
+    if (focusedLoading) return;
     const focusedVisible = Boolean(
       focusJob && visibleItems.some((it) => String(it.job_key || "").trim() === focusJob),
     );
@@ -5268,7 +5347,7 @@ export function WorkProductsApp() {
     if (focusJob && !focusedLoaded) return;
     setFocusJob(key);
     setFocusPromptId(null);
-  }, [selectedItem, focusJob, items, visibleItems]);
+  }, [selectedItem, focusJob, items, visibleItems, focusedLoading]);
 
   useEffect(() => {
     if (!listOpen) return;
@@ -5305,17 +5384,27 @@ export function WorkProductsApp() {
     if (hit) selectItem(hit);
   };
 
-  // Keep the URL named after the focused resource (job / media), not the search box.
+  // Keep the URL named after the pinned resource (job / media), not the search box.
   useEffect(() => {
+    const keepJobInUrl = focusPinned && Boolean(deepLink.job || deepLink.promptId);
     const next = workbenchHref({
-      jobKey: listOpen && !arrivedViaItemDeepLink ? null : focusJob,
-      promptId: listOpen && !arrivedViaItemDeepLink ? null : focusJob ? null : focusPromptId,
-      media: focusMedia,
+      jobKey: keepJobInUrl ? focusJob : !focusPinned && !listOpen ? focusJob : null,
+      promptId: keepJobInUrl && !focusJob ? focusPromptId : null,
+      media: focusPinned ? focusMedia : null,
       q: nameQuery.trim() || null,
     });
     if (`${window.location.pathname}${window.location.search}` === next) return;
     window.history.replaceState(null, "", next);
-  }, [arrivedViaItemDeepLink, focusJob, focusPromptId, focusMedia, listOpen, nameQuery]);
+  }, [
+    focusPinned,
+    deepLink.job,
+    deepLink.promptId,
+    focusJob,
+    focusPromptId,
+    focusMedia,
+    listOpen,
+    nameQuery,
+  ]);
 
   useEffect(() => {
     if (deepLinkScrolled.current || loading) return;
@@ -5332,7 +5421,7 @@ export function WorkProductsApp() {
         ? items.find((it) => String(it.prompt_id || "").trim() === needlePid)
         : undefined);
     if (!match && needleMedia) {
-      match = visibleItems.find((it) => workProductMatchesMedia(it, needleMedia));
+      match = pickBestMediaMatch(visibleItems, needleMedia) || pickBestMediaMatch(items, needleMedia);
     }
     if (!match) return;
 
@@ -5360,7 +5449,7 @@ export function WorkProductsApp() {
     if (!inVisible) return;
 
     deepLinkScrolled.current = true;
-    if (!focusJob && match.job_key) setFocusJob(String(match.job_key));
+    if (!focusJob && match.job_key && !focusMedia) setFocusJob(String(match.job_key));
     if (!listOpen) return;
     window.requestAnimationFrame(() => {
       const el = document.getElementById(workbenchJobDomId(match.job_key));
@@ -5478,6 +5567,26 @@ export function WorkProductsApp() {
     await queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductsRoot });
   };
 
+  const focusCaption = focusPinned
+    ? focusMedia
+      ? { kind: "Clip", name: mediaFocusLabel(focusMedia), title: focusMedia }
+      : focusJob
+        ? { kind: "Job", name: focusJob, title: focusJob }
+        : focusPromptId
+          ? { kind: "Prompt", name: focusPromptId, title: focusPromptId }
+          : { kind: "Focused", name: "", title: "" }
+    : null;
+  const focusRelation =
+    focusMedia && selectedItem ? workProductMediaRelation(selectedItem, focusMedia) : null;
+  const focusHint =
+    focusRelation === "output"
+      ? "This job produced the clip."
+      : focusRelation === "source"
+        ? "This job used the clip as source."
+        : focusCaption
+          ? `${focusCaption.kind} focus — close to return to the full jobs list.`
+          : "";
+
   return (
     <PipelineScreen className="work-products">
       <PageHeader
@@ -5528,10 +5637,16 @@ export function WorkProductsApp() {
               type="button"
               className="page-header__refresh"
               onClick={toggleJobList}
-              disabled={listOpen && !selectedItem}
+              disabled={listOpen && !selectedItem && !focusPinned}
               aria-expanded={listOpen}
               aria-controls="workbench-jobs-index"
-              title={listOpen ? "Collapse the job list" : "Expand the job list (Esc)"}
+              title={
+                listOpen
+                  ? "Collapse the job list"
+                  : focusPinned
+                    ? "Show jobs that match this focus (Esc)"
+                    : "Expand the job list (Esc)"
+              }
             >
               {listOpen ? "Hide jobs" : "Show jobs"}
             </button>
@@ -5776,21 +5891,19 @@ export function WorkProductsApp() {
             {hourlyOnly ? "No hourly work products found." : "No work products found."}
           </div>
         ) : null}
-        {!loading && !error && items.length && !visibleItems.length && listOpen ? (
+        {!loading && !error && items.length && !visibleItems.length && listOpen && !focusPinned ? (
           <div className="work-products-empty">
-            {focusMedia
-              ? `No loaded work products reference “${focusMedia}”.`
-              : nameQuery.trim()
-                ? `No work products match “${nameQuery.trim()}”.`
-                : "No work products match the selected filters."}
+            {nameQuery.trim()
+              ? `No work products match “${nameQuery.trim()}”.`
+              : "No work products match the selected filters."}
           </div>
         ) : null}
 
-        {listOpen && visibleItems.length ? (
+        {listOpen && (visibleItems.length || focusPinned) ? (
           <nav
             id="workbench-jobs-index"
-            className="work-products-index"
-            aria-label="Workbench jobs"
+            className={`work-products-index${focusPinned ? " work-products-index--focused" : ""}`}
+            aria-label={focusPinned ? "Focused jobs" : "Workbench jobs"}
             onKeyDown={onIndexKeyDown}
           >
             <div className="work-products-index__toolbar">
@@ -5798,14 +5911,29 @@ export function WorkProductsApp() {
                 type="button"
                 className="work-products-index__collapse"
                 onClick={hideJobList}
-                disabled={!selectedItem}
+                disabled={!selectedItem && !focusPinned}
                 title="Collapse the job list"
                 aria-expanded={true}
                 aria-controls="workbench-jobs-index"
               >
                 ‹
               </button>
-              <span className="work-products-index__toolbar-label">Jobs</span>
+              {focusPinned ? (
+                <span className="work-products-index__toolbar-focus">
+                  <span className="work-products-index__toolbar-label">Focused</span>
+                  <button
+                    type="button"
+                    className="work-products-index__focus-close"
+                    onClick={clearResourceFocus}
+                    title="Close focus"
+                    aria-label="Close focus"
+                  >
+                    ×
+                  </button>
+                </span>
+              ) : (
+                <span className="work-products-index__toolbar-label">Jobs</span>
+              )}
               <label className="work-products-limit work-products-limit--index">
                 Show
                 <select
@@ -5839,43 +5967,80 @@ export function WorkProductsApp() {
                   ))}
                 </select>
               </label>
+              {focusCaption ? (
+                <div className="work-products-index__focus">
+                  <span className="work-products-index__focus-kind">{focusCaption.kind}</span>
+                  {focusCaption.name ? (
+                    <span className="work-products-index__focus-name" title={focusHint || focusCaption.title}>
+                      {focusCaption.name}
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
-            <div className="work-products-index__list" role="listbox" aria-label="Recent jobs">
-              {visibleItems.map((item) => (
-                <WorkProductIndexRow
-                  key={item.job_key}
-                  item={item}
-                  selected={Boolean(selectedItem && item.job_key === selectedItem.job_key)}
-                  onSelect={selectItem}
-                  movingPending={pendingMoveMutation.isPending}
-                  onMovePending={(it, delta) => {
-                    const key = String(it.job_key || "").trim();
-                    if (!key) return;
-                    pendingMoveMutation.mutate({ job_key: key, delta });
-                  }}
-                />
-              ))}
-            </div>
+            {visibleItems.length ? (
+              <div className="work-products-index__list" role="listbox" aria-label="Recent jobs">
+                {visibleItems.map((item) => (
+                  <WorkProductIndexRow
+                    key={item.job_key}
+                    item={item}
+                    selected={Boolean(selectedItem && item.job_key === selectedItem.job_key)}
+                    onSelect={selectItem}
+                    movingPending={pendingMoveMutation.isPending}
+                    onMovePending={(it, delta) => {
+                      const key = String(it.job_key || "").trim();
+                      if (!key) return;
+                      pendingMoveMutation.mutate({ job_key: key, delta });
+                    }}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="work-products-index__empty">
+                {focusMedia
+                  ? `No loaded jobs reference this ${focusCaption?.kind.toLowerCase() || "clip"}.`
+                  : "No jobs match this focus."}
+              </div>
+            )}
           </nav>
         ) : !listOpen ? (
-          <button
-            type="button"
+          <div
             id="workbench-jobs-index"
-            className="work-products-index-rail"
-            onClick={showJobList}
-            title="Expand the job list (Esc)"
-            aria-expanded={false}
+            className={`work-products-index-rail${focusPinned ? " work-products-index-rail--focused" : ""}`}
           >
-            <span className="work-products-index-rail__chevron" aria-hidden>
-              ›
-            </span>
-            <span className="work-products-index-rail__label">Jobs</span>
-            {visibleItems.length || items.length ? (
-              <span className="work-products-index-rail__count">
-                {visibleItems.length || items.length}
+            <button
+              type="button"
+              className="work-products-index-rail__expand"
+              onClick={showJobList}
+              title={
+                focusPinned
+                  ? `${focusHint || "Focused jobs"} Expand the matching list (Esc)`
+                  : "Expand the job list (Esc)"
+              }
+              aria-expanded={false}
+            >
+              <span className="work-products-index-rail__chevron" aria-hidden>
+                ›
               </span>
+              <span className="work-products-index-rail__label">{focusPinned ? "Focused" : "Jobs"}</span>
+              {visibleItems.length || items.length ? (
+                <span className="work-products-index-rail__count">
+                  {focusPinned ? visibleItems.length : visibleItems.length || items.length}
+                </span>
+              ) : null}
+            </button>
+            {focusPinned ? (
+              <button
+                type="button"
+                className="work-products-index-rail__close"
+                onClick={clearResourceFocus}
+                title="Close focus"
+                aria-label="Close focus"
+              >
+                ×
+              </button>
             ) : null}
-          </button>
+          </div>
         ) : null}
         {selectedItem ? (
           <div className="work-products-detail">
@@ -5890,9 +6055,16 @@ export function WorkProductsApp() {
               onFocusJobKey={focusJobKey}
             />
           </div>
-        ) : focusedMissing ? (
-          <div className="work-products-empty">
-            This job isn’t in factory history.
+        ) : focusedGoneReason ? (
+          <div className="work-products-detail">
+            <div className="work-products-empty work-products-empty--gone">
+              <p className="work-products-empty__title">{focusedGoneMessage(focusedGoneReason)}</p>
+              {focusCaption?.name ? (
+                <p className="work-products-empty__detail" title={focusCaption.title}>
+                  {focusCaption.name}
+                </p>
+              ) : null}
+            </div>
           </div>
         ) : listOpen && visibleItems.length ? (
           <div className="work-products-detail">

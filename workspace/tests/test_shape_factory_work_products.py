@@ -380,6 +380,32 @@ class TestWorkProducts(unittest.TestCase):
             self.assertFalse(missing["ok"])
             self.assertEqual(missing["error"], "not_found")
 
+    def test_get_work_product_reports_deleted_discarded_job(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            data = root / "data"
+            out = root / "output"
+            jobs = data / "shape_factory" / "jobs" / "DEMO"
+            jobs.mkdir(parents=True)
+            out.mkdir(parents=True)
+            rec = {
+                "created_at": "2026-09-04T00:00:00+00:00",
+                "family_slug": "DEMO",
+                "job_key": "hourly__purged",
+                "submit": {
+                    "status": "complete",
+                    "discarded": True,
+                    "discard_reason": "appetite_remove_purge",
+                },
+            }
+            (jobs / "hourly__purged.job.json.discarded").write_text(
+                json.dumps(rec) + "\n", encoding="utf-8"
+            )
+            payload = get_work_product(data_root=data, output_root=out, job_key="hourly__purged")
+            self.assertFalse(payload["ok"])
+            self.assertEqual(payload["error"], "deleted")
+            self.assertEqual(payload["discard_reason"], "appetite_remove_purge")
+
     def test_shape_view_parses_contract(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
