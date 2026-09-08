@@ -17,6 +17,8 @@ This document defines what to commit, what to ignore, and a phased approach for 
 
 ### Root / infra
 - `.gitignore`, `.gitattributes`
+- `.cursor/rules/*.mdc` (shared agent guidance)
+- `.cursor/mcp.json` — project MCP servers that every clone should get. **Do** check this in when it has no secrets (this repo: Playwright via `npx`). **Do not** put API keys, OAuth client secrets, or tokens in it; use `${env:NAME}` (and each operator’s local env). Personal / all-workspace servers stay in `~/.cursor/mcp.json`, which is never in git.
 - `Dockerfile`, `docker-compose.yml`
 - `entrypoint.sh`
 - `Makefile`, `package.json`
@@ -63,6 +65,8 @@ This document defines what to commit, what to ignore, and a phased approach for 
 - **Build artifacts**: `workspace/experiments_ui/dist/`, `node_modules/`
 - **Large/generated**: Models, `*.safetensors`, `*.ckpt`, etc. (already in `.gitignore`)
 - **Personal / one-off**: One-off workflows, local-only scripts, machine-specific paths
+- **Agent verification dumps**: `.playwright-mcp/` (Playwright MCP page snapshots), ad-hoc `*.png` at the repo root, `tmp/`
+- **Global Cursor MCP**: `~/.cursor/mcp.json` (lives outside the repo; never copy it in)
 
 ---
 

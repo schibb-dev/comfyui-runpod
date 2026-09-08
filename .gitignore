@@ -113,6 +113,11 @@ workspace/experiments_ui/dist/
 
 # Local scratch logs (repo root)
 /tmp_comfy_logs.txt
+/tmp/
+
+# Playwright MCP + ad-hoc agent screenshots (never source)
+.playwright-mcp/
+/*.png
 
 # MkDocs planning docs build output
 site/
