@@ -2699,6 +2699,8 @@ export type WorkProductFamilyOption = {
   slug: string;
   shape_id?: string | null;
   shape_path?: string;
+  /** True when this family's catalog/template workflow is quarantined. */
+  quarantined?: boolean;
   primary_input?: string | null;
   input_profile?: string | null;
   chain_role?: string | null;

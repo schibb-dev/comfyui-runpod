@@ -117,6 +117,123 @@ export function pickDefaultExtendFamily(
   return first || slugs[0] || PREFERRED_EXTEND_FAMILIES[0];
 }
 
+function familySlugTokens(slug: string): string[] {
+  return slug.split(/[-_]/).filter(Boolean);
+}
+
+/** Slice of `slug` covering tokens `[from, to)`. Keeps the original separators. */
+function familySlugTokenSlice(slug: string, tokens: string[], from: number, to: number): string {
+  if (from < 0 || to > tokens.length || from >= to) return "";
+  let search = 0;
+  let start = 0;
+  let end = 0;
+  for (let i = 0; i < tokens.length; i++) {
+    const at = slug.indexOf(tokens[i], search);
+    if (at < 0) return tokens.slice(from, to).join("-");
+    if (i === from) start = at;
+    if (i === to - 1) end = at + tokens[i].length;
+    search = at + tokens[i].length;
+  }
+  return slug.slice(start, end);
+}
+
+function familyTokenIsGeneric(token: string): boolean {
+  return token.length <= 4 || /^(bare|og|ext)$/i.test(token);
+}
+
+/**
+ * Short picker labels that stay unique in `slugs` and keep distinctive tokens
+ * (`Breast-shake`, `identity_anchor`, `KNEEL-FB9-bare`) instead of mid-word chops.
+ */
+export function distinctiveFamilyLabels(slugs: string[], maxChars = 16): Map<string, string> {
+  const list = [...new Set(slugs.map((s) => String(s || "").trim()).filter(Boolean))];
+  const freq = new Map<string, number>();
+  const tokensOf = new Map<string, string[]>();
+  for (const slug of list) {
+    const tokens = familySlugTokens(slug);
+    tokensOf.set(slug, tokens);
+    for (const t of new Set(tokens)) freq.set(t, (freq.get(t) || 0) + 1);
+  }
+  const out = new Map<string, string>();
+  for (const slug of list) {
+    out.set(slug, distinctiveFamilyLabelOne(slug, list, tokensOf.get(slug) || [], freq, maxChars));
+  }
+  const owners = new Map<string, string[]>();
+  for (const [slug, label] of out) {
+    const group = owners.get(label) || [];
+    group.push(slug);
+    owners.set(label, group);
+  }
+  for (const group of owners.values()) {
+    if (group.length < 2) continue;
+    for (const slug of group) {
+      out.set(slug, slug.length <= maxChars ? slug : distinctiveFamilyFallback(slug, list, maxChars));
+    }
+  }
+  return out;
+}
+
+function distinctiveFamilyLabelOne(
+  slug: string,
+  all: string[],
+  tokens: string[],
+  freq: Map<string, number>,
+  maxChars: number,
+): string {
+  if (slug.length <= maxChars) return slug;
+  const uniqueAt = tokens
+    .map((t, i) => (freq.get(t) === 1 ? i : -1))
+    .filter((i) => i >= 0);
+  if (uniqueAt.length) {
+    let from = uniqueAt[0];
+    const to = uniqueAt[uniqueAt.length - 1] + 1;
+    while (
+      from > 0 &&
+      (familySlugTokenSlice(slug, tokens, from, to).length < 8 || familyTokenIsGeneric(tokens[from]))
+    ) {
+      const wider = familySlugTokenSlice(slug, tokens, from - 1, to);
+      if (wider.length > maxChars) break;
+      from -= 1;
+    }
+    let piece = familySlugTokenSlice(slug, tokens, from, to);
+    while (piece.length > maxChars && from < to - 1) {
+      from += 1;
+      piece = familySlugTokenSlice(slug, tokens, from, to);
+    }
+    if (piece && piece.length <= maxChars) return piece;
+  }
+  return distinctiveFamilyFallback(slug, all, maxChars);
+}
+
+function distinctiveFamilyFallback(slug: string, all: string[], maxChars: number): string {
+  let need = 1;
+  for (const other of all) {
+    if (other === slug) continue;
+    let i = 0;
+    while (i < slug.length && i < other.length && slug[i] === other[i]) i += 1;
+    need = Math.max(need, Math.min(slug.length, i + 1));
+  }
+  if (need >= slug.length) return slug;
+  if (need <= maxChars) {
+    const dash = slug.indexOf("-", need);
+    const und = slug.indexOf("_", need);
+    const nextSep = [dash, und].filter((n) => n >= need);
+    if (nextSep.length) {
+      const cut = Math.min(...nextSep);
+      if (cut <= maxChars && cut > 0) return slug.slice(0, cut);
+    }
+    return slug.slice(0, need);
+  }
+  const tokens = familySlugTokens(slug);
+  const tail = tokens[tokens.length - 1] || "";
+  if (tail && tail.length + 4 <= maxChars) {
+    const headBudget = maxChars - tail.length - 1;
+    const head = slug.slice(0, Math.max(3, headBudget)).replace(/[-_]$/, "");
+    return `${head}…${tail}`;
+  }
+  return `${slug.slice(0, Math.max(1, maxChars - 1))}…`;
+}
+
 /** Families that can take the same kind of input as `fromSlug` (I2V↔I2V, extend↔extend). */
 export function familySwapTargets(
   families: WorkProductFamilyOption[],
@@ -159,6 +276,40 @@ export function pickDefaultSwapTarget(
     if (pref !== from && slugs.includes(pref)) return pref;
   }
   return slugs[0];
+}
+
+/** Quarantine registry rows that can mark a family picker option. */
+export type FamilyQuarantineHint = {
+  workflow_name?: string;
+  workflow_path?: string;
+  status?: string;
+};
+
+/**
+ * True when a quarantined workflow belongs to this family slug
+ * (`{slug}-readable.json` or `{slug}_2026-…` / `{slug}_OG_…`), not a longer
+ * sibling slug (`FB9` must not match `FB9_GEX2_…`).
+ */
+export function familySlugIsQuarantined(
+  slug: string,
+  entries?: FamilyQuarantineHint[] | null,
+): boolean {
+  const s = String(slug || "").trim();
+  if (!s || !entries?.length) return false;
+  return entries.some((e) => {
+    if (e.status && String(e.status).toLowerCase() !== "quarantined") return false;
+    const raw = String(e.workflow_name || e.workflow_path || "")
+      .trim()
+      .replace(/\\/g, "/");
+    const base = raw.split("/").pop() || raw;
+    if (!base) return false;
+    if (base === `${s}-readable.json` || base === `${s}.json`) return true;
+    if (base.startsWith(`${s}_`) || base.startsWith(`${s}-`)) {
+      const rest = base.slice(s.length + 1);
+      return /^(readable|\d{4}|OG[_-])/i.test(rest);
+    }
+    return false;
+  });
 }
 
 /** True when a media path is a still (not a video Use). */

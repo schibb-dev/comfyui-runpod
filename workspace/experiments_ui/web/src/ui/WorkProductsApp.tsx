@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createPortal } from "react-dom";
-import { discardShapeFactoryJob, fetchShapeFactoryWorkProduct, fetchShapeFactoryWorkProducts, finishShapeFactoryEdit, claimShapeFactoryFromQueue, movePendingQueue, promoteShapeFactoryTemplate, remediateShapeFactoryJob, replayShapeFactory, swapShapeFactoryFamily, unqueueShapeFactory, updatePendingShapeFactoryTrim, updateShapeFactoryOwnedLoras, updateShapeFactoryOwnedParams, updateShapeFactoryOwnedPrompt } from "./api";
+import { discardShapeFactoryJob, fetchShapeFactoryQuarantine, fetchShapeFactoryWorkProduct, fetchShapeFactoryWorkProducts, finishShapeFactoryEdit, claimShapeFactoryFromQueue, movePendingQueue, promoteShapeFactoryTemplate, remediateShapeFactoryJob, replayShapeFactory, swapShapeFactoryFamily, unqueueShapeFactory, updatePendingShapeFactoryTrim, updateShapeFactoryOwnedLoras, updateShapeFactoryOwnedParams, updateShapeFactoryOwnedPrompt } from "./api";
 import {
   groupWorkProductsByNavSection,
   workProductListBucket,
@@ -74,7 +74,7 @@ import {
 } from "./workProductMediaFocus";
 import { prefetchAssetRatings } from "./assetRatingsCache";
 import { loadClipsForMedia, rememberFamiliesFromWorkProducts } from "./shapeFactorySessionCache";
-import { familySwapTargets, isDefaultPromptVariant, isStillMediaPath, jobPromptVariantDisplayName, jobPromptVariantName, jobPromptVariantSlug, promptTextIsOverridden, promptVariantName, promptVariantSlug } from "./submitFamily";
+import { distinctiveFamilyLabels, familySlugIsQuarantined, familySwapTargets, isDefaultPromptVariant, isStillMediaPath, jobPromptVariantDisplayName, jobPromptVariantName, jobPromptVariantSlug, promptTextIsOverridden, promptVariantName, promptVariantSlug } from "./submitFamily";
 import { recencyMs, recencyStamp } from "./workProductRecency";
 import { failurePrimaryLabel, workProductFailure, workProductFlowEvents } from "./workProductFailure";
 import { queryKeys } from "./queryKeys";
@@ -508,9 +508,8 @@ function canUnqueueWorkProduct(item: WorkProductItem): boolean {
 /**
  * Queued / pending jobs can be retargeted: replay as another family, then retire the old one.
  *
- * The Jobs-list bulk Swap control is hidden pending a better UX; per-job Swap
- * (re-run with another family) still uses this. Review the surface and maybe
- * the replay-then-retire mechanics — not whether retargeting is useful.
+ * Swap replaces the waiting job. Re-run always mints a new job and keeps this one.
+ * Both stay available when a family change makes Swap legal.
  */
 function canSwapFamilyWorkProduct(item: WorkProductItem): boolean {
   if (!String(item.job_key || "").trim()) return false;
@@ -859,6 +858,51 @@ function workbenchSourceBinding(item: WorkProductItem): WorkProductBinding | nul
 function workbenchJobAppetiteRelpath(item: WorkProductItem): string | null {
   const out = String(item.output_relpath || "").trim();
   return out || null;
+}
+
+function workProductKnownSeed(item: WorkProductItem): number | null {
+  const fromItem = item.noise_seed;
+  if (fromItem != null && Number.isFinite(Number(fromItem))) return Math.trunc(Number(fromItem));
+  const fromParams = item.params_profile?.current?.seed;
+  if (fromParams != null && Number.isFinite(Number(fromParams))) return Math.trunc(Number(fromParams));
+  return null;
+}
+
+function parseNoiseSeed(raw: string): number | null {
+  const t = String(raw || "").trim();
+  if (!/^-?\d+$/.test(t)) return null;
+  const n = Number(t);
+  if (!Number.isFinite(n) || !Number.isInteger(n)) return null;
+  return n;
+}
+
+function drawRandomNoiseSeed(): number {
+  return Math.floor(Math.random() * 0x7fffffff);
+}
+
+function mergeReplaySeedOverride(
+  overrides: ShapeFactoryMapQueueOverrides | undefined,
+  seed: number,
+): ShapeFactoryMapQueueOverrides {
+  return {
+    ...overrides,
+    parameters: {
+      ...(overrides?.parameters || {}),
+      seed,
+      noise_seed: seed,
+    },
+  };
+}
+
+type RerunSeedMode = "same" | "new" | "manual";
+
+/** True when this job’s Use is a video (VHS trim applies). Stills have no Trim. */
+function workbenchSourceIsVideo(item: WorkProductItem): boolean {
+  const videoRel = String(item.bindings?.source_video?.relpath || "").trim();
+  if (videoRel) return !isStillMediaPath(videoRel);
+  const rel = workbenchSourceMediaRelpath(item) || "";
+  if (!rel || isStillMediaPath(rel)) return false;
+  return /\.(mp4|webm|mov|mkv)(\?|$)/i.test(rel);
 }
 
 /** Relpath for advancing / submitting from this job's input (not its output). */
@@ -3754,22 +3798,55 @@ function WorkProductQuickQueue({
     () => familySwapTargets(families || [], currentFamily),
     [families, currentFamily],
   );
+  const familyLabels = useMemo(() => {
+    const slugs = [currentFamily, ...swapTargets.map((f) => f.slug)];
+    return distinctiveFamilyLabels(slugs);
+  }, [currentFamily, swapTargets]);
   const [rerunFamily, setRerunFamily] = useState(currentFamily);
   const [rerunTrimMode, setRerunTrimMode] = useState<"job" | "edited">(() =>
     sourceTrim.dirty || sourceTrim.clampedDefault ? "edited" : "job",
   );
-  const [rerunSeedMode, setRerunSeedMode] = useState<"same" | "new">("new");
+  const [rerunSeedMode, setRerunSeedMode] = useState<RerunSeedMode>("new");
+  const [rerunSeedDraft, setRerunSeedDraft] = useState("");
+  const knownSeed = workProductKnownSeed(item);
+  const manualSeed = parseNoiseSeed(rerunSeedDraft);
+  const seedReady = rerunSeedMode !== "manual" || manualSeed != null;
+  const rerunFieldId = useId();
+  const quarantineQuery = useQuery({
+    queryKey: queryKeys.shapeFactory.quarantine({ status: "quarantined" }),
+    queryFn: () => fetchShapeFactoryQuarantine({ status: "quarantined" }),
+    staleTime: 30_000,
+  });
+  const quarantineEntries = quarantineQuery.data?.entries || [];
+  const trimApplies = workbenchSourceIsVideo(item);
+  const trimEdited = Boolean(sourceTrim.dirty || sourceTrim.clampedDefault);
+  const effectiveTrimMode = trimApplies && trimEdited ? rerunTrimMode : "job";
+  const familyIsQuarantined = (slug: string) =>
+    Boolean(families?.find((f) => f.slug === slug)?.quarantined) ||
+    familySlugIsQuarantined(slug, quarantineEntries);
 
   useEffect(() => {
     setRerunFamily(currentFamily);
+    setRerunSeedMode("new");
+    setRerunSeedDraft("");
   }, [item.job_key, currentFamily]);
 
   useEffect(() => {
+    if (!trimApplies) {
+      setRerunTrimMode("job");
+      return;
+    }
     if (sourceTrim.dirty || sourceTrim.clampedDefault) setRerunTrimMode("edited");
-  }, [sourceTrim.dirty, sourceTrim.clampedDefault]);
+    else setRerunTrimMode("job");
+  }, [item.job_key, trimApplies, sourceTrim.dirty, sourceTrim.clampedDefault]);
+
+  useEffect(() => {
+    if (!rerunFamily || rerunFamily === currentFamily) return;
+    if (familyIsQuarantined(rerunFamily)) setRerunFamily(currentFamily);
+  }, [rerunFamily, currentFamily, quarantineEntries, families]);
 
   const familyChanged = Boolean(rerunFamily && currentFamily && rerunFamily !== currentFamily);
-  const swapInstead = familyChanged && canSwapFamilyWorkProduct(item);
+  const canSwapQueued = familyChanged && canSwapFamilyWorkProduct(item);
 
   const mutationsBusy =
     unqueueMutation.isPending ||
@@ -4006,13 +4083,16 @@ function WorkProductQuickQueue({
     });
   };
 
-  const rerun = async (when: SubmitWhen, opts?: { clearError?: boolean }) => {
+  const rerun = async (when: SubmitWhen, opts?: { clearError?: boolean; replaceQueued?: boolean }) => {
     if (!jobKey || isBusy) return;
     const targetFamily = String(rerunFamily || currentFamily || "").trim();
-    if (swapInstead) {
+    const replaceQueued = Boolean(opts?.replaceQueued) && canSwapQueued;
+    if (replaceQueued) {
       const ok = window.confirm(
         `Swap this ${workProductStatusKey(item)} job to ${targetFamily}?\n\n` +
-          `A new ${targetFamily} job is queued (trim ${rerunTrimMode} · seed ${rerunSeedMode}). ` +
+          `A new ${targetFamily} job is queued (trim ${effectiveTrimMode} · seed ${
+            rerunSeedMode === "manual" && manualSeed != null ? manualSeed : rerunSeedMode
+          }). ` +
           `The current ${currentFamily || "family"} job is unqueued and removed so it cannot start.`,
       );
       if (!ok) return;
@@ -4022,7 +4102,7 @@ function WorkProductQuickQueue({
     try {
       let overrides: ShapeFactoryMapQueueOverrides | undefined;
       let warning: string | null = null;
-      if (rerunTrimMode === "edited") {
+      if (effectiveTrimMode === "edited") {
         const fromTrim = trimOverridesFromState(
           { ...sourceTrim, dirty: true },
           null,
@@ -4031,7 +4111,10 @@ function WorkProductQuickQueue({
         overrides = fromTrim.overrides;
         warning = fromTrim.warning;
       }
-      if (swapInstead) {
+      if (rerunSeedMode === "manual" && manualSeed != null) {
+        overrides = mergeReplaySeedOverride(overrides, manualSeed);
+      }
+      if (replaceQueued) {
         const dest = destinationForWhen(when);
         const res = await swapMutation.mutateAsync({
           job_key: jobKey,
@@ -4040,7 +4123,7 @@ function WorkProductQuickQueue({
           front: dest.front,
           destination: dest.destination,
           pending_position: dest.pending_position,
-          seed_mode: rerunSeedMode,
+          seed_mode: rerunSeedMode === "manual" ? undefined : rerunSeedMode,
           overrides,
         });
         const row = (res.items || []).find((it) => it.ok) || (res.items || [])[0];
@@ -4056,7 +4139,7 @@ function WorkProductQuickQueue({
               : nextKey
                 ? `Swapped ${when}→${targetFamily} · ${nextKey}${pid ? ` · ${pid}` : ""}`
                 : `Swapped ${when}→${targetFamily}`,
-            `trim ${rerunTrimMode}`,
+            `trim ${effectiveTrimMode}`,
             warning,
           ]
             .filter(Boolean)
@@ -4076,7 +4159,7 @@ function WorkProductQuickQueue({
         front: dest.front,
         destination: dest.destination,
         pending_position: dest.pending_position,
-        seed_mode: rerunSeedMode,
+        seed_mode: rerunSeedMode === "manual" ? undefined : rerunSeedMode,
         overrides,
       });
       const nextKey = String(res.job_key || "").trim();
@@ -4085,11 +4168,13 @@ function WorkProductQuickQueue({
       const seedLabel =
         res.seed_mode === "new"
           ? `seed new${res.noise_seed != null ? ` ${res.noise_seed}` : ""}`
-          : res.seed_mode === "same" || res.seed_mode === "explicit"
-            ? `seed same${res.noise_seed != null ? ` ${res.noise_seed}` : ""}`
-            : res.seed_mode === "same_missing"
-              ? "seed same (missing — template)"
-              : null;
+          : res.seed_mode === "explicit"
+            ? `seed set${res.noise_seed != null ? ` ${res.noise_seed}` : ""}`
+            : res.seed_mode === "same"
+              ? `seed same${res.noise_seed != null ? ` ${res.noise_seed}` : ""}`
+              : res.seed_mode === "same_missing"
+                ? "seed same (missing — template)"
+                : null;
       const familyLabel = familyChanged ? `as ${targetFamily}` : null;
       let cleared = false;
       if (opts?.clearError && (nextKey || pid)) {
@@ -4108,7 +4193,7 @@ function WorkProductQuickQueue({
               ? `Re-run ${when} queued · ${pid}`
               : `Re-run ${when} queued`,
           familyLabel,
-          `trim ${rerunTrimMode}`,
+          `trim ${effectiveTrimMode}`,
           seedLabel,
           clampMsg,
           opts?.clearError ? (cleared ? "cleared error" : "successor created · error still listed") : null,
@@ -4158,6 +4243,84 @@ function WorkProductQuickQueue({
     canUnqueue ||
     canClaim ||
     (!failure && (canArchive || canDelete));
+
+  const destDisabled = !canRerun || !seedReady || (familyChanged && !rerunFamily);
+  const seedChoiceLabel =
+    rerunSeedMode === "manual" && manualSeed != null ? String(manualSeed) : rerunSeedMode;
+  const familyAs = familyChanged ? ` as ${rerunFamily}` : "";
+  const renderDests = (kind: "rerun" | "swap") => {
+    const replace = kind === "swap";
+    return (
+      <div className="work-product-quick-queue__dests">
+        <div className="work-product-quick-queue__dest" role="group" aria-label="Factory pending">
+          <span className="work-product-quick-queue__dest-label" title="Factory pending FIFO">
+            Pending
+          </span>
+          <div className="work-product-quick-queue__dest-btns">
+            <button
+              type="button"
+              className="drt-btn work-product-quick-queue__queue-next"
+              disabled={destDisabled}
+              title={
+                replace
+                  ? `Swap to ${rerunFamily} at the front of the factory pending FIFO · retire this job`
+                  : `New job${familyAs} at the front of the factory pending FIFO`
+              }
+              onClick={() => void rerun("queue_next", { replaceQueued: replace })}
+            >
+              Next
+            </button>
+            <button
+              type="button"
+              className="drt-btn work-product-quick-queue__queue"
+              disabled={destDisabled}
+              title={
+                replace
+                  ? `Swap to ${rerunFamily} onto the end of the factory pending FIFO · retire this job`
+                  : `New job${familyAs} onto the end of the factory pending FIFO`
+              }
+              onClick={() => void rerun("queue", { replaceQueued: replace })}
+            >
+              Later
+            </button>
+          </div>
+        </div>
+        <div className="work-product-quick-queue__dest" role="group" aria-label="Comfy">
+          <span className="work-product-quick-queue__dest-label" title="Skip pending — submit directly to Comfy">
+            Comfy
+          </span>
+          <div className="work-product-quick-queue__dest-btns">
+            <button
+              type="button"
+              className="drt-btn work-product-quick-queue__rerun"
+              disabled={destDisabled}
+              title={
+                replace
+                  ? `Swap to ${rerunFamily} · trim ${effectiveTrimMode} · seed ${seedChoiceLabel} · front of Comfy · retire this job`
+                  : `New job${familyAs} · trim ${effectiveTrimMode} · seed ${seedChoiceLabel} · front of Comfy`
+              }
+              onClick={() => void rerun("now", { replaceQueued: replace })}
+            >
+              Now
+            </button>
+            <button
+              type="button"
+              className="drt-btn work-product-quick-queue__rerun"
+              disabled={destDisabled}
+              title={
+                replace
+                  ? `Swap to ${rerunFamily} · trim ${effectiveTrimMode} · seed ${seedChoiceLabel} · normal priority · retire this job`
+                  : `New job${familyAs} · trim ${effectiveTrimMode} · seed ${seedChoiceLabel} · normal priority`
+              }
+              onClick={() => void rerun("later", { replaceQueued: replace })}
+            >
+              Later
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="work-product-quick-queue work-product-quick-queue--actions" role="group" aria-label="Job actions">
@@ -4242,7 +4405,7 @@ function WorkProductQuickQueue({
           {relpath ? (
             <button
               type="button"
-              className="drt-btn work-product-quick-queue__now"
+              className="drt-btn work-product-quick-queue__compose"
               title="Open Submit with Extend / Vary / Derive for this output"
               onClick={() => openSubmit(submitIntent)}
             >
@@ -4254,7 +4417,7 @@ function WorkProductQuickQueue({
           {sourceSubmitIntent ? (
             <button
               type="button"
-              className="drt-btn work-product-quick-queue__now"
+              className="drt-btn work-product-quick-queue__compose"
               title={
                 isStillMediaPath(workbenchSourceMediaRelpath(item) || "")
                   ? "Open Submit with this job's input still (I2V)"
@@ -4275,71 +4438,95 @@ function WorkProductQuickQueue({
       </div>
 
       {!failure ? (
-        <div className="work-product-quick-queue__group" role="group" aria-label={swapInstead ? "Swap" : "Re-run"}>
+        <div className="work-product-quick-queue__group" role="group" aria-label="Re-run">
           <span
             className="work-product-quick-queue__label"
-            title={
-              swapInstead
-                ? "Retarget this waiting job to another family, then retire the old one"
-                : "New job from this recipe — trim, seed, and family are independent"
-            }
+            title="New job from this recipe — trim, seed, and family are independent"
           >
-            {swapInstead ? "Swap" : "Re-run"}
+            Re-run
           </span>
-          <div className="work-product-quick-queue__body">
-          <div className="work-product-quick-queue__row">
+          <div className="work-product-quick-queue__body work-product-quick-queue__body--rerun">
+          <div className="work-product-rerun-table" role="group" aria-label="Re-run settings">
             {currentFamily || swapTargets.length ? (
-              <label className="work-product-rerun-opts work-product-rerun-opts--family">
-                <span className="work-product-rerun-opts__label">Family</span>
+              <>
+                <span className="work-product-rerun-table__label" id={`${rerunFieldId}-family`}>
+                  Family
+                </span>
                 <select
-                  className="work-product-family-select"
+                  className={
+                    "work-product-family-select" +
+                    (familyIsQuarantined(rerunFamily || currentFamily) ? " work-product-family-select--quarantined" : "")
+                  }
                   value={rerunFamily || currentFamily}
                   disabled={isBusy || (!swapTargets.length && !currentFamily)}
-                  aria-label="Family for re-run or swap"
+                  aria-labelledby={`${rerunFieldId}-family`}
                   title={
-                    swapInstead
-                      ? `Swap queued ${currentFamily} → ${rerunFamily}`
-                      : familyChanged
-                        ? `Re-run as ${rerunFamily} (keeps this job)`
-                        : "Same family, or pick a compatible one"
+                    familyIsQuarantined(rerunFamily || currentFamily)
+                      ? `${rerunFamily || currentFamily} — this family’s workflow is quarantined`
+                      : familyChanged && canSwapQueued
+                        ? `Re-run as ${rerunFamily} keeps this job · Swap replaces it`
+                        : familyChanged
+                          ? `Re-run as ${rerunFamily} (keeps this job)`
+                          : rerunFamily || currentFamily || "Same family, or pick a compatible one"
                   }
-                  onChange={(e) => setRerunFamily(e.target.value)}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    if (next !== currentFamily && familyIsQuarantined(next)) return;
+                    setRerunFamily(next);
+                  }}
                 >
-                  {currentFamily ? <option value={currentFamily}>{currentFamily}</option> : null}
-                  {swapTargets.map((f) => (
-                    <option key={f.slug} value={f.slug}>
-                      {f.slug}
+                  {currentFamily ? (
+                    <option value={currentFamily} title={currentFamily}>
+                      {familyLabels.get(currentFamily) || currentFamily}
                     </option>
-                  ))}
+                  ) : null}
+                  {swapTargets.map((f) => {
+                    const blocked = familyIsQuarantined(f.slug);
+                    return (
+                      <option key={f.slug} value={f.slug} disabled={blocked} title={f.slug}>
+                        {familyLabels.get(f.slug) || f.slug}
+                      </option>
+                    );
+                  })}
                 </select>
-              </label>
+              </>
             ) : null}
-            <div className="work-product-rerun-opts" role="group" aria-label="Re-run trim">
-              <span className="work-product-rerun-opts__label">Trim</span>
-              <div className="segmented work-product-rerun-opts__seg">
-                <button
-                  type="button"
-                  className={rerunTrimMode === "job" ? "seg-btn active" : "seg-btn"}
-                  disabled={isBusy}
-                  title="Keep the Use window baked into this job"
-                  onClick={() => setRerunTrimMode("job")}
-                >
-                  As job
-                </button>
-                <button
-                  type="button"
-                  className={rerunTrimMode === "edited" ? "seg-btn active" : "seg-btn"}
-                  disabled={isBusy}
-                  title="Use the source marks currently on this card"
-                  onClick={() => setRerunTrimMode("edited")}
-                >
-                  As edited
-                </button>
-              </div>
-            </div>
-            <div className="work-product-rerun-opts" role="group" aria-label="Re-run seed">
-              <span className="work-product-rerun-opts__label">Seed</span>
-              <div className="segmented work-product-rerun-opts__seg">
+            {trimApplies ? (
+              <>
+                <span className="work-product-rerun-table__label" id={`${rerunFieldId}-trim`}>
+                  Trim
+                </span>
+                <div className="segmented work-product-rerun-opts__seg" role="group" aria-labelledby={`${rerunFieldId}-trim`}>
+                  <button
+                    type="button"
+                    className={effectiveTrimMode === "job" ? "seg-btn active" : "seg-btn"}
+                    disabled={isBusy}
+                    title="Keep the Use window baked into this job"
+                    onClick={() => setRerunTrimMode("job")}
+                  >
+                    As job
+                  </button>
+                  <button
+                    type="button"
+                    className={effectiveTrimMode === "edited" ? "seg-btn active" : "seg-btn"}
+                    disabled={isBusy || !trimEdited}
+                    title={
+                      trimEdited
+                        ? "Use the source marks currently on this card"
+                        : "Edit the source trim on this card to enable As edited"
+                    }
+                    onClick={() => setRerunTrimMode("edited")}
+                  >
+                    As edited
+                  </button>
+                </div>
+              </>
+            ) : null}
+            <span className="work-product-rerun-table__label" id={`${rerunFieldId}-seed`}>
+              Seed
+            </span>
+            <div className="work-product-rerun-seed">
+              <div className="segmented work-product-rerun-opts__seg" role="group" aria-labelledby={`${rerunFieldId}-seed`}>
                 <button
                   type="button"
                   className={rerunSeedMode === "same" ? "seg-btn active" : "seg-btn"}
@@ -4353,70 +4540,111 @@ function WorkProductQuickQueue({
                   type="button"
                   className={rerunSeedMode === "new" ? "seg-btn active" : "seg-btn"}
                   disabled={isBusy}
-                  title="Draw a new noise seed; keep other bindings"
+                  title="Draw a new noise seed at submit time — the value is not known yet"
                   onClick={() => setRerunSeedMode("new")}
                 >
                   New
                 </button>
+                <button
+                  type="button"
+                  className={rerunSeedMode === "manual" ? "seg-btn active" : "seg-btn"}
+                  disabled={isBusy}
+                  title="Type a seed, or use random / increment / decrement"
+                  onClick={() => {
+                    setRerunSeedMode("manual");
+                    setRerunSeedDraft((prev) => {
+                      if (parseNoiseSeed(prev) != null) return prev;
+                      return knownSeed != null ? String(knownSeed) : String(drawRandomNoiseSeed());
+                    });
+                  }}
+                >
+                  Set
+                </button>
               </div>
+              {rerunSeedMode === "same" && knownSeed != null ? (
+                <span className="work-product-rerun-seed__known" title="This job’s noise seed">
+                  {knownSeed}
+                </span>
+              ) : null}
+              {rerunSeedMode === "manual" ? (
+                <div className="work-product-rerun-seed__override">
+                  <input
+                    className="work-product-rerun-seed__input"
+                    type="text"
+                    inputMode="numeric"
+                    spellCheck={false}
+                    value={rerunSeedDraft}
+                    disabled={isBusy}
+                    aria-label="Override noise seed"
+                    title="Exact noise seed for the new job"
+                    onChange={(e) => setRerunSeedDraft(e.target.value)}
+                  />
+                  <div className="work-product-rerun-seed__affordance" role="group" aria-label="Seed override">
+                    <button
+                      type="button"
+                      className="seg-btn"
+                      disabled={isBusy}
+                      title="Draw a random seed into this field"
+                      onClick={() => setRerunSeedDraft(String(drawRandomNoiseSeed()))}
+                    >
+                      random
+                    </button>
+                    <button
+                      type="button"
+                      className="seg-btn"
+                      disabled={isBusy || (manualSeed == null && knownSeed == null)}
+                      title="Add 1 to the seed"
+                      onClick={() => {
+                        const base = manualSeed ?? knownSeed;
+                        if (base == null) return;
+                        setRerunSeedDraft(String(base + 1));
+                      }}
+                    >
+                      increment
+                    </button>
+                    <button
+                      type="button"
+                      className="seg-btn"
+                      disabled={isBusy || (manualSeed == null && knownSeed == null)}
+                      title="Subtract 1 from the seed"
+                      onClick={() => {
+                        const base = manualSeed ?? knownSeed;
+                        if (base == null) return;
+                        setRerunSeedDraft(String(base - 1));
+                      }}
+                    >
+                      decrement
+                    </button>
+                  </div>
+                </div>
+              ) : null}
             </div>
           </div>
-          <div className="work-product-quick-queue__row">
-            <span className="work-product-quick-queue__sublabel" title="Factory pending FIFO">
-              Pending
-            </span>
-            <button
-              type="button"
-              className="drt-btn work-product-quick-queue__queue"
-              disabled={!canRerun || (familyChanged && !rerunFamily)}
-              title={
-                swapInstead
-                  ? `Swap to ${rerunFamily} onto the factory pending FIFO · retire this job`
-                  : `New job${familyChanged ? ` as ${rerunFamily}` : ""} onto the factory pending FIFO`
-              }
-              onClick={() => void rerun("queue")}
-            >
-              {swapInstead ? "Swap queue" : "Queue"}
-            </button>
-            <button
-              type="button"
-              className="drt-btn work-product-quick-queue__queue-next"
-              disabled={!canRerun || (familyChanged && !rerunFamily)}
-              title="Insert at the front of the factory pending FIFO"
-              onClick={() => void rerun("queue_next")}
-            >
-              Next
-            </button>
-            <span className="work-product-quick-queue__sep" aria-hidden="true" />
-            <span className="work-product-quick-queue__sublabel" title="Skip pending — submit directly to Comfy">
-              Comfy
-            </span>
-            <button
-              type="button"
-              className="drt-btn work-product-quick-queue__rerun"
-              disabled={!canRerun || (familyChanged && !rerunFamily)}
-              title={
-                swapInstead
-                  ? `Swap to ${rerunFamily} · trim ${rerunTrimMode} · seed ${rerunSeedMode} · front of Comfy · retire this job`
-                  : `New job${familyChanged ? ` as ${rerunFamily}` : ""} · trim ${rerunTrimMode} · seed ${rerunSeedMode} · front of Comfy`
-              }
-              onClick={() => void rerun("now")}
-            >
-              {swapInstead ? "Swap now" : "Now"}
-            </button>
-            <button
-              type="button"
-              className="drt-btn work-product-quick-queue__rerun"
-              disabled={!canRerun || (familyChanged && !rerunFamily)}
-              title={
-                swapInstead
-                  ? `Swap to ${rerunFamily} · trim ${rerunTrimMode} · seed ${rerunSeedMode} · normal priority · retire this job`
-                  : `New job${familyChanged ? ` as ${rerunFamily}` : ""} · trim ${rerunTrimMode} · seed ${rerunSeedMode} · normal priority`
-              }
-              onClick={() => void rerun("later")}
-            >
-              {swapInstead ? "Swap later" : "Later"}
-            </button>
+          <div className="work-product-quick-queue__outputs" role="group" aria-label="Output decisions">
+            {canSwapQueued ? (
+              <div className="work-product-quick-queue__intents">
+                <div className="work-product-quick-queue__intent" role="group" aria-label="Re-run destinations">
+                  <span
+                    className="work-product-quick-queue__sublabel"
+                    title="Mint a new job from this recipe. This queued job stays put."
+                  >
+                    Re-run
+                  </span>
+                  {renderDests("rerun")}
+                </div>
+                <div className="work-product-quick-queue__intent" role="group" aria-label="Swap destinations">
+                  <span
+                    className="work-product-quick-queue__sublabel"
+                    title="Replace this queued job with the new family. The old job is unqueued and removed."
+                  >
+                    Swap
+                  </span>
+                  {renderDests("swap")}
+                </div>
+              </div>
+            ) : (
+              renderDests("rerun")
+            )}
           </div>
           </div>
         </div>
