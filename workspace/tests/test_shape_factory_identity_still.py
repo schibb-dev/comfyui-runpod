@@ -173,6 +173,41 @@ class IdentityStillCandidatesTests(unittest.TestCase):
             self.assertTrue(all(c.get("evidence") != "rated_opener" for c in payload["candidates"]))
             self.assertEqual(payload["candidates"][0]["evidence"], "lineage_thumb")
 
+    def test_pick_default_identity_still_uses_companion_png(self) -> None:
+        from shape_factory_identity_still import pick_default_identity_still
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            ws = root / "workspace"
+            out = root / "output"
+            data = root / "data"
+            og = out / "og"
+            for p in (ws / "input", og, data / "shapes"):
+                p.mkdir(parents=True)
+            clip = og / "clip.mp4"
+            thumb = og / "clip.png"
+            clip.write_bytes(b"vid")
+            thumb.write_bytes(b"thumb")
+            shape = {
+                "requires": [
+                    {"slot": "identity_anchor", "media": "image", "binding": {"type": "load_image"}},
+                ]
+            }
+            with mock.patch("shape_factory_identity_still._infer_still_from_media", return_value=None):
+                picked = pick_default_identity_still(
+                    relpath="og/clip.mp4",
+                    family_slug="FB9_GEX2_identity_anchor",
+                    workspace_root=ws,
+                    output_root=out,
+                    data_root=data,
+                    media_abs=clip,
+                    shape=shape,
+                    allow_mint=False,
+                )
+            self.assertIsNotNone(picked)
+            self.assertEqual(Path(picked["path"]).resolve(), thumb.resolve())
+            self.assertEqual(picked["evidence"], "lineage_thumb")
+
     def test_mint_targets_prefer_earliest_ancestor(self) -> None:
         from shape_factory_identity_still import list_identity_still_candidates
 

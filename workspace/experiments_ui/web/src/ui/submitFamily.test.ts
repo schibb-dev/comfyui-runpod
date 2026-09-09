@@ -3,8 +3,10 @@ import {
   familySlugIsQuarantined,
   jobPromptVariantDisplayName,
   jobPromptVariantName,
+  pickRerunPromptPreset,
   promptTextIsOverridden,
   distinctiveFamilyLabels,
+  rerunPromptPresetDiffers,
 } from "./submitFamily";
 
 describe("familySlugIsQuarantined", () => {
@@ -114,5 +116,40 @@ describe("jobPromptVariantDisplayName", () => {
     expect(jobPromptVariantName(item)).toBe("Default");
     expect(promptTextIsOverridden(item.prompt_profile)).toBe(true);
     expect(jobPromptVariantDisplayName(item)).toBe("Default · edited");
+  });
+});
+
+describe("pickRerunPromptPreset", () => {
+  const profiles = [
+    { slug: "default", name: "Default", path: "/pools/FB9_GEX/prompts/catalog-default.json", basename: "catalog-default.json" },
+    {
+      slug: "faceblast-extend",
+      name: "FaceBlast extend",
+      path: "/pools/FB9_GEX/prompts/catalog-faceblast-extend.json",
+      basename: "catalog-faceblast-extend.json",
+    },
+  ];
+
+  it("matches the job variant slug to a catalog preset", () => {
+    expect(pickRerunPromptPreset(profiles, { slug: "faceblast-extend", snowflake: true } as never)).toBe(
+      "/pools/FB9_GEX/prompts/catalog-faceblast-extend.json",
+    );
+    expect(pickRerunPromptPreset(profiles, "default")).toBe("/pools/FB9_GEX/prompts/catalog-default.json");
+  });
+
+  it("falls back to catalog-default, never a scratch path", () => {
+    expect(pickRerunPromptPreset(profiles, { slug: "unknown", path: "/scratch/draft.json" })).toBe(
+      "/pools/FB9_GEX/prompts/catalog-default.json",
+    );
+    expect(pickRerunPromptPreset(profiles)).toBe("/pools/FB9_GEX/prompts/catalog-default.json");
+  });
+
+  it("only treats a different catalog path as a change", () => {
+    expect(
+      rerunPromptPresetDiffers("/pools/FB9_GEX/prompts/catalog-default.json", profiles, { slug: "default" }),
+    ).toBe(false);
+    expect(
+      rerunPromptPresetDiffers("/pools/FB9_GEX/prompts/catalog-faceblast-extend.json", profiles, { slug: "default" }),
+    ).toBe(true);
   });
 });

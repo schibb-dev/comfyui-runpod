@@ -1663,6 +1663,9 @@ export type ShapeFactoryReplayRequest = {
   pending_position?: "append" | "front";
   /** Hold job seed (`same`) or draw a new one (`new`). */
   seed_mode?: "same" | "new";
+  /** Catalog prompt preset path (family pool). */
+  prompt_profile?: string;
+  bindings?: Record<string, string>;
   overrides?: ShapeFactoryMapQueueOverrides;
 };
 
@@ -1693,6 +1696,8 @@ export type ShapeFactorySwapFamilyRequest = {
   destination?: "pending" | "comfy";
   pending_position?: "append" | "front";
   seed_mode?: "same" | "new";
+  prompt_profile?: string;
+  bindings?: Record<string, string>;
   overrides?: ShapeFactoryMapQueueOverrides;
 };
 

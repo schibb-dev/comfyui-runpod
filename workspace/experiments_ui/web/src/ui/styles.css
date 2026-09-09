@@ -16320,6 +16320,18 @@ button.home-backlog-linkish {
   line-height: 1.2;
 }
 
+/* Appetite-style inline row (label + controls), not a stacked section header. */
+.work-product-quick-queue__group--bar {
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.work-product-quick-queue__group--bar > .work-product-quick-queue__label {
+  font-weight: 400;
+}
+
 .work-product-quick-queue__body {
   display: flex;
   flex-direction: column;
@@ -16333,6 +16345,15 @@ button.home-backlog-linkish {
   align-items: start;
   column-gap: 18px;
   row-gap: 10px;
+}
+
+.work-product-quick-queue__body--rerun .work-product-rerun-card {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.work-product-rerun-card .work-product-rerun-table__label {
+  padding-top: 3px;
 }
 
 .work-product-quick-queue__body--rerun .work-product-rerun-table {
@@ -16367,7 +16388,8 @@ button.home-backlog-linkish {
   }
 }
 
-.work-product-quick-queue--actions > .work-product-quick-queue__group + .work-product-quick-queue__group {
+.work-product-quick-queue--actions > .work-product-quick-queue__group--stack,
+.work-product-quick-queue--actions > .work-product-quick-queue__group--stack + .work-product-quick-queue__group {
   padding-top: 6px;
   border-top: 1px solid var(--border);
 }
@@ -16722,6 +16744,10 @@ button.home-backlog-linkish {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.work-product-rerun-table .work-product-prompt-select {
+  max-width: 10.5rem;
 }
 
 .work-product-family-select--quarantined {

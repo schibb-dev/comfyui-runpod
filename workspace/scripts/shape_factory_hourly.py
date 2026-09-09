@@ -929,55 +929,23 @@ def prefer_identity_anchor_on_extend(
         rel = "og/" + rel.split("/og/", 1)[1]
 
     try:
-        from shape_factory_identity_still import (
-            list_identity_still_candidates,
-            mint_identity_still_from_video,
-        )
+        from shape_factory_identity_still import pick_default_identity_still
     except ImportError:
         return plan
 
-    try:
-        cands = list_identity_still_candidates(
-            relpath=rel,
-            family_slug=target_fam,
-            job_key="",
-            workspace_root=workspace_root,
-            output_root=output_root,
-            data_root=data_root,
-            media_abs=Path(source_video) if Path(source_video).is_file() else None,
-            include_rated=False,
-        )
-    except Exception:
-        return plan
-
-    still_path = ""
-    evidence = ""
-    rows = cands.get("candidates") if isinstance(cands, dict) else None
-    if isinstance(rows, list) and rows:
-        rec_id = cands.get("recommended_id")
-        chosen = next((r for r in rows if r.get("id") == rec_id), rows[0])
-        still_path = str(chosen.get("path") or "").strip()
-        evidence = str(chosen.get("evidence") or "candidate")
-
-    if not still_path and allow_mint:
-        targets = cands.get("mint_targets") if isinstance(cands, dict) else None
-        if isinstance(targets, list) and targets:
-            t0 = targets[0] if isinstance(targets[0], dict) else {}
-            try:
-                minted = mint_identity_still_from_video(
-                    video_path=str(t0.get("video_path") or ""),
-                    video_relpath=str(t0.get("video_relpath") or ""),
-                    at=str(t0.get("at") or "start"),
-                    workspace_root=workspace_root,
-                    output_root=output_root,
-                    data_root=data_root,
-                )
-                cand = minted.get("candidate") if isinstance(minted, dict) else None
-                if isinstance(cand, dict):
-                    still_path = str(cand.get("path") or "").strip()
-                    evidence = str(cand.get("evidence") or "first_frame")
-            except Exception:
-                still_path = ""
+    picked = pick_default_identity_still(
+        relpath=rel,
+        family_slug=target_fam,
+        job_key="",
+        workspace_root=workspace_root,
+        output_root=output_root,
+        data_root=data_root,
+        media_abs=Path(source_video) if Path(source_video).is_file() else None,
+        allow_mint=allow_mint,
+        include_rated=False,
+    )
+    still_path = str((picked or {}).get("path") or "").strip()
+    evidence = str((picked or {}).get("evidence") or "")
 
     if not still_path or not Path(still_path).is_file():
         out = dict(plan)

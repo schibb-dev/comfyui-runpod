@@ -74,7 +74,7 @@ import {
 } from "./workProductMediaFocus";
 import { prefetchAssetRatings } from "./assetRatingsCache";
 import { loadClipsForMedia, rememberFamiliesFromWorkProducts } from "./shapeFactorySessionCache";
-import { distinctiveFamilyLabels, familySlugIsQuarantined, familySwapTargets, isDefaultPromptVariant, isStillMediaPath, jobPromptVariantDisplayName, jobPromptVariantName, jobPromptVariantSlug, promptTextIsOverridden, promptVariantName, promptVariantSlug } from "./submitFamily";
+import { distinctiveFamilyLabels, familyPromptProfiles, familySlugIsQuarantined, familySwapTargets, isDefaultPromptVariant, isStillMediaPath, jobPromptVariantDisplayName, jobPromptVariantName, jobPromptVariantSlug, pickRerunPromptPreset, promptProfileOptionLabel, promptTextIsOverridden, promptVariantName, promptVariantSlug, rerunPromptPresetDiffers } from "./submitFamily";
 import { recencyMs, recencyStamp } from "./workProductRecency";
 import { failurePrimaryLabel, workProductFailure, workProductFlowEvents } from "./workProductFailure";
 import { queryKeys } from "./queryKeys";
@@ -3739,7 +3739,7 @@ function workbenchSourceSubmitIntent(
     markIn: still ? null : clip ? clip.mark_in_s : windowOk ? opts.sourceTrim.markIn : null,
     markOut: still ? null : clip ? clip.mark_out_s : windowOk ? opts.sourceTrim.markOut : null,
     clipId: still ? null : clip?.clip_id || opts.sourceClipId || null,
-    // Stills go through I2V on Submit; videos open the Advance (extend) compose.
+    // Stills go through I2V on Submit; videos open the extend compose.
     step: still ? null : opts.step || "advance.extend",
     origin: "workbench",
   });
@@ -3803,6 +3803,19 @@ function WorkProductQuickQueue({
     return distinctiveFamilyLabels(slugs);
   }, [currentFamily, swapTargets]);
   const [rerunFamily, setRerunFamily] = useState(currentFamily);
+  const jobPromptPrefer =
+    promptVariantSlug(item.prompt_profile) || jobPromptVariantSlug(item.job_key) || null;
+  const rerunPromptProfiles = useMemo(
+    () => familyPromptProfiles(families || [], rerunFamily || currentFamily),
+    [families, rerunFamily, currentFamily],
+  );
+  const jobPromptProfiles = useMemo(
+    () => familyPromptProfiles(families || [], currentFamily),
+    [families, currentFamily],
+  );
+  const [rerunPromptPath, setRerunPromptPath] = useState(() =>
+    pickRerunPromptPreset(familyPromptProfiles(families || [], currentFamily), jobPromptPrefer),
+  );
   const [rerunTrimMode, setRerunTrimMode] = useState<"job" | "edited">(() =>
     sourceTrim.dirty || sourceTrim.clampedDefault ? "edited" : "job",
   );
@@ -3831,6 +3844,12 @@ function WorkProductQuickQueue({
     setRerunSeedDraft("");
   }, [item.job_key, currentFamily]);
 
+  const promptCatalogKey = rerunPromptProfiles.map((p) => p.path).join("|");
+  useEffect(() => {
+    setRerunPromptPath(pickRerunPromptPreset(rerunPromptProfiles, jobPromptPrefer));
+    // promptCatalogKey, not the profiles array: same catalog after refetch must not wipe a pick.
+  }, [item.job_key, rerunFamily, promptCatalogKey, jobPromptPrefer]);
+
   useEffect(() => {
     if (!trimApplies) {
       setRerunTrimMode("job");
@@ -3847,6 +3866,11 @@ function WorkProductQuickQueue({
 
   const familyChanged = Boolean(rerunFamily && currentFamily && rerunFamily !== currentFamily);
   const canSwapQueued = familyChanged && canSwapFamilyWorkProduct(item);
+  const promptChanged =
+    Boolean(rerunPromptPath) &&
+    (familyChanged || rerunPromptPresetDiffers(rerunPromptPath, jobPromptProfiles, jobPromptPrefer));
+  const selectedPrompt = rerunPromptProfiles.find((p) => p.path === rerunPromptPath);
+  const selectedPromptLabel = selectedPrompt ? promptProfileOptionLabel(selectedPrompt) : "";
 
   const mutationsBusy =
     unqueueMutation.isPending ||
@@ -4092,7 +4116,7 @@ function WorkProductQuickQueue({
         `Swap this ${workProductStatusKey(item)} job to ${targetFamily}?\n\n` +
           `A new ${targetFamily} job is queued (trim ${effectiveTrimMode} · seed ${
             rerunSeedMode === "manual" && manualSeed != null ? manualSeed : rerunSeedMode
-          }). ` +
+          }${selectedPromptLabel ? ` · prompt ${selectedPromptLabel}` : ""}). ` +
           `The current ${currentFamily || "family"} job is unqueued and removed so it cannot start.`,
       );
       if (!ok) return;
@@ -4114,6 +4138,8 @@ function WorkProductQuickQueue({
       if (rerunSeedMode === "manual" && manualSeed != null) {
         overrides = mergeReplaySeedOverride(overrides, manualSeed);
       }
+      const promptBinding =
+        promptChanged && rerunPromptPath ? { prompt_profile: rerunPromptPath } : undefined;
       if (replaceQueued) {
         const dest = destinationForWhen(when);
         const res = await swapMutation.mutateAsync({
@@ -4124,6 +4150,7 @@ function WorkProductQuickQueue({
           destination: dest.destination,
           pending_position: dest.pending_position,
           seed_mode: rerunSeedMode === "manual" ? undefined : rerunSeedMode,
+          bindings: promptBinding,
           overrides,
         });
         const row = (res.items || []).find((it) => it.ok) || (res.items || [])[0];
@@ -4140,6 +4167,7 @@ function WorkProductQuickQueue({
                 ? `Swapped ${when}→${targetFamily} · ${nextKey}${pid ? ` · ${pid}` : ""}`
                 : `Swapped ${when}→${targetFamily}`,
             `trim ${effectiveTrimMode}`,
+            promptChanged && selectedPromptLabel ? `prompt ${selectedPromptLabel}` : null,
             warning,
           ]
             .filter(Boolean)
@@ -4160,6 +4188,7 @@ function WorkProductQuickQueue({
         destination: dest.destination,
         pending_position: dest.pending_position,
         seed_mode: rerunSeedMode === "manual" ? undefined : rerunSeedMode,
+        bindings: promptBinding,
         overrides,
       });
       const nextKey = String(res.job_key || "").trim();
@@ -4176,6 +4205,7 @@ function WorkProductQuickQueue({
                 ? "seed same (missing — template)"
                 : null;
       const familyLabel = familyChanged ? `as ${targetFamily}` : null;
+      const promptLabel = promptChanged && selectedPromptLabel ? `prompt ${selectedPromptLabel}` : null;
       let cleared = false;
       if (opts?.clearError && (nextKey || pid)) {
         try {
@@ -4193,6 +4223,7 @@ function WorkProductQuickQueue({
               ? `Re-run ${when} queued · ${pid}`
               : `Re-run ${when} queued`,
           familyLabel,
+          promptLabel,
           `trim ${effectiveTrimMode}`,
           seedLabel,
           clampMsg,
@@ -4248,6 +4279,7 @@ function WorkProductQuickQueue({
   const seedChoiceLabel =
     rerunSeedMode === "manual" && manualSeed != null ? String(manualSeed) : rerunSeedMode;
   const familyAs = familyChanged ? ` as ${rerunFamily}` : "";
+  const promptAs = promptChanged && selectedPromptLabel ? ` · prompt ${selectedPromptLabel}` : "";
   const renderDests = (kind: "rerun" | "swap") => {
     const replace = kind === "swap";
     return (
@@ -4263,8 +4295,8 @@ function WorkProductQuickQueue({
               disabled={destDisabled}
               title={
                 replace
-                  ? `Swap to ${rerunFamily} at the front of the factory pending FIFO · retire this job`
-                  : `New job${familyAs} at the front of the factory pending FIFO`
+                  ? `Swap to ${rerunFamily}${promptAs} at the front of the factory pending FIFO · retire this job`
+                  : `New job${familyAs}${promptAs} at the front of the factory pending FIFO`
               }
               onClick={() => void rerun("queue_next", { replaceQueued: replace })}
             >
@@ -4276,8 +4308,8 @@ function WorkProductQuickQueue({
               disabled={destDisabled}
               title={
                 replace
-                  ? `Swap to ${rerunFamily} onto the end of the factory pending FIFO · retire this job`
-                  : `New job${familyAs} onto the end of the factory pending FIFO`
+                  ? `Swap to ${rerunFamily}${promptAs} onto the end of the factory pending FIFO · retire this job`
+                  : `New job${familyAs}${promptAs} onto the end of the factory pending FIFO`
               }
               onClick={() => void rerun("queue", { replaceQueued: replace })}
             >
@@ -4296,8 +4328,8 @@ function WorkProductQuickQueue({
               disabled={destDisabled}
               title={
                 replace
-                  ? `Swap to ${rerunFamily} · trim ${effectiveTrimMode} · seed ${seedChoiceLabel} · front of Comfy · retire this job`
-                  : `New job${familyAs} · trim ${effectiveTrimMode} · seed ${seedChoiceLabel} · front of Comfy`
+                  ? `Swap to ${rerunFamily}${promptAs} · trim ${effectiveTrimMode} · seed ${seedChoiceLabel} · front of Comfy · retire this job`
+                  : `New job${familyAs}${promptAs} · trim ${effectiveTrimMode} · seed ${seedChoiceLabel} · front of Comfy`
               }
               onClick={() => void rerun("now", { replaceQueued: replace })}
             >
@@ -4309,8 +4341,8 @@ function WorkProductQuickQueue({
               disabled={destDisabled}
               title={
                 replace
-                  ? `Swap to ${rerunFamily} · trim ${effectiveTrimMode} · seed ${seedChoiceLabel} · normal priority · retire this job`
-                  : `New job${familyAs} · trim ${effectiveTrimMode} · seed ${seedChoiceLabel} · normal priority`
+                  ? `Swap to ${rerunFamily}${promptAs} · trim ${effectiveTrimMode} · seed ${seedChoiceLabel} · normal priority · retire this job`
+                  : `New job${familyAs}${promptAs} · trim ${effectiveTrimMode} · seed ${seedChoiceLabel} · normal priority`
               }
               onClick={() => void rerun("later", { replaceQueued: replace })}
             >
@@ -4396,12 +4428,11 @@ function WorkProductQuickQueue({
         </div>
       ) : null}
 
-      <div className="work-product-quick-queue__group" role="group" aria-label="Advance">
-        <span className="work-product-quick-queue__label" title="Compose the next Advance on Submit">
-          Advance
+      <div className="work-product-quick-queue__group work-product-quick-queue__group--bar" role="group" aria-label="Submit">
+        <span className="work-product-quick-queue__label" title="Open Submit with this job’s output or input">
+          Submit
         </span>
-        <div className="work-product-quick-queue__body">
-          <div className="work-product-quick-queue__row">
+        <div className="work-product-quick-queue__row">
           {relpath ? (
             <button
               type="button"
@@ -4433,20 +4464,23 @@ function WorkProductQuickQueue({
           {openBadge(extendOpen, "Extend")}
           {openBadge(varyOpen, "Vary")}
           {openBadge(deriveOpen, "Derive")}
-          </div>
         </div>
       </div>
 
       {!failure ? (
-        <div className="work-product-quick-queue__group" role="group" aria-label="Re-run">
+        <div className="work-product-quick-queue__group work-product-quick-queue__group--stack" role="group" aria-label="Re-run">
           <span
             className="work-product-quick-queue__label"
-            title="New job from this recipe — trim, seed, and family are independent"
+            title="New job from this recipe — family, prompt preset, trim, and seed are independent"
           >
             Re-run
           </span>
           <div className="work-product-quick-queue__body work-product-quick-queue__body--rerun">
-          <div className="work-product-rerun-table" role="group" aria-label="Re-run settings">
+          <div className="work-product-quick-queue__dest work-product-rerun-card" role="group" aria-label="Re-run settings">
+            <span className="work-product-quick-queue__dest-label" title="Family, prompt preset, trim, and seed">
+              Settings
+            </span>
+            <div className="work-product-rerun-table">
             {currentFamily || swapTargets.length ? (
               <>
                 <span className="work-product-rerun-table__label" id={`${rerunFieldId}-family`}>
@@ -4488,6 +4522,35 @@ function WorkProductQuickQueue({
                       </option>
                     );
                   })}
+                </select>
+              </>
+            ) : null}
+            {rerunPromptProfiles.length ? (
+              <>
+                <span className="work-product-rerun-table__label" id={`${rerunFieldId}-prompt`}>
+                  Prompt
+                </span>
+                <select
+                  className="work-product-family-select work-product-prompt-select"
+                  value={
+                    rerunPromptProfiles.some((p) => p.path === rerunPromptPath)
+                      ? rerunPromptPath
+                      : rerunPromptProfiles[0]?.path || ""
+                  }
+                  disabled={isBusy}
+                  aria-labelledby={`${rerunFieldId}-prompt`}
+                  title={
+                    selectedPrompt
+                      ? `${promptProfileOptionLabel(selectedPrompt)} — catalog preset for ${rerunFamily || currentFamily}`
+                      : "Catalog prompt preset for the selected family"
+                  }
+                  onChange={(e) => setRerunPromptPath(e.target.value)}
+                >
+                  {rerunPromptProfiles.map((p) => (
+                    <option key={p.path} value={p.path} title={p.path}>
+                      {promptProfileOptionLabel(p)}
+                    </option>
+                  ))}
                 </select>
               </>
             ) : null}
@@ -4619,6 +4682,7 @@ function WorkProductQuickQueue({
                 </div>
               ) : null}
             </div>
+            </div>
           </div>
           <div className="work-product-quick-queue__outputs" role="group" aria-label="Output decisions">
             {canSwapQueued ? (
@@ -4651,11 +4715,10 @@ function WorkProductQuickQueue({
       ) : null}
 
       {showJobControls ? (
-        <div className="work-product-quick-queue__group" role="group" aria-label="This job">
+        <div className="work-product-quick-queue__group work-product-quick-queue__group--bar" role="group" aria-label="This job">
           <span className="work-product-quick-queue__label" title="Edit or remove the current record">
             This job
           </span>
-          <div className="work-product-quick-queue__body">
           <div className="work-product-quick-queue__row">
             {canEditSubmit && editSubmitIntent ? (
               <button
@@ -4751,7 +4814,6 @@ function WorkProductQuickQueue({
                 Delete
               </button>
             ) : null}
-          </div>
           </div>
         </div>
       ) : null}

@@ -217,7 +217,7 @@ def _resolve_identity_still_for_shape(
     Fill required image slots (identity_anchor / source_still) when missing.
 
     Ladder: explicit body path → existing still bindings (cross-slot) →
-    embedded LoadImage on output/parent videos.
+    Submit/hourly pick (original LoadImage, companion video PNG, then mint).
     """
     needed = _image_source_slots(shape)
     if not needed:
@@ -267,55 +267,6 @@ def _resolve_identity_still_for_shape(
             existing_still = cand
             break
 
-    inferred: Optional[Tuple[str, str]] = None
-    if resolved_explicit is None and not existing_still:
-        for media in _collect_identity_media_candidates(
-            job=job, bindings=next_bindings, output_abs=output_abs
-        ):
-            inferred = _infer_still_from_media(
-                media,
-                workspace_root=workspace_root,
-                output_root=output_root,
-                data_root=data_root,
-            )
-            if inferred:
-                break
-        # Walk parent_output one more hop via job_output_index when available.
-        if inferred is None and output_abs:
-            try:
-                from shape_factory_job_output_index import (
-                    default_job_output_index_path,
-                    lookup_by_relpath,
-                    open_job_output_index,
-                )
-
-                og_guess = Path(output_root) / "og"
-                idx_path = default_job_output_index_path(og_guess if og_guess.is_dir() else Path(output_root))
-                if idx_path.is_file():
-                    con = open_job_output_index(idx_path)
-                    try:
-                        # Normalize to og/... relpath when possible
-                        rel = str(output_abs).replace("\\", "/")
-                        for prefix in (str(Path(output_root).resolve()) + "/", str(output_root) + "/"):
-                            if rel.startswith(prefix):
-                                rel = rel[len(prefix) :]
-                                break
-                        if not rel.startswith("og/") and "/og/" in rel:
-                            rel = "og/" + rel.split("/og/", 1)[1]
-                        row = lookup_by_relpath(con, rel, output_root=Path(output_root))
-                        parent = str((row or {}).get("parent_output") or "").strip()
-                        if parent:
-                            inferred = _infer_still_from_media(
-                                parent,
-                                workspace_root=workspace_root,
-                                output_root=output_root,
-                                data_root=data_root,
-                            )
-                    finally:
-                        con.close()
-            except Exception:
-                pass
-
     still_path = ""
     evidence = None
     if resolved_explicit is not None:
@@ -330,8 +281,36 @@ def _resolve_identity_still_for_shape(
         )
         still_path = str(got) if got is not None else existing_still
         evidence = "job_binding"
-    elif inferred:
-        still_path, evidence = inferred
+    else:
+        # Submit / hourly ladder: original LoadImage → companion video PNG → mint.
+        media_guess = ""
+        for cand in _collect_identity_media_candidates(
+            job=job, bindings=next_bindings, output_abs=output_abs
+        ):
+            media_guess = cand
+            break
+        try:
+            from shape_factory_identity_still import media_relpath_for_identity, pick_default_identity_still
+
+            picked = pick_default_identity_still(
+                relpath=media_relpath_for_identity(media_guess, output_root) if media_guess else "",
+                family_slug=str(
+                    body.get("family_slug") or body.get("family") or (job or {}).get("family_slug") or ""
+                ),
+                job_key=str((job or {}).get("job_key") or ""),
+                job=job if isinstance(job, dict) else None,
+                workspace_root=workspace_root,
+                output_root=output_root,
+                data_root=data_root,
+                media_abs=Path(media_guess) if media_guess and Path(media_guess).is_file() else None,
+                shape=shape,
+                allow_mint=True,
+            )
+        except Exception:
+            picked = None
+        if isinstance(picked, dict) and str(picked.get("path") or "").strip():
+            still_path = str(picked["path"]).strip()
+            evidence = str(picked.get("evidence") or "candidate")
 
     for slot in needed:
         if str(next_bindings.get(slot) or "").strip():
@@ -2337,6 +2316,11 @@ def swap_family_from_request_body(
             overrides = body.get("overrides")
             if isinstance(overrides, dict) and overrides:
                 replay_body["overrides"] = overrides
+            bindings = body.get("bindings") if isinstance(body.get("bindings"), dict) else None
+            if bindings:
+                replay_body["bindings"] = bindings
+            elif body.get("prompt_profile") not in (None, ""):
+                replay_body["bindings"] = {"prompt_profile": body.get("prompt_profile")}
             replayed = replay_from_request_body(
                 replay_body,
                 repo_root=repo_root,

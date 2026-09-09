@@ -724,6 +724,96 @@ def list_identity_still_candidates(
     }
 
 
+def media_relpath_for_identity(media_abs: str, output_root: Path) -> str:
+    """Best-effort ``og/...`` (or leftover abs) for the candidates API."""
+    rel = str(media_abs or "").replace("\\", "/")
+    out_s = str(Path(output_root).expanduser().resolve()).replace("\\", "/").rstrip("/")
+    if rel.startswith(out_s + "/"):
+        rel = rel[len(out_s) + 1 :]
+    elif rel.startswith(str(output_root).replace("\\", "/").rstrip("/") + "/"):
+        rel = rel[len(str(output_root).replace("\\", "/").rstrip("/")) + 1 :]
+    if not rel.startswith("og/") and "/og/" in rel:
+        rel = "og/" + rel.split("/og/", 1)[1]
+    return rel
+
+
+def pick_default_identity_still(
+    *,
+    relpath: str = "",
+    family_slug: str = "",
+    job_key: str = "",
+    job: Optional[Dict[str, Any]] = None,
+    workspace_root: Path,
+    output_root: Path,
+    data_root: Path,
+    media_abs: Optional[Path] = None,
+    shape: Optional[Dict[str, Any]] = None,
+    allow_mint: bool = True,
+    include_rated: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """
+    Bind-time pick using the Submit / hourly candidate ladder.
+
+    Recommended still (job binding → original LoadImage → companion video PNG),
+    then mint the earliest ancestor first frame when ``allow_mint`` and nothing
+    else exists. Returns ``{path, evidence}`` or None.
+    """
+    rel = str(relpath or "").strip()
+    if not rel and media_abs is not None:
+        rel = media_relpath_for_identity(str(media_abs), output_root)
+    try:
+        cands = list_identity_still_candidates(
+            relpath=rel,
+            family_slug=family_slug,
+            job_key=job_key,
+            workspace_root=workspace_root,
+            output_root=output_root,
+            data_root=data_root,
+            media_abs=media_abs,
+            job=job,
+            shape=shape,
+            include_rated=include_rated,
+        )
+    except Exception:
+        cands = {}
+    rows = cands.get("candidates") if isinstance(cands, dict) else None
+    chosen: Optional[Dict[str, Any]] = None
+    if isinstance(rows, list) and rows:
+        rec_id = cands.get("recommended_id")
+        chosen = next((r for r in rows if isinstance(r, dict) and r.get("id") == rec_id), None)
+        if chosen is None and isinstance(rows[0], dict):
+            chosen = rows[0]
+    if isinstance(chosen, dict):
+        path = str(chosen.get("path") or "").strip()
+        if path and Path(path).is_file():
+            return {"path": path, "evidence": str(chosen.get("evidence") or "candidate")}
+
+    if not allow_mint:
+        return None
+    targets = cands.get("mint_targets") if isinstance(cands, dict) else None
+    if not isinstance(targets, list) or not targets:
+        return None
+    t0 = targets[0] if isinstance(targets[0], dict) else {}
+    try:
+        minted = mint_identity_still_from_video(
+            video_path=str(t0.get("video_path") or ""),
+            video_relpath=str(t0.get("video_relpath") or ""),
+            at=str(t0.get("at") or "start"),
+            workspace_root=workspace_root,
+            output_root=output_root,
+            data_root=data_root,
+        )
+    except Exception:
+        return None
+    cand = minted.get("candidate") if isinstance(minted, dict) else None
+    if not isinstance(cand, dict):
+        return None
+    path = str(cand.get("path") or "").strip()
+    if not path or not Path(path).is_file():
+        return None
+    return {"path": path, "evidence": str(cand.get("evidence") or "first_frame")}
+
+
 def default_mint_input_dir(*, workspace_root: Path, data_root: Path) -> Path:
     host = Path("/home/yuji/comfyui-runpod-data/input")
     if host.is_dir():

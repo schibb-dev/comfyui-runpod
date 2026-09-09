@@ -725,6 +725,36 @@ class ShapeFactoryQueueTests(unittest.TestCase):
         self.assertEqual(Path(bindings["identity_anchor"]).resolve(), still.resolve())
         self.assertEqual((meta or {}).get("evidence"), "job_binding")
 
+    def test_extend_fills_identity_anchor_from_companion_png(self) -> None:
+        from shape_factory_queue import _resolve_identity_still_for_shape
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            og = root / "og"
+            og.mkdir()
+            clip = og / "clip.mp4"
+            thumb = og / "clip.png"
+            clip.write_bytes(b"vid")
+            thumb.write_bytes(b"thumb")
+            shape = {
+                "requires": [
+                    {"slot": "identity_anchor", "media": "image", "binding": {"type": "load_image"}},
+                ]
+            }
+            with mock.patch("shape_factory_identity_still._infer_still_from_media", return_value=None):
+                bindings, meta = _resolve_identity_still_for_shape(
+                    shape=shape,
+                    body={"family_slug": "FB9_GEX2_identity_anchor"},
+                    job=None,
+                    bindings={"source_video": str(clip)},
+                    output_abs=str(clip),
+                    workspace_root=root / "workspace",
+                    output_root=root,
+                    data_root=root / "data",
+                )
+            self.assertEqual(Path(bindings["identity_anchor"]).resolve(), thumb.resolve())
+            self.assertEqual((meta or {}).get("evidence"), "lineage_thumb")
+
     def test_extend_drops_parent_source_still_on_v2v_shape(self) -> None:
         from shape_factory_queue import _bindings_declared_by_shape, replay_from_request_body
 
@@ -1166,6 +1196,7 @@ class ShapeFactoryReplaySeedTests(unittest.TestCase):
             self.assertEqual(body.get("family_slug"), "X-KNEEL-FB9-bare")
             self.assertTrue(body.get("force"))
             self.assertEqual(body.get("overrides"), {"parameters": {"seed": 7}})
+            self.assertEqual(body.get("bindings"), {"prompt_profile": "/pools/X-KNEEL-FB9-bare/prompts/catalog-default.json"})
             return {"ok": True, "job_key": "X-KNEEL-FB9-bare__new", "prompt_id": "pid-new"}
 
         def fake_mutate(**kwargs):
@@ -1186,6 +1217,7 @@ class ShapeFactoryReplaySeedTests(unittest.TestCase):
                     "front": True,
                     "seed_mode": "same",
                     "overrides": {"parameters": {"seed": 7}},
+                    "bindings": {"prompt_profile": "/pools/X-KNEEL-FB9-bare/prompts/catalog-default.json"},
                 },
                 repo_root=REPO_ROOT,
                 workspace_root=REPO_ROOT / "workspace",

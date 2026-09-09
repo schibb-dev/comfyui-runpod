@@ -517,3 +517,36 @@ export function pickDefaultPromptProfile(
   const def = profiles.find((p) => promptVariantSlug(p) === "default" || p.basename === "catalog-default.json");
   return (def || profiles[0]).path;
 }
+
+/**
+ * Catalog preset path for Re-run. Matches the job's variant slug when that
+ * preset exists on the selected family; never a scratch / snowflake path.
+ */
+export function pickRerunPromptPreset(
+  profiles: WorkProductFamilyPromptProfile[],
+  prefer?: string | null | PromptVariantNameSource,
+): string {
+  if (!profiles.length) return "";
+  const slug = promptVariantSlug(prefer);
+  if (slug) {
+    const hit = profiles.find((p) => promptVariantSlug(p) === slug);
+    if (hit?.path) return hit.path;
+  }
+  if (prefer && typeof prefer === "object") {
+    const path = String(prefer.path || prefer.seed?.path || "").trim();
+    const byPath = profiles.find((p) => p.path === path);
+    if (byPath?.path) return byPath.path;
+  }
+  return pickDefaultPromptProfile(profiles);
+}
+
+/** Send a prompt_profile binding only when the operator picked a different catalog preset. */
+export function rerunPromptPresetDiffers(
+  selectedPath: string,
+  jobProfiles: WorkProductFamilyPromptProfile[],
+  jobPrefer?: string | null | PromptVariantNameSource,
+): boolean {
+  const selected = String(selectedPath || "").trim();
+  if (!selected) return false;
+  return selected !== pickRerunPromptPreset(jobProfiles, jobPrefer);
+}
