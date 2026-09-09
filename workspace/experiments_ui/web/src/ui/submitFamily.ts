@@ -540,6 +540,55 @@ export function pickRerunPromptPreset(
   return pickDefaultPromptProfile(profiles);
 }
 
+/** Video product that `replay(extend=true)` can chain as the next source. */
+export function workProductHasExtendableOutput(item: {
+  output_relpath?: string | null;
+  output_url?: string | null;
+}): boolean {
+  const rel = String(item.output_relpath || "")
+    .replace(/\\/g, "/")
+    .trim();
+  if (rel) {
+    if (isStillMediaPath(rel)) return false;
+    return /\.(mp4|webm|mov|mkv)(\?|$)/i.test(rel);
+  }
+  const url = String(item.output_url || "").trim();
+  if (!url || isStillMediaPath(url)) return false;
+  return /\.(mp4|webm|mov|mkv)(\?|$)/i.test(url);
+}
+
+/**
+ * Quick-action Extend: factory job with a video output and at least one V2V/VI2V family.
+ * Pending/queued jobs without a product stay Re-run / Swap only.
+ */
+export function workProductCanQuickExtend(
+  item: {
+    job_key?: string | null;
+    job_path?: string | null;
+    output_relpath?: string | null;
+    output_url?: string | null;
+  },
+  families?: WorkProductFamilyOption[],
+): boolean {
+  if (!String(item.job_key || "").trim()) return false;
+  if (!workProductHasExtendableOutput(item)) return false;
+  if (!families || !families.length) return true;
+  return families.some(isExtendFamilyOption);
+}
+
+/** Prefer the operator's family when it can extend; otherwise the successor default. */
+export function pickQuickExtendFamily(
+  families: WorkProductFamilyOption[],
+  extendDefaults: Record<string, string>,
+  item: { family_slug?: string | null; output_relpath?: string | null },
+  preferredSlug?: string | null,
+): string {
+  const preferred = String(preferredSlug || "").trim();
+  const pref = families.find((f) => f.slug === preferred);
+  if (pref && isExtendFamilyOption(pref)) return preferred;
+  return pickDefaultExtendFamily(families, extendDefaults, item.family_slug, item.output_relpath);
+}
+
 /** Send a prompt_profile binding only when the operator picked a different catalog preset. */
 export function rerunPromptPresetDiffers(
   selectedPath: string,

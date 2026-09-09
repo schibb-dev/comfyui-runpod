@@ -3,11 +3,15 @@ import {
   familySlugIsQuarantined,
   jobPromptVariantDisplayName,
   jobPromptVariantName,
+  pickQuickExtendFamily,
   pickRerunPromptPreset,
   promptTextIsOverridden,
   distinctiveFamilyLabels,
   rerunPromptPresetDiffers,
+  workProductCanQuickExtend,
+  workProductHasExtendableOutput,
 } from "./submitFamily";
+import type { WorkProductFamilyOption } from "./types";
 
 describe("familySlugIsQuarantined", () => {
   const entries = [
@@ -151,5 +155,62 @@ describe("pickRerunPromptPreset", () => {
     expect(
       rerunPromptPresetDiffers("/pools/FB9_GEX/prompts/catalog-faceblast-extend.json", profiles, { slug: "default" }),
     ).toBe(true);
+  });
+});
+
+const extendFamily = (slug: string, extra: Partial<WorkProductFamilyOption> = {}): WorkProductFamilyOption => ({
+  slug,
+  chain_role: "extend",
+  io_class: "V2V",
+  ...extra,
+});
+const i2vFamily = (slug: string): WorkProductFamilyOption => ({
+  slug,
+  chain_role: "origin",
+  io_class: "I2V",
+});
+
+describe("workProductCanQuickExtend", () => {
+  const families = [i2vFamily("X-KNEEL-FB9"), extendFamily("FB9_GEX"), extendFamily("FB9_GEX2")];
+
+  it("requires a factory job with a video output", () => {
+    expect(workProductHasExtendableOutput({ output_relpath: "og/clip.mp4" })).toBe(true);
+    expect(workProductHasExtendableOutput({ output_relpath: "input/still.jpeg" })).toBe(false);
+    expect(
+      workProductCanQuickExtend({ job_key: "j1", output_relpath: "og/clip.mp4" }, families),
+    ).toBe(true);
+    expect(
+      workProductCanQuickExtend({ job_key: "j1", output_relpath: null }, families),
+    ).toBe(false);
+    expect(
+      workProductCanQuickExtend({ job_key: "", output_relpath: "og/clip.mp4" }, families),
+    ).toBe(false);
+  });
+
+  it("hides Extend when no V2V/VI2V family exists", () => {
+    expect(
+      workProductCanQuickExtend({ job_key: "j1", output_relpath: "og/clip.mp4" }, [i2vFamily("X-KNEEL-FB9")]),
+    ).toBe(false);
+  });
+});
+
+describe("pickQuickExtendFamily", () => {
+  const families = [i2vFamily("X-KNEEL-FB9"), extendFamily("FB9_GEX"), extendFamily("FB9_GEX2")];
+
+  it("keeps an operator-picked extend family", () => {
+    expect(
+      pickQuickExtendFamily(families, { "X-KNEEL-FB9": "FB9_GEX" }, { family_slug: "X-KNEEL-FB9" }, "FB9_GEX2"),
+    ).toBe("FB9_GEX2");
+  });
+
+  it("ignores an I2V picker value and uses the successor default", () => {
+    expect(
+      pickQuickExtendFamily(
+        families,
+        { "X-KNEEL-FB9": "FB9_GEX" },
+        { family_slug: "X-KNEEL-FB9", output_relpath: "og/kneel.mp4" },
+        "X-KNEEL-FB9",
+      ),
+    ).toBe("FB9_GEX");
   });
 });
