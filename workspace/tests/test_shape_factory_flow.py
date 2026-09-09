@@ -7,6 +7,8 @@ import unittest
 
 import support  # noqa: F401  — injects workspace/scripts onto sys.path
 from shape_factory_flow import (
+    classify_job_failure,
+    ensure_failure_flow_event,
     flow_phase,
     normalize_flow_status,
     remediation_actions,
@@ -34,6 +36,8 @@ class TestShapeFactoryFlow(unittest.TestCase):
     def test_edit_transition_guards(self) -> None:
         self.assertTrue(status_allows_begin_edit("pending"))
         self.assertTrue(status_allows_begin_edit("queued"))
+        self.assertTrue(status_allows_begin_edit("interrupted"))
+        self.assertTrue(status_allows_begin_edit("abandoned"))
         self.assertFalse(status_allows_begin_edit("complete"))
         self.assertTrue(status_allows_finish_edit("editing"))
         self.assertTrue(status_allows_finish_edit("pending"))
@@ -53,7 +57,31 @@ class TestShapeFactoryFlow(unittest.TestCase):
         self.assertEqual(flow_phase("complete"), "terminal")
         self.assertIn("cancel_to_pending", remediation_actions("queued", prompt_id="pid-1"))
         self.assertIn("queue_now", remediation_actions("editing"))
-        self.assertIn("save_as_template", remediation_actions("error"))
+        self.assertIn("retry_same", remediation_actions("error"))
+        missed = classify_job_failure("error", error="name 'ensure_comfy_submit_ready' is not defined")
+        self.assertEqual(missed["kind"], "submit_missed")
+        self.assertEqual(missed["primary"], "retry_same")
+        stopped = classify_job_failure(
+            "error",
+            prompt_id="pid-1",
+            error="SamplerCustomAdvanced · #150: Interrupted",
+        )
+        self.assertEqual(stopped["kind"], "interrupted")
+        self.assertEqual(stopped["primary"], "replay")
+        self.assertIn("replay", remediation_actions("error", prompt_id="pid-1", error="Interrupted"))
+        stuck = classify_job_failure("error", error="Invalid image file: input/x.png")
+        self.assertEqual(stuck["kind"], "permanent")
+        self.assertEqual(stuck["primary"], "edit")
+        abandoned = classify_job_failure("abandoned", prompt_id="pid-2")
+        self.assertEqual(abandoned["kind"], "abandoned")
+        self.assertEqual(abandoned["primary"], "replay")
+        events = ensure_failure_flow_event(
+            {"flow_events": []},
+            "error",
+            error="name 'ensure_comfy_submit_ready' is not defined",
+        )
+        self.assertEqual(events[0]["action"], "submit_failed")
+        self.assertFalse(events[0]["ok"])
 
 
 if __name__ == "__main__":

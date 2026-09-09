@@ -24,7 +24,11 @@ describe("workProductPendingQueue", () => {
 
   it("treats pending without prompt_id as queue inventory", () => {
     expect(isPendingQueueItem(item({ status: "pending" }))).toBe(true);
+    expect(isPendingQueueItem(item({ status: "editing" }))).toBe(true);
     expect(isPendingQueueItem(item({ status: "queued", prompt_id: "p" }))).toBe(false);
+    expect(isPendingQueueItem(item({ status: "error", pending_index: 3, pending_count: 13 }))).toBe(false);
+    expect(isPendingQueueItem(item({ status: "failed" }))).toBe(false);
+    expect(isPendingQueueItem(item({ status: "deposited" }))).toBe(false);
   });
 
   it("orders by pending_index then rank", () => {

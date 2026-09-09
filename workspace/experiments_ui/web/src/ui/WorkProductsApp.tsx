@@ -1,8 +1,16 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createPortal } from "react-dom";
-import { discardShapeFactoryJob, fetchShapeFactoryWorkProduct, fetchShapeFactoryWorkProducts, finishShapeFactoryEdit, claimShapeFactoryFromQueue, movePendingQueue, promoteShapeFactoryTemplate, replayShapeFactory, swapShapeFactoryFamily, unqueueShapeFactory, updatePendingShapeFactoryTrim, updateShapeFactoryOwnedLoras, updateShapeFactoryOwnedParams, updateShapeFactoryOwnedPrompt } from "./api";
-import { workProductListBucket } from "./workProductListSort";
+import { discardShapeFactoryJob, fetchShapeFactoryWorkProduct, fetchShapeFactoryWorkProducts, finishShapeFactoryEdit, claimShapeFactoryFromQueue, movePendingQueue, promoteShapeFactoryTemplate, remediateShapeFactoryJob, replayShapeFactory, swapShapeFactoryFamily, unqueueShapeFactory, updatePendingShapeFactoryTrim, updateShapeFactoryOwnedLoras, updateShapeFactoryOwnedParams, updateShapeFactoryOwnedPrompt } from "./api";
+import {
+  groupWorkProductsByNavSection,
+  workProductListBucket,
+  workProductNavSection,
+  workProductNavSectionBadges,
+  workProductsInOpenNavSections,
+  type WorkProductNavBadge,
+  type WorkProductNavSectionId,
+} from "./workProductListSort";
 import { destinationForWhen, isPendingQueueItem, pendingQueueIndex, type SubmitWhen } from "./workProductPendingQueue";
 import type { ShapeFactoryClip } from "./api";
 import { ClipBookmarksRail, pickDefaultClip } from "./ClipBookmarksRail";
@@ -37,6 +45,8 @@ import { discoveryLibraryHref, extractContentIdFromName, parseWorkbenchDeepLink,
 import { factoryMapFamilyHref } from "./factoryMapRoute";
 import { AppetitePreviewBadge, AppetitePreviewFrame } from "./AppetitePreviewBadge";
 import { DiscoveryAssetLineagePanel } from "./DiscoveryAssetLineagePanel";
+import { ComfyHealthBanner, useComfyHealthRetrySec } from "./ComfyHealthBanner";
+import { comfyHealthIsBackoff, formatComfyRetry } from "./comfyHealth";
 import { RemoveReviewBanner } from "./RemoveReviewBanner";
 import { SubmitComposerModal } from "./SubmitComposerModal";
 import { useAssetRatingsTick, WorkProductAppetiteStrip } from "./WorkProductAppetiteStrip";
@@ -64,8 +74,9 @@ import {
 } from "./workProductMediaFocus";
 import { prefetchAssetRatings } from "./assetRatingsCache";
 import { loadClipsForMedia, rememberFamiliesFromWorkProducts } from "./shapeFactorySessionCache";
-import { familySwapTargets, isDefaultPromptVariant, isStillMediaPath, jobPromptVariantName, jobPromptVariantSlug, promptVariantName, promptVariantSlug } from "./submitFamily";
+import { familySwapTargets, isDefaultPromptVariant, isStillMediaPath, jobPromptVariantDisplayName, jobPromptVariantName, jobPromptVariantSlug, promptTextIsOverridden, promptVariantName, promptVariantSlug } from "./submitFamily";
 import { recencyMs, recencyStamp } from "./workProductRecency";
+import { failurePrimaryLabel, workProductFailure, workProductFlowEvents } from "./workProductFailure";
 import { queryKeys } from "./queryKeys";
 import type {
   DiscoveryAssetLineageItemSummary,
@@ -91,6 +102,7 @@ const SORT_KEY = "work-products-sort-v3";
 const APPETITE_FILTER_OFF_KEY = "work-products-appetite-filter-off-v2";
 const APPETITE_FILTER_OFF_KEY_V1 = "work-products-appetite-filter-off";
 const SECTION_OPEN_KEY = "work-products-section-open-v3";
+const NAV_SECTION_OPEN_KEY = "work-products-nav-section-open-v1";
 const HOURLY_ONLY_KEY = "work-products-hourly-only";
 const STATUS_FILTER_OFF_KEY = "work-products-status-filter-off";
 const MARKER_FILTER_OFF_KEY = "work-products-marker-filter-off";
@@ -385,6 +397,38 @@ function persistSectionOpen(map: Record<string, boolean>) {
   }
 }
 
+/** Queue/live, pending, and errors stay open; completed starts collapsed. */
+const DEFAULT_NAV_SECTION_OPEN: Record<WorkProductNavSectionId, boolean> = {
+  live: true,
+  pending: true,
+  error: true,
+  done: false,
+};
+
+function loadNavSectionOpen(): Record<WorkProductNavSectionId, boolean> {
+  try {
+    const raw = localStorage.getItem(NAV_SECTION_OPEN_KEY);
+    if (!raw) return { ...DEFAULT_NAV_SECTION_OPEN };
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object") return { ...DEFAULT_NAV_SECTION_OPEN };
+    const out = { ...DEFAULT_NAV_SECTION_OPEN };
+    for (const id of Object.keys(DEFAULT_NAV_SECTION_OPEN) as WorkProductNavSectionId[]) {
+      if (typeof parsed[id] === "boolean") out[id] = parsed[id];
+    }
+    return out;
+  } catch {
+    return { ...DEFAULT_NAV_SECTION_OPEN };
+  }
+}
+
+function persistNavSectionOpen(map: Record<WorkProductNavSectionId, boolean>) {
+  try {
+    localStorage.setItem(NAV_SECTION_OPEN_KEY, JSON.stringify(map));
+  } catch {
+    /* ignore */
+  }
+}
+
 function isInFlightStatus(status?: string | null): boolean {
   const s = (status || "").toLowerCase();
   return !s || s === "queued" || s === "pending" || s === "editing" || s === "running" || s === "submitted";
@@ -551,12 +595,14 @@ function sortWorkProducts(items: WorkProductItem[], sort: WorkProductSort): Work
   const running: WorkProductItem[] = [];
   const queued: WorkProductItem[] = [];
   const pending: WorkProductItem[] = [];
+  const errored: WorkProductItem[] = [];
   const done: WorkProductItem[] = [];
   for (const it of items) {
     const bucket = workProductListBucket(workProductStatusKey(it));
     if (bucket === "running") running.push(it);
     else if (bucket === "queued") queued.push(it);
     else if (bucket === "pending") pending.push(it);
+    else if (bucket === "error") errored.push(it);
     else done.push(it);
   }
 
@@ -587,8 +633,9 @@ function sortWorkProducts(items: WorkProductItem[], sort: WorkProductSort): Work
   running.sort(byRecentFirst);
   queued.sort(byRecentFirst);
   pending.sort((a, b) => pendingQueueIndex(a) - pendingQueueIndex(b) || recencyMs(a) - recencyMs(b));
+  errored.sort(byRecentFirst);
   done.sort(cmp);
-  return [...running, ...queued, ...pending, ...done];
+  return [...running, ...queued, ...pending, ...errored, ...done];
 }
 
 function filterWorkProductsByName(items: WorkProductItem[], query: string): WorkProductItem[] {
@@ -691,7 +738,7 @@ function formatRelativeAge(iso?: string | null): string {
 }
 
 function FlowEventTimeline({ item }: { item: WorkProductItem }) {
-  const events = Array.isArray(item.flow_events) ? item.flow_events : [];
+  const events = workProductFlowEvents(item);
   if (!events.length) return null;
   const recent = events.slice(-6).reverse();
   return (
@@ -2746,19 +2793,26 @@ function PromptVariantBadge({
   item: { job_key?: string | null; prompt_profile?: WorkProductPromptProfile | null };
   title?: string;
 }) {
-  const name = jobPromptVariantName(item);
+  const name = jobPromptVariantDisplayName(item);
   const slug = promptVariantSlug(item.prompt_profile) || jobPromptVariantSlug(item.job_key);
   if (!name && !slug) return null;
-  const isDefault = isDefaultPromptVariant(item.prompt_profile) || slug === "default";
+  const edited = promptTextIsOverridden(item.prompt_profile);
+  const isDefault = !edited && (isDefaultPromptVariant(item.prompt_profile) || slug === "default");
   const shown = name || slug;
   const tip =
     title ||
-    (slug && slug !== shown ? `${shown} · ${slug}` : isDefault ? `Default · ${slug || "default"}` : shown);
+    (edited
+      ? `${shown} · text differs from catalog`
+      : slug && slug !== shown
+        ? `${shown} · ${slug}`
+        : isDefault
+          ? `Default · ${slug || "default"}`
+          : shown);
   return (
     <span
       className={`work-product-badge work-product-badge--variant${
         isDefault ? " work-product-badge--variant-default" : ""
-      }`}
+      }${edited ? " work-product-badge--variant-edited" : ""}`}
       title={tip}
     >
       {shown}
@@ -2836,7 +2890,7 @@ function WorkProductPromptEditor({
   if (!prompt && !editable) return null;
 
   const hash = shortContentHash(prompt?.content_hash);
-  const sourceLabel = jobPromptVariantName(item) || prompt?.label || prompt?.basename || "owned prompt";
+  const sourceLabel = jobPromptVariantDisplayName(item) || prompt?.label || prompt?.basename || "owned prompt";
   const busy = saveMut.isPending || promoteMut.isPending;
   const canPromote = canPromoteJobPrompt(item) && !editing;
   const canDiff = Boolean(prompt?.snowflake && prompt?.seed) && !editing;
@@ -3693,6 +3747,8 @@ function WorkProductQuickQueue({
   const finishEditMutation = useMutation({ mutationFn: finishShapeFactoryEdit });
   const replayMutation = useMutation({ mutationFn: replayShapeFactory });
   const swapMutation = useMutation({ mutationFn: swapShapeFactoryFamily });
+  const remediateMutation = useMutation({ mutationFn: remediateShapeFactoryJob });
+  const failure = workProductFailure(item);
   const currentFamily = String(item.family_slug || "").trim();
   const swapTargets = useMemo(
     () => familySwapTargets(families || [], currentFamily),
@@ -3721,7 +3777,8 @@ function WorkProductQuickQueue({
     discardMutation.isPending ||
     finishEditMutation.isPending ||
     replayMutation.isPending ||
-    swapMutation.isPending;
+    swapMutation.isPending ||
+    remediateMutation.isPending;
   const isBusy = busy || mutationsBusy;
   const canRerun = Boolean(jobKey) && !isBusy;
   const canUnqueue = canUnqueueWorkProduct(item) && !isBusy;
@@ -3732,18 +3789,19 @@ function WorkProductQuickQueue({
     !isBusy;
   const canEditSubmit = canEditJobViaSubmit(item) && !isBusy;
   const isEditing = workProductStatusKey(item) === "editing";
-  const editSubmitIntent = canEditSubmit
-    ? buildSubmitDeepLink({
-        editJob: jobKey,
-        origin: "workbench",
-        family: item.family_slug || null,
-        mediaRelpath: String(item.bindings?.source_video?.relpath || item.bindings?.source_still?.relpath || "").trim() || null,
-      })
-    : null;
+  const nonFactory = isNonFactoryWorkProduct(item);
+  const editSubmitIntent =
+    (canEditSubmit || Boolean(failure && jobKey && !nonFactory))
+      ? buildSubmitDeepLink({
+          editJob: jobKey,
+          origin: "workbench",
+          family: item.family_slug || null,
+          mediaRelpath: String(item.bindings?.source_video?.relpath || item.bindings?.source_still?.relpath || "").trim() || null,
+        })
+      : null;
   const canArchive = canArchiveTerminalWorkProduct(item) && !isBusy;
   const canDelete = canDeleteWorkProduct(item) && !isBusy;
   const deleteIsPendingOnly = canDiscardPendingWorkProduct(item);
-  const nonFactory = isNonFactoryWorkProduct(item);
   const submitIntent = workbenchAdvanceSubmitIntent(item, {
     outputTrim,
     sourceClipId,
@@ -3908,7 +3966,47 @@ function WorkProductQuickQueue({
     }
   };
 
-  const rerun = async (when: SubmitWhen) => {
+  const retrySame = async () => {
+    if (!jobKey || isBusy || nonFactory) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await remediateMutation.mutateAsync({
+        job_key: jobKey,
+        job_path: String(item.job_path || "").trim() || undefined,
+        action: "retry_same",
+        actor: "operator",
+        reason: "user_retry_same",
+        source_surface: "workbench",
+      });
+      const rank = res.pending_rank != null ? ` · #${res.pending_rank}` : "";
+      setMsg(`Returned to pending${res.job_key ? ` · ${res.job_key}` : ""}${rank}`);
+      await invalidateWorkbench();
+      await invalidateQueue();
+      onCommitted?.();
+      if (res.job_key) onFocusJobKey?.(res.job_key);
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const archiveErrorSource = async (reason: string) => {
+    if (!canArchiveTerminalWorkProduct(item) && !isHistoryFailureStub(item)) return null;
+    return discardMutation.mutateAsync({
+      job_key: jobKey || undefined,
+      job_path: String(item.job_path || "").trim() || undefined,
+      prompt_id: String(item.prompt_id || "").trim() || undefined,
+      history_from_comfy: isHistoryFailureStub(item) || Boolean(item.history_from_comfy),
+      reason,
+      expunge: false,
+      actor: "operator",
+      source_surface: "workbench",
+    });
+  };
+
+  const rerun = async (when: SubmitWhen, opts?: { clearError?: boolean }) => {
     if (!jobKey || isBusy) return;
     const targetFamily = String(rerunFamily || currentFamily || "").trim();
     if (swapInstead) {
@@ -3993,6 +4091,15 @@ function WorkProductQuickQueue({
               ? "seed same (missing — template)"
               : null;
       const familyLabel = familyChanged ? `as ${targetFamily}` : null;
+      let cleared = false;
+      if (opts?.clearError && (nextKey || pid)) {
+        try {
+          const archived = await archiveErrorSource("user_fixed_replay");
+          cleared = Boolean(archived?.ok || archived?.discarded || archived?.dismissed);
+        } catch {
+          cleared = false;
+        }
+      }
       setMsg(
         [
           nextKey
@@ -4004,6 +4111,7 @@ function WorkProductQuickQueue({
           `trim ${rerunTrimMode}`,
           seedLabel,
           clampMsg,
+          opts?.clearError ? (cleared ? "cleared error" : "successor created · error still listed") : null,
         ]
           .filter(Boolean)
           .join(" · "),
@@ -4030,8 +4138,93 @@ function WorkProductQuickQueue({
       </span>
     ) : null;
 
+  const failureSecondaries = failure ? failure.actions.filter((a) => a !== failure.primary) : [];
+  const runFailureAction = (action: string, when?: SubmitWhen) => {
+    if (action === "retry_same") return void retrySame();
+    if (action === "replay") return void rerun(when || "queue", { clearError: true });
+    if (action === "edit") return openSubmit(editSubmitIntent);
+    if (action === "discard") return void archive();
+  };
+  const failureActionLabel = (action: string) => {
+    if (action === "retry_same") return "Return to pending";
+    if (action === "replay") return "Replay to pending";
+    if (action === "edit") return "Edit in Submit";
+    return "Archive";
+  };
+
   return (
     <div className="work-product-quick-queue" role="group" aria-label="Job actions">
+      {failure ? (
+        <div className="work-product-fix" role="group" aria-label="Fix">
+          <div className="work-product-fix__headline">{failure.headline}</div>
+          {failure.detail ? <div className="work-product-fix__detail">{failure.detail}</div> : null}
+          <div className="work-product-fix__row">
+            <button
+              type="button"
+              className="drt-btn work-product-quick-queue__now work-product-fix__primary"
+              disabled={isBusy || (failure.primary === "edit" && !editSubmitIntent)}
+              title={
+                failure.primary === "replay"
+                  ? "Mint a successor onto pending, then clear this error row"
+                  : failure.primary === "retry_same"
+                    ? "Same job goes back on the pending FIFO — it leaves Errors"
+                    : failurePrimaryLabel(failure)
+              }
+              onClick={() => runFailureAction(failure.primary)}
+            >
+              {failurePrimaryLabel(failure)}
+            </button>
+            {failure.primary === "replay" ? (
+              <button
+                type="button"
+                className="drt-btn work-product-quick-queue__rerun"
+                disabled={!canRerun}
+                title="Replay a successor directly onto Comfy, then clear this error row"
+                onClick={() => void rerun("now", { clearError: true })}
+              >
+                Replay now
+              </button>
+            ) : null}
+            {failureSecondaries.map((action) => (
+              <button
+                key={action}
+                type="button"
+                className={
+                  action === "discard"
+                    ? "drt-btn work-product-quick-queue__discard"
+                    : "drt-btn"
+                }
+                disabled={
+                  isBusy ||
+                  (action === "replay" && !canRerun) ||
+                  (action === "edit" && !editSubmitIntent) ||
+                  (action === "discard" && !canArchive) ||
+                  (action === "retry_same" && (!jobKey || nonFactory))
+                }
+                title={
+                  action === "replay"
+                    ? "Mint a successor onto pending, then clear this error row"
+                    : failureActionLabel(action)
+                }
+                onClick={() => runFailureAction(action)}
+              >
+                {failureActionLabel(action)}
+              </button>
+            ))}
+            {canDelete ? (
+              <button
+                type="button"
+                className="drt-btn work-product-quick-queue__discard"
+                disabled={!canDelete}
+                title="Permanently delete this failed job and its sidecars from disk"
+                onClick={() => void discard()}
+              >
+                Delete
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
       <div className="work-product-quick-queue__row">
         <span className="work-product-quick-queue__label" title="Compose the next Advance on Submit">
           Advance
@@ -4067,6 +4260,8 @@ function WorkProductQuickQueue({
         {openBadge(extendOpen, "Extend")}
         {openBadge(varyOpen, "Vary")}
         {openBadge(deriveOpen, "Derive")}
+        {!failure ? (
+          <>
         <span className="work-product-quick-queue__sep" aria-hidden="true" />
         <span
           className="work-product-quick-queue__label"
@@ -4312,6 +4507,8 @@ function WorkProductQuickQueue({
             >
               Delete
             </button>
+          </>
+        ) : null}
           </>
         ) : null}
       </div>
@@ -4609,11 +4806,17 @@ function WorkProductDetails({
           </span>
         ) : null}
       </div>
-      {item.error || workProductStatusKey(item) === "interrupted" ? (
-        <div className="work-product-details__error" title={workProductErrorCopy(item)}>
-          {workProductErrorCopy(item)}
-        </div>
-      ) : null}
+      {(() => {
+        const failure = workProductFailure(item);
+        const copy = workProductErrorCopy(item);
+        if (!failure && !copy) return null;
+        return (
+          <div className="work-product-details__error" title={copy || failure?.headline}>
+            {failure ? <div className="work-product-details__error-headline">{failure.headline}</div> : null}
+            {copy ? copy : null}
+          </div>
+        );
+      })()}
       <FlowEventTimeline item={item} />
       <WorkProductAppetiteStrip
         relpath={workbenchJobAppetiteRelpath(item)}
@@ -4735,6 +4938,69 @@ function workProductMatchesFocus(
   return false;
 }
 
+function navSectionBadgeAria(label: string, count: number, badges: WorkProductNavBadge[]): string {
+  const parts = badges.map((b) => (b.label ? `${b.count} ${b.label}` : String(b.count)));
+  return parts.length ? `${label}, ${parts.join(", ")}` : `${label}, ${count}`;
+}
+
+function WorkProductIndexSection({
+  id,
+  label,
+  title,
+  count,
+  badges,
+  hint,
+  open,
+  onOpenChange,
+  children,
+}: {
+  id: WorkProductNavSectionId;
+  label: string;
+  title: string;
+  count: number;
+  badges: WorkProductNavBadge[];
+  hint?: React.ReactNode;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <details
+      className={`work-products-index__section work-products-index__section--${id}`}
+      open={open}
+      onToggle={(e) => {
+        const next = e.currentTarget.open;
+        if (next !== open) onOpenChange(next);
+      }}
+    >
+      <summary
+        className="work-products-index__section-summary"
+        title={title}
+        aria-label={navSectionBadgeAria(label, count, badges)}
+      >
+        <span className="work-products-index__section-label">{label}</span>
+        {hint}
+        <span className="work-products-index__section-badges">
+          {badges.map((badge) => (
+            <span
+              key={badge.key}
+              className={`work-products-index__section-badge work-products-index__section-badge--${badge.tone}`}
+            >
+              <span className="work-products-index__section-badge-count">{badge.count}</span>
+              {badge.label ? (
+                <span className="work-products-index__section-badge-label">{badge.label}</span>
+              ) : null}
+            </span>
+          ))}
+        </span>
+      </summary>
+      <div className="work-products-index__section-rows" role="group" aria-label={label}>
+        {children}
+      </div>
+    </details>
+  );
+}
+
 function WorkProductIndexRow({
   item,
   selected,
@@ -4745,14 +5011,20 @@ function WorkProductIndexRow({
   item: WorkProductItem;
   selected: boolean;
   onSelect: (item: WorkProductItem) => void;
-  onMovePending?: (item: WorkProductItem, delta: number) => void;
+  onMovePending?: (
+    item: WorkProductItem,
+    spec: { delta: number } | { position: "front" | "back" },
+  ) => void;
   movingPending?: boolean;
 }) {
   const thumb = item.output_thumb_url || sourcePreviewUrls(item).thumb;
   const status = statusFilterVisual(item.status || "pending");
   const timing = timingHeadline(item);
   const pendingPos = isPendingQueueItem(item) ? pendingQueueIndex(item) : Number.POSITIVE_INFINITY;
-  const canReorder = Number.isFinite(pendingPos) && typeof item.pending_count === "number";
+  const canReorder =
+    workProductNavSection(item.status) === "pending" &&
+    Number.isFinite(pendingPos) &&
+    typeof item.pending_count === "number";
   const row = (
     <button
       type="button"
@@ -4827,10 +5099,24 @@ function WorkProductIndexRow({
           type="button"
           className="work-product-index-row__reorder-btn"
           disabled={movingPending || idx <= 0}
-          title="Move earlier (next to drain)"
+          title="Send to top (next to drain). Edit-locked jobs stay held."
+          aria-label="Send to top of pending queue"
           onClick={(e) => {
             e.stopPropagation();
-            onMovePending?.(item, -1);
+            onMovePending?.(item, { position: "front" });
+          }}
+        >
+          ⤒
+        </button>
+        <button
+          type="button"
+          className="work-product-index-row__reorder-btn"
+          disabled={movingPending || idx <= 0}
+          title="Move earlier (next to drain)"
+          aria-label="Move earlier in pending queue"
+          onClick={(e) => {
+            e.stopPropagation();
+            onMovePending?.(item, { delta: -1 });
           }}
         >
           ▲
@@ -4843,12 +5129,26 @@ function WorkProductIndexRow({
           className="work-product-index-row__reorder-btn"
           disabled={movingPending || idx >= last}
           title="Move later"
+          aria-label="Move later in pending queue"
           onClick={(e) => {
             e.stopPropagation();
-            onMovePending?.(item, 1);
+            onMovePending?.(item, { delta: 1 });
           }}
         >
           ▼
+        </button>
+        <button
+          type="button"
+          className="work-product-index-row__reorder-btn"
+          disabled={movingPending || idx >= last}
+          title="Send to bottom"
+          aria-label="Send to bottom of pending queue"
+          onClick={(e) => {
+            e.stopPropagation();
+            onMovePending?.(item, { position: "back" });
+          }}
+        >
+          ⤓
         </button>
       </div>
     </div>
@@ -5079,6 +5379,9 @@ export function WorkProductsApp() {
   const [listOpen, setListOpen] = useState(() => !hasResourceDeepLink);
   const [toolsOpen, setToolsOpen] = useState(() => Boolean(deepLink.q) || loadChrome().tools);
   const [filtersOpen, setFiltersOpen] = useState(() => loadChrome().filters);
+  const [navSectionOpen, setNavSectionOpen] = useState<Record<WorkProductNavSectionId, boolean>>(
+    () => loadNavSectionOpen(),
+  );
   const deepLinkScrolled = useRef(false);
   /** Operator clicked a job in a media-focused list — stop snapping to the producer. */
   const mediaPickTouched = useRef(false);
@@ -5121,12 +5424,17 @@ export function WorkProductsApp() {
     refetchInterval: (query) => {
       if (typeof document !== "undefined" && document.hidden) return false;
       const rows = (query.state.data?.items || []) as WorkProductItem[];
+      // Snapshot only — drain owns the circuit. Refresh so backoff copy stays current.
+      if (comfyHealthIsBackoff(query.state.data?.comfy_health)) return 30_000;
       // Live frames already poll /api/comfy/live-status. This only picks up completed outputs.
       return rows.some((it) => isLivePreviewItem(it)) ? 30_000 : false;
     },
     refetchIntervalInBackground: false,
   });
   const items = queryState.data?.items || [];
+  const comfyHealth = queryState.data?.comfy_health;
+  const comfyHealthRetrySec = useComfyHealthRetrySec(comfyHealth);
+  const comfyHealthBackoff = comfyHealthIsBackoff(comfyHealth);
   const mediaProducerKey = useMemo(
     () => (focusMedia ? inferJobKeyFromMediaPath(focusMedia) : null),
     [focusMedia],
@@ -5311,6 +5619,21 @@ export function WorkProductsApp() {
     appetiteTick,
   ]);
 
+  const navSections = useMemo(() => groupWorkProductsByNavSection(visibleItems), [visibleItems]);
+  const navKeyboardItems = useMemo(
+    () => workProductsInOpenNavSections(visibleItems, navSectionOpen),
+    [visibleItems, navSectionOpen],
+  );
+
+  const setNavSectionOpenId = useCallback((id: WorkProductNavSectionId, open: boolean) => {
+    setNavSectionOpen((prev) => {
+      if (prev[id] === open) return prev;
+      const next = { ...prev, [id]: open };
+      persistNavSectionOpen(next);
+      return next;
+    });
+  }, []);
+
   const failedVisible = useMemo(
     () => visibleItems.filter((it) => canArchiveTerminalWorkProduct(it)),
     [visibleItems],
@@ -5379,12 +5702,24 @@ export function WorkProductsApp() {
   }, [selectedItem, focusJob, items, visibleItems, focusedLoading]);
 
   useEffect(() => {
+    if (!selectedItem) return;
+    const id = workProductNavSection(selectedItem.status);
+    setNavSectionOpen((prev) => {
+      if (prev[id]) return prev;
+      const next = { ...prev, [id]: true };
+      persistNavSectionOpen(next);
+      return next;
+    });
+  }, [selectedItem?.job_key]);
+
+  useEffect(() => {
     if (!listOpen) return;
     const key = String(selectedItem?.job_key || "").trim();
-    if (!key) return;
+    if (!key || !selectedItem) return;
+    if (!navSectionOpen[workProductNavSection(selectedItem.status)]) return;
     const el = document.getElementById(workbenchJobDomId(key));
     el?.scrollIntoView({ block: "nearest" });
-  }, [selectedItem?.job_key, listOpen]);
+  }, [selectedItem?.job_key, selectedItem, listOpen, navSectionOpen]);
 
   useEffect(() => {
     if (listOpen) return;
@@ -5400,16 +5735,18 @@ export function WorkProductsApp() {
 
   const onIndexKeyDown = (e: React.KeyboardEvent) => {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Home" && e.key !== "End") return;
-    if (!visibleItems.length) return;
+    if (!navKeyboardItems.length) return;
     e.preventDefault();
     const idx = selectedItem
-      ? visibleItems.findIndex((it) => it.job_key && it.job_key === selectedItem.job_key)
+      ? navKeyboardItems.findIndex((it) => it.job_key && it.job_key === selectedItem.job_key)
       : -1;
     let next = 0;
-    if (e.key === "ArrowDown") next = Math.min(visibleItems.length - 1, Math.max(0, idx) + 1);
-    else if (e.key === "ArrowUp") next = Math.max(0, idx < 0 ? 0 : idx - 1);
-    else if (e.key === "End") next = visibleItems.length - 1;
-    const hit = visibleItems[next];
+    if (idx < 0) {
+      next = e.key === "ArrowUp" || e.key === "End" ? navKeyboardItems.length - 1 : 0;
+    } else if (e.key === "ArrowDown") next = Math.min(navKeyboardItems.length - 1, idx + 1);
+    else if (e.key === "ArrowUp") next = Math.max(0, idx - 1);
+    else if (e.key === "End") next = navKeyboardItems.length - 1;
+    const hit = navKeyboardItems[next];
     if (hit) selectItem(hit);
   };
 
@@ -5450,7 +5787,7 @@ export function WorkProductsApp() {
         ? items.find((it) => String(it.prompt_id || "").trim() === needlePid)
         : undefined);
     if (!match && needleMedia) {
-      match = pickBestMediaMatch(visibleItems, needleMedia) || pickBestMediaMatch(items, needleMedia);
+      match = pickBestMediaMatch(visibleItems, needleMedia) || pickBestMediaMatch(items, needleMedia) || undefined;
     }
     if (!match) return;
 
@@ -5477,6 +5814,12 @@ export function WorkProductsApp() {
     }
     if (!inVisible) return;
 
+    const sectionId = workProductNavSection(match.status);
+    if (!navSectionOpen[sectionId]) {
+      setNavSectionOpenId(sectionId, true);
+      return;
+    }
+
     deepLinkScrolled.current = true;
     if (!focusJob && match.job_key && !focusMedia) setFocusJob(String(match.job_key));
     if (!listOpen) return;
@@ -5498,6 +5841,8 @@ export function WorkProductsApp() {
     statusOff.size,
     appetiteOff.size,
     visibleItems,
+    navSectionOpen,
+    setNavSectionOpenId,
   ]);
 
   const toggleStatusFilter = (status: string) => {
@@ -5910,6 +6255,7 @@ export function WorkProductsApp() {
       ) : null}
 
       <RemoveReviewBanner enabled={!appetiteOff.has("remove")} />
+      {listOpen ? <ComfyHealthBanner health={comfyHealth} /> : null}
 
       <div className={`work-products-shell${listOpen ? "" : " work-products-shell--list-collapsed"}`}>
         {error && listOpen ? <div className="work-products-error">{error}</div> : null}
@@ -6009,19 +6355,44 @@ export function WorkProductsApp() {
             </div>
             {visibleItems.length ? (
               <div className="work-products-index__list" role="listbox" aria-label="Recent jobs">
-                {visibleItems.map((item) => (
-                  <WorkProductIndexRow
-                    key={item.job_key}
-                    item={item}
-                    selected={Boolean(selectedItem && item.job_key === selectedItem.job_key)}
-                    onSelect={selectItem}
-                    movingPending={pendingMoveMutation.isPending}
-                    onMovePending={(it, delta) => {
-                      const key = String(it.job_key || "").trim();
-                      if (!key) return;
-                      pendingMoveMutation.mutate({ job_key: key, delta });
-                    }}
-                  />
+                {navSections.map((sec) => (
+                  <WorkProductIndexSection
+                    key={sec.id}
+                    id={sec.id}
+                    label={sec.label}
+                    title={
+                      sec.id === "live" && comfyHealthBackoff
+                        ? "Drain paused until the next successful Comfy health check."
+                        : sec.title
+                    }
+                    count={sec.items.length}
+                    badges={workProductNavSectionBadges(sec.id, sec.items)}
+                    hint={
+                      sec.id === "live" && comfyHealthBackoff ? (
+                        <span className="work-products-index__section-badge work-products-index__section-badge--error">
+                          backoff
+                          {comfyHealthRetrySec > 0 ? ` · ${formatComfyRetry(comfyHealthRetrySec)}` : ""}
+                        </span>
+                      ) : null
+                    }
+                    open={navSectionOpen[sec.id]}
+                    onOpenChange={(open) => setNavSectionOpenId(sec.id, open)}
+                  >
+                    {sec.items.map((item) => (
+                      <WorkProductIndexRow
+                        key={item.job_key}
+                        item={item}
+                        selected={Boolean(selectedItem && item.job_key === selectedItem.job_key)}
+                        onSelect={selectItem}
+                        movingPending={pendingMoveMutation.isPending}
+                        onMovePending={(it, spec) => {
+                          const key = String(it.job_key || "").trim();
+                          if (!key) return;
+                          pendingMoveMutation.mutate({ job_key: key, ...spec });
+                        }}
+                      />
+                    ))}
+                  </WorkProductIndexSection>
                 ))}
               </div>
             ) : (

@@ -825,6 +825,7 @@ class TestWorkProducts(unittest.TestCase):
         self.assertEqual(orphan.get("status"), "error")
         self.assertIn("No frames generated", str(orphan.get("error") or ""))
         self.assertTrue(orphan.get("history_from_comfy"))
+        self.assertEqual((orphan.get("failure") or {}).get("primary"), "discard")
 
     def test_extract_history_error_fallback_when_no_message(self):
         from shape_factory import extract_history_execution_error, format_history_error_text
@@ -882,6 +883,94 @@ class TestWorkProducts(unittest.TestCase):
             self.assertEqual(submit.get("healed_from"), "interrupted")
             self.assertNotIn("interrupted_reason", submit)
             self.assertTrue(any(str(mp4) in str(p) for p in submit.get("outputs") or []))
+
+    def test_reconcile_heals_error_when_mp4_exists(self):
+        from shape_factory_work_products import reconcile_inflight_jobs_with_comfy
+
+        with tempfile.TemporaryDirectory() as td:
+            data = Path(td)
+            jobs = data / "shape_factory" / "jobs" / "FB8VA5-ZOOMOUT"
+            jobs.mkdir(parents=True)
+            out = data / "output" / "og" / "2026-09-08"
+            out.mkdir(parents=True)
+            prefix = "og/2026-09-08/error_healed"
+            mp4 = out / "error_healed_00001.mp4"
+            mp4.write_bytes(b"ok")
+            key = "error_healed"
+            path = jobs / f"{key}.job.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "job_key": key,
+                        "family_slug": "FB8VA5-ZOOMOUT",
+                        "output_prefix": prefix,
+                        "submit": {
+                            "status": "error",
+                            "error": "[Errno 104] Connection reset by peer",
+                            "attempts": 1,
+                            "retryable": True,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            summary = reconcile_inflight_jobs_with_comfy(
+                data_root=data,
+                comfy_server="http://example.invalid",
+                queue_running=[],
+                queue_pending=[],
+                persist=True,
+                auto_retry_oom=False,
+                output_root=data / "output",
+            )
+            self.assertGreaterEqual(int(summary.get("healed") or 0), 1)
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            submit = saved["submit"]
+            self.assertEqual(submit["status"], "complete")
+            self.assertEqual(submit.get("healed_from"), "error")
+            self.assertNotIn("error", submit)
+
+    def test_reconcile_requeues_transient_submit_error(self):
+        from shape_factory_work_products import reconcile_inflight_jobs_with_comfy
+
+        with tempfile.TemporaryDirectory() as td:
+            data = Path(td)
+            jobs = data / "shape_factory" / "jobs" / "X-KNEEL-FB9"
+            jobs.mkdir(parents=True)
+            key = "transient_reset"
+            path = jobs / f"{key}.job.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "job_key": key,
+                        "family_slug": "X-KNEEL-FB9",
+                        "submit": {
+                            "status": "error",
+                            "error": "[Errno 104] Connection reset by peer",
+                            "attempts": 1,
+                            "max_attempts": 3,
+                            "retryable": True,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            summary = reconcile_inflight_jobs_with_comfy(
+                data_root=data,
+                comfy_server="http://example.invalid",
+                queue_running=[],
+                queue_pending=[],
+                persist=True,
+                auto_retry_oom=False,
+                output_root=data / "output",
+            )
+            self.assertGreaterEqual(int(summary.get("requeued") or 0), 1)
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            submit = saved["submit"]
+            self.assertEqual(submit["status"], "pending")
+            self.assertEqual(submit.get("requeued_from"), "error")
+            self.assertEqual(submit.get("attempts"), 1)
+            self.assertIn("Connection reset", str(submit.get("error") or ""))
 
     def test_reconcile_rebinds_interrupted_job_by_workflow_name(self):
         from shape_factory_work_products import reconcile_inflight_jobs_with_comfy

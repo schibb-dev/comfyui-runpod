@@ -208,9 +208,18 @@ def collect_ops_status(
         hourly_enabled = None
 
     last_park = control.get("last_park") if isinstance(control.get("last_park"), dict) else None
+    comfy_health = None
+    if data_root is not None:
+        try:
+            from shape_factory_comfy_health import snapshot_comfy_health  # type: ignore
+
+            comfy_health = snapshot_comfy_health(data_root)
+        except Exception:
+            comfy_health = None
     return {
         "ok": True,
         "comfy": comfy,
+        "comfy_health": comfy_health,
         "hourly": {"enabled": hourly_enabled},
         "drain": {
             "active": drain_active,

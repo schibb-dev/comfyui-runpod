@@ -82,6 +82,8 @@ def mutate_job(
     mark_out: Optional[float] = None,
     slot: Optional[str] = None,
     binding_path: Optional[str] = None,
+    successor_job_key: Optional[str] = None,
+    remediated_action: Optional[str] = None,
 ) -> dict[str, Any]:
     """Mutate/edit an existing flow job using one canonical control entrypoint."""
     import shape_factory as sf
@@ -227,6 +229,47 @@ def mutate_job(
         _append_control_event(
             data_root=root,
             action=act,
+            job_key=job_key or str(out.get("job_key") or "").strip() or None,
+            job_path=job_path,
+            actor=actor,
+            source_surface=source_surface,
+            reason=reason,
+            ok=bool(out.get("ok")),
+        )
+        return out
+    if act in {"retry_same", "retry_submit"}:
+        out = sf.retry_failed_job_to_pending(
+            data_root=root,
+            server=server,
+            job_key=job_key,
+            job_path=job_path,
+            timeout_s=timeout_s,
+            pending_position=pending_position,
+        )
+        out["control"] = control
+        _append_control_event(
+            data_root=root,
+            action="retry_same",
+            job_key=job_key or str(out.get("job_key") or "").strip() or None,
+            job_path=job_path,
+            actor=actor,
+            source_surface=source_surface,
+            reason=reason,
+            ok=bool(out.get("ok")),
+        )
+        return out
+    if act == "mark_remediated":
+        out = sf.mark_failed_job_remediated(
+            data_root=root,
+            job_key=job_key,
+            job_path=job_path,
+            action=str(remediated_action or "replay").strip() or "replay",
+            successor_job_key=successor_job_key,
+        )
+        out["control"] = control
+        _append_control_event(
+            data_root=root,
+            action="mark_remediated",
             job_key=job_key or str(out.get("job_key") or "").strip() or None,
             job_path=job_path,
             actor=actor,

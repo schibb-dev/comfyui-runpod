@@ -62,6 +62,8 @@ import type {
   ShapeFactoryJobEditSnapshot,
   ShapeFactoryDiscardRequest,
   ShapeFactoryDiscardResponse,
+  ShapeFactoryRemediateRequest,
+  ShapeFactoryRemediateResponse,
   ShapeFactoryUpdatePendingTrimRequest,
   ShapeFactoryUpdatePendingTrimResponse,
   ShapeFactoryUpdatePendingBindingRequest,
@@ -1678,6 +1680,22 @@ export async function unqueueShapeFactory(req: ShapeFactoryUnqueueRequest): Prom
   return j;
 }
 
+export async function remediateShapeFactoryJob(
+  req: ShapeFactoryRemediateRequest,
+): Promise<ShapeFactoryRemediateResponse> {
+  const r = await fetch("/api/shape-factory/remediate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "retry_same", ...req }),
+  });
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryRemediateResponse;
+  if (!r.ok || !j.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(`POST /api/shape-factory/remediate failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
+}
+
 export async function discardShapeFactoryJob(req: ShapeFactoryDiscardRequest): Promise<ShapeFactoryDiscardResponse> {
   const r = await fetch("/api/shape-factory/discard", {
     method: "POST",
@@ -1712,12 +1730,18 @@ export async function beginShapeFactoryEdit(
 
 export async function movePendingQueue(req: {
   job_key: string;
-  delta: number;
+  delta?: number;
+  position?: "front" | "back";
 }): Promise<{ ok: boolean; job_key?: string; pending_rank?: number; queue?: Array<{ job_key: string; pending_rank: number }> }> {
   const r = await fetch("/api/shape-factory/pending-queue", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "move", job_key: req.job_key, delta: req.delta }),
+    body: JSON.stringify({
+      action: "move",
+      job_key: req.job_key,
+      delta: req.delta ?? 0,
+      position: req.position || "",
+    }),
   });
   const j = (await r.json().catch(() => ({}))) as {
     ok?: boolean;

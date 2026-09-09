@@ -92,6 +92,61 @@ class PendingQueueTests(unittest.TestCase):
             queue = compact_pending_ranks(jobs_dir=root)
             self.assertEqual([r["job_key"] for r in queue], ["b", "c", "a"])
 
+    def test_move_front_and_back(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            a = _write_job(root, "a", created="2026-01-01T00:00:00+00:00")
+            b = _write_job(root, "b", created="2026-01-02T00:00:00+00:00")
+            c = _write_job(root, "c", created="2026-01-03T00:00:00+00:00")
+            for path in (a, b, c):
+                enqueue_pending_job(path, jobs_dir=root)
+            move_pending_job(jobs_dir=root, job_key="c", position="front")
+            queue = compact_pending_ranks(jobs_dir=root)
+            self.assertEqual([r["job_key"] for r in queue], ["c", "a", "b"])
+            move_pending_job(jobs_dir=root, job_key="c", position="back")
+            queue = compact_pending_ranks(jobs_dir=root)
+            self.assertEqual([r["job_key"] for r in queue], ["a", "b", "c"])
+
+    def test_move_front_keeps_editing_lock_and_extra_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            a = _write_job(root, "a", created="2026-01-01T00:00:00+00:00")
+            b = _write_job(root, "held", created="2026-01-02T00:00:00+00:00", status="editing")
+            extra = json.loads(b.read_text(encoding="utf-8"))
+            extra["owned_prompt"] = {"text": "do-not-clobber"}
+            extra["submit"]["editing_from_status"] = "pending"
+            b.write_text(json.dumps(extra), encoding="utf-8")
+            enqueue_pending_job(a, jobs_dir=root)
+            enqueue_pending_job(b, jobs_dir=root)
+            move_pending_job(jobs_dir=root, job_key="held", position="front")
+            held = json.loads(b.read_text(encoding="utf-8"))
+            self.assertEqual(held["submit"]["status"], "editing")
+            self.assertEqual(held["submit"]["pending_rank"], 0)
+            self.assertEqual(held["owned_prompt"], {"text": "do-not-clobber"})
+            self.assertEqual(held["submit"]["editing_from_status"], "pending")
+            a_doc = json.loads(a.read_text(encoding="utf-8"))
+            self.assertEqual(a_doc["submit"]["pending_rank"], 1)
+
+    def test_reorder_does_not_clobber_claimed_head(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            a = _write_job(root, "a", created="2026-01-01T00:00:00+00:00")
+            b = _write_job(root, "b", created="2026-01-02T00:00:00+00:00")
+            enqueue_pending_job(a, jobs_dir=root)
+            enqueue_pending_job(b, jobs_dir=root)
+            claimed = json.loads(a.read_text(encoding="utf-8"))
+            claimed["submit"]["status"] = "queued"
+            claimed["submit"]["prompt_id"] = "pid-claimed"
+            claimed["marker"] = "drain-won"
+            a.write_text(json.dumps(claimed), encoding="utf-8")
+            move_pending_job(jobs_dir=root, job_key="b", position="front")
+            after = json.loads(a.read_text(encoding="utf-8"))
+            self.assertEqual(after["submit"]["status"], "queued")
+            self.assertEqual(after["submit"]["prompt_id"], "pid-claimed")
+            self.assertEqual(after["marker"], "drain-won")
+            queue = compact_pending_ranks(jobs_dir=root)
+            self.assertEqual([r["job_key"] for r in queue], ["b"])
+
     def test_destination_parse(self) -> None:
         self.assertEqual(parse_queue_destination({"destination": "pending"}), "pending")
         self.assertEqual(parse_queue_destination({"skip_submit": True}), "pending")

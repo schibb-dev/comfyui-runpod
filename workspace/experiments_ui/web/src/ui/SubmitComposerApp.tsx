@@ -11,6 +11,7 @@ import {
   queueShapeFactoryCombo,
   updatePendingShapeFactoryBinding,
   updatePendingShapeFactoryTrim,
+  updateShapeFactoryOwnedLoras,
   updateShapeFactoryOwnedParams,
   type IdentityStillCandidate,
   type IdentityStillMintTarget,
@@ -59,9 +60,17 @@ import type {
   ShapeFactoryMapQueueOverrides,
   WorkProductFamilyOption,
   WorkProductFamilyPromptProfile,
+  WorkProductLoraEntry,
+  WorkProductParamsValues,
 } from "./types";
 import { SubmitDurationField } from "./SubmitDurationField";
 import { formatSubmitDuration } from "./submitDuration";
+import { SubmitLorasEditor, SubmitParamsExtras } from "./SubmitRuntimeEditors";
+import {
+  composeRuntimeOverrides,
+  familyDefaultLoras,
+  familyDefaultParams,
+} from "./submitRuntime";
 import { SubmitPromptEditor, type SubmitPromptEditorHandle, type SubmitPromptOverride } from "./SubmitPromptEditor";
 import { VideoTrimControls, type VideoTrimPlaybackMode } from "./VideoTrimControls";
 import { useTrimPlaybackEnforcement } from "./useTrimPlayback";
@@ -513,6 +522,8 @@ function SubmitEditJobApp({
   const [sourcePathDraft, setSourcePathDraft] = useState("");
   const [promptProfileDraft, setPromptProfileDraft] = useState("");
   const [genFrames, setGenFrames] = useState<number | null>(null);
+  const [paramDraft, setParamDraft] = useState<WorkProductParamsValues>({});
+  const [loraDraft, setLoraDraft] = useState<WorkProductLoraEntry[]>([]);
   const [promptDirty, setPromptDirty] = useState(false);
   const [preferredWhen, setPreferredWhen] = useState<SubmitWhen>("queue");
   const [editFamilies, setEditFamilies] = useState<WorkProductFamilyOption[]>(
@@ -528,6 +539,8 @@ function SubmitEditJobApp({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const releasedRef = useRef(false);
   const persistFramesTimer = useRef<number | null>(null);
+  const persistParamsTimer = useRef<number | null>(null);
+  const persistLorasTimer = useRef<number | null>(null);
   const promptEditorRef = useRef<SubmitPromptEditorHandle | null>(null);
   const queryClient = useQueryClient();
   const recentSubmitsQuery = useQuery({
@@ -590,6 +603,8 @@ function SubmitEditJobApp({
           setBusy(false);
           return;
         }
+        if (persistParamsTimer.current) window.clearTimeout(persistParamsTimer.current);
+        if (persistLorasTimer.current) window.clearTimeout(persistLorasTimer.current);
         const res = await finishShapeFactoryEdit({
           job_key: editJob,
           action,
@@ -707,6 +722,8 @@ function SubmitEditJobApp({
     setPromptProfileDraft(promptSeed);
     const framesSeed = snap?.params_profile?.current?.frames;
     if (framesSeed != null && Number.isFinite(framesSeed)) setGenFrames(framesSeed);
+    setParamDraft({ ...(snap?.params_profile?.current || {}) });
+    setLoraDraft([...(snap?.loras_profile?.current || snap?.loras_profile?.seed || [])]);
     const ident =
       snap?.bindings?.identity_anchor || snap?.bindings?.identity_still || null;
     const identPath = String(ident?.relpath || ident?.path || "").trim();
@@ -739,6 +756,8 @@ function SubmitEditJobApp({
     return () => {
       window.removeEventListener("pagehide", onUnload);
       if (persistFramesTimer.current) window.clearTimeout(persistFramesTimer.current);
+      if (persistParamsTimer.current) window.clearTimeout(persistParamsTimer.current);
+      if (persistLorasTimer.current) window.clearTimeout(persistLorasTimer.current);
     };
   }, [editJob, finished]);
 
@@ -817,11 +836,39 @@ function SubmitEditJobApp({
     const resolved = next ?? seedFrames ?? null;
     setGenFrames(resolved);
     if (resolved == null || finished) return;
-    if (persistFramesTimer.current) window.clearTimeout(persistFramesTimer.current);
-    persistFramesTimer.current = window.setTimeout(() => {
+    persistRuntimeParams({ ...paramDraft, frames: resolved });
+  };
+
+  const persistRuntimeParams = (next: WorkProductParamsValues) => {
+    setParamDraft(next);
+    if (finished) return;
+    if (persistParamsTimer.current) window.clearTimeout(persistParamsTimer.current);
+    persistParamsTimer.current = window.setTimeout(() => {
+      const parameters: WorkProductParamsValues = {};
+      for (const key of ["frames", "steps", "overlap", "seed"] as const) {
+        const n = next[key];
+        if (n != null && Number.isFinite(n)) parameters[key] = n;
+      }
+      if (!Object.keys(parameters).length) return;
       void updateShapeFactoryOwnedParams({
         job_key: editJob,
-        parameters: { frames: resolved },
+        parameters,
+      })
+        .then(() => refreshSnapshot())
+        .catch((err) => {
+          setMsg(err instanceof Error ? err.message : String(err));
+        });
+    }, 350);
+  };
+
+  const persistLoras = (next: WorkProductLoraEntry[]) => {
+    setLoraDraft(next);
+    if (finished || !next.length) return;
+    if (persistLorasTimer.current) window.clearTimeout(persistLorasTimer.current);
+    persistLorasTimer.current = window.setTimeout(() => {
+      void updateShapeFactoryOwnedLoras({
+        job_key: editJob,
+        entries: next,
       })
         .then(() => refreshSnapshot())
         .catch((err) => {
@@ -1257,6 +1304,18 @@ function SubmitEditJobApp({
               disabled={busy || finished}
               onChange={persistFrames}
             />
+            <SubmitParamsExtras
+              draft={paramDraft}
+              seed={snap?.params_profile?.seed || familyDefaultParams(editFamilies, familySlug)}
+              disabled={busy || finished}
+              onChange={persistRuntimeParams}
+            />
+            <SubmitLorasEditor
+              draft={loraDraft}
+              seed={snap?.loras_profile?.seed || []}
+              disabled={busy || finished}
+              onChange={persistLoras}
+            />
             <SubmitPromptEditor
               ref={promptEditorRef}
               heading="Prompt"
@@ -1579,6 +1638,8 @@ function SubmitAdvanceComposerApp({
   const [varyPromptOverride, setVaryPromptOverride] = useState<SubmitPromptOverride | null>(null);
   const [derivePromptOverride, setDerivePromptOverride] = useState<SubmitPromptOverride | null>(null);
   const [genFrames, setGenFrames] = useState<number | null>(null);
+  const [paramDraft, setParamDraft] = useState<WorkProductParamsValues>({});
+  const [loraDraft, setLoraDraft] = useState<WorkProductLoraEntry[]>([]);
 
   const duration =
     videoDuration > 0
@@ -1920,6 +1981,13 @@ function SubmitAdvanceComposerApp({
           ? deriveFamily
           : extendFamily || varyFamily || deriveFamily || i2vFamily;
   const seedFrames = familyDefaultFrames(families, durationFamily);
+  const seedParams = familyDefaultParams(families, durationFamily);
+  const seedLoras = familyDefaultLoras(families, durationFamily);
+
+  useEffect(() => {
+    setParamDraft({});
+    setLoraDraft(familyDefaultLoras(families, durationFamily).map((row) => ({ ...row })));
+  }, [durationFamily, families]);
 
   const canSubmit = isStill
     ? Boolean(mediaRelpath.trim()) && Boolean(i2vFamily) && !busy
@@ -1982,8 +2050,26 @@ function SubmitAdvanceComposerApp({
     };
     if (activeClip?.clip_id || clipId) overrides.source_clip_id = activeClip?.clip_id || clipId;
     if (genFrames != null) overrides.parameters = { ...overrides.parameters, frames: genFrames };
+    const runtime = composeRuntimeOverrides(genFrames, paramDraft, seedParams, loraDraft, seedLoras);
+    if (runtime.parameters) {
+      overrides.parameters = { ...(overrides.parameters || {}), ...runtime.parameters };
+    }
+    if (runtime.loras) overrides.loras = runtime.loras;
     return { overrides, warning: win.warning };
-  }, [activeClip?.clip_id, clipId, fps, genFrames, markIn, markOut, videoDuration, windowOk]);
+  }, [
+    activeClip?.clip_id,
+    clipId,
+    fps,
+    genFrames,
+    loraDraft,
+    markIn,
+    markOut,
+    paramDraft,
+    seedLoras,
+    seedParams,
+    videoDuration,
+    windowOk,
+  ]);
 
   const submit = async (when: SubmitWhen) => {
     if (!canSubmit) return;
@@ -2000,16 +2086,17 @@ function SubmitAdvanceComposerApp({
             ? stillPath
             : `input/${stillPath.split("/").pop() || stillPath}`;
         const dest = destinationForWhen(when);
+        const runtime = composeRuntimeOverrides(genFrames, paramDraft, seedParams, loraDraft, seedLoras);
         const res = await queueShapeFactoryCombo({
           family_slug: i2vFamily,
           bindings: {
             source_still: bindingPath,
             ...(i2vPromptProfile ? { prompt_profile: i2vPromptProfile } : {}),
           },
-          ...(genFrames != null || i2vPromptOverride
+          ...(i2vPromptOverride || runtime.parameters || runtime.loras
             ? {
                 overrides: {
-                  ...(genFrames != null ? { parameters: { frames: genFrames } } : {}),
+                  ...runtime,
                   ...(i2vPromptOverride ? { prompt_profile: i2vPromptOverride } : {}),
                 },
               }
@@ -2219,13 +2306,11 @@ function SubmitAdvanceComposerApp({
 
     const { overrides, warning } = isStill
       ? {
-          overrides:
-            genFrames != null
-              ? ({ parameters: { frames: genFrames } } as ShapeFactoryMapQueueOverrides)
-              : undefined,
+          overrides: composeRuntimeOverrides(genFrames, paramDraft, seedParams, loraDraft, seedLoras) as ShapeFactoryMapQueueOverrides,
           warning: null as string | null,
         }
       : buildOverrides();
+    const runtimeExtras = overrides || {};
     const params = (overrides?.parameters || {}) as Record<string, unknown>;
     const vhs =
       overrides && windowOk
@@ -2286,7 +2371,15 @@ function SubmitAdvanceComposerApp({
       useWindow,
       vhs,
       vhsWarning: warning,
-      durationLabel: formatSubmitDuration(genFrames ?? seedFrames) || "family / variant default",
+      durationLabel: [
+        formatSubmitDuration(genFrames ?? seedFrames) || "family / variant default",
+        runtimeExtras.parameters && Object.keys(runtimeExtras.parameters).some((k) => k !== "frames")
+          ? "params edited"
+          : null,
+        runtimeExtras.loras ? "loras edited" : null,
+      ]
+        .filter(Boolean)
+        .join(" · "),
       identity: {
         mode: identityMode,
         path: identitySelectedPath,
@@ -2311,6 +2404,10 @@ function SubmitAdvanceComposerApp({
     families,
     genFrames,
     seedFrames,
+    loraDraft,
+    paramDraft,
+    seedLoras,
+    seedParams,
     i2vFamily,
     i2vPromptOverride,
     i2vPromptProfile,
@@ -2628,6 +2725,18 @@ function SubmitAdvanceComposerApp({
                     disabled={busy}
                     onChange={setGenFrames}
                   />
+                  <SubmitParamsExtras
+                    draft={paramDraft}
+                    seed={seedParams}
+                    disabled={busy}
+                    onChange={setParamDraft}
+                  />
+                  <SubmitLorasEditor
+                    draft={loraDraft}
+                    seed={seedLoras}
+                    disabled={busy}
+                    onChange={setLoraDraft}
+                  />
                   <SubmitPromptEditor
                     key={i2vPromptProfile || i2vFamily || "i2v-prompt"}
                     heading="Prompt"
@@ -2773,6 +2882,18 @@ function SubmitAdvanceComposerApp({
                   seedFrames={seedFrames}
                   disabled={busy}
                   onChange={setGenFrames}
+                />
+                <SubmitParamsExtras
+                  draft={paramDraft}
+                  seed={seedParams}
+                  disabled={busy}
+                  onChange={setParamDraft}
+                />
+                <SubmitLorasEditor
+                  draft={loraDraft}
+                  seed={seedLoras}
+                  disabled={busy}
+                  onChange={setLoraDraft}
                 />
                 {extendOn ? (
                   <SubmitPromptEditor

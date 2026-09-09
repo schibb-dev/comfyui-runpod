@@ -177,6 +177,7 @@ class JobEditTests(unittest.TestCase):
             self.assertEqual(snap.get("family_slug"), "TestFam")
             profile = snap.get("params_profile") or {}
             self.assertEqual((profile.get("current") or {}).get("frames"), 81)
+            self.assertIn("loras_profile", snap)
 
     def test_submit_job_file_pending_only_skips_editing(self) -> None:
         with tempfile.TemporaryDirectory() as td:

@@ -9,19 +9,85 @@ Drain (``submit --pending-only``) and Workbench share this order. Rank lives on
 from __future__ import annotations
 
 import datetime as _dt
+import fcntl
 import json
+import os
+import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 PENDING_RANK_KEY = "pending_rank"
+PENDING_QUEUE_LOCK_NAME = ".pending-queue.lock"
 PENDING_QUEUE_STATUSES = frozenset({"", "pending", "editing", "draft", "deposited", "error", "failed"})
 _BLOCKED_STATUSES = frozenset(
     {"queued", "running", "submitted", "complete", "completed", "abandoned"}
 )
+_HOLD_STATUSES = frozenset({"editing", "error", "failed"})
+_tls = threading.local()
 
 
 def jobs_dir_from_data_root(data_root: Path) -> Path:
     return Path(data_root).expanduser().resolve() / "shape_factory" / "jobs"
+
+
+def pending_queue_lock_path(jobs_dir: Path) -> Path:
+    return Path(jobs_dir).expanduser().resolve() / PENDING_QUEUE_LOCK_NAME
+
+
+@contextmanager
+def pending_queue_lock(jobs_dir: Path, *, timeout_s: float = 10.0) -> Iterator[None]:
+    """Exclusive lock for FIFO rank rewrites and drain job-file writes.
+
+    Re-entrant in the same thread so ``move`` → ``compact`` → ``reorder``
+    does not deadlock. Drain should take the same lock around job-file
+    writes so a jump-to-front cannot clobber a just-claimed head.
+    """
+    root = Path(jobs_dir).expanduser().resolve()
+    key = str(root)
+    held: dict[str, int] = getattr(_tls, "held", None) or {}
+    depth = int(held.get(key) or 0)
+    if depth > 0:
+        held[key] = depth + 1
+        _tls.held = held
+        try:
+            yield
+        finally:
+            held[key] = depth
+            if held[key] <= 0:
+                held.pop(key, None)
+        return
+
+    root.mkdir(parents=True, exist_ok=True)
+    lock_path = pending_queue_lock_path(root)
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o666)
+    deadline = time.monotonic() + max(0.2, float(timeout_s))
+    locked = False
+    try:
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = True
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("pending_queue_busy")
+                time.sleep(0.04)
+        held[key] = 1
+        _tls.held = held
+        try:
+            yield
+        finally:
+            held[key] = int(held.get(key) or 1) - 1
+            if held[key] <= 0:
+                held.pop(key, None)
+    finally:
+        try:
+            if locked:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
 
 def jobs_dir_from_job_path(job_path: Path) -> Path:
@@ -134,32 +200,62 @@ def _write_job(path: Path, job: dict[str, Any]) -> None:
         )
 
 
+def _queue_row_meta(path: Path, job: dict[str, Any], index: int) -> dict[str, Any]:
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    return {
+        "job_key": str(job.get("job_key") or path.stem.replace(".job", "")),
+        "job_path": str(path),
+        "pending_rank": index,
+        "status": str(submit.get("status") or "pending"),
+    }
+
+
+def _apply_pending_rank(path: Path, index: int) -> Optional[dict[str, Any]]:
+    """Stamp ``pending_rank`` on a freshly read job. Skip claimed / gone rows.
+
+    Re-reads so a drain that just wrote ``prompt_id`` / ``queued`` is not
+    clobbered, and an ``editing`` lock is never released by a reorder.
+    """
+    try:
+        job = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(job, dict) or not is_pending_queue_job(job):
+        return None
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else None
+    if submit is None:
+        submit = {}
+        job["submit"] = submit
+    status = str(submit.get("status") or "").strip().lower()
+    if status not in _HOLD_STATUSES:
+        submit["status"] = "pending"
+    changed = job_pending_rank(job) != index or _coerce_rank(submit.get(PENDING_RANK_KEY)) != index
+    if changed:
+        submit[PENDING_RANK_KEY] = index
+        job.pop(PENDING_RANK_KEY, None)
+        _write_job(path, job)
+    else:
+        submit[PENDING_RANK_KEY] = index
+    return _queue_row_meta(path, job, index)
+
+
 def compact_pending_ranks(*, jobs_dir: Path) -> list[dict[str, Any]]:
     """Rewrite ``pending_rank`` to 0..n-1 in FIFO order. Returns the compact list."""
-    rows = iter_pending_queue_job_files(jobs_dir)
-    out: list[dict[str, Any]] = []
-    for index, (path, job) in enumerate(rows):
-        submit = job.get("submit") if isinstance(job.get("submit"), dict) else None
-        if submit is None:
-            submit = {}
-            job["submit"] = submit
-        status = str(submit.get("status") or "").strip().lower()
-        if status not in {"editing", "error", "failed"}:
-            submit["status"] = "pending"
-        if job_pending_rank(job) != index:
-            submit[PENDING_RANK_KEY] = index
-            _write_job(path, job)
-        else:
-            submit[PENDING_RANK_KEY] = index
-        out.append(
-            {
-                "job_key": str(job.get("job_key") or path.stem.replace(".job", "")),
-                "job_path": str(path),
-                "pending_rank": index,
-                "status": str(submit.get("status") or "pending"),
-            }
-        )
-    return out
+    with pending_queue_lock(jobs_dir):
+        still: list[Path] = []
+        for path, _job in iter_pending_queue_job_files(jobs_dir):
+            try:
+                fresh = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if isinstance(fresh, dict) and is_pending_queue_job(fresh):
+                still.append(path)
+        out: list[dict[str, Any]] = []
+        for index, path in enumerate(still):
+            meta = _apply_pending_rank(path, index)
+            if meta is not None:
+                out.append(meta)
+        return out
 
 
 def enqueue_pending_job(
@@ -171,102 +267,112 @@ def enqueue_pending_job(
     """Place (or re-place) a job on the pending queue. ``position`` is append|front."""
     path = Path(job_path).expanduser().resolve()
     root = Path(jobs_dir).expanduser().resolve() if jobs_dir else jobs_dir_from_job_path(path)
-    job = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(job, dict):
-        raise ValueError(f"not a job document: {path}")
-    submit = job.get("submit") if isinstance(job.get("submit"), dict) else None
-    if submit is None:
-        submit = {}
-        job["submit"] = submit
-    submit.pop("prompt_id", None)
-    if str(submit.get("status") or "").strip().lower() != "editing":
-        submit["status"] = "pending"
-    pos = str(position or "append").strip().lower()
-    if pos in {"front", "next", "head"}:
-        pos = "front"
-    else:
-        pos = "append"
-    # Drop any stale rank so compact + insert sees a clean list, then insert.
-    submit.pop(PENDING_RANK_KEY, None)
-    _write_job(path, job)
+    with pending_queue_lock(root):
+        job = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(job, dict):
+            raise ValueError(f"not a job document: {path}")
+        submit = job.get("submit") if isinstance(job.get("submit"), dict) else None
+        if submit is None:
+            submit = {}
+            job["submit"] = submit
+        submit.pop("prompt_id", None)
+        if str(submit.get("status") or "").strip().lower() != "editing":
+            submit["status"] = "pending"
+        pos = str(position or "append").strip().lower()
+        if pos in {"front", "next", "head", "top"}:
+            pos = "front"
+        else:
+            pos = "append"
+        # Drop any stale rank so compact + insert sees a clean list, then insert.
+        submit.pop(PENDING_RANK_KEY, None)
+        _write_job(path, job)
 
-    others = [(p, j) for p, j in iter_pending_queue_job_files(root) if p.resolve() != path]
-    ordered = [(path, job)] + others if pos == "front" else others + [(path, job)]
-    for index, (p, j) in enumerate(ordered):
-        sub = j.get("submit") if isinstance(j.get("submit"), dict) else None
-        if sub is None:
-            sub = {}
-            j["submit"] = sub
-        if str(sub.get("status") or "").strip().lower() not in {"editing", "error", "failed"}:
-            sub["status"] = "pending"
-        sub[PENDING_RANK_KEY] = index
-        _write_job(p, j)
-    rank = 0 if pos == "front" else max(0, len(ordered) - 1)
-    return {
-        "ok": True,
-        "job_key": str(job.get("job_key") or path.stem.replace(".job", "")),
-        "job_path": str(path),
-        "pending_rank": rank,
-        "pending_count": len(ordered),
-        "position": pos,
-        "status": "pending",
-    }
+        others = [p for p, _j in iter_pending_queue_job_files(root) if p.resolve() != path]
+        ordered = [path] + others if pos == "front" else others + [path]
+        kept: list[dict[str, Any]] = []
+        for index, p in enumerate(ordered):
+            meta = _apply_pending_rank(p, index)
+            if meta is not None:
+                kept.append(meta)
+        rank = next((r["pending_rank"] for r in kept if Path(r["job_path"]).resolve() == path), None)
+        if rank is None:
+            rank = 0 if pos == "front" else max(0, len(kept) - 1)
+        return {
+            "ok": True,
+            "job_key": str(job.get("job_key") or path.stem.replace(".job", "")),
+            "job_path": str(path),
+            "pending_rank": rank,
+            "pending_count": len(kept),
+            "position": pos,
+            "status": str(submit.get("status") or "pending"),
+        }
+
+
+def _parse_move_destination(*, keys: list[str], idx: int, delta: int, position: str) -> int:
+    pos = str(position or "").strip().lower()
+    last = max(0, len(keys) - 1)
+    if pos in {"front", "top", "head", "next"}:
+        return 0
+    if pos in {"back", "bottom", "end", "append"}:
+        return last
+    return max(0, min(last, idx + int(delta)))
 
 
 def move_pending_job(
     *,
     jobs_dir: Path,
     job_key: str,
-    delta: int,
+    delta: int = 0,
+    position: str = "",
 ) -> dict[str, Any]:
-    """Move one job by ``delta`` slots (−1 = toward drain / earlier)."""
+    """Move one job by ``delta`` slots (−1 = toward drain) or ``position`` front|back.
+
+    Jump-to-front keeps ``editing`` so pending-drain will not snatch a locked job.
+    Rank writes re-read each file under ``pending_queue_lock``.
+    """
     key = str(job_key or "").strip()
     if not key:
         raise ValueError("job_key is required")
+    pos = str(position or "").strip().lower()
     try:
-        step = int(delta)
+        step = int(delta or 0)
     except (TypeError, ValueError) as exc:
         raise ValueError("delta must be an integer") from exc
-    if step == 0:
+    if not pos and step == 0:
         return {"ok": True, "job_key": key, "moved": False, "queue": compact_pending_ranks(jobs_dir=jobs_dir)}
 
-    rows = compact_pending_ranks(jobs_dir=jobs_dir)
-    keys = [str(r["job_key"]) for r in rows]
-    try:
-        idx = keys.index(key)
-    except ValueError as exc:
-        raise ValueError(f"not_pending:{key}") from exc
-    dest = max(0, min(len(keys) - 1, idx + step))
-    if dest == idx:
-        return {"ok": True, "job_key": key, "moved": False, "pending_rank": idx, "queue": rows}
-    keys.insert(dest, keys.pop(idx))
-    return reorder_pending_jobs(jobs_dir=jobs_dir, job_keys=keys)
+    with pending_queue_lock(jobs_dir):
+        rows = compact_pending_ranks(jobs_dir=jobs_dir)
+        keys = [str(r["job_key"]) for r in rows]
+        try:
+            idx = keys.index(key)
+        except ValueError as exc:
+            raise ValueError(f"not_pending:{key}") from exc
+        dest = _parse_move_destination(keys=keys, idx=idx, delta=step, position=pos)
+        if dest == idx:
+            return {"ok": True, "job_key": key, "moved": False, "pending_rank": idx, "queue": rows}
+        keys.insert(dest, keys.pop(idx))
+        return reorder_pending_jobs(jobs_dir=jobs_dir, job_keys=keys)
 
 
 def reorder_pending_jobs(*, jobs_dir: Path, job_keys: list[str]) -> dict[str, Any]:
     """Set the pending queue to ``job_keys`` order (must include every pending key)."""
     wanted = [str(k).strip() for k in job_keys if str(k or "").strip()]
-    rows = iter_pending_queue_job_files(jobs_dir)
-    by_key = {str(j.get("job_key") or p.stem.replace(".job", "")): (p, j) for p, j in rows}
-    current = list(by_key.keys())
-    missing = [k for k in wanted if k not in by_key]
-    if missing:
-        raise ValueError(f"unknown_or_not_pending:{','.join(missing)}")
-    extras = [k for k in current if k not in wanted]
-    ordered_keys = wanted + extras
-    for index, key in enumerate(ordered_keys):
-        path, job = by_key[key]
-        submit = job.get("submit") if isinstance(job.get("submit"), dict) else None
-        if submit is None:
-            submit = {}
-            job["submit"] = submit
-        submit[PENDING_RANK_KEY] = index
-        if str(submit.get("status") or "").strip().lower() not in {"editing", "error", "failed"}:
-            submit["status"] = "pending"
-        _write_job(path, job)
-    queue = compact_pending_ranks(jobs_dir=jobs_dir)
-    rank = next((r["pending_rank"] for r in queue if r["job_key"] == wanted[0]), None) if wanted else None
-    return {"ok": True, "moved": True, "job_key": wanted[0] if wanted else None, "pending_rank": rank, "queue": queue}
+    with pending_queue_lock(jobs_dir):
+        rows = iter_pending_queue_job_files(jobs_dir)
+        by_key = {str(j.get("job_key") or p.stem.replace(".job", "")): p for p, j in rows}
+        current = list(by_key.keys())
+        missing = [k for k in wanted if k not in by_key]
+        if missing:
+            raise ValueError(f"unknown_or_not_pending:{','.join(missing)}")
+        extras = [k for k in current if k not in wanted]
+        ordered_keys = wanted + extras
+        for index, key in enumerate(ordered_keys):
+            path = by_key[key]
+            _apply_pending_rank(path, index)
+        queue = compact_pending_ranks(jobs_dir=jobs_dir)
+        rank = next((r["pending_rank"] for r in queue if r["job_key"] == wanted[0]), None) if wanted else None
+        return {"ok": True, "moved": True, "job_key": wanted[0] if wanted else None, "pending_rank": rank, "queue": queue}
 
 
 def attach_pending_queue_meta(items: list[dict[str, Any]]) -> list[dict[str, Any]]:

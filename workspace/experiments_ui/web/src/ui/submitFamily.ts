@@ -294,6 +294,41 @@ export function jobPromptVariantName(item: {
   return formatPromptVariantStem(slug) || slug;
 }
 
+export type PromptOverrideHint = {
+  snowflake?: boolean | null;
+};
+
+function looksLikeScratchPrompt(profile?: string | null | PromptVariantNameSource | null): boolean {
+  const bits =
+    profile && typeof profile === "object"
+      ? [profile.path, profile.basename, profile.seed?.basename]
+      : [profile];
+  return bits.some((bit) => /\/_scratch\/|__draft_/i.test(String(bit || "")));
+}
+
+/** True when owned prompt text diverged from the catalog seed. */
+export function promptTextIsOverridden(
+  profile?: string | null | (PromptVariantNameSource & PromptOverrideHint) | null,
+  glance?: { prompt_snowflake?: boolean | null } | null,
+): boolean {
+  if (profile && typeof profile === "object" && profile.snowflake) return true;
+  if (glance?.prompt_snowflake) return true;
+  return looksLikeScratchPrompt(profile);
+}
+
+/** Variant name plus `` · edited`` when the job no longer matches the catalog. */
+export function jobPromptVariantDisplayName(item: {
+  job_key?: string | null;
+  prompt_profile?: string | null | (PromptVariantNameSource & PromptOverrideHint);
+  glance?: { prompt_snowflake?: boolean | null } | null;
+}): string {
+  const name = jobPromptVariantName(item);
+  if (promptTextIsOverridden(item.prompt_profile, item.glance)) {
+    return name ? `${name} · edited` : "edited";
+  }
+  return name;
+}
+
 export function isDefaultPromptVariant(input?: string | null | PromptVariantNameSource): boolean {
   return promptVariantSlug(input) === "default";
 }

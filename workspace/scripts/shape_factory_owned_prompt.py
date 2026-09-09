@@ -83,12 +83,111 @@ def fork_owned_prompt_from_profile_doc(
     )
 
 
+def is_scratch_prompt_path(raw: Any) -> bool:
+    """True for compose-scratch / ``__draft_`` prompt files (not catalog)."""
+    norm = str(raw or "").replace("\\", "/").lower()
+    if not norm:
+        return False
+    name = Path(norm).name
+    return "/_scratch/" in f"/{norm}" or "__draft_" in name
+
+
+def _resolve_prompt_profile_path(
+    raw: str,
+    *,
+    data_root: Optional[Path] = None,
+) -> Optional[Path]:
+    path = Path(str(raw or "").strip()).expanduser()
+    if path.is_file():
+        return path
+    if data_root is not None and str(raw or "").strip():
+        cand = Path(data_root).expanduser() / raw
+        if cand.is_file():
+            return cand
+        try:
+            from shape_factory_map import resolve_existing_path
+
+            found = resolve_existing_path(
+                raw,
+                output_root=Path(data_root),
+                data_root=Path(data_root),
+                workspace_root=None,
+            )
+            if found.is_file():
+                return found
+        except Exception:
+            pass
+    return None
+
+
+def _catalog_from_scratch_filename(
+    path: Path,
+    *,
+    data_root: Optional[Path] = None,
+) -> str:
+    """Recover ``pools/<family>/prompts/<stem>.json`` from ``<stem>__draft_<ts>.json``."""
+    stem = Path(path).stem
+    base = stem.split("__draft_", 1)[0].strip()
+    if not base or base == stem:
+        return ""
+    parts = str(path).replace("\\", "/").split("/")
+    family = ""
+    if "_scratch" in parts:
+        idx = parts.index("_scratch")
+        if idx + 1 < len(parts):
+            family = parts[idx + 1]
+    candidates: list[Path] = []
+    if data_root is not None and family:
+        candidates.append(Path(data_root).expanduser() / "pools" / family / "prompts" / f"{base}.json")
+    if family:
+        # Host vs container data roots often differ; try the scratch file's ancestor.
+        for parent in Path(path).resolve().parents:
+            if parent.name in {"shape_factory", ".data"}:
+                root = parent.parent if parent.name == "shape_factory" else parent
+                candidates.append(root / "pools" / family / "prompts" / f"{base}.json")
+                break
+    for cand in candidates:
+        if cand.is_file() and not is_scratch_prompt_path(str(cand)):
+            return str(cand.resolve())
+    return ""
+
+
+def catalog_source_profile_from_path(
+    source_profile: str,
+    *,
+    data_root: Optional[Path] = None,
+) -> str:
+    """Follow a scratch JSON's stamped catalog path; otherwise return the given path."""
+    raw = str(source_profile or "").strip()
+    if not raw:
+        return ""
+    path = _resolve_prompt_profile_path(raw, data_root=data_root)
+    if path is None:
+        return raw
+    if not is_scratch_prompt_path(str(path)):
+        return str(path)
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        doc = None
+    stamped = str((doc or {}).get("source_profile") or "").strip() if isinstance(doc, dict) else ""
+    if stamped and not is_scratch_prompt_path(stamped):
+        resolved = _resolve_prompt_profile_path(stamped, data_root=data_root)
+        return str(resolved) if resolved is not None else stamped
+    inferred = _catalog_from_scratch_filename(path, data_root=data_root)
+    return inferred or str(path)
+
+
 def fork_owned_prompt_from_profile_file(path: Path) -> Dict[str, Any]:
     p = Path(path).expanduser()
     doc = json.loads(p.read_text(encoding="utf-8"))
     if not isinstance(doc, dict):
         raise ValueError(f"prompt profile is not a JSON object: {p}")
-    return fork_owned_prompt_from_profile_doc(doc, source_profile=str(p.resolve()))
+    src = str(p.resolve())
+    stamped = str(doc.get("source_profile") or "").strip()
+    if stamped and not is_scratch_prompt_path(stamped):
+        src = stamped
+    return fork_owned_prompt_from_profile_doc(doc, source_profile=src)
 
 
 def get_owned_prompt(job: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -238,11 +337,16 @@ def owned_prompt_to_excerpt(
         out["negative_excerpt"] = negative if len(negative) <= 120 else negative[:119] + "…"
         out["negative_chars"] = len(negative)
 
-    seed = _seed_baseline_from_source_profile(source, data_root=data_root)
+    catalog = catalog_source_profile_from_path(source, data_root=data_root) if source else ""
+    seed = _seed_baseline_from_source_profile(catalog or source, data_root=data_root)
     if seed is not None:
         out["seed"] = seed
         seed_hash = str(seed.get("content_hash") or "").strip()
         out["snowflake"] = bool(seed_hash and seed_hash != ch)
+    # Compose scratch used to bind source_profile to the draft itself (same hash as
+    # the owned text). Treat those as edited unless we can compare a real catalog.
+    if is_scratch_prompt_path(source) and (not catalog or is_scratch_prompt_path(catalog)):
+        out["snowflake"] = True
     display_name = str(owned.get("name") or "").strip()
     if not display_name and seed is not None:
         display_name = str(seed.get("name") or "").strip()
@@ -274,25 +378,8 @@ def _seed_baseline_from_source_profile(
     raw = str(source_profile or "").strip()
     if not raw:
         return None
-    path = Path(raw).expanduser()
-    if not path.is_file() and data_root is not None:
-        cand = Path(data_root).expanduser() / raw
-        if cand.is_file():
-            path = cand
-        else:
-            # Try as path relative to pools / absolute-looking fragments.
-            try:
-                from shape_factory_map import resolve_existing_path
-
-                path = resolve_existing_path(
-                    raw,
-                    output_root=Path(data_root),
-                    data_root=Path(data_root),
-                    workspace_root=None,
-                )
-            except Exception:
-                path = Path(raw).expanduser()
-    if not path.is_file():
+    path = _resolve_prompt_profile_path(raw, data_root=data_root)
+    if path is None or not path.is_file():
         return None
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
@@ -525,11 +612,15 @@ def promote_prompt_to_library(
 
 def resolve_prompt_parent_path(job: Dict[str, Any]) -> Optional[str]:
     owned = get_owned_prompt(job)
+    raw = ""
     if owned and owned.get("source_profile"):
-        return str(owned.get("source_profile"))
-    binds = job.get("bindings") if isinstance(job.get("bindings"), dict) else {}
-    meta = binds.get("prompt_profile") if isinstance(binds, dict) else None
-    if isinstance(meta, dict):
-        raw = str(meta.get("path") or meta.get("relpath") or "").strip()
-        return raw or None
-    return None
+        raw = str(owned.get("source_profile"))
+    else:
+        binds = job.get("bindings") if isinstance(job.get("bindings"), dict) else {}
+        meta = binds.get("prompt_profile") if isinstance(binds, dict) else None
+        if isinstance(meta, dict):
+            raw = str(meta.get("path") or meta.get("relpath") or "").strip()
+    if not raw:
+        return None
+    catalog = catalog_source_profile_from_path(raw)
+    return catalog or raw

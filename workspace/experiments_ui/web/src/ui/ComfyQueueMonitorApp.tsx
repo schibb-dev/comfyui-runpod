@@ -12,6 +12,8 @@ import {
   saveQueueItemForLater,
   setQueueLedgerControl,
 } from "./api";
+import { ComfyHealthBanner } from "./ComfyHealthBanner";
+import { comfyHealthIsBackoff, formatComfyRetry } from "./comfyHealth";
 import { ComfyLiveMetricsBar, ComfyLivePreview } from "./ComfyLivePreview";
 import { ComfyUiLink } from "./comfyUiWindow";
 import { discoveryLibraryHref, parseQueueDeepLink, queueHref, submitHref, workbenchHref } from "./discoveryDeepLink";
@@ -20,7 +22,7 @@ import { PipelineMediaPlayer, vhsWindowFromKeyParams } from "./PipelineMediaPlay
 import { PipelineFilterRow, PipelineList, PipelineScreen, PipelineScroll } from "./PipelineScreen";
 import { nextQueueSectionShowForDoubleClick } from "./filterGroupDoubleClick";
 import { PromptPeekButton } from "./PromptPeek";
-import { jobPromptVariantName } from "./submitFamily";
+import { jobPromptVariantDisplayName } from "./submitFamily";
 import { queryKeys } from "./queryKeys";
 import type {
   ComfyHistoryItem,
@@ -146,9 +148,10 @@ function queueGlanceRows(
   }
   {
     const promptLabel =
-      jobPromptVariantName({
+      jobPromptVariantDisplayName({
         job_key: item.job_key,
         prompt_profile: item.prompt_profile || g.prompt_profile,
+        glance: g,
       }) ||
       String(g.prompt_profile || "").trim() ||
       null;
@@ -1045,6 +1048,8 @@ function QueueLedgerPanel({
   const watchOn = ops?.watch_queue?.running;
   const comfyRun = ops?.comfy?.running;
   const comfyPend = ops?.comfy?.pending;
+  const comfyHealth = status?.comfy_health || ops?.comfy_health;
+  const comfyBackoff = comfyHealthIsBackoff(comfyHealth);
   const lastParkAt = ops?.ledger?.last_park_at;
   const lastParkAdded = ops?.ledger?.last_park?.added;
   const stats = status?.stats;
@@ -1091,6 +1096,17 @@ function QueueLedgerPanel({
               />
               <FeederPill on={hourlyOn} onLabel="Hourlies on" offLabel="Hourlies off" unknownLabel="Hourlies —" />
               <FeederPill on={drainOn} onLabel="Drain on" offLabel="Drain off" unknownLabel="Drain —" />
+              {comfyBackoff ? (
+                <span
+                  className="queue-ledger__pill queue-ledger__pill--warn"
+                  title={comfyHealth?.error || ""}
+                >
+                  Comfy backoff
+                  {typeof comfyHealth?.retry_in_sec === "number" && comfyHealth.retry_in_sec > 0
+                    ? ` · ${formatComfyRetry(comfyHealth.retry_in_sec)}`
+                    : ""}
+                </span>
+              ) : null}
               <FeederPill on={watchOn} onLabel="Watch-queue on" offLabel="Watch-queue off" unknownLabel="Watch-queue —" />
             </div>
             <div className="queue-ledger__actions">
@@ -1581,6 +1597,7 @@ export function ComfyQueueMonitorApp() {
           <p className="queue-monitor-hint">
             <strong>Clear waiting</strong> empties Comfy pending. Ledger restore state is managed on the Ledger tab.
           </p>
+          <ComfyHealthBanner health={ledger?.comfy_health || ledger?.ops?.comfy_health} />
           <div className="queue-monitor-toolbar">
             <PipelineFilterRow aria-label="Queue sections">
               <StatusChip

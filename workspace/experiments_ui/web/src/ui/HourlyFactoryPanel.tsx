@@ -10,6 +10,7 @@ import {
 } from "./hourlyBacklogNav";
 import { PipelineMediaPlayer } from "./PipelineMediaPlayer";
 import { routeHref } from "./routes";
+import { comfyHealthIsBackoff, comfyHealthSummary } from "./comfyHealth";
 import type {
   HomeSummaryResponse,
   HourlyChainBacklog,
@@ -175,6 +176,9 @@ function HourlyScheduleControls({
         {num(initial?.factory_pending)}
         {" · "}
         hourlies {num(initial?.factory_hourly_pending)}/{num(sch?.pending_hourly_min ?? hourlyMin)}
+        {comfyHealthIsBackoff(initial?.comfy_health)
+          ? ` · ${comfyHealthSummary(initial?.comfy_health, initial?.comfy_health?.retry_in_sec)}`
+          : ""}
         {initial?.still_promo?.until ? ` · image starters promoted until ${formatDue(initial.still_promo.until)}` : ""}
         {initial?.faceblast_promo?.until
           ? ` · FaceBlast-extend prompts promoted until ${formatDue(initial.faceblast_promo.until)}`

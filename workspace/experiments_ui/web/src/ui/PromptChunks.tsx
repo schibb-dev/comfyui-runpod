@@ -88,7 +88,7 @@ export function PromptSnowflakeChip({
       className={`work-product-badge work-product-badge--snowflake${className ? ` ${className}` : ""}`}
       title={title || "Structurally edited from template (prompt, params, or loras)"}
     >
-      snowflake
+      edited
     </span>
   );
 }

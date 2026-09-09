@@ -2324,6 +2324,12 @@ def _hourly_schedule_payload(cfg: ServerConfig) -> Dict[str, Any]:
     out["comfy_running"] = running
     out["factory_pending"] = factory_pending
     out["factory_hourly_pending"] = factory_hourly_pending
+    try:
+        from shape_factory_comfy_health import snapshot_comfy_health  # type: ignore
+
+        out["comfy_health"] = snapshot_comfy_health(data_root)
+    except Exception:
+        pass
     return out
 
 
@@ -2986,6 +2992,53 @@ def _shape_factory_unqueue_payload(cfg: ServerConfig, body: Dict[str, Any]) -> D
     )
 
 
+def _shape_factory_remediate_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /api/shape-factory/remediate — { job_key, action: retry_same }."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_creation_control import mutate_job  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    action = str(body.get("action") or "retry_same").strip().lower() or "retry_same"
+    if action not in {"retry_same", "retry_submit", "mark_remediated"}:
+        raise ValueError("action must be retry_same or mark_remediated")
+    job_key = str(body.get("job_key") or "").strip() or None
+    job_path_raw = str(body.get("job_path") or "").strip() or None
+    if not job_key and not job_path_raw:
+        raise ValueError("missing_job_key")
+    reason = str(body.get("reason") or action).strip() or action
+    actor = str(body.get("actor") or "operator").strip() or "operator"
+    source_surface = str(body.get("source_surface") or "workbench").strip() or "workbench"
+    pending_position = str(body.get("pending_position") or "append").strip() or "append"
+    successor_job_key = str(body.get("successor_job_key") or "").strip() or None
+    remediated_action = str(body.get("remediated_action") or "replay").strip() or "replay"
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    if action == "mark_remediated":
+        return mutate_job(
+            action="mark_remediated",
+            data_root=data_root,
+            job_key=job_key,
+            job_path=Path(job_path_raw) if job_path_raw else None,
+            successor_job_key=successor_job_key,
+            remediated_action=remediated_action,
+            reason=reason,
+            actor=actor,
+            source_surface=source_surface,
+        )
+    return mutate_job(
+        action="retry_same",
+        server=str(cfg.comfy_server),
+        data_root=data_root,
+        job_key=job_key,
+        job_path=Path(job_path_raw) if job_path_raw else None,
+        pending_position=pending_position,
+        reason=reason,
+        actor=actor,
+        source_surface=source_surface,
+    )
+
+
 def _shape_factory_pending_queue_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
     """POST /api/shape-factory/pending-queue — list / move / reorder factory pending FIFO."""
     d = _workspace_scripts_dir()
@@ -3006,11 +3059,15 @@ def _shape_factory_pending_queue_payload(cfg: ServerConfig, body: Dict[str, Any]
         queue = compact_pending_ranks(jobs_dir=jobs_dir)
         return {"ok": True, "action": "list", "count": len(queue), "queue": queue}
     if action == "move":
-        return move_pending_job(
-            jobs_dir=jobs_dir,
-            job_key=str(body.get("job_key") or "").strip(),
-            delta=int(body.get("delta") or 0),
-        )
+        try:
+            return move_pending_job(
+                jobs_dir=jobs_dir,
+                job_key=str(body.get("job_key") or "").strip(),
+                delta=int(body.get("delta") or 0),
+                position=str(body.get("position") or "").strip(),
+            )
+        except TimeoutError as exc:
+            return {"ok": False, "error": "pending_queue_busy", "detail": str(exc)}
     if action == "reorder":
         keys = body.get("job_keys") if isinstance(body.get("job_keys"), list) else []
         return reorder_pending_jobs(jobs_dir=jobs_dir, job_keys=[str(k) for k in keys])
@@ -4806,6 +4863,12 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
         payload["history_attach_error"] = history_obj.get("detail") or history_obj.get("error")
     if reconcile is not None:
         payload["comfy_reconcile"] = reconcile
+    try:
+        from shape_factory_comfy_health import snapshot_comfy_health  # type: ignore
+
+        payload["comfy_health"] = snapshot_comfy_health(data_root)
+    except Exception:
+        pass
     # Re-attach after live/history rows so synthetic items also get markers when resolvable.
     try:
         from shape_factory_markers import attach_markers_to_work_products  # type: ignore
@@ -12863,6 +12926,16 @@ class Handler(BaseHTTPRequestHandler):
                 out["ops"] = _queue_ops_status(cfg)
             except Exception as e:
                 out["ops"] = {"ok": False, "error": "ops_status_failed", "detail": str(e)}
+            try:
+                from shape_factory_comfy_health import snapshot_comfy_health  # type: ignore
+                from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+                health = snapshot_comfy_health(resolve_shape_factory_data_root(repo_root=_repo_root()))
+                out["comfy_health"] = health
+                if isinstance(out.get("ops"), dict):
+                    out["ops"]["comfy_health"] = health
+            except Exception:
+                pass
             return _json_response(self, 200, out)
 
         if path == "/api/queue/ledger-events":
@@ -13061,6 +13134,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_shape_factory_derive_post()
         if path == "/api/shape-factory/unqueue":
             return self._handle_shape_factory_unqueue_post()
+        if path == "/api/shape-factory/remediate":
+            return self._handle_shape_factory_remediate_post()
         if path == "/api/shape-factory/pending-queue":
             return self._handle_shape_factory_pending_queue_post()
         if path == "/api/shape-factory/begin-edit":
@@ -13430,6 +13505,8 @@ class Handler(BaseHTTPRequestHandler):
             payload = _shape_factory_pending_queue_payload(cfg, body if isinstance(body, dict) else {})
         except ValueError as e:
             return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except TimeoutError as e:
+            return _json_response(self, 409, {"ok": False, "error": "pending_queue_busy", "detail": str(e)})
         except Exception as e:
             return _json_response(self, 500, {"ok": False, "error": "shape_factory_pending_queue_failed", "detail": str(e)})
         code = 200 if payload.get("ok", True) else 400
@@ -13450,6 +13527,27 @@ class Handler(BaseHTTPRequestHandler):
         if payload.get("error") == "still_running":
             return _json_response(self, 409, payload)
         code = 200 if payload.get("ok", True) else 502
+        return _json_response(self, code, payload)
+
+    def _handle_shape_factory_remediate_post(self) -> None:
+        """POST /api/shape-factory/remediate — return a failed job to pending (same job)."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _shape_factory_remediate_payload(cfg, body if isinstance(body, dict) else {})
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "shape_factory_remediate_failed", "detail": str(e)})
+        if payload.get("error") in {"still_running", "not_failed"}:
+            return _json_response(self, 409, payload)
+        if payload.get("error") == "comfy_unreachable":
+            return _json_response(self, 502, payload)
+        if payload.get("error") == "job_not_found":
+            return _json_response(self, 404, payload)
+        code = 200 if payload.get("ok", True) else 400
         return _json_response(self, code, payload)
 
     def _handle_shape_factory_begin_edit_post(self) -> None:
@@ -16533,7 +16631,9 @@ def main() -> int:
     print(
         "[experiments-ui] comfy_live_routes=GET /api/comfy/live-preview, GET /api/comfy/live-status, GET /api/comfy/logs"
     )
-    print(        "[experiments-ui] shape_factory_routes=GET /api/shape-factory/map, GET /api/shape-factory/prompt-profile, GET /api/shape-factory/families, GET /api/shape-factory/work-products, GET /api/shape-factory/work-product, GET /api/shape-factory/json-peek, GET /api/shape-factory/quarantine, GET /api/shape-factory/submit-attempts, POST /api/shape-factory/queue, POST /api/shape-factory/replay, POST /api/shape-factory/swap-family, POST /api/shape-factory/derive, POST /api/shape-factory/unqueue, POST /api/shape-factory/discard, POST /api/shape-factory/update-pending-trim, POST /api/shape-factory/quarantine/release")
+    print(
+        "[experiments-ui] shape_factory_routes=GET /api/shape-factory/map, GET /api/shape-factory/prompt-profile, GET /api/shape-factory/families, GET /api/shape-factory/work-products, GET /api/shape-factory/work-product, GET /api/shape-factory/json-peek, GET /api/shape-factory/quarantine, GET /api/shape-factory/submit-attempts, POST /api/shape-factory/queue, POST /api/shape-factory/replay, POST /api/shape-factory/swap-family, POST /api/shape-factory/derive, POST /api/shape-factory/unqueue, POST /api/shape-factory/remediate, POST /api/shape-factory/discard, POST /api/shape-factory/update-pending-trim, POST /api/shape-factory/quarantine/release"
+    )
     server.serve_forever()
     return 0
 

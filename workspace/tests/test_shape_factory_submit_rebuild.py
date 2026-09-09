@@ -147,15 +147,71 @@ class ShapeFactorySubmitRebuildTests(unittest.TestCase):
                 os.environ["SHAPE_FACTORY_SUBMIT_MAX_ATTEMPTS"] = prev
 
     def test_permanent_submit_failure_hint(self) -> None:
-        from shape_factory import abandon_submit_failure, is_permanent_submit_failure, job_abandoned
+        from shape_factory import (
+            abandon_submit_failure,
+            is_permanent_submit_failure,
+            is_transient_submit_error,
+            job_abandoned,
+            requeue_transient_submit_error,
+        )
 
         self.assertTrue(is_permanent_submit_failure("Invalid image file: input/x.png"))
         self.assertTrue(is_permanent_submit_failure("no companion PNG for bindings"))
         self.assertFalse(is_permanent_submit_failure("Connection reset by peer"))
+        self.assertTrue(is_transient_submit_error("[Errno 104] Connection reset by peer"))
+        self.assertTrue(is_transient_submit_error("Connection refused"))
+        self.assertFalse(is_transient_submit_error("Invalid image file: input/x.png"))
+        job_retry = {
+            "submit": {
+                "status": "error",
+                "error": "[Errno 104] Connection reset by peer",
+                "attempts": 1,
+                "max_attempts": 3,
+                "retryable": True,
+            }
+        }
+        self.assertTrue(requeue_transient_submit_error(job_retry))
+        self.assertEqual(job_retry["submit"]["status"], "pending")
+        self.assertEqual(job_retry["submit"]["attempts"], 1)
+        self.assertEqual(job_retry["submit"].get("requeued_from"), "error")
+        job_perm = {"submit": {"status": "error", "error": "Invalid image file: x.png", "attempts": 1}}
+        self.assertFalse(requeue_transient_submit_error(job_perm))
+        self.assertEqual(job_perm["submit"]["status"], "error")
         job: dict = {}
         abandon_submit_failure(job, error="Invalid image file: x.png", server="http://x", attempts=3)
         self.assertTrue(job_abandoned(job))
         self.assertEqual(job["submit"]["attempts"], 3)
+
+    def test_transient_submit_backoff_holds_drain(self) -> None:
+        from shape_factory import (
+            job_in_transient_submit_backoff,
+            job_pending_submit,
+            job_transient_submit_backoff_remaining,
+            submit_backoff_seconds,
+        )
+
+        self.assertEqual(submit_backoff_seconds(1), 60)
+        self.assertEqual(submit_backoff_seconds(2), 180)
+        self.assertEqual(submit_backoff_seconds(9), 480)
+        attempted = "2026-09-09T12:00:00+00:00"
+        import datetime as dt
+
+        attempted_ts = dt.datetime.fromisoformat(attempted).timestamp()
+        job = {
+            "submit": {
+                "status": "error",
+                "error": "[Errno 104] Connection reset by peer",
+                "attempts": 1,
+                "max_attempts": 3,
+                "attempted_at": attempted,
+                "retryable": True,
+            }
+        }
+        self.assertTrue(job_in_transient_submit_backoff(job, now=attempted_ts + 10))
+        self.assertGreater(job_transient_submit_backoff_remaining(job, now=attempted_ts + 10), 40)
+        # Per-job wait is informational; the drain gate is the Comfy health circuit.
+        self.assertTrue(job_pending_submit(job, now=attempted_ts + 10))
+        self.assertTrue(job_pending_submit(job, now=attempted_ts + 61))
 
     def test_hostify_repo_path_maps_workspace_data(self) -> None:
         from shape_factory import hostify_repo_path, shape_factory_repo_root

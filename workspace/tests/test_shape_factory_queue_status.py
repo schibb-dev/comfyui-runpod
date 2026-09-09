@@ -187,6 +187,32 @@ class QueueStatusTests(unittest.TestCase):
         self.assertEqual(result.get("comfy_running"), 1)
         self.assertEqual(result.get("comfy_pending"), 2)
 
+    def test_pending_only_skips_when_comfy_queue_probe_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            job_path = Path(tmp) / "job.job.json"
+            job_path.write_text(
+                json.dumps({"job_key": "t1", "submit": {"status": "pending"}}),
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                sf,
+                "comfy_waiting_queue_empty",
+                side_effect=ConnectionResetError(104, "Connection reset by peer"),
+            ):
+                result = sf.submit_job_file(
+                    job_path,
+                    server="http://x",
+                    data_root=Path(tmp),
+                    dry_run=False,
+                    force=False,
+                    pending_only=True,
+                )
+            self.assertTrue(result.get("skipped"))
+            self.assertEqual(result.get("reason"), "comfy_not_ready")
+            saved = json.loads(job_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["submit"]["status"], "pending")
+            self.assertEqual(saved["submit"].get("attempts") or 0, 0)
+
     def test_unqueue_demotes_factory_job_by_prompt_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_root = Path(tmp)
@@ -404,6 +430,57 @@ class QueueStatusTests(unittest.TestCase):
             self.assertEqual(submit.get("discard_reason"), "user_archived_failure")
             self.assertEqual(submit.get("previous_prompt_id"), "pid-err")
             self.assertNotIn("prompt_id", submit)
+
+    def test_retry_failed_job_returns_same_job_to_pending(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_root = Path(tmp)
+            jobs_dir = data_root / "shape_factory" / "jobs" / "F"
+            jobs_dir.mkdir(parents=True)
+            job_path = jobs_dir / "miss1.job.json"
+            job_path.write_text(
+                json.dumps(
+                    {
+                        "job_key": "miss1",
+                        "submit": {
+                            "status": "error",
+                            "error": "name 'ensure_comfy_submit_ready' is not defined",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = sf.retry_failed_job_to_pending(data_root=data_root, job_key="miss1")
+            self.assertTrue(result.get("ok"))
+            self.assertEqual(result.get("status"), "pending")
+            self.assertEqual(result.get("previous_status"), "error")
+            self.assertEqual(
+                result.get("requeued_error"),
+                "name 'ensure_comfy_submit_ready' is not defined",
+            )
+            saved = json.loads(job_path.read_text(encoding="utf-8"))
+            submit = saved["submit"]
+            self.assertEqual(submit["status"], "pending")
+            self.assertNotIn("error", submit)
+            self.assertEqual(
+                submit.get("requeued_error"),
+                "name 'ensure_comfy_submit_ready' is not defined",
+            )
+            self.assertIsInstance(submit.get("pending_rank"), int)
+
+    def test_retry_failed_job_refuses_pending(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_root = Path(tmp)
+            jobs_dir = data_root / "shape_factory" / "jobs" / "F"
+            jobs_dir.mkdir(parents=True)
+            job_path = jobs_dir / "ok1.job.json"
+            job_path.write_text(
+                json.dumps({"job_key": "ok1", "submit": {"status": "pending"}}),
+                encoding="utf-8",
+            )
+            result = sf.retry_failed_job_to_pending(data_root=data_root, job_key="ok1")
+            self.assertFalse(result.get("ok"))
+            self.assertEqual(result.get("error"), "not_failed")
+            self.assertTrue(job_path.is_file())
 
     def test_pending_only_limit_skips_already_submitted(self) -> None:
         """--limit must apply after pending filter, not to alphabetical all-jobs."""

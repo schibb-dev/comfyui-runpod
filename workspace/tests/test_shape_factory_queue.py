@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import support  # noqa: F401  — injects workspace/scripts onto sys.path
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -248,6 +250,51 @@ class ShapeFactoryQueueTests(unittest.TestCase):
             self.assertTrue(out.is_file())
             body = json.loads(out.read_text())
             self.assertEqual(body["positive"], "edited")
+            self.assertEqual(body.get("source_profile"), str(src.resolve()))
+
+    def test_lora_override_stamps_generated_job(self) -> None:
+        from shape_factory_queue import _apply_lora_override_to_generated_job
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            job_path = root / "job.json"
+            wf_path = root / "wf.json"
+            wf = {
+                "nodes": [
+                    {
+                        "id": 416,
+                        "type": "Power Lora Loader (rgthree)",
+                        "widgets_values": [
+                            {"on": True, "lora": "a.safetensors", "strength": 0.9, "strengthTwo": None},
+                            {"on": False, "lora": "b.safetensors", "strength": 0.5, "strengthTwo": None},
+                        ],
+                    }
+                ],
+                "links": [],
+            }
+            wf_path.write_text(json.dumps(wf), encoding="utf-8")
+            job = {"job_key": "demo", "loras": None}
+            job_path.write_text(json.dumps(job), encoding="utf-8")
+            gen = {"job_path": job_path, "workflow_path": wf_path, "job_meta": job}
+            _apply_lora_override_to_generated_job(
+                gen,
+                {
+                    "loras": {
+                        "entries": [
+                            {"lora": "a.safetensors", "on": False, "strength": 0.4},
+                            {"lora": "b.safetensors", "on": True, "strength": 0.5},
+                        ]
+                    }
+                },
+                data_root=root,
+            )
+            owned = (gen.get("job_meta") or {}).get("loras") or {}
+            self.assertEqual(owned.get("entries", [])[0]["on"], False)
+            self.assertEqual(owned.get("entries", [])[0]["strength"], 0.4)
+            patched = json.loads(wf_path.read_text())
+            slot = patched["nodes"][0]["widgets_values"][0]
+            self.assertFalse(slot["on"])
+            self.assertEqual(slot["strength"], 0.4)
 
     def test_extend_length_parameters_keeps_template_budget(self) -> None:
         from shape_factory_queue import _extend_length_parameters, _parent_frame_count

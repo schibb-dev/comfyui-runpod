@@ -10,7 +10,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from shape_factory_flow import flow_phase, normalize_flow_status, remediation_actions
+from shape_factory_flow import (
+    classify_job_failure,
+    ensure_failure_flow_event,
+    flow_phase,
+    normalize_flow_status,
+    remediation_actions,
+)
 
 # Plan fields worth keeping on the job for construction debugging.
 CONSTRUCTION_PLAN_KEYS: tuple[str, ...] = (
@@ -148,9 +154,28 @@ def list_shape_families(
                 {"shape_path": str(path), "template_path": doc.get("template")},
                 data_root=Path(data_root),
             )
-            frames = _coerce_int(seed.get("frames") if isinstance(seed, dict) else None)
-            if frames is not None and frames > 0:
-                row["params_defaults"] = {"frames": frames}
+            defaults: Dict[str, int] = {}
+            if isinstance(seed, dict):
+                for key in ("frames", "steps", "overlap", "seed"):
+                    n = _coerce_int(seed.get(key))
+                    if n is None:
+                        continue
+                    if key == "frames" and n <= 0:
+                        continue
+                    defaults[key] = n
+            if defaults:
+                row["params_defaults"] = defaults
+            try:
+                from shape_factory_owned_loras import load_template_lora_seed
+
+                loras, _, _ = load_template_lora_seed(
+                    {"shape_path": str(path), "template_path": doc.get("template")},
+                    data_root=Path(data_root),
+                )
+                if loras:
+                    row["loras_defaults"] = loras
+            except Exception:
+                pass
         except Exception:
             pass
         profiles = list_family_prompt_profiles(data_root, family_slug or slug)
@@ -1116,17 +1141,28 @@ def _prompt_excerpt(
     if display_name:
         out["name"] = display_name
     try:
-        from shape_factory_owned_prompt import prompt_variant_slug
+        from shape_factory_owned_prompt import (
+            catalog_source_profile_from_path,
+            is_scratch_prompt_path,
+            prompt_content_hash,
+            prompt_variant_slug,
+            _seed_baseline_from_source_profile,
+        )
 
         variant_slug = prompt_variant_slug(doc.get("slug"), display_name, doc.get("label"), p.stem)
         if variant_slug:
             out["slug"] = variant_slug
-    except Exception:
-        pass
-    try:
-        from shape_factory_owned_prompt import prompt_content_hash
-
-        out["content_hash"] = prompt_content_hash(positive, negative)
+        ch = prompt_content_hash(positive, negative)
+        out["content_hash"] = ch
+        catalog = catalog_source_profile_from_path(str(doc.get("source_profile") or raw), data_root=data_root)
+        seed = _seed_baseline_from_source_profile(catalog or raw, data_root=data_root)
+        if seed is not None:
+            out["seed"] = seed
+            seed_hash = str(seed.get("content_hash") or "").strip()
+            out["snowflake"] = bool(seed_hash and seed_hash != ch)
+        if is_scratch_prompt_path(raw) or is_scratch_prompt_path(str(p)):
+            if not catalog or is_scratch_prompt_path(catalog):
+                out["snowflake"] = True
     except Exception:
         pass
     if positive:
@@ -1904,8 +1940,40 @@ def _work_product_item_from_job(
         ),
         "flow_state": normalize_flow_status(status),
         "flow_phase": flow_phase(status),
-        "remediation_actions": list(remediation_actions(status, prompt_id=submit.get("prompt_id"))),
-        "flow_events": submit.get("flow_events") if isinstance(submit.get("flow_events"), list) else [],
+        "failure": classify_job_failure(
+            status,
+            prompt_id=submit.get("prompt_id"),
+            error=error_text,
+            permanent_hint=bool(submit.get("permanent_hint")),
+        ),
+        "remediated": (
+            {
+                "at": submit.get("remediated_at"),
+                "action": str(submit.get("remediated_action") or "replay"),
+                "successor_job_key": str(submit.get("remediated_successor") or "").strip() or None,
+            }
+            if submit.get("remediated") or submit.get("remediated_at")
+            else None
+        ),
+        "remediation_actions": list(
+            remediation_actions(
+                status,
+                prompt_id=submit.get("prompt_id"),
+                error=error_text,
+                permanent_hint=bool(submit.get("permanent_hint")),
+            )
+        ),
+        "flow_events": ensure_failure_flow_event(
+            {
+                "flow_events": list(submit.get("flow_events") or [])
+                if isinstance(submit.get("flow_events"), list)
+                else []
+            },
+            status,
+            error=error_text,
+            prompt_id=submit.get("prompt_id"),
+            at=submit.get("interrupted_at") or submit.get("attempted_at") or submit.get("finished_at"),
+        ),
         "prompt_id": submit.get("prompt_id"),
         "submitted_at": submit.get("submitted_at"),
         "finished_at": _job_finished_at(
@@ -1936,6 +2004,13 @@ def _work_product_item_from_job(
         "construction": construction,
         "warnings": job.get("warnings") or [],
     }
+    rem = item.get("remediated") if isinstance(item.get("remediated"), dict) else None
+    fail = item.get("failure") if isinstance(item.get("failure"), dict) else None
+    if rem and fail:
+        fail = dict(fail)
+        fail["already_fixed"] = True
+        fail["successor_job_key"] = rem.get("successor_job_key")
+        item["failure"] = fail
     if live_from_comfy:
         item["live_from_comfy"] = True
     if work_items_doc is not None and work_items_for_item is not None and output_rel:
@@ -2519,6 +2594,7 @@ def reconcile_inflight_jobs_with_comfy(
         discover_job_outputs,
         promote_complete_from_outputs,
         queue_prompt_id_buckets,
+        requeue_transient_submit_error,
         update_job_status_from_comfy,
     )
 
@@ -2543,6 +2619,7 @@ def reconcile_inflight_jobs_with_comfy(
         "by_status": {},
         "oom_retries": 0,
         "healed": 0,
+        "requeued": 0,
     }
     if not jobs_root.is_dir():
         return summary
@@ -2612,6 +2689,29 @@ def reconcile_inflight_jobs_with_comfy(
                     summary["healed"] = int(summary.get("healed") or 0) + 1
                     summary["updated"] = int(summary.get("updated") or 0) + 1
                     by_status["complete"] = by_status.get("complete", 0) + 1
+                    if persist:
+                        try:
+                            atomic_write_json(path, job)
+                        except OSError:
+                            summary["ok"] = False
+                            summary["write_error"] = str(path)
+            elif before in {"error", "failed"} and not prompt_id:
+                outputs = discover_job_outputs(job, data_root, output_root=oroot)
+                if outputs:
+                    promote_complete_from_outputs(job, outputs, healed_from="error")
+                    summary["healed"] = int(summary.get("healed") or 0) + 1
+                    summary["updated"] = int(summary.get("updated") or 0) + 1
+                    by_status["complete"] = by_status.get("complete", 0) + 1
+                    if persist:
+                        try:
+                            atomic_write_json(path, job)
+                        except OSError:
+                            summary["ok"] = False
+                            summary["write_error"] = str(path)
+                elif requeue_transient_submit_error(job):
+                    summary["requeued"] = int(summary.get("requeued") or 0) + 1
+                    summary["updated"] = int(summary.get("updated") or 0) + 1
+                    by_status["pending"] = by_status.get("pending", 0) + 1
                     if persist:
                         try:
                             atomic_write_json(path, job)
@@ -3214,6 +3314,19 @@ def attach_comfy_history_failures(
             row["comfy_error"] = err
             row["history_from_comfy"] = True
             row["live_from_comfy"] = False
+            history_stub = not str(row.get("job_path") or "").strip()
+            fail = classify_job_failure(
+                status,
+                prompt_id=pid,
+                error=str(row.get("error") or ""),
+            )
+            if history_stub and fail:
+                fail = dict(fail)
+                fail["primary"] = "discard"
+                fail["actions"] = ["discard"]
+                fail["can_retry_same"] = False
+            row["failure"] = fail
+            row["remediation_actions"] = list((fail or {}).get("actions") or [])
             row["details"] = _detail_rows(row)
             return row
 

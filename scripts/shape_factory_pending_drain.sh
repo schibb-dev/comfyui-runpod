@@ -14,6 +14,7 @@ COMFY="${COMFY:-http://127.0.0.1:8188}"
 # Cap how many we try per tick; submit --pending-only also refuses while Comfy waiting is non-empty.
 DRAIN_LIMIT="${DRAIN_LIMIT:-2}"
 JOBS_DIR="${JOBS_DIR:-$REPO/.data/shape_factory/jobs}"
+DATA_ROOT="${DATA_ROOT:-$REPO/.data}"
 
 read_schedule_field() {
   cd "$SCRIPTS" && python3 - "$SCHEDULE" "$1" "$2" <<'PY'
@@ -73,11 +74,31 @@ PY
   rm -f "$qf"
 }
 
+comfy_health() {
+  cd "$SCRIPTS" && python3 shape_factory_comfy_health.py "$@" --data-root "$DATA_ROOT"
+}
+
+# Drain-owned circuit: skip /queue + /prompt while backoff is open.
+if health_json=$(comfy_health gate); then
+  :
+else
+  gate_rc=$?
+  if [ "$gate_rc" -eq 3 ]; then
+    retry=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("retry_in_sec") or 0)' "$health_json" 2>/dev/null || echo "?")
+    log "comfy health backoff retry_in=${retry}s; skip queue probe; refill hourlies only"
+    refill_hourlies 0
+    exit 0
+  fi
+  log "comfy health gate failed rc=$gate_rc; continue to probe"
+fi
+
 if ! read -r RUN PEND < <(queue_counts); then
-  log "comfy unreachable; refill hourlies only"
+  log "comfy unreachable; record health backoff; refill hourlies only"
+  comfy_health fail --error "comfy unreachable" >/dev/null || true
   refill_hourlies 0
   exit 0
 fi
+comfy_health ok --running "$RUN" --pending "$PEND" >/dev/null || true
 
 # Fill toward HOURLY_QUEUE_MAX waiting slots (same steady-state as hourly).
 SLOTS=$((HOURLY_QUEUE_MAX - PEND))

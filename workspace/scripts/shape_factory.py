@@ -76,6 +76,7 @@ from shape_factory_seed_sources import add_seed_sources_subparser
 from shape_factory_backfill import add_backfill_subparser
 from shape_factory_hygiene import add_hygiene_subparser
 from shape_factory_flow import (
+    append_flow_event,
     status_allows_begin_edit,
     status_allows_finish_edit,
     status_is_discardable,
@@ -2300,6 +2301,112 @@ def is_permanent_submit_failure(exc: BaseException | str) -> bool:
     return any(n in msg for n in needles)
 
 
+def is_transient_submit_error(exc: BaseException | str) -> bool:
+    """True when /prompt failed because Comfy dropped the socket (retry the same job)."""
+    if is_permanent_submit_failure(exc):
+        return False
+    if isinstance(exc, BaseException):
+        try:
+            from http_retry import is_transient_http_error
+
+            if isinstance(exc, Exception) and is_transient_http_error(exc):
+                return True
+        except Exception:
+            pass
+    msg = str(exc).lower()
+    needles = (
+        "connection reset",
+        "connection refused",
+        "broken pipe",
+        "errno 104",
+        "errno 110",
+        "errno 111",
+        "timed out",
+        "temporary failure",
+        "temporarily unavailable",
+        "network is unreachable",
+    )
+    return any(n in msg for n in needles)
+
+
+# Shared ladder for the Comfy health circuit (and leftover per-job wait helpers).
+# Attempt 1 → 1m, 2 → 3m, 3+ → 8m (cap). Override: SHAPE_FACTORY_SUBMIT_BACKOFF_SECS=60,180,480
+_DEFAULT_SUBMIT_BACKOFF_SECS = (60, 180, 480)
+
+
+def submit_backoff_seconds(attempts: int) -> int:
+    """How long to wait after ``attempts`` transient submit failures."""
+    steps = _DEFAULT_SUBMIT_BACKOFF_SECS
+    raw = os.environ.get("SHAPE_FACTORY_SUBMIT_BACKOFF_SECS", "").strip()
+    if raw:
+        parsed: list[int] = []
+        for part in raw.split(","):
+            part = part.strip()
+            if part.isdigit():
+                parsed.append(max(0, int(part)))
+        if parsed:
+            steps = tuple(parsed)
+    n = max(0, int(attempts or 0))
+    if n <= 0:
+        return 0
+    return int(steps[min(len(steps) - 1, n - 1)])
+
+
+def parse_submit_timestamp(raw: Any) -> Optional[float]:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        return _dt.datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
+def job_transient_submit_backoff_remaining(
+    job: dict[str, Any],
+    *,
+    now: Optional[float] = None,
+) -> float:
+    """Seconds until a transient-error job may be drained again. ``0`` if ready."""
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    err = str(submit.get("error") or submit.get("requeued_error") or "")
+    if not err or not is_transient_submit_error(err):
+        return 0.0
+    attempted = parse_submit_timestamp(submit.get("attempted_at"))
+    if attempted is None:
+        return 0.0
+    wait = float(submit_backoff_seconds(max(1, submit_attempt_count(job))))
+    clock = time.time() if now is None else float(now)
+    return max(0.0, attempted + wait - clock)
+
+
+def job_in_transient_submit_backoff(job: dict[str, Any], *, now: Optional[float] = None) -> bool:
+    return job_transient_submit_backoff_remaining(job, now=now) > 0.0
+
+
+def requeue_transient_submit_error(job: dict[str, Any]) -> bool:
+    """Return a retryable connection-reset error to ``pending`` for the next drain."""
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    if not submit:
+        return False
+    status = str(submit.get("status") or "").strip().lower()
+    if status not in {"error", "failed"}:
+        return False
+    if str(submit.get("prompt_id") or "").strip():
+        return False
+    if job_retries_exhausted(job):
+        return False
+    err = str(submit.get("error") or "")
+    if not is_transient_submit_error(err):
+        return False
+    submit["status"] = "pending"
+    submit["requeued_from"] = status
+    submit["requeued_at"] = utc_now()
+    submit["requeued_error"] = err
+    job["submit"] = submit
+    return True
+
+
 def abandon_submit_failure(
     job: dict[str, Any],
     *,
@@ -2311,6 +2418,7 @@ def abandon_submit_failure(
     """Mark a job abandoned so hourly/pending-only will never retry it."""
     prev = job.get("submit") if isinstance(job.get("submit"), dict) else {}
     n = int(attempts if attempts is not None else submit_attempt_count(job) or submit_max_attempts())
+    events = list(prev.get("flow_events") or []) if isinstance(prev.get("flow_events"), list) else []
     job["submit"] = {
         "status": "abandoned",
         "error": str(error),
@@ -2320,7 +2428,16 @@ def abandon_submit_failure(
         "abandoned_from": previous_status,
         "attempted_at": utc_now(),
         "comfy_server": server or str(prev.get("comfy_server") or ""),
+        "flow_events": events,
     }
+    append_flow_event(
+        job["submit"],
+        action="abandoned",
+        actor="drain",
+        source_surface="submit",
+        reason=str(error),
+        ok=False,
+    )
 
 
 def record_submit_failure(
@@ -2347,6 +2464,7 @@ def record_submit_failure(
             attempts=attempts,
         )
         return "abandoned"
+    events = list(prev.get("flow_events") or []) if isinstance(prev.get("flow_events"), list) else []
     job["submit"] = {
         "status": "error",
         "error": str(error),
@@ -2356,11 +2474,20 @@ def record_submit_failure(
         "comfy_server": server or str(prev.get("comfy_server") or ""),
         "retryable": True,
         "permanent_hint": is_permanent_submit_failure(error),
+        "flow_events": events,
     }
+    append_flow_event(
+        job["submit"],
+        action="submit_failed",
+        actor="drain",
+        source_surface="submit",
+        reason=str(error),
+        ok=False,
+    )
     return "error"
 
 
-def job_pending_submit(job: dict[str, Any]) -> bool:
+def job_pending_submit(job: dict[str, Any], *, now: Optional[float] = None) -> bool:
     """True when pending-drain / ``--pending-only`` may push this job to Comfy."""
     if job_already_submitted(job) or job_abandoned(job):
         return False
@@ -5052,9 +5179,22 @@ def submit_job_file(
 ) -> dict[str, Any]:
     """Generate prompt + submit one shape-factory job to ComfyUI."""
     job_path = job_path.expanduser().resolve()
+
+    def persist_job() -> None:
+        if not pending_only:
+            atomic_write_json(job_path, job)
+            return
+        try:
+            from shape_factory_pending_queue import jobs_dir_from_job_path, pending_queue_lock
+
+            with pending_queue_lock(jobs_dir_from_job_path(job_path), timeout_s=20.0):
+                atomic_write_json(job_path, job)
+        except TimeoutError:
+            atomic_write_json(job_path, job)
+
     job = json.loads(job_path.read_text(encoding="utf-8"))
     if hostify_job_paths(job):
-        atomic_write_json(job_path, job)
+        persist_job()
     # Cap retries: error jobs that hit max attempts become abandoned.
     submit_block = job.get("submit") if isinstance(job.get("submit"), dict) else {}
     if str(submit_block.get("status") or "") == "error" and job_retries_exhausted(job):
@@ -5065,11 +5205,20 @@ def submit_job_file(
             previous_status="error",
             attempts=submit_attempt_count(job),
         )
-        atomic_write_json(job_path, job)
+        persist_job()
     job_key = str(job.get("job_key") or job_path.stem.replace(".job", ""))
 
     if pending_only and job_already_submitted(job):
         return {"ok": True, "skipped": True, "reason": "already_submitted", "job_key": job_key, "job_path": str(job_path)}
+
+    if job_abandoned(job) and not force:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "abandoned",
+            "job_key": job_key,
+            "job_path": str(job_path),
+        }
 
     if pending_only and not job_pending_submit(job) and not force:
         submit_st = str((job.get("submit") or {}).get("status") or "").strip().lower()
@@ -5078,15 +5227,6 @@ def submit_job_file(
             "ok": True,
             "skipped": True,
             "reason": reason,
-            "job_key": job_key,
-            "job_path": str(job_path),
-        }
-
-    if job_abandoned(job) and not force:
-        return {
-            "ok": True,
-            "skipped": True,
-            "reason": "abandoned",
             "job_key": job_key,
             "job_path": str(job_path),
         }
@@ -5112,31 +5252,69 @@ def submit_job_file(
             "prompt_id": pid,
         }
 
-    # Pending drain: only feed Comfy when its waiting queue is empty (running OK).
+    # Pending drain: health circuit + only feed Comfy when waiting queue is empty.
     if pending_only and not force and not dry_run:
-        empty, run_n, pend_n = comfy_waiting_queue_empty(server, timeout_s=min(15, int(timeout) or 15))
-        if not empty:
+        gate = ensure_comfy_submit_ready(
+            server,
+            data_root=data_root,
+            timeout_s=min(15, int(timeout) or 15),
+        )
+        if not gate.get("ready"):
+            out = {
+                "ok": True,
+                "skipped": True,
+                "reason": str(gate.get("reason") or "comfy_not_ready"),
+                "job_key": job_key,
+                "job_path": str(job_path),
+            }
+            if gate.get("error"):
+                out["error"] = gate.get("error")
+            if gate.get("retry_in_sec") is not None:
+                out["retry_in_sec"] = gate.get("retry_in_sec")
+            if gate.get("comfy_running") is not None:
+                out["comfy_running"] = gate.get("comfy_running")
+            if gate.get("comfy_pending") is not None:
+                out["comfy_pending"] = gate.get("comfy_pending")
+            if gate.get("health"):
+                out["comfy_health"] = gate.get("health")
+            return out
+        # Re-check under the FIFO lock after the Comfy wait so a jump-to-front
+        # of an edit-locked job (or a fresh begin-edit on the head) is not snatched.
+        try:
+            from shape_factory_pending_queue import jobs_dir_from_job_path, pending_queue_lock
+
+            with pending_queue_lock(jobs_dir_from_job_path(job_path), timeout_s=8.0):
+                job = json.loads(job_path.read_text(encoding="utf-8"))
+        except TimeoutError:
             return {
                 "ok": True,
                 "skipped": True,
-                "reason": "comfy_pending_busy",
+                "reason": "pending_queue_busy",
                 "job_key": job_key,
                 "job_path": str(job_path),
-                "comfy_running": run_n,
-                "comfy_pending": pend_n,
+            }
+        if not job_pending_submit(job):
+            submit_st = str((job.get("submit") or {}).get("status") or "").strip().lower()
+            reason = "editing" if submit_st == "editing" else "not_pending"
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": reason,
+                "job_key": job_key,
+                "job_path": str(job_path),
             }
 
     queued_prefix = apply_queue_date_to_prefix(str(job.get("output_prefix") or ""))
     if queued_prefix and queued_prefix != str(job.get("output_prefix") or "") and not dry_run:
         job["output_prefix"] = queued_prefix
-        atomic_write_json(job_path, job)
+        persist_job()
 
     workflow_path = ensure_job_workflow_path(
         job,
         data_root=data_root,
     )
     if str(job.get("generated_workflow_path") or "") != str(workflow_path):
-        atomic_write_json(job_path, job)
+        persist_job()
     if not workflow_path.is_file():
         raise RuntimeError(f"workflow missing: {workflow_path}")
 
@@ -5154,7 +5332,7 @@ def submit_job_file(
     vhs_apply = apply_job_vhs_window_to_workflow(job, workflow)
     if vhs_apply and vhs_apply.get("vhs"):
         atomic_write_json(workflow_path, workflow)
-        atomic_write_json(job_path, job)
+        persist_job()
 
     shape_path = resolve_job_asset_path(
         str(job.get("shape_path") or ""),
@@ -5200,7 +5378,7 @@ def submit_job_file(
     )
     t_prep1 = time.time()
     atomic_write_json(workflow_path, workflow)
-    atomic_write_json(job_path, job)
+    persist_job()
 
     prompt_path = job_path.with_name(job_path.stem.replace(".job", "") + ".prompt.json")
     atomic_write_json(prompt_path, prompt_obj)
@@ -5265,7 +5443,7 @@ def submit_job_file(
         "submitted_ts": t1,
         "submitted_at": submit_record["submitted_at"],
     }
-    atomic_write_json(job_path, job)
+    persist_job()
     persist_timings(job_path, job)
 
     return {
@@ -5366,21 +5544,43 @@ def cmd_submit(args: argparse.Namespace) -> int:
             if result.get("skipped"):
                 skipped += 1
                 reason = str(result.get("reason") or "skipped")
-                if not (quiet and reason in {"already_submitted", "submit_error", "abandoned", "comfy_pending_busy"}):
+                if not (quiet and reason in {
+                    "already_submitted",
+                    "submit_error",
+                    "abandoned",
+                    "comfy_pending_busy",
+                    "comfy_not_ready",
+                    "comfy_backoff",
+                    "submit_backoff",
+                }):
                     print(f"## {job_key}")
                     pid = result.get("prompt_id")
                     if pid:
                         print(f"skip (already submitted prompt_id={pid})")
                     else:
                         print(f"skip ({reason})")
-                # One busy signal means the whole pending drain should wait.
-                if reason == "comfy_pending_busy" and bool(getattr(args, "pending_only", False)):
+                # One busy / not-ready signal means the whole pending drain should wait.
+                if reason in {"comfy_pending_busy", "comfy_not_ready", "comfy_backoff"} and bool(
+                    getattr(args, "pending_only", False)
+                ):
                     if not quiet:
-                        print(
-                            f"# comfy waiting queue busy "
-                            f"(running={result.get('comfy_running')} pending={result.get('comfy_pending')}); "
-                            f"stop pending drain"
-                        )
+                        if reason == "comfy_backoff":
+                            print(
+                                f"# comfy health backoff "
+                                f"(retry_in={result.get('retry_in_sec')}s); "
+                                f"stop pending drain"
+                            )
+                        elif reason == "comfy_not_ready":
+                            print(
+                                f"# comfy not ready ({result.get('error') or 'queue probe failed'}); "
+                                f"stop pending drain"
+                            )
+                        else:
+                            print(
+                                f"# comfy waiting queue busy "
+                                f"(running={result.get('comfy_running')} pending={result.get('comfy_pending')}); "
+                                f"stop pending drain"
+                            )
                     break
             elif result.get("dry_run"):
                 print(f"## {job_key}")
@@ -5412,6 +5612,16 @@ def cmd_submit(args: argparse.Namespace) -> int:
             except Exception:
                 pass
             failed += 1
+            if pending_only and is_transient_submit_error(exc):
+                try:
+                    from shape_factory_comfy_health import observe_comfy_queue_result
+
+                    observe_comfy_queue_result(data_root, ok=False, error=str(exc))
+                except Exception:
+                    pass
+                if not quiet:
+                    print("# comfy not ready (transient submit error); stop pending drain")
+                break
 
         if args.delay and not args.dry_run:
             time.sleep(args.delay)
@@ -5470,6 +5680,77 @@ def comfy_waiting_queue_empty(server: str, *, timeout_s: int = 15) -> tuple[bool
     """
     running, pending = queue_prompt_id_buckets(server, timeout_s=timeout_s)
     return (len(pending) == 0), len(running), len(pending)
+
+
+def ensure_comfy_submit_ready(
+    server: str,
+    *,
+    data_root: Path,
+    timeout_s: int = 15,
+    now: Optional[float] = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Gate pending-drain on the shared Comfy health circuit + waiting-queue empty.
+
+    While backoff is open, skip the HTTP probe. When the window elapses (or there
+    is no health file), ``GET /queue`` is the green-light: success clears the
+    circuit; failure opens/extends it. A full waiting queue is healthy-but-busy.
+    """
+    from shape_factory_comfy_health import (
+        comfy_health_in_backoff,
+        comfy_health_public,
+        load_comfy_health,
+        observe_comfy_queue_result,
+    )
+
+    clock = time.time() if now is None else float(now)
+    state = load_comfy_health(data_root=data_root)
+    if not force and comfy_health_in_backoff(state, now=clock):
+        pub = comfy_health_public(state, now=clock)
+        return {
+            "ready": False,
+            "reason": "comfy_backoff",
+            "retry_in_sec": pub.get("retry_in_sec") or 0,
+            "error": pub.get("error"),
+            "health": pub,
+        }
+
+    try:
+        empty, run_n, pend_n = comfy_waiting_queue_empty(server, timeout_s=timeout_s)
+    except Exception as exc:
+        state = observe_comfy_queue_result(data_root, ok=False, error=str(exc), now=clock)
+        pub = comfy_health_public(state, now=clock)
+        return {
+            "ready": False,
+            "reason": "comfy_not_ready",
+            "error": str(exc),
+            "retry_in_sec": pub.get("retry_in_sec") or 0,
+            "health": pub,
+        }
+
+    state = observe_comfy_queue_result(
+        data_root,
+        ok=True,
+        running=run_n,
+        pending=pend_n,
+        now=clock,
+    )
+    pub = comfy_health_public(state, now=clock)
+    if not empty:
+        return {
+            "ready": False,
+            "reason": "comfy_pending_busy",
+            "comfy_running": run_n,
+            "comfy_pending": pend_n,
+            "health": pub,
+        }
+    return {
+        "ready": True,
+        "reason": "ok",
+        "comfy_running": run_n,
+        "comfy_pending": pend_n,
+        "health": pub,
+    }
 
 
 def find_job_by_prompt_id(jobs_root: Path, prompt_id: str) -> tuple[Optional[Path], Optional[dict[str, Any]]]:
@@ -5761,6 +6042,179 @@ def unqueue_to_pending(
     if comfy_delete_error:
         out["comfy_delete_error"] = comfy_delete_error
     return out
+
+
+_RETRYABLE_FAILURE_STATUSES = frozenset({"error", "failed", "interrupted", "abandoned"})
+
+
+def retry_failed_job_to_pending(
+    *,
+    data_root: Path,
+    job_key: Optional[str] = None,
+    job_path: Optional[Path] = None,
+    server: str = "",
+    timeout_s: int = 15,
+    pending_position: str = "append",
+) -> dict[str, Any]:
+    """Return a failed job to the factory pending FIFO (same job, not a successor).
+
+    Use when submit never landed (no ``prompt_id``) or the operator wants another
+    drain attempt. Refuses if Comfy is still running this prompt.
+    """
+    data_root = Path(data_root).expanduser().resolve()
+    job_file, job = _resolve_job_file_and_doc(data_root=data_root, job_key=job_key, job_path=job_path)
+    if job is None or job_file is None:
+        return {"ok": False, "error": "job_not_found", "job_key": job_key}
+
+    submit = job.setdefault("submit", {})
+    if not isinstance(submit, dict):
+        submit = {}
+        job["submit"] = submit
+    key = str(job.get("job_key") or job_file.stem.replace(".job", ""))
+    status = str(submit.get("status") or "").strip().lower()
+    pid = str(submit.get("prompt_id") or "").strip()
+    if status not in _RETRYABLE_FAILURE_STATUSES:
+        return {
+            "ok": False,
+            "error": "not_failed",
+            "job_key": key,
+            "status": status or None,
+            "detail": "Only error/interrupted/abandoned jobs can return to pending in place.",
+        }
+
+    comfy_deleted = False
+    comfy_delete_error: Optional[str] = None
+    server_s = str(server or "").rstrip("/")
+    if pid and server_s:
+        try:
+            running_ids, pending_ids = queue_prompt_id_buckets(server_s, timeout_s=timeout_s)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": "comfy_unreachable",
+                "job_key": key,
+                "prompt_id": pid,
+                "detail": str(exc),
+            }
+        if pid in running_ids:
+            return {
+                "ok": False,
+                "error": "still_running",
+                "job_key": key,
+                "prompt_id": pid,
+                "status": "running",
+                "detail": "Prompt is still running on Comfy; cannot retry the same job.",
+            }
+        if pid in pending_ids:
+            try:
+                _http_json(
+                    "POST",
+                    f"{server_s}/queue",
+                    {"delete": [pid]},
+                    timeout_s=min(15, int(timeout_s) or 15),
+                )
+                comfy_deleted = True
+            except Exception as exc:
+                comfy_delete_error = str(exc)
+        else:
+            comfy_deleted = True
+
+    prior_error = str(submit.get("error") or "").strip() or None
+    if prior_error:
+        submit["requeued_error"] = prior_error
+    submit["requeued_at"] = utc_now()
+    if pid:
+        submit["previous_prompt_id"] = pid
+        submit["unqueued_at"] = utc_now()
+        submit.pop("prompt_id", None)
+        _neutralize_submit_sidecar(job, previous_prompt_id=pid)
+    for k in (
+        "error",
+        "error_node",
+        "error_type",
+        "comfy_error",
+        "node_errors",
+        "interrupted_reason",
+        "interrupted_at",
+        "permanent_hint",
+    ):
+        submit.pop(k, None)
+    submit["status"] = "pending"
+    atomic_write_json(job_file, job)
+
+    pending_rank = None
+    try:
+        from shape_factory_pending_queue import enqueue_pending_job, jobs_dir_from_data_root
+
+        pos = str(pending_position or "append").strip().lower() or "append"
+        enq = enqueue_pending_job(job_file, jobs_dir=jobs_dir_from_data_root(data_root), position=pos)
+        pending_rank = enq.get("pending_rank")
+    except Exception:
+        pending_rank = None
+
+    out: dict[str, Any] = {
+        "ok": True,
+        "action": "retry_same",
+        "job_key": key,
+        "job_path": str(job_file),
+        "status": "pending",
+        "previous_status": status,
+        "previous_prompt_id": pid or None,
+        "pending_rank": pending_rank,
+        "comfy_deleted": comfy_deleted,
+        "requeued_error": prior_error,
+    }
+    if comfy_delete_error:
+        out["comfy_delete_error"] = comfy_delete_error
+    return out
+
+
+def mark_failed_job_remediated(
+    *,
+    data_root: Path,
+    job_key: Optional[str] = None,
+    job_path: Optional[Path] = None,
+    action: str = "replay",
+    successor_job_key: Optional[str] = None,
+) -> dict[str, Any]:
+    """Stamp a failed job as already remediations. Keeps it in Errors with a Fixed mark."""
+    data_root = Path(data_root).expanduser().resolve()
+    job_file, job = _resolve_job_file_and_doc(data_root=data_root, job_key=job_key, job_path=job_path)
+    if job is None or job_file is None:
+        return {"ok": False, "error": "job_not_found", "job_key": job_key}
+
+    submit = job.setdefault("submit", {})
+    if not isinstance(submit, dict):
+        submit = {}
+        job["submit"] = submit
+    key = str(job.get("job_key") or job_file.stem.replace(".job", ""))
+    status = str(submit.get("status") or "").strip().lower()
+    if status not in _RETRYABLE_FAILURE_STATUSES:
+        return {
+            "ok": False,
+            "error": "not_failed",
+            "job_key": key,
+            "status": status or None,
+            "detail": "Only error/interrupted/abandoned jobs can be marked remediations.",
+        }
+    act = str(action or "replay").strip().lower() or "replay"
+    successor = str(successor_job_key or "").strip() or None
+    submit["remediated"] = True
+    submit["remediated_at"] = utc_now()
+    submit["remediated_action"] = act
+    if successor:
+        submit["remediated_successor"] = successor
+    atomic_write_json(job_file, job)
+    return {
+        "ok": True,
+        "action": "mark_remediated",
+        "job_key": key,
+        "job_path": str(job_file),
+        "status": status,
+        "remediated_action": act,
+        "successor_job_key": successor,
+        "remediated_at": submit.get("remediated_at"),
+    }
 
 
 # Soft-archive / discard from the active job set (not queued/running on Comfy).
@@ -6138,6 +6592,13 @@ def job_edit_snapshot(
         params_profile = owned_params_to_profile(job, data_root=data_root, job_path=job_file)
     except Exception:
         params_profile = None
+    loras_profile = None
+    try:
+        from shape_factory_owned_loras import owned_loras_to_profile
+
+        loras_profile = owned_loras_to_profile(job, data_root=data_root, job_path=job_file)
+    except Exception:
+        loras_profile = None
     return {
         "ok": True,
         "job_key": key,
@@ -6156,8 +6617,9 @@ def job_edit_snapshot(
         "created_at": job.get("created_at"),
         "construction": job.get("construction") if isinstance(job.get("construction"), dict) else None,
         "prompt": prompt_excerpt,
-        # Same profile Workbench uses — first Submit tunable (frames) can later land on a variant.
+        # Same profiles Workbench uses — Submit tunables (params + LoRAs) seed from these.
         "params_profile": params_profile,
+        "loras_profile": loras_profile,
     }
 
 
@@ -7970,7 +8432,7 @@ def promote_complete_from_outputs(
     for k in ("interrupted_at", "interrupted_reason"):
         submit.pop(k, None)
     err = str(submit.get("error") or "")
-    if err.lower().startswith("interrupted"):
+    if err.lower().startswith("interrupted") or healed_from in {"error", "failed"}:
         submit.pop("error", None)
 
 

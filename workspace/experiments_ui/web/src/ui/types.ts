@@ -82,6 +82,8 @@ export type QueueJobGlance = {
   noise_seed?: number | null;
   is_hourly?: boolean;
   prompt_profile?: string | null;
+  /** True when owned prompt text diverged from the catalog seed. */
+  prompt_snowflake?: boolean;
   source_name?: string | null;
   identity_name?: string | null;
   sampler_name?: string | null;
@@ -1578,6 +1580,10 @@ export type ShapeFactoryMapQueueOverrides = {
     seed?: number;
     noise_seed?: number;
   };
+  /** Compose-time Power LoRA stack (applied when the job is generated). */
+  loras?: {
+    entries?: WorkProductLoraEntry[];
+  };
 };
 
 export type FutureRunDraft = {
@@ -1834,6 +1840,7 @@ export type ShapeFactoryJobEditSnapshot = {
   prompt?: WorkProductPromptProfile | null;
   /** Current vs template seed (frames/steps/overlap). First Submit tunable surface. */
   params_profile?: WorkProductParamsProfile | null;
+  loras_profile?: WorkProductLorasProfile | null;
   error?: string;
   detail?: string;
 };
@@ -1868,6 +1875,32 @@ export type ShapeFactoryDiscardResponse = {
   detail?: string;
   prompt_id?: string;
   reason?: string;
+};
+
+/** POST /api/shape-factory/remediate — return a failed job to pending (same job). */
+export type ShapeFactoryRemediateRequest = {
+  job_key?: string;
+  job_path?: string;
+  action?: "retry_same" | "retry_submit";
+  pending_position?: "append" | "front";
+  actor?: string;
+  reason?: string;
+  source_surface?: string;
+};
+
+export type ShapeFactoryRemediateResponse = {
+  ok: boolean;
+  action?: string;
+  job_key?: string;
+  job_path?: string;
+  status?: string;
+  previous_status?: string;
+  previous_prompt_id?: string | null;
+  pending_rank?: number | null;
+  comfy_deleted?: boolean;
+  requeued_error?: string | null;
+  error?: string;
+  detail?: string;
 };
 
 /** POST /api/shape-factory/update-pending-trim — patch VHS window on a pending job. */
@@ -2105,6 +2138,7 @@ export type HourlyScheduleStatus = {
   comfy_running?: number | null;
   factory_pending?: number | null;
   factory_hourly_pending?: number | null;
+  comfy_health?: ComfyHealthStatus | null;
   still_promo?: {
     until?: string | null;
     window_days?: number;
@@ -2118,6 +2152,22 @@ export type HourlyScheduleStatus = {
   saved?: HourlySchedule;
   error?: string;
   detail?: string;
+};
+
+/** Drain-owned Comfy submit circuit. UI is display-only. */
+export type ComfyHealthStatus = {
+  ok?: boolean;
+  status?: "ok" | "backoff" | string;
+  error?: string | null;
+  consecutive_failures?: number;
+  retry_in_sec?: number;
+  backoff_sec?: number;
+  next_probe_at?: string | null;
+  last_ok_at?: string | null;
+  last_failed_at?: string | null;
+  last_probe_at?: string | null;
+  queue_running?: number | null;
+  queue_pending?: number | null;
 };
 
 /** GET /api/queue/ledger-status — Comfy queue shadow + restore controls. */
@@ -2157,6 +2207,7 @@ export type QueueLedgerOpsStatus = {
   hourly?: { enabled?: boolean | null };
   drain?: { active?: boolean | null; enabled?: boolean; label?: string };
   watch_queue?: { running?: boolean; status?: string };
+  comfy_health?: ComfyHealthStatus | null;
   ledger?: {
     paused?: boolean | null;
     last_park_at?: string | null;
@@ -2183,6 +2234,7 @@ export type QueueLedgerStatus = {
   snapshot?: { running?: string[]; pending?: string[] };
   entries?: QueueLedgerEntry[];
   ops?: QueueLedgerOpsStatus;
+  comfy_health?: ComfyHealthStatus | null;
   error?: string;
   detail?: string;
 };
@@ -2526,6 +2578,32 @@ export type WorkProductShapeProfile = {
   error?: string;
 };
 
+export type WorkProductFailureKind =
+  | "submit_missed"
+  | "interrupted"
+  | "comfy_failed"
+  | "permanent"
+  | "abandoned";
+
+export type WorkProductFailureAction = "retry_same" | "replay" | "edit" | "discard";
+
+export type WorkProductFailure = {
+  kind: WorkProductFailureKind;
+  headline: string;
+  primary: WorkProductFailureAction;
+  actions: WorkProductFailureAction[];
+  can_retry_same?: boolean;
+  detail?: string | null;
+  already_fixed?: boolean;
+  successor_job_key?: string | null;
+};
+
+export type WorkProductRemediated = {
+  at?: string | null;
+  action?: string | null;
+  successor_job_key?: string | null;
+};
+
 export type WorkProductItem = {
   job_key: string;
   job_path?: string;
@@ -2553,6 +2631,10 @@ export type WorkProductItem = {
   status?: string;
   flow_state?: string;
   flow_phase?: string;
+  /** Classified failure for the Workbench Fix path (error/interrupted/abandoned). */
+  failure?: WorkProductFailure | null;
+  /** Set after Fix replay — error row stays, marked so it is not remediations again. */
+  remediated?: WorkProductRemediated | null;
   remediation_actions?: string[];
   flow_events?: Array<{
     at?: string | null;
@@ -2635,7 +2717,12 @@ export type WorkProductFamilyOption = {
   /** Shape/template seed knobs (Wan frames, …). Submit tunables populate from this. */
   params_defaults?: {
     frames?: number;
+    steps?: number;
+    overlap?: number;
+    seed?: number;
   };
+  /** Power LoRA slots from the family catalog readable. */
+  loras_defaults?: WorkProductLoraEntry[];
   prompt_profiles?: WorkProductFamilyPromptProfile[];
 };
 
@@ -2970,6 +3057,7 @@ export type WorkProductsResponse = {
   /** Source family → next pipeline-step family for Extend picker defaults. */
   extend_family_defaults?: Record<string, string>;
   items?: WorkProductItem[];
+  comfy_health?: ComfyHealthStatus | null;
 };
 
 /** GET /api/shape-factory/work-product?job_key=… | ?prompt_id=… — one job from full history. */

@@ -9,7 +9,9 @@ export function isPendingQueueItem(item: WorkProductItem): boolean {
   if (s === "queued" || s === "running" || s === "submitted" || s === "complete" || s === "completed" || s === "abandoned") {
     return false;
   }
-  return s === "pending" || s === "editing" || s === "draft" || s === "deposited" || s === "error" || s === "failed" || !s;
+  // Reorder is scheduling-only. Error/failed/deposited stay out of the operator FIFO
+  // even when the factory still stamps a held pending_rank on those files.
+  return s === "pending" || s === "editing" || s === "draft" || !s;
 }
 
 export function pendingQueueIndex(item: WorkProductItem): number {

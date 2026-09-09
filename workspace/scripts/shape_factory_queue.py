@@ -568,6 +568,11 @@ def write_scratch_prompt_profile(
     source_path: Path,
 ) -> Path:
     merged = _merge_prompt_profile(base, override)
+    from shape_factory_owned_prompt import catalog_source_profile_from_path
+
+    catalog = catalog_source_profile_from_path(str(Path(source_path).expanduser().resolve()))
+    if catalog:
+        merged["source_profile"] = catalog
     scratch_dir = data_root / "shape_factory" / "jobs" / "_scratch" / family
     scratch_dir.mkdir(parents=True, exist_ok=True)
     ts = int(time.time())
@@ -1264,6 +1269,57 @@ def _parse_overrides(body: Dict[str, Any]) -> Dict[str, Any]:
     return overrides if isinstance(overrides, dict) else {}
 
 
+def _lora_entries_from_overrides(overrides: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+    raw = overrides.get("loras") if isinstance(overrides, dict) else None
+    if isinstance(raw, dict):
+        raw = raw.get("entries")
+    if not isinstance(raw, list):
+        return None
+    return [row for row in raw if isinstance(row, dict)]
+
+
+def _apply_lora_override_to_generated_job(
+    gen: Dict[str, Any],
+    overrides: Dict[str, Any],
+    *,
+    data_root: Path,
+) -> None:
+    """Stamp compose LoRA edits onto the new job + generated workflow."""
+    entries = _lora_entries_from_overrides(overrides)
+    if not entries:
+        return
+    from shape_factory import atomic_write_json, read_json
+    from shape_factory_owned_loras import (
+        apply_owned_loras_to_workflow,
+        ensure_owned_loras_from_workflow,
+        merge_owned_loras,
+        normalize_entries,
+    )
+
+    cleaned = normalize_entries(entries)
+    if not cleaned:
+        return
+    job_path = Path(gen.get("job_path") or "")
+    wf_path = Path(gen.get("workflow_path") or "")
+    job = gen.get("job_meta") if isinstance(gen.get("job_meta"), dict) else None
+    if job is None and job_path.is_file():
+        loaded = json.loads(job_path.read_text(encoding="utf-8"))
+        job = loaded if isinstance(loaded, dict) else None
+    if job is None:
+        return
+    ensure_owned_loras_from_workflow(job, data_root=data_root)
+    merge_owned_loras(job, cleaned)
+    if wf_path.is_file():
+        workflow = read_json(wf_path)
+        if isinstance(workflow, dict):
+            apply_owned_loras_to_workflow(job, workflow)
+            atomic_write_json(wf_path, workflow)
+            job["generated_workflow_path"] = str(wf_path)
+    if job_path.is_file() or gen.get("job_path"):
+        atomic_write_json(job_path, job)
+    gen["job_meta"] = job
+
+
 def _apply_binding_overrides(
     picks: Dict[str, Path],
     overrides: Dict[str, Any],
@@ -1299,6 +1355,12 @@ def _apply_binding_overrides(
     parameters = overrides.get("parameters")
     if isinstance(parameters, dict) and parameters:
         adhoc["parameters"] = parameters
+
+    lora_over = overrides.get("loras")
+    if isinstance(lora_over, dict) and isinstance(lora_over.get("entries"), list):
+        adhoc["loras"] = {"entries": lora_over["entries"]}
+    elif isinstance(lora_over, list):
+        adhoc["loras"] = {"entries": lora_over}
 
     clip_id = overrides.get("source_clip_id") or overrides.get("clip_id")
     if clip_id not in (None, ""):
@@ -1502,6 +1564,7 @@ def queue_shape_factory_combo(
         parent_output=parent_output,
         construction=construction,
     )
+    _apply_lora_override_to_generated_job(gen, overrides, data_root=comfy_data_root)
 
     dest = str(destination or "comfy").strip().lower()
     if dest not in {"pending", "comfy"}:

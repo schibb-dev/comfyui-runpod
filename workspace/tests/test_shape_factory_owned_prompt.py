@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import support  # noqa: F401  — injects workspace/scripts onto sys.path
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -235,6 +237,104 @@ class OwnedPromptTests(unittest.TestCase):
             self.assertTrue(diverged.get("snowflake"))
             self.assertEqual(diverged.get("positive"), "SNOW")
             self.assertEqual(diverged.get("seed", {}).get("positive"), "SEED")
+
+    def test_scratch_draft_is_snowflake_against_catalog(self) -> None:
+        from shape_factory_owned_prompt import (
+            fork_owned_prompt_from_profile_file,
+            owned_prompt_to_excerpt,
+        )
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            catalog = root / "pools" / "FB8VA5-ZOOMOUT" / "prompts" / "catalog-default.json"
+            catalog.parent.mkdir(parents=True)
+            catalog.write_text(
+                json.dumps({"name": "Default", "label": "catalog-default", "positive": "SEED", "negative": "N"}),
+                encoding="utf-8",
+            )
+            scratch = (
+                root / "shape_factory" / "jobs" / "_scratch" / "FB8VA5-ZOOMOUT" / "catalog-default__draft_1788888144.json"
+            )
+            scratch.parent.mkdir(parents=True)
+            scratch.write_text(
+                json.dumps(
+                    {
+                        "label": "catalog-default",
+                        "positive": "EDITED",
+                        "negative": "N",
+                        "source_profile": str(catalog),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            owned = fork_owned_prompt_from_profile_file(scratch)
+            self.assertEqual(owned.get("source_profile"), str(catalog))
+            ex = owned_prompt_to_excerpt(owned, data_root=root)
+            self.assertTrue(ex.get("snowflake"))
+            self.assertEqual(ex.get("name"), "Default")
+            self.assertEqual(ex.get("seed", {}).get("positive"), "SEED")
+
+            old = {
+                "positive": "EDITED",
+                "negative": "N",
+                "label": "catalog-default",
+                "slug": "default",
+                "source_profile": str(scratch),
+                "content_hash": "x",
+            }
+            # Legacy compose jobs pointed source_profile at the draft itself.
+            from shape_factory_owned_prompt import prompt_content_hash, attach_content_hash
+
+            attach_content_hash(old)
+            legacy = owned_prompt_to_excerpt(old, data_root=root)
+            self.assertTrue(legacy.get("snowflake"))
+            self.assertEqual(legacy.get("seed", {}).get("positive"), "SEED")
+
+    def test_faceblast_extend_scratch_keeps_catalog_name(self) -> None:
+        from shape_factory_owned_prompt import (
+            fork_owned_prompt_from_profile_file,
+            owned_prompt_to_excerpt,
+        )
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            catalog = root / "pools" / "FB9_GEX2" / "prompts" / "catalog-faceblast-extend.json"
+            catalog.parent.mkdir(parents=True)
+            catalog.write_text(
+                json.dumps(
+                    {
+                        "name": "FaceBlast extend",
+                        "label": "catalog-faceblast-extend",
+                        "positive": "FACE SEED",
+                        "negative": "",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            scratch = (
+                root
+                / "shape_factory"
+                / "jobs"
+                / "_scratch"
+                / "FB9_GEX2"
+                / "catalog-faceblast-extend__draft_99.json"
+            )
+            scratch.parent.mkdir(parents=True)
+            scratch.write_text(
+                json.dumps(
+                    {
+                        "name": "FaceBlast extend",
+                        "label": "catalog-faceblast-extend",
+                        "positive": "FACE EDIT",
+                        "negative": "",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            owned = fork_owned_prompt_from_profile_file(scratch)
+            ex = owned_prompt_to_excerpt(owned, data_root=root)
+            self.assertTrue(ex.get("snowflake"))
+            self.assertEqual(ex.get("name"), "FaceBlast extend")
 
     def test_update_pending_via_rows(self) -> None:
         from shape_factory import update_pending_job_owned_prompt

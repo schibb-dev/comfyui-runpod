@@ -118,6 +118,28 @@ class TestShapeFactoryCreationControl(unittest.TestCase):
         self.assertEqual(kwargs.get("prompt_id"), "abc123")
         self.assertEqual(kwargs.get("job_key"), "job-1")
 
+    def test_mutate_retry_same_delegates(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            with mock.patch(
+                "shape_factory.retry_failed_job_to_pending",
+                return_value={"ok": True, "job_key": "job-1", "status": "pending"},
+            ) as retry:
+                out = cc.mutate_job(
+                    action="retry_same",
+                    data_root=root,
+                    server="http://comfy.test",
+                    job_key="job-1",
+                    actor="operator",
+                    source_surface="workbench",
+                    reason="user_retry_same",
+                )
+        self.assertTrue(out.get("ok"))
+        self.assertEqual((out.get("control") or {}).get("reason"), "user_retry_same")
+        retry.assert_called_once()
+        kwargs = retry.call_args.kwargs
+        self.assertEqual(kwargs.get("job_key"), "job-1")
+
     def test_create_generate_calls_cmd_generate(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
