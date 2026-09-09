@@ -44,3 +44,19 @@ export function phoneTrimLoopSeekTarget(b: { in: number; out: number }): number 
   if (!(target > b.in + gap * 0.1)) target = Math.min(ceiling, b.in + gap * 0.35);
   return target;
 }
+
+/**
+ * Stop-at-end after a seek lands on/past `out`: snap to the last in-window frame.
+ * Returns null when no clamp is needed — including a paused playhead sitting on the
+ * out mark so OUT-handle preview can show that frame (same as IN-handle preview).
+ */
+export function trimStopAtEndSeekedClamp(
+  t: number,
+  b: { in: number; out: number },
+  duration: number,
+  paused: boolean,
+): number | null {
+  if (!(t >= b.out - 1e-3)) return null;
+  if (paused && t <= b.out + 1e-3) return null;
+  return Math.max(b.in, Math.min(b.out - 1 / 120, Math.max(0, duration - 1e-6)));
+}

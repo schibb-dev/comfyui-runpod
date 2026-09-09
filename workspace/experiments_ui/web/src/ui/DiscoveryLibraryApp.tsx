@@ -41,6 +41,7 @@ import {
   phoneTrimLoopSeekTarget,
   phoneTrimPlaybackActive,
   TRIM_HANDLE_MIN_GAP_SEC,
+  trimStopAtEndSeekedClamp,
 } from "./phoneTrimModel";
 import { DeviceProvider, useDeviceContext } from "./viewport";
 import {
@@ -2892,10 +2893,10 @@ function DiscoveryDesktopPreview({
       if (!ctx) return;
       const { b, duration } = ctx;
       const t = v.currentTime;
-      if (t >= b.out - 1e-3) {
-        v.pause();
-        v.currentTime = Math.max(b.in, Math.min(b.out - 1 / 120, Math.max(0, duration - 1e-6)));
-      }
+      const snap = trimStopAtEndSeekedClamp(t, b, duration, v.paused);
+      if (snap == null) return;
+      v.pause();
+      v.currentTime = snap;
     };
 
     v.addEventListener("timeupdate", onTimeUpdate);
@@ -4715,10 +4716,10 @@ function DiscoveryPhoneDetailOverlay({
       if (!ctx) return;
       const { b, duration } = ctx;
       const t = v.currentTime;
-      if (t >= b.out - 1e-3) {
-        v.pause();
-        v.currentTime = Math.max(b.in, Math.min(b.out - 1 / 120, Math.max(0, duration - 1e-6)));
-      }
+      const snap = trimStopAtEndSeekedClamp(t, b, duration, v.paused);
+      if (snap == null) return;
+      v.pause();
+      v.currentTime = snap;
     };
 
     v.addEventListener("timeupdate", onTimeUpdate);

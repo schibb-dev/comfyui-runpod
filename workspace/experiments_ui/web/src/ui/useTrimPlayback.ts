@@ -3,6 +3,7 @@ import {
   phoneTrimBounds,
   phoneTrimLoopSeekTarget,
   phoneTrimPlaybackActive,
+  trimStopAtEndSeekedClamp,
 } from "./phoneTrimModel";
 
 /** Repeat trim: `timeupdate` is sparse; treat as past-out slightly before `out`. */
@@ -31,6 +32,7 @@ export function useTrimPlaybackEnforcement(
   const { mediaKey, markIn, markOut, mode, enabled = true } = opts;
   const loop = mode === "repeat";
   const rewindPendingRef = useRef(false);
+  const parkedMediaKeyRef = useRef<string | number | null>(null);
 
   useEffect(() => {
     if (!enabled) return;
@@ -137,10 +139,10 @@ export function useTrimPlaybackEnforcement(
       if (!ctx?.trimActive) return;
       const { b, duration } = ctx;
       const t = v.currentTime;
-      if (t >= b.out - 1e-3) {
-        v.pause();
-        v.currentTime = Math.max(b.in, Math.min(b.out - 1 / 120, Math.max(0, duration - 1e-6)));
-      }
+      const snap = trimStopAtEndSeekedClamp(t, b, duration, v.paused);
+      if (snap == null) return;
+      v.pause();
+      v.currentTime = snap;
     };
 
     const parkAtIn = () => {
@@ -153,8 +155,15 @@ export function useTrimPlaybackEnforcement(
       if (inside && !v.paused) return;
       if (inside && v.paused && t > b.in + 0.05) return;
       if (Math.abs(t - b.in) < 0.04) return;
+      // OUT-handle preview seeks to `out`; don't yank that frame back to in.
+      if (v.paused && Math.abs(t - b.out) <= 0.04) return;
       v.currentTime = b.in;
     };
+
+    // Park only when media identity changes (or first load). Re-running this effect
+    // on markIn/markOut would otherwise snap OUT-marker preview back to in.
+    const mediaChanged = parkedMediaKeyRef.current !== mediaKey;
+    if (mediaChanged) parkedMediaKeyRef.current = mediaKey;
 
     v.addEventListener("timeupdate", onTimeUpdate);
     v.addEventListener("ended", onEnded);
@@ -162,7 +171,7 @@ export function useTrimPlaybackEnforcement(
     v.addEventListener("seeked", onSeeked);
     v.addEventListener("loadedmetadata", parkAtIn);
     v.addEventListener("loadeddata", parkAtIn);
-    if (v.readyState >= 1) parkAtIn();
+    if (v.readyState >= 1 && mediaChanged) parkAtIn();
     return () => {
       clearRewindSafety();
       v.removeEventListener("timeupdate", onTimeUpdate);
