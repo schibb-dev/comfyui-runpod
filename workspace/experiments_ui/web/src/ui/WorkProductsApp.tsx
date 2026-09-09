@@ -4152,8 +4152,15 @@ function WorkProductQuickQueue({
     return "Archive";
   };
 
+  const showJobControls =
+    Boolean(canEditSubmit && editSubmitIntent) ||
+    isEditing ||
+    canUnqueue ||
+    canClaim ||
+    (!failure && (canArchive || canDelete));
+
   return (
-    <div className="work-product-quick-queue" role="group" aria-label="Job actions">
+    <div className="work-product-quick-queue work-product-quick-queue--actions" role="group" aria-label="Job actions">
       {failure ? (
         <div className="work-product-fix" role="group" aria-label="Fix">
           <div className="work-product-fix__headline">{failure.headline}</div>
@@ -4225,293 +4232,301 @@ function WorkProductQuickQueue({
           </div>
         </div>
       ) : null}
-      <div className="work-product-quick-queue__row">
+
+      <div className="work-product-quick-queue__group" role="group" aria-label="Advance">
         <span className="work-product-quick-queue__label" title="Compose the next Advance on Submit">
           Advance
         </span>
-        {relpath ? (
-          <button
-            type="button"
-            className="drt-btn work-product-quick-queue__now"
-            title="Open Submit with Extend / Vary / Derive for this output"
-            onClick={() => openSubmit(submitIntent)}
-          >
-            Open output in Submit
-          </button>
-        ) : (
-          <span className="work-product-quick-queue__hint">No output</span>
-        )}
-        {sourceSubmitIntent ? (
-          <button
-            type="button"
-            className="drt-btn work-product-quick-queue__now"
+        <div className="work-product-quick-queue__body">
+          <div className="work-product-quick-queue__row">
+          {relpath ? (
+            <button
+              type="button"
+              className="drt-btn work-product-quick-queue__now"
+              title="Open Submit with Extend / Vary / Derive for this output"
+              onClick={() => openSubmit(submitIntent)}
+            >
+              Output
+            </button>
+          ) : (
+            <span className="work-product-quick-queue__hint">No output</span>
+          )}
+          {sourceSubmitIntent ? (
+            <button
+              type="button"
+              className="drt-btn work-product-quick-queue__now"
+              title={
+                isStillMediaPath(workbenchSourceMediaRelpath(item) || "")
+                  ? "Open Submit with this job's input still (I2V)"
+                  : "Open Submit with Extend / Vary for this job's input video"
+              }
+              onClick={() => openSubmit(sourceSubmitIntent)}
+            >
+              Input
+            </button>
+          ) : (
+            <span className="work-product-quick-queue__hint">No input</span>
+          )}
+          {openBadge(extendOpen, "Extend")}
+          {openBadge(varyOpen, "Vary")}
+          {openBadge(deriveOpen, "Derive")}
+          </div>
+        </div>
+      </div>
+
+      {!failure ? (
+        <div className="work-product-quick-queue__group" role="group" aria-label={swapInstead ? "Swap" : "Re-run"}>
+          <span
+            className="work-product-quick-queue__label"
             title={
-              isStillMediaPath(workbenchSourceMediaRelpath(item) || "")
-                ? "Open Submit with this job's input still (I2V)"
-                : "Open Submit with Extend / Vary for this job's input video"
+              swapInstead
+                ? "Retarget this waiting job to another family, then retire the old one"
+                : "New job from this recipe — trim, seed, and family are independent"
             }
-            onClick={() => openSubmit(sourceSubmitIntent)}
           >
-            Open input in Submit
-          </button>
-        ) : (
-          <span className="work-product-quick-queue__hint">No input</span>
-        )}
-        {openBadge(extendOpen, "Extend")}
-        {openBadge(varyOpen, "Vary")}
-        {openBadge(deriveOpen, "Derive")}
-        {!failure ? (
-          <>
-        <span className="work-product-quick-queue__sep" aria-hidden="true" />
-        <span
-          className="work-product-quick-queue__label"
-          title={
-            swapInstead
-              ? "Retarget this waiting job to another family, then retire the old one"
-              : "New job from this recipe — trim, seed, and family are independent"
-          }
-        >
-          {swapInstead ? "Swap" : "Re-run"}
-        </span>
-        {currentFamily || swapTargets.length ? (
-          <label className="work-product-rerun-opts work-product-rerun-opts--family">
-            <span className="work-product-rerun-opts__label">Family</span>
-            <select
-              className="work-product-family-select"
-              value={rerunFamily || currentFamily}
-              disabled={isBusy || (!swapTargets.length && !currentFamily)}
-              aria-label="Family for re-run or swap"
+            {swapInstead ? "Swap" : "Re-run"}
+          </span>
+          <div className="work-product-quick-queue__body">
+          <div className="work-product-quick-queue__row">
+            {currentFamily || swapTargets.length ? (
+              <label className="work-product-rerun-opts work-product-rerun-opts--family">
+                <span className="work-product-rerun-opts__label">Family</span>
+                <select
+                  className="work-product-family-select"
+                  value={rerunFamily || currentFamily}
+                  disabled={isBusy || (!swapTargets.length && !currentFamily)}
+                  aria-label="Family for re-run or swap"
+                  title={
+                    swapInstead
+                      ? `Swap queued ${currentFamily} → ${rerunFamily}`
+                      : familyChanged
+                        ? `Re-run as ${rerunFamily} (keeps this job)`
+                        : "Same family, or pick a compatible one"
+                  }
+                  onChange={(e) => setRerunFamily(e.target.value)}
+                >
+                  {currentFamily ? <option value={currentFamily}>{currentFamily}</option> : null}
+                  {swapTargets.map((f) => (
+                    <option key={f.slug} value={f.slug}>
+                      {f.slug}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+            <div className="work-product-rerun-opts" role="group" aria-label="Re-run trim">
+              <span className="work-product-rerun-opts__label">Trim</span>
+              <div className="segmented work-product-rerun-opts__seg">
+                <button
+                  type="button"
+                  className={rerunTrimMode === "job" ? "seg-btn active" : "seg-btn"}
+                  disabled={isBusy}
+                  title="Keep the Use window baked into this job"
+                  onClick={() => setRerunTrimMode("job")}
+                >
+                  As job
+                </button>
+                <button
+                  type="button"
+                  className={rerunTrimMode === "edited" ? "seg-btn active" : "seg-btn"}
+                  disabled={isBusy}
+                  title="Use the source marks currently on this card"
+                  onClick={() => setRerunTrimMode("edited")}
+                >
+                  As edited
+                </button>
+              </div>
+            </div>
+            <div className="work-product-rerun-opts" role="group" aria-label="Re-run seed">
+              <span className="work-product-rerun-opts__label">Seed</span>
+              <div className="segmented work-product-rerun-opts__seg">
+                <button
+                  type="button"
+                  className={rerunSeedMode === "same" ? "seg-btn active" : "seg-btn"}
+                  disabled={isBusy}
+                  title="Hold this job’s noise seed (exact retry when trim also matches)"
+                  onClick={() => setRerunSeedMode("same")}
+                >
+                  Same
+                </button>
+                <button
+                  type="button"
+                  className={rerunSeedMode === "new" ? "seg-btn active" : "seg-btn"}
+                  disabled={isBusy}
+                  title="Draw a new noise seed; keep other bindings"
+                  onClick={() => setRerunSeedMode("new")}
+                >
+                  New
+                </button>
+              </div>
+            </div>
+          </div>
+          <div className="work-product-quick-queue__row">
+            <span className="work-product-quick-queue__sublabel" title="Factory pending FIFO">
+              Pending
+            </span>
+            <button
+              type="button"
+              className="drt-btn work-product-quick-queue__queue"
+              disabled={!canRerun || (familyChanged && !rerunFamily)}
               title={
                 swapInstead
-                  ? `Swap queued ${currentFamily} → ${rerunFamily}`
-                  : familyChanged
-                    ? `Re-run as ${rerunFamily} (keeps this job)`
-                    : "Same family, or pick a compatible one"
+                  ? `Swap to ${rerunFamily} onto the factory pending FIFO · retire this job`
+                  : `New job${familyChanged ? ` as ${rerunFamily}` : ""} onto the factory pending FIFO`
               }
-              onChange={(e) => setRerunFamily(e.target.value)}
+              onClick={() => void rerun("queue")}
             >
-              {currentFamily ? <option value={currentFamily}>{currentFamily}</option> : null}
-              {swapTargets.map((f) => (
-                <option key={f.slug} value={f.slug}>
-                  {f.slug}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : null}
-        <div className="work-product-rerun-opts" role="group" aria-label="Re-run trim">
-          <span className="work-product-rerun-opts__label">Trim</span>
-          <div className="segmented work-product-rerun-opts__seg">
-            <button
-              type="button"
-              className={rerunTrimMode === "job" ? "seg-btn active" : "seg-btn"}
-              disabled={isBusy}
-              title="Keep the Use window baked into this job"
-              onClick={() => setRerunTrimMode("job")}
-            >
-              As job
+              {swapInstead ? "Swap queue" : "Queue"}
             </button>
             <button
               type="button"
-              className={rerunTrimMode === "edited" ? "seg-btn active" : "seg-btn"}
-              disabled={isBusy}
-              title="Use the source marks currently on this card"
-              onClick={() => setRerunTrimMode("edited")}
+              className="drt-btn work-product-quick-queue__queue-next"
+              disabled={!canRerun || (familyChanged && !rerunFamily)}
+              title="Insert at the front of the factory pending FIFO"
+              onClick={() => void rerun("queue_next")}
             >
-              As edited
+              Next
+            </button>
+            <span className="work-product-quick-queue__sep" aria-hidden="true" />
+            <span className="work-product-quick-queue__sublabel" title="Skip pending — submit directly to Comfy">
+              Comfy
+            </span>
+            <button
+              type="button"
+              className="drt-btn work-product-quick-queue__rerun"
+              disabled={!canRerun || (familyChanged && !rerunFamily)}
+              title={
+                swapInstead
+                  ? `Swap to ${rerunFamily} · trim ${rerunTrimMode} · seed ${rerunSeedMode} · front of Comfy · retire this job`
+                  : `New job${familyChanged ? ` as ${rerunFamily}` : ""} · trim ${rerunTrimMode} · seed ${rerunSeedMode} · front of Comfy`
+              }
+              onClick={() => void rerun("now")}
+            >
+              {swapInstead ? "Swap now" : "Now"}
+            </button>
+            <button
+              type="button"
+              className="drt-btn work-product-quick-queue__rerun"
+              disabled={!canRerun || (familyChanged && !rerunFamily)}
+              title={
+                swapInstead
+                  ? `Swap to ${rerunFamily} · trim ${rerunTrimMode} · seed ${rerunSeedMode} · normal priority · retire this job`
+                  : `New job${familyChanged ? ` as ${rerunFamily}` : ""} · trim ${rerunTrimMode} · seed ${rerunSeedMode} · normal priority`
+              }
+              onClick={() => void rerun("later")}
+            >
+              {swapInstead ? "Swap later" : "Later"}
             </button>
           </div>
-        </div>
-        <div className="work-product-rerun-opts" role="group" aria-label="Re-run seed">
-          <span className="work-product-rerun-opts__label">Seed</span>
-          <div className="segmented work-product-rerun-opts__seg">
-            <button
-              type="button"
-              className={rerunSeedMode === "same" ? "seg-btn active" : "seg-btn"}
-              disabled={isBusy}
-              title="Hold this job’s noise seed (exact retry when trim also matches)"
-              onClick={() => setRerunSeedMode("same")}
-            >
-              Same
-            </button>
-            <button
-              type="button"
-              className={rerunSeedMode === "new" ? "seg-btn active" : "seg-btn"}
-              disabled={isBusy}
-              title="Draw a new noise seed; keep other bindings"
-              onClick={() => setRerunSeedMode("new")}
-            >
-              New
-            </button>
           </div>
         </div>
-        <button
-          type="button"
-          className="drt-btn work-product-quick-queue__queue"
-          disabled={!canRerun || (familyChanged && !rerunFamily)}
-          title={
-            swapInstead
-              ? `Swap to ${rerunFamily} onto the factory pending FIFO · retire this job`
-              : `New job${familyChanged ? ` as ${rerunFamily}` : ""} onto the factory pending FIFO`
-          }
-          onClick={() => void rerun("queue")}
-        >
-          {swapInstead ? "Swap queue" : "Queue"}
-        </button>
-        <button
-          type="button"
-          className="drt-btn work-product-quick-queue__queue-next"
-          disabled={!canRerun || (familyChanged && !rerunFamily)}
-          title="Insert at the front of the factory pending FIFO"
-          onClick={() => void rerun("queue_next")}
-        >
-          Next
-        </button>
-        <span className="work-product-quick-queue__sep" aria-hidden="true" />
-        <span className="work-product-quick-queue__label" title="Skip pending — submit directly to Comfy">
-          Comfy
-        </span>
-        <button
-          type="button"
-          className="drt-btn work-product-quick-queue__rerun"
-          disabled={!canRerun || (familyChanged && !rerunFamily)}
-          title={
-            swapInstead
-              ? `Swap to ${rerunFamily} · trim ${rerunTrimMode} · seed ${rerunSeedMode} · front of Comfy · retire this job`
-              : `New job${familyChanged ? ` as ${rerunFamily}` : ""} · trim ${rerunTrimMode} · seed ${rerunSeedMode} · front of Comfy`
-          }
-          onClick={() => void rerun("now")}
-        >
-          {swapInstead ? "Swap now" : "Now"}
-        </button>
-        <button
-          type="button"
-          className="drt-btn work-product-quick-queue__rerun"
-          disabled={!canRerun || (familyChanged && !rerunFamily)}
-          title={
-            swapInstead
-              ? `Swap to ${rerunFamily} · trim ${rerunTrimMode} · seed ${rerunSeedMode} · normal priority · retire this job`
-              : `New job${familyChanged ? ` as ${rerunFamily}` : ""} · trim ${rerunTrimMode} · seed ${rerunSeedMode} · normal priority`
-          }
-          onClick={() => void rerun("later")}
-        >
-          {swapInstead ? "Swap later" : "Later"}
-        </button>
-        {canEditSubmit && editSubmitIntent ? (
-          <>
-            <span className="work-product-quick-queue__sep" aria-hidden="true" />
-            <button
-              type="button"
-              className="drt-btn work-product-quick-queue__edit"
-              title="Edit this run in Submit (unqueues if waiting on Comfy; holds pending-drain)"
-              onClick={() => openSubmit(editSubmitIntent)}
-            >
-              Edit
-            </button>
-          </>
-        ) : null}
-        {isEditing ? (
-          <>
-            <span className="work-product-quick-queue__sep" aria-hidden="true" />
-            <button
-              type="button"
-              className="drt-btn work-product-quick-queue__release"
-              disabled={isBusy}
-              title="Release editing lock back to pending so drain can pick it up"
-              onClick={() => {
-                void (async () => {
-                  setBusy(true);
-                  setMsg(null);
-                  try {
-                    await finishEditMutation.mutateAsync({
-                      job_key: jobKey,
-                      action: "later",
-                      actor: "operator",
-                      reason: "finish_edit:later",
-                      source_surface: "workbench",
-                    });
-                    setMsg("Released → pending");
-                    await invalidateWorkbench();
-                    onCommitted?.();
-                  } catch (e) {
-                    setMsg(e instanceof Error ? e.message : String(e));
-                  } finally {
-                    setBusy(false);
-                  }
-                })();
-              }}
-            >
-              Release
-            </button>
-          </>
-        ) : null}
-        {canUnqueue ? (
-          <>
-            <span className="work-product-quick-queue__sep" aria-hidden="true" />
-            <button
-              type="button"
-              className="drt-btn work-product-quick-queue__unqueue"
-              disabled={!canUnqueue}
-              title={
-                nonFactory
-                  ? "Remove this non-factory prompt from Comfy’s waiting queue"
-                  : "Remove from Comfy waiting queue and return this job to editable pending"
-              }
-              onClick={() => void unqueue()}
-            >
-              Unqueue
-            </button>
-          </>
-        ) : null}
-        {canClaim ? (
-          <>
-            <span className="work-product-quick-queue__sep" aria-hidden="true" />
-            <button
-              type="button"
-              className="drt-btn"
-              disabled={!canClaim}
-              title="Mint a durable Workbench job from this Comfy prompt (prompt/params/LoRAs on disk)"
-              onClick={() => void claimToWorkbench()}
-            >
-              Claim
-            </button>
-          </>
-        ) : null}
-        {canArchive ? (
-          <>
-            <span className="work-product-quick-queue__sep" aria-hidden="true" />
-            <button
-              type="button"
-              className="drt-btn work-product-quick-queue__discard"
-              disabled={!canArchive}
-              title="Remove from Workbench; soft-archive job + sidecars as .discarded (no restore UI)"
-              onClick={() => void archive()}
-            >
-              Archive
-            </button>
-          </>
-        ) : null}
-        {canDelete ? (
-          <>
-            <span className="work-product-quick-queue__sep" aria-hidden="true" />
-            <button
-              type="button"
-              className="drt-btn work-product-quick-queue__discard"
-              disabled={!canDelete}
-              title={
-                deleteIsPendingOnly
-                  ? "Permanently delete this pending job and its sidecars from disk"
-                  : "Permanently delete this failed job and its sidecars from disk"
-              }
-              onClick={() => void discard()}
-            >
-              Delete
-            </button>
-          </>
-        ) : null}
-          </>
-        ) : null}
-      </div>
+      ) : null}
+
+      {showJobControls ? (
+        <div className="work-product-quick-queue__group" role="group" aria-label="This job">
+          <span className="work-product-quick-queue__label" title="Edit or remove the current record">
+            This job
+          </span>
+          <div className="work-product-quick-queue__body">
+          <div className="work-product-quick-queue__row">
+            {canEditSubmit && editSubmitIntent ? (
+              <button
+                type="button"
+                className="drt-btn work-product-quick-queue__edit"
+                title="Edit this run in Submit (unqueues if waiting on Comfy; holds pending-drain)"
+                onClick={() => openSubmit(editSubmitIntent)}
+              >
+                Edit
+              </button>
+            ) : null}
+            {isEditing ? (
+              <button
+                type="button"
+                className="drt-btn work-product-quick-queue__release"
+                disabled={isBusy}
+                title="Release editing lock back to pending so drain can pick it up"
+                onClick={() => {
+                  void (async () => {
+                    setBusy(true);
+                    setMsg(null);
+                    try {
+                      await finishEditMutation.mutateAsync({
+                        job_key: jobKey,
+                        action: "later",
+                        actor: "operator",
+                        reason: "finish_edit:later",
+                        source_surface: "workbench",
+                      });
+                      setMsg("Released → pending");
+                      await invalidateWorkbench();
+                      onCommitted?.();
+                    } catch (e) {
+                      setMsg(e instanceof Error ? e.message : String(e));
+                    } finally {
+                      setBusy(false);
+                    }
+                  })();
+                }}
+              >
+                Release
+              </button>
+            ) : null}
+            {canUnqueue ? (
+              <button
+                type="button"
+                className="drt-btn work-product-quick-queue__unqueue"
+                disabled={!canUnqueue}
+                title={
+                  nonFactory
+                    ? "Remove this non-factory prompt from Comfy’s waiting queue"
+                    : "Remove from Comfy waiting queue and return this job to editable pending"
+                }
+                onClick={() => void unqueue()}
+              >
+                Unqueue
+              </button>
+            ) : null}
+            {canClaim ? (
+              <button
+                type="button"
+                className="drt-btn"
+                disabled={!canClaim}
+                title="Mint a durable Workbench job from this Comfy prompt (prompt/params/LoRAs on disk)"
+                onClick={() => void claimToWorkbench()}
+              >
+                Claim
+              </button>
+            ) : null}
+            {!failure && canArchive ? (
+              <button
+                type="button"
+                className="drt-btn work-product-quick-queue__discard"
+                disabled={!canArchive}
+                title="Remove from Workbench; soft-archive job + sidecars as .discarded (no restore UI)"
+                onClick={() => void archive()}
+              >
+                Archive
+              </button>
+            ) : null}
+            {!failure && canDelete ? (
+              <button
+                type="button"
+                className="drt-btn work-product-quick-queue__discard"
+                disabled={!canDelete}
+                title={
+                  deleteIsPendingOnly
+                    ? "Permanently delete this pending job and its sidecars from disk"
+                    : "Permanently delete this failed job and its sidecars from disk"
+                }
+                onClick={() => void discard()}
+              >
+                Delete
+              </button>
+            ) : null}
+          </div>
+          </div>
+        </div>
+      ) : null}
       {msg ? <p className="work-product-quick-queue__msg" title={msg}>{msg}</p> : null}
     </div>
   );

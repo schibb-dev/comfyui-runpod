@@ -16299,6 +16299,55 @@ button.home-backlog-linkish {
   background: rgba(0, 0, 0, 0.16);
 }
 
+.work-product-quick-queue--actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+}
+
+.work-product-quick-queue__group {
+  display: grid;
+  grid-template-columns: 5.25rem minmax(0, 1fr);
+  column-gap: 10px;
+  align-items: start;
+  min-width: 0;
+}
+
+.work-product-quick-queue__group > .work-product-quick-queue__label {
+  padding-top: 5px;
+  line-height: 1.2;
+}
+
+.work-product-quick-queue__body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.work-product-quick-queue--actions > .work-product-quick-queue__group + .work-product-quick-queue__group {
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.work-product-quick-queue--actions > .work-product-fix {
+  margin: 0;
+}
+
+.work-product-quick-queue--actions > .work-product-fix + .work-product-quick-queue__group {
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.work-product-quick-queue__sublabel {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
 .work-product-fix {
   margin: 0 0 8px;
   padding: 8px 10px;
@@ -16482,13 +16531,15 @@ button.home-backlog-linkish {
 
 .work-product-rerun-opts {
   display: inline-flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 0.35rem;
+  min-width: 0;
 }
 
 .work-product-rerun-opts--family .work-product-family-select {
-  max-width: 12rem;
+  max-width: 11rem;
+  min-width: 0;
 }
 
 .work-product-rerun-opts__label {
