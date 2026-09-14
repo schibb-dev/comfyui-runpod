@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createPortal } from "react-dom";
-import { discardShapeFactoryJob, fetchShapeFactoryQuarantine, fetchShapeFactoryWorkProduct, fetchShapeFactoryWorkProducts, finishShapeFactoryEdit, claimShapeFactoryFromQueue, movePendingQueue, promoteShapeFactoryTemplate, remediateShapeFactoryJob, replayShapeFactory, swapShapeFactoryFamily, unqueueShapeFactory, updatePendingShapeFactoryTrim, updateShapeFactoryOwnedLoras, updateShapeFactoryOwnedParams, updateShapeFactoryOwnedPrompt } from "./api";
+import { discardShapeFactoryJob, fetchDispositionBuckets, fetchShapeFactoryQuarantine, fetchShapeFactoryWorkProduct, fetchShapeFactoryWorkProducts, finishShapeFactoryEdit, claimShapeFactoryFromQueue, movePendingQueue, promoteShapeFactoryTemplate, remediateShapeFactoryJob, replayShapeFactory, swapShapeFactoryFamily, unqueueShapeFactory, updatePendingShapeFactoryTrim, updateShapeFactoryOwnedLoras, updateShapeFactoryOwnedParams, updateShapeFactoryOwnedPrompt } from "./api";
 import {
   groupWorkProductsByNavSection,
   workProductListBucket,
@@ -43,6 +43,18 @@ import { useTrimPlaybackEnforcement, type TrimPlaybackMode } from "./useTrimPlay
 import { ComfyUiLink, comfyUiHostLabel } from "./comfyUiWindow";
 import { discoveryLibraryHref, extractContentIdFromName, parseWorkbenchDeepLink, stillsHref, buildSubmitDeepLink, lineageSummaryHref, workbenchHref, workbenchHrefForMedia, isLineageInputStill, type SubmitDeepLink } from "./discoveryDeepLink";
 import { factoryMapFamilyHref } from "./factoryMapRoute";
+import {
+  isFollowUpWorkingSet,
+  isFollowUpWorkingSetJob,
+  workProductIdentityLabel,
+  loadWorkingSet,
+  persistWorkingSet,
+  parseWorkingSetId,
+  filterFollowUpBucketItems,
+  workProductFromFollowUpItem,
+  WORKBENCH_WORKING_SETS,
+  type WorkbenchWorkingSetId,
+} from "./workProductWorkingSet";
 import { AppetitePreviewBadge, AppetitePreviewFrame } from "./AppetitePreviewBadge";
 import { DiscoveryAssetLineagePanel } from "./DiscoveryAssetLineagePanel";
 import { ComfyHealthBanner, useComfyHealthRetrySec } from "./ComfyHealthBanner";
@@ -50,6 +62,7 @@ import { comfyHealthIsBackoff, formatComfyRetry } from "./comfyHealth";
 import { RemoveReviewBanner } from "./RemoveReviewBanner";
 import { SubmitComposerModal } from "./SubmitComposerModal";
 import { useAssetRatingsTick, WorkProductAppetiteStrip } from "./WorkProductAppetiteStrip";
+import { WorkProductDispositionStrip } from "./WorkProductDispositionStrip";
 import {
   APPETITE_FILTER_KEYS,
   APPETITE_FILTER_LABEL,
@@ -5402,6 +5415,14 @@ function WorkProductDetails({
             : "Appetite needs an output path"
         }
       />
+      <WorkProductDispositionStrip
+        relpath={workbenchJobAppetiteRelpath(item)}
+        disabledHint={
+          isLivePreviewItem(item) || String(item.status || "") === "pending"
+            ? "Follow-up available once this job has an output"
+            : "Follow-up needs an output path"
+        }
+      />
       <WorkProductQuickQueue
         item={item}
         families={families}
@@ -5623,11 +5644,16 @@ function WorkProductIndexRow({
       </span>
       <span className="work-product-index-row__meta">
         <span className="work-product-index-row__title">
-          <strong>{item.family_slug || "job"}</strong>
+          <strong>{item.family_slug || mediaFocusLabel(item.output_relpath || item.job_key) || "job"}</strong>
           <PromptVariantBadge item={item} />
           {item.is_hourly ? (
             <span className="work-product-badge work-product-badge--hourly" title="Produced by the hourly planner">
               Hourly
+            </span>
+          ) : null}
+          {item.disposition_entry ? (
+            <span className="work-product-badge" title="Follow-up mark">
+              {item.disposition_entry}
             </span>
           ) : null}
           {isRunningLiveItem(item) ? (
@@ -5649,7 +5675,7 @@ function WorkProductIndexRow({
           {timing ? ` · ${timing.text}` : ""}
         </span>
         <code className="work-product-index-row__key" title={item.job_key}>
-          {item.job_key}
+          {workProductIdentityLabel(item)}
         </code>
       </span>
       {isRunningLiveItem(item) ? null : (
@@ -5826,7 +5852,7 @@ function WorkProductRowInner({
             })()}
           </div>
           <code className="work-product-row__key" title={item.job_key}>
-            {item.job_key}
+            {workProductIdentityLabel(item)}
           </code>
         </div>
         {isRunningLiveItem(item) && item.prompt_id ? (
@@ -5913,7 +5939,8 @@ function workProductRowPropsEqual(
     a.prompt_id === b.prompt_id &&
     a.error === b.error &&
     a.created_at === b.created_at &&
-    a.live_from_comfy === b.live_from_comfy
+    a.live_from_comfy === b.live_from_comfy &&
+    a.disposition_entry === b.disposition_entry
   );
 }
 
@@ -5928,6 +5955,13 @@ export function WorkProductsApp() {
   const queryClient = useQueryClient();
   const [layout, setLayout] = useState<RowLayout>(() => loadLayout());
   const [sort, setSort] = useState<WorkProductSort>(() => loadSort());
+  const [workingSet, setWorkingSet] = useState<WorkbenchWorkingSetId>(() =>
+    deepLink.set ? parseWorkingSetId(deepLink.set) : loadWorkingSet(),
+  );
+  const followUpSet = isFollowUpWorkingSet(workingSet);
+  useEffect(() => {
+    persistWorkingSet(workingSet);
+  }, [workingSet]);
   // Search box is only seeded from explicit ?q= — never from job/media identity.
   const [nameQuery, setNameQuery] = useState(() => deepLink.q || "");
   const hasResourceDeepLink = Boolean(deepLink.job || deepLink.promptId || deepLink.media);
@@ -5951,7 +5985,9 @@ export function WorkProductsApp() {
   /** Resource deep-links (job / prompt / media) start pinned + list collapsed. */
   const [focusPinned, setFocusPinned] = useState(() => hasResourceDeepLink);
   const [listOpen, setListOpen] = useState(() => !hasResourceDeepLink);
-  const [toolsOpen, setToolsOpen] = useState(() => Boolean(deepLink.q) || loadChrome().tools);
+  const [toolsOpen, setToolsOpen] = useState(
+    () => Boolean(deepLink.q) || followUpSet || loadChrome().tools,
+  );
   const [filtersOpen, setFiltersOpen] = useState(() => loadChrome().filters);
   const [navSectionOpen, setNavSectionOpen] = useState<Record<WorkProductNavSectionId, boolean>>(
     () => loadNavSectionOpen(),
@@ -5969,8 +6005,8 @@ export function WorkProductsApp() {
     mediaPickTouched.current = true;
     setListOpen(true);
     setHourlyOnly(loadHourlyOnly());
-    window.history.replaceState(null, "", workbenchHref({ q: nameQuery.trim() || null }));
-  }, [nameQuery]);
+    window.history.replaceState(null, "", workbenchHref({ q: nameQuery.trim() || null, set: workingSet }));
+  }, [nameQuery, workingSet]);
   const bulkDiscardMutation = useMutation({ mutationFn: discardShapeFactoryJob });
   const pendingMoveMutation = useMutation({
     mutationFn: movePendingQueue,
@@ -5988,11 +6024,13 @@ export function WorkProductsApp() {
     if (!key) return;
     setFocusJob(key);
     setFocusPromptId(null);
-    window.history.replaceState(null, "", workbenchHref({ jobKey: key }));
-  }, []);
+    window.history.replaceState(null, "", workbenchHref({ jobKey: key, set: workingSet }));
+  }, [workingSet]);
+  const jobListLimit = followUpSet ? 120 : limit;
+  const jobListHourly = followUpSet ? false : hourlyOnly;
   const queryState = useQuery({
-    queryKey: queryKeys.shapeFactory.workProducts({ limit, hourlyOnly, family: null }),
-    queryFn: () => fetchShapeFactoryWorkProducts({ limit, hourlyOnly }),
+    queryKey: queryKeys.shapeFactory.workProducts({ limit: jobListLimit, hourlyOnly: jobListHourly, family: null }),
+    queryFn: () => fetchShapeFactoryWorkProducts({ limit: jobListLimit, hourlyOnly: jobListHourly }),
     staleTime: 30_000,
     placeholderData: (prev) => prev,
     refetchInterval: (query) => {
@@ -6005,7 +6043,18 @@ export function WorkProductsApp() {
     },
     refetchIntervalInBackground: false,
   });
-  const items = queryState.data?.items || [];
+  const bucketsQuery = useQuery({
+    queryKey: queryKeys.discovery.dispositionBuckets(null),
+    queryFn: () => fetchDispositionBuckets(),
+    staleTime: 15_000,
+  });
+  const recentItems = queryState.data?.items;
+  const items = useMemo(() => {
+    const jobs = recentItems || [];
+    if (!followUpSet) return jobs;
+    const rows = filterFollowUpBucketItems(bucketsQuery.data?.items || [], workingSet);
+    return rows.map((row) => workProductFromFollowUpItem(row, jobs));
+  }, [followUpSet, workingSet, bucketsQuery.data?.items, recentItems]);
   const comfyHealth = queryState.data?.comfy_health;
   const comfyHealthRetrySec = useComfyHealthRetrySec(comfyHealth);
   const comfyHealthBackoff = comfyHealthIsBackoff(comfyHealth);
@@ -6041,7 +6090,9 @@ export function WorkProductsApp() {
     focusJob,
     focusPromptId,
   ]);
-  const listSettled = !queryState.isLoading || Boolean(queryState.error);
+  const listSettled = followUpSet
+    ? !bucketsQuery.isLoading || Boolean(bucketsQuery.error)
+    : !queryState.isLoading || Boolean(queryState.error);
   const historyQuery = useQuery({
     queryKey: queryKeys.shapeFactory.workProduct({
       jobKey: historyLookupJobKey,
@@ -6056,7 +6107,8 @@ export function WorkProductsApp() {
       focusPinned &&
       Boolean(historyLookupJobKey || historyLookupPromptId) &&
       !recentHit &&
-      listSettled,
+      listSettled &&
+      !isFollowUpWorkingSetJob(historyLookupJobKey),
     staleTime: 30_000,
   });
   const historyItem = historyQuery.data?.ok ? historyQuery.data.item || null : null;
@@ -6073,9 +6125,13 @@ export function WorkProductsApp() {
   const families = queryState.data?.families || historyQuery.data?.families || [];
   const extendFamilyDefaults =
     queryState.data?.extend_family_defaults || historyQuery.data?.extend_family_defaults || {};
-  const loading = queryState.isLoading;
-  const refreshing = queryState.isFetching && !queryState.isLoading;
-  const error = queryState.error instanceof Error ? queryState.error.message : null;
+  const loading = followUpSet ? bucketsQuery.isLoading : queryState.isLoading;
+  const refreshing = followUpSet
+    ? bucketsQuery.isFetching && !bucketsQuery.isLoading
+    : queryState.isFetching && !queryState.isLoading;
+  const error =
+    (followUpSet && bucketsQuery.error instanceof Error ? bucketsQuery.error.message : null) ||
+    (queryState.error instanceof Error ? queryState.error.message : null);
   const historyResolved =
     Boolean(recentHit) ||
     !focusPinned ||
@@ -6332,6 +6388,7 @@ export function WorkProductsApp() {
       promptId: keepJobInUrl && !focusJob ? focusPromptId : null,
       media: focusPinned ? focusMedia : null,
       q: nameQuery.trim() || null,
+      set: workingSet,
     });
     if (`${window.location.pathname}${window.location.search}` === next) return;
     window.history.replaceState(null, "", next);
@@ -6344,6 +6401,7 @@ export function WorkProductsApp() {
     focusMedia,
     listOpen,
     nameQuery,
+    workingSet,
   ]);
 
   useEffect(() => {
@@ -6469,7 +6527,27 @@ export function WorkProductsApp() {
     setAppetiteOff(next);
   };
 
-  const refresh = () => queryState.refetch();
+  const refresh = () => {
+    void queryState.refetch();
+    void bucketsQuery.refetch();
+  };
+
+  const applyWorkingSet = useCallback(
+    (id: WorkbenchWorkingSetId) => {
+      setWorkingSet(id);
+      persistWorkingSet(id);
+      setFocusPinned(false);
+      setFocusMedia(null);
+      setFocusJob(null);
+      setFocusPromptId(null);
+      setListOpen(true);
+      if (isFollowUpWorkingSet(id)) {
+        setToolsOpen(true);
+        persistChrome({ tools: true, filters: filtersOpen });
+      }
+    },
+    [filtersOpen],
+  );
 
   const clearFailedVisible = async () => {
     const targets = failedVisible;
@@ -6635,10 +6713,27 @@ export function WorkProductsApp() {
       />
       {toolsOpen ? (
         <div id="workbench-tools" className="work-products-tools" role="group" aria-label="Workbench tools">
-          <label className="pipeline-tray-switch" title="Worktrays coming soon — Recent is the default working set">
+          <label className="pipeline-tray-switch" title="Recent jobs, or a follow-up pile of marked videos">
             <span>Working set</span>
-            <select value="recent" aria-label="Workbench working set" disabled>
-              <option value="recent">Recent</option>
+            <select
+              value={workingSet}
+              aria-label="Workbench working set"
+              onChange={(e) => applyWorkingSet(parseWorkingSetId(e.target.value))}
+            >
+              {WORKBENCH_WORKING_SETS.map((s) => {
+                const n =
+                  s.id === "follow-up"
+                    ? bucketsQuery.data?.count
+                    : s.entry
+                      ? bucketsQuery.data?.counts?.[s.entry]
+                      : undefined;
+                return (
+                  <option key={s.id} value={s.id}>
+                    {s.label}
+                    {typeof n === "number" ? ` (${n})` : ""}
+                  </option>
+                );
+              })}
             </select>
           </label>
           <label className="work-products-search" id="workbench-search">
@@ -6647,7 +6742,7 @@ export function WorkProductsApp() {
               type="search"
               value={nameQuery}
               onChange={(e) => setNameQuery(e.target.value)}
-              placeholder="Family or job key…"
+              placeholder={followUpSet ? "Filename or path…" : "Family or job key…"}
               aria-label="Filter work products by name"
             />
           </label>
@@ -6707,15 +6802,19 @@ export function WorkProductsApp() {
         <button
           type="button"
           className={`work-products-status-toggle work-products-status-toggle--hourly${
-            hourlyOnly ? " is-on" : " is-off"
+            hourlyOnly && !followUpSet ? " is-on" : " is-off"
           }`}
-          aria-pressed={hourlyOnly}
+          aria-pressed={hourlyOnly && !followUpSet}
+          disabled={followUpSet}
           title={
-            hourlyOnly
-              ? "Hourly only — click to show all jobs"
-              : "Showing all jobs — click for hourly only"
+            followUpSet
+              ? "Hourly filter does not apply to follow-up piles"
+              : hourlyOnly
+                ? "Hourly only — click to show all jobs"
+                : "Showing all jobs — click for hourly only"
           }
           onClick={() => {
+            if (followUpSet) return;
             const next = !hourlyOnly;
             setHourlyOnly(next);
             persistHourlyOnly(next);
@@ -6837,7 +6936,11 @@ export function WorkProductsApp() {
         {loading && !items.length && listOpen ? <div className="work-products-empty">Loading…</div> : null}
         {!loading && !error && !items.length && listOpen && !focusedItem ? (
           <div className="work-products-empty">
-            {hourlyOnly ? "No hourly work products found." : "No work products found."}
+            {followUpSet
+              ? "No videos in this follow-up pile."
+              : hourlyOnly
+                ? "No hourly work products found."
+                : "No work products found."}
           </div>
         ) : null}
         {!loading && !error && items.length && !visibleItems.length && listOpen && !focusPinned ? (
@@ -6852,7 +6955,7 @@ export function WorkProductsApp() {
           <nav
             id="workbench-jobs-index"
             className={`work-products-index${focusPinned ? " work-products-index--focused" : ""}`}
-            aria-label={focusPinned ? "Focused jobs" : "Workbench jobs"}
+            aria-label={focusPinned ? "Focused jobs" : followUpSet ? "Follow-up" : "Workbench jobs"}
             onKeyDown={onIndexKeyDown}
           >
             <div className="work-products-index__toolbar">
@@ -6881,8 +6984,9 @@ export function WorkProductsApp() {
                   </button>
                 </span>
               ) : (
-                <span className="work-products-index__toolbar-label">Jobs</span>
+                <span className="work-products-index__toolbar-label">{followUpSet ? "Follow-up" : "Jobs"}</span>
               )}
+              {followUpSet ? null : (
               <label className="work-products-limit work-products-limit--index">
                 Show
                 <select
@@ -6897,6 +7001,7 @@ export function WorkProductsApp() {
                   ))}
                 </select>
               </label>
+              )}
               <label className="work-products-limit work-products-limit--index">
                 Sort
                 <select
@@ -6928,7 +7033,7 @@ export function WorkProductsApp() {
               ) : null}
             </div>
             {visibleItems.length ? (
-              <div className="work-products-index__list" role="listbox" aria-label="Recent jobs">
+              <div className="work-products-index__list" role="listbox" aria-label={followUpSet ? "Follow-up" : "Recent jobs"}>
                 {navSections.map((sec) => (
                   <WorkProductIndexSection
                     key={sec.id}
@@ -6954,9 +7059,14 @@ export function WorkProductsApp() {
                   >
                     {sec.items.map((item) => (
                       <WorkProductIndexRow
-                        key={item.job_key}
+                        key={item.output_relpath || item.job_key}
                         item={item}
-                        selected={Boolean(selectedItem && item.job_key === selectedItem.job_key)}
+                        selected={Boolean(
+                          selectedItem &&
+                            (item.output_relpath && selectedItem.output_relpath
+                              ? item.output_relpath === selectedItem.output_relpath
+                              : item.job_key === selectedItem.job_key),
+                        )}
                         onSelect={selectItem}
                         movingPending={pendingMoveMutation.isPending}
                         onMovePending={(it, spec) => {
@@ -6971,9 +7081,11 @@ export function WorkProductsApp() {
               </div>
             ) : (
               <div className="work-products-index__empty">
-                {focusMedia
-                  ? `No loaded jobs reference this ${focusCaption?.kind.toLowerCase() || "clip"}.`
-                  : "No jobs match this focus."}
+                {followUpSet
+                  ? "No videos in this follow-up pile."
+                  : focusMedia
+                    ? `No loaded jobs reference this ${focusCaption?.kind.toLowerCase() || "clip"}.`
+                    : "No jobs match this focus."}
               </div>
             )}
           </nav>
@@ -6996,7 +7108,9 @@ export function WorkProductsApp() {
               <span className="work-products-index-rail__chevron" aria-hidden>
                 ›
               </span>
-              <span className="work-products-index-rail__label">{focusPinned ? "Focused" : "Jobs"}</span>
+              <span className="work-products-index-rail__label">
+                {focusPinned ? "Focused" : followUpSet ? "Follow-up" : "Jobs"}
+              </span>
               {visibleItems.length || items.length ? (
                 <span className="work-products-index-rail__count">
                   {focusPinned ? visibleItems.length : visibleItems.length || items.length}
@@ -7019,7 +7133,7 @@ export function WorkProductsApp() {
         {selectedItem ? (
           <div className="work-products-detail">
             <WorkProductRow
-              key={selectedItem.job_key}
+              key={selectedItem.output_relpath || selectedItem.job_key}
               item={selectedItem}
               layout={layout}
               families={families}
@@ -7042,7 +7156,9 @@ export function WorkProductsApp() {
           </div>
         ) : listOpen && visibleItems.length ? (
           <div className="work-products-detail">
-            <div className="work-products-empty">Select a job from the list.</div>
+            <div className="work-products-empty">
+              Select {followUpSet ? "a video" : "a job"} from the list.
+            </div>
           </div>
         ) : null}
       </div>

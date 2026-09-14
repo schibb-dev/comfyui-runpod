@@ -27,7 +27,7 @@ export function AppetiteRemoveIcon({ className }: { className?: string }) {
 }
 
 export const APPETITE_ORDER: { key: Appetite; label: string; short: string; glyph: string; hint: string }[] = [
-  { key: "remove", label: "Remove", short: "b", glyph: "⊘", hint: "Hide from lists and factory jobs — review later for deletion" },
+  { key: "remove", label: "Remove", short: "b", glyph: "⊘", hint: "Hide from lists and factory. Also marks Retire on Follow-up. Delete from Workbench when nothing depends on it" },
   { key: "less", label: "Less", short: "z", glyph: "−", hint: "Steer away from this direction" },
   { key: "neutral", label: "Neutral", short: "x", glyph: "○", hint: "No strong pull either way" },
   { key: "more", label: "More", short: "c", glyph: "+", hint: "Want more work in this direction" },

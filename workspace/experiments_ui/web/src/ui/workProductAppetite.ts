@@ -1,6 +1,8 @@
-import { peekAssetRatings } from "./assetRatingsCache";
+import { peekAssetRatings, patchCachedDisposition } from "./assetRatingsCache";
+import { queryKeys } from "./queryKeys";
 import type { Appetite, WorkProductItem } from "./types";
 import { isCompletedWorkProduct } from "./workProductRecency";
+import type { QueryClient } from "@tanstack/react-query";
 
 export function normalizeAppetiteRelpath(raw: string | null | undefined): string {
   return String(raw || "")
@@ -84,4 +86,19 @@ export function filterWorkProductsByAppetite(
     if (key != null) return !appetiteOff.has(key);
     return !unsetOnly;
   });
+}
+
+/** After a successful appetite POST: funnel Remove → Retire in the session cache, refresh piles. */
+export function afterAppetiteCommitted(
+  queryClient: QueryClient,
+  relpath: string,
+  appetite: Appetite | "" | null,
+): void {
+  const key = normalizeAppetiteRelpath(relpath);
+  if (!key) return;
+  if (appetite === "remove") {
+    patchCachedDisposition(key, ["retire"]);
+  }
+  void queryClient.invalidateQueries({ queryKey: ["discovery", "dispositionBuckets"] });
+  void queryClient.invalidateQueries({ queryKey: queryKeys.discovery.assetRemoveReview });
 }

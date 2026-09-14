@@ -99,6 +99,7 @@ import type {
   QualityAxis,
   DispositionCatalogResponse,
   DispositionSuggestResponse,
+  DispositionBucketsResponse,
   ToggleDispositionResponse,
   RunDispositionStepResponse,
   RecordTriageCompleteResponse,
@@ -1177,6 +1178,23 @@ export async function fetchDispositionSuggest(opts: {
   if (!r.ok || j.ok === false) {
     const detail = [j.error, (j as { detail?: string }).detail].filter(Boolean).join(": ");
     throw new Error(`GET /api/discovery/disposition-suggest failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
+}
+
+export async function fetchDispositionBuckets(opts?: {
+  entry?: string;
+}): Promise<DispositionBucketsResponse> {
+  const sp = new URLSearchParams();
+  if (opts?.entry) sp.set("entry", opts.entry);
+  const qs = sp.toString();
+  const r = await fetch(`/api/discovery/disposition-buckets${qs ? `?${qs}` : ""}`);
+  const j = (await r.json().catch(() => ({}))) as DispositionBucketsResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET /api/discovery/disposition-buckets failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
   }
   return j;
 }

@@ -4,6 +4,7 @@ import type {
   DispositionPromotions,
   DispositionReasonDetail,
 } from "./types";
+import { DISPOSITION_CLEAR_ALL } from "./dispositionOptimistic";
 
 export function DispositionBar({
   entries,
@@ -25,10 +26,28 @@ export function DispositionBar({
   const promote = new Set(promotions?.promote ?? []);
   const secondary = new Set(promotions?.secondary ?? []);
   const active = new Set(markers);
+  const activeEntry = entries.find((e) => active.has(e.id));
 
   return (
     <div className={"disposition-bar" + (embedded ? " disposition-bar--embedded" : "")} role="group" aria-label="Disposition — what to do next">
       <div className={embedded ? "drq-rate-bar drq-rate-bar--disposition" : "disposition-btns"}>
+        <button
+          type="button"
+          className={
+            (embedded ? "drq-star-btn drq-disposition-tile " : "disposition-btn ") +
+            "disposition-btn--unset" +
+            (!activeEntry ? " disposition-btn--on" : "")
+          }
+          disabled={busy}
+          title="None: clear follow-up mark"
+          aria-pressed={!activeEntry}
+          aria-label="Clear disposition"
+          onClick={() => {
+            if (activeEntry) onToggle(DISPOSITION_CLEAR_ALL, false);
+          }}
+        >
+          <span className="drq-disposition-tile__label">None</span>
+        </button>
         {entries.map((e) => {
           const isOn = active.has(e.id);
           const isPromote = promote.has(e.id);

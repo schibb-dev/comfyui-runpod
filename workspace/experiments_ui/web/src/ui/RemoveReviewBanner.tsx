@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchAssetRemoveReview, purgeAssetRemove } from "./api";
 import { patchCachedAppetite, peekAssetRatings, subscribeAssetRatings } from "./assetRatingsCache";
-import { workbenchHrefForMedia } from "./discoveryDeepLink";
+import { discoveryPoolsHref, workbenchHrefForMedia } from "./discoveryDeepLink";
 import { queryKeys } from "./queryKeys";
 import type { AssetRemoveReviewResponse } from "./types";
 
@@ -73,6 +73,9 @@ export function RemoveReviewBanner({ enabled }: { enabled: boolean }) {
     <aside className="remove-review-banner" aria-label="Remove appetite review">
       <div className="remove-review-banner__head">
         <strong>Remove review</strong>
+        <a className="remove-review-banner__follow-up" href={discoveryPoolsHref("retire")}>
+          Follow-up Retire
+        </a>
         <span className="remove-review-banner__meta">
           {q.isLoading
             ? "Scanning references…"
@@ -92,9 +95,10 @@ export function RemoveReviewBanner({ enabled }: { enabled: boolean }) {
         ) : null}
       </div>
       <p className="remove-review-banner__note">
-        Hidden from lists and factory jobs. Ready items have no downstream jobs or pool
-        memberships — delete removes the file, its ratings, and the Workbench job when
-        no other videos remain. Change appetite to restore instead.
+        Hidden from lists and factory jobs. Marking Remove also stamps Retire on Follow-up.
+        Ready items have no downstream jobs or pool memberships — delete removes the file,
+        its ratings, and the Workbench job when no other videos remain. Change appetite to
+        restore instead. Trash (Retire step) is recoverable; this Delete is not.
       </p>
       {msg ? <p className="remove-review-banner__msg">{msg}</p> : null}
       {items.length ? (

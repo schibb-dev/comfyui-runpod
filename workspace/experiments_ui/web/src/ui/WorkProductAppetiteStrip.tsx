@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { setAssetAppetite } from "./api";
 import { AppetiteBar } from "./AppetiteBar";
 import {
@@ -9,7 +10,7 @@ import {
   subscribeAssetRatings,
 } from "./assetRatingsCache";
 import type { Appetite, AppetiteFacet } from "./types";
-import { normalizeAppetiteRelpath } from "./workProductAppetite";
+import { afterAppetiteCommitted, normalizeAppetiteRelpath } from "./workProductAppetite";
 
 export { normalizeAppetiteRelpath };
 
@@ -92,6 +93,7 @@ export function WorkProductAppetiteStrip({
   disabledHint?: string;
   onSaved?: (appetite: Appetite | "", facet: AppetiteFacet) => void;
 }) {
+  const queryClient = useQueryClient();
   const { key, appetite, facet } = useAssetAppetite(relpath, defaultFacet);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
@@ -113,6 +115,7 @@ export function WorkProductAppetiteStrip({
           job_key: jobKey || undefined,
           family_slug: familySlug || undefined,
         });
+        afterAppetiteCommitted(queryClient, key, state || null);
         setMsg(state || "unset");
         onSaved?.(state, nextFacet);
         void revalidateAssetRatings(key);
@@ -123,7 +126,7 @@ export function WorkProductAppetiteStrip({
         setBusy(false);
       }
     },
-    [key, busy, appetite, facet, jobKey, familySlug, onSaved],
+    [key, busy, appetite, facet, jobKey, familySlug, onSaved, queryClient],
   );
 
   if (!key) {

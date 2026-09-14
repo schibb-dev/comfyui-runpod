@@ -342,6 +342,9 @@ export function DiscoveryAssetRatingsPanel({
         <a className="drt-btn" href="/discovery/rate" title="Open the batch rate queue for disposition + triage">
           Rate queue
         </a>
+        <a className="drt-btn" href="/discovery/pools" title="Videos marked to fix, look at, or vary later">
+          Follow-up
+        </a>
         {data?.index_updated_at ? (
           <span className="drt-muted" title={data.index_updated_at}>
             Index: {formatIsoDateTime(data.index_updated_at)}

@@ -1,6 +1,8 @@
 # Bucket model — Phase 2 implementation plan
 
-**Status:** Phase **2A shipped** (work item index + APIs + run-step hook). Phase 2B–2E planned.
+**Status:** Phase **2A shipped** (work item index + APIs + run-step hook). **2C partial:**
+Follow-up pile `/discovery/pools` lists disposition entries (refine / investigate /
+advance / park / retire). Phase 2B / remaining 2C–2E planned.
 
 **Model reference:** [`DISPOSITION_BUCKET_MODEL.md`](./DISPOSITION_BUCKET_MODEL.md) (expanded sections 11–16).
 
@@ -106,6 +108,12 @@ Replace single-choice Advance menu with:
 ---
 
 ## Phase 2C — Pool pages (bucket views)
+
+**Partial (2026-09-14):** `/discovery/pools` (nav: **Follow-up**) lists assets from
+`disposition_index` by primary entry (`?entry=refine` etc.). Mark from Workbench /
+Library inspector / Rate queue via the same toggle API. Workbench Tools → Working set
+opens the same piles as `/workbench?set=advance` (etc.). Remaining: review and
+orchestration work-item views, `pool_views.yaml`, per-bucket actions (trim, queue now).
 
 Routes (add to [`routes.ts`](../workspace/experiments_ui/web/src/ui/routes.ts) under Workbench):
 

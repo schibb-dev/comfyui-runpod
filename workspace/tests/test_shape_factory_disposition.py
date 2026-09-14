@@ -8,12 +8,21 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import support  # noqa: F401
+
 from shape_factory_disposition import (
     compute_disposition_promotions,
+    disposition_bucket_counts,
+    entries_in_conflict,
     is_retired_disposition,
+    list_disposition_bucket_items,
     load_seed_catalog,
     merge_catalog,
+    primary_entry_from_markers,
+    relocate_trashed_disposition_rows,
+    run_disposition_step,
     stamp_output_disposition,
+    stamp_retire_for_remove_appetite,
     toggle_output_disposition,
     trash_output_media,
 )
@@ -61,10 +70,14 @@ class DispositionCatalogTests(unittest.TestCase):
         lighting = next(m for m in cat["markers"] if m["id"] == "refine.lighting")
         self.assertEqual(lighting.get("modifier_mode"), "multi")
         self.assertTrue(any(x.get("id") == "bad_shadows" for x in lighting.get("modifiers") or []))
+        retire = next(m for m in cat["markers"] if m["id"] == "retire")
+        self.assertTrue(retire.get("exclusive"))
+        self.assertTrue(entries_in_conflict(cat, "retire", "refine"))
+        self.assertFalse(entries_in_conflict(cat, "refine", "advance"))
 
 
 class DispositionIndexTests(unittest.TestCase):
-    def test_toggle_entry_replaces_other_entries(self) -> None:
+    def test_toggle_entries_can_stack_except_retire(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             og = root / "og"
@@ -82,7 +95,7 @@ class DispositionIndexTests(unittest.TestCase):
                 disposition_index_path=idx,
                 catalog=cat,
             )
-            saved = toggle_output_disposition(
+            stacked = toggle_output_disposition(
                 media_abs=media,
                 media_relpath="og/clip.mp4",
                 marker_id="investigate",
@@ -91,7 +104,99 @@ class DispositionIndexTests(unittest.TestCase):
                 disposition_index_path=idx,
                 catalog=cat,
             )
-            self.assertEqual(saved["markers"], ["investigate"])
+            self.assertEqual(set(stacked["markers"]), {"refine", "investigate"})
+
+            retired = toggle_output_disposition(
+                media_abs=media,
+                media_relpath="og/clip.mp4",
+                marker_id="retire",
+                on=True,
+                og_root=og,
+                disposition_index_path=idx,
+                catalog=cat,
+            )
+            self.assertEqual(retired["markers"], ["retire"])
+
+            revived = toggle_output_disposition(
+                media_abs=media,
+                media_relpath="og/clip.mp4",
+                marker_id="advance",
+                on=True,
+                og_root=og,
+                disposition_index_path=idx,
+                catalog=cat,
+            )
+            self.assertEqual(revived["markers"], ["advance"])
+            self.assertNotIn("retire", revived["markers"])
+
+    def test_reason_keeps_nonconflicting_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            og = root / "og"
+            og.mkdir()
+            media = og / "clip.mp4"
+            media.write_bytes(b"fake")
+            idx = root / "_status" / "disposition_index.json"
+            cat = load_seed_catalog()
+            toggle_output_disposition(
+                media_abs=media,
+                media_relpath="og/clip.mp4",
+                marker_id="advance",
+                on=True,
+                og_root=og,
+                disposition_index_path=idx,
+                catalog=cat,
+            )
+            saved = toggle_output_disposition(
+                media_abs=media,
+                media_relpath="og/clip.mp4",
+                marker_id="refine.activity",
+                on=True,
+                modifiers=["too_busy"],
+                og_root=og,
+                disposition_index_path=idx,
+                catalog=cat,
+            )
+            self.assertEqual({"advance", "refine", "refine.activity"}, set(saved["markers"]))
+
+    def test_clear_all_none_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            og = root / "og"
+            og.mkdir()
+            media = og / "clip.mp4"
+            media.write_bytes(b"fake")
+            idx = root / "_status" / "disposition_index.json"
+            cat = load_seed_catalog()
+            toggle_output_disposition(
+                media_abs=media,
+                media_relpath="og/clip.mp4",
+                marker_id="refine",
+                on=True,
+                og_root=og,
+                disposition_index_path=idx,
+                catalog=cat,
+            )
+            toggle_output_disposition(
+                media_abs=media,
+                media_relpath="og/clip.mp4",
+                marker_id="park",
+                on=True,
+                og_root=og,
+                disposition_index_path=idx,
+                catalog=cat,
+            )
+            cleared = toggle_output_disposition(
+                media_abs=media,
+                media_relpath="og/clip.mp4",
+                marker_id="none",
+                on=False,
+                og_root=og,
+                disposition_index_path=idx,
+                catalog=cat,
+            )
+            self.assertTrue(cleared.get("cleared"))
+            self.assertEqual(cleared["markers"], [])
 
     def test_reason_auto_sets_refine_and_stores_modifiers(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -218,6 +323,176 @@ class DispositionIndexTests(unittest.TestCase):
             self.assertEqual(row["markers"], ["investigate"])
             self.assertEqual(row["notes"].get("investigate"), "needs a look")
 
+    def test_list_buckets_dedupes_short_and_discovery_keys(self) -> None:
+        cat = load_seed_catalog()
+        doc = {
+            "by_output_relpath": {
+                "clip.mp4": {
+                    "markers": ["refine", "refine.artifacts"],
+                    "notes": {"refine": "fix seams"},
+                    "short_key": "clip.mp4",
+                    "updated_at": "2026-09-01T00:00:00Z",
+                },
+                "og/2026-09-01/clip.mp4": {
+                    "markers": ["refine", "refine.artifacts"],
+                    "notes": {"refine": "fix seams"},
+                    "short_key": "clip.mp4",
+                    "updated_at": "2026-09-01T00:00:00Z",
+                },
+                "other.mp4": {
+                    "markers": ["park"],
+                    "notes": {},
+                    "short_key": "other.mp4",
+                    "updated_at": "2026-09-02T00:00:00Z",
+                },
+            }
+        }
+        items = list_disposition_bucket_items(doc, cat)
+        self.assertEqual(primary_entry_from_markers(["refine.artifacts", "refine"], cat), "refine")
+        rels = {row["relpath"] for row in items}
+        self.assertEqual(rels, {"og/2026-09-01/clip.mp4", "other.mp4"})
+        refine = next(r for r in items if r["entry"] == "refine")
+        self.assertEqual(refine["note"], "fix seams")
+        counts = disposition_bucket_counts(items, cat)
+        self.assertEqual(counts["refine"], 1)
+        self.assertEqual(counts["park"], 1)
+        parked = list_disposition_bucket_items(doc, cat, entry="park")
+        self.assertEqual(len(parked), 1)
+        self.assertEqual(parked[0]["entry"], "park")
+
+    def test_list_buckets_multi_entry_asset_in_each_tab(self) -> None:
+        cat = load_seed_catalog()
+        doc = {
+            "by_output_relpath": {
+                "og/clip.mp4": {
+                    "markers": ["refine", "advance", "refine.artifacts"],
+                    "notes": {"refine": "fix seams"},
+                    "short_key": "clip.mp4",
+                    "updated_at": "2026-09-01T00:00:00Z",
+                }
+            }
+        }
+        all_items = list_disposition_bucket_items(doc, cat)
+        self.assertEqual(len(all_items), 1)
+        self.assertEqual(all_items[0]["entries"], ["refine", "advance"])
+        self.assertEqual(all_items[0]["entry"], "refine")
+        refine = list_disposition_bucket_items(doc, cat, entry="refine")
+        advance = list_disposition_bucket_items(doc, cat, entry="advance")
+        park = list_disposition_bucket_items(doc, cat, entry="park")
+        self.assertEqual(len(refine), 1)
+        self.assertEqual(len(advance), 1)
+        self.assertEqual(len(park), 0)
+        counts = disposition_bucket_counts(all_items, cat)
+        self.assertEqual(counts["refine"], 1)
+        self.assertEqual(counts["advance"], 1)
+        self.assertEqual(counts["park"], 0)
+        self.assertEqual(primary_entry_from_markers(["advance", "refine"], cat), "refine")
+
+    def test_list_buckets_prefers_trash_path(self) -> None:
+        cat = load_seed_catalog()
+        doc = {
+            "by_output_relpath": {
+                "output/og/2025-12-16/clip": {
+                    "markers": ["retire"],
+                    "notes": {},
+                    "short_key": "og/_trash/2026-08-05/clip.mp4",
+                    "discovery_key": "output/og/2025-12-16/clip",
+                    "trashed": True,
+                    "updated_at": "2026-08-05T00:00:00Z",
+                },
+                "og/_trash/2026-08-05/clip.mp4": {
+                    "markers": ["retire"],
+                    "notes": {},
+                    "short_key": "og/_trash/2026-08-05/clip.mp4",
+                    "discovery_key": "og/_trash/2026-08-05/clip.mp4",
+                    "trashed": True,
+                    "updated_at": "2026-08-05T00:00:00Z",
+                },
+            }
+        }
+        items = list_disposition_bucket_items(doc, cat, entry="retire")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["relpath"], "og/_trash/2026-08-05/clip.mp4")
+        self.assertTrue(items[0]["trashed"])
+
+    def test_relocate_trashed_rows_rewrites_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            og = root / "og"
+            trash = og / "_trash" / "2026-08-05"
+            trash.mkdir(parents=True)
+            (trash / "clip.mp4").write_bytes(b"fake")
+            (trash / "clip.png").write_bytes(b"png")
+            idx = root / "_status" / "disposition_index.json"
+            idx.parent.mkdir(parents=True)
+            idx.write_text(
+                json.dumps(
+                    {
+                        "by_output_relpath": {
+                            "output/og/2025-12-16/clip": {
+                                "markers": ["retire"],
+                                "notes": {},
+                                "short_key": "og/2025-12-16/clip",
+                                "updated_at": "2026-08-01T00:00:00Z",
+                            },
+                            "og/2025-12-16/clip": {
+                                "markers": ["retire"],
+                                "notes": {},
+                                "short_key": "og/2025-12-16/clip",
+                                "updated_at": "2026-08-01T00:00:00Z",
+                            },
+                            "og/live.mp4": {
+                                "markers": ["retire"],
+                                "notes": {},
+                                "short_key": "og/live.mp4",
+                                "updated_at": "2026-08-01T00:00:00Z",
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (og / "live.mp4").write_bytes(b"still here")
+            out = relocate_trashed_disposition_rows(og_root=og, disposition_index_path=idx)
+            self.assertEqual(out["relocated"], 1)
+            self.assertEqual(out["skipped_present"], 1)
+            saved = json.loads(idx.read_text(encoding="utf-8"))
+            table = saved["by_output_relpath"]
+            self.assertIn("og/_trash/2026-08-05/clip.mp4", table)
+            self.assertNotIn("output/og/2025-12-16/clip", table)
+            self.assertNotIn("og/2025-12-16/clip", table)
+            self.assertIn("og/live.mp4", table)
+            self.assertTrue(table["og/_trash/2026-08-05/clip.mp4"]["trashed"])
+
+    def test_trash_step_rekeys_index(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            og = root / "og"
+            og.mkdir()
+            media = og / "clip.mp4"
+            media.write_bytes(b"fake")
+            (og / "clip.png").write_bytes(b"png")
+            idx = root / "_status" / "disposition_index.json"
+            cat = load_seed_catalog()
+            out = run_disposition_step(
+                step_id="retire.trash",
+                media_abs=media,
+                media_relpath="og/clip.mp4",
+                og_root=og,
+                disposition_index_path=idx,
+                catalog=cat,
+            )
+            self.assertTrue(out["ok"])
+            self.assertFalse(media.exists())
+            saved = json.loads(idx.read_text(encoding="utf-8"))
+            table = saved["by_output_relpath"]
+            trash_keys = [k for k in table if "/_trash/" in k.replace("\\", "/")]
+            self.assertTrue(trash_keys)
+            self.assertNotIn("og/clip.mp4", table)
+            row = table[trash_keys[0]]
+            self.assertIn("retire", row["markers"])
+            self.assertTrue(row.get("trashed"))
+
     def test_trash_moves_companion(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -231,6 +506,82 @@ class DispositionIndexTests(unittest.TestCase):
             self.assertTrue(out["ok"])
             self.assertFalse(media.exists())
             self.assertFalse(xmp.exists())
+
+    def test_remove_appetite_stamps_retire_on_og_video(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            og = root / "og"
+            og.mkdir()
+            media = og / "clip.mp4"
+            media.write_bytes(b"fake")
+            idx = root / "_status" / "disposition_index.json"
+            cat = load_seed_catalog()
+            toggle_output_disposition(
+                media_abs=media,
+                media_relpath="og/clip.mp4",
+                marker_id="advance",
+                on=True,
+                og_root=og,
+                disposition_index_path=idx,
+                catalog=cat,
+            )
+            out = stamp_retire_for_remove_appetite(
+                media_abs=media,
+                media_relpath="og/clip.mp4",
+                og_root=og,
+                appetite="remove",
+                disposition_index_path=idx,
+                catalog=cat,
+            )
+            self.assertTrue(out and out.get("ok"))
+            self.assertFalse(out.get("skipped"))
+            self.assertIn("retire", out.get("markers") or [])
+            self.assertNotIn("advance", out.get("markers") or [])
+            again = stamp_retire_for_remove_appetite(
+                media_abs=media,
+                media_relpath="og/clip.mp4",
+                og_root=og,
+                appetite="remove",
+                disposition_index_path=idx,
+                catalog=cat,
+            )
+            self.assertTrue(again.get("skipped"))
+            self.assertEqual(again.get("reason"), "already_retired")
+            self.assertIsNone(
+                stamp_retire_for_remove_appetite(
+                    media_abs=media,
+                    media_relpath="og/clip.mp4",
+                    og_root=og,
+                    appetite="more",
+                    disposition_index_path=idx,
+                    catalog=cat,
+                )
+            )
+            saved = json.loads(idx.read_text(encoding="utf-8"))
+            row = next(iter(saved["by_output_relpath"].values()))
+            self.assertIn("retire", row["markers"])
+
+    def test_remove_appetite_skips_still(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            og = root / "og"
+            og.mkdir()
+            still_dir = root / "input"
+            still_dir.mkdir()
+            still = still_dir / "face.png"
+            still.write_bytes(b"png")
+            idx = root / "_status" / "disposition_index.json"
+            out = stamp_retire_for_remove_appetite(
+                media_abs=still,
+                media_relpath="input/face.png",
+                og_root=og,
+                appetite="remove",
+                disposition_index_path=idx,
+                catalog=load_seed_catalog(),
+            )
+            self.assertTrue(out and out.get("skipped"))
+            self.assertEqual(out.get("reason"), "not_output_video")
+            self.assertFalse(idx.exists())
 
 
 class DispositionRetireTests(unittest.TestCase):

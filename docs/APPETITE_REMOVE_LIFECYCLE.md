@@ -1,21 +1,26 @@
 # Appetite `remove` — hide, then delete when nothing depends on it
 
-**Last updated:** 2026-09-08
+**Last updated:** 2026-09-14
 
 `remove` is a **terminal appetite mark**, not a fifth step on the `less → fast_track` scale. It means: do not show this asset in normal lists, and do not let it seed or bind factory jobs.
+
+**One-way funnel (2026-09-14):** marking Remove on an **og/wip video** also stamps disposition **Retire**, so the clip appears on Follow-up → Retire. Clearing Remove does **not** clear Retire. Stills stay Remove-only (gallery filter); they do not enter Follow-up.
+
+**Trash vs Delete:** Retire step **Trash** moves files to `og/_trash/` (recoverable). Workbench **Delete** unlinks the file when nothing depends on it. Clip-library “retire” (`deleted_at` on a bookmark) is a third, unrelated layer.
 
 ## Operator path
 
 1. Mark **Remove** (`b` / forbidden) on Workbench, Rate queue, Library, or still gallery.
-2. The row **disappears from default views**. Workbench’s remove chip starts **off**; turn it on to review.
-3. Change appetite (or clear it) to restore the asset to lists and factory eligibility.
+2. Videos also get **Retire** (replaces Advance/Refine). The row **disappears from default views**. Workbench’s remove chip starts **off**; turn it on to review. Follow-up → Retire still lists them (badge **hidden**).
+3. Change appetite (or clear it) to restore the asset to lists and factory eligibility. Retire stays until you clear it on Follow-up.
 4. If the review says **no dependents**, **Delete** removes the file and its ratings.
 
 ## What is live now
 
 | Surface | Behavior |
 |---------|----------|
-| Workbench | Remove chip defaults off (hidden). Turning it on shows marked rows plus a review banner (ref counts, no-dependents vs has-references). Ready rows get **Delete**; **Delete N ready** batches them. |
+| Workbench | Remove chip defaults off (hidden). Turning it on shows marked rows plus a review banner (ref counts, no-dependents vs has-references) with a link to Follow-up Retire. Ready rows get **Delete**; **Delete N ready** batches them. |
+| Follow-up | Videos stamped Retire (including via Remove) list under `/discovery/pools?entry=retire`. |
 | Discovery library | Skipped unless `?include_removed=1`. |
 | Still gallery | Default / All / Marked / Unmarked omit `remove`. Explicit **Remove (review)** filter lists them. |
 | Hourly picks | Stills and recipes with `remove` are dropped (weight 0 / skip). |

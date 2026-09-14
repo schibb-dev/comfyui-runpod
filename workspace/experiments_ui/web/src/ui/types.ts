@@ -750,6 +750,8 @@ export type DispositionCatalogMarker = {
   modifier_mode?: DispositionModifierMode | string;
   modifiers?: DispositionReasonModifier[];
   requires_note?: boolean;
+  exclusive?: boolean;
+  conflicts_with?: string[];
 };
 
 export type DispositionReasonDetail = {
@@ -801,6 +803,42 @@ export type ToggleDispositionResponse = {
   };
   promotions?: DispositionPromotions;
   error?: string;
+};
+
+export type DispositionBucketEntry = {
+  id: string;
+  label: string;
+  hint?: string;
+  count?: number;
+};
+
+export type DispositionBucketItem = {
+  relpath: string;
+  short_key?: string;
+  entry: string;
+  entries?: string[];
+  markers?: string[];
+  note?: string | null;
+  updated_at?: string | null;
+  name?: string;
+  url?: string | null;
+  thumb_url?: string | null;
+  video_url?: string | null;
+  trashed?: boolean;
+  original_relpath?: string | null;
+  appetite?: Appetite | null;
+};
+
+export type DispositionBucketsResponse = {
+  ok: boolean;
+  entry?: string | null;
+  counts?: Record<string, number>;
+  entries?: DispositionBucketEntry[];
+  items?: DispositionBucketItem[];
+  count?: number;
+  updated_at?: string | null;
+  error?: string;
+  detail?: string;
 };
 
 export type RunDispositionStepResponse = {
@@ -1021,6 +1059,8 @@ export type SetAppetiteResponse = {
     cleared?: boolean;
     discovery_key?: string;
     short_key?: string;
+    disposition_markers?: string[];
+    disposition?: Record<string, unknown>;
     /** Legacy: appetite set used to queue an Extend; no longer populated. */
     queued?: {
       ok?: boolean;

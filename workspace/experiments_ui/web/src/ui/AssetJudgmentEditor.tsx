@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { setAssetAppetite, setAssetRating } from "./api";
 import {
   patchCachedAppetite,
@@ -16,6 +17,8 @@ import type {
   QualityAxesMap,
 } from "./types";
 import { QUALITY_AXES, QUALITY_AXIS_LABELS } from "./types";
+import { WorkProductDispositionStrip } from "./WorkProductDispositionStrip";
+import { afterAppetiteCommitted } from "./workProductAppetite";
 
 function num(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
@@ -50,6 +53,7 @@ export function AssetJudgmentEditor({
   layout?: "inline" | "cards";
   onSaved?: (ratings: DiscoveryAssetRatingsResponse) => void;
 }) {
+  const queryClient = useQueryClient();
   const [explicitRating, setExplicitRating] = useState<number | null>(null);
   const [qualityAxes, setQualityAxes] = useState<QualityAxesMap>({});
   const [activeQualityAxis, setActiveQualityAxis] = useState<QualityAxis>("subject_beauty");
@@ -202,6 +206,7 @@ export function AssetJudgmentEditor({
       setMsg("");
       try {
         await setAssetAppetite({ relpath, appetite: state, facet });
+        afterAppetiteCommitted(queryClient, relpath, state || null);
         setMsg(state ? `Appetite: ${state}` : "Appetite unset");
         void refreshAfterSave();
       } catch (e) {
@@ -213,7 +218,7 @@ export function AssetJudgmentEditor({
         setAppetiteBusy(false);
       }
     },
-    [relpath, appetiteBusy, appetite, appetiteFacet, refreshAfterSave],
+    [relpath, appetiteBusy, appetite, appetiteFacet, refreshAfterSave, queryClient],
   );
 
   if (!relpath) return null;
@@ -316,6 +321,15 @@ export function AssetJudgmentEditor({
             onSet={(state, facet) => void setAppetiteState(state, facet)}
           />
         </div>
+        <div className="drq-judgment-card">
+          <div className="drq-judgment-card__head">
+            <h3 className="drq-judgment-card__title">Follow-up</h3>
+            <p className="drq-judgment-card__hint">
+              Fix / look later / vary — not appetite. Several marks can stack; Retire replaces the others. Browse the pile on Follow-up.
+            </p>
+          </div>
+          <WorkProductDispositionStrip relpath={relpath} />
+        </div>
         {msg ? <p className="drq-rate-hint factory-muted drt-judgment-msg">{msg}</p> : null}
       </div>
     );
@@ -330,6 +344,7 @@ export function AssetJudgmentEditor({
         busy={appetiteBusy}
         onSet={(state, facet) => void setAppetiteState(state, facet)}
       />
+      <WorkProductDispositionStrip relpath={relpath} />
       {msg ? <span className="drq-rate-hint factory-muted">{msg}</span> : null}
     </div>
   );

@@ -51,6 +51,9 @@ export const queryKeys = {
   },
   discovery: {
     assetRemoveReview: ["discovery", "assetRemoveReview"] as const,
+    dispositionCatalog: ["discovery", "dispositionCatalog"] as const,
+    dispositionBuckets: (entry?: string | null) =>
+      ["discovery", "dispositionBuckets", entry || "all"] as const,
   },
   queue: {
     root: ["queue"] as const,

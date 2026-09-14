@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   fetchDiscoveryRatingSampler,
   fetchDispositionCatalog,
@@ -24,9 +25,11 @@ import {
 import { cachedEnsureThumbUrl, enqueueEnsureThumb } from "./ensureThumbQueue";
 import { AppetiteBar, APPETITE_KEYMAP } from "./AppetiteBar";
 import { DispositionBar, DispositionReasonsPanel, DispositionRouter } from "./DispositionBar";
+import { DISPOSITION_CLEAR_ALL, optimisticDispositionToggle } from "./dispositionOptimistic";
 import { DispositionCatalogEditor } from "./DispositionCatalogEditor";
 import { DispositionStatusPanel } from "./DispositionStatusPanel";
 import { discoveryLibraryHref } from "./discoveryDeepLink";
+import { afterAppetiteCommitted } from "./workProductAppetite";
 import {
   TRIM_CONTEXT_DISCOVERY_PLAYER,
   loadDiscoveryTrimAsync,
@@ -289,79 +292,6 @@ function applyDispositionFromRatings(
   setReasonDetail?.(r.disposition_reason_detail ?? {});
 }
 
-function reasonIdsForProcess(reasons: DispositionCatalogMarker[], process: string): string[] {
-  const proc = process.trim();
-  return reasons.filter((r) => String(r.process || "").trim() === proc).map((r) => r.id);
-}
-
-/** Mirror server toggle rules so disposition tiles update before the POST returns. */
-function optimisticDispositionToggle(
-  markers: string[],
-  reasonDetail: Record<string, DispositionReasonDetail>,
-  entries: DispositionCatalogMarker[],
-  reasons: DispositionCatalogMarker[],
-  markerId: string,
-  on: boolean,
-  extra?: { note?: string; modifiers?: string[] },
-): { markers: string[]; reasonDetail: Record<string, DispositionReasonDetail> } {
-  const entryIds = new Set(entries.map((e) => e.id));
-  const spec = entries.find((e) => e.id === markerId) ?? reasons.find((r) => r.id === markerId);
-  if (!spec) return { markers: [...markers], reasonDetail: { ...reasonDetail } };
-
-  const nextMarkers = new Set(markers);
-  const nextDetail: Record<string, DispositionReasonDetail> = { ...reasonDetail };
-  const kind = spec.kind;
-
-  if (on) {
-    if (kind === "entry") {
-      for (const id of entryIds) nextMarkers.delete(id);
-      if (markerId !== "refine") {
-        for (const rid of reasonIdsForProcess(reasons, "refine")) {
-          nextMarkers.delete(rid);
-          delete nextDetail[rid];
-        }
-      }
-      nextMarkers.add(markerId);
-    } else if (kind === "reason") {
-      const process = String(spec.process || "").trim();
-      if (process && entryIds.has(process)) {
-        for (const id of entryIds) nextMarkers.delete(id);
-        nextMarkers.add(process);
-      }
-      nextMarkers.add(markerId);
-      const detail: DispositionReasonDetail = {};
-      if (extra?.modifiers !== undefined) {
-        if (extra.modifiers.length) detail.modifiers = extra.modifiers;
-      } else {
-        const prev = nextDetail[markerId];
-        if (prev?.modifiers?.length) detail.modifiers = [...prev.modifiers];
-      }
-      const note = (extra?.note || nextDetail[markerId]?.note || "").trim();
-      if (note) detail.note = note;
-      nextDetail[markerId] = detail;
-    } else {
-      nextMarkers.add(markerId);
-    }
-  } else {
-    nextMarkers.delete(markerId);
-    if (kind === "reason") {
-      delete nextDetail[markerId];
-    } else if (kind === "entry") {
-      const process = String(spec.process || markerId).trim();
-      for (const rid of reasonIdsForProcess(reasons, process)) {
-        nextMarkers.delete(rid);
-        delete nextDetail[rid];
-      }
-    }
-  }
-
-  for (const rid of Object.keys(nextDetail)) {
-    if (!nextMarkers.has(rid)) delete nextDetail[rid];
-  }
-
-  return { markers: [...nextMarkers].sort(), reasonDetail: nextDetail };
-}
-
 function entryLabelForMarker(markers: string[], catalog: DispositionCatalogMarker[]): string | null {
   const entry = markers.find((m) => catalog.some((c) => c.id === m && c.kind === "entry"));
   if (!entry) return null;
@@ -616,6 +546,7 @@ function CandidateStrip({
 }
 
 export function DiscoveryRatingQueueApp() {
+  const queryClient = useQueryClient();
   const [session, setSession] = useState<DiscoveryRatingSamplerResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -945,6 +876,8 @@ export function DiscoveryRatingQueueApp() {
       setCheckMsg("");
       try {
         await setAssetAppetite({ relpath: current.relpath, appetite: state, facet });
+        afterAppetiteCommitted(queryClient, current.relpath, state || null);
+        if (state === "remove") setDispositionMarkers(["retire"]);
         setCheckMsg(state ? `Appetite: ${state}` : "Appetite unset");
       } catch (e) {
         setAppetite(prevAppetite);
@@ -956,7 +889,7 @@ export function DiscoveryRatingQueueApp() {
         setAppetiteBusy(false);
       }
     },
-    [current, appetiteBusy, appetite, appetiteFacet, qualityAxes, markBatchRated],
+    [current, appetiteBusy, appetite, appetiteFacet, qualityAxes, markBatchRated, queryClient],
   );
 
   const formatDispositionResult = (stepId: string, result: Record<string, unknown> | undefined): string => {
@@ -1044,9 +977,11 @@ export function DiscoveryRatingQueueApp() {
         );
 
         const label =
-          catalogEntries.find((e) => e.id === markerId)?.label ??
-          catalogReasons.find((e) => e.id === markerId)?.label ??
-          markerId;
+          markerId === DISPOSITION_CLEAR_ALL
+            ? "all follow-up marks"
+            : catalogEntries.find((e) => e.id === markerId)?.label ??
+              catalogReasons.find((e) => e.id === markerId)?.label ??
+              markerId;
         const msg = on ? `Saved disposition: ${label}` : `Cleared: ${label}`;
         setDispositionLastAction(msg);
         setCheckMsg(msg);

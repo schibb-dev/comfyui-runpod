@@ -162,6 +162,21 @@ export function HomeDashboard() {
         </Card>
 
         <Card
+          title="Follow-up"
+          hint="Videos marked to fix, look at, or vary — corollary to appetite"
+          footer={
+            <a className="home-cta" href={routeHref("pools")}>
+              Open marked pile →
+            </a>
+          }
+        >
+          <p className="factory-muted" style={{ margin: 0 }}>
+            Refine (fix) · Investigate (look closer) · Advance (variations) · Park (later). Mark from
+            Workbench, Library, or Rating; come back here to work the pile.
+          </p>
+        </Card>
+
+        <Card
           title="Needs attention"
           hint="Fix these so generation + provenance stay clean"
           footer={

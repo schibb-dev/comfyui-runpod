@@ -1,6 +1,6 @@
 # Disposition, buckets, and review — model reference
 
-**Last updated:** 2026-08-07
+**Last updated:** 2026-09-14
 
 A skimmable map of the day-to-day process for reviewing clips, committing work intent, and feeding the factory — not a schema dump or API reference. Umbrella picture and fragment inventory: [CORPUS_LIFECYCLE.md](./CORPUS_LIFECYCLE.md). For ratings implementation detail see [RATINGS_V1_PLAN.md](./RATINGS_V1_PLAN.md). Clip / usable trim / starring / soft-delete: [CLIP_SELECTION_MODEL.md](./CLIP_SELECTION_MODEL.md).
 
@@ -165,7 +165,7 @@ stateDiagram-v2
 
 ## 7. Disposition entries (editing buckets)
 
-One **primary entry** at a time per asset (mutually exclusive). **Reasons** under Refine diagnose *why*; **steps** under Advance/Retire run hooks.
+An asset may carry **several** entry marks (Refine + Advance + Park, …). **Retire is exclusive** (`exclusive: true` in the catalog) and drops every other entry — turning on Refine while retired drops Retire. **Reasons** under Refine diagnose *why*; **steps** under Advance/Retire run hooks. **None** clears all entries on that asset.
 
 | Entry | Meaning | Typical steps |
 |-------|---------|---------------|
@@ -174,11 +174,13 @@ One **primary entry** at a time per asset (mutually exclusive). **Reasons** unde
 | **Advance** | Feed next pipeline stage | Extend, Vary (+ priority) |
 | **Extract** | Salvage part of clip | Frame, clip, reference |
 | **Re-evaluate later** (park) | Deferred — committed “come back” | (none) |
-| **Retire** | Remove from active work | Trash, Archive |
+| **Retire** | Out of active work. Appetite **Remove** also stamps this. | Trash (recoverable), Archive |
 
 Catalog source: [`disposition_catalog.yaml`](../disposition_catalog.yaml).
 
-Disposition is **mutable**: refine → advance → cleared → park is all valid over the asset’s life.
+**Remove vs Retire:** appetite Remove hides from lists/factory and can Delete; disposition Retire is the Follow-up “done with this” pile. Funnel is one-way (Remove → Retire). Clip-library retire (`deleted_at`) is bookmark soft-delete, not this entry.
+
+Disposition is **mutable**: refine + advance together, then retire, then cleared, is all valid over the asset’s life.
 
 ---
 
@@ -207,12 +209,14 @@ Example: one keeper → instance A (Extend, normal priority) + instance B (Vary,
 
 **Today’s UI:** Advance router still presents Extend / Vary / Queue now as a single-choice “next step” menu. The model above is **planned**; work-item index and multi-route UI are not shipped yet.
 
+Workbench Tools → **Working set** can list a follow-up pile (`/workbench?set=advance`) instead of recent jobs. Rows are marked videos, joined to a factory job when that job is still in the recent window.
+
 ---
 
 ## 9. Multi-bucket FAQ
 
 **Can one video be in multiple buckets at once?**  
-Yes as **views** (e.g. “Advance disposition” + “has open factory job”). No as conflicting **lifecycle** (only one primary disposition entry).
+Yes. Follow-up tabs are membership queries — Refine + Advance shows in both piles (All still lists the asset once). **Retire** conflicts with the other entries, so a retired clip is only in Retire. Factory-job views can still overlap independently.
 
 **Is bucket state on the asset, the bucket, or the instance?**  
 Split: disposition on asset; work on **instances**; buckets are **queries**.
@@ -240,7 +244,7 @@ Never triaged; disposition changed after last triage; (planned) work completed o
 | Work item index (`work_items_index.json`) | **Phase 2A shipped** — see [BUCKET_MODEL_PHASE2_PLAN.md](./BUCKET_MODEL_PHASE2_PLAN.md) |
 | Advance multi-route UI (pool toggles) | **Phase 2** |
 | Queue now as priority flag (not a pool) | **Phase 2** |
-| Dedicated pool pages (`/discovery/pools/*`) | **Phase 2** |
+| Dedicated pool pages (`/discovery/pools` follow-up by entry) | **Partial 2C** (2026-09-14) — entry piles; review/orchestration later |
 | Re-triage on work complete / child output | **Phase 2** |
 | Pool query spec (`pool_views.yaml`) | **Phase 2** |
 | Orchestration bucket (work ↔ factory join) | **Phase 2** |

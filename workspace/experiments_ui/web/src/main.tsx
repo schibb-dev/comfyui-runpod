@@ -13,6 +13,7 @@ const SCREENS: Record<AppRouteId, React.LazyExoticComponent<React.ComponentType>
   workflows: lazy(() => import("./ui/WorkflowExplorerApp").then((m) => ({ default: m.WorkflowExplorerApp }))),
   factory: lazy(() => import("./ui/DiscoveryFactoryMapApp").then((m) => ({ default: m.DiscoveryFactoryMapApp }))),
   rate: lazy(() => import("./ui/DiscoveryRatingQueueApp").then((m) => ({ default: m.DiscoveryRatingQueueApp }))),
+  pools: lazy(() => import("./ui/DiscoveryPoolsApp").then((m) => ({ default: m.DiscoveryPoolsApp }))),
   workbench: lazy(() => import("./ui/WorkProductsApp").then((m) => ({ default: m.WorkProductsApp }))),
   "family-ab": lazy(() => import("./ui/FamilyABApp").then((m) => ({ default: m.FamilyABApp }))),
   submit: lazy(() => import("./ui/SubmitComposerApp").then((m) => ({ default: m.SubmitComposerApp }))),

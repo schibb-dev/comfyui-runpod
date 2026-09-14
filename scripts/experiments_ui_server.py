@@ -1754,6 +1754,57 @@ def _discovery_item_for_relpath(index_obj: Any, rel_posix: str) -> Optional[Dict
     return None
 
 
+def _discovery_index_rel_lookup(index_obj: Any) -> Dict[str, Dict[str, Any]]:
+    """One-pass relpath / stem → library item map for bulk joins."""
+    out: Dict[str, Dict[str, Any]] = {}
+    if not isinstance(index_obj, dict):
+        return out
+    items = index_obj.get("items")
+    if not isinstance(items, list):
+        return out
+    exts = (".mp4", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".xmp", ".webm", ".mov", ".mkv")
+
+    def _stem(rel: str) -> str:
+        n = _normalize_rel_posix(rel.strip())
+        low = n.lower()
+        for ext in exts:
+            if low.endswith(ext):
+                return n[: -len(ext)]
+        return n
+
+    def _add_key(key: str, item: Dict[str, Any]) -> None:
+        k = _normalize_rel_posix(key.strip().lstrip("/"))
+        if k and k not in out:
+            out[k] = item
+
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        cands: List[str] = []
+        for k in ("relpath", "video_relpath", "thumb_relpath"):
+            v = it.get(k)
+            if isinstance(v, str) and v.strip():
+                cands.append(v.strip())
+        mems = it.get("members")
+        if isinstance(mems, list):
+            for mm in mems:
+                if isinstance(mm, dict):
+                    rv = mm.get("relpath")
+                    if isinstance(rv, str) and rv.strip():
+                        cands.append(rv.strip())
+        for c in cands:
+            _add_key(c, it)
+            stem = _stem(c)
+            _add_key(stem, it)
+            _add_key(Path(c).name, it)
+            _add_key(_stem(Path(c).name), it)
+            if "/og/" in c.replace("\\", "/"):
+                _add_key("og/" + c.replace("\\", "/").split("/og/", 1)[-1], it)
+            if "/wip/" in c.replace("\\", "/"):
+                _add_key("wip/" + c.replace("\\", "/").split("/wip/", 1)[-1], it)
+    return out
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
@@ -2655,6 +2706,22 @@ def _set_asset_appetite_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict
         og_root=og_root,
         appetite_index_path=_discovery_appetite_index_path(cfg),
     )
+    if appetite == "remove":
+        from shape_factory_disposition import stamp_retire_for_remove_appetite  # type: ignore
+
+        funnel = stamp_retire_for_remove_appetite(
+            media_abs=media_abs,
+            media_relpath=norm,
+            og_root=og_root,
+            appetite=appetite,
+            disposition_index_path=_discovery_disposition_index_path(cfg),
+        )
+        if isinstance(funnel, dict):
+            saved = dict(saved)
+            saved["disposition"] = funnel
+            markers = funnel.get("markers")
+            if isinstance(markers, list):
+                saved["disposition_markers"] = markers
     return saved
 
 
@@ -6342,6 +6409,174 @@ def _discovery_disposition_catalog_payload(cfg: ServerConfig) -> Dict[str, Any]:
         "reasons": reasons,
         "catalog_path": str(_discovery_disposition_catalog_path(cfg)),
         "seed_path": str(_repo_root() / "disposition_catalog.yaml"),
+    }
+
+
+def _discovery_disposition_buckets_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
+    """GET /api/discovery/disposition-buckets — follow-up piles; an asset may appear in several entry tabs."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_disposition import (  # type: ignore
+        catalog_entries,
+        disposition_bucket_counts,
+        find_trashed_output,
+        list_disposition_bucket_items,
+        trashed_relpath_for,
+    )
+    from shape_factory_ratings import normalize_appetite, path_appetite_state  # type: ignore
+
+    catalog = _discovery_load_disposition_catalog(cfg)
+    entry = str((q.get("entry") or [""])[0] or "").strip()
+    doc = _discovery_load_disposition_index(cfg) or {}
+    all_items = list_disposition_bucket_items(doc, catalog)
+    counts = disposition_bucket_counts(all_items, catalog)
+    def _item_entries(row: Dict[str, Any]) -> List[str]:
+        marked = row.get("entries")
+        if isinstance(marked, list) and marked:
+            return [str(x).strip() for x in marked if str(x).strip()]
+        primary = str(row.get("entry") or "").strip()
+        return [primary] if primary else []
+
+    items = [row for row in all_items if not entry or entry in _item_entries(row)]
+
+    idx_path = cfg.discovery_index_path
+    idx = _load_discovery_index_disk(idx_path) if idx_path.exists() else None
+    rel_lookup = _discovery_index_rel_lookup(idx) if isinstance(idx, dict) else {}
+    og_root = _prefer_flat_library_dir(cfg.output_root, "og")
+    appetite_doc = _discovery_load_appetite_index(cfg) or {}
+
+    def _rel_candidates(rel: str) -> List[str]:
+        raw = _normalize_rel_posix(rel.strip().lstrip("/"))
+        if not raw:
+            return []
+        out: List[str] = []
+        seen: set[str] = set()
+
+        def add(val: str) -> None:
+            v = _normalize_rel_posix(val.strip().lstrip("/"))
+            if v and v not in seen:
+                seen.add(v)
+                out.append(v)
+
+        add(raw)
+        if raw.startswith("output/output/"):
+            add(raw[len("output/output/") :])
+        elif raw.startswith("output/"):
+            add(raw[len("output/") :])
+        if "/og/" in raw:
+            add("og/" + raw.split("/og/", 1)[-1])
+        if "/wip/" in raw:
+            add("wip/" + raw.split("/wip/", 1)[-1])
+        extra: List[str] = []
+        for cand in list(out):
+            extra.append(cand)
+            low = cand.lower()
+            if not any(low.endswith(ext) for ext in (".mp4", ".png", ".jpg", ".jpeg", ".webp", ".webm", ".mov", ".mkv")):
+                extra.append(cand + ".mp4")
+                extra.append(cand + ".png")
+        for cand in extra:
+            add(cand)
+        return out
+
+    def _first_existing(relpath: str) -> Optional[str]:
+        for cand in _rel_candidates(relpath):
+            if _discovery_resolve_media_file(cfg, cand) is not None:
+                return cand
+        return None
+
+    def _join_library(relpath: str) -> Tuple[Optional[Dict[str, Any]], str]:
+        lib_hit: Optional[Dict[str, Any]] = None
+        resolved = relpath
+        for cand in _rel_candidates(relpath):
+            hit = rel_lookup.get(cand)
+            if isinstance(hit, dict):
+                lib_hit = hit
+                resolved = str(hit.get("relpath") or cand)
+                break
+        existing = _first_existing(relpath)
+        if existing:
+            resolved = existing
+        elif isinstance(lib_hit, dict):
+            resolved = str(lib_hit.get("relpath") or resolved)
+        if not isinstance(lib_hit, dict):
+            lib_hit = _discovery_synthetic_library_item_for_workspace_media(cfg, resolved)
+        return lib_hit, resolved
+
+    enriched: List[Dict[str, Any]] = []
+    for row in items:
+        rel = str(row.get("relpath") or "").strip()
+        lib, rel = _join_library(rel)
+        if str(row.get("entry") or "") == "retire" and "/_trash/" not in rel.replace("\\", "/"):
+            if _first_existing(rel) is None:
+                stem = Path(rel).stem or Path(str(row.get("short_key") or "")).stem
+                trash_abs = find_trashed_output(og_root, stem) if stem else None
+                if trash_abs is not None:
+                    trash_rel = trashed_relpath_for(og_root, trash_abs)
+                    tlib, trel = _join_library(trash_rel)
+                    rel = trel or trash_rel
+                    lib = tlib or lib
+                    row = {**row, "relpath": rel, "trashed": True}
+        name = rel.split("/")[-1] if rel else ""
+        url = _discovery_lineage_file_url(cfg, rel)
+        thumb_url = None
+        video_url = None
+        if isinstance(lib, dict):
+            name = str(lib.get("name") or name)
+            lib_rel = str(lib.get("relpath") or "").strip()
+            if lib_rel and _discovery_resolve_media_file(cfg, lib_rel) is not None:
+                rel = lib_rel
+            url = _discovery_lineage_file_url(cfg, rel) or url
+            video_url = _discovery_lineage_file_url(cfg, lib.get("video_relpath"))
+            thumb_url = _discovery_lineage_file_url(cfg, lib.get("thumb_relpath"))
+        if not thumb_url:
+            low = rel.lower()
+            if low.endswith(".mp4"):
+                thumb_url = _discovery_lineage_file_url(cfg, rel[:-4] + ".png")
+            elif low.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
+                thumb_url = url
+            else:
+                thumb_url = _discovery_lineage_file_url(cfg, rel + ".png")
+        if not video_url:
+            low = rel.lower()
+            if low.endswith((".mp4", ".webm", ".mov", ".mkv")):
+                video_url = url
+            else:
+                video_url = _discovery_lineage_file_url(cfg, rel + ".mp4")
+        appetite = normalize_appetite(path_appetite_state(rel, appetite_doc)) or None
+        if not appetite and row.get("original_relpath"):
+            appetite = normalize_appetite(path_appetite_state(str(row.get("original_relpath")), appetite_doc)) or None
+        enriched.append(
+            {
+                **row,
+                "relpath": rel,
+                "name": name,
+                "url": url,
+                "thumb_url": thumb_url,
+                "video_url": video_url,
+                "trashed": bool(row.get("trashed")) or "/_trash/" in rel.replace("\\", "/"),
+                "appetite": appetite,
+            }
+        )
+
+    entries = [
+        {
+            "id": str(m.get("id") or ""),
+            "label": str(m.get("label") or m.get("id") or ""),
+            "hint": str(m.get("hint") or ""),
+            "count": int(counts.get(str(m.get("id") or ""), 0) or 0),
+        }
+        for m in catalog_entries(catalog, kind="entry")
+        if str(m.get("id") or "").strip()
+    ]
+    return {
+        "ok": True,
+        "entry": entry or None,
+        "counts": counts,
+        "entries": entries,
+        "items": enriched,
+        "count": len(enriched),
+        "updated_at": doc.get("updated_at") if isinstance(doc, dict) else None,
     }
 
 
@@ -12298,6 +12533,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_discovery_disposition_catalog_get(q)
         if path == "/api/discovery/disposition-suggest":
             return self._handle_discovery_disposition_suggest_get(q)
+        if path == "/api/discovery/disposition-buckets":
+            return self._handle_discovery_disposition_buckets_get(q)
         if path == "/api/discovery/work-items":
             return self._handle_discovery_work_items_get(q)
         if path == "/api/discovery/work-items/pool":
@@ -15090,6 +15327,15 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, 500, {"ok": False, "error": "suggest_failed", "detail": str(e)})
         return _json_response(self, 200, payload)
 
+    def _handle_discovery_disposition_buckets_get(self, q: Dict[str, List[str]]) -> None:
+        """GET /api/discovery/disposition-buckets?entry=park — follow-up piles."""
+        cfg = self.server.cfg
+        try:
+            payload = _discovery_disposition_buckets_payload(cfg, q)
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "disposition_buckets_failed", "detail": str(e)})
+        return _json_response(self, 200, payload)
+
     def _handle_discovery_disposition_catalog_post(self) -> None:
         """
         POST /api/discovery/disposition-catalog
@@ -16620,6 +16866,7 @@ def main() -> int:
         "POST /api/discovery/library/ensure, "
         "POST /api/discovery/asset-ratings/set, POST /api/discovery/asset-appetite/set, "
         "GET/POST /api/discovery/disposition-catalog, GET /api/discovery/disposition-suggest, "
+        "GET /api/discovery/disposition-buckets, "
         "POST /api/discovery/asset-disposition/toggle, POST /api/discovery/asset-disposition/run-step, "
         "GET /api/discovery/identity-still/candidates, POST /api/discovery/identity-still/mint, "
         "GET /api/discovery/work-items, GET /api/discovery/work-items/pool, "

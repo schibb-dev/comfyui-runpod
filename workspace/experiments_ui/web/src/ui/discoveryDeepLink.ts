@@ -27,6 +27,12 @@ export function discoveryLibraryHref(relpath?: string | null): string {
   return `/discovery?relpath=${encodeURIComponent(norm)}`;
 }
 
+/** Follow-up piles: videos marked Refine / Investigate / Advance / Park / Retire. */
+export function discoveryPoolsHref(entry?: string | null): string {
+  const id = String(entry || "").trim();
+  return id ? `/discovery/pools?entry=${encodeURIComponent(id)}` : "/discovery/pools";
+}
+
 /** Library URL scoped to a folder prefix (date / generation tree browse). */
 export function discoveryLibraryFolderHref(pathPrefix?: string | null): string {
   const norm = (pathPrefix || "").trim().replace(/^\/+/, "").replace(/\\/g, "/");
@@ -308,6 +314,7 @@ export function workbenchHref(opts?: {
   promptId?: string | null;
   media?: string | null;
   q?: string | null;
+  set?: string | null;
 }): string {
   const sp = new URLSearchParams();
   const job = String(opts?.jobKey || "").trim();
@@ -317,10 +324,14 @@ export function workbenchHref(opts?: {
     .replace(/\\/g, "/")
     .replace(/^\/+/, "");
   const q = String(opts?.q || "").trim();
+  const set = String(opts?.set || "")
+    .trim()
+    .toLowerCase();
   if (job) sp.set("job", job);
   else if (promptId) sp.set("prompt_id", promptId);
   if (media) sp.set("media", media);
   if (q) sp.set("q", q);
+  if (set && set !== "recent") sp.set("set", set);
   const qs = sp.toString();
   return qs ? `/workbench?${qs}` : "/workbench";
 }
@@ -432,6 +443,8 @@ export function parseWorkbenchDeepLink(search: string = window.location.search):
   q: string | null;
   /** Media path / basename to focus as a resource (``?media=``). */
   media: string | null;
+  /** Working set id (``?set=advance`` / follow-up). */
+  set: string | null;
 } {
   const sp = new URLSearchParams(search);
   const job = (sp.get("job") || "").trim() || null;
@@ -441,7 +454,8 @@ export function parseWorkbenchDeepLink(search: string = window.location.search):
     .trim()
     .replace(/\\/g, "/")
     .replace(/^\/+/, "");
-  return { job, promptId, q, media: mediaRaw || null };
+  const set = (sp.get("set") || "").trim() || null;
+  return { job, promptId, q, media: mediaRaw || null, set };
 }
 
 /** Queue deep-link: Comfy prompt_id and/or factory job_key. */

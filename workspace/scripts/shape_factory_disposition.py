@@ -9,7 +9,7 @@ import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 try:
     import yaml
@@ -34,12 +34,17 @@ DEFAULT_CATALOG_YAML = Path(__file__).resolve().parent.parent / "disposition_cat
 def _seed_catalog_candidates(repo_root: Optional[Path] = None) -> List[Path]:
     script_dir = Path(__file__).resolve().parent
     ws_root = script_dir.parent
-    root = repo_root or script_dir.parents[2]
+    try:
+        guessed_repo = script_dir.parents[2]
+    except IndexError:
+        guessed_repo = script_dir.parents[-1] if script_dir.parents else script_dir
+    root = repo_root or guessed_repo
     seen: set[str] = set()
     out: List[Path] = []
     for p in (
         ws_root / "disposition_catalog.yaml",
         root / "disposition_catalog.yaml",
+        Path("/workspace/disposition_catalog.yaml"),
         DEFAULT_CATALOG_YAML,
     ):
         key = str(p)
@@ -50,6 +55,7 @@ def _seed_catalog_candidates(repo_root: Optional[Path] = None) -> List[Path]:
 
 ENTRY_IDS_RETIRED = frozenset({"retire"})
 RETIRE_STEP_IDS = frozenset({"retire.trash", "retire.archive"})
+CLEAR_ALL_MARKER_IDS = frozenset({"none", "*", "_clear"})
 
 
 def default_disposition_index_path(og_root: Path) -> Path:
@@ -221,6 +227,207 @@ def lookup_output_disposition(output_path: str, disposition_doc: dict[str, Any])
     return None
 
 
+def entry_ids_from_markers(
+    markers: Any,
+    catalog: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    """Catalog-order entry ids present in markers (assets may carry several)."""
+    present = {str(m).strip() for m in (markers or []) if str(m).strip()}
+    if not present:
+        return []
+    rows = catalog_entries(catalog or {}, kind="entry")
+    ordered = [str(m["id"]) for m in rows if str(m.get("id") or "") in present]
+    if ordered:
+        return ordered
+    fallback = ("refine", "investigate", "advance", "park", "retire")
+    return [mid for mid in fallback if mid in present]
+
+
+def primary_entry_from_markers(
+    markers: Any,
+    catalog: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Catalog-order first entry id in markers (display default when several)."""
+    ordered = entry_ids_from_markers(markers, catalog)
+    return ordered[0] if ordered else None
+
+
+def _entry_ids(catalog: Dict[str, Any]) -> Set[str]:
+    return {str(m["id"]) for m in catalog_entries(catalog, kind="entry") if m.get("id")}
+
+
+def entries_in_conflict(catalog: Dict[str, Any], a: str, b: str) -> bool:
+    """True when two entry markers cannot be set together (bidirectional)."""
+    left, right = str(a or "").strip(), str(b or "").strip()
+    if not left or not right or left == right:
+        return False
+    by_id = _marker_index(catalog)
+    sa, sb = by_id.get(left) or {}, by_id.get(right) or {}
+    if str(sa.get("kind") or "") != "entry" or str(sb.get("kind") or "") != "entry":
+        return False
+    if sa.get("exclusive") or sb.get("exclusive"):
+        return True
+    listed_a = {str(x).strip() for x in (sa.get("conflicts_with") or []) if str(x).strip()}
+    listed_b = {str(x).strip() for x in (sb.get("conflicts_with") or []) if str(x).strip()}
+    return right in listed_a or left in listed_b
+
+
+def _drop_entry_process(
+    markers: Set[str],
+    notes: Dict[str, str],
+    reason_detail: Dict[str, Any],
+    catalog: Dict[str, Any],
+    entry_id: str,
+) -> None:
+    spec = _marker_index(catalog).get(entry_id) or {}
+    process = str(spec.get("process") or entry_id).strip()
+    markers.discard(entry_id)
+    notes.pop(entry_id, None)
+    for kind in ("reason", "step"):
+        for row in catalog_entries(catalog, kind=kind):
+            if str(row.get("process") or "").strip() != process or not row.get("id"):
+                continue
+            rid = str(row["id"])
+            markers.discard(rid)
+            notes.pop(rid, None)
+            reason_detail.pop(rid, None)
+
+
+def apply_incoming_entry_conflicts(
+    markers: Set[str],
+    notes: Dict[str, str],
+    reason_detail: Dict[str, Any],
+    catalog: Dict[str, Any],
+    incoming_id: str,
+) -> None:
+    """Drop entries (and their reasons/steps) that cannot coexist with incoming_id."""
+    incoming = str(incoming_id or "").strip()
+    if not incoming:
+        return
+    for other in _entry_ids(catalog):
+        if other != incoming and entries_in_conflict(catalog, incoming, other):
+            _drop_entry_process(markers, notes, reason_detail, catalog, other)
+
+
+def _clear_all_disposition_markers(
+    markers: Set[str],
+    notes: Dict[str, str],
+    reason_detail: Dict[str, Any],
+    catalog: Dict[str, Any],
+) -> None:
+    drop: Set[str] = set()
+    for kind in ("entry", "reason", "step"):
+        for row in catalog_entries(catalog, kind=kind):
+            if row.get("id"):
+                drop.add(str(row["id"]))
+    markers -= drop
+    for mid in drop:
+        notes.pop(mid, None)
+        reason_detail.pop(mid, None)
+
+
+def list_disposition_bucket_items(
+    disposition_doc: Optional[Dict[str, Any]],
+    catalog: Optional[Dict[str, Any]] = None,
+    *,
+    entry: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Dedupe disposition_index rows into one item per asset.
+
+    Index stores both a discovery key (``og/…``) and a basename ``short_key``.
+    Prefer the longer discovery path for display / library join.
+    """
+    table = (disposition_doc or {}).get("by_output_relpath") or {}
+    if not isinstance(table, dict):
+        return []
+    cat = catalog or {}
+    want = str(entry or "").strip()
+    by_short: Dict[str, Dict[str, Any]] = {}
+    for key, row in table.items():
+        if not isinstance(row, dict):
+            continue
+        markers = [str(m).strip() for m in (row.get("markers") or []) if str(m).strip()]
+        marked = entry_ids_from_markers(markers, cat)
+        if not marked:
+            continue
+        if want and want not in marked:
+            continue
+        primary = marked[0]
+        rel = str(key or "").strip().replace("\\", "/")
+        discovery = str(row.get("discovery_key") or "").strip().replace("\\", "/")
+        short = str(row.get("short_key") or Path(rel).name).strip()
+        if not short:
+            short = Path(rel).name or rel
+        display = rel if "/" in rel else (discovery if "/" in discovery else rel)
+        if discovery and "/" in discovery and ("/" not in display or len(discovery) > len(display)):
+            display = discovery
+        # Prefer the trash copy when Retire+Trash rewrote (or dual-keyed) the row.
+        if "/_trash/" in rel:
+            display = rel
+        elif "/_trash/" in discovery:
+            display = discovery
+        notes = row.get("notes") if isinstance(row.get("notes"), dict) else {}
+        note = ""
+        if isinstance(notes, dict):
+            note = str(notes.get(primary) or "").strip()
+            if not note:
+                for v in notes.values():
+                    s = str(v or "").strip()
+                    if s:
+                        note = s
+                        break
+        item = {
+            "relpath": display,
+            "short_key": short,
+            "entry": primary,
+            "entries": marked,
+            "markers": markers,
+            "note": note or None,
+            "updated_at": row.get("updated_at"),
+            "trashed": bool(row.get("trashed")) or "/_trash/" in display,
+            "original_relpath": row.get("original_relpath") or None,
+        }
+        prev = by_short.get(short)
+        if prev is None:
+            by_short[short] = item
+            continue
+        prev_rel = str(prev.get("relpath") or "")
+        if "/_trash/" in display and "/_trash/" not in prev_rel:
+            by_short[short] = item
+        elif "/" not in prev_rel and "/" in display:
+            by_short[short] = item
+        elif "/" in display and "/" in prev_rel and len(display) > len(prev_rel):
+            by_short[short] = item
+    out = list(by_short.values())
+    out.sort(key=lambda r: (str(r.get("updated_at") or ""), str(r.get("relpath") or "")), reverse=True)
+    return out
+
+
+def disposition_bucket_counts(
+    items: Sequence[Dict[str, Any]],
+    catalog: Optional[Dict[str, Any]] = None,
+) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for row in catalog_entries(catalog or {}, kind="entry"):
+        counts[str(row["id"])] = 0
+    if not counts:
+        counts = {k: 0 for k in ("refine", "investigate", "advance", "park", "retire")}
+    for item in items:
+        marked = item.get("entries")
+        if not isinstance(marked, list) or not marked:
+            primary = str(item.get("entry") or "").strip()
+            marked = [primary] if primary else []
+        seen: Set[str] = set()
+        for entry in marked:
+            eid = str(entry or "").strip()
+            if not eid or eid in seen:
+                continue
+            seen.add(eid)
+            counts[eid] = int(counts.get(eid) or 0) + 1
+    return counts
+
+
 def _discovery_keys_for_relpath(media_relpath: str, og_root: Path, media_abs: Path) -> Tuple[str, str]:
     from correlate_output_ratings import output_relpath_keys_from_xmp
 
@@ -299,6 +506,166 @@ def stamp_output_disposition(
     )
 
 
+_OUTPUT_VIDEO_EXTS = {".mp4", ".webm", ".mov", ".mkv"}
+
+
+def is_output_video_for_retire_funnel(
+    media_abs: Path,
+    media_relpath: str,
+    *,
+    og_root: Path,
+) -> bool:
+    """True for og/wip videos — stills and input/ uploads stay Remove-only."""
+    rel = str(media_relpath or "").replace("\\", "/").strip().lstrip("/")
+    low = rel.lower()
+    if low.startswith("input/") or "/input/" in f"/{low}":
+        return False
+    abs_p = Path(media_abs)
+    ext = Path(rel or abs_p.name).suffix.lower() or abs_p.suffix.lower()
+    if ext not in _OUTPUT_VIDEO_EXTS:
+        return False
+    og_root = Path(og_root).resolve()
+    try:
+        abs_p.resolve().relative_to(og_root)
+        return True
+    except ValueError:
+        pass
+    wip = og_root.parent / "wip" if og_root.name.lower() == "og" else og_root / "wip"
+    try:
+        abs_p.resolve().relative_to(wip.resolve())
+        return True
+    except ValueError:
+        pass
+    return low.startswith(("og/", "wip/", "output/og/", "output/wip/"))
+
+
+def stamp_retire_for_remove_appetite(
+    *,
+    media_abs: Path,
+    media_relpath: str,
+    og_root: Path,
+    appetite: Any = "remove",
+    disposition_index_path: Optional[Path] = None,
+    catalog: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    One-way funnel: appetite ``remove`` also stamps disposition ``retire``.
+
+    Does not run Trash/Archive. Clearing Remove does not clear Retire.
+    Stills / input/ files are skipped so they do not enter Follow-up.
+    """
+    if normalize_appetite(appetite) != "remove":
+        return None
+    media_abs = Path(media_abs)
+    og_root = Path(og_root).resolve()
+    if disposition_index_path is None:
+        disposition_index_path = default_disposition_index_path(og_root)
+    if not is_output_video_for_retire_funnel(media_abs, media_relpath, og_root=og_root):
+        return {"ok": True, "skipped": True, "reason": "not_output_video"}
+    doc = _load_or_init_disposition_doc(disposition_index_path)
+    row = lookup_output_disposition(media_relpath, doc) or {}
+    markers = row.get("markers") if isinstance(row, dict) else []
+    if is_retired_disposition(markers if isinstance(markers, list) else []):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "already_retired",
+            "markers": list(markers) if isinstance(markers, list) else [],
+        }
+    stamped = stamp_output_disposition(
+        media_abs=media_abs,
+        media_relpath=media_relpath,
+        marker_id="retire",
+        og_root=og_root,
+        disposition_index_path=disposition_index_path,
+        catalog=catalog,
+    )
+    out = dict(stamped) if isinstance(stamped, dict) else {"ok": True}
+    out.setdefault("markers", stamped.get("markers") if isinstance(stamped, dict) else ["retire"])
+    out["funnel"] = "remove_to_retire"
+    return out
+
+
+def resolve_output_video_abs(og_root: Path, relpath: str) -> Optional[Path]:
+    """Best-effort file for a remove/retire relpath (live og/wip, then trash)."""
+    og_root = Path(og_root).resolve()
+    root = og_root.parent if og_root.name.lower() == "og" else og_root
+    raw = str(relpath or "").replace("\\", "/").strip().lstrip("/")
+    if not raw:
+        return None
+    cands = [raw]
+    if raw.startswith("output/"):
+        cands.append(raw[len("output/") :])
+    paths: List[Path] = []
+    for c in cands:
+        paths.append(root / c)
+        paths.append(og_root / c)
+        if not Path(c).suffix:
+            for ext in _OUTPUT_VIDEO_EXTS:
+                paths.append(root / f"{c}{ext}")
+                paths.append(og_root / f"{c}{ext}")
+    for p in paths:
+        if p.is_file():
+            return p
+    return find_trashed_output(og_root, Path(raw).name)
+
+
+def stamp_retire_for_remove_rows(
+    *,
+    og_root: Path,
+    appetite_doc: Optional[Dict[str, Any]] = None,
+    appetite_index_path: Optional[Path] = None,
+    disposition_index_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Backfill: stamp Retire on existing appetite=remove output videos."""
+    from shape_factory_remove_review import list_remove_relpaths
+
+    og_root = Path(og_root).resolve()
+    if appetite_doc is None:
+        from shape_factory_ratings import load_appetite_doc
+
+        appetite_index_path = Path(
+            appetite_index_path or (og_root.parent / "_status" / "appetite_index.json")
+        )
+        appetite_doc = load_appetite_doc(appetite_index_path)
+    if disposition_index_path is None:
+        disposition_index_path = default_disposition_index_path(og_root)
+    catalog = load_merged_catalog(og_root=og_root)
+    stamped: List[str] = []
+    skipped: List[Dict[str, str]] = []
+    missing = 0
+    for row in list_remove_relpaths(appetite_doc or {}):
+        rel = str(row.get("relpath") or "").strip()
+        media_abs = resolve_output_video_abs(og_root, rel)
+        if media_abs is None:
+            missing += 1
+            skipped.append({"relpath": rel, "reason": "missing_file"})
+            continue
+        result = stamp_retire_for_remove_appetite(
+            media_abs=media_abs,
+            media_relpath=rel,
+            og_root=og_root,
+            appetite="remove",
+            disposition_index_path=disposition_index_path,
+            catalog=catalog,
+        )
+        if not result:
+            continue
+        if result.get("skipped"):
+            skipped.append({"relpath": rel, "reason": str(result.get("reason") or "skipped")})
+            continue
+        stamped.append(rel)
+    return {
+        "ok": True,
+        "stamped": len(stamped),
+        "skipped": len(skipped),
+        "missing_file": missing,
+        "items": stamped,
+        "skipped_items": skipped[:40],
+        "path": str(disposition_index_path),
+    }
+
+
 def _normalize_modifiers(
     spec: Dict[str, Any],
     modifiers: Optional[List[str]],
@@ -359,11 +726,17 @@ def toggle_output_disposition(
     if not marker_id:
         raise ValueError("missing marker")
     by_id = _marker_index(catalog)
-    spec = by_id.get(marker_id)
-    if not spec or spec.get("enabled") is False:
-        raise ValueError(f"unknown marker: {marker_id}")
-
-    kind = str(spec.get("kind") or "").strip()
+    clear_all = marker_id.lower() in CLEAR_ALL_MARKER_IDS
+    if clear_all:
+        if on:
+            raise ValueError("cannot turn on none")
+        spec = {"id": "none", "kind": "clear"}
+        kind = "clear"
+    else:
+        spec = by_id.get(marker_id)
+        if not spec or spec.get("enabled") is False:
+            raise ValueError(f"unknown marker: {marker_id}")
+        kind = str(spec.get("kind") or "").strip()
     note_text = str(note or "").strip()
 
     og_root = Path(og_root).resolve()
@@ -394,22 +767,13 @@ def toggle_output_disposition(
 
     if on:
         if kind == "entry":
-            # One primary entry at a time: clear other entry markers.
-            entry_ids = {m["id"] for m in catalog_entries(catalog, kind="entry")}
-            markers -= entry_ids
-            # Switching away from refine clears refine reasons.
-            if marker_id != "refine":
-                refine_reasons = _reason_ids_for_process(catalog, "refine")
-                markers -= refine_reasons
-                for rid in refine_reasons:
-                    reason_detail.pop(rid, None)
-                    notes.pop(rid, None)
+            apply_incoming_entry_conflicts(markers, notes, reason_detail, catalog, marker_id)
         elif kind == "reason":
-            # Selecting a reason ensures its process entry is active.
+            # Selecting a reason ensures its process entry is active; keep
+            # non-conflicting entries (e.g. refine + advance).
             process = str(spec.get("process") or "").strip()
-            if process and process in {m["id"] for m in catalog_entries(catalog, kind="entry")}:
-                entry_ids = {m["id"] for m in catalog_entries(catalog, kind="entry")}
-                markers -= entry_ids
+            if process and process in _entry_ids(catalog):
+                apply_incoming_entry_conflicts(markers, notes, reason_detail, catalog, process)
                 markers.add(process)
             mods = _normalize_modifiers(spec, modifiers) if modifiers is not None else None
             detail: Dict[str, Any] = {}
@@ -431,18 +795,21 @@ def toggle_output_disposition(
         if note_text and kind != "reason":
             notes[marker_id] = note_text
     else:
-        markers.discard(marker_id)
-        notes.pop(marker_id, None)
-        if kind == "reason":
-            reason_detail.pop(marker_id, None)
-        elif kind == "entry":
-            # Clearing an entry clears reasons for that process.
-            process = str(spec.get("process") or marker_id).strip()
-            reason_ids = _reason_ids_for_process(catalog, process)
-            markers -= reason_ids
-            for rid in reason_ids:
-                reason_detail.pop(rid, None)
-                notes.pop(rid, None)
+        if kind == "clear":
+            _clear_all_disposition_markers(markers, notes, reason_detail, catalog)
+        else:
+            markers.discard(marker_id)
+            notes.pop(marker_id, None)
+            if kind == "reason":
+                reason_detail.pop(marker_id, None)
+            elif kind == "entry":
+                # Clearing an entry clears reasons for that process.
+                process = str(spec.get("process") or marker_id).strip()
+                reason_ids = _reason_ids_for_process(catalog, process)
+                markers -= reason_ids
+                for rid in reason_ids:
+                    reason_detail.pop(rid, None)
+                    notes.pop(rid, None)
 
     # Drop reason_detail keys that are no longer marked.
     for rid in list(reason_detail.keys()):
@@ -668,6 +1035,174 @@ def trash_output_media(media_abs: Path, *, og_root: Path) -> Dict[str, Any]:
     return {"ok": True, "moved": moved, "trash_dir": str(dest_dir), "original_relpath": str(rel)}
 
 
+def _og_library_root(og_root: Path) -> Path:
+    """Parent of ``og/`` (workspace output root) for ``og/_trash/…`` relpaths."""
+    og_root = Path(og_root).resolve()
+    return og_root.parent if og_root.name.lower() == "og" else og_root
+
+
+def find_trashed_output(og_root: Path, name_or_stem: str) -> Optional[Path]:
+    """Newest ``og/_trash/**/<stem>.mp4`` (else .png) for a retired basename."""
+    stem = Path(str(name_or_stem or "").strip()).stem
+    if not stem:
+        return None
+    trash = Path(og_root).resolve() / "_trash"
+    if not trash.is_dir():
+        return None
+    hits = [p for p in trash.glob(f"**/{stem}.mp4") if p.is_file()]
+    if not hits:
+        hits = [p for p in trash.glob(f"**/{stem}.png") if p.is_file()]
+    if not hits:
+        return None
+    hits.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return hits[0]
+
+
+def trashed_relpath_for(og_root: Path, trash_abs: Path) -> str:
+    root = _og_library_root(og_root)
+    try:
+        return trash_abs.resolve().relative_to(root).as_posix()
+    except ValueError:
+        try:
+            return trash_abs.resolve().relative_to(Path(og_root).resolve()).as_posix()
+        except ValueError:
+            return trash_abs.name
+
+
+def _original_output_exists(og_root: Path, relpath: str) -> bool:
+    raw = str(relpath or "").strip().replace("\\", "/")
+    if not raw:
+        return False
+    og_root = Path(og_root).resolve()
+    root = _og_library_root(og_root)
+    cands = [raw]
+    if raw.startswith("output/"):
+        cands.append(raw[len("output/") :])
+    if raw.startswith("og/"):
+        cands.append(raw[len("og/") :])
+    paths: List[Path] = []
+    for c in cands:
+        paths.append(root / c)
+        paths.append(og_root / c)
+        if not Path(c).suffix:
+            paths.append(root / f"{c}.mp4")
+            paths.append(og_root / f"{c}.mp4")
+            name = Path(c).name
+            paths.append(og_root / name)
+            paths.append(og_root / f"{name}.mp4")
+            # date/name under og/
+            if c.startswith("og/"):
+                paths.append(og_root / c[len("og/") :])
+                paths.append(og_root / f"{c[len('og/'):]}.mp4")
+    for p in paths:
+        if p.is_file():
+            return True
+    return False
+
+
+def rekey_disposition_row(
+    table: Dict[str, Any],
+    *,
+    old_keys: Sequence[str],
+    new_relpath: str,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Move a disposition row onto a new relpath key (and drop stale aliases)."""
+    row: Dict[str, Any] = {}
+    for k in old_keys:
+        cur = table.get(str(k or "").strip())
+        if isinstance(cur, dict):
+            row = copy.deepcopy(cur)
+            break
+    if not row:
+        return {}
+    if extra:
+        row.update(extra)
+    row["updated_at"] = utc_now()
+    new_rel = str(new_relpath or "").strip().replace("\\", "/")
+    if not new_rel:
+        return row
+    seen: set[str] = set()
+    for k in list(old_keys) + [new_rel]:
+        kk = str(k or "").strip()
+        if kk:
+            seen.add(kk)
+    for k in seen:
+        table.pop(k, None)
+    table[new_rel] = row
+    if Path(new_rel).name != new_rel:
+        table[Path(new_rel).name] = row
+    return row
+
+
+def relocate_trashed_disposition_rows(
+    *,
+    og_root: Path,
+    disposition_index_path: Path,
+) -> Dict[str, Any]:
+    """
+    Point retire rows at ``og/_trash/…`` when the original file is gone.
+
+    Retire+Trash used to move bytes without rewriting the index, so Follow-up
+    still requested the old ``output/og/…`` stem and showed a broken thumb.
+    """
+    og_root = Path(og_root).resolve()
+    doc = _load_or_init_disposition_doc(disposition_index_path)
+    table = doc.setdefault("by_output_relpath", {})
+    # Group alias keys that share short_key / stem.
+    groups: Dict[str, List[str]] = {}
+    for key, row in list(table.items()):
+        if not isinstance(row, dict):
+            continue
+        markers = row.get("markers") or []
+        if "retire" not in markers:
+            continue
+        short = str(row.get("short_key") or key).strip()
+        stem = Path(short).stem or Path(str(key)).stem
+        groups.setdefault(stem, []).append(str(key))
+
+    relocated: List[Dict[str, str]] = []
+    skipped = 0
+    missing = 0
+    for stem, keys in groups.items():
+        live_keys = [k for k in keys if "/_trash/" not in str(k).replace("\\", "/")]
+        if not live_keys:
+            skipped += 1
+            continue
+        if any(_original_output_exists(og_root, k) for k in live_keys):
+            skipped += 1
+            continue
+        trash_abs = find_trashed_output(og_root, stem)
+        if trash_abs is None:
+            missing += 1
+            continue
+        new_rel = trashed_relpath_for(og_root, trash_abs)
+        row = rekey_disposition_row(
+            table,
+            old_keys=keys,
+            new_relpath=new_rel,
+            extra={
+                "trashed": True,
+                "original_relpath": next((k for k in keys if "/" in k), keys[0]),
+                "short_key": new_rel,
+                "discovery_key": new_rel,
+            },
+        )
+        if row:
+            relocated.append({"stem": stem, "relpath": new_rel})
+    if relocated:
+        doc["updated_at"] = utc_now()
+        _atomic_write_json_doc(disposition_index_path, doc)
+    return {
+        "ok": True,
+        "relocated": len(relocated),
+        "skipped_present": skipped,
+        "missing_trash": missing,
+        "items": relocated,
+        "path": str(disposition_index_path),
+    }
+
+
 def run_disposition_hook(
     hook: str,
     *,
@@ -713,8 +1248,9 @@ def run_disposition_hook(
         return {"ok": True, "hook": hook, "toggled": toggled, "cleared_investigate": inv}
 
     if hook == "trash":
-        result = trash_output_media(media_abs, og_root=og_root)
-        toggle_output_disposition(
+        # Stamp retire while the file still exists, then move, then rewrite index keys
+        # so Follow-up does not keep requesting the vacated original path.
+        stamped = toggle_output_disposition(
             media_abs=media_abs,
             media_relpath=media_relpath,
             marker_id="retire",
@@ -723,7 +1259,30 @@ def run_disposition_hook(
             disposition_index_path=disposition_index_path,
             catalog=catalog,
         )
-        return {"ok": True, "hook": hook, **result}
+        result = trash_output_media(media_abs, og_root=og_root)
+        new_rel = None
+        moved = result.get("moved") or []
+        mp4 = next((p for p in moved if str(p).lower().endswith(".mp4")), None)
+        trash_abs = Path(mp4) if mp4 else (Path(moved[0]) if moved else None)
+        if trash_abs is not None:
+            new_rel = trashed_relpath_for(og_root, trash_abs)
+            doc = _load_or_init_disposition_doc(disposition_index_path)
+            table = doc.setdefault("by_output_relpath", {})
+            old_keys = [media_relpath, stamped.get("short_key"), stamped.get("discovery_key"), Path(media_relpath).stem]
+            rekey_disposition_row(
+                table,
+                old_keys=[str(k) for k in old_keys if k],
+                new_relpath=new_rel,
+                extra={
+                    "trashed": True,
+                    "original_relpath": media_relpath,
+                    "short_key": new_rel,
+                    "discovery_key": new_rel,
+                },
+            )
+            doc["updated_at"] = utc_now()
+            _atomic_write_json_doc(disposition_index_path, doc)
+        return {"ok": True, "hook": hook, "new_relpath": new_rel, "stamped": stamped, **result}
 
     if hook == "archive":
         doc = _load_or_init_disposition_doc(disposition_index_path)
@@ -830,7 +1389,8 @@ def run_disposition_step(
         extra=extra,
     )
     doc = _load_or_init_disposition_doc(disposition_index_path)
-    row = lookup_output_disposition(media_relpath, doc) or {}
+    lookup_key = str((result or {}).get("new_relpath") or media_relpath)
+    row = lookup_output_disposition(lookup_key, doc) or lookup_output_disposition(media_relpath, doc) or {}
     if isinstance(row, dict):
         short_key = row.get("short_key") or ""
         discovery_key = media_relpath

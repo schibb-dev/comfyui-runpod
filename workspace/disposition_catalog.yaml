@@ -6,6 +6,8 @@
 # hook: none | replay | replay_front | extend | open_trim | trash | archive |
 #       extract_frame | sampler_pin | appetite_more | set_marker
 # modifier_mode: none | exclusive | multi
+# exclusive: true — this entry cannot coexist with other entries (Retire)
+# conflicts_with: [id, ...] — extra pairwise entry conflicts (bidirectional)
 #
 version: 1
 schema: comfyui-runpod.disposition-catalog.v0
@@ -88,8 +90,9 @@ markers:
     kind: entry
     process: retire
     label: Retire
-    hint: Soft-archive out of active work
+    hint: Soft-archive out of active work. Remove appetite also stamps this (hide/delete stays on Remove). Conflicts with other follow-up marks.
     enabled: true
+    exclusive: true
     order: 4
     hook: none
     narrows_to: [retire.trash, retire.archive]

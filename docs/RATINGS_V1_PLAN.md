@@ -77,6 +77,8 @@ Operator map for Workbench **Vary** vs **Derive** vs **Extend** (and how Derived
 - **Promoted sources.** Hourly biases toward **X-Kneel** and **2025-era OG** clips (`HOURLY_KNEEL_SOURCE_BOOST` / `HOURLY_2025_SOURCE_BOOST`, defaults `2.5` / `2.0`) in replay + derive weights and when varying `source_video`. `HOURLY_PROMOTED_SOURCE_SHARE` (default `0.35`) periodically forces a processing rewire so those pool members enter as first-hop sources instead of only chaining recent GEX2 keepers.
 - **Tag-coupled discovery.** `asset_tags.json` (bootstrap: embedded-prompt keywords; future: Florence/WD14) lets appetite generalize by content through `by_tag_appetite`, biasing the sampler and derive-source ranking.
 - **Ubiquitous mark (2026-08-29).** Appetite is first-class on **workproduct surfaces**, not only Rate queue / Library: Workbench rows and Factory Map job/pair inspectors use the same `POST /api/discovery/asset-appetite/set` path ([`WorkProductAppetiteStrip`](../workspace/experiments_ui/web/src/ui/WorkProductAppetiteStrip.tsx)). Marking biases **this** output for future use; generalizing to **similar** workproducts/workflows is a separate technique track — [`APPETITE_SIMILARITY_BIAS_PLAN.md`](./APPETITE_SIMILARITY_BIAS_PLAN.md). Full desire→technique orientation: [`HEURISTIC_ENGINE_NORTH_STAR.md`](./HEURISTIC_ENGINE_NORTH_STAR.md).
+- **Ubiquitous follow-up (2026-09-14).** Disposition entries (Refine / Investigate / Advance / Park / Retire) are the corollary: “fix this,” “look later,” “good for variations.” Same `disposition_index` as the Rate queue; compact strip on Workbench and AssetInspector; browse pile at `/discovery/pools`; Workbench working set (`?set=advance`) lists the same videos as jobs. Reasons and Advance steps stay on Rating.
+- **Remove → Retire funnel (2026-09-14).** Marking appetite `remove` on an og/wip video also stamps `retire` (exclusive vs other follow-up entries). Follow-up Retire is where hide/delete candidates show up; Workbench Remove review still owns Delete. Reverse is not automatic. See [`APPETITE_REMOVE_LIFECYCLE.md`](./APPETITE_REMOVE_LIFECYCLE.md).
 
 ### Rebuild command order
 
@@ -121,7 +123,7 @@ python3 shape_factory.py heuristics build           # reads ratings + appetite +
 | `investigate` | Unknown delta — route to refine / extract / advance / retire |
 | `extract` | Salvage part (frame, clip, reference) |
 | `advance` | Feed next pipeline stage |
-| `retire` | Remove from active work |
+| `retire` | Out of active work (Remove appetite also stamps this) |
 | `park` | Decide later |
 
 ### Catalog (editable)

@@ -1,11 +1,13 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { setAssetAppetite } from "./api";
 import { AppetiteBar, AppetiteGlyph } from "./AppetiteBar";
 import { patchCachedAppetite, revalidateAssetRatings } from "./assetRatingsCache";
 import { appetiteRowTitle } from "./discoveryRatingsRollup";
 import type { Appetite, AppetiteFacet } from "./types";
 import { useAssetAppetite } from "./WorkProductAppetiteStrip";
+import { afterAppetiteCommitted } from "./workProductAppetite";
 
 const HOVER_CLOSE_MS = 220;
 const UNSET_GLYPH = "?";
@@ -28,6 +30,7 @@ export function AppetitePreviewBadge({
   familySlug?: string | null;
   defaultFacet?: AppetiteFacet;
 }) {
+  const queryClient = useQueryClient();
   const { key, appetite, facet } = useAssetAppetite(relpath, defaultFacet);
   const [open, setOpen] = useState(false);
   const [pinned, setPinned] = useState(false);
@@ -124,6 +127,7 @@ export function AppetitePreviewBadge({
           job_key: jobKey || undefined,
           family_slug: familySlug || undefined,
         });
+        afterAppetiteCommitted(queryClient, key, state || null);
         void revalidateAssetRatings(key);
       } catch (e) {
         patchCachedAppetite(key, prevAppetite, prevFacet);
@@ -132,7 +136,7 @@ export function AppetitePreviewBadge({
         setBusy(false);
       }
     },
-    [key, busy, jobKey, familySlug, facet, appetite],
+    [key, busy, jobKey, familySlug, facet, appetite, queryClient],
   );
 
   if (!key) return null;
