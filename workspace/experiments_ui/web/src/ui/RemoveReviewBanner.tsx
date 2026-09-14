@@ -9,6 +9,7 @@ import type { AssetRemoveReviewResponse } from "./types";
 export function RemoveReviewBanner({ enabled }: { enabled: boolean }) {
   const queryClient = useQueryClient();
   const [msg, setMsg] = useState("");
+  const [listOpen, setListOpen] = useState(false);
   const q = useQuery({
     queryKey: queryKeys.discovery.assetRemoveReview,
     queryFn: () => fetchAssetRemoveReview({ limit: 80 }),
@@ -56,6 +57,22 @@ export function RemoveReviewBanner({ enabled }: { enabled: boolean }) {
   if (!enabled) return null;
   if (!hasMarked && !busy && !q.isError) return null;
 
+  const hint = q.isLoading
+    ? "Scanning references…"
+    : q.isError
+      ? "Could not load review"
+      : [
+          purgeReady
+            ? `${purgeReady} queued to delete`
+            : count
+              ? "none queued to delete"
+              : null,
+          count ? `${count} marked` : null,
+          hasRefs ? `${hasRefs} have references` : null,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+
   const confirmDelete = (relpaths: string[]) => {
     if (!relpaths.length || busy) return;
     const n = relpaths.length;
@@ -70,19 +87,28 @@ export function RemoveReviewBanner({ enabled }: { enabled: boolean }) {
   };
 
   return (
-    <aside className="remove-review-banner" aria-label="Remove appetite review">
+    <aside
+      className={`remove-review-banner${listOpen ? "" : " remove-review-banner--collapsed"}`}
+      aria-label="Remove appetite review"
+    >
       <div className="remove-review-banner__head">
-        <strong>Remove review</strong>
+        <button
+          type="button"
+          className="remove-review-banner__toggle"
+          aria-expanded={listOpen}
+          aria-controls="remove-review-details"
+          title={listOpen ? "Hide the delete queue" : "Show the delete queue"}
+          onClick={() => setListOpen((open) => !open)}
+        >
+          <span className="remove-review-banner__chevron" aria-hidden>
+            {listOpen ? "▾" : "▸"}
+          </span>
+          <strong>Remove review</strong>
+        </button>
         <a className="remove-review-banner__follow-up" href={discoveryPoolsHref("retire")}>
           Follow-up Retire
         </a>
-        <span className="remove-review-banner__meta">
-          {q.isLoading
-            ? "Scanning references…"
-            : q.isError
-              ? "Could not load review"
-              : `${count} marked · ${purgeReady} no dependents · ${hasRefs} have references`}
-        </span>
+        <span className="remove-review-banner__meta">{hint}</span>
         {purgeReady ? (
           <button
             type="button"
@@ -94,40 +120,44 @@ export function RemoveReviewBanner({ enabled }: { enabled: boolean }) {
           </button>
         ) : null}
       </div>
-      <p className="remove-review-banner__note">
-        Hidden from lists and factory jobs. Marking Remove also stamps Retire on Follow-up.
-        Ready items have no downstream jobs or pool memberships — delete removes the file,
-        its ratings, and the Workbench job when no other videos remain. Change appetite to
-        restore instead. Trash (Retire step) is recoverable; this Delete is not.
-      </p>
       {msg ? <p className="remove-review-banner__msg">{msg}</p> : null}
-      {items.length ? (
-        <ul className="remove-review-banner__list">
-          {items.slice(0, 24).map((it) => {
-            const href = workbenchHrefForMedia({ relpath: it.relpath });
-            const blockers = (it.blockers || []).join(" · ");
-            return (
-              <li key={it.relpath} className={it.purge_ready ? "is-ready" : "has-refs"}>
-                <a href={href} title={it.relpath}>
-                  {it.relpath.split("/").pop() || it.relpath}
-                </a>
-                <span>
-                  {it.purge_ready ? "no dependents" : blockers || "has references"}
-                </span>
-                {it.purge_ready ? (
-                  <button
-                    type="button"
-                    className="remove-review-banner__delete"
-                    disabled={busy}
-                    onClick={() => confirmDelete([it.relpath])}
-                  >
-                    Delete
-                  </button>
-                ) : null}
-              </li>
-            );
-          })}
-        </ul>
+      {listOpen ? (
+        <div id="remove-review-details">
+          <p className="remove-review-banner__note">
+            Hidden from lists and factory jobs. Marking Remove also stamps Retire on Follow-up.
+            Ready items have no downstream jobs or pool memberships — delete removes the file,
+            its ratings, and the Workbench job when no other videos remain. Change appetite to
+            restore instead. Trash (Retire step) is recoverable; this Delete is not.
+          </p>
+          {items.length ? (
+            <ul className="remove-review-banner__list">
+              {items.slice(0, 24).map((it) => {
+                const href = workbenchHrefForMedia({ relpath: it.relpath });
+                const blockers = (it.blockers || []).join(" · ");
+                return (
+                  <li key={it.relpath} className={it.purge_ready ? "is-ready" : "has-refs"}>
+                    <a href={href} title={it.relpath}>
+                      {it.relpath.split("/").pop() || it.relpath}
+                    </a>
+                    <span>
+                      {it.purge_ready ? "no dependents" : blockers || "has references"}
+                    </span>
+                    {it.purge_ready ? (
+                      <button
+                        type="button"
+                        className="remove-review-banner__delete"
+                        disabled={busy}
+                        onClick={() => confirmDelete([it.relpath])}
+                      >
+                        Delete
+                      </button>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ul>
+          ) : null}
+        </div>
       ) : null}
     </aside>
   );

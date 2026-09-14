@@ -14830,11 +14830,34 @@ button.home-backlog-linkish {
   font-size: 13px;
 }
 
+.remove-review-banner--collapsed {
+  padding: 6px 12px;
+}
+
 .remove-review-banner__head {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
   gap: 8px 12px;
+}
+
+.remove-review-banner__toggle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.remove-review-banner__chevron {
+  display: inline-block;
+  width: 0.85em;
+  color: var(--muted);
 }
 
 .remove-review-banner__meta {
