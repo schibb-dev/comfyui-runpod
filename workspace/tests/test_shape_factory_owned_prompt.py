@@ -107,6 +107,29 @@ class OwnedPromptTests(unittest.TestCase):
             # Fork file unchanged
             self.assertEqual(json.loads(fork_path.read_text(encoding="utf-8"))["positive"], "NEW")
 
+    def test_promote_overwrite_reports_erofs(self) -> None:
+        from shape_factory_owned_prompt import promote_prompt_to_library
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            prompts = root / "pools" / "DEMO" / "prompts"
+            prompts.mkdir(parents=True)
+            (prompts / "catalog-default.json").write_text(
+                json.dumps({"label": "catalog-default", "positive": "OLD", "negative": ""}),
+                encoding="utf-8",
+            )
+            with mock.patch.object(Path, "write_bytes", side_effect=OSError(30, "Read-only file system")):
+                over = promote_prompt_to_library(
+                    data_root=root,
+                    family_slug="DEMO",
+                    positive="NEW",
+                    negative="",
+                    mode="overwrite",
+                )
+            self.assertFalse(over["ok"])
+            self.assertEqual(over["error"], "catalog_read_only")
+            self.assertIn("read-only", str(over.get("detail") or "").lower())
+
     def test_apply_prefers_owned_over_catalog_file(self) -> None:
         from shape_factory import apply_api_slot_bindings
 

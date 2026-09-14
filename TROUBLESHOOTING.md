@@ -249,6 +249,8 @@ After changing `experiments_ui_server.py`, restart only that process (do not res
 
 **Permission denied (EACCES) on `.data/shape_factory/*.json`:** the file is `root:root` from a `docker exec` that ran as root. UI/hourly run as uid 1000. Fix: `docker exec -u 0 comfyui0-runpod /workspace/scripts/reclaim_runtime_ownership.sh`. Prefer `docker exec -u ubuntu` for later writes.
 
+**Promote template `EROFS` / Read-only file system on `.data/pools/.../catalog-default.json`:** the catalog bind is `:ro` except `shape_factory/`, `pools/`, and `shapes/`. If you still see EROFS, the container was created before those writable binds — `docker compose up -d` to recreate (this restarts ComfyUI). Then retry overwrite.
+
 ---
 
 ## After reboot: empty input/output/workflows (wrong bind mounts)

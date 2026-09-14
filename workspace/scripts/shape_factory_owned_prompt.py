@@ -483,6 +483,21 @@ def _bak_path(path: Path) -> Path:
     return path.with_name(f"{path.name}.bak.{stamp}")
 
 
+def _catalog_write_error(exc: OSError, path: Path) -> Dict[str, Any]:
+    if getattr(exc, "errno", None) == 30:
+        return {
+            "ok": False,
+            "error": "catalog_read_only",
+            "detail": (
+                "Family catalog is mounted read-only in the container. "
+                "docker-compose binds ./.data/pools and ./.data/shapes writable — "
+                "recreate the container (`docker compose up -d`) after that change."
+            ),
+            "path": str(path),
+        }
+    return {"ok": False, "error": "catalog_write_failed", "detail": str(exc), "path": str(path)}
+
+
 def build_library_prompt_doc(
     *,
     positive: str,
@@ -563,9 +578,6 @@ def promote_prompt_to_library(
         target = prompts_dir / "catalog-default.json"
         label_s = str(label or "catalog-default").strip() or "catalog-default"
         bak = None
-        if target.is_file():
-            bak = _bak_path(target)
-            bak.write_bytes(target.read_bytes())
         doc = build_library_prompt_doc(
             positive=positive,
             negative=negative,
@@ -575,7 +587,13 @@ def promote_prompt_to_library(
             promoted_from_job=promoted_from_job,
             note=note,
         )
-        _atomic_write_json(target, doc)
+        try:
+            if target.is_file():
+                bak = _bak_path(target)
+                bak.write_bytes(target.read_bytes())
+            _atomic_write_json(target, doc)
+        except OSError as exc:
+            return _catalog_write_error(exc, bak or target)
         return {
             "ok": True,
             "mode": "overwrite",
@@ -600,7 +618,10 @@ def promote_prompt_to_library(
         promoted_from_job=promoted_from_job,
         note=note,
     )
-    _atomic_write_json(target, doc)
+    try:
+        _atomic_write_json(target, doc)
+    except OSError as exc:
+        return _catalog_write_error(exc, target)
     return {
         "ok": True,
         "mode": "fork",

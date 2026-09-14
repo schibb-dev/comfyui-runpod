@@ -54,10 +54,13 @@ services:
       # Family discovery review cards (Workflow Explorer). Prefer this over a
       # workspace/ copy; recreate the container after adding to pick up the mount.
       - ./docs:/workspace/docs
-      # Catalog (shapes/pools/pipelines/chains) stays read-only; runtime under
-      # shape_factory/ (jobs, schedule, quarantine, dismissals, logs) is writable.
+      # Most of .data stays read-only. Runtime jobs live under shape_factory/.
+      # Workbench promote overwrites family prompts (pools/*/prompts) and
+      # shape readables — those trees need a writable bind (more-specific than :ro).
       - ./.data:/workspace/.data:ro
       - ./.data/shape_factory:/workspace/.data/shape_factory
+      - ./.data/pools:/workspace/.data/pools
+      - ./.data/shapes:/workspace/.data/shapes
       # Workspace scripts (tuning/watch utilities used at runtime)
       - ./workspace/scripts:/workspace/ws_scripts:ro
       # Custom nodes: use the image's baked-in nodes (from custom_nodes.yaml at build time).
