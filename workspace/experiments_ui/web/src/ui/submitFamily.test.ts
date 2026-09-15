@@ -8,9 +8,11 @@ import {
   jobPromptVariantName,
   pickQuickExtendFamily,
   pickRerunPromptPreset,
+  pickRerunStack,
   promptTextIsOverridden,
   distinctiveFamilyLabels,
   rerunPromptPresetDiffers,
+  stackPickerOptionLabel,
   workProductCanQuickExtend,
   workProductHasExtendableOutput,
 } from "./submitFamily";
@@ -186,6 +188,29 @@ describe("isExtendFamilyOption", () => {
         io_class: "V2V",
       }),
     ).toBe(false);
+  });
+});
+
+describe("pickRerunStack", () => {
+  const stacks = [
+    { stack_id: "i2v-720p-Q5", label: "720p-Q5 virt4.0" },
+    { stack_id: "i2v-480p-Q8", label: "480p-Q8 virt6.0" },
+    { stack_id: "i2v-480p-Q5", label: "480p-Q5 virt4.0" },
+  ];
+
+  it("prefers the job stack, then the family default", () => {
+    expect(pickRerunStack(stacks, { jobStackId: "i2v-480p-Q5", familyStackId: "i2v-720p-Q5" })).toBe(
+      "i2v-480p-Q5",
+    );
+    expect(pickRerunStack(stacks, { familyStackId: "i2v-480p-Q8" })).toBe("i2v-480p-Q8");
+    expect(pickRerunStack(stacks)).toBe("i2v-720p-Q5");
+    expect(pickRerunStack(stacks, { jobStackId: "missing", familyStackId: "i2v-480p-Q8" })).toBe(
+      "i2v-480p-Q8",
+    );
+  });
+
+  it("labels stack as id · spec", () => {
+    expect(stackPickerOptionLabel(stacks[0])).toBe("i2v-720p-Q5 · 720p-Q5 virt4.0");
   });
 });
 

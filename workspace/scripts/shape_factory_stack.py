@@ -8,13 +8,13 @@ CLIP filename is patched only when the loader class matches ``clip_loader_type``
 from __future__ import annotations
 
 import copy
+import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
 
-STACKS_DIR = Path(__file__).resolve().parents[2] / ".data" / "stacks"
 STACK_SCHEMA = "comfyui-runpod.stack.v0"
 
 _UNET_TYPES = {
@@ -32,8 +32,37 @@ _TEA_WIDGET = {"coefficients": 4}
 _CLIP_WIDGET = {"clip_name": 0}
 
 
+def shape_factory_data_root() -> Path:
+    """Repo or container `.data` that owns `stacks/` (not `parents[2]`, which is `/` in Docker)."""
+    env = os.environ.get("SHAPE_FACTORY_DATA_ROOT", "").strip()
+    if env:
+        p = Path(env).expanduser()
+        if p.is_dir():
+            return p.resolve()
+    here = Path(__file__).resolve()
+    scripts_dir = here.parent
+    parent = scripts_dir.parent
+
+    def _has_factory(root: Path) -> bool:
+        return (root / ".data" / "stacks").is_dir() or (root / ".data" / "shapes").is_dir()
+
+    if scripts_dir.name == "ws_scripts":
+        return (parent / ".data").resolve()
+    if scripts_dir.name == "scripts" and parent.name == "workspace":
+        repo = parent.parent
+        if _has_factory(repo):
+            return (repo / ".data").resolve()
+        if _has_factory(parent):
+            return (parent / ".data").resolve()
+        return (repo / ".data").resolve()
+    for cand in (Path("/workspace"), parent, parent.parent if len(here.parents) > 1 else parent):
+        if _has_factory(cand):
+            return (cand / ".data").resolve()
+    return (parent.parent / ".data").resolve() if parent.name == "workspace" else (parent / ".data").resolve()
+
+
 def default_stacks_dir() -> Path:
-    return STACKS_DIR
+    return shape_factory_data_root() / "stacks"
 
 
 def stack_id_from_shape(shape: Dict[str, Any], job: Optional[Dict[str, Any]] = None) -> Optional[str]:
@@ -178,6 +207,56 @@ def stamp_job_stack(job_meta: Dict[str, Any], stack: Optional[Dict[str, Any]]) -
         return
     job_meta["stack_id"] = sid
     job_meta["stack"] = fields
+
+
+def format_stack_label(stack: Dict[str, Any]) -> str:
+    """Picker label, e.g. ``720p-Q5 virt4.0`` (no canvas — that is runtime)."""
+    unet = str(stack.get("unet_name") or "").strip()
+    try:
+        from graph_run_specs import _fmt_virt, _parse_unet_filename
+    except Exception:
+        _parse_unet_filename = None  # type: ignore
+        _fmt_virt = None  # type: ignore
+    family = _size_token(stack.get("training_size")) or _size_token(unet)
+    quant = str(stack.get("quant") or "").strip()
+    if _parse_unet_filename is not None and unet:
+        parsed = _parse_unet_filename(unet)
+        family = str(parsed.get("unet_family") or family or "").strip() or family
+        quant = str(parsed.get("quant") or quant or "").strip() or quant
+    bits: List[str] = []
+    head = "-".join(p for p in (family, quant) if p)
+    if head:
+        bits.append(head)
+    virt = stack.get("virtual_vram_gb")
+    if virt is not None and _fmt_virt is not None:
+        try:
+            label = _fmt_virt(float(virt))
+        except (TypeError, ValueError):
+            label = None
+        if label:
+            bits.append(label)
+    elif virt is not None:
+        try:
+            bits.append(f"virt{float(virt):.1f}")
+        except (TypeError, ValueError):
+            pass
+    return " ".join(bits) or str(stack.get("stack_id") or "").strip()
+
+
+def list_stacks(*, stacks_dir: Optional[Path] = None) -> List[Dict[str, Any]]:
+    root = Path(stacks_dir) if stacks_dir is not None else default_stacks_dir()
+    if not root.is_dir():
+        return []
+    out: List[Dict[str, Any]] = []
+    for path in sorted(root.glob("*.yaml")):
+        try:
+            doc = load_stack(path.stem, stacks_dir=root)
+        except Exception:
+            continue
+        fields = stack_job_fields(doc)
+        fields["label"] = format_stack_label(doc)
+        out.append(fields)
+    return out
 
 
 def apply_shape_stack_ui(

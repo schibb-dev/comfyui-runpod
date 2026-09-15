@@ -88,13 +88,14 @@ import {
 } from "./workProductMediaFocus";
 import { prefetchAssetRatings } from "./assetRatingsCache";
 import { loadClipsForMedia, rememberFamiliesFromWorkProducts } from "./shapeFactorySessionCache";
-import { distinctiveFamilyLabels, familyPickerOptionLabel, familyPickerOptionTitle, familyPromptProfiles, familySlugIsQuarantined, familySwapTargets, isDefaultPromptVariant, isExtendFamilyOption, isStillMediaPath, jobPromptVariantDisplayName, jobPromptVariantName, jobPromptVariantSlug, pickQuickExtendFamily, pickRerunPromptPreset, promptProfileOptionLabel, promptTextIsOverridden, promptVariantName, promptVariantSlug, rerunPromptPresetDiffers, specDisplayJoined, workProductCanQuickExtend, workProductHasExtendableOutput } from "./submitFamily";
+import { distinctiveFamilyLabels, familyPickerOptionLabel, familyPickerOptionTitle, familyPromptProfiles, familySlugIsQuarantined, familySwapTargets, isDefaultPromptVariant, isExtendFamilyOption, isStillMediaPath, jobPromptVariantDisplayName, jobPromptVariantName, jobPromptVariantSlug, pickQuickExtendFamily, pickRerunPromptPreset, pickRerunStack, promptProfileOptionLabel, promptTextIsOverridden, promptVariantName, promptVariantSlug, rerunPromptPresetDiffers, specDisplayJoined, stackPickerOptionLabel, workProductCanQuickExtend, workProductHasExtendableOutput } from "./submitFamily";
 import { recencyMs, recencyStamp } from "./workProductRecency";
 import { failurePrimaryLabel, workProductFailure, workProductFlowEvents } from "./workProductFailure";
 import { queryKeys } from "./queryKeys";
 import type {
   DiscoveryAssetLineageItemSummary,
   DiscoveryLibraryItem,
+  GenerationStackOption,
   ShapeFactoryMapQueueOverrides,
   WorkItem,
   WorkProductBinding,
@@ -3724,6 +3725,15 @@ function WorkProductLorasEditor({
 type RecipeFamilyChoice = { slug: string; label: string; disabled?: boolean; title?: string };
 
 /** Shared Family / Prompt / Trim / Seed knobs for Re-run and Extend. */
+function mergeReplayStackOverride(
+  overrides: ShapeFactoryMapQueueOverrides | undefined,
+  stackId: string | null | undefined,
+): ShapeFactoryMapQueueOverrides | undefined {
+  const sid = String(stackId || "").trim();
+  if (!sid) return overrides;
+  return { ...(overrides || {}), stack: sid };
+}
+
 function RecipeSettingsCard({
   fieldId,
   ariaLabel,
@@ -3732,6 +3742,9 @@ function RecipeSettingsCard({
   familyOptions,
   onFamilyChange,
   familyTitle,
+  stackValue,
+  stackOptions,
+  onStackChange,
   promptProfiles,
   promptPath,
   onPromptPath,
@@ -3756,6 +3769,9 @@ function RecipeSettingsCard({
   familyOptions: RecipeFamilyChoice[];
   onFamilyChange: (slug: string) => void;
   familyTitle: string;
+  stackValue?: string;
+  stackOptions?: GenerationStackOption[];
+  onStackChange?: (stackId: string) => void;
   promptProfiles: WorkProductFamilyPromptProfile[];
   promptPath: string;
   onPromptPath: (path: string) => void;
@@ -3776,7 +3792,7 @@ function RecipeSettingsCard({
   const manualSeed = parseNoiseSeed(seedDraft);
   return (
     <div className="work-product-quick-queue__dest work-product-rerun-card" role="group" aria-label={ariaLabel}>
-      <span className="work-product-quick-queue__dest-label" title="Family, prompt preset, trim, and seed">
+      <span className="work-product-quick-queue__dest-label" title="Family, stack, prompt preset, trim, and seed">
         Settings
       </span>
       <div className="work-product-rerun-table">
@@ -3801,6 +3817,27 @@ function RecipeSettingsCard({
               {familyOptions.map((f) => (
                 <option key={f.slug} value={f.slug} disabled={f.disabled} title={f.title || f.slug}>
                   {f.label}
+                </option>
+              ))}
+            </select>
+          </>
+        ) : null}
+        {stackOptions?.length && onStackChange ? (
+          <>
+            <span className="work-product-rerun-table__label" id={`${fieldId}-stack`}>
+              Stack
+            </span>
+            <select
+              className="work-product-family-select"
+              value={stackOptions.some((s) => s.stack_id === stackValue) ? stackValue : stackOptions[0]?.stack_id || ""}
+              disabled={isBusy}
+              aria-labelledby={`${fieldId}-stack`}
+              title="Coupled UNet family+quant, TeaCache coeffs, and virt VRAM — not canvas or duration"
+              onChange={(e) => onStackChange(e.target.value)}
+            >
+              {stackOptions.map((s) => (
+                <option key={s.stack_id} value={s.stack_id} title={s.unet_name || s.stack_id}>
+                  {stackPickerOptionLabel(s)}
                 </option>
               ))}
             </select>
@@ -4021,6 +4058,7 @@ function workbenchSourceSubmitIntent(
 function WorkProductQuickQueue({
   item,
   families,
+  stacks,
   extendFamilyDefaults,
   outputTrim,
   sourceTrim,
@@ -4031,6 +4069,7 @@ function WorkProductQuickQueue({
 }: {
   item: WorkProductItem;
   families?: WorkProductFamilyOption[];
+  stacks?: GenerationStackOption[];
   extendFamilyDefaults?: Record<string, string>;
   outputTrim: InputTrimState;
   sourceTrim: InputTrimState;
@@ -4093,6 +4132,12 @@ function WorkProductQuickQueue({
   const [rerunPromptPath, setRerunPromptPath] = useState(() =>
     pickRerunPromptPreset(familyPromptProfiles(families || [], currentFamily), jobPromptPrefer),
   );
+  const [rerunStack, setRerunStack] = useState(() =>
+    pickRerunStack(stacks, {
+      jobStackId: item.stack_id,
+      familyStackId: (families || []).find((f) => f.slug === currentFamily)?.stack_id,
+    }),
+  );
   const [rerunTrimMode, setRerunTrimMode] = useState<"job" | "edited">(() =>
     sourceTrim.dirty || sourceTrim.clampedDefault ? "edited" : "job",
   );
@@ -4126,6 +4171,20 @@ function WorkProductQuickQueue({
     setRerunPromptPath(pickRerunPromptPreset(rerunPromptProfiles, jobPromptPrefer));
     // promptCatalogKey, not the profiles array: same catalog after refetch must not wipe a pick.
   }, [item.job_key, rerunFamily, promptCatalogKey, jobPromptPrefer]);
+
+  const stackCatalogKey = (stacks || []).map((s) => s.stack_id).join("|");
+  const rerunFamilyStackId = String(
+    (families || []).find((f) => f.slug === (rerunFamily || currentFamily))?.stack_id || "",
+  ).trim();
+  useEffect(() => {
+    const sameFamily = !rerunFamily || rerunFamily === currentFamily;
+    setRerunStack(
+      pickRerunStack(stacks, {
+        jobStackId: sameFamily ? item.stack_id : null,
+        familyStackId: rerunFamilyStackId,
+      }),
+    );
+  }, [item.job_key, item.stack_id, rerunFamily, currentFamily, stackCatalogKey, rerunFamilyStackId]);
 
   useEffect(() => {
     if (!trimApplies) {
@@ -4172,6 +4231,11 @@ function WorkProductQuickQueue({
       jobPromptPrefer,
     ),
   );
+  const [extendStack, setExtendStack] = useState(() =>
+    pickRerunStack(stacks, {
+      familyStackId: (families || []).find((f) => f.slug === defaultExtendFamily)?.stack_id,
+    }),
+  );
   const [extendTrimMode, setExtendTrimMode] = useState<"job" | "edited">(() =>
     outputTrim.dirty || outputTrim.clampedDefault ? "edited" : "job",
   );
@@ -4193,6 +4257,17 @@ function WorkProductQuickQueue({
   useEffect(() => {
     setExtendPromptPath(pickRerunPromptPreset(extendPromptProfiles, jobPromptPrefer));
   }, [item.job_key, extendFamily, extendPromptCatalogKey, jobPromptPrefer]);
+
+  const extendFamilyStackId = String(
+    (families || []).find((f) => f.slug === extendFamily)?.stack_id || "",
+  ).trim();
+  useEffect(() => {
+    setExtendStack(
+      pickRerunStack(stacks, {
+        familyStackId: extendFamilyStackId,
+      }),
+    );
+  }, [item.job_key, extendFamily, stackCatalogKey, extendFamilyStackId]);
 
   useEffect(() => {
     if (!outputTrimApplies) {
@@ -4500,6 +4575,8 @@ function WorkProductQuickQueue({
       if (seedMode === "manual" && seedValue != null) {
         overrides = mergeReplaySeedOverride(overrides, seedValue);
       }
+      const stackId = doExtend ? extendStack : rerunStack;
+      overrides = mergeReplayStackOverride(overrides, stackId);
       const promptBinding = doExtend
         ? extendPromptChanged && extendPromptPath
           ? { prompt_profile: extendPromptPath }
@@ -4580,6 +4657,7 @@ function WorkProductQuickQueue({
         : promptBinding && selectedPromptLabel
           ? `prompt ${selectedPromptLabel}`
           : null;
+      const stackLabel = stackId ? `stack ${stackId}` : null;
       const trimLabel = doExtend ? `trim output ${effectiveExtendTrimMode}` : `trim ${effectiveTrimMode}`;
       let cleared = false;
       if (opts?.clearError && (nextKey || pid)) {
@@ -4599,6 +4677,7 @@ function WorkProductQuickQueue({
               : `${verb} ${when} queued`,
           familyLabel,
           promptLabel,
+          stackLabel,
           trimLabel,
           seedLabel,
           clampMsg,
@@ -4667,6 +4746,8 @@ function WorkProductQuickQueue({
   const extendPromptAs =
     extendPromptChanged && selectedExtendPromptLabel ? ` · prompt ${selectedExtendPromptLabel}` : "";
   const extendFamilyLabel = familyLabels.get(extendFamily) || extendFamily;
+  const stackAs = rerunStack ? ` · stack ${rerunStack}` : "";
+  const extendStackAs = extendStack ? ` · stack ${extendStack}` : "";
   const familyChoice = (slug: string, extra?: Partial<RecipeFamilyChoice>): RecipeFamilyChoice => {
     const fam = (families || []).find((f) => f.slug === slug);
     const short = familyLabels.get(slug) || slug;
@@ -4693,30 +4774,30 @@ function WorkProductQuickQueue({
     const titleFor = (dest: "pending-next" | "pending-later" | "comfy-now" | "comfy-later") => {
       if (extend) {
         if (dest === "pending-next") {
-          return `Extend as ${extendFamily}${extendPromptAs} at the front of the factory pending FIFO`;
+          return `Extend as ${extendFamily}${extendPromptAs}${extendStackAs} at the front of the factory pending FIFO`;
         }
         if (dest === "pending-later") {
-          return `Extend as ${extendFamily}${extendPromptAs} onto the end of the factory pending FIFO`;
+          return `Extend as ${extendFamily}${extendPromptAs}${extendStackAs} onto the end of the factory pending FIFO`;
         }
         if (dest === "comfy-now") {
-          return `Extend as ${extendFamily}${extendPromptAs} · trim output ${effectiveExtendTrimMode} · seed ${extendSeedChoiceLabel} · front of Comfy`;
+          return `Extend as ${extendFamily}${extendPromptAs}${extendStackAs} · trim output ${effectiveExtendTrimMode} · seed ${extendSeedChoiceLabel} · front of Comfy`;
         }
-        return `Extend as ${extendFamily}${extendPromptAs} · trim output ${effectiveExtendTrimMode} · seed ${extendSeedChoiceLabel} · normal priority`;
+        return `Extend as ${extendFamily}${extendPromptAs}${extendStackAs} · trim output ${effectiveExtendTrimMode} · seed ${extendSeedChoiceLabel} · normal priority`;
       }
       if (replace) {
-        if (dest === "pending-next") return `Swap to ${rerunFamily}${promptAs} at the front of the factory pending FIFO · retire this job`;
-        if (dest === "pending-later") return `Swap to ${rerunFamily}${promptAs} onto the end of the factory pending FIFO · retire this job`;
+        if (dest === "pending-next") return `Swap to ${rerunFamily}${promptAs}${stackAs} at the front of the factory pending FIFO · retire this job`;
+        if (dest === "pending-later") return `Swap to ${rerunFamily}${promptAs}${stackAs} onto the end of the factory pending FIFO · retire this job`;
         if (dest === "comfy-now") {
-          return `Swap to ${rerunFamily}${promptAs} · trim ${effectiveTrimMode} · seed ${seedChoiceLabel} · front of Comfy · retire this job`;
+          return `Swap to ${rerunFamily}${promptAs}${stackAs} · trim ${effectiveTrimMode} · seed ${seedChoiceLabel} · front of Comfy · retire this job`;
         }
-        return `Swap to ${rerunFamily}${promptAs} · trim ${effectiveTrimMode} · seed ${seedChoiceLabel} · normal priority · retire this job`;
+        return `Swap to ${rerunFamily}${promptAs}${stackAs} · trim ${effectiveTrimMode} · seed ${seedChoiceLabel} · normal priority · retire this job`;
       }
-      if (dest === "pending-next") return `New job${familyAs}${promptAs} at the front of the factory pending FIFO`;
-      if (dest === "pending-later") return `New job${familyAs}${promptAs} onto the end of the factory pending FIFO`;
+      if (dest === "pending-next") return `New job${familyAs}${promptAs}${stackAs} at the front of the factory pending FIFO`;
+      if (dest === "pending-later") return `New job${familyAs}${promptAs}${stackAs} onto the end of the factory pending FIFO`;
       if (dest === "comfy-now") {
-        return `New job${familyAs}${promptAs} · trim ${effectiveTrimMode} · seed ${seedChoiceLabel} · front of Comfy`;
+        return `New job${familyAs}${promptAs}${stackAs} · trim ${effectiveTrimMode} · seed ${seedChoiceLabel} · front of Comfy`;
       }
-      return `New job${familyAs}${promptAs} · trim ${effectiveTrimMode} · seed ${seedChoiceLabel} · normal priority`;
+      return `New job${familyAs}${promptAs}${stackAs} · trim ${effectiveTrimMode} · seed ${seedChoiceLabel} · normal priority`;
     };
     return (
       <div className="work-product-quick-queue__dests">
@@ -4892,7 +4973,7 @@ function WorkProductQuickQueue({
           <details className="work-product-quick-queue__fold" open>
             <summary
               className="work-product-quick-queue__fold-summary"
-              title="New job from this recipe — family, prompt preset, trim, and seed are independent"
+              title="New job from this recipe — family, stack, prompt preset, trim, and seed are independent"
             >
               Re-run
             </summary>
@@ -4917,6 +4998,9 @@ function WorkProductQuickQueue({
                           ? `Re-run as ${rerunFamily} (keeps this job)`
                           : rerunFamily || currentFamily || "Same family, or pick a compatible one"
                   }
+                  stackValue={rerunStack}
+                  stackOptions={stacks}
+                  onStackChange={setRerunStack}
                   promptProfiles={rerunPromptProfiles}
                   promptPath={rerunPromptPath}
                   onPromptPath={setRerunPromptPath}
@@ -4972,6 +5056,9 @@ function WorkProductQuickQueue({
                         ? `${extendFamily} — this family’s workflow is quarantined`
                         : `Extend this output as ${extendFamily}`
                     }
+                    stackValue={extendStack}
+                    stackOptions={stacks}
+                    onStackChange={setExtendStack}
                     promptProfiles={extendPromptProfiles}
                     promptPath={extendPromptPath}
                     onPromptPath={setExtendPromptPath}
@@ -5265,6 +5352,7 @@ function WorkProductLineageSection({
 function WorkProductDetails({
   item,
   families,
+  stacks,
   extendFamilyDefaults,
   outputTrim,
   sourceTrim,
@@ -5275,6 +5363,7 @@ function WorkProductDetails({
 }: {
   item: WorkProductItem;
   families?: WorkProductFamilyOption[];
+  stacks?: GenerationStackOption[];
   extendFamilyDefaults?: Record<string, string>;
   outputTrim: InputTrimState;
   sourceTrim: InputTrimState;
@@ -5475,6 +5564,7 @@ function WorkProductDetails({
       <WorkProductQuickQueue
         item={item}
         families={families}
+        stacks={stacks}
         extendFamilyDefaults={extendFamilyDefaults}
         outputTrim={outputTrim}
         sourceTrim={sourceTrim}
@@ -5809,6 +5899,7 @@ function WorkProductRowInner({
   item,
   layout,
   families,
+  stacks,
   extendFamilyDefaults,
   onCommitted,
   onOpenSubmit,
@@ -5817,6 +5908,7 @@ function WorkProductRowInner({
   item: WorkProductItem;
   layout: RowLayout;
   families?: WorkProductFamilyOption[];
+  stacks?: GenerationStackOption[];
   extendFamilyDefaults?: Record<string, string>;
   onCommitted?: () => void;
   onOpenSubmit?: (intent: SubmitDeepLink) => void;
@@ -5954,6 +6046,7 @@ function WorkProductRowInner({
         <WorkProductDetails
           item={item}
           families={families}
+          stacks={stacks}
           extendFamilyDefaults={extendFamilyDefaults}
           outputTrim={outputTrim}
           sourceTrim={sourceTrim}
@@ -5972,6 +6065,7 @@ function workProductRowPropsEqual(
   next: Readonly<React.ComponentProps<typeof WorkProductRowInner>>,
 ): boolean {
   if (prev.layout !== next.layout) return false;
+  if (prev.families !== next.families || prev.stacks !== next.stacks) return false;
   if (
     prev.onCommitted !== next.onCommitted ||
     prev.onOpenSubmit !== next.onOpenSubmit ||
@@ -5983,6 +6077,7 @@ function workProductRowPropsEqual(
   const b = next.item;
   return (
     a.job_key === b.job_key &&
+    a.stack_id === b.stack_id &&
     a.status === b.status &&
     a.output_url === b.output_url &&
     a.output_relpath === b.output_relpath &&
@@ -6176,6 +6271,7 @@ export function WorkProductsApp() {
       : null;
   const focusedItem = recentHit || historyItem || mediaFallbackItem || null;
   const families = queryState.data?.families || historyQuery.data?.families || [];
+  const stacks = queryState.data?.stacks || historyQuery.data?.stacks || [];
   const extendFamilyDefaults =
     queryState.data?.extend_family_defaults || historyQuery.data?.extend_family_defaults || {};
   const loading = followUpSet ? bucketsQuery.isLoading : queryState.isLoading;
@@ -7190,6 +7286,7 @@ export function WorkProductsApp() {
               item={selectedItem}
               layout={layout}
               families={families}
+              stacks={stacks}
               extendFamilyDefaults={extendFamilyDefaults}
               onOpenSubmit={setSubmitModalIntent}
               onCommitted={onRowCommitted}

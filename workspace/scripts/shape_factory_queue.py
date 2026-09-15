@@ -1345,6 +1345,12 @@ def _apply_binding_overrides(
     if clip_id not in (None, ""):
         adhoc["source_clip_id"] = str(clip_id).strip()
 
+    stack_raw = overrides.get("stack") or overrides.get("stack_id")
+    if stack_raw not in (None, ""):
+        sid = str(stack_raw).strip()
+        if sid:
+            adhoc["stack"] = sid
+
     return picks, adhoc
 
 

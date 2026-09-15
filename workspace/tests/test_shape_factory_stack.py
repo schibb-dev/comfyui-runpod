@@ -13,6 +13,9 @@ from shape_factory_stack import (
     apply_shape_stack_api,
     apply_shape_stack_ui,
     apply_stack_ui,
+    default_stacks_dir,
+    format_stack_label,
+    list_stacks,
     load_stack,
     stamp_job_stack,
     validate_stack,
@@ -25,6 +28,16 @@ class ValidateStackTests(unittest.TestCase):
             doc = load_stack(sid)
             self.assertEqual(doc["stack_id"], sid)
             self.assertEqual(validate_stack(doc), [])
+
+    def test_list_stacks_labels(self) -> None:
+        rows = list_stacks()
+        ids = {r["stack_id"] for r in rows}
+        self.assertEqual(ids, {"i2v-480p-Q5", "i2v-480p-Q8", "i2v-720p-Q5"})
+        q5 = next(r for r in rows if r["stack_id"] == "i2v-720p-Q5")
+        self.assertEqual(q5["label"], format_stack_label(load_stack("i2v-720p-Q5")))
+        self.assertIn("Q5", q5["label"])
+        self.assertIn("virt", q5["label"])
+        self.assertTrue((default_stacks_dir() / "i2v-720p-Q5.yaml").is_file())
 
     def test_rejects_mismatched_coeffs(self) -> None:
         doc = {

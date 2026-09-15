@@ -1640,6 +1640,9 @@ export type ShapeFactoryMapQueueOverrides = {
   loras?: {
     entries?: WorkProductLoraEntry[];
   };
+  /** Named generation stack id (`i2v-720p-Q5`). */
+  stack?: string;
+  stack_id?: string;
 };
 
 export type FutureRunDraft = {
@@ -2747,6 +2750,8 @@ export type WorkProductItem = {
   spec_tune?: string | null;
   spec_sampler?: string | null;
   run_spec?: Record<string, unknown> | null;
+  /** Named generation stack (`i2v-720p-Q5`, …) when the job recorded one. */
+  stack_id?: string | null;
   /** Comfy noise seed extracted from prompt / construction. */
   noise_seed?: number | null;
   /** How seed was chosen on replay (same / new / …), when known. */
@@ -2806,6 +2811,20 @@ export type WorkProductFamilyOption = {
   spec_tune?: string | null;
   spec_sampler?: string | null;
   prompt_profiles?: WorkProductFamilyPromptProfile[];
+  /** Default generation stack id (`i2v-720p-Q5`, …). */
+  stack_id?: string | null;
+};
+
+export type GenerationStackOption = {
+  stack_id: string;
+  label?: string;
+  unet_name?: string;
+  training_size?: string;
+  quant?: string;
+  teacache_coefficients?: string;
+  virtual_vram_gb?: number;
+  clip_name?: string;
+  clip_loader_type?: string;
 };
 
 export type WorkProductFamilyPromptProfile = {
@@ -2826,6 +2845,7 @@ export type ShapeFactoryFamiliesResponse = {
   schema_version?: string;
   fingerprint?: string;
   families?: WorkProductFamilyOption[];
+  stacks?: GenerationStackOption[];
   sets?: {
     extend?: WorkProductFamilyOption[];
     vary?: WorkProductFamilyOption[];
@@ -3136,6 +3156,7 @@ export type WorkProductsResponse = {
   limit?: number;
   count?: number;
   families?: WorkProductFamilyOption[];
+  stacks?: GenerationStackOption[];
   /** Source family → next pipeline-step family for Extend picker defaults. */
   extend_family_defaults?: Record<string, string>;
   items?: WorkProductItem[];
@@ -3153,6 +3174,7 @@ export type WorkProductResponse = {
   discard_reason?: string | null;
   families?: WorkProductFamilyOption[];
   extend_family_defaults?: Record<string, string>;
+  stacks?: GenerationStackOption[];
   item?: WorkProductItem;
 };
 

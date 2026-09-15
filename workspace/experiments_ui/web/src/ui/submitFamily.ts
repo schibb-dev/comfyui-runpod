@@ -1,6 +1,6 @@
 /** Shared extend / I2V family defaults for Submit compose. */
 
-import type { WorkProductFamilyOption, WorkProductFamilyPromptProfile } from "./types";
+import type { GenerationStackOption, WorkProductFamilyOption, WorkProductFamilyPromptProfile } from "./types";
 
 export const PREFERRED_EXTEND_FAMILIES = ["FB9_GEX2", "FB9_GEX_FACIAL", "FB9_GEX"] as const;
 export const PREFERRED_I2V_FAMILIES = [
@@ -44,6 +44,26 @@ export function familyPickerOptionTitle(
   family: Pick<WorkProductFamilyOption, "slug" | "spec_abbrev" | "spec_title"> | null | undefined,
 ): string {
   return String(family?.spec_title || family?.spec_abbrev || family?.slug || "").trim();
+}
+
+export function stackPickerOptionLabel(stack: GenerationStackOption | null | undefined): string {
+  const id = String(stack?.stack_id || "").trim();
+  const label = String(stack?.label || "").trim();
+  if (label && id && label !== id) return `${id} · ${label}`;
+  return label || id;
+}
+
+export function pickRerunStack(
+  stacks: GenerationStackOption[] | null | undefined,
+  prefer?: { jobStackId?: string | null; familyStackId?: string | null },
+): string {
+  const rows = Array.isArray(stacks) ? stacks : [];
+  const ids = new Set(rows.map((s) => String(s.stack_id || "").trim()).filter(Boolean));
+  const job = String(prefer?.jobStackId || "").trim();
+  if (job && ids.has(job)) return job;
+  const fam = String(prefer?.familyStackId || "").trim();
+  if (fam && ids.has(fam)) return fam;
+  return String(rows[0]?.stack_id || "").trim();
 }
 
 export function isExtendFamilySlug(slug: string): boolean {

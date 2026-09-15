@@ -544,7 +544,7 @@ class TestWorkProducts(unittest.TestCase):
             shapes = data / "shapes"
             shapes.mkdir(parents=True)
             (shapes / "Alpha.shape.yaml").write_text(
-                "shape_id: alpha-shape\nfamily_slug: Alpha\nrequires: []\nproduces: []\n",
+                "shape_id: alpha-shape\nfamily_slug: Alpha\nstack: i2v-720p-Q5\nrequires: []\nproduces: []\n",
                 encoding="utf-8",
             )
             (shapes / "Beta.shape.yaml").write_text(
@@ -555,6 +555,8 @@ class TestWorkProducts(unittest.TestCase):
             slugs = {f["slug"] for f in fams}
             self.assertEqual(slugs, {"Alpha", "Beta"})
             self.assertNotIn("prompt_profiles", fams[0])
+            alpha = next(f for f in fams if f["slug"] == "Alpha")
+            self.assertEqual(alpha.get("stack_id"), "i2v-720p-Q5")
 
             out = root / "output"
             jobs = data / "shape_factory" / "jobs" / "Alpha"
@@ -565,6 +567,7 @@ class TestWorkProducts(unittest.TestCase):
                         "created_at": "2026-07-13T12:00:00+00:00",
                         "family_slug": "Alpha",
                         "job_key": "hourly__a",
+                        "stack_id": "i2v-480p-Q5",
                         "submit": {"status": "queued"},
                     }
                 )
@@ -575,6 +578,11 @@ class TestWorkProducts(unittest.TestCase):
             self.assertIn("families", payload)
             self.assertEqual({f["slug"] for f in payload["families"]}, {"Alpha", "Beta"})
             self.assertEqual(payload.get("extend_family_defaults"), {})
+            stack_ids = {s.get("stack_id") for s in payload.get("stacks") or []}
+            self.assertGreaterEqual(stack_ids, {"i2v-720p-Q5", "i2v-480p-Q8", "i2v-480p-Q5"})
+            items = payload.get("items") or []
+            self.assertTrue(items)
+            self.assertEqual(items[0].get("stack_id"), "i2v-480p-Q5")
 
     def test_list_shape_families_includes_template_frames_default(self):
         with tempfile.TemporaryDirectory() as td:
@@ -702,6 +710,8 @@ class TestWorkProducts(unittest.TestCase):
             self.assertNotIn("X-KNEEL-FB9", extend_slugs)
             self.assertIn("FB9_GEX2_identity_anchor", extend_slugs)
             self.assertEqual(payload["extend_family_defaults"], {"X-KNEEL-FB9": "FB9_GEX2"})
+            stack_ids = {s.get("stack_id") for s in payload.get("stacks") or []}
+            self.assertGreaterEqual(stack_ids, {"i2v-720p-Q5", "i2v-480p-Q8", "i2v-480p-Q5"})
             self.assertTrue(is_extend_family_option({"slug": "FB9_GEX2", "shape_id": "wan_v2v_gex2"}))
             self.assertFalse(is_extend_family_option({"slug": "X-KNEEL-FB9", "shape_id": "wan_i2v_kneel"}))
             self.assertTrue(

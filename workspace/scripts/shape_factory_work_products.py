@@ -131,6 +131,14 @@ def list_shape_families(
             for key in ("primary_input", "input_profile", "chain_role", "io_class"):
                 if doc.get(key) is not None and str(doc.get(key)).strip():
                     row[key] = str(doc.get(key)).strip()
+            try:
+                from shape_factory_stack import stack_id_from_shape
+
+                sid = stack_id_from_shape(doc)
+                if sid:
+                    row["stack_id"] = sid
+            except Exception:
+                pass
             if "io_class" not in row and row.get("input_profile"):
                 from shape_factory_vocab import io_class_for_profile
 
@@ -358,6 +366,7 @@ def list_submit_family_sets(
         "schema_version": "comfyui-runpod.submit-families.v0",
         "fingerprint": _shapes_pipelines_fingerprint(data_root),
         "families": families,
+        "stacks": _list_stacks_payload(data_root),
         "sets": {
             "extend": extend,
             "vary": vary,
@@ -380,6 +389,20 @@ def _family_slug_from_shape_ref(shape: Any) -> str:
     if "/" not in raw and "\\" not in raw and raw:
         return raw
     return Path(raw).stem
+
+
+def _list_stacks_payload(data_root: Optional[Path] = None) -> List[Dict[str, Any]]:
+    try:
+        from shape_factory_stack import list_stacks
+
+        kwargs: Dict[str, Any] = {}
+        if data_root is not None:
+            stacks_dir = Path(data_root) / "stacks"
+            if stacks_dir.is_dir():
+                kwargs["stacks_dir"] = stacks_dir
+        return list_stacks(**kwargs)
+    except Exception:
+        return []
 
 
 def list_extend_family_defaults(data_root: Path) -> Dict[str, str]:
@@ -1347,6 +1370,7 @@ def _detail_rows(item: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     add("Created", item.get("created_at"))
     add("Family", item.get("family_slug"))
+    add("Stack", item.get("stack_id"))
     add("Experiment", item.get("exp_id"))
     add("Run id", item.get("run_id"))
     add("Status", item.get("status"))
@@ -1791,6 +1815,17 @@ def _job_recency_ts(path: Path) -> float:
         return 0.0
 
 
+def _job_stack_id(job: Dict[str, Any]) -> Optional[str]:
+    sid = str(job.get("stack_id") or "").strip()
+    if sid:
+        return sid
+    raw = job.get("stack")
+    if isinstance(raw, dict):
+        return str(raw.get("stack_id") or raw.get("id") or "").strip() or None
+    text = str(raw or "").strip()
+    return text or None
+
+
 def _work_product_item_from_job(
     path: Path,
     job: Dict[str, Any],
@@ -2036,6 +2071,7 @@ def _work_product_item_from_job(
         "generated_workflow_path": job.get("generated_workflow_path"),
         "prompt_path": submit.get("prompt_path"),
         "graph_hash": job.get("graph_hash"),
+        "stack_id": _job_stack_id(job),
         "output_prefix": job.get("output_prefix"),
         "status": status,
         "pending_rank": (
@@ -2232,6 +2268,7 @@ def get_work_product(
                 "job_key": exp_item.get("job_key"),
                 "prompt_id": exp_item.get("prompt_id"),
                 "families": families,
+                "stacks": _list_stacks_payload(data_root),
                 "extend_family_defaults": list_extend_family_defaults(data_root),
                 "item": exp_item,
             }
@@ -2301,6 +2338,7 @@ def get_work_product(
         "job_key": item.get("job_key"),
         "prompt_id": item.get("prompt_id"),
         "families": families,
+        "stacks": _list_stacks_payload(data_root),
         "extend_family_defaults": list_extend_family_defaults(data_root),
         "item": item,
     }
@@ -2435,6 +2473,7 @@ def list_recent_work_products(
         "limit": limit,
         "count": len(items),
         "families": families,
+        "stacks": _list_stacks_payload(data_root),
         "extend_family_defaults": extend_family_defaults,
         "items": items,
     }
