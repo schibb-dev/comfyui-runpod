@@ -502,6 +502,38 @@ def _relpath_under(root: Path, abs_path: Any) -> Optional[str]:
     return None
 
 
+# Empty VHS combine often leaves a ~48-byte ftyp/mdat stub with no moov atom.
+_MIN_PLAYABLE_MP4_BYTES = 4096
+
+
+def _prefer_playable_mp4s(paths: List[str]) -> List[str]:
+    """Drop truncated VHS stubs when a real mp4 exists; largest files first."""
+    cleaned = [str(p).strip() for p in paths if str(p).strip()]
+    if not cleaned:
+        return []
+    playable: List[str] = []
+    rest: List[str] = []
+    for f in cleaned:
+        p = Path(f)
+        try:
+            size = p.stat().st_size
+        except OSError:
+            continue
+        if p.suffix.lower() == ".mp4" and size >= _MIN_PLAYABLE_MP4_BYTES:
+            playable.append(f)
+        else:
+            rest.append(f)
+
+    def _rank(f: str) -> Tuple[int, float]:
+        try:
+            st = Path(f).stat()
+            return (int(st.st_size), float(st.st_mtime))
+        except OSError:
+            return (0, 0.0)
+
+    return sorted(playable or rest, key=_rank, reverse=True)
+
+
 def _keeper_output_rel(
     paths: List[str],
     *,
@@ -509,7 +541,7 @@ def _keeper_output_rel(
     job: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
     """Pick the final/produce-node video; never prefer a ``_PREVIEW`` sibling."""
-    cleaned = [str(p).strip() for p in paths if str(p).strip()]
+    cleaned = _prefer_playable_mp4s(paths)
     if not cleaned:
         return None
     picked: List[str] = list(cleaned)

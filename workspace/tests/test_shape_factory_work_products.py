@@ -1473,6 +1473,37 @@ class TestWorkProducts(unittest.TestCase):
             self.assertEqual(filtered.get("experiment_count"), 0)
             self.assertEqual(filtered.get("items"), [])
 
+    def test_experiment_output_skips_truncated_mp4_for_dated_copy(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            output = root / "output"
+            exp_id = "x-kneel-bra-upscale"
+            prefix = f"og/2026-05-09/experiments/{exp_id}/X-Kneel-FB9-Bra-UP_OG"
+            stem = self._write_quality_experiment(
+                output,
+                exp_id=exp_id,
+                run_id="run_001",
+                prefix=prefix,
+                prompt_id="pid-upscale",
+            )
+            fossil = output / "og" / "2026-05-09" / "experiments" / exp_id
+            fossil.mkdir(parents=True)
+            (fossil / f"{stem}_00001.mp4").write_bytes(b"\x00" * 48)
+            dated = output / "og" / "2026-09-15" / "experiments" / exp_id
+            dated.mkdir(parents=True)
+            (dated / f"{stem}_00001.mp4").write_bytes(b"mp4" * 2000)
+
+            payload = attach_experiment_runs(
+                {"ok": True, "limit": 40, "family": None, "families": [{"slug": "X-KNEEL-FB9"}], "items": []},
+                output_root=output,
+            )
+            finished = next(it for it in payload["items"] if it.get("run_id") == "run_001")
+            self.assertEqual(finished.get("status"), "complete")
+            self.assertEqual(
+                finished.get("output_relpath"),
+                f"og/2026-09-15/experiments/{exp_id}/{stem}_00001.mp4",
+            )
+
     def test_get_work_product_falls_back_to_experiment_run(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
