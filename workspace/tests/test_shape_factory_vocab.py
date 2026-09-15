@@ -8,9 +8,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import support  # noqa: F401  — injects workspace/scripts onto sys.path
 from shape_factory_vocab import (
+    CHAIN_ROLES,
+    PLAY_BEATS,
     format_catalog_stem,
     guess_io_from_workflow,
+    is_delivery_shape,
     parse_catalog_stem,
     stamp_job_vocab,
     validate_shape_vocab,
@@ -82,6 +86,54 @@ class VocabFieldTests(unittest.TestCase):
         )
         self.assertEqual(job["io_class"], "V2V")
         self.assertEqual(job["chain_role"], "extend")
+
+    def test_play_beats_and_delivery_are_valid(self) -> None:
+        self.assertEqual(
+            PLAY_BEATS,
+            frozenset({"origin", "extend", "climax", "denouement"}),
+        )
+        for role in ("climax", "denouement", "delivery"):
+            self.assertIn(role, CHAIN_ROLES)
+        shape = {
+            "primary_input": "video",
+            "input_profile": "video_prompt",
+            "chain_role": "climax",
+            "requires": [
+                {"slot": "source_video"},
+                {"slot": "prompt_profile"},
+            ],
+        }
+        self.assertEqual(validate_shape_vocab(shape), [])
+
+    def test_delivery_role_requires_block(self) -> None:
+        shape = {
+            "primary_input": "video",
+            "input_profile": "video_only",
+            "chain_role": "delivery",
+            "requires": [{"slot": "source_video"}],
+        }
+        errs = validate_shape_vocab(shape)
+        self.assertTrue(any("delivery: block" in e for e in errs))
+
+    def test_play_beat_rejects_delivery_block(self) -> None:
+        shape = {
+            "primary_input": "video",
+            "input_profile": "video_prompt",
+            "chain_role": "extend",
+            "delivery": {"upscale": True},
+            "requires": [
+                {"slot": "source_video"},
+                {"slot": "prompt_profile"},
+            ],
+        }
+        errs = validate_shape_vocab(shape)
+        self.assertTrue(any("packaging" in e for e in errs))
+
+    def test_is_delivery_shape(self) -> None:
+        self.assertTrue(is_delivery_shape({"chain_role": "delivery"}))
+        self.assertTrue(is_delivery_shape({"chain_role": "extend", "delivery": {}}))
+        self.assertFalse(is_delivery_shape({"chain_role": "denouement"}))
+        self.assertFalse(is_delivery_shape({"chain_role": "origin"}))
 
 
 class StartImageTests(unittest.TestCase):

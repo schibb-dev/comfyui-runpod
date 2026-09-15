@@ -12,12 +12,23 @@ Declared on every `*.shape.yaml`:
 |-------|--------|---------|
 | `primary_input` | `still` \| `video` | Feedstock class |
 | `input_profile` | `still_prompt` \| `video_prompt` \| `video_identity_still_prompt` \| `video_only` | Slot contract |
-| `chain_role` | `origin` \| `extend` \| `mutate` \| `denouement` \| `standalone` | Role inside a pipeline |
+| `chain_role` | play beat or packaging — see below | Ranking prior for composition; not a lockout |
 | `io_class` | `I2V` \| `V2V` \| `VI2V` \| … | Process class badge (derived from profile) |
 | `postprocess` | see [`docs/WORKFLOW_LAYERS.md`](../../docs/WORKFLOW_LAYERS.md) | Generation editorial (`color_match`, `merge_frames`) at generate time |
 
-These are **descriptive** — operators see badges now; automation can read them later.
-They are not a lockout / compatibility engine.
+**Play beats** (generation family = graph + prompt book + conditioning):
+
+| Beat | Composition pattern |
+|------|---------------------|
+| `origin` | Setup. Still → first clip. |
+| `extend` | Repeatable parts (dribble / pass). May loop. |
+| `climax` | Through-composed payoff. Tends not to repeat. |
+| `denouement` | Aftermath on the same play (fist pump). Not packaging. |
+
+**Not a beat:** `delivery` is highlight-reel packaging (upscale / RIFE / delivery color-match). `mutate` and `standalone` are reserved / unassigned.
+
+These are **descriptive** — operators see badges now; automation can rank later.
+They are not a lockout / compatibility engine. Workbench may still wire the rebound three.
 
 Hard integrity check (labels must not lie): Wan `start_image` ancestry must match
 `primary_input` (see `shape_factory_vocab.validate_start_image_vs_primary_input`).
@@ -62,7 +73,7 @@ Reserved later tags: `II2V`, `IV2V`, `I2I`, `V2I`, `T2V`, `VV2V`.
 | FB9_GEX2 | V2V | extend | video_prompt |
 | FB9_GEX_FACIAL | V2V | extend | video_prompt |
 | FB9_GEX2_identity_anchor | VI2V | extend | video_identity_still_prompt |
-| wan-delivery-postprocess | V2V | denouement | video_only |
+| wan-delivery-postprocess | V2V | delivery | video_only |
 
 `mutate` is reserved vocabulary — none assigned yet.
 

@@ -3,6 +3,7 @@ import {
   familySlugIsQuarantined,
   familyPickerOptionLabel,
   familyPickerOptionTitle,
+  isExtendFamilyOption,
   jobPromptVariantDisplayName,
   jobPromptVariantName,
   pickQuickExtendFamily,
@@ -170,6 +171,22 @@ const i2vFamily = (slug: string): WorkProductFamilyOption => ({
   slug,
   chain_role: "origin",
   io_class: "I2V",
+});
+
+describe("isExtendFamilyOption", () => {
+  it("keeps play-beat video families and excludes packaging", () => {
+    expect(isExtendFamilyOption(extendFamily("FB9_GEX"))).toBe(true);
+    expect(isExtendFamilyOption(extendFamily("payoff", { chain_role: "climax" }))).toBe(true);
+    expect(isExtendFamilyOption(extendFamily("aftermath", { chain_role: "denouement" }))).toBe(true);
+    expect(isExtendFamilyOption(i2vFamily("X-KNEEL-FB9"))).toBe(false);
+    expect(
+      isExtendFamilyOption({
+        slug: "wan-delivery-postprocess",
+        chain_role: "delivery",
+        io_class: "V2V",
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("workProductCanQuickExtend", () => {

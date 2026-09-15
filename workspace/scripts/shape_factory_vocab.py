@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Shape Factory station vocabulary: IO class, chain_role, catalog stems.
 
+``chain_role`` on a generation family is a **play beat** (origin / extend /
+climax / denouement): a ranking prior for composition, not a lockout.
+
+``delivery`` is highlight-reel packaging (upscale / RIFE / delivery color-match),
+not a beat. Route packaging off the ``delivery:`` block, not off denouement.
+
 Descriptive first — operators see it now; automation reads it later.
 Not a constraint / lockout engine.
 """
@@ -23,15 +29,10 @@ INPUT_PROFILES = frozenset(
         "video_only",
     }
 )
-CHAIN_ROLES = frozenset(
-    {
-        "origin",
-        "extend",
-        "mutate",
-        "denouement",
-        "standalone",
-    }
-)
+# Play beats: intended composition pattern on a generation family (graph + prompt).
+PLAY_BEATS = frozenset({"origin", "extend", "climax", "denouement"})
+# Packaging (not a beat) plus reserved / unassigned roles.
+CHAIN_ROLES = PLAY_BEATS | frozenset({"delivery", "mutate", "standalone"})
 
 # Process-class tags used in catalog stems and UI badges.
 IO_TAGS = frozenset(
@@ -131,6 +132,15 @@ def stamp_job_vocab(job_meta: Dict[str, Any], shape: Dict[str, Any]) -> None:
         job_meta[k] = v
 
 
+def is_delivery_shape(shape: Dict[str, Any]) -> bool:
+    """True when the shape is highlight-reel packaging, not a play beat."""
+    if not isinstance(shape, dict):
+        return False
+    if isinstance(shape.get("delivery"), dict):
+        return True
+    return str(shape.get("chain_role") or "").strip().lower() == "delivery"
+
+
 def validate_shape_vocab(shape: Dict[str, Any]) -> List[str]:
     """Soft + hard field checks on a shape document. Returns error strings."""
     errors: List[str] = []
@@ -152,6 +162,15 @@ def validate_shape_vocab(shape: Dict[str, Any]) -> List[str]:
         errors.append("missing chain_role")
     elif role not in CHAIN_ROLES:
         errors.append(f"invalid chain_role: {role!r}")
+
+    has_delivery_block = isinstance(shape.get("delivery"), dict)
+    if role == "delivery" and not has_delivery_block:
+        errors.append("chain_role delivery requires a delivery: block")
+    if has_delivery_block and role in PLAY_BEATS:
+        errors.append(
+            "delivery: block is packaging; use chain_role delivery "
+            "(not a play beat: origin/extend/climax/denouement)"
+        )
 
     if profile in PROFILE_TO_PRIMARY and primary and PROFILE_TO_PRIMARY[profile] != primary:
         errors.append(

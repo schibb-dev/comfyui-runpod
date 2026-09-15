@@ -27,7 +27,7 @@ optional delivery transforms you are not running in production.
 
 | Category | Where it lives | Effects | In production today |
 |----------|----------------|---------|---------------------|
-| **Delivery postprocess** | Separate denouement shape + optional pipeline tail | ColorMatch, RealESRGAN 4×, RIFE | **Off by default** — opt-in via `delivery:` block |
+| **Delivery postprocess** | Separate packaging shape + optional pipeline tail | ColorMatch, RealESRGAN 4×, RIFE | **Off by default** — opt-in via `delivery:` block |
 | **Generation editorial** | Stays in the generation graph | ColorMatch (extend), VHS_MergeImages, batch trim | **On** on extend lines where wired |
 
 ColorMatch on GEX extend uses in-graph frames (source vs generated). That is part of
@@ -52,7 +52,7 @@ today, so nothing breaks by removing unused nodes first.
 
 The interim apply layer ([`shape_factory_generation_editorial.py`](../workspace/scripts/shape_factory_generation_editorial.py))
 sets **generation editorial** policy (`color_match`, `merge_frames`) on shapes that
-declare a `postprocess:` block. Delivery effects use a separate denouement workflow with
+declare a `postprocess:` block. Delivery effects use a separate packaging workflow with
 a `delivery:` block — see [`.data/shapes/delivery/README.md`](../.data/shapes/delivery/README.md).
 
 ---
@@ -65,9 +65,11 @@ a `delivery:` block — see [`.data/shapes/delivery/README.md`](../.data/shapes/
 | **Delivery postprocess** | Optional video-in → video-out transforms | `wan-delivery-postprocess` + `delivery:` toggles | ColorMatch, RealESRGAN, RIFE |
 | **Runtime** | Per-run tuning on a stable graph | `ui_defaults`, `dev-fast.yaml`, adhoc params, promote | frames, steps, overlap, seed, VHS clip window |
 
-### Delivery postprocess (denouement workflow)
+### Delivery postprocess (packaging workflow)
 
-One graph (`wan-delivery-postprocess`), separate from generation. Each effect is an
+One graph (`wan-delivery-postprocess`), separate from generation **and** from play
+beats (`chain_role` origin / extend / climax / denouement). Packaging is highlight-reel
+finishing, not aftermath in the constructed video. Each effect is an
 **optional component** toggled via the shape `delivery:` block (or per-job
 `adhoc_overrides.delivery`):
 
@@ -109,7 +111,7 @@ Completed 2026-09-03:
 
 - `video_only` input profile in [`shape_factory_vocab.py`](../workspace/scripts/shape_factory_vocab.py)
 - Catalog builder: [`build_delivery_catalogs.py`](../workspace/scripts/build_delivery_catalogs.py)
-- Enrolled denouement shape: `wan-delivery-postprocess`
+- Enrolled packaging shape: `wan-delivery-postprocess`
   ([`.data/shapes/delivery/`](../.data/shapes/delivery/))
 - Apply module: [`shape_factory_delivery_postprocess.py`](../workspace/scripts/shape_factory_delivery_postprocess.py)
 - Opt-in example pipeline: [`kneel-deliver.pipeline.yaml`](../.data/pipelines/kneel-deliver.pipeline.yaml)
@@ -165,7 +167,7 @@ a different station or pipeline step.
 
 - Different `graph_hash` (identity anchor, VI2V vs V2V, different node types)
 - Different product lines run in parallel (origin I2V vs extend V2V)
-- Delivery postprocess recipes (**one denouement graph**; toggle `color_match` / `upscale` / `interpolate`)
+- Delivery postprocess recipes (**one packaging graph**; toggle `color_match` / `upscale` / `interpolate`)
 
 **Default:** one canonical **generation** template per topology — not one per Q/fp variant.
 

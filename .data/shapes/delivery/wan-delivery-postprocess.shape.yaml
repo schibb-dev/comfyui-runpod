@@ -3,7 +3,7 @@ shape_id: wan-delivery-postprocess
 family_slug: wan-delivery-postprocess
 primary_input: video
 input_profile: video_only
-chain_role: denouement
+chain_role: delivery
 io_class: V2V
 graph_hash: 815baa4117a0b548159929ff5f53debeb3e9138841cfdb8e43ce2f141abf6e77
 template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/wan-delivery-postprocess-readable.json

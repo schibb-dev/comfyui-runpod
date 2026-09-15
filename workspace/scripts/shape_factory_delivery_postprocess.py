@@ -1,6 +1,7 @@
 """Apply shape-level delivery postprocess policy (ColorMatch, upscale, RIFE).
 
-Used only on denouement delivery shapes — not on generation workflows.
+Used only on packaging shapes with a ``delivery:`` block — not on generation
+play-beat families (origin / extend / climax / denouement).
 """
 
 from __future__ import annotations

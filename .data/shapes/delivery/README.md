@@ -1,8 +1,14 @@
-# Delivery postprocess station (Phase 2)
+# Delivery postprocess station (packaging)
 
-One **denouement** workflow, completely separate from generation. Generation templates
+Highlight-reel packaging, completely separate from the play. Generation templates
 no longer contain ColorMatch (delivery), upscale, or RIFE for final delivery — those live
 here only.
+
+This is **not** a denouement beat. Denouement is aftermath *in the constructed video*
+(graph + prompt). This station takes an already-made clip and packages it (grade /
+4× / smoother). It can wrap origin, extend, climax, or denouement.
+
+`chain_role: delivery`. Factory apply keys off the `delivery:` block, not off a play beat.
 
 ## Optional components (`delivery:` block)
 

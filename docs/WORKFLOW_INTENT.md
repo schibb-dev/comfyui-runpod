@@ -7,6 +7,10 @@ are informal pipelines.
 
 There is no separate “route” or “playbook” layer — pipeline *is* the plan.
 
+`chain_role` on a generation family is a **play beat** (origin / extend / climax /
+denouement): a ranking prior, not a script. `delivery` is highlight-reel packaging,
+off that axis. See [`.data/shapes/README.md`](../.data/shapes/README.md).
+
 ## Station specs (Phase 1)
 
 Each shape declares:

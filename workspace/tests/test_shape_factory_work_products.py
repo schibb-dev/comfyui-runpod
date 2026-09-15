@@ -42,6 +42,22 @@ class TestWorkProducts(unittest.TestCase):
         self.assertEqual(prefer_target_family(None, "FB9_GEX"), "FB9_GEX")
         self.assertEqual(prefer_target_family("  ", ""), "")
 
+    def test_extend_option_play_beats_not_delivery(self):
+        self.assertTrue(is_extend_family_option({"slug": "FB9_GEX2", "chain_role": "extend", "io_class": "V2V"}))
+        self.assertTrue(is_extend_family_option({"slug": "future-climax", "chain_role": "climax", "io_class": "V2V"}))
+        self.assertTrue(is_extend_family_option({"slug": "future-denouement", "chain_role": "denouement", "io_class": "V2V"}))
+        self.assertFalse(is_extend_family_option({"slug": "X-KNEEL-FB9", "chain_role": "origin", "io_class": "I2V"}))
+        self.assertFalse(
+            is_extend_family_option(
+                {
+                    "slug": "wan-delivery-postprocess",
+                    "chain_role": "delivery",
+                    "io_class": "V2V",
+                    "shape_id": "wan-delivery-postprocess",
+                }
+            )
+        )
+
     def test_job_is_hourly_product_uses_prefix_not_source_name(self):
         self.assertTrue(job_is_hourly_product({"job_key": "hourly__prompt_profile-abc__source_video-x"}))
         self.assertTrue(

@@ -71,7 +71,7 @@ class DeliveryApplyTests(unittest.TestCase):
 
         wf = build_delivery_catalog(prefix="test/FINAL")
         shape = {
-            "chain_role": "denouement",
+            "chain_role": "delivery",
             "delivery": {
                 "color_match": True,
                 "upscale": False,
@@ -86,7 +86,7 @@ class DeliveryApplyTests(unittest.TestCase):
         self.assertEqual(modes["UpscaleModelLoader"], 2)
         self.assertEqual(modes["RIFE VFI"], 0)
 
-    def test_shape_factory_routes_denouement_to_delivery(self) -> None:
+    def test_shape_factory_routes_delivery_block_to_packaging(self) -> None:
         from shape_factory import apply_shape_postprocess_ui
 
         wf = {
@@ -96,11 +96,22 @@ class DeliveryApplyTests(unittest.TestCase):
             ]
         }
         shape = {
-            "chain_role": "denouement",
+            "chain_role": "delivery",
             "delivery": {"interpolate": True},
         }
         apply_shape_postprocess_ui(wf, shape)
         self.assertEqual(wf["nodes"][1]["mode"], 0)
+
+    def test_denouement_play_beat_uses_editorial_not_packaging(self) -> None:
+        from shape_factory import apply_shape_postprocess_ui
+
+        wf = {"nodes": [{"id": 9, "type": "VHS_MergeImages", "mode": 0}]}
+        shape = {
+            "chain_role": "denouement",
+            "postprocess": {"merge_frames": False},
+        }
+        apply_shape_postprocess_ui(wf, shape)
+        self.assertEqual(wf["nodes"][0]["mode"], 2)
 
     def test_generation_shape_still_uses_editorial(self) -> None:
         from shape_factory import apply_shape_postprocess_ui
@@ -125,7 +136,7 @@ class DeliveryShapeEnrollmentTests(unittest.TestCase):
         doc = yaml.safe_load(path.read_text(encoding="utf-8"))
         errs = validate_shape_vocab(doc)
         self.assertEqual(errs, [], msg=errs)
-        self.assertEqual(doc.get("chain_role"), "denouement")
+        self.assertEqual(doc.get("chain_role"), "delivery")
         self.assertIsInstance(doc.get("delivery"), dict)
 
 

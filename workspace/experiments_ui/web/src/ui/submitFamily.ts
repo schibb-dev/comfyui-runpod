@@ -60,7 +60,9 @@ export function isExtendFamilyOption(f: WorkProductFamilyOption): boolean {
   const slug = String(f.slug || "").trim();
   if (!isExtendFamilySlug(slug)) return false;
   const role = String(f.chain_role || "").trim().toLowerCase();
-  if (role === "extend") return true;
+  // Packaging is not a play beat. Climax/denouement stay eligible (free composition).
+  if (role === "delivery") return false;
+  if (role === "extend" || role === "climax" || role === "denouement") return true;
   if (role === "origin") return false;
   const io = String(f.io_class || "").trim().toUpperCase();
   if (io === "V2V" || io === "VI2V" || io === "EXT") return true;

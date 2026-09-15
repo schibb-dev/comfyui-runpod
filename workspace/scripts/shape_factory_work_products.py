@@ -215,12 +215,20 @@ def list_shape_families(
 
 
 def is_extend_family_option(row: Dict[str, Any]) -> bool:
-    """Mirror Submit UI: video Extend targets (V2V / VI2V / extend role), not I2V/still."""
+    """Mirror Submit UI: video play-beat targets (V2V / VI2V / extend|climax|denouement).
+
+    Delivery packaging is not a play beat. Labels guide ranking; they do not
+    lock composition — climax/denouement stay eligible next to extend.
+    """
     slug = str(row.get("slug") or "").strip()
     if not slug:
         return False
+    if isinstance(row.get("delivery"), dict):
+        return False
     role = str(row.get("chain_role") or "").strip().lower()
-    if role == "extend":
+    if role == "delivery":
+        return False
+    if role in {"extend", "climax", "denouement"}:
         return True
     if role == "origin":
         return False
