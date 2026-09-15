@@ -13,9 +13,12 @@ from shape_factory_work_products import (
     _relpath_under,
     _shape_view,
     attach_comfy_history_failures,
+    attach_experiment_runs,
     attach_live_comfy_queue,
     construction_from_plan,
     decode_prompt_markup,
+    experiment_job_key,
+    get_experiment_work_product,
     get_work_product,
     is_extend_family_option,
     job_is_hourly_product,
@@ -24,6 +27,7 @@ from shape_factory_work_products import (
     list_recent_work_products,
     list_shape_families,
     list_submit_family_sets,
+    parse_experiment_job_key,
     prefer_target_family,
     _job_finished_at,
     _output_generated_at,
@@ -1325,6 +1329,156 @@ class TestWorkProducts(unittest.TestCase):
         self.assertEqual(item.get("applied_vhs"), {"skip_first_frames": 9, "frame_load_cap": 30})
         labels = {r["label"]: r["value"] for r in (item.get("details") or [])}
         self.assertEqual(labels.get("VHS skip_first_frames"), "9")
+
+    def test_experiment_job_key_roundtrip(self):
+        key = experiment_job_key("x-kneel-bra-720p-i2v", "run_004")
+        self.assertEqual(key, "exp__x-kneel-bra-720p-i2v__run_004")
+        self.assertEqual(parse_experiment_job_key(key), ("x-kneel-bra-720p-i2v", "run_004"))
+        self.assertIsNone(parse_experiment_job_key("hourly__prompt_profile-abc"))
+
+    def _write_quality_experiment(self, output_root: Path, *, exp_id: str, run_id: str, prefix: str, prompt_id: str, family: str = "X-KNEEL-FB9"):
+        exp = output_root / "experiments" / exp_id
+        run = exp / "runs" / run_id
+        run.mkdir(parents=True)
+        (exp / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "exp_id": exp_id,
+                    "kind": "quality_experiment",
+                    "promote": {"from_family": family, "family_slug": f"{family}-720p"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        prompt = {
+            "398": {
+                "class_type": "VHS_VideoCombine",
+                "inputs": {"filename_prefix": prefix, "save_output": True},
+            },
+            "80": {
+                "class_type": "UnetLoaderGGUFDisTorchMultiGPU",
+                "inputs": {"unet_name": "WAN/wan2.1-i2v-14b-720p-Q5_K_M.gguf", "virtual_vram_gb": 4.0},
+            },
+        }
+        (run / "prompt.json").write_text(json.dumps(prompt), encoding="utf-8")
+        (run / "submit.json").write_text(json.dumps({"prompt_id": prompt_id}), encoding="utf-8")
+        (run / "params.json").write_text(json.dumps({"seed": 631, "note": "ab clip"}), encoding="utf-8")
+        return Path(prefix).name
+
+    def test_attach_experiment_runs_finds_dated_output_and_live_queue(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            output = root / "output"
+            exp_id = "x-demo-i2v"
+            prefix = f"og/2026-05-09/experiments/{exp_id}/Clip_still-abc_OG"
+            stem = self._write_quality_experiment(
+                output,
+                exp_id=exp_id,
+                run_id="run_004",
+                prefix=prefix,
+                prompt_id="pid-stale",
+            )
+            dated = output / "og" / "2026-09-15" / "experiments" / exp_id
+            dated.mkdir(parents=True)
+            (dated / f"{stem}_00001.mp4").write_bytes(b"mp4")
+
+            queued_pid = "pid-queued"
+            self._write_quality_experiment(
+                output,
+                exp_id=exp_id,
+                run_id="run_008",
+                prefix=f"og/2026-05-09/experiments/{exp_id}/Clip_small_OG",
+                prompt_id=queued_pid,
+            )
+            # Noise: ignored kinds must not appear.
+            other = output / "experiments" / "tune_old"
+            other.mkdir(parents=True)
+            (other / "manifest.json").write_text(json.dumps({"exp_id": "tune_old", "kind": "tune"}), encoding="utf-8")
+            (other / "runs" / "run_001").mkdir(parents=True)
+            (other / "runs" / "run_001" / "prompt.json").write_text(
+                json.dumps({"1": {"class_type": "VHS_VideoCombine", "inputs": {"filename_prefix": "x", "save_output": True}}}),
+                encoding="utf-8",
+            )
+
+            payload = {
+                "ok": True,
+                "limit": 40,
+                "family": None,
+                "families": [{"slug": "X-KNEEL-FB9"}],
+                "items": [
+                    {
+                        "job_key": "live__pid-queued",
+                        "prompt_id": queued_pid,
+                        "status": "queued",
+                        "live_from_comfy": True,
+                    },
+                    {"job_key": "hourly__keep", "status": "complete"},
+                ],
+            }
+            out = attach_experiment_runs(
+                payload,
+                output_root=output,
+                queue_running=[],
+                queue_pending=[[0, queued_pid, {}]],
+            )
+            self.assertEqual(out.get("experiment_count"), 2)
+            keys = [it.get("job_key") for it in out["items"]]
+            self.assertIn("exp__x-demo-i2v__run_004", keys)
+            self.assertIn("hourly__keep", keys)
+            finished = next(it for it in out["items"] if it.get("run_id") == "run_004")
+            self.assertTrue(finished.get("from_experiment"))
+            self.assertEqual(finished.get("status"), "complete")
+            self.assertEqual(
+                finished.get("output_relpath"),
+                f"og/2026-09-15/experiments/{exp_id}/{stem}_00001.mp4",
+            )
+            labels = {r["label"]: r["value"] for r in (finished.get("details") or [])}
+            self.assertEqual(labels.get("Experiment"), exp_id)
+            self.assertEqual(labels.get("Run id"), "run_004")
+            queued = next(it for it in out["items"] if it.get("prompt_id") == queued_pid)
+            self.assertEqual(queued.get("job_key"), "exp__x-demo-i2v__run_008")
+            self.assertEqual(queued.get("status"), "queued")
+            self.assertTrue(queued.get("from_experiment"))
+
+            filtered = attach_experiment_runs(
+                {"ok": True, "limit": 40, "family": "FB9_GEX", "families": [{"slug": "FB9_GEX"}], "items": []},
+                output_root=output,
+            )
+            self.assertEqual(filtered.get("experiment_count"), 0)
+            self.assertEqual(filtered.get("items"), [])
+
+    def test_get_work_product_falls_back_to_experiment_run(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            data = root / "data"
+            output = root / "output"
+            (data / "shape_factory" / "jobs").mkdir(parents=True)
+            prefix = "og/2026-05-09/experiments/x-demo-i2v/Clip_OG"
+            stem = self._write_quality_experiment(
+                output,
+                exp_id="x-demo-i2v",
+                run_id="run_004",
+                prefix=prefix,
+                prompt_id="pid-004",
+            )
+            dated = output / "og" / "2026-09-15" / "experiments" / "x-demo-i2v"
+            dated.mkdir(parents=True)
+            (dated / f"{stem}_00001.mp4").write_bytes(b"mp4")
+            direct = get_experiment_work_product(
+                output_root=output,
+                job_key="exp__x-demo-i2v__run_004",
+                family_slugs=["X-KNEEL-FB9"],
+            )
+            self.assertIsNotNone(direct)
+            self.assertEqual(direct.get("run_id"), "run_004")
+            payload = get_work_product(
+                data_root=data,
+                output_root=output,
+                job_key="exp__x-demo-i2v__run_004",
+            )
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["item"]["exp_id"], "x-demo-i2v")
+            self.assertTrue(payload["item"]["from_experiment"])
 
 
 if __name__ == "__main__":

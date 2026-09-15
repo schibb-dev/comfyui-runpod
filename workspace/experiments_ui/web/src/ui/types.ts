@@ -2762,6 +2762,10 @@ export type WorkProductItem = {
   live_from_comfy?: boolean;
   /** Attached from Comfy /history (may lack a factory .job.json). */
   history_from_comfy?: boolean;
+  /** Tune / quality experiment run (not a factory .job.json). */
+  from_experiment?: boolean;
+  exp_id?: string | null;
+  run_id?: string | null;
 };
 
 export type WorkProductFamilyOption = {

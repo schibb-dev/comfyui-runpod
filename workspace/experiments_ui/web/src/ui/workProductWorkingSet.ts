@@ -64,10 +64,15 @@ export function isFollowUpWorkingSetJob(jobKey?: string | null): boolean {
   return String(jobKey || "").startsWith(FOLLOW_UP_JOB_PREFIX);
 }
 
-export function workProductIdentityLabel(item: Pick<WorkProductItem, "job_key" | "output_relpath">): string {
+export function workProductIdentityLabel(
+  item: Pick<WorkProductItem, "job_key" | "output_relpath" | "exp_id" | "run_id">,
+): string {
   if (isFollowUpWorkingSetJob(item.job_key)) {
     return mediaFocusLabel(item.output_relpath || item.job_key);
   }
+  const exp = String(item.exp_id || "").trim();
+  const run = String(item.run_id || "").trim();
+  if (exp && run) return `${exp} / ${run}`;
   return item.job_key || "";
 }
 

@@ -1339,6 +1339,8 @@ def _detail_rows(item: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     add("Created", item.get("created_at"))
     add("Family", item.get("family_slug"))
+    add("Experiment", item.get("exp_id"))
+    add("Run id", item.get("run_id"))
     add("Status", item.get("status"))
     add("Error", item.get("error"))
     add("Error node", item.get("error_node"))
@@ -2201,6 +2203,30 @@ def get_work_product(
 
     path, job = _find_job_file(data_root, job_key=jk, prompt_id=pid)
     if path is None or job is None:
+        families = list_shape_families(
+            data_root,
+            workspace_root=output_root.parent,
+            output_root=output_root,
+        )
+        slugs = [str(f.get("slug") or "") for f in families if isinstance(f, dict)]
+        exp_item = get_experiment_work_product(
+            output_root=output_root,
+            job_key=jk,
+            prompt_id=pid,
+            family_slugs=slugs,
+        )
+        if exp_item:
+            return {
+                "ok": True,
+                "schema_version": "comfyui-runpod.work-product.v0",
+                "data_root": str(data_root),
+                "jobs_root": str(data_root / "shape_factory" / "jobs"),
+                "job_key": exp_item.get("job_key"),
+                "prompt_id": exp_item.get("prompt_id"),
+                "families": families,
+                "extend_family_defaults": list_extend_family_defaults(data_root),
+                "item": exp_item,
+            }
         return {
             "ok": False,
             "error": "not_found",
@@ -2653,6 +2679,352 @@ def _synthetic_live_work_product(
             item["parent_output_thumb_url"] = src.get("thumb_url")
     item["details"] = _detail_rows(item)
     return item
+
+
+def experiment_job_key(exp_id: str, run_id: str) -> str:
+    return f"exp__{str(exp_id).strip()}__{str(run_id).strip()}"
+
+
+def parse_experiment_job_key(job_key: str) -> Optional[Tuple[str, str]]:
+    text = str(job_key or "").strip()
+    if not text.startswith("exp__"):
+        return None
+    rest = text[len("exp__") :]
+    if "__" not in rest:
+        return None
+    exp_id, run_id = rest.rsplit("__", 1)
+    if not exp_id or not run_id:
+        return None
+    return exp_id, run_id
+
+
+def _read_json_obj(path: Path) -> Dict[str, Any]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _file_mtime_iso(path: Path) -> Optional[str]:
+    try:
+        ts = path.stat().st_mtime
+    except OSError:
+        return None
+    return datetime.fromtimestamp(ts, tz=timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _experiment_is_current(exp_dir: Path, manifest: Dict[str, Any]) -> bool:
+    name = exp_dir.name
+    if name.startswith("_"):
+        return False
+    kind = str(manifest.get("kind") or "").strip().lower()
+    if kind == "quality_experiment":
+        return True
+    return name.startswith("x-")
+
+
+def _experiment_output_rel(
+    *,
+    output_root: Path,
+    exp_id: str,
+    prefix: str,
+) -> Optional[str]:
+    stem = Path(str(prefix or "").replace("\\", "/")).name.strip()
+    files: List[str] = []
+    pref = str(prefix or "").replace("\\", "/").lstrip("/")
+    if pref:
+        for suffix in ("_FINAL_00001.mp4", "_00001.mp4", ".mp4"):
+            p = output_root / f"{pref}{suffix}"
+            if p.is_file():
+                files.append(str(p))
+        parent = output_root / Path(pref).parent
+        if parent.is_dir() and stem:
+            files.extend(str(p) for p in parent.glob(f"{stem}*.mp4") if p.is_file())
+    og = output_root / "og"
+    if og.is_dir() and exp_id:
+        for folder in og.glob(f"*/experiments/{exp_id}"):
+            if not folder.is_dir():
+                continue
+            if stem:
+                files.extend(str(p) for p in folder.glob(f"{stem}*.mp4") if p.is_file())
+            else:
+                files.extend(str(p) for p in folder.glob("*.mp4") if p.is_file())
+    seen: set[str] = set()
+    uniq: List[str] = []
+    for f in files:
+        if f in seen:
+            continue
+        seen.add(f)
+        uniq.append(f)
+    return _keeper_output_rel(uniq, output_root=output_root)
+
+
+def _work_product_from_experiment_run(
+    *,
+    exp_dir: Path,
+    manifest: Dict[str, Any],
+    run_dir: Path,
+    output_root: Path,
+    family_slugs: Iterable[str],
+    running_ids: Optional[set[str]] = None,
+    pending_ids: Optional[set[str]] = None,
+) -> Optional[Dict[str, Any]]:
+    exp_id = str(manifest.get("exp_id") or exp_dir.name).strip() or exp_dir.name
+    run_id = run_dir.name
+    prompt = _read_json_obj(run_dir / "prompt.json")
+    if not prompt:
+        return None
+    submit = _read_json_obj(run_dir / "submit.json")
+    params = _read_json_obj(run_dir / "params.json")
+    prefix = _filename_prefix_from_prompt(prompt)
+    pid = str(submit.get("prompt_id") or "").strip()
+    running = running_ids or set()
+    pending = pending_ids or set()
+    output_rel = _experiment_output_rel(output_root=output_root, exp_id=exp_id, prefix=prefix)
+    if pid and pid in running:
+        status = "running"
+        live = True
+    elif pid and pid in pending:
+        status = "queued"
+        live = True
+    elif output_rel:
+        status = "complete"
+        live = False
+    elif pid:
+        status = "submitted"
+        live = False
+    else:
+        status = "pending"
+        live = False
+
+    promote = manifest.get("promote") if isinstance(manifest.get("promote"), dict) else {}
+    family = (
+        str(promote.get("from_family") or promote.get("family_slug") or "").strip()
+        or _family_from_output_prefix(prefix, family_slugs)
+        or None
+    )
+    stamp = _file_mtime_iso(run_dir / "submit.json") or _file_mtime_iso(run_dir / "prompt.json")
+    thumb_rel = _thumb_rel_for_video(output_rel)
+    if thumb_rel and not _output_rel_exists(output_root, thumb_rel):
+        thumb_rel = None
+    noise_seed = None
+    for src in (params, prompt):
+        raw = src.get("seed") if isinstance(src, dict) else None
+        if raw is None:
+            continue
+        try:
+            noise_seed = int(raw)
+            break
+        except (TypeError, ValueError):
+            continue
+    item: Dict[str, Any] = {
+        "job_key": experiment_job_key(exp_id, run_id),
+        "family_slug": family,
+        "created_at": stamp,
+        "status": status,
+        "prompt_id": pid or None,
+        "exp_id": exp_id,
+        "run_id": run_id,
+        "from_experiment": True,
+        "output_prefix": prefix or None,
+        "output_relpath": output_rel,
+        "output_url": _file_url(output_rel),
+        "output_thumb_url": _file_url(thumb_rel),
+        "live_from_comfy": live,
+        "construction": {
+            "step": "experiment",
+            "source": "experiment",
+            "exp_id": exp_id,
+            "run_id": run_id,
+        },
+        "bindings": {},
+        "noise_seed": noise_seed,
+    }
+    note = str(params.get("note") or "").strip()
+    if note:
+        item["construction"]["note"] = note
+    _apply_run_spec_fields(item, _run_spec_from_graph(prompt))
+    src = _source_media_from_prompt(prompt, output_root=output_root)
+    if src:
+        slot = "source_video" if str(src.get("relpath") or "").lower().endswith(".mp4") else "source_image"
+        item["bindings"] = {slot: src}
+        item["parent_output"] = src.get("path")
+        item["parent_output_relpath"] = src.get("relpath")
+        item["parent_output_url"] = src.get("url")
+        item["parent_output_thumb_url"] = src.get("thumb_url")
+    item["details"] = _detail_rows(item)
+    return item
+
+
+def iter_current_experiment_work_products(
+    *,
+    output_root: Path,
+    family_slugs: Iterable[str],
+    family: Optional[str] = None,
+    running_ids: Optional[set[str]] = None,
+    pending_ids: Optional[set[str]] = None,
+    limit: int = 40,
+) -> List[Dict[str, Any]]:
+    root = Path(output_root) / "experiments"
+    if not root.is_dir():
+        return []
+    rows: List[Dict[str, Any]] = []
+    want = str(family or "").strip()
+    for exp_dir in sorted(root.iterdir(), key=lambda p: p.name):
+        if not exp_dir.is_dir():
+            continue
+        mf_path = exp_dir / "manifest.json"
+        if not mf_path.is_file():
+            continue
+        manifest = _read_json_obj(mf_path)
+        if not _experiment_is_current(exp_dir, manifest):
+            continue
+        runs = exp_dir / "runs"
+        if not runs.is_dir():
+            continue
+        for run_dir in sorted(runs.iterdir(), key=lambda p: p.name, reverse=True):
+            if not run_dir.is_dir() or not run_dir.name.startswith("run_"):
+                continue
+            item = _work_product_from_experiment_run(
+                exp_dir=exp_dir,
+                manifest=manifest,
+                run_dir=run_dir,
+                output_root=Path(output_root),
+                family_slugs=family_slugs,
+                running_ids=running_ids,
+                pending_ids=pending_ids,
+            )
+            if not item:
+                continue
+            if want and str(item.get("family_slug") or "") != want:
+                continue
+            rows.append(item)
+    rows.sort(key=lambda it: str(it.get("created_at") or ""), reverse=True)
+    return rows[: max(1, min(80, int(limit)))]
+
+
+def _merge_experiment_into_row(row: Dict[str, Any], exp: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(row)
+    out["job_key"] = exp.get("job_key") or out.get("job_key")
+    out["exp_id"] = exp.get("exp_id")
+    out["run_id"] = exp.get("run_id")
+    out["from_experiment"] = True
+    if exp.get("family_slug") and not out.get("family_slug"):
+        out["family_slug"] = exp.get("family_slug")
+    if exp.get("created_at") and not out.get("created_at"):
+        out["created_at"] = exp.get("created_at")
+    if exp.get("output_relpath") and not out.get("output_relpath"):
+        out["output_relpath"] = exp.get("output_relpath")
+        out["output_url"] = exp.get("output_url")
+        out["output_thumb_url"] = exp.get("output_thumb_url")
+        if str(out.get("status") or "").lower() in IN_FLIGHT_STATUSES | {"", "submitted", "pending"}:
+            if not out.get("live_from_comfy"):
+                out["status"] = exp.get("status") or "complete"
+    if exp.get("noise_seed") is not None and out.get("noise_seed") is None:
+        out["noise_seed"] = exp.get("noise_seed")
+    constr = dict(out.get("construction") or {}) if isinstance(out.get("construction"), dict) else {}
+    constr.update(exp.get("construction") or {})
+    out["construction"] = constr
+    if exp.get("spec_model") and not out.get("spec_model"):
+        for key in ("spec_abbrev", "spec_title", "spec_model", "spec_params", "spec_tune", "spec_sampler", "run_spec"):
+            if exp.get(key) is not None:
+                out[key] = exp.get(key)
+    if exp.get("bindings") and not out.get("bindings"):
+        out["bindings"] = exp.get("bindings")
+        out["parent_output"] = exp.get("parent_output")
+        out["parent_output_relpath"] = exp.get("parent_output_relpath")
+        out["parent_output_url"] = exp.get("parent_output_url")
+        out["parent_output_thumb_url"] = exp.get("parent_output_thumb_url")
+    out["details"] = _detail_rows(out)
+    return out
+
+
+def attach_experiment_runs(
+    payload: Dict[str, Any],
+    *,
+    output_root: Path,
+    queue_running: Any = None,
+    queue_pending: Any = None,
+) -> Dict[str, Any]:
+    """Fold current quality-experiment runs into Workbench (including finished clips)."""
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        return payload
+    running_ids, pending_ids = _queue_prompt_id_sets(queue_running, queue_pending)
+    family_slugs = [str(f.get("slug") or "") for f in (payload.get("families") or []) if isinstance(f, dict)]
+    family = str(payload.get("family") or "").strip() or None
+    exp_items = iter_current_experiment_work_products(
+        output_root=Path(output_root),
+        family_slugs=family_slugs,
+        family=family,
+        running_ids=running_ids,
+        pending_ids=pending_ids,
+        limit=max(20, min(80, int(payload.get("limit") or 40))),
+    )
+    items = list(payload.get("items") or [])
+    by_pid: Dict[str, int] = {}
+    by_prefix: Dict[str, int] = {}
+    by_jk: Dict[str, int] = {}
+    for i, it in enumerate(items):
+        if not isinstance(it, dict):
+            continue
+        pid = str(it.get("prompt_id") or "").strip()
+        if pid and pid not in by_pid:
+            by_pid[pid] = i
+        pref = Path(str(it.get("output_prefix") or "").replace("\\", "/")).name.strip()
+        if pref and pref not in by_prefix:
+            by_prefix[pref] = i
+        jk = str(it.get("job_key") or "").strip()
+        if jk and jk not in by_jk:
+            by_jk[jk] = i
+
+    extra: List[Dict[str, Any]] = []
+    for exp in exp_items:
+        pid = str(exp.get("prompt_id") or "").strip()
+        pref = Path(str(exp.get("output_prefix") or "").replace("\\", "/")).name.strip()
+        jk = str(exp.get("job_key") or "").strip()
+        idx = None
+        if pid and pid in by_pid:
+            idx = by_pid[pid]
+        elif pref and pref in by_prefix:
+            idx = by_prefix[pref]
+        elif jk and jk in by_jk:
+            idx = by_jk[jk]
+        if idx is not None:
+            items[idx] = _merge_experiment_into_row(items[idx], exp)
+            continue
+        extra.append(exp)
+
+    if extra:
+        payload["items"] = extra + items
+    else:
+        payload["items"] = items
+    payload["count"] = len(payload["items"])
+    payload["experiment_count"] = len(exp_items)
+    return payload
+
+
+def get_experiment_work_product(
+    *,
+    output_root: Path,
+    job_key: Optional[str] = None,
+    prompt_id: Optional[str] = None,
+    family_slugs: Optional[Iterable[str]] = None,
+) -> Optional[Dict[str, Any]]:
+    parsed = parse_experiment_job_key(str(job_key or ""))
+    pid = str(prompt_id or "").strip()
+    slugs = list(family_slugs or [])
+    for item in iter_current_experiment_work_products(
+        output_root=Path(output_root),
+        family_slugs=slugs,
+        limit=80,
+    ):
+        if parsed:
+            if item.get("exp_id") == parsed[0] and item.get("run_id") == parsed[1]:
+                return item
+        if pid and str(item.get("prompt_id") or "").strip() == pid:
+            return item
+    return None
 
 
 # Statuses that mean "should still be on Comfy /queue" until proven otherwise.

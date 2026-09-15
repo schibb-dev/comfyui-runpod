@@ -4841,6 +4841,7 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
     from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
     from shape_factory_work_products import (  # type: ignore
         attach_comfy_history_failures,
+        attach_experiment_runs,
         attach_live_comfy_queue,
         demote_stale_inflight_items,
         list_recent_work_products,
@@ -4910,11 +4911,25 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
             data_root=data_root,
             output_root=cfg.output_root,
         )
+        try:
+            payload = attach_experiment_runs(
+                payload,
+                output_root=cfg.output_root,
+                queue_running=queue_obj.get("queue_running"),
+                queue_pending=queue_obj.get("queue_pending"),
+            )
+        except Exception as e:
+            payload["experiment_attach_error"] = str(e)
         payload = demote_stale_inflight_items(
             payload,
             queue_running=queue_obj.get("queue_running"),
             queue_pending=queue_obj.get("queue_pending"),
         )
+    else:
+        try:
+            payload = attach_experiment_runs(payload, output_root=cfg.output_root)
+        except Exception as e:
+            payload["experiment_attach_error"] = str(e)
     if isinstance(history_obj, dict) and "error" not in history_obj:
         try:
             payload = attach_comfy_history_failures(

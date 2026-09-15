@@ -504,8 +504,18 @@ function isHistoryFailureStub(item: WorkProductItem): boolean {
 }
 
 /** Synthetic Comfy live stub — no factory .job.json to demote to pending. */
+function isExperimentWorkProduct(item: WorkProductItem): boolean {
+  if (item.from_experiment) return true;
+  const key = String(item.job_key || "");
+  if (key.startsWith("exp__")) return true;
+  const construction = item.construction || {};
+  return String(construction.source || "") === "experiment";
+}
+
+/** Synthetic Comfy live stub — no factory .job.json to demote to pending. */
 function isNonFactoryWorkProduct(item: WorkProductItem): boolean {
   if (isHistoryFailureStub(item)) return false;
+  if (isExperimentWorkProduct(item)) return true;
   if (!String(item.job_path || "").trim()) return true;
   const key = String(item.job_key || "");
   if (key.startsWith("live__")) return true;
@@ -2435,6 +2445,8 @@ const DETAIL_GROUPS: DetailGroupDef[] = [
       "Model",
       "Tune",
       "Sampler",
+      "Experiment",
+      "Run id",
       "Job key",
       "Job file",
       "Output prefix",
@@ -2775,6 +2787,8 @@ const DETAIL_LABELS: Record<string, string> = {
   Model: "Model",
   Tune: "Tune",
   Sampler: "Sampler",
+  Experiment: "Experiment",
+  "Run id": "Run",
   "VHS skip_first_frames": "skip_first_frames",
   "VHS frame_load_cap": "frame_load_cap",
   Exec: "Exec",
@@ -4128,7 +4142,9 @@ function WorkProductQuickQueue({
 
   const familyChanged = Boolean(rerunFamily && currentFamily && rerunFamily !== currentFamily);
   const canSwapQueued = familyChanged && canSwapFamilyWorkProduct(item);
-  const canExtend = workProductCanQuickExtend(item, families) && !isNonFactoryWorkProduct(item);
+  const canExtend =
+    workProductCanQuickExtend(item, families) &&
+    (!isNonFactoryWorkProduct(item) || isExperimentWorkProduct(item));
   const extendFamilies = useMemo(
     () => (families || []).filter(isExtendFamilyOption),
     [families],
@@ -5302,6 +5318,11 @@ function WorkProductDetails({
         {item.is_hourly ? (
           <span className="work-product-badge work-product-badge--hourly" title="Produced by the hourly planner">
             Hourly
+          </span>
+        ) : null}
+        {isExperimentWorkProduct(item) ? (
+          <span className="work-product-badge" title="Quality experiment run">
+            Experiment{item.run_id ? ` ${item.run_id}` : ""}
           </span>
         ) : null}
         {item.family_slug ? (
