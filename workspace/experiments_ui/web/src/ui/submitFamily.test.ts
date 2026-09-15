@@ -260,7 +260,7 @@ describe("pickQuickExtendFamily", () => {
 });
 
 describe("familyPickerOptionLabel", () => {
-  it("appends model and tune after the short name", () => {
+  it("appends runtime tune only — not stack tokens like 720p-Q5", () => {
     expect(
       familyPickerOptionLabel(
         {
@@ -270,20 +270,20 @@ describe("familyPickerOptionLabel", () => {
         },
         "X-KNEEL-FB9",
       ),
-    ).toBe("X-KNEEL-FB9 · 720p-Q5 virt4.0 432×768 · 6.5s 20step cfg3.0 den0.87");
+    ).toBe("X-KNEEL-FB9 · 6.5s 20step cfg3.0 den0.87");
   });
 
-  it("falls back to spec_abbrev when split fields are missing", () => {
+  it("ignores spec_abbrev so 720p-Q5 never lands on the family option", () => {
     expect(
       familyPickerOptionLabel(
         { slug: "X-KNEEL-FB9", spec_abbrev: "720p-Q5 virt4.0 432×768 6.5s 20step cfg3.0 den0.87" },
         "X-KNEEL-FB9",
       ),
-    ).toBe("X-KNEEL-FB9 · 720p-Q5 virt4.0 432×768 6.5s 20step cfg3.0 den0.87");
+    ).toBe("X-KNEEL-FB9");
   });
 
-  it("falls back to the name when spec is missing", () => {
+  it("falls back to the name when tune is missing", () => {
     expect(familyPickerOptionLabel({ slug: "FB9_GEX" }, "GEX")).toBe("GEX");
-    expect(familyPickerOptionTitle({ slug: "FB9_GEX", spec_title: "WAN/foo.gguf" })).toBe("WAN/foo.gguf");
+    expect(familyPickerOptionTitle({ slug: "FB9_GEX", spec_title: "WAN/foo.gguf" })).toBe("FB9_GEX");
   });
 });

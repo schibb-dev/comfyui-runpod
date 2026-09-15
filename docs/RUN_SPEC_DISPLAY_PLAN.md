@@ -34,7 +34,7 @@ The `__rs-` marker is the strip gate for [`_job_key_from_filename_prefix`](../wo
 | --- | --- | --- |
 | Queue glance | Live Comfy API prompt | Model, emphasized Tune, muted Sampler |
 | Workbench list / details | Job `.prompt.json`, else generated workflow, else template | Model chip, Tune chip, muted Sampler chip |
-| Family / template pickers | Catalog template after shape `ui_defaults` | `{slug} · {spec_model} · {spec_tune}` |
+| Family / template pickers | Catalog template after shape `ui_defaults` | `{slug} · {spec_tune}` — stack tokens (`720p-Q5 virt4.0`) belong on the Stack picker |
 | Output names (slice 4) | Same extractor, new submits only | `__rs-…` suffix |
 
 Python owns extraction + strings ([`workspace/scripts/graph_run_specs.py`](../workspace/scripts/graph_run_specs.py)). TypeScript displays `spec_model` / `spec_tune` / `spec_sampler` (`spec_abbrev` is a fallback).

@@ -17,7 +17,7 @@ export function familyDefaultFrames(families: WorkProductFamilyOption[], slug: s
   return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
 }
 
-/** `{short} · 720p-Q5 virt4.0 432×768 · 6.5s 20step cfg3.0 den0.87` for family <option> labels. */
+/** Job/queue spec line: stack+canvas + tune. Family pickers must not use this. */
 export function specDisplayJoined(spec: {
   spec_model?: string | null;
   spec_params?: string | null;
@@ -29,21 +29,29 @@ export function specDisplayJoined(spec: {
   return [model, tune].filter(Boolean).join(" · ") || String(spec?.spec_abbrev || "").trim();
 }
 
+/** Runtime tune only (`6.5s 20step …`). Stack tokens (`720p-Q5 virt4.0`) stay on the Stack picker. */
+export function familyPickerTune(
+  family: Pick<WorkProductFamilyOption, "spec_tune" | "spec_params"> | null | undefined,
+): string {
+  return String(family?.spec_tune || family?.spec_params || "").trim();
+}
+
 export function familyPickerOptionLabel(
-  family: Pick<WorkProductFamilyOption, "slug" | "spec_abbrev" | "spec_model" | "spec_params" | "spec_tune"> | null | undefined,
+  family: Pick<WorkProductFamilyOption, "slug" | "spec_params" | "spec_tune"> | null | undefined,
   shortLabel?: string,
 ): string {
   const name = String(shortLabel || family?.slug || "").trim();
-  const spec = specDisplayJoined(family);
-  if (!name) return spec;
-  if (!spec) return name;
-  return `${name} · ${spec}`;
+  const tune = familyPickerTune(family);
+  if (!name) return tune;
+  if (!tune) return name;
+  return `${name} · ${tune}`;
 }
 
 export function familyPickerOptionTitle(
-  family: Pick<WorkProductFamilyOption, "slug" | "spec_abbrev" | "spec_title"> | null | undefined,
+  family: Pick<WorkProductFamilyOption, "slug" | "spec_params" | "spec_tune"> | null | undefined,
+  shortLabel?: string,
 ): string {
-  return String(family?.spec_title || family?.spec_abbrev || family?.slug || "").trim();
+  return familyPickerOptionLabel(family, shortLabel);
 }
 
 export function stackPickerOptionLabel(stack: GenerationStackOption | null | undefined): string {
