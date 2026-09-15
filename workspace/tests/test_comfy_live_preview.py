@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import struct
+import tempfile
 import time
 import unittest
 
@@ -12,10 +13,14 @@ import support  # noqa: F401
 from comfy_live_preview import (
     BINARY_EVENT_PREVIEW_IMAGE,
     BINARY_EVENT_PREVIEW_IMAGE_WITH_METADATA,
+    DEFAULT_CLIENT_IDS,
     FORMAT_JPEG,
     FORMAT_PNG,
     LivePreviewCache,
+    client_ids_from_queue_payload,
     parse_preview_binary,
+    queue_prompt_ids_from_payload,
+    should_listen_for_client_id,
     ws_url_from_server,
 )
 
@@ -90,6 +95,37 @@ class ParseBinaryTests(unittest.TestCase):
         )
 
 
+class ClientIdRoutingTests(unittest.TestCase):
+    def test_default_client_ids_include_http_submitters(self) -> None:
+        for cid in ("comfy_tool", "factory-map-ui", "shape_factory"):
+            self.assertIn(cid, DEFAULT_CLIENT_IDS)
+
+    def test_queue_payload_extracts_running_and_pending(self) -> None:
+        payload = {
+            "queue_running": [[3, "pid-run", {}, {"client_id": "comfy_tool"}]],
+            "queue_pending": [
+                [1, "pid-a", {}, {"client_id": "factory-map-ui"}],
+                [2, "pid-b", {}, {"client_id": "compare-480p-q8-432x768"}],
+                [3, "pid-dup", {}, {"client_id": "comfy_tool"}],
+            ],
+        }
+        self.assertEqual(
+            client_ids_from_queue_payload(payload),
+            ["comfy_tool", "factory-map-ui", "compare-480p-q8-432x768"],
+        )
+        self.assertEqual(
+            queue_prompt_ids_from_payload(payload),
+            ["pid-run", "pid-a", "pid-b", "pid-dup"],
+        )
+
+    def test_listen_skips_comfy_frontend_uuids(self) -> None:
+        self.assertTrue(should_listen_for_client_id("comfy_tool"))
+        self.assertTrue(should_listen_for_client_id("compare-480p-q8-432x768"))
+        self.assertFalse(should_listen_for_client_id("7192f4bb-475c-43f2-bde7-5ffdfb370fef"))
+        self.assertFalse(should_listen_for_client_id("a" * 32))
+        self.assertFalse(should_listen_for_client_id(""))
+
+
 class CacheTests(unittest.TestCase):
     def test_progress_and_preview(self) -> None:
         cache = LivePreviewCache(max_entries=8, finished_ttl_s=0.2)
@@ -158,6 +194,36 @@ class CacheTests(unittest.TestCase):
         self.assertTrue(st["has_preview"])
         self.assertEqual(st["frames_count"], 1)
 
+    def test_progress_state_maps_running_node(self) -> None:
+        cache = LivePreviewCache(max_entries=8)
+        pid = cache.on_text_event(
+            "progress_state",
+            {
+                "prompt_id": "ps-1",
+                "nodes": {
+                    "10": {"value": 2, "max": 14, "state": "running", "node_id": "10"},
+                    "9": {"value": 1, "max": 1, "state": "finished", "node_id": "9"},
+                },
+            },
+        )
+        self.assertEqual(pid, "ps-1")
+        st = cache.status_items(["ps-1"])[0]
+        self.assertEqual(st["value"], 2)
+        self.assertEqual(st["max"], 14)
+        self.assertEqual(st["node"], "10")
+        self.assertEqual(st["status"], "running")
+
+    def test_progress_falls_back_to_current_pid(self) -> None:
+        cache = LivePreviewCache(max_entries=8)
+        cache.note_queue_running("run-q")
+        pid = cache.on_text_event("progress", {"value": 3, "max": 14}, current_pid="run-q")
+        self.assertEqual(pid, "run-q")
+        st = cache.status_items(["run-q"])[0]
+        self.assertFalse(st["has_preview"])
+        self.assertEqual(st["value"], 3)
+        self.assertEqual(st["max"], 14)
+        self.assertEqual(st["status"], "running")
+
     def test_guess_preview_pid_uses_running(self) -> None:
         cache = LivePreviewCache(max_entries=8)
         cache.on_text_event("execution_start", {"prompt_id": "run-a"})
@@ -169,6 +235,42 @@ class CacheTests(unittest.TestCase):
         assert pid is not None
         cache.on_preview_bytes(pid, jpeg, "image/jpeg")
         self.assertEqual(cache.get_image("run-a")[0], jpeg)
+
+
+class PersistTests(unittest.TestCase):
+    def test_late_client_rehydrates_latest_still(self) -> None:
+        jpeg = b"\xff\xd8\xff" + b"\x33" * 12
+        with tempfile.TemporaryDirectory() as tmp:
+            a = LivePreviewCache(persist_dir=tmp)
+            a.on_preview_bytes("pid-keep", jpeg, "image/jpeg")
+            b = LivePreviewCache(persist_dir=tmp)
+            got = b.get_image("pid-keep")
+            self.assertIsNotNone(got)
+            assert got is not None
+            self.assertEqual(got[0], jpeg)
+            self.assertTrue(b.status_items(["pid-keep"])[0]["has_preview"])
+
+    def test_finish_invalidates_disk(self) -> None:
+        jpeg = b"\xff\xd8\xff" + b"\x44" * 12
+        with tempfile.TemporaryDirectory() as tmp:
+            a = LivePreviewCache(persist_dir=tmp)
+            a.on_preview_bytes("pid-done", jpeg, "image/jpeg")
+            a.on_text_event("execution_success", {"prompt_id": "pid-done"})
+            b = LivePreviewCache(persist_dir=tmp)
+            self.assertIsNone(b.get_image("pid-done"))
+
+    def test_retain_drops_ids_not_in_queue(self) -> None:
+        jpeg = b"\xff\xd8\xffxx"
+        with tempfile.TemporaryDirectory() as tmp:
+            a = LivePreviewCache(persist_dir=tmp)
+            a.on_preview_bytes("old-pid", jpeg, "image/jpeg")
+            a.on_preview_bytes("live-pid", jpeg, "image/jpeg")
+            a.retain_persisted(["live-pid"])
+            b = LivePreviewCache(persist_dir=tmp)
+            self.assertIsNone(b.get_image("old-pid"))
+            got = b.get_image("live-pid")
+            assert got is not None
+            self.assertEqual(got[0], jpeg)
 
 
 if __name__ == "__main__":

@@ -16886,7 +16886,8 @@ def main() -> int:
             sys.path.insert(0, str(d))
         from comfy_live_preview import start_bridge  # type: ignore
 
-        start_bridge(str(cfg.comfy_server))
+        persist_dir = _output_status_dir(cfg.output_root) / "live_preview"
+        start_bridge(str(cfg.comfy_server), persist_dir=persist_dir)
     except Exception as e:
         print(f"[experiments-ui] comfy live-preview bridge not started: {e}")
     print(f"[experiments-ui] listening on http://{args.host}:{args.port}")

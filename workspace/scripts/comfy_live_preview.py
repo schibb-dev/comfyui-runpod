@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+import re
 import struct
 import threading
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 # Comfy BinaryEventTypes (protocol.py)
 BINARY_EVENT_PREVIEW_IMAGE = 1
@@ -21,13 +25,18 @@ CLIENT_FEATURE_FLAGS: Dict[str, bool] = {
     "supports_preview_metadata": True,
 }
 
-# Submitters historically used both hyphen and underscore forms; listen for both.
+# Comfy send_sync's progress/preview only to the submitting clientId. HTTP
+# submitters do not hold a WS, so this bridge must connect as those ids.
+# (A second socket with the same clientId replaces the first in Comfy.)
 DEFAULT_CLIENT_IDS: Tuple[str, ...] = (
+    "comfy_tool",
     "shape_factory",
     "shape-factory",
     "factory-map-ui",
     "experiments-ui",
     "shape_factory_validate",
+    "ledger",
+    "comfy-queue-ledger",
 )
 DEFAULT_MAX_ENTRIES = 32
 DEFAULT_FINISHED_TTL_S = 45.0
@@ -36,6 +45,155 @@ DEFAULT_MAX_VHS_FRAMES = 64
 # Binary preview frames sometimes arrive before/without prompt_id metadata.
 DEFAULT_ORPHAN_TTL_S = 8.0
 DEFAULT_ORPHAN_MAX = 12
+DEFAULT_MAX_CLIENTS = 16
+DEFAULT_QUEUE_SCAN_S = 3.0
+
+# Comfy's web UI uses a random UUID clientId and holds that socket; joining it
+# would steal the frontend's live view. Skip those when scanning /queue.
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.I,
+)
+_HEX32_RE = re.compile(r"^[0-9a-f]{32}$", re.I)
+
+
+def client_ids_from_queue_payload(payload: Any) -> List[str]:
+    """Extract unique ``client_id`` values from a Comfy ``/queue`` JSON body."""
+    if not isinstance(payload, dict):
+        return []
+    found: List[str] = []
+    for key in ("queue_running", "queue_pending"):
+        rows = payload.get(key) or []
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            extra: Any = None
+            if isinstance(row, (list, tuple)) and len(row) > 3:
+                extra = row[3]
+            elif isinstance(row, dict):
+                extra = row.get("extra_data") or row.get("extra") or row
+            if not isinstance(extra, dict):
+                continue
+            cid = extra.get("client_id") or extra.get("clientId")
+            if isinstance(cid, str) and cid.strip():
+                found.append(cid.strip())
+    return list(dict.fromkeys(found))
+
+
+def queue_prompt_ids_from_payload(payload: Any) -> List[str]:
+    """Unique prompt_ids from Comfy ``/queue`` running + pending rows."""
+    if not isinstance(payload, dict):
+        return []
+    found: List[str] = []
+    for key in ("queue_running", "queue_pending"):
+        rows = payload.get(key) or []
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            pid: Any = None
+            if isinstance(row, (list, tuple)) and len(row) > 1:
+                pid = row[1]
+            elif isinstance(row, dict):
+                pid = row.get("prompt_id")
+            if isinstance(pid, str) and pid.strip():
+                found.append(pid.strip())
+    return list(dict.fromkeys(found))
+
+
+def should_listen_for_client_id(client_id: str) -> bool:
+    """True when this bridge should open a WS as ``client_id``."""
+    cid = str(client_id or "").strip()
+    if not cid:
+        return False
+    if cid in DEFAULT_CLIENT_IDS:
+        return True
+    if _UUID_RE.match(cid) or _HEX32_RE.match(cid):
+        return False
+    return True
+
+
+_SAFE_PID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+
+
+class PreviewDiskStore:
+    """Last still per prompt_id, so a late-starting client can reuse it."""
+
+    def __init__(self, root: Optional[Union[str, Path]] = None) -> None:
+        self.root = Path(root) if root else None
+
+    def _stem(self, prompt_id: str) -> Optional[Path]:
+        if self.root is None:
+            return None
+        pid = str(prompt_id or "").strip()
+        if not pid or not _SAFE_PID_RE.fullmatch(pid):
+            return None
+        return self.root / pid
+
+    def save(self, prompt_id: str, image: bytes, mime: str) -> None:
+        stem = self._stem(prompt_id)
+        if stem is None or not image:
+            return
+        try:
+            assert self.root is not None
+            self.root.mkdir(parents=True, exist_ok=True)
+            meta = {
+                "prompt_id": str(prompt_id).strip(),
+                "mime": mime or "image/jpeg",
+                "updated_at": time.time(),
+                "nbytes": len(image),
+            }
+            img_tmp = stem.with_suffix(".img.tmp")
+            meta_tmp = stem.with_suffix(".json.tmp")
+            img_tmp.write_bytes(image)
+            meta_tmp.write_text(json.dumps(meta), encoding="utf-8")
+            img_tmp.replace(stem.with_suffix(".img"))
+            meta_tmp.replace(stem.with_suffix(".json"))
+        except OSError as e:
+            print(f"[comfy-live-preview] persist failed pid={prompt_id}: {e}")
+
+    def load(self, prompt_id: str) -> Optional[Tuple[bytes, str]]:
+        stem = self._stem(prompt_id)
+        if stem is None:
+            return None
+        img_path = stem.with_suffix(".img")
+        meta_path = stem.with_suffix(".json")
+        try:
+            if not img_path.is_file():
+                return None
+            image = img_path.read_bytes()
+            if not image:
+                return None
+            mime = "image/jpeg"
+            if meta_path.is_file():
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                if isinstance(meta, dict):
+                    raw_mime = meta.get("mime")
+                    if isinstance(raw_mime, str) and raw_mime.strip():
+                        mime = raw_mime.strip()
+            return image, mime
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return None
+
+    def delete(self, prompt_id: str) -> None:
+        stem = self._stem(prompt_id)
+        if stem is None:
+            return
+        for suf in (".img", ".json", ".img.tmp", ".json.tmp"):
+            try:
+                stem.with_suffix(suf).unlink()
+            except OSError:
+                pass
+
+    def list_ids(self) -> List[str]:
+        if self.root is None or not self.root.is_dir():
+            return []
+        return [p.stem for p in self.root.glob("*.img")]
+
+    def retain_only(self, prompt_ids: Iterable[str]) -> None:
+        keep = {str(p).strip() for p in prompt_ids if str(p).strip()}
+        for pid in self.list_ids():
+            if pid not in keep:
+                self.delete(pid)
 
 
 def ws_url_from_server(server: str, *, client_id: str) -> str:
@@ -249,6 +407,7 @@ class LivePreviewCache:
         max_vhs_frames: int = DEFAULT_MAX_VHS_FRAMES,
         orphan_ttl_s: float = DEFAULT_ORPHAN_TTL_S,
         orphan_max: int = DEFAULT_ORPHAN_MAX,
+        persist_dir: Optional[Union[str, Path]] = None,
     ) -> None:
         self._lock = threading.RLock()
         self._by_pid: Dict[str, LivePreviewEntry] = {}
@@ -258,6 +417,7 @@ class LivePreviewCache:
         self.max_vhs_frames = max(1, int(max_vhs_frames))
         self.orphan_ttl_s = float(orphan_ttl_s)
         self.orphan_max = max(1, int(orphan_max))
+        self._disk = PreviewDiskStore(persist_dir)
         # Shared across WS client threads — last prompt known to be executing.
         self._running_pid: Optional[str] = None
         # Frames that arrived without a resolvable prompt_id (await attach).
@@ -312,6 +472,52 @@ class LivePreviewCache:
             if running:
                 return running
             return pref or None
+
+    def note_queue_running(self, prompt_id: str) -> None:
+        """Mark ``prompt_id`` running from ``/queue`` without clearing cached frames."""
+        pid = str(prompt_id or "").strip()
+        if not pid:
+            return
+        with self._lock:
+            ent = self._touch(pid)
+            if ent.status in ("unknown", "done"):
+                ent.status = "running"
+            ent.finished_at = None
+            self._mark_running(pid)
+            self._evict()
+
+    def retain_persisted(self, prompt_ids: Iterable[str]) -> None:
+        """Drop on-disk stills for prompt_ids no longer in the Comfy queue."""
+        self._disk.retain_only(prompt_ids)
+
+    def hydrate_from_disk(self, prompt_id: str) -> bool:
+        """Load the last persisted still into memory. Returns True if an image is present."""
+        pid = str(prompt_id or "").strip()
+        if not pid:
+            return False
+        with self._lock:
+            ent = self._by_pid.get(pid)
+            if ent is not None:
+                if ent.image:
+                    return True
+                if ent.finished_at is not None:
+                    return False
+        loaded = self._disk.load(pid)
+        if not loaded:
+            return False
+        image, mime = loaded
+        with self._lock:
+            ent = self._touch(pid)
+            if ent.finished_at is not None:
+                return False
+            if not ent.image:
+                ent.image = image
+                ent.mime = mime or "image/jpeg"
+                if ent.status in ("unknown", "done"):
+                    ent.status = "running"
+                    ent.finished_at = None
+            self._evict()
+        return True
 
     def stash_orphan_preview(
         self,
@@ -410,11 +616,39 @@ class LivePreviewCache:
                 self._evict()
             return pid
 
+        if msg_type == "progress_state":
+            pid = str(data.get("prompt_id") or current_pid or "").strip()
+            if not pid:
+                pid = str(self.guess_preview_pid() or "").strip()
+            if not pid:
+                return None
+            nodes = data.get("nodes") if isinstance(data.get("nodes"), dict) else {}
+            running_nodes = [
+                n
+                for n in nodes.values()
+                if isinstance(n, dict) and str(n.get("state") or "") == "running"
+            ]
+            pick = running_nodes[-1] if running_nodes else None
+            if pick is None:
+                vals = [n for n in nodes.values() if isinstance(n, dict)]
+                pick = vals[-1] if vals else {}
+            data = {
+                "prompt_id": pid,
+                "value": pick.get("value"),
+                "max": pick.get("max"),
+                "node": pick.get("node_id") or pick.get("display_node_id") or pick.get("real_node_id"),
+            }
+            msg_type = "progress"
+
         pid = data.get("prompt_id")
         if not isinstance(pid, str) or not pid.strip():
-            return None
+            fallback = str(current_pid or self.guess_preview_pid() or "").strip()
+            if not fallback:
+                return None
+            pid = fallback
         pid = pid.strip()
         flush_after = False
+        drop_disk = False
         with self._lock:
             ent = self._touch(pid)
             if msg_type == "execution_start":
@@ -430,6 +664,7 @@ class LivePreviewCache:
                 ent.max = None
                 self._mark_running(pid)
                 flush_after = True
+                drop_disk = True
             elif msg_type == "executing":
                 node = data.get("node")
                 if node is None:
@@ -439,12 +674,11 @@ class LivePreviewCache:
                     if ent.started_at is None:
                         ent.started_at = ent.finished_at
                     self._clear_running_if(pid)
+                    drop_disk = True
                 else:
                     ent.status = "running"
                     ent.node = str(node)
                     ent.finished_at = None
-                    if ent.started_at is None:
-                        ent.started_at = time.time()
                     self._mark_running(pid)
             elif msg_type == "progress":
                 try:
@@ -455,6 +689,9 @@ class LivePreviewCache:
                     ent.max = int(data.get("max"))
                 except (TypeError, ValueError):
                     pass
+                node = data.get("node")
+                if node is not None and str(node).strip():
+                    ent.node = str(node)
                 ent.status = "running"
                 ent.finished_at = None
                 if ent.started_at is None:
@@ -466,19 +703,24 @@ class LivePreviewCache:
                 if ent.started_at is None:
                     ent.started_at = ent.finished_at
                 self._clear_running_if(pid)
+                drop_disk = True
             elif msg_type == "execution_error":
                 ent.status = "error"
                 ent.finished_at = time.time()
                 if ent.started_at is None:
                     ent.started_at = ent.finished_at
                 self._clear_running_if(pid)
+                drop_disk = True
             elif msg_type == "execution_interrupted":
                 ent.status = "interrupted"
                 ent.finished_at = time.time()
                 if ent.started_at is None:
                     ent.started_at = ent.finished_at
                 self._clear_running_if(pid)
+                drop_disk = True
             self._evict()
+        if drop_disk:
+            self._disk.delete(pid)
         if flush_after:
             self.flush_orphans_to(pid)
         return pid
@@ -490,18 +732,20 @@ class LivePreviewCache:
         mime: str,
         *,
         frame_index: Optional[int] = None,
+        persist: bool = True,
     ) -> None:
         pid = str(prompt_id or "").strip()
         if not pid or not image:
             return
+        stored_mime = mime or "image/jpeg"
         with self._lock:
             ent = self._touch(pid)
             ent.image = image
-            ent.mime = mime or "image/jpeg"
+            ent.mime = stored_mime
             if frame_index is not None and frame_index >= 0:
                 idx = int(frame_index)
                 ent.frames[idx] = image
-                ent.frame_mimes[idx] = mime or "image/jpeg"
+                ent.frame_mimes[idx] = stored_mime
                 if len(ent.frames) > self.max_vhs_frames:
                     for old in sorted(ent.frames.keys())[: len(ent.frames) - self.max_vhs_frames]:
                         ent.frames.pop(old, None)
@@ -514,6 +758,8 @@ class LivePreviewCache:
             if ent.started_at is None:
                 ent.started_at = time.time()
             self._evict()
+        if persist:
+            self._disk.save(pid, image, stored_mime)
 
     def get_entry(self, prompt_id: str) -> Optional[LivePreviewEntry]:
         pid = str(prompt_id or "").strip()
@@ -542,6 +788,8 @@ class LivePreviewCache:
             )
 
     def get_image(self, prompt_id: str, *, frame: Optional[int] = None) -> Optional[Tuple[bytes, str]]:
+        if frame is None:
+            self.hydrate_from_disk(prompt_id)
         ent = self.get_entry(prompt_id)
         if ent is None:
             return None
@@ -558,6 +806,11 @@ class LivePreviewCache:
         return None
 
     def status_items(self, prompt_ids: Optional[Sequence[str]] = None) -> List[Dict[str, Any]]:
+        ids: List[str] = []
+        if prompt_ids:
+            ids = [str(p or "").strip() for p in prompt_ids if str(p or "").strip()]
+            for pid in ids:
+                self.hydrate_from_disk(pid)
         with self._lock:
             self._evict()
             empty = {
@@ -599,13 +852,19 @@ class LivePreviewBridge:
         comfy_server: str,
         client_ids: Sequence[str] = DEFAULT_CLIENT_IDS,
         cache: Optional[LivePreviewCache] = None,
+        max_clients: int = DEFAULT_MAX_CLIENTS,
+        queue_scan_s: float = DEFAULT_QUEUE_SCAN_S,
     ) -> None:
         self.comfy_server = str(comfy_server or "").rstrip("/") or "http://127.0.0.1:8188"
         self.client_ids = tuple(dict.fromkeys(str(c).strip() for c in client_ids if str(c).strip())) or DEFAULT_CLIENT_IDS
         self.cache = cache or LivePreviewCache()
+        self.max_clients = max(1, int(max_clients))
+        self.queue_scan_s = max(1.0, float(queue_scan_s))
         self._stop = threading.Event()
         self._threads: List[threading.Thread] = []
         self._started = False
+        self._client_lock = threading.Lock()
+        self._active_ids: Dict[str, bool] = {}
 
     def start(self) -> None:
         if self._started:
@@ -613,17 +872,69 @@ class LivePreviewBridge:
         self._started = True
         self._stop.clear()
         for cid in self.client_ids:
-            t = threading.Thread(
-                target=self._run_client_loop,
-                args=(cid,),
-                name=f"comfy-live-preview:{cid}",
-                daemon=True,
-            )
-            self._threads.append(t)
-            t.start()
+            self._ensure_client(cid)
+        scan = threading.Thread(
+            target=self._run_queue_scan_loop,
+            name="comfy-live-preview:queue-scan",
+            daemon=True,
+        )
+        self._threads.append(scan)
+        scan.start()
 
     def stop(self) -> None:
         self._stop.set()
+
+    def active_client_ids(self) -> List[str]:
+        with self._client_lock:
+            return list(self._active_ids.keys())
+
+    def _ensure_client(self, client_id: str) -> bool:
+        cid = str(client_id or "").strip()
+        if not cid or not should_listen_for_client_id(cid):
+            return False
+        with self._client_lock:
+            if cid in self._active_ids or self._stop.is_set():
+                return False
+            if len(self._active_ids) >= self.max_clients:
+                return False
+            self._active_ids[cid] = True
+        t = threading.Thread(
+            target=self._run_client_loop,
+            args=(cid,),
+            name=f"comfy-live-preview:{cid}",
+            daemon=True,
+        )
+        self._threads.append(t)
+        t.start()
+        return True
+
+    def _run_queue_scan_loop(self) -> None:
+        url = f"{self.comfy_server}/queue"
+        while not self._stop.is_set():
+            try:
+                with urllib.request.urlopen(url, timeout=5) as resp:
+                    payload = json.loads(resp.read().decode("utf-8"))
+            except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+                print(f"[comfy-live-preview] queue scan failed: {e}")
+            else:
+                self._apply_queue_snapshot(payload)
+            if self._stop.wait(self.queue_scan_s):
+                break
+
+    def _apply_queue_snapshot(self, payload: Any) -> None:
+        for cid in client_ids_from_queue_payload(payload):
+            if self._ensure_client(cid):
+                print(f"[comfy-live-preview] listening client={cid} (from /queue)")
+        qids = queue_prompt_ids_from_payload(payload)
+        self.cache.retain_persisted(qids)
+        running = payload.get("queue_running") or []
+        if isinstance(running, list) and running:
+            row = running[0]
+            rpid = row[1] if isinstance(row, (list, tuple)) and len(row) > 1 else None
+            if isinstance(rpid, str) and rpid.strip():
+                pid = rpid.strip()
+                self.cache.note_queue_running(pid)
+                self.cache.hydrate_from_disk(pid)
 
     def _run_client_loop(self, client_id: str) -> None:
         backoff = 1.0
@@ -658,6 +969,14 @@ class LivePreviewBridge:
         data = obj.get("data")
         if not isinstance(msg_type, str) or not isinstance(data, dict):
             return current_pid
+        if msg_type in ("status", "feature_flags", "crystools.monitor"):
+            return current_pid
+        raw_pid = data.get("prompt_id")
+        if not (isinstance(raw_pid, str) and raw_pid.strip()):
+            fallback = str(current_pid or self.cache.guess_preview_pid() or "").strip()
+            if fallback:
+                data = dict(data)
+                data["prompt_id"] = fallback
         pid = self.cache.on_text_event(msg_type, data, current_pid=current_pid)
         return pid or current_pid
 
@@ -752,16 +1071,25 @@ def get_bridge() -> Optional[LivePreviewBridge]:
     return _BRIDGE
 
 
-def start_bridge(comfy_server: str, *, client_ids: Optional[Iterable[str]] = None) -> LivePreviewBridge:
+def start_bridge(
+    comfy_server: str,
+    *,
+    client_ids: Optional[Iterable[str]] = None,
+    persist_dir: Optional[Union[str, Path]] = None,
+) -> LivePreviewBridge:
     global _BRIDGE
     with _BRIDGE_LOCK:
         if _BRIDGE is not None:
             return _BRIDGE
         ids = tuple(client_ids) if client_ids is not None else DEFAULT_CLIENT_IDS
-        bridge = LivePreviewBridge(comfy_server=comfy_server, client_ids=ids)
+        cache = LivePreviewCache(persist_dir=persist_dir)
+        bridge = LivePreviewBridge(comfy_server=comfy_server, client_ids=ids, cache=cache)
         bridge.start()
         _BRIDGE = bridge
-        print(f"[comfy-live-preview] bridge started server={comfy_server} clients={list(ids)}")
+        print(
+            f"[comfy-live-preview] bridge started server={comfy_server} "
+            f"clients={list(ids)} persist={persist_dir or '-'}"
+        )
         return bridge
 
 
