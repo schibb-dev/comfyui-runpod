@@ -15552,6 +15552,24 @@ button.home-backlog-linkish {
   background: rgba(90, 162, 255, 0.45);
 }
 
+.work-product-live__progress--indeterminate .work-product-live__bar {
+  width: 38%;
+  animation: work-product-live-indet 1.4s ease-in-out infinite;
+}
+
+@keyframes work-product-live-indet {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(280%);
+  }
+}
+
+.pipeline-row__head .work-product-live__metrics {
+  width: 100%;
+}
+
 .work-product-live__prog-label,
 .work-product-live__progress--text {
   position: relative;

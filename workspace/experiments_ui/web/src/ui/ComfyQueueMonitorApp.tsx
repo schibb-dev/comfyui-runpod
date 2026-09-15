@@ -603,6 +603,7 @@ function QueueItemRow({
       <div className="pipeline-row__media-stack">
         <ComfyLivePreview
           promptId={pid}
+          submittedAt={item.queued_at}
           className="pipeline-row__live"
           showMetrics={false}
         />
@@ -626,7 +627,11 @@ function QueueItemRow({
       queuedAt={item.queued_at}
       changedAt={item.changed_at}
       live={kind === "running"}
-      liveMetrics={kind === "running" && pid ? <ComfyLiveMetricsBar promptId={pid} /> : null}
+      liveMetrics={
+        kind === "running" && pid ? (
+          <ComfyLiveMetricsBar promptId={pid} submittedAt={item.queued_at} />
+        ) : null
+      }
       actions={
         <>
           <button
