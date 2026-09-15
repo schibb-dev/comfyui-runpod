@@ -63,11 +63,22 @@ export function workProductMatchesMedia(item: WorkProductItem, media: string): b
 /**
  * Factory outputs are `{job_key}_{NNNNN}.mp4`. Used to fetch the producer when
  * it is older than the recent Workbench window.
+ *
+ * Dated OG/GEX names (`FB9_GEX_2026-03-10_00005`) and `*_OG_00001` catalog
+ * originals also end in `_NNNNN` — those are not factory job keys.
  */
 export function inferJobKeyFromMediaPath(media: string): string | null {
-  const n = normalizeMediaNeedle(media);
-  if (!n.stem) return null;
-  const m = /^(.+)_(\d{5})$/.exec(n.stem);
+  const raw = String(media || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "");
+  if (!raw) return null;
+  const base = raw.split("/").pop() || raw;
+  const stem = base.replace(/\.(mp4|webm|mov|mkv|png|jpe?g|webp|gif)$/i, "");
+  if (!stem) return null;
+  if (/_\d{4}-\d{2}-\d{2}_\d{5}$/.test(stem)) return null;
+  if (/_(OG|WIP)_\d{5}$/i.test(stem)) return null;
+  const m = /^(.+)_(\d{5})$/.exec(stem);
   return m ? m[1] : null;
 }
 
@@ -108,8 +119,11 @@ export function filterWorkProductsByMedia(
 }
 
 export function mediaFocusLabel(media: string): string {
-  const n = normalizeMediaNeedle(media);
-  return n.base || n.needle || media;
+  const raw = String(media || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "");
+  return (raw.split("/").pop() || raw || media);
 }
 
 export type FocusedGoneReason = "missing" | "deleted";

@@ -52,6 +52,7 @@ import {
   parseWorkingSetId,
   filterFollowUpBucketItems,
   workProductFromFollowUpItem,
+  workProductFromFocusedMedia,
   WORKBENCH_WORKING_SETS,
   type WorkbenchWorkingSetId,
 } from "./workProductWorkingSet";
@@ -6156,12 +6157,10 @@ export function WorkProductsApp() {
       focusPinned &&
       Boolean(historyLookupJobKey || historyLookupPromptId) &&
       !recentHit &&
-      listSettled &&
       !isFollowUpWorkingSetJob(historyLookupJobKey),
     staleTime: 30_000,
   });
   const historyItem = historyQuery.data?.ok ? historyQuery.data.item || null : null;
-  const focusedItem = recentHit || historyItem || null;
   const historyError = String(historyQuery.data?.error || "").trim();
   const mediaProbe = useQuery({
     queryKey: ["workbench", "mediaExists", focusMedia] as const,
@@ -6171,6 +6170,11 @@ export function WorkProductsApp() {
   });
   const mediaProbePending = Boolean(focusPinned && focusMedia && mediaProbe.isPending);
   const mediaMissing = Boolean(focusPinned && focusMedia && mediaProbe.isSuccess && mediaProbe.data === false);
+  const mediaFallbackItem =
+    focusPinned && focusMedia && mediaProbe.isSuccess && mediaProbe.data
+      ? workProductFromFocusedMedia(focusMedia)
+      : null;
+  const focusedItem = recentHit || historyItem || mediaFallbackItem || null;
   const families = queryState.data?.families || historyQuery.data?.families || [];
   const extendFamilyDefaults =
     queryState.data?.extend_family_defaults || historyQuery.data?.extend_family_defaults || {};
@@ -6194,7 +6198,7 @@ export function WorkProductsApp() {
       (Boolean(historyLookupJobKey || historyLookupPromptId) &&
         !focusedItem &&
         !mediaMissing &&
-        (!listSettled || !historyResolved)));
+        !historyResolved));
   const focusedGoneReason: FocusedGoneReason | null = (() => {
     if (!focusPinned || focusedLoading) return null;
     if (historyError === "deleted") return "deleted";

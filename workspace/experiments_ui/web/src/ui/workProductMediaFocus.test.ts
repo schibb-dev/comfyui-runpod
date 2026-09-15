@@ -31,6 +31,16 @@ describe("inferJobKeyFromMediaPath", () => {
   it("returns null when there is no batch suffix", () => {
     expect(inferJobKeyFromMediaPath("og/demo/plain-name.mp4")).toBeNull();
   });
+
+  it("does not treat dated OG/GEX names as factory job keys", () => {
+    expect(inferJobKeyFromMediaPath("og/2026-03-10/FB9_GEX_2026-03-10_00005.mp4")).toBeNull();
+    expect(inferJobKeyFromMediaPath("og/2026-04-13/FB9_GEX2_OVERHEAD_2026-04-13_00006.mp4")).toBeNull();
+  });
+
+  it("does not treat catalog OG/WIP numbered names as factory job keys", () => {
+    expect(inferJobKeyFromMediaPath("og/2026-03-01/011326_OG_00001.mp4")).toBeNull();
+    expect(inferJobKeyFromMediaPath("og/demo/clip_WIP_00002.mp4")).toBeNull();
+  });
 });
 
 describe("media matching", () => {
@@ -90,6 +100,9 @@ describe("media matching", () => {
   it("labels the focus chip with the basename", () => {
     expect(mediaFocusLabel(MEDIA)).toBe(
       "hourly__pp-catalog-default__still-ff55a69e40c5268ccccfc6b3b9883b8581085bacad8e383e0e21c818aaa6b63b__00_20260904153504_f1_00001",
+    );
+    expect(mediaFocusLabel("og/2026-03-10/FB9_GEX_2026-03-10_00005.mp4")).toBe(
+      "FB9_GEX_2026-03-10_00005.mp4",
     );
   });
 

@@ -1,5 +1,10 @@
 import type { DispositionBucketItem, WorkProductItem } from "./types";
-import { isMediaOutputOfJob, mediaFocusLabel, workProductMatchesMedia } from "./workProductMediaFocus";
+import {
+  filesUrlForRelpath,
+  isMediaOutputOfJob,
+  mediaFocusLabel,
+  workProductMatchesMedia,
+} from "./workProductMediaFocus";
 
 export type WorkbenchWorkingSetId =
   | "recent"
@@ -99,6 +104,21 @@ export function filterFollowUpBucketItems(
   const entry = workingSetEntry(setId);
   if (!entry) return rows;
   return rows.filter((r) => itemEntries(r).includes(entry));
+}
+
+/** Play a `?media=` clip that has no factory/follow-up producer row. */
+export function workProductFromFocusedMedia(media: string): WorkProductItem | null {
+  const rel = String(media || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "");
+  if (!rel) return null;
+  return {
+    job_key: FOLLOW_UP_JOB_PREFIX + rel,
+    output_relpath: rel,
+    output_url: filesUrlForRelpath(rel),
+    status: "complete",
+  };
 }
 
 export function workProductFromFollowUpItem(
