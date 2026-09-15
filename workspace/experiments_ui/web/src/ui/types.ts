@@ -1724,6 +1724,9 @@ export type ShapeFactoryReplayRequest = {
   seed_mode?: "same" | "new";
   /** Catalog prompt preset path (family pool). */
   prompt_profile?: string;
+  /** Recovered LoadImage still (claim jobs often omit bindings). */
+  source_still?: string;
+  identity_anchor?: string;
   bindings?: Record<string, string>;
   overrides?: ShapeFactoryMapQueueOverrides;
 };

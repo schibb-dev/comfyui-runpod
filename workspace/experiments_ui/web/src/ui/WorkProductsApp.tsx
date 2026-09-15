@@ -3734,6 +3734,15 @@ function mergeReplayStackOverride(
   return { ...(overrides || {}), stack: sid };
 }
 
+function replayStillPath(item: WorkProductItem): string {
+  const still =
+    item.bindings?.source_still ||
+    item.bindings?.identity_anchor ||
+    item.bindings?.identity_still ||
+    item.bindings?.source_image;
+  return String(still?.path || still?.relpath || still?.basename || "").trim();
+}
+
 function RecipeSettingsCard({
   fieldId,
   ariaLabel,
@@ -4586,6 +4595,11 @@ function WorkProductQuickQueue({
           : undefined;
       if (replaceQueued) {
         const dest = destinationForWhen(when);
+        const stillPath = replayStillPath(item);
+        const bindings = {
+          ...(promptBinding || {}),
+          ...(stillPath ? { source_still: stillPath, identity_anchor: stillPath } : {}),
+        };
         const res = await swapMutation.mutateAsync({
           job_key: jobKey,
           family_slug: targetFamily,
@@ -4594,7 +4608,7 @@ function WorkProductQuickQueue({
           destination: dest.destination,
           pending_position: dest.pending_position,
           seed_mode: seedMode === "manual" ? undefined : seedMode,
-          bindings: promptBinding,
+          bindings: Object.keys(bindings).length ? bindings : undefined,
           overrides,
         });
         const row = (res.items || []).find((it) => it.ok) || (res.items || [])[0];
@@ -4624,6 +4638,11 @@ function WorkProductQuickQueue({
         return;
       }
       const dest = destinationForWhen(when);
+      const stillPath = replayStillPath(item);
+      const bindings = {
+        ...(promptBinding || {}),
+        ...(stillPath ? { source_still: stillPath, identity_anchor: stillPath } : {}),
+      };
       const res = await replayMutation.mutateAsync({
         job_key: jobKey,
         family_slug: targetFamily || undefined,
@@ -4632,7 +4651,9 @@ function WorkProductQuickQueue({
         destination: dest.destination,
         pending_position: dest.pending_position,
         seed_mode: seedMode === "manual" ? undefined : seedMode,
-        bindings: promptBinding,
+        source_still: stillPath || undefined,
+        identity_anchor: stillPath || undefined,
+        bindings: Object.keys(bindings).length ? bindings : undefined,
         overrides,
       });
       const nextKey = String(res.job_key || "").trim();

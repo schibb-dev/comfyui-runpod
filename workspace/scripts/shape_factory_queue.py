@@ -10,7 +10,9 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import time
+import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -89,6 +91,169 @@ def _image_source_slots(shape: Dict[str, Any]) -> list[str]:
             if slot not in out:
                 out.append(slot)
     return out
+
+
+_STILL_JOBKEY_RE = re.compile(r"(?:^|__)still-(.+?)(?:__|$)", re.I)
+_LOAD_IMAGE_TYPES = frozenset({"LoadImage", "LoadImageOutput"})
+_STILL_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif", ".jfif")
+
+
+def _binding_path_from_spec(spec: Any) -> str:
+    if isinstance(spec, str):
+        return spec.strip()
+    if isinstance(spec, dict):
+        return str(spec.get("path") or spec.get("relpath") or spec.get("basename") or "").strip()
+    return ""
+
+
+def _flatten_bindings_map(raw: Any) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    if not isinstance(raw, dict):
+        return out
+    for slot, spec in raw.items():
+        path = _binding_path_from_spec(spec)
+        if path:
+            out[str(slot)] = path
+    return out
+
+
+def _still_token_from_job_key(job_key: str) -> str:
+    m = _STILL_JOBKEY_RE.search(str(job_key or ""))
+    return str(m.group(1) or "").strip() if m else ""
+
+
+def _load_image_names_from_prompt(prompt: Any) -> List[str]:
+    """Basenames from LoadImage nodes (API prompt or LiteGraph)."""
+    names: List[str] = []
+    seen: set[str] = set()
+
+    def add(raw: str) -> None:
+        bn = Path(str(raw or "").replace("\\", "/")).name
+        if not bn:
+            return
+        key = bn.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        names.append(bn)
+
+    if not isinstance(prompt, dict):
+        return names
+    nodes = prompt.get("nodes") if isinstance(prompt.get("nodes"), list) else None
+    iterable = nodes if nodes is not None else prompt.values()
+    for node in iterable:
+        if not isinstance(node, dict):
+            continue
+        ntype = str(node.get("class_type") or node.get("type") or "")
+        if ntype not in _LOAD_IMAGE_TYPES and "LoadImage" not in ntype:
+            continue
+        inputs = node.get("inputs") if isinstance(node.get("inputs"), dict) else {}
+        raw = str(inputs.get("image") or "").strip()
+        if not raw:
+            widgets = node.get("widgets_values")
+            if isinstance(widgets, list) and widgets:
+                raw = str(widgets[0] or "").strip()
+        add(raw)
+    return names
+
+
+def _prompt_id_from_job(job: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(job, dict):
+        return ""
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    claim = job.get("claim") if isinstance(job.get("claim"), dict) else {}
+    return str(submit.get("prompt_id") or claim.get("prompt_id") or "").strip()
+
+
+def _fetch_comfy_api_prompt(prompt_id: str, comfy_server: str) -> Optional[Dict[str, Any]]:
+    """Best-effort GET of a live/history API prompt. Never raises."""
+    pid = str(prompt_id or "").strip()
+    server = str(comfy_server or "").strip().rstrip("/")
+    if not pid or not server:
+        return None
+
+    def from_prompt_field(prompt_field: Any) -> Optional[Dict[str, Any]]:
+        if isinstance(prompt_field, list) and len(prompt_field) >= 3 and isinstance(prompt_field[2], dict):
+            return prompt_field[2]
+        if isinstance(prompt_field, dict):
+            if any(isinstance(v, dict) and v.get("class_type") for v in prompt_field.values()):
+                return prompt_field
+            nested = prompt_field.get("prompt")
+            if isinstance(nested, dict):
+                return nested
+        return None
+
+    try:
+        with urllib.request.urlopen(f"{server}/history/{pid}", timeout=8) as resp:
+            hist = json.loads(resp.read().decode("utf-8"))
+        if isinstance(hist, dict):
+            got = from_prompt_field((hist.get(pid) or {}).get("prompt") if isinstance(hist.get(pid), dict) else None)
+            if got:
+                return got
+            entry = hist.get(pid)
+            if isinstance(entry, dict):
+                got = from_prompt_field(entry)
+                if got:
+                    return got
+    except Exception:
+        pass
+    try:
+        with urllib.request.urlopen(f"{server}/queue", timeout=8) as resp:
+            queue_doc = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(queue_doc, dict):
+        return None
+    for bucket in (queue_doc.get("queue_running"), queue_doc.get("queue_pending")):
+        for ent in bucket or []:
+            ent_pid = ""
+            prompt_obj: Any = None
+            if isinstance(ent, list) and len(ent) >= 3:
+                ent_pid = str(ent[1] or "")
+                prompt_obj = ent[2]
+            elif isinstance(ent, dict):
+                ent_pid = str(ent.get("prompt_id") or "")
+                prompt_obj = ent.get("prompt")
+            if ent_pid != pid:
+                continue
+            got = from_prompt_field(prompt_obj) if not (
+                isinstance(prompt_obj, dict)
+                and any(isinstance(v, dict) and v.get("class_type") for v in prompt_obj.values())
+            ) else prompt_obj
+            if isinstance(got, dict):
+                return got
+    return None
+
+
+def _image_bindings_from_api_prompt(
+    shape: Dict[str, Any],
+    prompt: Any,
+    *,
+    workspace_root: Path,
+    output_root: Path,
+    data_root: Path,
+) -> Dict[str, Any]:
+    """LoadImage slot rows when a claim/replay seed has no still binding."""
+    still_path = ""
+    for name in _load_image_names_from_prompt(prompt):
+        got = _resolve_still_file(
+            name, workspace_root=workspace_root, output_root=output_root, data_root=data_root
+        )
+        if got is not None:
+            still_path = str(got)
+            break
+    if not still_path:
+        return {}
+    slots = _image_source_slots(shape) or ["source_still"]
+    return {
+        slot: {
+            "binding_type": "load_image",
+            "path": still_path,
+            "recovered": True,
+            "evidence": "api_prompt",
+        }
+        for slot in slots
+    }
 
 
 def _resolve_still_file(
@@ -202,6 +367,34 @@ def _collect_identity_media_candidates(
     return out
 
 
+def _resolve_still_guess(
+    raw: str,
+    *,
+    workspace_root: Path,
+    output_root: Path,
+    data_root: Path,
+) -> Optional[Path]:
+    """Resolve a still path, basename, or extension-less job-key token."""
+    s = str(raw or "").strip()
+    if not s:
+        return None
+    got = _resolve_still_file(
+        s, workspace_root=workspace_root, output_root=output_root, data_root=data_root
+    )
+    if got is not None:
+        return got
+    bn = Path(s.replace("\\", "/")).name
+    if not bn or "." in bn:
+        return None
+    for ext in _STILL_EXTS:
+        got = _resolve_still_file(
+            bn + ext, workspace_root=workspace_root, output_root=output_root, data_root=data_root
+        )
+        if got is not None:
+            return got
+    return None
+
+
 def _resolve_identity_still_for_shape(
     *,
     shape: Dict[str, Any],
@@ -212,11 +405,13 @@ def _resolve_identity_still_for_shape(
     workspace_root: Path,
     output_root: Path,
     data_root: Path,
+    comfy_server: str = "",
 ) -> Tuple[Dict[str, str], Optional[Dict[str, Any]]]:
     """
     Fill required image slots (identity_anchor / source_still) when missing.
 
     Ladder: explicit body path → existing still bindings (cross-slot) →
+    job_key ``still-`` token / claimed Comfy LoadImage →
     Submit/hourly pick (original LoadImage, companion video PNG, then mint).
     """
     needed = _image_source_slots(shape)
@@ -273,7 +468,7 @@ def _resolve_identity_still_for_shape(
         still_path = str(resolved_explicit)
         evidence = "body"
     elif existing_still:
-        got = _resolve_still_file(
+        got = _resolve_still_guess(
             existing_still,
             workspace_root=workspace_root,
             output_root=output_root,
@@ -281,7 +476,41 @@ def _resolve_identity_still_for_shape(
         )
         still_path = str(got) if got is not None else existing_still
         evidence = "job_binding"
-    else:
+    elif isinstance(job, dict):
+        job_flat = _flatten_bindings_map(job.get("bindings"))
+        for alias in ("identity_anchor", "source_still", "identity_still", "source_image"):
+            cand = str(job_flat.get(alias) or "").strip()
+            if not cand:
+                continue
+            got = _resolve_still_guess(
+                cand, workspace_root=workspace_root, output_root=output_root, data_root=data_root
+            )
+            still_path = str(got) if got is not None else cand
+            evidence = "job_binding"
+            break
+        if not still_path:
+            token = _still_token_from_job_key(str(job.get("job_key") or ""))
+            if token:
+                got = _resolve_still_guess(
+                    token, workspace_root=workspace_root, output_root=output_root, data_root=data_root
+                )
+                if got is not None:
+                    still_path = str(got)
+                    evidence = "job_key"
+        if not still_path:
+            pid = _prompt_id_from_job(job)
+            claim = job.get("claim") if isinstance(job.get("claim"), dict) else {}
+            server = str(comfy_server or claim.get("comfy_server") or "").strip()
+            prompt = _fetch_comfy_api_prompt(pid, server) if pid else None
+            for name in _load_image_names_from_prompt(prompt):
+                got = _resolve_still_guess(
+                    name, workspace_root=workspace_root, output_root=output_root, data_root=data_root
+                )
+                if got is not None:
+                    still_path = str(got)
+                    evidence = "api_prompt"
+                    break
+    if not still_path:
         # Submit / hourly ladder: original LoadImage → companion video PNG → mint.
         media_guess = ""
         for cand in _collect_identity_media_candidates(
@@ -1994,11 +2223,8 @@ def replay_from_request_body(
         job, job_path = found
         family_slug = family_slug or str(job.get("family_slug") or "").strip()
         job_bindings = job.get("bindings") if isinstance(job.get("bindings"), dict) else {}
-        for slot, spec in job_bindings.items():
-            if isinstance(spec, dict):
-                path = str(spec.get("path") or "").strip()
-                if path:
-                    bindings[str(slot)] = path
+        bindings.update(_flatten_bindings_map(job_bindings))
+        bindings.update(_flatten_bindings_map(request_bindings))
         submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
         sub_outs = submit.get("outputs") if isinstance(submit.get("outputs"), list) else []
         job_outs = job.get("outputs") if isinstance(job.get("outputs"), list) else []
@@ -2016,21 +2242,11 @@ def replay_from_request_body(
     else:
         job = None
         job_path = None
-        raw = body.get("bindings")
-        if isinstance(raw, dict):
-            for slot, spec in raw.items():
-                if isinstance(spec, str) and spec.strip():
-                    bindings[str(slot)] = spec.strip()
-                elif isinstance(spec, dict):
-                    path = str(spec.get("path") or "").strip()
-                    if path:
-                        bindings[str(slot)] = path
+        bindings.update(_flatten_bindings_map(body.get("bindings")))
         output_abs = str(body.get("output_path") or "").strip()
 
     if not family_slug:
         raise ValueError("family_slug is required")
-    if not bindings:
-        raise ValueError("no bindings to replay")
 
     shape_path = _resolve_shape_path(
         data_root / "shapes" / f"{family_slug}.shape.yaml",
@@ -2122,11 +2338,15 @@ def replay_from_request_body(
         workspace_root=workspace_root,
         output_root=output_root,
         data_root=data_root,
+        comfy_server=comfy_server,
     )
     if identity_meta and construction is not None:
         construction = dict(construction)
         construction["identity_anchor"] = identity_meta.get("path")
         construction["identity_evidence"] = identity_meta.get("evidence")
+
+    if not bindings:
+        raise ValueError("no bindings to replay")
 
     bindings = _bindings_declared_by_shape(shape, bindings)
 

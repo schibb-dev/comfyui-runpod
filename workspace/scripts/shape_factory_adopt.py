@@ -782,6 +782,19 @@ def claim_queue_prompt_as_job(
     from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    recovered_bindings: Dict[str, Any] = {}
+    try:
+        from shape_factory_queue import _image_bindings_from_api_prompt
+
+        recovered_bindings = _image_bindings_from_api_prompt(
+            shape_doc,
+            api_prompt,
+            workspace_root=Path(workspace_root) if workspace_root else Path("."),
+            output_root=Path(output_root),
+            data_root=data_root,
+        )
+    except Exception:
+        recovered_bindings = {}
     job: Dict[str, Any] = {
         "schema_version": "comfyui-runpod.shape-job.v0",
         "origin": "claim_queue",
@@ -793,7 +806,7 @@ def claim_queue_prompt_as_job(
         "template_path": str(shape_doc.get("template") or ""),
         "pools_path": str(pools_path) if pools_path.is_file() else None,
         "job_key": job_key,
-        "bindings": {},
+        "bindings": recovered_bindings or {},
         "deposits": shape_doc.get("deposits") if isinstance(shape_doc.get("deposits"), dict) else {},
         "submit": {
             "status": status if status in {"queued", "running", "complete", "error"} else "queued",

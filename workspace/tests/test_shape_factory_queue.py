@@ -982,6 +982,104 @@ class ShapeFactoryQueueTests(unittest.TestCase):
         )
         self.assertIn("prompt_profile_remapped", out)
 
+    def test_identity_still_from_still_job_key(self) -> None:
+        from shape_factory_queue import _resolve_identity_still_for_shape
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            inp = root / "workspace" / "input"
+            inp.mkdir(parents=True)
+            still = inp / "sfq-jobkey-still.png"
+            still.write_bytes(b"png")
+            shape = {
+                "requires": [
+                    {"slot": "source_still", "media": "image", "binding": {"type": "load_image"}},
+                ]
+            }
+            bindings, meta = _resolve_identity_still_for_shape(
+                shape=shape,
+                body={},
+                job={
+                    "job_key": "FAM__pp-catalog-default__still-sfq-jobkey-still__000_adhoc",
+                    "bindings": {},
+                },
+                bindings={"prompt_profile": "/tmp/p.json"},
+                output_abs="",
+                workspace_root=root / "workspace",
+                output_root=root / "output",
+                data_root=root / ".data",
+            )
+            self.assertEqual(Path(bindings["source_still"]).resolve(), still.resolve())
+            self.assertEqual((meta or {}).get("evidence"), "job_key")
+
+    def test_identity_still_from_api_prompt(self) -> None:
+        from shape_factory_queue import _resolve_identity_still_for_shape
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            inp = root / "workspace" / "input"
+            inp.mkdir(parents=True)
+            still = inp / "sfq-claim-still.jpg"
+            still.write_bytes(b"jpeg")
+            shape = {
+                "requires": [
+                    {"slot": "source_still", "media": "image", "binding": {"type": "load_image"}},
+                ]
+            }
+            prompt = {
+                "88": {"class_type": "LoadImage", "inputs": {"image": "sfq-claim-still.jpg"}},
+            }
+            with mock.patch("shape_factory_queue._fetch_comfy_api_prompt", return_value=prompt):
+                bindings, meta = _resolve_identity_still_for_shape(
+                    shape=shape,
+                    body={"family_slug": "X-KNEEL-FB9"},
+                    job={
+                        "job_key": "X-KNEEL-FB9__claim__7192f4bb-475",
+                        "bindings": {},
+                        "submit": {"prompt_id": "7192f4bb-475c-43f2-bde7-5ffdfb370fef"},
+                        "claim": {"prompt_id": "7192f4bb-475c-43f2-bde7-5ffdfb370fef", "comfy_server": "http://127.0.0.1:8188"},
+                    },
+                    bindings={"prompt_profile": "/tmp/p.json"},
+                    output_abs="",
+                    workspace_root=root / "workspace",
+                    output_root=root / "output",
+                    data_root=root / ".data",
+                    comfy_server="http://127.0.0.1:8188",
+                )
+            self.assertEqual(Path(bindings["source_still"]).resolve(), still.resolve())
+            self.assertEqual((meta or {}).get("evidence"), "api_prompt")
+
+    def test_flatten_string_source_still_binding(self) -> None:
+        from shape_factory_queue import _flatten_bindings_map
+
+        self.assertEqual(
+            _flatten_bindings_map({"source_still": "/input/a.jpg", "prompt_profile": {"path": "/p.json"}}),
+            {"source_still": "/input/a.jpg", "prompt_profile": "/p.json"},
+        )
+
+    def test_image_bindings_from_api_prompt(self) -> None:
+        from shape_factory_queue import _image_bindings_from_api_prompt
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            inp = root / "workspace" / "input"
+            inp.mkdir(parents=True)
+            still = inp / "sfq-face.jpg"
+            still.write_bytes(b"jpeg")
+            shape = {
+                "requires": [
+                    {"slot": "source_still", "media": "image", "binding": {"type": "load_image"}},
+                ]
+            }
+            rows = _image_bindings_from_api_prompt(
+                shape,
+                {"88": {"class_type": "LoadImage", "inputs": {"image": "sfq-face.jpg"}}},
+                workspace_root=root / "workspace",
+                output_root=root / "output",
+                data_root=root / ".data",
+            )
+            self.assertEqual(Path(rows["source_still"]["path"]).resolve(), still.resolve())
+
     def test_extend_missing_identity_still_raises(self) -> None:
         from shape_factory_queue import _resolve_identity_still_for_shape
 
