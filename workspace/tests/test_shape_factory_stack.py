@@ -136,6 +136,27 @@ class ApplyStackTests(unittest.TestCase):
         self.assertEqual(job["stack_id"], "i2v-480p-Q5")
         self.assertEqual(job["stack"]["teacache_coefficients"], "i2v_480")
 
+    def test_named_stack_wins_over_ui_defaults(self) -> None:
+        from shape_factory import apply_shape_stack_ui, apply_shape_ui_defaults_ui
+
+        wf = self._origin_wf()
+        shape = {
+            "stack": "i2v-720p-Q5",
+            "ui_defaults": {
+                "ui_nodes": {
+                    458: {"widgets_values": ["junk.gguf", "cuda:0", 99, False, ""]},
+                    396: {"widgets_values": [0.19, 0.1, 1, "offload_device", "i2v_480"]},
+                }
+            },
+        }
+        apply_shape_ui_defaults_ui(wf, shape)
+        apply_shape_stack_ui(wf, shape)
+        unet = next(n for n in wf["nodes"] if n["id"] == 458)
+        tea = next(n for n in wf["nodes"] if n["id"] == 396)
+        self.assertIn("720p-Q5", unet["widgets_values"][0])
+        self.assertEqual(unet["widgets_values"][2], 4)
+        self.assertEqual(tea["widgets_values"][4], "i2v_720")
+
     def test_enrolled_generation_shapes_resolve(self) -> None:
         root = Path(__file__).resolve().parents[2] / ".data" / "shapes"
         for path in sorted(root.glob("*.shape.yaml")):

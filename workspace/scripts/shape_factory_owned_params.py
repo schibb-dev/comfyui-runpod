@@ -116,8 +116,8 @@ def load_template_param_seed(
     wf = copy.deepcopy(workflow)
     if shape:
         try:
-            apply_shape_stack_ui(wf, shape)
             apply_shape_ui_defaults_ui(wf, shape)
+            apply_shape_stack_ui(wf, shape)
         except Exception:
             pass
     return extract_params_from_workflow(wf), str(template_path)

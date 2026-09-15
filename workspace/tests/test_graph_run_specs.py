@@ -3,13 +3,16 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import unittest
 
 import support  # noqa: F401
+import yaml
 from graph_run_specs import (
     append_run_spec_to_prefix,
     apply_run_spec_suffix_to_prompt,
     extract_run_spec,
+    extract_run_spec_from_template,
     strip_run_spec_suffix,
 )
 
@@ -206,6 +209,17 @@ class GraphRunSpecsTests(unittest.TestCase):
         self.assertIn("__rs-", final)
         self.assertTrue(final.startswith("og/2026-09-15/experiments/x-kneel/X-KNEEL-FB9__"))
         self.assertEqual(prompt["399"]["inputs"]["filename_prefix"], "og/tmp/clip_PREVIEW")
+
+    def test_family_template_spec_follows_named_stack(self) -> None:
+        data = Path(__file__).resolve().parents[2] / ".data"
+        kneel = yaml.safe_load((data / "shapes" / "X-KNEEL-FB9.shape.yaml").read_text(encoding="utf-8"))
+        spec = extract_run_spec_from_template(kneel, data_root=data)
+        self.assertTrue(str(spec.get("spec_model") or "").startswith("720p-Q5"), spec.get("spec_model"))
+        self.assertEqual(spec.get("teacache_coefficients"), "i2v_720")
+        gex = yaml.safe_load((data / "shapes" / "FB9_GEX2.shape.yaml").read_text(encoding="utf-8"))
+        spec2 = extract_run_spec_from_template(gex, data_root=data)
+        self.assertTrue(str(spec2.get("spec_model") or "").startswith("480p-Q8"), spec2.get("spec_model"))
+        self.assertEqual(spec2.get("teacache_coefficients"), "i2v_480")
 
 
 if __name__ == "__main__":
