@@ -13,6 +13,7 @@ Declared on every `*.shape.yaml`:
 | `primary_input` | `still` \| `video` | Feedstock class |
 | `input_profile` | `still_prompt` \| `video_prompt` \| `video_identity_still_prompt` \| `video_only` | Slot contract |
 | `chain_role` | play beat or packaging — see below | Ranking prior for composition; not a lockout |
+| `stack` | `i2v-720p-Q5` \| `i2v-480p-Q8` \| … | Default generation weights bundle ([`.data/stacks/`](../stacks/)) |
 | `io_class` | `I2V` \| `V2V` \| `VI2V` \| … | Process class badge (derived from profile) |
 | `postprocess` | see [`docs/WORKFLOW_LAYERS.md`](../../docs/WORKFLOW_LAYERS.md) | Generation editorial (`color_match`, `merge_frames`) at generate time |
 

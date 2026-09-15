@@ -5,6 +5,7 @@ primary_input: video
 input_profile: video_identity_still_prompt
 chain_role: extend
 io_class: VI2V
+stack: i2v-480p-Q8
 graph_hash: d511c11892e623115e768af0f1b46eb1d07bc121c161cf1e2e06abfac24bcc3f
 template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/FB9_GEX2_identity_anchor-readable.json
 candidate: /home/yuji/src/comfyui-runpod/.data/template_candidates/FB9_GEX2_identity_anchor.candidate.json

@@ -204,13 +204,20 @@ per-job override via `adhoc_overrides.postprocess`.
 
 ---
 
-## Deferred: model stack profiles
+## Model stack profiles
 
-**Status:** not implemented — one stack per family is sufficient for now.
+**Status:** generate/submit apply named stacks from [`.data/stacks/`](../.data/stacks/).
+Family `stack:` is the default; `adhoc_overrides.stack` can select another valid
+profile on the same `graph_hash`. Canvas stays runtime.
 
-480p Q8 vs 720p Q5 today means **separate catalog templates**, not a runtime switch.
+| stack_id | Default families |
+|----------|------------------|
+| `i2v-720p-Q5` | origin (Kneel, FaceBlast, BounceDance, FB8…) |
+| `i2v-480p-Q8` | GEX extend + identity-anchor |
+| `i2v-480p-Q5` | override only |
 
-**Revisit when:** you need to A/B quant tiers on the same `graph_hash` without forking catalog JSON.
+UNet `720p`/`480p` must match TeaCache `i2v_720` / `i2v_480`. Apply:
+[`workspace/scripts/shape_factory_stack.py`](../workspace/scripts/shape_factory_stack.py).
 
 ---
 
@@ -224,6 +231,7 @@ per-job override via `adhoc_overrides.postprocess`.
 | Hash migration record | [`.data/shapes/graph_hash_migration_delivery_postprocess_2026-09-03.yaml`](../.data/shapes/graph_hash_migration_delivery_postprocess_2026-09-03.yaml) | Done |
 | Delivery apply | [`workspace/scripts/shape_factory_delivery_postprocess.py`](../workspace/scripts/shape_factory_delivery_postprocess.py) | Done |
 | Delivery shape | [`.data/shapes/delivery/`](../.data/shapes/delivery/) | Done |
+| Stack profiles | [`workspace/scripts/shape_factory_stack.py`](../workspace/scripts/shape_factory_stack.py) | 1a — apply + job stamp |
 | Pipeline tail | `.data/pipelines/` | Partial (opt-in examples) |
 | Tests | [`workspace/tests/test_shape_factory_postprocess.py`](../workspace/tests/test_shape_factory_postprocess.py) | Done |
 

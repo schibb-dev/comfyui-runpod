@@ -79,6 +79,8 @@ workspace/comfyui-wan
 .data/**
 !.data/shapes/
 !.data/shapes/**
+!.data/stacks/
+!.data/stacks/**
 !.data/pools/
 !.data/pools/*/
 !.data/pools/*/pools.yaml

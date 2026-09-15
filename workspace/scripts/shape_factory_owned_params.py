@@ -80,6 +80,7 @@ def load_template_param_seed(
 ) -> Tuple[Dict[str, int], Optional[str]]:
     """Return (seed params, template_path) after shape ui_defaults, without job adhoc."""
     from shape_factory import (  # type: ignore
+        apply_shape_stack_ui,
         apply_shape_ui_defaults_ui,
         load_yaml,
         read_json,
@@ -115,6 +116,7 @@ def load_template_param_seed(
     wf = copy.deepcopy(workflow)
     if shape:
         try:
+            apply_shape_stack_ui(wf, shape)
             apply_shape_ui_defaults_ui(wf, shape)
         except Exception:
             pass

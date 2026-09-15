@@ -5,6 +5,7 @@ primary_input: still
 input_profile: still_prompt
 chain_role: origin
 io_class: I2V
+stack: i2v-720p-Q5
 graph_hash: 9f872e075e342628043d89cbdb7fec00db8415a6eed6755f46f38ea724bb081d
 template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/FB8VA4-2026-01-11-224827_OG_00001-readable.json
 candidate: /home/yuji/src/comfyui-runpod/.data/template_candidates/FB8VA4-2026-01-11-224827_OG_00001.candidate.json

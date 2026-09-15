@@ -5,6 +5,7 @@ primary_input: still
 input_profile: still_prompt
 chain_role: origin
 io_class: I2V
+stack: i2v-720p-Q5
 graph_hash: a1759a8ccc8fb6cfff46939ab809a98d4023d0e4756b0c45cc8b8f66725c016d
 template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/BounceDanceA-readable.json
 candidate: /home/yuji/src/comfyui-runpod/.data/template_candidates/BounceDanceA.candidate.json

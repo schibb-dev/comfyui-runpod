@@ -5,6 +5,7 @@ primary_input: video
 input_profile: video_prompt
 chain_role: extend
 io_class: V2V
+stack: i2v-480p-Q8
 graph_hash: abc50f33a4a181afac4f7afaad7e353ad22aa19d18f78aff9f55e05c6508fdd1
 template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/FB9_GEX_FACIAL_2026-04-26_00001-readable.json
 candidate: /home/yuji/src/comfyui-runpod/.data/template_candidates/FB9_GEX_FACIAL_2026-04-26_00001.candidate.json

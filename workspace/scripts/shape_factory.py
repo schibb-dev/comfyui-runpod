@@ -154,6 +154,26 @@ def apply_shape_ui_defaults_api(prompt: dict[str, Any], shape: dict[str, Any]) -
     return apply_dev_tuning_api(prompt, defaults)
 
 
+def apply_shape_stack_ui(
+    workflow: dict[str, Any],
+    shape: dict[str, Any],
+    job: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    from shape_factory_stack import apply_shape_stack_ui as _apply
+
+    return _apply(workflow, shape, job)
+
+
+def apply_shape_stack_api(
+    prompt: dict[str, Any],
+    shape: dict[str, Any],
+    job: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    from shape_factory_stack import apply_shape_stack_api as _apply
+
+    return _apply(prompt, shape, job)
+
+
 def apply_shape_postprocess_ui(
     workflow: dict[str, Any],
     shape: dict[str, Any],
@@ -1758,6 +1778,8 @@ def generate_job_for_picks(
     sanitize_linked_text_widget_defaults(workflow)
     # Catalog templates bake authoring-clip skip/cap; rebound sources must not inherit them.
     zero_vhs_load_window_on_workflow(workflow)
+    stack_job = {"adhoc_overrides": adhoc_overrides} if adhoc_overrides else None
+    stack_changes = apply_shape_stack_ui(workflow, shape, stack_job)
     apply_shape_ui_defaults_ui(workflow, shape)
     apply_shape_postprocess_ui(workflow, shape)
 
@@ -1886,6 +1908,12 @@ def generate_job_for_picks(
         from shape_factory_vocab import stamp_job_vocab
 
         stamp_job_vocab(job_meta, shape)
+    except Exception:
+        pass
+    try:
+        from shape_factory_stack import stamp_job_stack
+
+        stamp_job_stack(job_meta, (stack_changes or {}).get("stack"))
     except Exception:
         pass
     if isinstance(draft_for_window.get("vhs_window"), dict):
@@ -4783,6 +4811,7 @@ def resolve_prompt_for_job(
     # Fix LoadImage / VHS paths from job bindings before convert (stale generated workflows
     # often still have input/<file> or a dead workspace/input host path).
     warnings.extend(_rebind_job_slots_to_ui_workflow(workflow, shape, job, data_root))
+    apply_shape_stack_ui(workflow, shape, job)
     apply_shape_ui_defaults_ui(workflow, shape)
     apply_shape_postprocess_ui(workflow, shape, job)
     warnings.extend(repair_ui_workflow_for_submit(workflow))
@@ -4798,6 +4827,7 @@ def resolve_prompt_for_job(
         warnings.extend(sync_prompt_inputs_from_ui_workflow(workflow, prompt_obj))
         warnings.extend(sanitize_converted_prompt(workflow, prompt_obj))
         warnings.extend(apply_api_slot_bindings(prompt_obj, shape, job, data_root))
+        apply_shape_stack_api(prompt_obj, shape, job)
         apply_shape_ui_defaults_api(prompt_obj, shape)
         apply_shape_postprocess_api(prompt_obj, shape, job)
         warnings.extend(
@@ -4825,6 +4855,7 @@ def resolve_prompt_for_job(
     prompt = extract_api_prompt_from_png(seed_png)
     warnings.extend(sanitize_converted_prompt(workflow, prompt))
     warnings.extend(apply_api_slot_bindings(prompt, shape, job, data_root))
+    apply_shape_stack_api(prompt, shape, job)
     apply_shape_ui_defaults_api(prompt, shape)
     apply_shape_postprocess_api(prompt, shape, job)
     warnings.extend(
@@ -5091,6 +5122,7 @@ def rebuild_job_workflow(
             continue
         warnings.extend(apply_slot_binding(workflow, req, path, data_root))
 
+    apply_shape_stack_ui(workflow, shape, job)
     apply_shape_ui_defaults_ui(workflow, shape)
     apply_shape_postprocess_ui(workflow, shape, job)
 

@@ -95,7 +95,7 @@ def extract_run_spec_from_template(
 ) -> Dict[str, Any]:
     """Load a family catalog template (plus shape ui_defaults) and extract a spec."""
     try:
-        from shape_factory import apply_shape_ui_defaults_ui, read_json, resolve_job_asset_path
+        from shape_factory import apply_shape_stack_ui, apply_shape_ui_defaults_ui, read_json, resolve_job_asset_path
     except Exception:
         return {}
     data_root = Path(data_root).expanduser().resolve()
@@ -116,6 +116,7 @@ def extract_run_spec_from_template(
     wf = copy.deepcopy(workflow)
     if shape:
         try:
+            apply_shape_stack_ui(wf, shape)
             apply_shape_ui_defaults_ui(wf, shape)
         except Exception:
             pass

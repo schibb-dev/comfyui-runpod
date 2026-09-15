@@ -5,6 +5,7 @@ primary_input: still
 input_profile: still_prompt
 chain_role: origin
 io_class: I2V
+stack: i2v-720p-Q5
 # start_image rewired to source_still (401); EXT VHS chain bypassed
 graph_hash: a0e7b29d5be86e0b6e0b61af9a5e9c881d3659a89b52550f1b3fb856c51e88b5
 template: /home/yuji/comfyui-runpod-data/comfyui_user/default/workflows/generated/catalog/FB8VB2_2026-01-09_225941_EXT_00001-readable.json

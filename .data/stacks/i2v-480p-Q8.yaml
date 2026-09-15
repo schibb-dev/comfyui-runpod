@@ -1,0 +1,10 @@
+schema_version: comfyui-runpod.stack.v0
+stack_id: i2v-480p-Q8
+unet_family: wan2.1-i2v-14b
+training_size: 480p
+quant: Q8_0
+unet_name: wan2.1-i2v-14b-480p-Q8_0.gguf
+teacache_coefficients: i2v_480
+virtual_vram_gb: 6
+clip_name: umt5_xxl_fp8_e4m3fn_scaled.safetensors
+clip_loader_type: CLIPLoaderMultiGPU

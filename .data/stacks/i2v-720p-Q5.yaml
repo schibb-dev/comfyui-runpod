@@ -1,0 +1,10 @@
+schema_version: comfyui-runpod.stack.v0
+stack_id: i2v-720p-Q5
+unet_family: wan2.1-i2v-14b
+training_size: 720p
+quant: Q5_K_M
+unet_name: WAN/wan2.1-i2v-14b-720p-Q5_K_M.gguf
+teacache_coefficients: i2v_720
+virtual_vram_gb: 4
+clip_name: umt5-xxl-encoder-Q5_K_M.gguf
+clip_loader_type: CLIPLoaderGGUFMultiGPU
