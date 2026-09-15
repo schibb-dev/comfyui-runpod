@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   familySlugIsQuarantined,
+  familyPickerOptionLabel,
+  familyPickerOptionTitle,
   jobPromptVariantDisplayName,
   jobPromptVariantName,
   pickQuickExtendFamily,
@@ -212,5 +214,34 @@ describe("pickQuickExtendFamily", () => {
         "X-KNEEL-FB9",
       ),
     ).toBe("FB9_GEX");
+  });
+});
+
+describe("familyPickerOptionLabel", () => {
+  it("appends model and tune after the short name", () => {
+    expect(
+      familyPickerOptionLabel(
+        {
+          slug: "X-KNEEL-FB9",
+          spec_model: "720p-Q5 virt4.0 432×768",
+          spec_params: "6.5s 20step cfg3.0 den0.87",
+        },
+        "X-KNEEL-FB9",
+      ),
+    ).toBe("X-KNEEL-FB9 · 720p-Q5 virt4.0 432×768 · 6.5s 20step cfg3.0 den0.87");
+  });
+
+  it("falls back to spec_abbrev when split fields are missing", () => {
+    expect(
+      familyPickerOptionLabel(
+        { slug: "X-KNEEL-FB9", spec_abbrev: "720p-Q5 virt4.0 432×768 6.5s 20step cfg3.0 den0.87" },
+        "X-KNEEL-FB9",
+      ),
+    ).toBe("X-KNEEL-FB9 · 720p-Q5 virt4.0 432×768 6.5s 20step cfg3.0 den0.87");
+  });
+
+  it("falls back to the name when spec is missing", () => {
+    expect(familyPickerOptionLabel({ slug: "FB9_GEX" }, "GEX")).toBe("GEX");
+    expect(familyPickerOptionTitle({ slug: "FB9_GEX", spec_title: "WAN/foo.gguf" })).toBe("WAN/foo.gguf");
   });
 });

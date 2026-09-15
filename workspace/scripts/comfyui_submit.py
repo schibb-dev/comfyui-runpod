@@ -380,6 +380,12 @@ def submit_prompt_to_comfyui(
     _normalize_prompt_paths_for_linux(prompt)
     normalize_prompt_output_prefixes(prompt)
     apply_queue_date_to_prompt(prompt)
+    try:
+        from graph_run_specs import apply_run_spec_suffix_to_prompt
+
+        apply_run_spec_suffix_to_prompt(prompt)
+    except Exception:
+        pass
     payload: Dict[str, Any] = {"prompt": prompt, "client_id": client_id}
     if front:
         payload["front"] = True

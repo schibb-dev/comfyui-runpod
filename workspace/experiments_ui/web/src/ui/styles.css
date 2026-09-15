@@ -13762,6 +13762,22 @@ button.home-backlog-linkish {
   color: var(--text);
 }
 
+.pipeline-row__glance-row--emphasis dt {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.pipeline-row__glance-row--emphasis dd {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.pipeline-row__glance-row--muted dt,
+.pipeline-row__glance-row--muted dd {
+  color: var(--muted);
+  font-weight: 450;
+}
+
 .pipeline-row__glance-row dd.pipeline-row__glance-value--prompt {
   overflow: visible;
   text-overflow: unset;
@@ -15109,6 +15125,15 @@ button.home-backlog-linkish {
   border-color: rgba(140, 180, 220, 0.4);
   background: rgba(50, 80, 110, 0.28);
   color: rgba(200, 220, 240, 0.95);
+}
+
+.work-product-badge--tune {
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-weight: 650;
+  border-color: rgba(220, 190, 100, 0.55);
+  background: rgba(150, 120, 40, 0.32);
+  color: rgba(255, 232, 170, 0.98);
 }
 
 .work-product-badge--decode-vae {

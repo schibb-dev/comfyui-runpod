@@ -54,6 +54,7 @@ This page mirrors the planning-relevant sections of the repo-root [DOCUMENTATION
 | [BUCKET_MODEL_PHASE2_PLAN.md](BUCKET_MODEL_PHASE2_PLAN.md) | Work items, pool pages, multi-route Advance. |
 | [ASSET_LIFECYCLE_PLAN.md](ASSET_LIFECYCLE_PLAN.md) | Asset lifecycle phase 2. |
 | [WORKFLOW_REPAIR_PLAN.md](WORKFLOW_REPAIR_PLAN.md) | Workflow repair tiers. |
+| [RUN_SPEC_DISPLAY_PLAN.md](RUN_SPEC_DISPLAY_PLAN.md) | Queue / Workbench / picker spec line; `__rs-` output suffix. |
 
 ---
 

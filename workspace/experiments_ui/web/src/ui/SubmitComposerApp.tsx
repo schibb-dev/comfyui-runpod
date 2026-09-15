@@ -45,6 +45,8 @@ import {
 } from "./shapeFactorySessionCache";
 import {
   familyDefaultFrames,
+  familyPickerOptionLabel,
+  familyPickerOptionTitle,
   familyPromptProfiles,
   isExtendFamilyOption,
   isI2VFamilyOption,
@@ -254,7 +256,7 @@ function FamilySelect({
         value={value}
         disabled={disabled || !opts.length}
         aria-label={`${label} target family`}
-        title={title}
+        title={familyPickerOptionTitle(opts.find((f) => f.slug === value)) || title}
         onChange={(e) => onChange(e.target.value)}
       >
         {opts.length === 0 ? <option value="">Loading…</option> : null}
@@ -263,8 +265,8 @@ function FamilySelect({
           const promoScope = String(f.promotion?.scope || "").trim();
           const promoSuffix = promoScope === "temporary" ? " [TEMP]" : promoScope === "long_term" ? " [DEFAULT]" : "";
           return (
-            <option key={f.slug} value={f.slug}>
-              {f.slug}
+            <option key={f.slug} value={f.slug} title={familyPickerOptionTitle(f) || f.slug}>
+              {familyPickerOptionLabel(f)}
               {promoSuffix}
             </option>
           );

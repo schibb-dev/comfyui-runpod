@@ -91,6 +91,22 @@ export type QueueJobGlance = {
   cfg?: number | string | null;
   steps?: number | string | null;
   denoise?: number | string | null;
+  /** Compact generation spec (UNet/quant + canvas/duration/TeaCache). */
+  spec_abbrev?: string | null;
+  spec_title?: string | null;
+  spec_model?: string | null;
+  spec_params?: string | null;
+  spec_tune?: string | null;
+  spec_sampler?: string | null;
+  unet_name?: string | null;
+  unet_family?: string | null;
+  quant?: string | null;
+  width?: number | null;
+  height?: number | null;
+  duration_sec?: number | null;
+  teacache?: number | string | null;
+  teacache_coefficients?: string | null;
+  virtual_vram_gb?: number | null;
   /** Still-source vs video-extend workflow (for media overlay badge). */
   workflow_kind?: "image" | "extend" | null;
 };
@@ -2723,6 +2739,14 @@ export type WorkProductItem = {
     skip_first_frames?: number;
     frame_load_cap?: number;
   } | null;
+  /** Compact generation spec (UNet/quant + canvas/duration/TeaCache). */
+  spec_abbrev?: string | null;
+  spec_title?: string | null;
+  spec_model?: string | null;
+  spec_params?: string | null;
+  spec_tune?: string | null;
+  spec_sampler?: string | null;
+  run_spec?: Record<string, unknown> | null;
   /** Comfy noise seed extracted from prompt / construction. */
   noise_seed?: number | null;
   /** How seed was chosen on replay (same / new / …), when known. */
@@ -2770,6 +2794,13 @@ export type WorkProductFamilyOption = {
   };
   /** Power LoRA slots from the family catalog readable. */
   loras_defaults?: WorkProductLoraEntry[];
+  /** Template generation spec (UNet/quant + canvas/duration/TeaCache). */
+  spec_abbrev?: string | null;
+  spec_title?: string | null;
+  spec_model?: string | null;
+  spec_params?: string | null;
+  spec_tune?: string | null;
+  spec_sampler?: string | null;
   prompt_profiles?: WorkProductFamilyPromptProfile[];
 };
 

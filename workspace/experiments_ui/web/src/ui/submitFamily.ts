@@ -17,6 +17,35 @@ export function familyDefaultFrames(families: WorkProductFamilyOption[], slug: s
   return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
 }
 
+/** `{short} · 720p-Q5 virt4.0 432×768 · 6.5s 20step cfg3.0 den0.87` for family <option> labels. */
+export function specDisplayJoined(spec: {
+  spec_model?: string | null;
+  spec_params?: string | null;
+  spec_tune?: string | null;
+  spec_abbrev?: string | null;
+} | null | undefined): string {
+  const model = String(spec?.spec_model || "").trim();
+  const tune = String(spec?.spec_tune || spec?.spec_params || "").trim();
+  return [model, tune].filter(Boolean).join(" · ") || String(spec?.spec_abbrev || "").trim();
+}
+
+export function familyPickerOptionLabel(
+  family: Pick<WorkProductFamilyOption, "slug" | "spec_abbrev" | "spec_model" | "spec_params" | "spec_tune"> | null | undefined,
+  shortLabel?: string,
+): string {
+  const name = String(shortLabel || family?.slug || "").trim();
+  const spec = specDisplayJoined(family);
+  if (!name) return spec;
+  if (!spec) return name;
+  return `${name} · ${spec}`;
+}
+
+export function familyPickerOptionTitle(
+  family: Pick<WorkProductFamilyOption, "slug" | "spec_abbrev" | "spec_title"> | null | undefined,
+): string {
+  return String(family?.spec_title || family?.spec_abbrev || family?.slug || "").trim();
+}
+
 export function isExtendFamilySlug(slug: string): boolean {
   const s = String(slug || "").trim();
   return Boolean(s);

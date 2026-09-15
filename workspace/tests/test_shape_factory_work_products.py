@@ -6,7 +6,9 @@ from pathlib import Path
 import support  # noqa: F401  — injects workspace/scripts onto sys.path
 from shape_factory_work_products import (
     _family_from_output_prefix,
+    _factory_job_key_heuristic,
     _filename_prefix_from_prompt,
+    _job_key_from_filename_prefix,
     _keeper_output_rel,
     _relpath_under,
     _shape_view,
@@ -1193,6 +1195,21 @@ class TestWorkProducts(unittest.TestCase):
         prefix = _filename_prefix_from_prompt(prompt)
         self.assertIn("FACIAL", prefix)
         self.assertEqual(_family_from_output_prefix(prefix, ["FB9_GEX2", "FB9_GEX_FACIAL"]), "FB9_GEX_FACIAL")
+
+    def test_job_key_heuristic_strips_run_spec_suffix(self):
+        key = "X-KNEEL-FB9__pp-catalog-default__still-abc__000_adhoc_ui1"
+        stamped = f"{key}__rs-720p_Q5_576x1024_6p5s_28st_Tea25_vv4"
+        self.assertEqual(_factory_job_key_heuristic(stamped), key)
+        prompt = {
+            "398": {
+                "class_type": "VHS_VideoCombine",
+                "inputs": {
+                    "filename_prefix": f"og/2026-09-15/X-Kneel-FB9_shape/{stamped}",
+                    "save_output": True,
+                },
+            }
+        }
+        self.assertEqual(_job_key_from_filename_prefix(prompt), key)
 
     def test_applied_vhs_gleaned_from_generated_workflow(self):
         from shape_factory_work_products import _work_product_item_from_job

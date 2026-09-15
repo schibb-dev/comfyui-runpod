@@ -87,7 +87,7 @@ import {
 } from "./workProductMediaFocus";
 import { prefetchAssetRatings } from "./assetRatingsCache";
 import { loadClipsForMedia, rememberFamiliesFromWorkProducts } from "./shapeFactorySessionCache";
-import { distinctiveFamilyLabels, familyPromptProfiles, familySlugIsQuarantined, familySwapTargets, isDefaultPromptVariant, isExtendFamilyOption, isStillMediaPath, jobPromptVariantDisplayName, jobPromptVariantName, jobPromptVariantSlug, pickQuickExtendFamily, pickRerunPromptPreset, promptProfileOptionLabel, promptTextIsOverridden, promptVariantName, promptVariantSlug, rerunPromptPresetDiffers, workProductCanQuickExtend, workProductHasExtendableOutput } from "./submitFamily";
+import { distinctiveFamilyLabels, familyPickerOptionLabel, familyPickerOptionTitle, familyPromptProfiles, familySlugIsQuarantined, familySwapTargets, isDefaultPromptVariant, isExtendFamilyOption, isStillMediaPath, jobPromptVariantDisplayName, jobPromptVariantName, jobPromptVariantSlug, pickQuickExtendFamily, pickRerunPromptPreset, promptProfileOptionLabel, promptTextIsOverridden, promptVariantName, promptVariantSlug, rerunPromptPresetDiffers, specDisplayJoined, workProductCanQuickExtend, workProductHasExtendableOutput } from "./submitFamily";
 import { recencyMs, recencyStamp } from "./workProductRecency";
 import { failurePrimaryLabel, workProductFailure, workProductFlowEvents } from "./workProductFailure";
 import { queryKeys } from "./queryKeys";
@@ -2432,6 +2432,9 @@ const DETAIL_GROUPS: DetailGroupDef[] = [
       "Created",
       "Seed",
       "Seed mode",
+      "Model",
+      "Tune",
+      "Sampler",
       "Job key",
       "Job file",
       "Output prefix",
@@ -2769,6 +2772,9 @@ const DETAIL_LABELS: Record<string, string> = {
   "Prompt profile": "Profile",
   "Prompt label": "Name",
   "Prompt file": "Profile",
+  Model: "Model",
+  Tune: "Tune",
+  Sampler: "Sampler",
   "VHS skip_first_frames": "skip_first_frames",
   "VHS frame_load_cap": "frame_load_cap",
   Exec: "Exec",
@@ -3700,7 +3706,7 @@ function WorkProductLorasEditor({
   );
 }
 
-type RecipeFamilyChoice = { slug: string; label: string; disabled?: boolean };
+type RecipeFamilyChoice = { slug: string; label: string; disabled?: boolean; title?: string };
 
 /** Shared Family / Prompt / Trim / Seed knobs for Re-run and Extend. */
 function RecipeSettingsCard({
@@ -3778,7 +3784,7 @@ function RecipeSettingsCard({
               onChange={(e) => onFamilyChange(e.target.value)}
             >
               {familyOptions.map((f) => (
-                <option key={f.slug} value={f.slug} disabled={f.disabled} title={f.slug}>
+                <option key={f.slug} value={f.slug} disabled={f.disabled} title={f.title || f.slug}>
                   {f.label}
                 </option>
               ))}
@@ -4644,21 +4650,23 @@ function WorkProductQuickQueue({
   const extendPromptAs =
     extendPromptChanged && selectedExtendPromptLabel ? ` · prompt ${selectedExtendPromptLabel}` : "";
   const extendFamilyLabel = familyLabels.get(extendFamily) || extendFamily;
+  const familyChoice = (slug: string, extra?: Partial<RecipeFamilyChoice>): RecipeFamilyChoice => {
+    const fam = (families || []).find((f) => f.slug === slug);
+    const short = familyLabels.get(slug) || slug;
+    return {
+      slug,
+      label: familyPickerOptionLabel(fam || { slug }, short),
+      title: familyPickerOptionTitle(fam || { slug }) || slug,
+      ...extra,
+    };
+  };
   const rerunFamilyOptions: RecipeFamilyChoice[] = [
-    ...(currentFamily
-      ? [{ slug: currentFamily, label: familyLabels.get(currentFamily) || currentFamily }]
-      : []),
-    ...swapTargets.map((f) => ({
-      slug: f.slug,
-      label: familyLabels.get(f.slug) || f.slug,
-      disabled: familyIsQuarantined(f.slug),
-    })),
+    ...(currentFamily ? [familyChoice(currentFamily)] : []),
+    ...swapTargets.map((f) => familyChoice(f.slug, { disabled: familyIsQuarantined(f.slug) })),
   ];
-  const extendFamilyOptions: RecipeFamilyChoice[] = extendFamilies.map((f) => ({
-    slug: f.slug,
-    label: familyLabels.get(f.slug) || f.slug,
-    disabled: familyIsQuarantined(f.slug),
-  }));
+  const extendFamilyOptions: RecipeFamilyChoice[] = extendFamilies.map((f) =>
+    familyChoice(f.slug, { disabled: familyIsQuarantined(f.slug) }),
+  );
   const renderDests = (kind: "rerun" | "swap" | "extend") => {
     const replace = kind === "swap";
     const extend = kind === "extend";
@@ -5328,6 +5336,25 @@ function WorkProductDetails({
             seed {Number(item.noise_seed)}
           </span>
         ) : null}
+        {item.spec_model ? (
+          <span className="work-product-badge" title={item.spec_title || "UNet family, quant, canvas, DisTorch"}>
+            {item.spec_model}
+          </span>
+        ) : null}
+        {item.spec_tune || item.spec_params ? (
+          <span className="work-product-badge work-product-badge--tune" title="Duration, steps, CFG, denoise">
+            {item.spec_tune || item.spec_params}
+          </span>
+        ) : !item.spec_model && item.spec_abbrev ? (
+          <span className="work-product-badge" title={item.spec_title || item.spec_abbrev}>
+            {item.spec_abbrev}
+          </span>
+        ) : null}
+        {item.spec_sampler ? (
+          <span className="work-product-badge work-product-badge--muted" title="Sampler, scheduler, TeaCache">
+            {item.spec_sampler}
+          </span>
+        ) : null}
         {item.pick_mode ? (
           <span className={`work-product-badge ${badgeClass(item.pick_mode)}`}>{item.pick_mode}</span>
         ) : null}
@@ -5670,9 +5697,10 @@ function WorkProductIndexRow({
             {item.status || "pending"}
           </span>
         </span>
-        <span className="work-product-index-row__sub" title={formatWhen(recencyStamp(item))}>
+        <span className="work-product-index-row__sub" title={item.spec_title || formatWhen(recencyStamp(item))}>
           {formatRelativeAge(recencyStamp(item))}
           {timing ? ` · ${timing.text}` : ""}
+          {specDisplayJoined(item) ? ` · ${specDisplayJoined(item)}` : ""}
         </span>
         <code className="work-product-index-row__key" title={item.job_key}>
           {workProductIdentityLabel(item)}

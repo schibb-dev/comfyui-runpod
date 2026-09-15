@@ -166,6 +166,26 @@ def list_shape_families(
             if defaults:
                 row["params_defaults"] = defaults
             try:
+                from graph_run_specs import extract_run_spec_from_template
+
+                run_spec = extract_run_spec_from_template(doc, data_root=Path(data_root))
+                abbrev = str((run_spec or {}).get("abbrev") or "").strip()
+                if abbrev:
+                    row["spec_abbrev"] = abbrev
+                    row["spec_title"] = str(run_spec.get("title") or abbrev)
+                model = str((run_spec or {}).get("spec_model") or "").strip()
+                params = str((run_spec or {}).get("spec_params") or "").strip()
+                if model:
+                    row["spec_model"] = model
+                if params:
+                    row["spec_params"] = params
+                    row["spec_tune"] = params
+                sampler = str((run_spec or {}).get("spec_sampler") or "").strip()
+                if sampler:
+                    row["spec_sampler"] = sampler
+            except Exception:
+                pass
+            try:
                 from shape_factory_owned_loras import load_template_lora_seed
 
                 loras, _, _ = load_template_lora_seed(
@@ -653,6 +673,79 @@ def _prompt_doc_for_job(job: Dict[str, Any], job_path: Path) -> Optional[Dict[st
         if isinstance(doc, dict):
             return doc
     return None
+
+
+def _run_spec_from_graph(graph: Any) -> Dict[str, Any]:
+    if not isinstance(graph, dict):
+        return {}
+    try:
+        from graph_run_specs import extract_run_spec
+
+        spec = extract_run_spec(graph)
+    except Exception:
+        return {}
+    return spec if isinstance(spec, dict) else {}
+
+
+def _apply_run_spec_fields(item: Dict[str, Any], run_spec: Dict[str, Any]) -> None:
+    if not isinstance(run_spec, dict):
+        return
+    abbrev = str(run_spec.get("abbrev") or "").strip()
+    model = str(run_spec.get("spec_model") or "").strip()
+    params = str(run_spec.get("spec_params") or "").strip()
+    if not (abbrev or model or params):
+        return
+    item["run_spec"] = run_spec
+    if abbrev:
+        item["spec_abbrev"] = abbrev
+    item["spec_title"] = run_spec.get("title") or abbrev
+    if model:
+        item["spec_model"] = model
+    if params:
+        item["spec_params"] = params
+        item["spec_tune"] = params
+    sampler = str(run_spec.get("spec_sampler") or "").strip()
+    if sampler:
+        item["spec_sampler"] = sampler
+
+
+def _run_spec_for_job(
+    job: Dict[str, Any],
+    job_path: Path,
+    *,
+    data_root: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Prompt graph first, then generated workflow, then family template."""
+    spec = _run_spec_from_graph(_prompt_doc_for_job(job, job_path))
+    if spec.get("abbrev"):
+        return spec
+    spec = _run_spec_from_graph(_workflow_doc_for_job(job, job_path))
+    if spec.get("abbrev"):
+        return spec
+    if data_root is None:
+        return spec
+    shape: Dict[str, Any] = {}
+    try:
+        from shape_factory import load_yaml, resolve_job_asset_path
+
+        shape_raw = str(job.get("shape_path") or "").strip()
+        workspace_root = Path(data_root).parent if Path(data_root).name == ".data" else Path(data_root)
+        if shape_raw:
+            sp = resolve_job_asset_path(shape_raw, data_root=Path(data_root), workspace_root=workspace_root)
+            if sp is not None and Path(sp).is_file():
+                loaded = load_yaml(Path(sp)) if str(sp).endswith((".yaml", ".yml")) else json.loads(Path(sp).read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    shape = loaded
+        from graph_run_specs import extract_run_spec_from_template
+
+        spec = extract_run_spec_from_template(
+            shape or job,
+            data_root=Path(data_root),
+            template_path=str(job.get("template_path") or shape.get("template") or "") or None,
+        )
+    except Exception:
+        return spec
+    return spec if isinstance(spec, dict) else {}
 
 
 _VHS_LOAD_CLASS_TYPES: frozenset[str] = frozenset(
@@ -1254,6 +1347,9 @@ def _detail_rows(item: Dict[str, Any]) -> List[Dict[str, Any]]:
         c0 = item.get("construction") if isinstance(item.get("construction"), dict) else {}
         seed_val = c0.get("noise_seed") if c0.get("noise_seed") is not None else c0.get("seed")
     add("Seed", seed_val)
+    add("Model", item.get("spec_model"))
+    add("Tune", item.get("spec_params") or item.get("spec_tune"))
+    add("Sampler", item.get("spec_sampler"))
     seed_mode = item.get("seed_mode")
     if seed_mode is None:
         c0 = item.get("construction") if isinstance(item.get("construction"), dict) else {}
@@ -2004,6 +2100,8 @@ def _work_product_item_from_job(
         "construction": construction,
         "warnings": job.get("warnings") or [],
     }
+    run_spec = _run_spec_for_job(job, path, data_root=data_root)
+    _apply_run_spec_fields(item, run_spec)
     rem = item.get("remediated") if isinstance(item.get("remediated"), dict) else None
     fail = item.get("failure") if isinstance(item.get("failure"), dict) else None
     if rem and fail:
@@ -2350,6 +2448,14 @@ def _factory_job_key_heuristic(name: str) -> Optional[str]:
     text = str(name or "").strip()
     if not text:
         return None
+    try:
+        from graph_run_specs import strip_run_spec_suffix
+
+        text = strip_run_spec_suffix(text)
+        if "/" in text.replace("\\", "/"):
+            text = strip_run_spec_suffix(Path(text.replace("\\", "/")).name)
+    except Exception:
+        pass
     if text.startswith("client:") or text.startswith("graph ("):
         return None
     if "__" in text or text.startswith("hourly"):
@@ -2531,6 +2637,8 @@ def _synthetic_live_work_product(
         "construction": {"step": "live", "source": "comfy_queue"},
         "bindings": {},
     }
+    run_spec = _run_spec_from_graph(prompt if isinstance(prompt, dict) else None)
+    _apply_run_spec_fields(item, run_spec)
     applied_vhs = _applied_vhs_window_from_prompt(prompt if isinstance(prompt, dict) else None)
     if applied_vhs is not None:
         item["applied_vhs"] = applied_vhs

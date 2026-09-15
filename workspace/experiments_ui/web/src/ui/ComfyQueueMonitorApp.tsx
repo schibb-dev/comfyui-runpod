@@ -96,6 +96,8 @@ type QueueGlanceRow = {
   prompt?: WorkProductPromptProfile | null;
   /** When set, the value is a named-window ComfyUI (or other) link. */
   hrefKind?: "comfyui";
+  emphasis?: boolean;
+  muted?: boolean;
 };
 
 function queueGlanceRows(
@@ -110,10 +112,16 @@ function queueGlanceRows(
 ): QueueGlanceRow[] {
   const g = item.glance || {};
   const rows: QueueGlanceRow[] = [];
-  const push = (key: string, label: string, value: string | null | undefined, title?: string) => {
+  const push = (
+    key: string,
+    label: string,
+    value: string | null | undefined,
+    title?: string,
+    flags?: { emphasis?: boolean; muted?: boolean },
+  ) => {
     const v = String(value || "").trim();
     if (!v) return;
-    rows.push({ key, label, value: v, title });
+    rows.push({ key, label, value: v, title, ...flags });
   };
 
   if (g.is_hourly) push("hourly", "Kind", "Hourly", "Hourly planner job");
@@ -134,16 +142,22 @@ function queueGlanceRows(
     push("trim", "Trim", opts.trimBadge.text, opts.trimBadge.title);
   }
   {
-    const samplerBits = [g.sampler_name, g.scheduler].filter(Boolean).map(String);
-    const extras = [
-      g.cfg != null && String(g.cfg).trim() !== "" ? `cfg ${g.cfg}` : null,
-      g.steps != null && String(g.steps).trim() !== "" ? `steps ${g.steps}` : null,
-      g.denoise != null && String(g.denoise).trim() !== "" && Number(g.denoise) !== 1
-        ? `denoise ${g.denoise}`
-        : null,
-    ].filter(Boolean);
-    if (samplerBits.length || extras.length) {
-      push("sampler", "Sampler", [...samplerBits, ...extras].join(" · "));
+    const model = String(g.spec_model || "").trim();
+    const tune = String(g.spec_tune || g.spec_params || "").trim();
+    const aux = String(g.spec_sampler || "").trim();
+    if (model || tune) {
+      push("model", "Model", model || null, g.unet_name || g.spec_title || "UNet family, quant, canvas, DisTorch");
+      push("tune", "Tune", tune || null, "Duration, steps, CFG, denoise", { emphasis: true });
+    } else {
+      push("spec", "Spec", g.spec_abbrev || null, g.spec_title || "Generation spec");
+    }
+    if (aux) {
+      push("sampler", "Sampler", aux, "Sampler, scheduler, TeaCache", { muted: true });
+    } else {
+      const samplerBits = [g.sampler_name, g.scheduler].filter(Boolean).map(String);
+      if (samplerBits.length) {
+        push("sampler", "Sampler", samplerBits.join(" "), "Sampler, scheduler, TeaCache", { muted: true });
+      }
     }
   }
   {
@@ -480,7 +494,16 @@ function QueuePipelineRow({
           {glanceRows && glanceRows.length ? (
             <dl className="pipeline-row__glance" aria-label="Job summary">
               {glanceRows.map((row) => (
-                <div key={row.key} className="pipeline-row__glance-row">
+                <div
+                  key={row.key}
+                  className={[
+                    "pipeline-row__glance-row",
+                    row.emphasis ? "pipeline-row__glance-row--emphasis" : "",
+                    row.muted ? "pipeline-row__glance-row--muted" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                >
                   <dt>{row.label}</dt>
                   <dd
                     className={

@@ -11527,6 +11527,15 @@ def _extract_key_params_from_prompt(prompt_obj: Any) -> Dict[str, Any]:
                         out["force_rate"] = fr
                 except (TypeError, ValueError):
                     pass
+    try:
+        d = _workspace_scripts_dir()
+        if d.is_dir() and str(d) not in sys.path:
+            sys.path.insert(0, str(d))
+        from graph_run_specs import extract_run_spec, merge_run_spec_into_params  # type: ignore
+
+        merge_run_spec_into_params(out, extract_run_spec(prompt_obj))
+    except Exception:
+        pass
     return out
 
 
@@ -11735,6 +11744,25 @@ def _queue_enrich_from_job(
             except (TypeError, ValueError):
                 continue
     for k in ("sampler_name", "scheduler", "cfg", "steps", "denoise"):
+        if k in params and params[k] is not None and str(params[k]).strip() != "":
+            glance[k] = params[k]
+    for k in (
+        "spec_abbrev",
+        "spec_title",
+        "spec_model",
+        "spec_params",
+        "spec_tune",
+        "spec_sampler",
+        "unet_name",
+        "unet_family",
+        "quant",
+        "width",
+        "height",
+        "duration_sec",
+        "teacache",
+        "teacache_coefficients",
+        "virtual_vram_gb",
+    ):
         if k in params and params[k] is not None and str(params[k]).strip() != "":
             glance[k] = params[k]
 

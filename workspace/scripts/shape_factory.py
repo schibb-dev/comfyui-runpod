@@ -2793,6 +2793,15 @@ def apply_api_slot_bindings(
     prefix = str(job.get("output_prefix") or "").rstrip("/")
     prefix = flatten_output_prefix(prefix)
     if prefix:
+        try:
+            from graph_run_specs import append_run_spec_to_prefix, extract_run_spec
+
+            token = str((extract_run_spec(prompt) or {}).get("fs_token") or "").strip()
+            if token:
+                prefix = append_run_spec_to_prefix(prefix, token)
+        except Exception:
+            pass
+    if prefix:
         final_ids: set[str] = set()
         for prod in shape.get("produces") or []:
             if not isinstance(prod, dict):
