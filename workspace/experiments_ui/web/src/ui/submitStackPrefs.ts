@@ -297,3 +297,21 @@ export function pickSubmitStack(
 export function resolveSubmitRouteKind(isStill: boolean): SubmitRouteKind {
   return isStill ? "still" : "video";
 }
+
+/** Initial stack for Submit compose (cookie + catalog, before async family boot). */
+export function pickSubmitStackForOpen(
+  stacks: GenerationStackOption[] | null | undefined,
+  opts: {
+    isStill: boolean;
+    familySlug?: string | null;
+    jobStackId?: string | null;
+    familyStackId?: string | null;
+  },
+): string {
+  return pickSubmitStack(stacks, {
+    routeKind: resolveSubmitRouteKind(opts.isStill),
+    familySlug: opts.familySlug,
+    jobStackId: opts.jobStackId,
+    familyStackId: opts.familyStackId,
+  });
+}

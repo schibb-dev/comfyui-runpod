@@ -3,6 +3,7 @@ import {
   familyRouteKey,
   findStackIdByModelSignature,
   pickSubmitStack,
+  pickSubmitStackForOpen,
   readSubmitStackPrefs,
   rememberSubmitStack,
   setSubmitStackCookieStoreForTests,
@@ -132,6 +133,22 @@ describe("submitStackPrefs", () => {
       },
       modelSignature: "480p:q8",
     });
+  });
+
+  it("pickSubmitStackForOpen uses still route and saved model signature", () => {
+    writeSubmitStackPrefs({
+      lastByRoute: { video: "i2v-720p-Q5" },
+      byFamilyRoute: {},
+      recentByRoute: {},
+      modelSignature: "480p:q8",
+    });
+    expect(
+      pickSubmitStackForOpen(stacks, {
+        isStill: true,
+        familySlug: "FB9-FaceBlast",
+        familyStackId: "i2v-720p-Q5",
+      }),
+    ).toBe("i2v-480p-Q8");
   });
 
   it("migrates v1 cookie shape: video byFamily only, model carries to still", () => {

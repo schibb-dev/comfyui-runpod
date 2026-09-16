@@ -16,6 +16,7 @@ import { parseStillDeepLink, stillsHref, buildSubmitDeepLink, discoveryLibraryHr
 import { PageHeader } from "./PageHeader";
 import { queryKeys } from "./queryKeys";
 import { SubmitComposerModal } from "./SubmitComposerModal";
+import { prefetchFamiliesBootstrap } from "./shapeFactorySessionCache";
 import { AppetitePreviewBadge } from "./AppetitePreviewBadge";
 import { WorkProductAppetiteStrip } from "./WorkProductAppetiteStrip";
 import type { InputCurationCollection, InputCurationStillItem, StillTagEvent } from "./types";
@@ -135,6 +136,10 @@ export function StillGalleryApp() {
   const eventAfterId = useRef(0);
   const deepLinkDone = useRef(false);
   const [deepLinkHitPath, setDeepLinkHitPath] = useState<string | null>(null);
+
+  useEffect(() => {
+    prefetchFamiliesBootstrap();
+  }, []);
 
   useEffect(() => {
     const t = window.setTimeout(() => setQDebounced(q.trim()), 250);

@@ -82,7 +82,12 @@ import { SubmitPromptEditor, type SubmitPromptEditorHandle, type SubmitPromptOve
 import { VideoTrimControls, type VideoTrimPlaybackMode } from "./VideoTrimControls";
 import { useTrimPlaybackEnforcement } from "./useTrimPlayback";
 import { marksToVhsWindow } from "./workProductTrim";
-import { pickSubmitStack, rememberSubmitStack, resolveSubmitRouteKind } from "./submitStackPrefs";
+import {
+  pickSubmitStack,
+  pickSubmitStackForOpen,
+  rememberSubmitStack,
+  resolveSubmitRouteKind,
+} from "./submitStackPrefs";
 
 type RowLayout = "split" | "stacked";
 
@@ -298,18 +303,24 @@ function StackSelect({
   title?: string;
 }) {
   if (!stacks.length) return null;
-  const valid = stacks.some((s) => s.stack_id === value) ? value : stacks[0]?.stack_id || "";
+  const inCatalog = stacks.some((s) => s.stack_id === value);
+  const selectValue = inCatalog ? value : "";
   return (
     <label className="work-product-quick-queue__family-wrap">
       <span className="work-product-quick-queue__family-label">{label}</span>
       <select
         className="work-product-quick-queue__family"
-        value={valid}
+        value={selectValue}
         disabled={disabled}
         aria-label={`${label} generation profile`}
         title={title}
         onChange={(e) => onChange(e.target.value)}
       >
+        {!selectValue ? (
+          <option value="" disabled>
+            Stack…
+          </option>
+        ) : null}
         {stacks.map((s) => (
           <option key={s.stack_id} value={s.stack_id} title={stackPickerOptionLabel(s)}>
             {stackPickerOptionLabel(s)}
@@ -1835,7 +1846,20 @@ function SubmitAdvanceComposerApp({
   );
   const [stacks, setStacks] = useState<GenerationStackOption[]>(() => cachedFamiliesBoot?.stacks || []);
   const [sourceJobStackId, setSourceJobStackId] = useState<string | null>(null);
-  const [submitStack, setSubmitStack] = useState("");
+  const initialI2vFamily = useMemo(() => {
+    if (!isStillMediaPath(intent.mediaRelpath)) return "";
+    if (intent.family) return intent.family;
+    if (!cachedFamiliesBoot) return "";
+    return pickDefaultI2VFamily(cachedFamiliesBoot.families || [], intent.family);
+  }, [cachedFamiliesBoot, intent.family, intent.mediaRelpath]);
+  const [submitStack, setSubmitStack] = useState(() =>
+    pickSubmitStackForOpen(cachedFamiliesBoot?.stacks || [], {
+      isStill: isStillMediaPath(intent.mediaRelpath),
+      familySlug: initialI2vFamily || intent.family,
+      familyStackId: familyStackId(cachedFamiliesBoot?.families, initialI2vFamily || intent.family),
+    }),
+  );
+  const stackTouchedRef = useRef(false);
   const [extendOn, setExtendOn] = useState(initialRoutes.extend);
   const [varyOn, setVaryOn] = useState(initialRoutes.vary);
   const [deriveOn, setDeriveOn] = useState(initialRoutes.derive);
@@ -2189,17 +2213,24 @@ function SubmitAdvanceComposerApp({
   }, [stacks, submitStack]);
 
   useEffect(() => {
+    stackTouchedRef.current = false;
+  }, [intent.mediaRelpath, intent.fromJob, intent.family]);
+
+  useEffect(() => {
+    if (!stacks.length) return;
     const intentFamily = String(intent.family || "").trim();
     const preferJobStack =
       sourceJobStackId && (!intentFamily || durationFamily === intentFamily) ? sourceJobStackId : null;
-    setSubmitStack(
-      pickSubmitStack(stacks, {
-        routeKind: submitRouteKind,
-        jobStackId: preferJobStack,
-        familyStackId: durationFamilyStackId,
-        familySlug: durationFamily,
-      }),
-    );
+    const picked = pickSubmitStack(stacks, {
+      routeKind: submitRouteKind,
+      jobStackId: preferJobStack,
+      familyStackId: durationFamilyStackId,
+      familySlug: durationFamily,
+    });
+    setSubmitStack((prev) => {
+      if (stackTouchedRef.current && prev && stacks.some((s) => s.stack_id === prev)) return prev;
+      return picked;
+    });
   }, [
     durationFamily,
     durationFamilyStackId,
@@ -2212,6 +2243,7 @@ function SubmitAdvanceComposerApp({
 
   const chooseSubmitStack = useCallback(
     (stackId: string) => {
+      stackTouchedRef.current = true;
       setSubmitStack(stackId);
       rememberSubmitStack(stackId, {
         routeKind: submitRouteKind,
@@ -2367,8 +2399,10 @@ function SubmitAdvanceComposerApp({
                 : `Seeded ${i2vFamily}`,
         );
         void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.submitAttemptsRoot });
-        if (res.job_key) {
+        if (submitStack) {
           rememberSubmitStack(submitStack, { routeKind: "still", familySlug: i2vFamily, stacks });
+        }
+        if (res.job_key) {
           onSubmitted?.({ jobKeys: [res.job_key] });
           clearStickyIdentity();
         }
