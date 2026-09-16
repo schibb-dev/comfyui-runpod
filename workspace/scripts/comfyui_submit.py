@@ -381,7 +381,7 @@ def submit_prompt_to_comfyui(
     normalize_prompt_output_prefixes(prompt)
     apply_queue_date_to_prompt(prompt)
     try:
-        from graph_run_specs import apply_run_spec_suffix_to_prompt
+        from graph_run_specs import apply_run_spec_suffix_to_prompt, apply_run_spec_suffix_to_workflow
 
         apply_run_spec_suffix_to_prompt(prompt)
     except Exception:
@@ -398,6 +398,12 @@ def submit_prompt_to_comfyui(
         workflow_name=workflow_name,
     )
     if isinstance(workflow_copy, dict) and workflow_copy:
+        try:
+            from graph_run_specs import apply_run_spec_suffix_to_workflow
+
+            apply_run_spec_suffix_to_workflow(workflow_copy)
+        except Exception:
+            pass
         extra_data["extra_pnginfo"] = {"workflow": workflow_copy}
     extra_data.update(workflow_meta)
     if extra_data:

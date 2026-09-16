@@ -1831,6 +1831,13 @@ def generate_job_for_picks(
         job_key = slug(job_key, room) + extra_suffix
 
     output_prefix = f"{prefix_root}/{job_key}"
+    try:
+        from graph_run_specs import extract_run_spec, stamp_prefix_with_graph_spec
+
+        output_prefix = stamp_prefix_with_graph_spec(output_prefix, workflow)
+        _generate_run_spec = extract_run_spec(workflow)
+    except Exception:
+        _generate_run_spec = {}
     final_node_ids: set[int] = set()
     for prod in shape.get("produces") or []:
         if not isinstance(prod, dict):
@@ -1914,6 +1921,12 @@ def generate_job_for_picks(
         from shape_factory_stack import stamp_job_stack
 
         stamp_job_stack(job_meta, (stack_changes or {}).get("stack"))
+    except Exception:
+        pass
+    try:
+        from graph_run_specs import stamp_job_run_spec
+
+        stamp_job_run_spec(job_meta, _generate_run_spec)
     except Exception:
         pass
     if isinstance(draft_for_window.get("vhs_window"), dict):
@@ -4817,6 +4830,14 @@ def resolve_prompt_for_job(
     warnings.extend(repair_ui_workflow_for_submit(workflow))
     final_ids = _produce_node_ids(shape)
     queued = apply_queue_date_to_prefix(str(job.get("output_prefix") or ""))
+    try:
+        from graph_run_specs import extract_run_spec, stamp_job_run_spec, stamp_prefix_with_graph_spec
+
+        if queued:
+            queued = stamp_prefix_with_graph_spec(queued, workflow)
+        stamp_job_run_spec(job, extract_run_spec(workflow))
+    except Exception:
+        pass
     if queued:
         job["output_prefix"] = queued
         strip_video_previews_and_redirect_outputs(
@@ -5139,6 +5160,12 @@ def rebuild_job_workflow(
         pass
 
     output_prefix = flatten_output_prefix(str(job.get("output_prefix") or ""))
+    try:
+        from graph_run_specs import stamp_prefix_with_graph_spec
+
+        output_prefix = stamp_prefix_with_graph_spec(output_prefix, workflow)
+    except Exception:
+        pass
     final_node_ids: set[int] = set()
     for prod in shape.get("produces") or []:
         if not isinstance(prod, dict):
@@ -5416,6 +5443,19 @@ def submit_job_file(
         server,
         convert_timeout,
     )
+    try:
+        from graph_run_specs import (
+            apply_run_spec_suffix_to_prompt,
+            apply_run_spec_suffix_to_workflow,
+            extract_run_spec,
+            stamp_job_run_spec,
+        )
+
+        apply_run_spec_suffix_to_prompt(prompt_obj)
+        apply_run_spec_suffix_to_workflow(workflow)
+        stamp_job_run_spec(job, extract_run_spec(prompt_obj))
+    except Exception:
+        pass
     t_prep1 = time.time()
     atomic_write_json(workflow_path, workflow)
     persist_job()

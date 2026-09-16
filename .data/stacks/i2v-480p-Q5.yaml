@@ -3,7 +3,7 @@ stack_id: i2v-480p-Q5
 unet_family: wan2.1-i2v-14b
 training_size: 480p
 quant: Q5_K_M
-unet_name: wan2.1-i2v-14b-480p-Q5_K_M.gguf
+unet_name: WAN/wan2.1-i2v-14b-480p-Q5_K_M.gguf
 teacache_coefficients: i2v_480
 virtual_vram_gb: 4
 # CLIP omitted: GGUF vs fp8 loader types differ across origin/GEX graphs.

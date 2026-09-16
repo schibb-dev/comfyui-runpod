@@ -90,6 +90,18 @@ def _as_stack_id(raw: Any) -> Optional[str]:
     return text or None
 
 
+def normalize_unet_name(unet: str) -> str:
+    """Map bare filenames to ComfyUI loader paths (``WAN/…`` vs unet root)."""
+    u = str(unet or "").strip().replace("\\", "/")
+    if not u:
+        return u
+    base = u.rsplit("/", 1)[-1]
+    # Q5_K_M i2v weights are under models/unet/WAN/; Q8_0 480p stays at unet root.
+    if re.match(r"wan2\.1-i2v-14b-(480p|720p)-Q5_K_M\.gguf", base, re.I):
+        return f"WAN/{base}"
+    return u
+
+
 def load_stack(
     stack_id: str,
     *,
@@ -109,6 +121,8 @@ def load_stack(
     doc.setdefault("stack_id", sid)
     if str(doc.get("stack_id") or "").strip() != sid:
         raise ValueError(f"stack file {path.name} stack_id {doc.get('stack_id')!r} != {sid!r}")
+    if doc.get("unet_name"):
+        doc["unet_name"] = normalize_unet_name(str(doc["unet_name"]))
     errs = validate_stack(doc)
     if errs:
         raise ValueError(f"invalid stack {sid}: " + "; ".join(errs))
@@ -179,7 +193,7 @@ def stack_job_fields(stack: Dict[str, Any]) -> Dict[str, Any]:
         virt_n = None
     out: Dict[str, Any] = {
         "stack_id": str(stack.get("stack_id") or "").strip(),
-        "unet_name": str(stack.get("unet_name") or "").strip(),
+        "unet_name": normalize_unet_name(str(stack.get("unet_name") or "")),
         "teacache_coefficients": str(stack.get("teacache_coefficients") or "").strip(),
     }
     if str(stack.get("quant") or "").strip():
@@ -293,7 +307,7 @@ def apply_shape_stack_api(
 
 def apply_stack_ui(workflow: dict[str, Any], stack: dict[str, Any]) -> dict[str, Any]:
     patched: list[dict[str, Any]] = []
-    unet = str(stack.get("unet_name") or "").strip()
+    unet = normalize_unet_name(str(stack.get("unet_name") or ""))
     virt = stack.get("virtual_vram_gb")
     coeffs = str(stack.get("teacache_coefficients") or "").strip()
     clip_name = str(stack.get("clip_name") or "").strip()
@@ -324,7 +338,7 @@ def apply_stack_ui(workflow: dict[str, Any], stack: dict[str, Any]) -> dict[str,
 
 def apply_stack_api(prompt: dict[str, Any], stack: dict[str, Any]) -> dict[str, Any]:
     patched: list[dict[str, Any]] = []
-    unet = str(stack.get("unet_name") or "").strip()
+    unet = normalize_unet_name(str(stack.get("unet_name") or ""))
     virt = stack.get("virtual_vram_gb")
     coeffs = str(stack.get("teacache_coefficients") or "").strip()
     clip_name = str(stack.get("clip_name") or "").strip()

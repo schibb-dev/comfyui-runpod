@@ -11,8 +11,10 @@ import yaml
 from graph_run_specs import (
     append_run_spec_to_prefix,
     apply_run_spec_suffix_to_prompt,
+    apply_run_spec_suffix_to_workflow,
     extract_run_spec,
     extract_run_spec_from_template,
+    stamp_prefix_with_graph_spec,
     strip_run_spec_suffix,
 )
 
@@ -220,6 +222,70 @@ class GraphRunSpecsTests(unittest.TestCase):
         spec2 = extract_run_spec_from_template(gex, data_root=data)
         self.assertTrue(str(spec2.get("spec_model") or "").startswith("480p-Q8"), spec2.get("spec_model"))
         self.assertEqual(spec2.get("teacache_coefficients"), "i2v_480")
+
+    def test_template_spec_follows_job_stack_override(self) -> None:
+        data = Path(__file__).resolve().parents[2] / ".data"
+        kneel = yaml.safe_load((data / "shapes" / "X-KNEEL-FB9.shape.yaml").read_text(encoding="utf-8"))
+        spec = extract_run_spec_from_template(
+            kneel,
+            data_root=data,
+            job={"adhoc_overrides": {"stack": "i2v-480p-Q5"}},
+        )
+        self.assertTrue(str(spec.get("spec_model") or "").startswith("480p-Q5"), spec.get("spec_model"))
+        self.assertEqual(spec.get("teacache_coefficients"), "i2v_480")
+        self.assertIn("480p-Q5", str(spec.get("unet_name") or ""))
+
+    def test_suffix_follows_stacked_unet_not_catalog(self) -> None:
+        from shape_factory_stack import apply_stack_api, load_stack
+
+        prompt = _api_prompt(
+            unet="WAN/wan2.1-i2v-14b-720p-Q5_K_M.gguf",
+            width=576,
+            height=1024,
+            duration=6.5,
+            steps=28,
+            tea=0.25,
+            vv=4.0,
+        )
+        apply_stack_api(prompt, load_stack("i2v-480p-Q8"))
+        apply_run_spec_suffix_to_prompt(prompt)
+        final = prompt["398"]["inputs"]["filename_prefix"]
+        self.assertIn("__rs-480p_Q8", final)
+        self.assertNotIn("720p_Q5", final)
+        spec = extract_run_spec(prompt)
+        self.assertTrue(str(spec.get("spec_model") or "").startswith("480p-Q8"), spec.get("spec_model"))
+        self.assertEqual(spec.get("teacache_coefficients"), "i2v_480")
+
+    def test_workflow_suffix_and_stamp_follow_litegraph_stack(self) -> None:
+        from shape_factory_stack import apply_stack_ui, load_stack
+
+        wf = {
+            "nodes": [
+                {
+                    "id": 458,
+                    "type": "UnetLoaderGGUFDisTorchMultiGPU",
+                    "title": "Model",
+                    "widgets_values": ["WAN/wan2.1-i2v-14b-720p-Q5_K_M.gguf", "cuda:0", 4.0, False, ""],
+                },
+                {
+                    "id": 398,
+                    "type": "VHS_VideoCombine",
+                    "widgets_values": {
+                        "filename_prefix": "og/2026-09-15/hourly/jobkey",
+                        "save_output": True,
+                        "save_metadata": True,
+                    },
+                },
+            ]
+        }
+        apply_stack_ui(wf, load_stack("i2v-480p-Q8"))
+        prefix = stamp_prefix_with_graph_spec("og/2026-09-15/hourly/jobkey", wf)
+        self.assertIn("__rs-480p_Q8", prefix)
+        wf["nodes"][1]["widgets_values"]["filename_prefix"] = prefix
+        apply_run_spec_suffix_to_workflow(wf)
+        self.assertEqual(wf["nodes"][1]["widgets_values"]["filename_prefix"], prefix)
+        spec = extract_run_spec(wf)
+        self.assertTrue(str(spec.get("spec_model") or "").startswith("480p-Q8"), spec.get("spec_model"))
 
 
 if __name__ == "__main__":

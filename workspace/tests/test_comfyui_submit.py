@@ -93,6 +93,62 @@ class ComfyUiSubmitTests(unittest.TestCase):
         # Caller graph is not mutated.
         self.assertNotIn("__rs-", prompt["398"]["inputs"]["filename_prefix"])
 
+    def test_submit_embeds_stacked_model_on_workflow_metadata(self) -> None:
+        prompt = {
+            "458": {
+                "class_type": "UnetLoaderGGUFDisTorchMultiGPU",
+                "inputs": {
+                    "unet_name": "wan2.1-i2v-14b-480p-Q8_0.gguf",
+                    "virtual_vram_gb": 6.0,
+                },
+                "_meta": {"title": "Model"},
+            },
+            "398": {
+                "class_type": "VHS_VideoCombine",
+                "inputs": {"filename_prefix": "og/2026-09-15/hourly/jobkey", "save_output": True},
+            },
+        }
+        workflow_ui = {
+            "nodes": [
+                {
+                    "id": 458,
+                    "type": "UnetLoaderGGUFDisTorchMultiGPU",
+                    "title": "Model",
+                    "widgets_values": ["wan2.1-i2v-14b-480p-Q8_0.gguf", "cuda:0", 6.0, False, ""],
+                },
+                {
+                    "id": 398,
+                    "type": "VHS_VideoCombine",
+                    "widgets_values": {
+                        "filename_prefix": "og/2026-09-15/hourly/jobkey",
+                        "save_output": True,
+                        "save_metadata": True,
+                    },
+                },
+            ],
+            "links": [],
+            "version": 0.4,
+        }
+        captured = {}
+
+        def fake_http_json(method: str, url: str, payload=None, timeout_s: int = 30):
+            captured["payload"] = payload
+            return {"prompt_id": "pid-meta"}
+
+        with mock.patch.object(comfyui_submit, "_http_json", side_effect=fake_http_json):
+            comfyui_submit.submit_prompt_to_comfyui(
+                "http://127.0.0.1:8188",
+                prompt,
+                workflow_ui=workflow_ui,
+            )
+
+        posted = captured["payload"]["prompt"]
+        self.assertIn("__rs-480p_Q8", posted["398"]["inputs"]["filename_prefix"])
+        wf = ((captured["payload"].get("extra_data") or {}).get("extra_pnginfo") or {}).get("workflow") or {}
+        combine = next(n for n in wf["nodes"] if n.get("id") == 398)
+        self.assertIn("__rs-480p_Q8", combine["widgets_values"]["filename_prefix"])
+        self.assertNotIn("__rs-", workflow_ui["nodes"][1]["widgets_values"]["filename_prefix"])
+
 
 if __name__ == "__main__":
     unittest.main()

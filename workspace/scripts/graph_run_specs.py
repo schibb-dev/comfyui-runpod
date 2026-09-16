@@ -92,8 +92,13 @@ def extract_run_spec_from_template(
     *,
     data_root: Path,
     template_path: Optional[str] = None,
+    job: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Load a family catalog template (runtime ui_defaults, then named stack) and extract a spec."""
+    """Load a family catalog template (runtime ui_defaults, then named stack) and extract a spec.
+
+    ``job`` supplies ``adhoc_overrides.stack`` so the spec follows the stack
+    that will actually run, not the fossil catalog UNet widgets.
+    """
     try:
         from shape_factory import apply_shape_stack_ui, apply_shape_ui_defaults_ui, read_json, resolve_job_asset_path
     except Exception:
@@ -117,7 +122,7 @@ def extract_run_spec_from_template(
     if shape:
         try:
             apply_shape_ui_defaults_ui(wf, shape)
-            apply_shape_stack_ui(wf, shape)
+            apply_shape_stack_ui(wf, shape, job)
         except Exception:
             pass
     return extract_run_spec(wf)
@@ -178,11 +183,42 @@ def merge_run_spec_into_params(params: Dict[str, Any], spec: Optional[Dict[str, 
         params["spec_sampler"] = sampler_abbrev
 
 
+def stamp_prefix_with_graph_spec(prefix: str, graph: Any) -> str:
+    """Append ``__rs-…`` from the stacked graph so names follow the UNet that will run."""
+    token = str((extract_run_spec(graph) or {}).get("fs_token") or "").strip()
+    if not token:
+        return str(prefix or "")
+    return append_run_spec_to_prefix(prefix, token)
+
+
+def stamp_job_run_spec(job: Dict[str, Any], spec: Optional[Dict[str, Any]]) -> None:
+    """Copy glance fields onto job.json from the graph after stack apply."""
+    if not isinstance(job, dict) or not isinstance(spec, dict):
+        return
+    model = str(spec.get("spec_model") or "").strip()
+    if model:
+        job["spec_model"] = model
+    token = str(spec.get("fs_token") or spec.get("spec_fs") or "").strip()
+    if token:
+        job["spec_fs"] = token
+    tune = str(spec.get("spec_tune") or spec.get("spec_params") or "").strip()
+    if tune:
+        job["spec_tune"] = tune
+    title = str(spec.get("spec_title") or spec.get("title") or "").strip()
+    if title:
+        job["spec_title"] = title
+    unet = str(spec.get("unet_name") or "").strip()
+    if unet:
+        job["unet_name"] = unet
+
+
 def apply_run_spec_suffix_to_prompt(prompt: Dict[str, Any]) -> list[str]:
     """Append ``__rs-…`` to final save prefixes. Idempotent. Skips preview/debug."""
     changes: list[str] = []
     if not isinstance(prompt, dict):
         return changes
+    if _is_litegraph(prompt):
+        return apply_run_spec_suffix_to_workflow(prompt)
     spec = extract_run_spec(prompt)
     token = str(spec.get("fs_token") or "").strip()
     if not token:
@@ -205,6 +241,35 @@ def apply_run_spec_suffix_to_prompt(prompt: Dict[str, Any]) -> list[str]:
         if new != raw:
             inputs["filename_prefix"] = new
             changes.append(f"{nid}.filename_prefix: {raw!r} -> {new!r}")
+    return changes
+
+
+def apply_run_spec_suffix_to_workflow(workflow: Dict[str, Any]) -> list[str]:
+    """Same ``__rs-…`` stamp on LiteGraph VHS/Save widgets (embedded extra_pnginfo)."""
+    changes: list[str] = []
+    if not isinstance(workflow, dict) or not _is_litegraph(workflow):
+        return changes
+    spec = extract_run_spec(workflow)
+    token = str(spec.get("fs_token") or "").strip()
+    if not token:
+        return changes
+    for node in workflow.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        ntype = str(node.get("type") or node.get("class_type") or "")
+        if ntype not in _OUTPUT_PREFIX_TYPES:
+            continue
+        widgets = node.get("widgets_values")
+        if isinstance(widgets, dict):
+            if widgets.get("save_output") is False:
+                continue
+            raw = widgets.get("filename_prefix")
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            new = append_run_spec_to_prefix(raw, token)
+            if new != raw:
+                widgets["filename_prefix"] = new
+                changes.append(f"{node.get('id')}.filename_prefix: {raw!r} -> {new!r}")
     return changes
 
 

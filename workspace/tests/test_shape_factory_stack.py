@@ -17,17 +17,34 @@ from shape_factory_stack import (
     format_stack_label,
     list_stacks,
     load_stack,
+    normalize_unet_name,
     stamp_job_stack,
     validate_stack,
 )
 
 
 class ValidateStackTests(unittest.TestCase):
+    def test_normalize_unet_name_adds_wan_prefix_for_q5(self) -> None:
+        self.assertEqual(
+            normalize_unet_name("wan2.1-i2v-14b-480p-Q5_K_M.gguf"),
+            "WAN/wan2.1-i2v-14b-480p-Q5_K_M.gguf",
+        )
+        self.assertEqual(
+            normalize_unet_name("WAN/wan2.1-i2v-14b-720p-Q5_K_M.gguf"),
+            "WAN/wan2.1-i2v-14b-720p-Q5_K_M.gguf",
+        )
+        self.assertEqual(
+            normalize_unet_name("wan2.1-i2v-14b-480p-Q8_0.gguf"),
+            "wan2.1-i2v-14b-480p-Q8_0.gguf",
+        )
+
     def test_repo_stacks_load(self) -> None:
         for sid in ("i2v-720p-Q5", "i2v-480p-Q8", "i2v-480p-Q5"):
             doc = load_stack(sid)
             self.assertEqual(doc["stack_id"], sid)
             self.assertEqual(validate_stack(doc), [])
+        q5_480 = load_stack("i2v-480p-Q5")
+        self.assertEqual(q5_480["unet_name"], "WAN/wan2.1-i2v-14b-480p-Q5_K_M.gguf")
 
     def test_list_stacks_labels(self) -> None:
         rows = list_stacks()
