@@ -61,6 +61,16 @@ export function stackPickerOptionLabel(stack: GenerationStackOption | null | und
   return label || id;
 }
 
+export function familyStackId(
+  families: WorkProductFamilyOption[] | null | undefined,
+  slug: string | null | undefined,
+): string | null {
+  const s = String(slug || "").trim();
+  if (!s) return null;
+  const raw = String((families || []).find((f) => f.slug === s)?.stack_id || "").trim();
+  return raw || null;
+}
+
 export function pickRerunStack(
   stacks: GenerationStackOption[] | null | undefined,
   prefer?: { jobStackId?: string | null; familyStackId?: string | null },

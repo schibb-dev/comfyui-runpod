@@ -10,7 +10,7 @@ import {
   type ShapeFactoryClipsListResponse,
 } from "./api";
 import { clearSessionListCache, getSessionListCache, setSessionListCache } from "./sessionListCache";
-import type { WorkProductFamilyOption } from "./types";
+import type { GenerationStackOption, WorkProductFamilyOption } from "./types";
 
 export type FamiliesBootstrap = {
   families: WorkProductFamilyOption[];
@@ -18,10 +18,11 @@ export type FamiliesBootstrap = {
   vary_families: WorkProductFamilyOption[];
   derive_families: WorkProductFamilyOption[];
   extend_family_defaults: Record<string, string>;
+  stacks: GenerationStackOption[];
   fingerprint?: string;
 };
 
-const FAMILIES_KEY = "sf:families-bootstrap-v3";
+const FAMILIES_KEY = "sf:families-bootstrap-v4";
 /** Config-only endpoint — long TTL; fingerprint still refreshes on soft reload. */
 const FAMILIES_TTL_MS = 60 * 60 * 1000;
 const CLIPS_TTL_MS = 5 * 60 * 1000;
@@ -55,6 +56,7 @@ function normalizeFamiliesBoot(input: {
   extend_families?: WorkProductFamilyOption[] | null;
   vary_families?: WorkProductFamilyOption[] | null;
   derive_families?: WorkProductFamilyOption[] | null;
+  stacks?: GenerationStackOption[] | null;
   sets?: {
     extend?: WorkProductFamilyOption[] | null;
     vary?: WorkProductFamilyOption[] | null;
@@ -73,6 +75,7 @@ function normalizeFamiliesBoot(input: {
     vary_families: vary,
     derive_families: derive,
     extend_family_defaults: input.extend_family_defaults || {},
+    stacks: input.stacks || [],
     fingerprint: input.fingerprint || undefined,
   };
 }
@@ -89,6 +92,7 @@ export function putFamiliesBootstrap(value: FamiliesBootstrap): void {
 /** Write families extracted from any work-products response (partial; no discrete sets). */
 export function rememberFamiliesFromWorkProducts(res: {
   families?: WorkProductFamilyOption[] | null;
+  stacks?: GenerationStackOption[] | null;
   extend_family_defaults?: Record<string, string> | null;
 }): void {
   const prev = peekFamiliesBootstrap();
@@ -98,6 +102,7 @@ export function rememberFamiliesFromWorkProducts(res: {
       extend_families: prev?.extend_families,
       vary_families: prev?.vary_families,
       derive_families: prev?.derive_families,
+      stacks: res.stacks || prev?.stacks || [],
       extend_family_defaults: res.extend_family_defaults || prev?.extend_family_defaults || {},
       fingerprint: prev?.fingerprint,
     }),
@@ -114,7 +119,7 @@ export async function loadFamiliesBootstrap(opts?: {
       const n = Number(f.params_defaults?.frames);
       return Number.isFinite(n) && n > 0;
     });
-    if (cachedHasProfiles && cachedHasFrameDefaults) {
+    if (cachedHasProfiles && cachedHasFrameDefaults && (hit.value.stacks || []).length) {
       // Refresh when the server fingerprint moved (new catalog / shape).
       try {
         const res = await fetchShapeFactoryFamilies();

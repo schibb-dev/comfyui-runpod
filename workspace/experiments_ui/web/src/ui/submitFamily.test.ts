@@ -8,6 +8,7 @@ import {
   jobPromptVariantName,
   pickQuickExtendFamily,
   pickRerunPromptPreset,
+  familyStackId,
   pickRerunStack,
   promptTextIsOverridden,
   distinctiveFamilyLabels,
@@ -197,6 +198,13 @@ describe("pickRerunStack", () => {
     { stack_id: "i2v-480p-Q8", label: "480p-Q8 virt6.0" },
     { stack_id: "i2v-480p-Q5", label: "480p-Q5 virt4.0" },
   ];
+
+  it("reads stack_id from family option", () => {
+    expect(
+      familyStackId([{ slug: "FB9", stack_id: "i2v-480p-Q8" } as WorkProductFamilyOption], "FB9"),
+    ).toBe("i2v-480p-Q8");
+    expect(familyStackId([], "FB9")).toBeNull();
+  });
 
   it("prefers the job stack, then the family default", () => {
     expect(pickRerunStack(stacks, { jobStackId: "i2v-480p-Q5", familyStackId: "i2v-720p-Q5" })).toBe(

@@ -86,6 +86,15 @@ export function loraBasename(name: string): string {
   return base.replace(/\.safetensors$/i, "");
 }
 
+export function mergeSubmitStackOverride(
+  overrides: ShapeFactoryMapQueueOverrides | undefined,
+  stackId: string | null | undefined,
+): ShapeFactoryMapQueueOverrides | undefined {
+  const sid = String(stackId || "").trim();
+  if (!sid) return overrides;
+  return { ...(overrides || {}), stack: sid };
+}
+
 export function composeRuntimeOverrides(
   genFrames: number | null,
   paramDraft: WorkProductParamsValues,

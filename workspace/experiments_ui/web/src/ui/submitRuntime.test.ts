@@ -2,8 +2,19 @@ import { describe, expect, it } from "vitest";
 import {
   composeRuntimeOverrides,
   lorasOverrideFromDraft,
+  mergeSubmitStackOverride,
   paramsOverrideFromDraft,
 } from "./submitRuntime";
+
+describe("mergeSubmitStackOverride", () => {
+  it("adds stack to overrides", () => {
+    expect(mergeSubmitStackOverride({ parameters: { frames: 81 } }, "i2v-720p-Q5")).toEqual({
+      parameters: { frames: 81 },
+      stack: "i2v-720p-Q5",
+    });
+    expect(mergeSubmitStackOverride(undefined, "")).toBeUndefined();
+  });
+});
 
 describe("composeRuntimeOverrides", () => {
   it("omits template-matching knobs and LoRAs", () => {

@@ -4,6 +4,7 @@ import {
   beginShapeFactoryEdit,
   composeSubmitAdvance,
   fetchShapeFactoryJobEdit,
+  fetchShapeFactoryWorkProduct,
   fetchShapeFactorySubmitAttempts,
   finishShapeFactoryEdit,
   listShapeFactoryClipsLibrary,
@@ -48,6 +49,7 @@ import {
   familyPickerOptionLabel,
   familyPickerOptionTitle,
   familyPromptProfiles,
+  familyStackId,
   isExtendFamilyOption,
   isI2VFamilyOption,
   isStillMediaPath,
@@ -57,8 +59,10 @@ import {
   promptProfileOptionLabel,
   promptVariantName,
   promptVariantSlug,
+  stackPickerOptionLabel,
 } from "./submitFamily";
 import type {
+  GenerationStackOption,
   ShapeFactoryMapQueueOverrides,
   WorkProductFamilyOption,
   WorkProductFamilyPromptProfile,
@@ -72,11 +76,13 @@ import {
   composeRuntimeOverrides,
   familyDefaultLoras,
   familyDefaultParams,
+  mergeSubmitStackOverride,
 } from "./submitRuntime";
 import { SubmitPromptEditor, type SubmitPromptEditorHandle, type SubmitPromptOverride } from "./SubmitPromptEditor";
 import { VideoTrimControls, type VideoTrimPlaybackMode } from "./VideoTrimControls";
 import { useTrimPlaybackEnforcement } from "./useTrimPlayback";
 import { marksToVhsWindow } from "./workProductTrim";
+import { pickSubmitStack, rememberSubmitStack, resolveSubmitRouteKind } from "./submitStackPrefs";
 
 type RowLayout = "split" | "stacked";
 
@@ -276,6 +282,44 @@ function FamilySelect({
   );
 }
 
+function StackSelect({
+  value,
+  onChange,
+  stacks,
+  disabled,
+  label = "Stack",
+  title = "Generation stack (UNet/resolution/TeaCache). Default comes from the family shape.",
+}: {
+  value: string;
+  onChange: (stackId: string) => void;
+  stacks: GenerationStackOption[];
+  disabled?: boolean;
+  label?: string;
+  title?: string;
+}) {
+  if (!stacks.length) return null;
+  const valid = stacks.some((s) => s.stack_id === value) ? value : stacks[0]?.stack_id || "";
+  return (
+    <label className="work-product-quick-queue__family-wrap">
+      <span className="work-product-quick-queue__family-label">{label}</span>
+      <select
+        className="work-product-quick-queue__family"
+        value={valid}
+        disabled={disabled}
+        aria-label={`${label} generation profile`}
+        title={title}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        {stacks.map((s) => (
+          <option key={s.stack_id} value={s.stack_id} title={stackPickerOptionLabel(s)}>
+            {stackPickerOptionLabel(s)}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 function ProfileSelect({
   familySlug,
   value,
@@ -406,6 +450,98 @@ function identityBindingSlot(snap: ShapeFactoryJobEditSnapshot | null): "identit
   return "identity_anchor";
 }
 
+/** Finish controls for edit-job mode — distinct from compose submit row. */
+function EditFinishRow({
+  preferredWhen,
+  busy,
+  canFinish,
+  disabled,
+  promptDirty,
+  blockedReason,
+  sticky,
+  onDone,
+  onSubmit,
+}: {
+  preferredWhen: SubmitWhen;
+  busy: boolean;
+  canFinish: boolean;
+  disabled?: boolean;
+  promptDirty?: boolean;
+  blockedReason?: string | null;
+  sticky?: boolean;
+  onDone: () => void;
+  onSubmit: (when: SubmitWhen) => void;
+}) {
+  const locked = disabled || !canFinish;
+  const doneBusy = busy && preferredWhen === "queue";
+  return (
+    <div
+      className={"work-product-edit-finish" + (sticky ? " work-product-edit-finish--sticky" : "")}
+      role="group"
+      aria-label="Finish editing"
+    >
+      <p className="work-product-quick-queue__hint">
+        Variant, trim, params, and LoRAs save as you edit.
+        {promptDirty ? " Prompt has unsaved changes — finish below saves them, or use Save to job." : " Prompt: Save to job, or finish below saves it."}
+      </p>
+      {locked && blockedReason ? (
+        <p className="work-product-viewer__trim-warn" role="status">
+          {blockedReason}
+        </p>
+      ) : null}
+      <div className="work-product-quick-queue__row">
+        <button
+          type="button"
+          className="drt-btn work-product-quick-queue__done"
+          disabled={locked}
+          title="Save prompt changes and return this job to pending"
+          onClick={onDone}
+        >
+          {doneBusy ? "Saving…" : "Done editing"}
+        </button>
+        <span className="work-product-quick-queue__sep" aria-hidden="true" />
+        <span className="work-product-quick-queue__label" title="Reposition in the factory pending FIFO when releasing">
+          Pending
+        </span>
+        <button
+          type="button"
+          className={
+            "drt-btn work-product-quick-queue__queue-next" +
+            (preferredWhen === "queue_next" ? " submit-composer__when--preferred" : "")
+          }
+          disabled={locked}
+          title="Done editing — jump to the front of the pending queue"
+          onClick={() => onSubmit("queue_next")}
+        >
+          {busy && preferredWhen === "queue_next" ? "Saving…" : "Next in pending"}
+        </button>
+        <span className="work-product-quick-queue__sep" aria-hidden="true" />
+        <span className="work-product-quick-queue__label" title="Done editing — submit directly to Comfy">
+          Comfy
+        </span>
+        <button
+          type="button"
+          className={"drt-btn work-product-quick-queue__now" + (preferredWhen === "now" ? " submit-composer__when--preferred" : "")}
+          disabled={locked}
+          title="Done editing — enqueue at the front of Comfy now"
+          onClick={() => onSubmit("now")}
+        >
+          {busy && preferredWhen === "now" ? "Submitting…" : "Now"}
+        </button>
+        <button
+          type="button"
+          className={"drt-btn work-product-quick-queue__later" + (preferredWhen === "later" ? " submit-composer__when--preferred" : "")}
+          disabled={locked}
+          title="Done editing — enqueue at the back of Comfy"
+          onClick={() => onSubmit("later")}
+        >
+          {busy && preferredWhen === "later" ? "Submitting…" : "Later"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function SubmitWhenRow({
   preferredWhen,
   busy,
@@ -508,7 +644,9 @@ function SubmitEditJobApp({
 }) {
   const isModal = presentation === "modal";
   const [layout, setLayout] = useState<RowLayout>(() => loadLayout());
-  const [busy, setBusy] = useState(false);
+  const [booting, setBooting] = useState(true);
+  const [releasing, setReleasing] = useState(false);
+  const [bindingSaving, setBindingSaving] = useState<string | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
   const [snap, setSnap] = useState<ShapeFactoryJobEditSnapshot | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
@@ -577,11 +715,22 @@ function SubmitEditJobApp({
   const identitySlot = identityBindingSlot(snap);
   const canFinish =
     Boolean(snap) &&
-    !busy &&
+    !booting &&
+    !releasing &&
     !finished &&
     windowOk &&
     !(identityNeeded && identityLoading) &&
     !(identityNeeded && !identitySelectedPath);
+  const editBlockedReason = useMemo(() => {
+    if (canFinish || finished) return null;
+    if (booting) return "Loading job…";
+    if (releasing) return "Finishing edit…";
+    if (!windowOk) return "Set mark in/out or pick a clip before submitting.";
+    if (identityNeeded && identityLoading) return "Loading identity still candidates…";
+    if (identityNeeded && !identitySelectedPath) return "Pick or mint an identity still before submitting.";
+    return null;
+  }, [booting, canFinish, finished, identityLoading, identityNeeded, identitySelectedPath, releasing, windowOk]);
+  const editLocked = booting || releasing || finished;
 
   const originBack = useMemo(
     () =>
@@ -596,13 +745,13 @@ function SubmitEditJobApp({
   const releaseEdit = useCallback(
     async (action: "later" | "cancel" | "now", opts?: { front?: boolean; pendingPosition?: "append" | "front"; navigate?: boolean }) => {
       if (releasedRef.current && action !== "now") return;
-      setBusy(true);
+      setReleasing(true);
       setMsg(null);
       setSubmitError(null);
       try {
         const saved = await promptEditorRef.current?.flush();
         if (saved === false) {
-          setBusy(false);
+          setReleasing(false);
           return;
         }
         if (persistParamsTimer.current) window.clearTimeout(persistParamsTimer.current);
@@ -622,13 +771,13 @@ function SubmitEditJobApp({
         setMsg(
           action === "now"
             ? opts?.front
-              ? `Now · ${res.prompt_id || res.job_key || editJob}`
-              : `Later · ${res.prompt_id || res.job_key || editJob}`
+              ? `Submitted to Comfy (now) · ${res.prompt_id || res.job_key || editJob}`
+              : `Submitted to Comfy (later) · ${res.prompt_id || res.job_key || editJob}`
             : action === "later"
               ? opts?.pendingPosition === "front"
-                ? `Next ${res.job_key || editJob}${rank}`
-                : `Queue ${res.job_key || editJob}${rank}`
-              : "Edit cancelled (pending)",
+                ? `Done editing · next in pending${rank}`
+                : `Done editing · returned to pending${rank}`
+              : "Edit lock released · returned to pending",
         );
         void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.submitAttemptsRoot });
         if (opts?.navigate !== false && isModal && onClose && action === "cancel") {
@@ -640,7 +789,7 @@ function SubmitEditJobApp({
         setMsg(null);
         void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.submitAttemptsRoot });
       } finally {
-        setBusy(false);
+        setReleasing(false);
       }
     },
     [editJob, isModal, onClose, queryClient],
@@ -669,7 +818,7 @@ function SubmitEditJobApp({
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      setBusy(true);
+      setBooting(true);
       setBootError(null);
       try {
         await beginShapeFactoryEdit({
@@ -690,7 +839,7 @@ function SubmitEditJobApp({
       } catch (e) {
         if (!cancelled) setBootError(e instanceof Error ? e.message : String(e));
       } finally {
-        if (!cancelled) setBusy(false);
+        if (!cancelled) setBooting(false);
       }
     })();
     return () => {
@@ -881,8 +1030,8 @@ function SubmitEditJobApp({
 
   const applyBindingEdit = async (slot: string, value: string) => {
     const trimmed = String(value || "").trim();
-    if (!trimmed || busy || finished) return;
-    setBusy(true);
+    if (!trimmed || editLocked || finished) return;
+    setBindingSaving(slot);
     setMsg(null);
     try {
       await updatePendingShapeFactoryBinding({
@@ -894,17 +1043,17 @@ function SubmitEditJobApp({
         source_surface: "submit_edit",
       });
       await refreshSnapshot();
-      setMsg(`Updated ${slot}`);
+      setMsg(slot === "prompt_profile" ? "Variant saved" : `Updated ${slot}`);
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      setBindingSaving(null);
     }
   };
 
   const applyIdentity = async (path: string, id?: string) => {
     const trimmed = String(path || "").trim();
-    if (!trimmed || busy || finished) return;
+    if (!trimmed || editLocked || finished) return;
     setIdentitySelectedPath(trimmed);
     setIdentitySelectedId(id || "");
     try {
@@ -923,7 +1072,7 @@ function SubmitEditJobApp({
   };
 
   const mintIdentity = async (target: IdentityStillMintTarget) => {
-    if (identityMintBusy || busy || finished) return;
+    if (identityMintBusy || editLocked || finished) return;
     setIdentityMintBusy(true);
     setMsg(null);
     try {
@@ -985,7 +1134,8 @@ function SubmitEditJobApp({
     if (!isStill && !windowOk) blockers.push("set Use window");
     if (identityNeeded && identityLoading) blockers.push("identity loading");
     if (identityNeeded && !identitySelectedPath) blockers.push("pick identity");
-    if (busy) blockers.push("saving");
+    if (releasing) blockers.push("finishing");
+    if (bindingSaving) blockers.push("saving");
     if (finished) blockers.push("finished");
     const ready: ConstructionReady = canFinish
       ? { ok: true, label: "Ready", detail: null }
@@ -1018,13 +1168,14 @@ function SubmitEditJobApp({
     };
   }, [
     activeClip,
-    busy,
+    bindingSaving,
     canFinish,
     duration,
     editFamilies,
     familySlug,
     finished,
     fps,
+    releasing,
     genFrames,
     identityCandidates,
     identityLoading,
@@ -1188,7 +1339,7 @@ function SubmitEditJobApp({
                 </AppetitePreviewFrame>
               ) : (
                 <div className="work-product-viewer__empty">
-                  {busy ? "Loading…" : "No source media on this job"}
+                  {booting ? "Loading…" : "No source media on this job"}
                 </div>
               )}
             </div>
@@ -1255,155 +1406,161 @@ function SubmitEditJobApp({
             ) : null}
           </div>
 
-          <div className="work-product-quick-queue" role="group" aria-label="Edit job">
-            <SubmitWhenRow
-              preferredWhen={preferredWhen}
-              busy={busy}
-              canSubmit={canFinish}
-              disabled={finished}
-              onSubmit={finishWhen}
-              pendingLabel={isStill ? "Seed" : editRouteKind(snap, isStill)}
-              comfyLabel="Comfy"
-              extra={
-                <>
-                  <span className="work-product-quick-queue__sep" aria-hidden="true" />
-                  <button
-                    type="button"
-                    className="drt-btn"
-                    disabled={busy || finished}
-                    title="Release the edit lock and leave this job pending"
-                    onClick={() => void releaseEdit("cancel")}
-                  >
-                    Cancel
-                  </button>
-                </>
-              }
-            />
-            <div className="work-product-quick-queue__families">
-              <FamilySelect
-                value={familySlug}
-                onChange={() => undefined}
-                label={isStill ? "I2V family" : editRouteKind(snap, isStill)}
-                title="Family is locked to this job — compose a new route to change family"
-                opts={familyOpts}
-                disabled
-              />
-              <ProfileSelect
-                familySlug={familySlug}
-                value={promptProfileDraft}
-                onChange={(next) => {
-                  setPromptProfileDraft(next);
-                  void applyBindingEdit("prompt_profile", next);
-                }}
-                ariaPrefix={isStill ? "I2V" : editRouteKind(snap, isStill)}
-                families={editFamilies}
-                disabled={busy || finished}
-              />
-            </div>
-            <SubmitDurationField
-              frames={genFrames}
-              seedFrames={seedFrames}
-              disabled={busy || finished}
-              onChange={persistFrames}
-            />
-            <SubmitParamsExtras
-              draft={paramDraft}
-              seed={snap?.params_profile?.seed || familyDefaultParams(editFamilies, familySlug)}
-              disabled={busy || finished}
-              onChange={persistRuntimeParams}
-            />
-            <SubmitLorasEditor
-              draft={loraDraft}
-              seed={snap?.loras_profile?.seed || []}
-              disabled={busy || finished}
-              onChange={persistLoras}
-            />
-            <SubmitPromptEditor
-              ref={promptEditorRef}
-              heading="Prompt"
-              prompt={snap?.prompt || null}
-              profilePath={promptProfileDraft || null}
-              jobKey={editJob}
-              jobPath={snap?.job_path || null}
-              disabled={busy || finished}
-              onDirtyChange={setPromptDirty}
-              onJobSaved={() => void refreshSnapshot()}
-            />
-            {identityNeeded ? (
-              <IdentityStillPicker
-                loading={identityLoading}
-                selectedPath={identitySelectedPath}
-                selectedId={identitySelectedId}
-                candidates={identityCandidates}
-                mintTargets={identityMintTargets}
-                mintBusy={identityMintBusy}
-                disabled={busy || finished}
-                onSelect={(c) => void applyIdentity(c.path, c.id)}
-                onMint={(t) => void mintIdentity(t)}
-              />
-            ) : null}
-            {snap?.source?.slot === "source_still" || snap?.source?.slot === "source_video" ? (
-              <label className="submit-composer__edit-binding">
-                <span>Source ({snap?.source?.slot})</span>
-                <div className="submit-composer__edit-binding-row">
-                  <input
-                    type="text"
-                    value={sourcePathDraft}
-                    disabled={busy || finished}
-                    onChange={(e) => setSourcePathDraft(e.target.value)}
-                    placeholder={snap?.source?.path || "input/foo.jpeg"}
-                  />
-                  <button
-                    type="button"
-                    className="drt-btn"
-                    disabled={busy || finished || !sourcePathDraft.trim()}
-                    onClick={() => void applyBindingEdit(String(snap?.source?.slot || ""), sourcePathDraft)}
-                  >
-                    Apply
-                  </button>
-                </div>
-              </label>
-            ) : null}
-            <SubmitConstructionPreview
-              routes={constructionPreview.routes}
-              useLabel={constructionPreview.useLabel}
-              useWindow={constructionPreview.useWindow}
-              vhs={constructionPreview.vhs}
-              vhsWarning={constructionPreview.vhsWarning}
-              durationLabel={constructionPreview.durationLabel}
-              identity={constructionPreview.identity}
-              preferredWhen={preferredWhen}
-              origin={origin}
-              fromJob={editJob}
-              ready={constructionPreview.ready}
-            />
-            {submitError ? <SubmitQueueErrorPanel error={submitError} /> : null}
-            {msg ? (
-              <p className="work-product-quick-queue__msg work-product-quick-queue__msg--ok" title={msg}>
-                {msg}
-              </p>
-            ) : null}
-            <RecentSubmitsPanel items={recentSubmitsQuery.data?.items || []} />
-            {finished ? (
-              <div className="submit-composer__links">
-                {isModal && onClose ? (
-                  <button type="button" className="drt-btn" onClick={onClose}>
-                    Done
-                  </button>
-                ) : null}
-                <a className="drt-btn" href={workbenchHref({ jobKey: editJob })}>
-                  Open in Workbench
-                </a>
-                <a className="drt-btn" href={queueHref({ jobKey: editJob })}>
-                  Open Queue
-                </a>
-                {!isModal ? (
-                  <a className="drt-btn" href={originBack.href}>
-                    {originBack.label}
-                  </a>
+          <div className="work-product-details submit-composer__compose">
+            <div className="work-product-quick-queue" role="group" aria-label="Edit job">
+              {!finished ? (
+                <EditFinishRow
+                  preferredWhen={preferredWhen}
+                  busy={releasing}
+                  canFinish={canFinish}
+                  blockedReason={editBlockedReason}
+                  promptDirty={promptDirty}
+                  onDone={() => finishWhen("queue")}
+                  onSubmit={finishWhen}
+                />
+              ) : null}
+              <div className="work-product-quick-queue__families">
+                <FamilySelect
+                  value={familySlug}
+                  onChange={() => undefined}
+                  label={isStill ? "I2V family" : editRouteKind(snap, isStill)}
+                  title="Family is locked to this job — compose a new route to change family"
+                  opts={familyOpts}
+                  disabled
+                />
+                <ProfileSelect
+                  familySlug={familySlug}
+                  value={promptProfileDraft}
+                  onChange={(next) => {
+                    setPromptProfileDraft(next);
+                    void applyBindingEdit("prompt_profile", next);
+                  }}
+                  ariaPrefix={isStill ? "I2V" : editRouteKind(snap, isStill)}
+                  families={editFamilies}
+                  disabled={editLocked || finished || bindingSaving === "prompt_profile"}
+                />
+                {bindingSaving === "prompt_profile" ? (
+                  <span className="work-product-quick-queue__hint">Saving variant…</span>
                 ) : null}
               </div>
-            ) : null}
+              <SubmitDurationField
+                frames={genFrames}
+                seedFrames={seedFrames}
+                disabled={editLocked || finished}
+                onChange={persistFrames}
+              />
+              <SubmitParamsExtras
+                draft={paramDraft}
+                seed={snap?.params_profile?.seed || familyDefaultParams(editFamilies, familySlug)}
+                disabled={editLocked || finished}
+                onChange={persistRuntimeParams}
+              />
+              <SubmitLorasEditor
+                draft={loraDraft}
+                seed={snap?.loras_profile?.seed || []}
+                disabled={editLocked || finished}
+                onChange={persistLoras}
+              />
+              <SubmitPromptEditor
+                ref={promptEditorRef}
+                heading="Prompt"
+                prompt={snap?.prompt || null}
+                profilePath={promptProfileDraft || null}
+                jobKey={editJob}
+                jobPath={snap?.job_path || null}
+                disabled={editLocked || finished}
+                onDirtyChange={setPromptDirty}
+                onJobSaved={() => void refreshSnapshot()}
+              />
+              {identityNeeded ? (
+                <IdentityStillPicker
+                  loading={identityLoading}
+                  selectedPath={identitySelectedPath}
+                  selectedId={identitySelectedId}
+                  candidates={identityCandidates}
+                  mintTargets={identityMintTargets}
+                  mintBusy={identityMintBusy}
+                  disabled={editLocked || finished}
+                  onSelect={(c) => void applyIdentity(c.path, c.id)}
+                  onMint={(t) => void mintIdentity(t)}
+                />
+              ) : null}
+              {snap?.source?.slot === "source_still" || snap?.source?.slot === "source_video" ? (
+                <label className="submit-composer__edit-binding">
+                  <span>Source ({snap?.source?.slot})</span>
+                  <div className="submit-composer__edit-binding-row">
+                    <input
+                      type="text"
+                      value={sourcePathDraft}
+                      disabled={editLocked || finished}
+                      onChange={(e) => setSourcePathDraft(e.target.value)}
+                      placeholder={snap?.source?.path || "input/foo.jpeg"}
+                    />
+                    <button
+                      type="button"
+                      className="drt-btn"
+                      disabled={editLocked || finished || !sourcePathDraft.trim()}
+                      onClick={() => void applyBindingEdit(String(snap?.source?.slot || ""), sourcePathDraft)}
+                    >
+                      Apply
+                    </button>
+                  </div>
+                </label>
+              ) : null}
+              <SubmitConstructionPreview
+                routes={constructionPreview.routes}
+                useLabel={constructionPreview.useLabel}
+                useWindow={constructionPreview.useWindow}
+                vhs={constructionPreview.vhs}
+                vhsWarning={constructionPreview.vhsWarning}
+                durationLabel={constructionPreview.durationLabel}
+                stackLabel={null}
+                identity={constructionPreview.identity}
+                preferredWhen={preferredWhen}
+                origin={origin}
+                fromJob={editJob}
+                ready={constructionPreview.ready}
+              />
+              {!finished ? (
+                <EditFinishRow
+                  sticky
+                  preferredWhen={preferredWhen}
+                  busy={releasing}
+                  canFinish={canFinish}
+                  blockedReason={editBlockedReason}
+                  promptDirty={promptDirty}
+                  onDone={() => finishWhen("queue")}
+                  onSubmit={finishWhen}
+                />
+              ) : null}
+              {submitError ? <SubmitQueueErrorPanel error={submitError} /> : null}
+              {msg ? (
+                <p className="work-product-quick-queue__msg work-product-quick-queue__msg--ok" title={msg}>
+                  {msg}
+                </p>
+              ) : null}
+              <RecentSubmitsPanel items={recentSubmitsQuery.data?.items || []} />
+              {finished ? (
+                <div className="submit-composer__links">
+                  {isModal && onClose ? (
+                    <button type="button" className="drt-btn" onClick={onClose}>
+                      Done
+                    </button>
+                  ) : null}
+                  <a className="drt-btn" href={workbenchHref({ jobKey: editJob })}>
+                    Open in Workbench
+                  </a>
+                  <a className="drt-btn" href={queueHref({ jobKey: editJob })}>
+                    Open Queue
+                  </a>
+                  {!isModal ? (
+                    <a className="drt-btn" href={originBack.href}>
+                      {originBack.label}
+                    </a>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
           </div>
         </div>
       </div>
@@ -1424,6 +1581,7 @@ function SubmitConstructionPreview({
   vhs,
   vhsWarning,
   durationLabel,
+  stackLabel,
   identity,
   preferredWhen,
   origin,
@@ -1436,6 +1594,7 @@ function SubmitConstructionPreview({
   vhs: { skip: number; cap: number } | null;
   vhsWarning: string | null;
   durationLabel: string;
+  stackLabel: string | null;
   identity: {
     mode: "off" | "loading" | "not_required" | "needed" | "set";
     path: string;
@@ -1513,6 +1672,11 @@ function SubmitConstructionPreview({
                 ? "now"
                 : "later"}
         </span>
+        {stackLabel ? (
+          <span className="work-product-badge" title="Named generation stack applied at submit">
+            stack · {stackLabel}
+          </span>
+        ) : null}
       </div>
       <dl className="submit-composer__construction-list">
         <div className="submit-composer__construction-row">
@@ -1542,6 +1706,12 @@ function SubmitConstructionPreview({
             {durationLabel}
           </dd>
         </div>
+        {stackLabel ? (
+          <div className="submit-composer__construction-row">
+            <dt>Stack</dt>
+            <dd title="Named UNet/resolution/TeaCache profile (adhoc_overrides.stack)">{stackLabel}</dd>
+          </div>
+        ) : null}
         {identity.mode !== "off" ? (
           <div className="submit-composer__construction-row">
             <dt>Identity</dt>
@@ -1663,6 +1833,9 @@ function SubmitAdvanceComposerApp({
   const [deriveFamilyRows, setDeriveFamilyRows] = useState<WorkProductFamilyOption[]>(
     () => cachedFamiliesBoot?.derive_families || cachedFamiliesBoot?.families || [],
   );
+  const [stacks, setStacks] = useState<GenerationStackOption[]>(() => cachedFamiliesBoot?.stacks || []);
+  const [sourceJobStackId, setSourceJobStackId] = useState<string | null>(null);
+  const [submitStack, setSubmitStack] = useState("");
   const [extendOn, setExtendOn] = useState(initialRoutes.extend);
   const [varyOn, setVaryOn] = useState(initialRoutes.vary);
   const [deriveOn, setDeriveOn] = useState(initialRoutes.derive);
@@ -1718,6 +1891,7 @@ function SubmitAdvanceComposerApp({
       const deriveRows = boot.derive_families?.length ? boot.derive_families : rows;
       const defaults = boot.extend_family_defaults || {};
       setFamilies(rows);
+      setStacks(boot.stacks || []);
       setExtendFamilyRows(extendRows);
       setVaryFamilyRows(varyRows);
       setDeriveFamilyRows(deriveRows);
@@ -1815,6 +1989,27 @@ function SubmitAdvanceComposerApp({
       cancelled = true;
     };
   }, [applyFamiliesBoot]);
+
+  useEffect(() => {
+    const jk = String(intent.fromJob || "").trim();
+    if (!jk) {
+      setSourceJobStackId(null);
+      return;
+    }
+    let cancelled = false;
+    void fetchShapeFactoryWorkProduct({ jobKey: jk })
+      .then((res) => {
+        if (cancelled || !res.ok || !res.item) return;
+        const sid = String(res.item.stack_id || "").trim();
+        setSourceJobStackId(sid || null);
+      })
+      .catch(() => {
+        if (!cancelled) setSourceJobStackId(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [intent.fromJob]);
 
   // Resolve clip_id → marks / media (skip when deep-link already has a window and no clip to resolve)
   useEffect(() => {
@@ -1985,6 +2180,47 @@ function SubmitAdvanceComposerApp({
   const seedFrames = familyDefaultFrames(families, durationFamily);
   const seedParams = familyDefaultParams(families, durationFamily);
   const seedLoras = familyDefaultLoras(families, durationFamily);
+  const durationFamilyStackId = familyStackId(families, durationFamily);
+  const submitRouteKind = resolveSubmitRouteKind(isStill);
+  const stackCatalogKey = useMemo(() => stacks.map((s) => s.stack_id).join("|"), [stacks]);
+  const submitStackLabel = useMemo(() => {
+    const hit = stacks.find((s) => s.stack_id === submitStack);
+    return hit ? stackPickerOptionLabel(hit) : submitStack || null;
+  }, [stacks, submitStack]);
+
+  useEffect(() => {
+    const intentFamily = String(intent.family || "").trim();
+    const preferJobStack =
+      sourceJobStackId && (!intentFamily || durationFamily === intentFamily) ? sourceJobStackId : null;
+    setSubmitStack(
+      pickSubmitStack(stacks, {
+        routeKind: submitRouteKind,
+        jobStackId: preferJobStack,
+        familyStackId: durationFamilyStackId,
+        familySlug: durationFamily,
+      }),
+    );
+  }, [
+    durationFamily,
+    durationFamilyStackId,
+    intent.family,
+    sourceJobStackId,
+    stackCatalogKey,
+    stacks,
+    submitRouteKind,
+  ]);
+
+  const chooseSubmitStack = useCallback(
+    (stackId: string) => {
+      setSubmitStack(stackId);
+      rememberSubmitStack(stackId, {
+        routeKind: submitRouteKind,
+        familySlug: durationFamily,
+        stacks,
+      });
+    },
+    [durationFamily, stacks, submitRouteKind],
+  );
 
   useEffect(() => {
     setParamDraft({});
@@ -2057,7 +2293,10 @@ function SubmitAdvanceComposerApp({
       overrides.parameters = { ...(overrides.parameters || {}), ...runtime.parameters };
     }
     if (runtime.loras) overrides.loras = runtime.loras;
-    return { overrides, warning: win.warning };
+    return {
+      overrides: mergeSubmitStackOverride(overrides, submitStack),
+      warning: win.warning,
+    };
   }, [
     activeClip?.clip_id,
     clipId,
@@ -2069,6 +2308,7 @@ function SubmitAdvanceComposerApp({
     paramDraft,
     seedLoras,
     seedParams,
+    submitStack,
     videoDuration,
     windowOk,
   ]);
@@ -2089,18 +2329,22 @@ function SubmitAdvanceComposerApp({
             : `input/${stillPath.split("/").pop() || stillPath}`;
         const dest = destinationForWhen(when);
         const runtime = composeRuntimeOverrides(genFrames, paramDraft, seedParams, loraDraft, seedLoras);
+        const stillOverrides = mergeSubmitStackOverride(
+          {
+            ...runtime,
+            ...(i2vPromptOverride ? { prompt_profile: i2vPromptOverride } : {}),
+          },
+          submitStack,
+        );
         const res = await queueShapeFactoryCombo({
           family_slug: i2vFamily,
           bindings: {
             source_still: bindingPath,
             ...(i2vPromptProfile ? { prompt_profile: i2vPromptProfile } : {}),
           },
-          ...(i2vPromptOverride || runtime.parameters || runtime.loras
+          ...(stillOverrides && Object.keys(stillOverrides).length
             ? {
-                overrides: {
-                  ...runtime,
-                  ...(i2vPromptOverride ? { prompt_profile: i2vPromptOverride } : {}),
-                },
+                overrides: stillOverrides,
               }
             : {}),
           front: dest.front,
@@ -2124,6 +2368,7 @@ function SubmitAdvanceComposerApp({
         );
         void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.submitAttemptsRoot });
         if (res.job_key) {
+          rememberSubmitStack(submitStack, { routeKind: "still", familySlug: i2vFamily, stacks });
           onSubmitted?.({ jobKeys: [res.job_key] });
           clearStickyIdentity();
         }
@@ -2175,9 +2420,11 @@ function SubmitAdvanceComposerApp({
       setMsg([result.message, warning].filter(Boolean).join(" · "));
       void queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.submitAttemptsRoot });
       if (result.jobKeys.length) {
+        rememberSubmitStack(submitStack, { routeKind: "video", familySlug: durationFamily, stacks });
         onSubmitted?.({ jobKeys: result.jobKeys });
         if (identitySelectedPath) clearStickyIdentity();
-      }    } catch (e) {
+      }
+    } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
       setSubmitError(err);
       setMsg(null);
@@ -2308,7 +2555,10 @@ function SubmitAdvanceComposerApp({
 
     const { overrides, warning } = isStill
       ? {
-          overrides: composeRuntimeOverrides(genFrames, paramDraft, seedParams, loraDraft, seedLoras) as ShapeFactoryMapQueueOverrides,
+          overrides: mergeSubmitStackOverride(
+            composeRuntimeOverrides(genFrames, paramDraft, seedParams, loraDraft, seedLoras) as ShapeFactoryMapQueueOverrides,
+            submitStack,
+          ),
           warning: null as string | null,
         }
       : buildOverrides();
@@ -2382,6 +2632,7 @@ function SubmitAdvanceComposerApp({
       ]
         .filter(Boolean)
         .join(" · "),
+      stackLabel: submitStackLabel,
       identity: {
         mode: identityMode,
         path: identitySelectedPath,
@@ -2422,6 +2673,8 @@ function SubmitAdvanceComposerApp({
     markIn,
     markOut,
     mediaRelpath,
+    submitStack,
+    submitStackLabel,
     varyFamily,
     varyOn,
     varyPromptOverride,
@@ -2719,6 +2972,12 @@ function SubmitAdvanceComposerApp({
                       "Still → video origin family (Kneel / FaceBlast / Bounce…)",
                       i2vFamilyOpts,
                     )}
+                    <StackSelect
+                      value={submitStack}
+                      onChange={chooseSubmitStack}
+                      stacks={stacks}
+                      disabled={busy}
+                    />
                     {profileSelect(i2vFamily, i2vPromptProfile, setI2vPromptProfile, "I2V")}
                   </div>
                   <SubmitDurationField
@@ -2875,6 +3134,15 @@ function SubmitAdvanceComposerApp({
                         )
                       : null}
                     {deriveOn ? profileSelect(deriveFamily, derivePromptProfile, setDerivePromptProfile, "Derive") : null}
+                    {anyRoute ? (
+                      <StackSelect
+                        value={submitStack}
+                        onChange={chooseSubmitStack}
+                        stacks={stacks}
+                        disabled={busy}
+                        title="Generation stack for all checked advance routes (shared overrides)."
+                      />
+                    ) : null}
                   </div>
                 ) : (
                   <p className="work-product-quick-queue__hint">Select Extend, Vary, and/or Derive</p>
@@ -2949,6 +3217,7 @@ function SubmitAdvanceComposerApp({
                   vhs={constructionPreview.vhs}
                   vhsWarning={constructionPreview.vhsWarning}
                   durationLabel={constructionPreview.durationLabel}
+                  stackLabel={constructionPreview.stackLabel}
                   identity={constructionPreview.identity}
                   preferredWhen={preferredWhen}
                   origin={intent.origin}
