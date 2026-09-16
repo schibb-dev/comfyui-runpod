@@ -35,11 +35,11 @@ DEFAULT_SCHEDULE: Dict[str, Any] = {
     "schema_version": 1,
     "enabled": False,
     "timezone": "America/New_York",
-    "window_start": "02:00",
-    "window_duration_min": 180,
+    "window_start": "03:00",
+    "window_duration_min": 120,
     "front": True,
     "max_inflight": 1,
-    "max_items_per_tick": 48,
+    "max_items_per_tick": 96,
     "comfy_server": None,
     "auto_drain_on_enqueue": False,
 }
@@ -443,6 +443,54 @@ def get_run(con: sqlite3.Connection, run_id: str) -> Optional[Dict[str, Any]]:
     }
 
 
+def list_recent_still_tag_runs(
+    *,
+    data_root: Path,
+    limit: int = 30,
+    statuses: Optional[Sequence[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Recent still-tag runs for Workbench (newest enqueue first)."""
+    db_path = default_db_path(data_root=data_root)
+    if not db_path.is_file():
+        return []
+    allowed = tuple(statuses or ("queued", "running", "done", "error"))
+    placeholders = ",".join("?" for _ in allowed)
+    lim = max(1, min(200, int(limit)))
+    con = connect(db_path)
+    try:
+        rows = con.execute(
+            f"""
+            SELECT * FROM still_tag_runs
+            WHERE status IN ({placeholders})
+            ORDER BY enqueued_at DESC
+            LIMIT ?
+            """,
+            (*allowed, lim),
+        ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            run = get_run(con, str(r["run_id"]))
+            if run:
+                out.append(run)
+        return out
+    finally:
+        con.close()
+
+
+def still_tag_run_workbench_status(run_status: str) -> str:
+    """Map still_tag_runs.status → Workbench work-product status."""
+    s = str(run_status or "").strip().lower()
+    if s == "queued":
+        return "pending"
+    if s == "running":
+        return "running"
+    if s == "done":
+        return "complete"
+    if s == "error":
+        return "error"
+    return "pending"
+
+
 def list_events(
     con: sqlite3.Connection, *, run_id: str, after_id: int = 0, limit: int = 200
 ) -> List[Dict[str, Any]]:
@@ -476,6 +524,94 @@ def list_events(
             }
         )
     return out
+
+
+def _parse_created_at_ts(raw: Any) -> Optional[float]:
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return float(raw)
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        return _dt.datetime.fromisoformat(text).timestamp()
+    except Exception:
+        return None
+
+
+def _target_recency_ts(data_root: Path, content_id: str) -> float:
+    """Newest-first ordering for tag drain (catalog first_seen, then mtime)."""
+    from input_still_catalog import default_catalog_path  # type: ignore
+
+    cid = str(content_id or "").strip().lower()
+    if not cid:
+        return 0.0
+    cat = default_catalog_path(data_root=data_root)
+    if not cat.is_file():
+        return 0.0
+    con_cat = sqlite3.connect(str(cat), timeout=30.0)
+    try:
+        row = con_cat.execute(
+            "SELECT first_seen, mtime FROM stills WHERE lower(path) LIKE ? LIMIT 1",
+            (f"%{cid}%",),
+        ).fetchone()
+    finally:
+        con_cat.close()
+    if not row:
+        return 0.0
+    ts = _parse_created_at_ts(row[0])
+    if ts is not None:
+        return ts
+    try:
+        return float(row[1] or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _sort_targets_newest_first(
+    targets: Sequence[Dict[str, Any]],
+    *,
+    data_root: Path,
+) -> List[Dict[str, Any]]:
+    rows = [t for t in targets if isinstance(t, dict)]
+    return sorted(
+        rows,
+        key=lambda t: _target_recency_ts(data_root, str(t.get("content_id") or "")),
+        reverse=True,
+    )
+
+
+def current_still_tag_target(
+    scope: Dict[str, Any],
+    *,
+    data_root: Path,
+    done_count: int = 0,
+    content_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Target still for Workbench live preview.
+
+    When ``content_id`` is set (from a live Florence LoadImage), use that still.
+    Otherwise use the next target after ``done_count`` in newest-first drain order.
+    """
+    targets = [
+        t
+        for t in (scope.get("targets") or [])
+        if isinstance(t, dict) and not t.get("missing")
+    ]
+    if not targets:
+        return None
+    ordered = _sort_targets_newest_first(targets, data_root=data_root)
+    cid = str(content_id or "").strip().lower()
+    if cid:
+        for t in ordered:
+            if str(t.get("content_id") or "").strip().lower() == cid:
+                return t
+    idx = min(max(0, int(done_count or 0)), len(ordered) - 1)
+    return ordered[idx]
 
 
 def content_ids_missing_provisional(con: sqlite3.Connection, candidates: Sequence[str]) -> List[str]:
@@ -724,6 +860,7 @@ def process_run(
         fp = set(pin.get("fp_blocklist") or [])
         scope = run.get("scope") or {}
         targets = [t for t in (scope.get("targets") or []) if isinstance(t, dict) and not t.get("missing")]
+        targets = _sort_targets_newest_first(targets, data_root=data_root)
         provider = str(run.get("provider") or "comfy")
         server = str(run.get("comfy_server") or DEFAULT_COMFY_SERVER)
         model_pin = str(run.get("model_pin") or pin["model_pin"])
@@ -974,6 +1111,29 @@ def _parse_hhmm(value: Any) -> Optional[Tuple[int, int]]:
     return None
 
 
+def _local_window_bounds(
+    local: _dt.datetime,
+    *,
+    start_hhmm: Tuple[int, int],
+    duration_min: int,
+) -> Tuple[bool, _dt.datetime, _dt.datetime]:
+    """True when *local* is inside [start, start+duration), with midnight wrap."""
+    duration = max(1, int(duration_min))
+    start_dt = local.replace(hour=start_hhmm[0], minute=start_hhmm[1], second=0, microsecond=0)
+    end_dt = start_dt + _dt.timedelta(minutes=duration)
+    if end_dt <= start_dt:
+        end_dt = start_dt + _dt.timedelta(minutes=duration)
+    if local < start_dt:
+        prev_start = start_dt - _dt.timedelta(days=1)
+        prev_end = prev_start + _dt.timedelta(minutes=duration)
+        if prev_start <= local < prev_end:
+            return True, prev_start, prev_end
+        return False, start_dt, end_dt
+    if start_dt <= local < end_dt:
+        return True, start_dt, end_dt
+    return False, start_dt, end_dt
+
+
 def index_window_status(
     schedule: Optional[Dict[str, Any]] = None,
     *,
@@ -1006,32 +1166,30 @@ def index_window_status(
     else:
         local = now.astimezone()
 
-    start_dt = local.replace(hour=start[0], minute=start[1], second=0, microsecond=0)
-    end_dt = start_dt + _dt.timedelta(minutes=duration)
-    # Window may wrap past midnight
-    if end_dt <= start_dt:
-        end_dt = start_dt + _dt.timedelta(minutes=duration)
-
-    in_window = False
-    if local < start_dt:
-        # maybe previous day's window still open (wrap)
-        prev_start = start_dt - _dt.timedelta(days=1)
-        prev_end = prev_start + _dt.timedelta(minutes=duration)
-        if prev_start <= local < prev_end:
+    in_window, start_dt, end_dt = _local_window_bounds(local, start_hhmm=start, duration_min=duration)
+    window_kind = "primary"
+    catch_up_enabled = bool(sch.get("catch_up_enabled"))
+    catch_start = _parse_hhmm(sch.get("catch_up_window_start"))
+    catch_duration = max(1, int(sch.get("catch_up_window_duration_min") or 120))
+    catch_start_dt: Optional[_dt.datetime] = None
+    catch_end_dt: Optional[_dt.datetime] = None
+    if catch_up_enabled and catch_start is not None:
+        catch_in, catch_start_dt, catch_end_dt = _local_window_bounds(
+            local, start_hhmm=catch_start, duration_min=catch_duration
+        )
+        if catch_in:
             in_window = True
-            start_dt, end_dt = prev_start, prev_end
-    elif start_dt <= local < end_dt:
-        in_window = True
-    else:
-        in_window = False
+            start_dt, end_dt = catch_start_dt, catch_end_dt
+            window_kind = "catch_up"
 
     reason = "ok" if (enabled and in_window) else (
         "disabled" if not enabled else "outside_window"
     )
-    return {
+    out: Dict[str, Any] = {
         "enabled": enabled,
         "in_window": bool(in_window),
         "reason": reason,
+        "window_kind": window_kind if in_window else None,
         "timezone": tz_name,
         "timezone_resolved": tz_ok,
         "local_now": local.replace(microsecond=0).isoformat(),
@@ -1044,6 +1202,11 @@ def index_window_status(
         "auto_drain_on_enqueue": bool(sch.get("auto_drain_on_enqueue")),
         "comfy_server": sch.get("comfy_server"),
     }
+    if catch_up_enabled and catch_start is not None and catch_start_dt is not None and catch_end_dt is not None:
+        out["catch_up_enabled"] = True
+        out["catch_up_window_start_local"] = catch_start_dt.replace(microsecond=0).isoformat()
+        out["catch_up_window_end_local"] = catch_end_dt.replace(microsecond=0).isoformat()
+    return out
 
 
 def should_auto_drain_on_enqueue(
@@ -1155,7 +1318,7 @@ def drain_backlog(
                 """
                 SELECT run_id, total FROM still_tag_runs
                 WHERE status='queued'
-                ORDER BY enqueued_at ASC
+                ORDER BY enqueued_at DESC
                 LIMIT 1
                 """
             ).fetchone()

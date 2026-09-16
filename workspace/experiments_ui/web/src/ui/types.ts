@@ -2711,6 +2711,8 @@ export type WorkProductItem = {
     reason?: string | null;
     ok?: boolean;
   }>;
+  /** Comfy /queue tuple number when running or waiting (lower runs sooner). */
+  queue_index?: number | null;
   /** 0-based place on the factory pending FIFO (0 = next drain). */
   pending_rank?: number | null;
   pending_index?: number | null;
@@ -2774,6 +2776,24 @@ export type WorkProductItem = {
   from_experiment?: boolean;
   exp_id?: string | null;
   run_id?: string | null;
+  /** Still auto-tagger batch (`still_tag_runs` in SQLite). */
+  work_kind?: "still_tag" | "factory" | string;
+  still_tag_run_id?: string | null;
+  /** Human label for Workbench list rows (e.g. Still tag · 3/200 tagged). */
+  display_title?: string | null;
+  /** v0 tag output — still preview + provisional tag sample (iterate later). */
+  still_tag_output?: {
+    tags?: string[];
+    tag_count?: number;
+    done_count?: number;
+    total?: number;
+    error_count?: number;
+    preview_content_id?: string | null;
+    current_content_id?: string | null;
+    current_relpath?: string | null;
+    current_url?: string | null;
+    caption?: string | null;
+  };
 };
 
 export type WorkProductFamilyOption = {
@@ -3360,6 +3380,8 @@ export type ComfyLiveStatusItem = {
   value?: number | null;
   max?: number | null;
   node?: string | null;
+  /** Resolved from workflow/ledger when ``node`` is an id. */
+  node_title?: string | null;
   status?: string | null;
   updated_at?: number | null;
   finished_at?: number | null;

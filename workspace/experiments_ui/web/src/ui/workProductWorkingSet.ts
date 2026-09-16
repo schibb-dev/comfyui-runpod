@@ -1,5 +1,9 @@
 import type { DispositionBucketItem, WorkProductItem } from "./types";
 import {
+  workProductIdentityLabel as kindIdentityLabel,
+  workProductKindId,
+} from "./workProductKind";
+import {
   filesUrlForRelpath,
   isMediaOutputOfJob,
   mediaFocusLabel,
@@ -70,8 +74,11 @@ export function isFollowUpWorkingSetJob(jobKey?: string | null): boolean {
 }
 
 export function workProductIdentityLabel(
-  item: Pick<WorkProductItem, "job_key" | "output_relpath" | "exp_id" | "run_id">,
+  item: Pick<WorkProductItem, "job_key" | "output_relpath" | "exp_id" | "run_id" | "work_kind" | "construction">,
 ): string {
+  if (workProductKindId(item as WorkProductItem) !== "factory") {
+    return kindIdentityLabel(item as WorkProductItem);
+  }
   if (isFollowUpWorkingSetJob(item.job_key)) {
     return mediaFocusLabel(item.output_relpath || item.job_key);
   }

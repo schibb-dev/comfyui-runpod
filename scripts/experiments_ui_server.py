@@ -4843,6 +4843,7 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
         attach_comfy_history_failures,
         attach_experiment_runs,
         attach_live_comfy_queue,
+        attach_still_tag_runs,
         demote_stale_inflight_items,
         list_recent_work_products,
         reconcile_inflight_jobs_with_comfy,
@@ -4902,6 +4903,12 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
         limit=limit,
         hourly_only=hourly_only,
         family=family,
+    )
+    payload = attach_still_tag_runs(
+        payload,
+        data_root=data_root,
+        output_root=cfg.output_root,
+        limit=max(limit, 30),
     )
     if isinstance(queue_obj, dict) and "error" not in queue_obj:
         payload = attach_live_comfy_queue(
@@ -15161,6 +15168,41 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(raw)
 
+    def _live_status_prompt_for_id(self, prompt_id: str) -> Optional[Dict[str, Any]]:
+        """Resolve Comfy API prompt graph for a live prompt_id (ledger, then /queue)."""
+        pid = str(prompt_id or "").strip()
+        if not pid:
+            return None
+        st = _read_queue_ledger_state(self.server.cfg.queue_ledger_state_path)
+        known = st.get("known") if isinstance(st.get("known"), dict) else {}
+        rec = known.get(pid) if isinstance(known.get(pid), dict) else None
+        prompt = rec.get("prompt") if isinstance(rec, dict) else None
+        if isinstance(prompt, dict):
+            return prompt
+        cache = getattr(self, "_live_status_queue_prompt_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            comfy = str(self.server.cfg.comfy_server).rstrip("/")
+            try:
+                qobj = _http_json("GET", f"{comfy}/queue", timeout_s=6)
+                if isinstance(qobj, dict):
+                    for key in ("queue_running", "queue_pending"):
+                        rows = qobj.get(key)
+                        if not isinstance(rows, list):
+                            continue
+                        for row in rows:
+                            if not (isinstance(row, list) and len(row) >= 3 and isinstance(row[1], str)):
+                                continue
+                            row_pid = row[1].strip()
+                            row_prompt = row[2] if isinstance(row[2], dict) else None
+                            if row_pid and isinstance(row_prompt, dict):
+                                cache[row_pid] = row_prompt
+            except Exception:
+                pass
+            self._live_status_queue_prompt_cache = cache
+        row_prompt = cache.get(pid)
+        return row_prompt if isinstance(row_prompt, dict) else None
+
     def _handle_comfy_live_status_get(self, q: Dict[str, List[str]]) -> None:
         """GET /api/comfy/live-status?prompt_id=a,b — progress + has_preview for prompt ids."""
         d = _workspace_scripts_dir()
@@ -15177,8 +15219,9 @@ class Handler(BaseHTTPRequestHandler):
                 s = part.strip()
                 if s:
                     ids.append(s)
+        self._live_status_queue_prompt_cache = None
         try:
-            payload = live_status_payload(ids or None)
+            payload = live_status_payload(ids or None, prompt_for_id=self._live_status_prompt_for_id)
         except Exception as e:
             return _json_response(self, 500, {"ok": False, "error": "live_status_failed", "detail": str(e)})
         return _json_response(self, 200, payload)

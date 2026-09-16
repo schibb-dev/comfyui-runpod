@@ -92,6 +92,20 @@ import { prefetchAssetRatings } from "./assetRatingsCache";
 import { loadClipsForMedia, rememberFamiliesFromWorkProducts } from "./shapeFactorySessionCache";
 import { distinctiveFamilyLabels, familyPickerOptionLabel, familyPickerOptionTitle, familyPromptProfiles, familySlugIsQuarantined, familySwapTargets, isDefaultPromptVariant, isExtendFamilyOption, isStillMediaPath, jobPromptVariantDisplayName, jobPromptVariantName, jobPromptVariantSlug, pickQuickExtendFamily, pickRerunPromptPreset, pickRerunStack, promptProfileOptionLabel, promptTextIsOverridden, promptVariantName, promptVariantSlug, rerunPromptPresetDiffers, specDisplayJoined, stackPickerOptionLabel, workProductCanQuickExtend, workProductHasExtendableOutput } from "./submitFamily";
 import { recencyStamp } from "./workProductRecency";
+import {
+  stillTagCurrentContentId,
+  stillTagProgressLabel,
+  stillTagStatusLabel,
+} from "./stillTagWorkProduct";
+import {
+  workProductDisplayTitle,
+  workProductKindIs,
+  workProductKindStatusLabel,
+  workProductPreviewMode,
+  workProductPreviewUrl,
+  workProductRunningLiveDespiteOutput,
+  workProductShowFactoryChrome,
+} from "./workProductKind";
 import { failurePrimaryLabel, workProductFailure, workProductFlowEvents } from "./workProductFailure";
 import { queryKeys } from "./queryKeys";
 import type {
@@ -511,6 +525,7 @@ function isExperimentWorkProduct(item: WorkProductItem): boolean {
 
 /** Synthetic Comfy live stub — no factory .job.json to demote to pending. */
 function isNonFactoryWorkProduct(item: WorkProductItem): boolean {
+  if (workProductKindIs(item, "still_tag")) return false;
   if (isHistoryFailureStub(item)) return false;
   if (isExperimentWorkProduct(item)) return true;
   if (!String(item.job_path || "").trim()) return true;
@@ -574,8 +589,12 @@ function canDeleteWorkProduct(item: WorkProductItem): boolean {
 }
 
 function isRunningLiveItem(item: WorkProductItem): boolean {
+  const status = String(item.status || "").toLowerCase();
+  if (status !== "running") return false;
+  if (workProductRunningLiveDespiteOutput(item)) {
+    return Boolean(item.prompt_id) || Boolean(item.live_from_comfy);
+  }
   if (item.output_url) return false;
-  if (String(item.status || "").toLowerCase() !== "running") return false;
   return Boolean(item.prompt_id) || Boolean(item.live_from_comfy);
 }
 
@@ -594,6 +613,12 @@ function isSourceThumbPreviewItem(item: WorkProductItem): boolean {
 }
 
 function isLivePreviewItem(item: WorkProductItem): boolean {
+  if (
+    workProductPreviewMode(item) === "still_tag" &&
+    (isRunningLiveItem(item) || isInFlightStatus(item.status))
+  ) {
+    return true;
+  }
   if (item.live_from_comfy && item.prompt_id && !item.output_url) return true;
   return isRunningLiveItem(item) || isWaitingPreviewItem(item);
 }
@@ -906,6 +931,55 @@ function sourcePreviewUrls(item: WorkProductItem): { thumb: string | null; video
   };
 }
 
+function WorkProductStillTagPreview({ item }: { item: WorkProductItem }) {
+  const img = workProductPreviewUrl(item);
+  const progress = stillTagProgressLabel(item);
+  const tags = item.still_tag_output?.tags || [];
+  const status = workProductKindStatusLabel(item) || stillTagStatusLabel(item);
+  const cid = stillTagCurrentContentId(item);
+  const relpath = item.still_tag_output?.current_relpath || item.output_relpath || item.parent_output_relpath;
+  const running = String(item.status || "").toLowerCase() === "running";
+  return (
+    <div className="work-product-live work-product-live--still-tag">
+      <div
+        className={`work-product-live__frame work-product-live__frame--still-tag${
+          running ? " work-product-live__frame--live" : ""
+        }`}
+      >
+        {img ? (
+          <AppetitePreviewFrame relpath={relpath}>
+            <img className="work-product-live__img work-product-live__img--still-tag" src={img} alt="Still being tagged" />
+          </AppetitePreviewFrame>
+        ) : (
+          <div className="work-product-live__waiting work-product-live__waiting--muted">No still preview</div>
+        )}
+        <span className={`work-product-live__badge work-product-live__badge--${status}`}>{status}</span>
+      </div>
+      <div className="work-product-viewer__still-tag-meta">
+        {progress ? <span className="factory-muted">{progress}</span> : null}
+        {cid ? (
+          <code className="work-product-viewer__still-tag-cid" title={cid}>
+            {cid.slice(0, 12)}…
+          </code>
+        ) : null}
+        {running ? (
+          <span className="work-product-badge work-product-badge--live-run">Florence on GPU</span>
+        ) : null}
+        {tags.length ? (
+          <p className="work-product-viewer__still-tag-tags" title={tags.join(", ")}>
+            {tags.slice(0, 16).join(", ")}
+            {tags.length > 16 ? "…" : ""}
+          </p>
+        ) : String(item.status || "").toLowerCase() === "complete" ? (
+          <p className="factory-muted">Tagged — open Still Gallery for full provisional tags.</p>
+        ) : String(item.status || "").toLowerCase() === "pending" ? (
+          <p className="factory-muted">Queued for index hour — next still shown above.</p>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function WorkProductSourceThumbPreview({ item }: { item: WorkProductItem }) {
   const { thumb, video, label } = sourcePreviewUrls(item);
   const { label: kind, visual } = sourceThumbPreviewMeta(item);
@@ -1134,7 +1208,9 @@ function WorkProductViewer({
   onUseForExtend?: (clip: ShapeFactoryClip) => void;
   sourceDefaults: { skip_first_frames: number; frame_load_cap: number };
 }) {
-  const videoUrl = item.output_url || null;
+  const previewMode = workProductPreviewMode(item);
+  const stillTag = previewMode === "still_tag";
+  const videoUrl = stillTag ? null : item.output_url || null;
   const thumbUrl = item.output_thumb_url || null;
   const source = item.bindings?.source_video;
   const sourceUrl = source?.url || null;
@@ -1553,6 +1629,8 @@ function WorkProductViewer({
               }}
             />
           </>
+        ) : stillTag ? (
+          <WorkProductStillTagPreview item={item} />
         ) : showRunningLive ? (
           <div className="work-product-viewer__live-plus-source">
             <ComfyLivePreview
@@ -5379,12 +5457,17 @@ function WorkProductDetails({
             Hourly
           </span>
         ) : null}
+        {workProductKindIs(item, "still_tag") ? (
+          <span className="work-product-badge" title="Still auto-tagger batch">
+            Still tag
+          </span>
+        ) : null}
         {isExperimentWorkProduct(item) ? (
           <span className="work-product-badge" title="Quality experiment run">
             Experiment{item.run_id ? ` ${item.run_id}` : ""}
           </span>
         ) : null}
-        {item.family_slug ? (
+        {item.family_slug && workProductShowFactoryChrome(item) ? (
           <a
             className="work-product-badge work-product-badge--link"
             href={factoryMapFamilyHref(item.family_slug, { focus: "pools" })}
@@ -5393,7 +5476,7 @@ function WorkProductDetails({
             {item.family_slug}
           </a>
         ) : null}
-        <PromptVariantBadge item={item} />
+        {workProductShowFactoryChrome(item) ? <PromptVariantBadge item={item} /> : null}
         {shape?.io_class ? (
           <span className="work-product-badge" title="IO class (station process)">
             {String(shape.io_class)}
@@ -5720,7 +5803,10 @@ function WorkProductIndexRow({
   ) => void;
   movingPending?: boolean;
 }) {
-  const thumb = item.output_thumb_url || sourcePreviewUrls(item).thumb;
+  const thumb =
+    workProductPreviewUrl(item) ||
+    item.output_thumb_url ||
+    sourcePreviewUrls(item).thumb;
   const status = statusFilterVisual(item.status || "pending");
   const timing = timingHeadline(item);
   const pendingPos = isPendingQueueItem(item) ? pendingQueueIndex(item) : Number.POSITIVE_INFINITY;
@@ -5752,8 +5838,17 @@ function WorkProductIndexRow({
       </span>
       <span className="work-product-index-row__meta">
         <span className="work-product-index-row__title">
-          <strong>{item.family_slug || mediaFocusLabel(item.output_relpath || item.job_key) || "job"}</strong>
-          <PromptVariantBadge item={item} />
+          <strong>
+            {workProductKindIs(item, "still_tag")
+              ? workProductDisplayTitle(item)
+              : item.family_slug || mediaFocusLabel(item.output_relpath || item.job_key) || "job"}
+          </strong>
+          {workProductKindIs(item, "still_tag") ? (
+            <span className="work-product-badge" title="Still auto-tagger (Florence)">
+              still tag
+            </span>
+          ) : null}
+          {workProductShowFactoryChrome(item) ? <PromptVariantBadge item={item} /> : null}
           {item.is_hourly ? (
             <span className="work-product-badge work-product-badge--hourly" title="Produced by the hourly planner">
               Hourly
@@ -5915,7 +6010,9 @@ function WorkProductRowInner({
       >
         <div className="work-product-row__head-main">
           <div className="work-product-row__title">
-            {item.family_slug ? (
+            {workProductKindIs(item, "still_tag") ? (
+              <strong title="Still auto-tagger batch (Florence)">{workProductDisplayTitle(item)}</strong>
+            ) : item.family_slug ? (
               <strong>
                 <a
                   className="work-product-family-link"
@@ -5928,8 +6025,13 @@ function WorkProductRowInner({
             ) : (
               <strong>job</strong>
             )}
-            <PromptVariantBadge item={item} />
-            {item.job_key && item.family_slug ? (
+            {workProductKindIs(item, "still_tag") ? (
+              <span className="work-product-badge" title="Index-hour still auto-tagger">
+                tags
+              </span>
+            ) : null}
+            {workProductShowFactoryChrome(item) ? <PromptVariantBadge item={item} /> : null}
+            {item.job_key && item.family_slug && workProductShowFactoryChrome(item) ? (
               <a
                 className="work-product-badge work-product-badge--link"
                 href={factoryMapFamilyHref(item.family_slug, { focus: "job", jobKey: item.job_key })}

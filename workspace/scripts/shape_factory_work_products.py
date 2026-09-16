@@ -3179,6 +3179,398 @@ def _work_product_list_bucket(status: Optional[str]) -> str:
     return "done"
 
 
+def _prompt_is_florence_still_tag(prompt: Any) -> bool:
+    """True when a Comfy prompt graph is the still auto-tagger (Florence2Run)."""
+    if not isinstance(prompt, dict):
+        return False
+    for node in prompt.values():
+        if not isinstance(node, dict):
+            continue
+        ct = str(node.get("class_type") or "")
+        if "Florence2Run" in ct or ct == "DownloadAndLoadFlorence2Model":
+            return True
+    return False
+
+
+def _florence_load_image_from_prompt(prompt: Any) -> Optional[str]:
+    """LoadImage ``image`` ref from a Florence caption graph."""
+    if not isinstance(prompt, dict):
+        return None
+    for node in prompt.values():
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("class_type") or "") != "LoadImage":
+            continue
+        inputs = node.get("inputs") if isinstance(node.get("inputs"), dict) else {}
+        raw = str(inputs.get("image") or "").strip()
+        if raw:
+            return raw
+    return None
+
+
+def _content_id_from_florence_prompt(prompt: Any) -> Optional[str]:
+    from vision_still_tags import extract_content_id  # type: ignore
+
+    ref = _florence_load_image_from_prompt(prompt)
+    if not ref:
+        return None
+    cid = extract_content_id(ref)
+    return str(cid).strip().lower() if cid else None
+
+
+def _still_tag_content_to_run_map(data_root: Path) -> Dict[str, str]:
+    """Map content_id → still_tag run_id for queued/running batches."""
+    try:
+        from vision_still_tags import list_recent_still_tag_runs  # type: ignore
+    except Exception:
+        return {}
+    out: Dict[str, str] = {}
+    for run in list_recent_still_tag_runs(
+        data_root=data_root,
+        limit=200,
+        statuses=("queued", "running"),
+    ):
+        run_id = str(run.get("run_id") or "").strip()
+        if not run_id:
+            continue
+        scope = run.get("scope") if isinstance(run.get("scope"), dict) else {}
+        for raw in scope.get("targets") or []:
+            if not isinstance(raw, dict):
+                continue
+            cid = str(raw.get("content_id") or "").strip().lower()
+            if cid:
+                out[cid] = run_id
+    return out
+
+
+def _find_still_tag_item_index(
+    items: Sequence[Any],
+    *,
+    used_indices: set[int],
+    run_id: Optional[str] = None,
+    content_id: Optional[str] = None,
+) -> Optional[int]:
+    """Locate a still-tag work-product row for a live Florence prompt."""
+    want_run = str(run_id or "").strip()
+    want_cid = str(content_id or "").strip().lower()
+    fallback: Optional[int] = None
+    for i, it in enumerate(items):
+        if i in used_indices or not isinstance(it, dict) or not _is_still_tag_work_product(it):
+            continue
+        if want_run and str(it.get("still_tag_run_id") or it.get("job_key") or "").strip() == want_run:
+            return i
+        if want_cid and str(it.get("content_id") or "").strip().lower() == want_cid:
+            return i
+        if fallback is None and str(it.get("status") or "") in {"running", "pending", "queued"}:
+            fallback = i
+    return fallback
+
+
+def _is_still_tag_work_product(item: Dict[str, Any]) -> bool:
+    return str(item.get("work_kind") or "") == "still_tag" or str(
+        (item.get("construction") or {}).get("step") or ""
+    ) == "still_tag"
+
+
+def _still_tag_sample_tags(con: Any, *, run_id: str, content_id: Optional[str]) -> List[str]:
+    from vision_still_tags import _json_loads_list  # type: ignore
+
+    rows = con.execute(
+        """
+        SELECT payload_json FROM still_tag_events
+        WHERE run_id=? AND kind='item_done'
+        ORDER BY id DESC
+        LIMIT 8
+        """,
+        (run_id,),
+    ).fetchall()
+    for row in rows:
+        try:
+            payload = json.loads(str(row["payload_json"] or "{}"))
+        except Exception:
+            payload = {}
+        if isinstance(payload, dict):
+            tags = payload.get("tags")
+            if isinstance(tags, list) and tags:
+                return [str(t) for t in tags[:32]]
+    cid = str(content_id or "").strip().lower()
+    if cid:
+        prov = con.execute(
+            "SELECT provisional_tags FROM still_tag_items WHERE content_id=?",
+            (cid,),
+        ).fetchone()
+        if prov:
+            loaded = _json_loads_list(prov["provisional_tags"])
+            if loaded:
+                return loaded[:32]
+    return []
+
+
+def _still_tag_preview_target(scope: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """First resolvable still from run scope (scope is newest-first at enqueue)."""
+    targets = scope.get("targets") if isinstance(scope.get("targets"), list) else []
+    for raw in targets:
+        if isinstance(raw, dict) and not raw.get("missing"):
+            return raw
+    return None
+
+
+def _still_tag_relpath_from_target(target: Optional[Dict[str, Any]]) -> Tuple[str, str]:
+    """Return (content_id, normalized input/… relpath) for a scope target."""
+    if not target:
+        return "", ""
+    cid = str(target.get("content_id") or "").strip().lower()
+    preview_rel = str(target.get("relpath") or "").strip().replace("\\", "/")
+    if preview_rel and not preview_rel.lower().startswith("input/"):
+        preview_rel = f"input/{preview_rel.lstrip('/')}"
+    return cid, preview_rel
+
+
+def _apply_still_tag_target_to_item(
+    item: Dict[str, Any],
+    target: Optional[Dict[str, Any]],
+    *,
+    tags: Optional[List[str]] = None,
+) -> None:
+    """In-place: set live preview URLs + still_tag_output.current_* from a scope target."""
+    cid, preview_rel = _still_tag_relpath_from_target(target)
+    still_url = _file_url(preview_rel) if preview_rel else None
+    if preview_rel:
+        binding = {
+            "path": str((target or {}).get("path") or ""),
+            "basename": Path(preview_rel).name,
+            "relpath": preview_rel,
+            "url": still_url,
+            "thumb_url": still_url,
+            "binding_type": "still",
+            "role": "source_still",
+        }
+        item["bindings"] = {"source_still": binding}
+    item["content_id"] = cid or item.get("content_id")
+    item["output_relpath"] = preview_rel or None
+    item["output_url"] = still_url
+    item["output_thumb_url"] = still_url
+    item["parent_output_relpath"] = preview_rel or None
+    item["parent_output_url"] = still_url
+    item["parent_output_thumb_url"] = still_url
+    out = item.get("still_tag_output") if isinstance(item.get("still_tag_output"), dict) else {}
+    out = dict(out)
+    out["current_content_id"] = cid or None
+    out["current_relpath"] = preview_rel or None
+    out["current_url"] = still_url
+    if tags is not None:
+        out["tags"] = tags
+        out["tag_count"] = len(tags)
+    item["still_tag_output"] = out
+
+
+def _refresh_still_tag_live_row(
+    row: Dict[str, Any],
+    *,
+    data_root: Path,
+    live_prompt: Any = None,
+) -> Dict[str, Any]:
+    """Align still-tag work-product preview with the Florence LoadImage currently on Comfy."""
+    from vision_still_tags import (  # type: ignore
+        connect,
+        current_still_tag_target,
+        default_db_path,
+        get_run,
+    )
+
+    run_id = str(row.get("still_tag_run_id") or row.get("job_key") or "").strip()
+    if not run_id:
+        return row
+    con = connect(default_db_path(data_root=data_root))
+    try:
+        run = get_run(con, run_id)
+    finally:
+        con.close()
+    if not run:
+        return row
+    scope = run.get("scope") if isinstance(run.get("scope"), dict) else {}
+    done = int(row.get("still_tag_output", {}).get("done_count") or run.get("done_count") or 0)
+    load_cid = _content_id_from_florence_prompt(live_prompt)
+    target = current_still_tag_target(
+        scope,
+        data_root=data_root,
+        done_count=done,
+        content_id=load_cid,
+    )
+    tags: List[str] = []
+    if target:
+        con2 = connect(default_db_path(data_root=data_root))
+        try:
+            tags = _still_tag_sample_tags(
+                con2,
+                run_id=run_id,
+                content_id=str(target.get("content_id") or ""),
+            )
+        finally:
+            con2.close()
+    _apply_still_tag_target_to_item(row, target, tags=tags if tags else None)
+    total = int(run.get("total") or 0)
+    errors = int(run.get("error_count") or 0)
+    progress = f"{done}/{total} tagged" + (f" · {errors} err" if errors else "")
+    row["display_title"] = f"Still tag · {progress}" if total else "Still tag"
+    return row
+
+
+def _still_tag_run_work_product(
+    run: Dict[str, Any],
+    *,
+    data_root: Path,
+    output_root: Path,
+    con: Any = None,
+) -> Dict[str, Any]:
+    """Build a Workbench work-product row from a still_tag_runs record."""
+    from vision_still_tags import (  # type: ignore
+        connect,
+        current_still_tag_target,
+        default_db_path,
+        still_tag_run_workbench_status,
+    )
+
+    run_id = str(run.get("run_id") or "").strip()
+    scope = run.get("scope") if isinstance(run.get("scope"), dict) else {}
+    total = int(run.get("total") or 0)
+    done = int(run.get("done_count") or 0)
+    errors = int(run.get("error_count") or 0)
+    current = current_still_tag_target(scope, data_root=data_root, done_count=done)
+    current_cid, preview_rel = _still_tag_relpath_from_target(current)
+
+    tags: List[str] = []
+    own_con = con is None
+    if own_con:
+        con = connect(default_db_path(data_root=data_root))
+    try:
+        tags = _still_tag_sample_tags(con, run_id=run_id, content_id=current_cid)
+    finally:
+        if own_con:
+            con.close()
+
+    wp_status = still_tag_run_workbench_status(str(run.get("status") or ""))
+    still_url = _file_url(preview_rel) if preview_rel else None
+
+    pin_policy = str(run.get("pin_policy") or "").strip() or None
+    model_pin = str(run.get("model_pin") or "").strip() or None
+    provider = str(run.get("provider") or "comfy").strip()
+
+    progress = f"{done}/{total} tagged" + (f" · {errors} err" if errors else "")
+    display_title = f"Still tag · {progress}" if total else "Still tag"
+
+    item: Dict[str, Any] = {
+        "job_key": run_id,
+        "job_path": f"still_tag_run:{run_id}",
+        "family_slug": "still-tag",
+        "display_title": display_title,
+        "created_at": run.get("enqueued_at"),
+        "started_at": run.get("started_at"),
+        "finished_at": run.get("finished_at"),
+        "status": wp_status,
+        "flow_state": wp_status,
+        "flow_phase": "tagging",
+        "work_kind": "still_tag",
+        "still_tag_run_id": run_id,
+        "prompt_id": None,
+        "submitted_at": run.get("started_at"),
+        "error": str(run.get("detail") or "").strip() or None,
+        "output_relpath": preview_rel or None,
+        "output_url": still_url,
+        "output_thumb_url": still_url,
+        "parent_output_relpath": preview_rel or None,
+        "parent_output_url": still_url,
+        "parent_output_thumb_url": still_url,
+        "content_id": current_cid or None,
+        "spec_abbrev": "still-tag",
+        "spec_title": f"Florence auto-tag · {provider}",
+        "bindings": {},
+        "construction": {
+            "step": "still_tag",
+            "source": "still_tag_run",
+            "provider": provider,
+            "total": total,
+            "done_count": done,
+            "error_count": errors,
+            "pin_policy": pin_policy,
+            "model_pin": model_pin,
+        },
+        "still_tag_output": {
+            "tags": tags,
+            "tag_count": len(tags),
+            "done_count": done,
+            "total": total,
+            "error_count": errors,
+            "preview_content_id": current_cid or None,
+            "current_content_id": current_cid or None,
+            "current_relpath": preview_rel or None,
+            "current_url": still_url,
+        },
+        "details": [
+            {"label": "Run", "value": run_id},
+            {"label": "Provider", "value": provider},
+            {"label": "Model", "value": model_pin or "—"},
+            {"label": "Pin policy", "value": pin_policy or "—"},
+            {"label": "Progress", "value": f"{done}/{total} tagged" + (f" · {errors} err" if errors else "")},
+        ],
+    }
+    if tags:
+        item["details"].append({"label": "Sample tags", "value": ", ".join(tags[:12]) + ("…" if len(tags) > 12 else "")})
+    _apply_still_tag_target_to_item(item, current, tags=tags)
+    return item
+
+
+def attach_still_tag_runs(
+    payload: Dict[str, Any],
+    *,
+    data_root: Path,
+    output_root: Path,
+    limit: int = 30,
+) -> Dict[str, Any]:
+    """Merge still-tag runs into Workbench work-products (first-class jobs, v0 output = still + tags)."""
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        return payload
+    try:
+        from vision_still_tags import list_recent_still_tag_runs  # type: ignore
+    except Exception as e:
+        payload["still_tag_attach_error"] = str(e)
+        return payload
+
+    cap = max(1, min(200, int(limit or 30)))
+    runs = list_recent_still_tag_runs(data_root=data_root, limit=cap)
+    if not runs:
+        payload["still_tag_count"] = 0
+        return payload
+
+    from vision_still_tags import connect, default_db_path  # type: ignore
+
+    db_path = default_db_path(data_root=data_root)
+    con = connect(db_path) if db_path.is_file() else None
+    try:
+        tag_items = [
+            _still_tag_run_work_product(
+                run,
+                data_root=data_root,
+                output_root=output_root,
+                con=con,
+            )
+            for run in runs
+        ]
+    finally:
+        if con is not None:
+            con.close()
+    existing = list(payload.get("items") or [])
+    tag_keys = {str(it.get("job_key") or "") for it in tag_items}
+    rest = [
+        it
+        for it in existing
+        if isinstance(it, dict) and str(it.get("job_key") or "") not in tag_keys
+    ]
+    payload["items"] = tag_items + rest
+    payload["still_tag_count"] = len(tag_items)
+    return payload
+
+
 def _work_product_item_nav_section(item: Dict[str, Any]) -> str:
     """Mirror Workbench nav sections: live / pending / error / done."""
     if item.get("live_from_comfy"):
@@ -3524,6 +3916,7 @@ def attach_live_comfy_queue(
     jobs_root = Path(data_root) / "shape_factory" / "jobs" if data_root else None
     out_root = Path(output_root).resolve() if output_root else None
     data_r = Path(data_root).resolve() if data_root else None
+    still_tag_cid_to_run = _still_tag_content_to_run_map(data_r) if data_r is not None else {}
     live_items: List[Dict[str, Any]] = []
     used_indices: set[int] = set()
     emitted_live_job_keys: set[str] = set()
@@ -3570,6 +3963,12 @@ def attach_live_comfy_queue(
             if live_vhs is not None:
                 row["applied_vhs"] = live_vhs
                 row["details"] = _detail_rows(row)
+        if _is_still_tag_work_product(row) and data_r is not None:
+            row = _refresh_still_tag_live_row(
+                row,
+                data_root=data_r,
+                live_prompt=ent.get("prompt"),
+            )
         return _stamp_row_queue_index(row, ent)
 
     for ent in entries:
@@ -3644,6 +4043,32 @@ def attach_live_comfy_queue(
             row_job_key = str(row.get("job_key") or "").strip()
             if row_job_key:
                 emitted_live_job_keys.add(row_job_key)
+            continue
+
+        prompt_obj = ent.get("prompt") if isinstance(ent.get("prompt"), dict) else None
+        if _prompt_is_florence_still_tag(prompt_obj):
+            load_cid = _content_id_from_florence_prompt(prompt_obj)
+            run_id = still_tag_cid_to_run.get(load_cid or "") if load_cid else None
+            still_idx = _find_still_tag_item_index(
+                items,
+                used_indices=used_indices,
+                run_id=run_id,
+                content_id=load_cid,
+            )
+            if still_idx is not None:
+                row = _promote_on_page_row(still_idx, status=status, prompt_id=pid, ent=ent)
+                row_job_key = str(row.get("job_key") or "").strip()
+                if row_job_key and row_job_key in emitted_live_job_keys:
+                    emitted_live_prompt_ids.add(pid)
+                    continue
+                live_items.append(row)
+                emitted_live_prompt_ids.add(pid)
+                if row_job_key:
+                    emitted_live_job_keys.add(row_job_key)
+                continue
+            # Do not synthesize generic live__ rows for Florence — they show the LoadImage
+            # jpeg name and look like stray I2V jobs in Workbench.
+            emitted_live_prompt_ids.add(pid)
             continue
 
         row = _synthetic_live_work_product(
