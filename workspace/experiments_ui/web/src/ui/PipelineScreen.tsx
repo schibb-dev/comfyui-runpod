@@ -45,6 +45,13 @@ export function PipelineScroll({ children }: { children: React.ReactNode }) {
   return <div className="pipeline-scroll">{children}</div>;
 }
 
-export function PipelineList({ children }: { children: React.ReactNode }) {
-  return <div className="pipeline-list">{children}</div>;
+export function PipelineList({
+  children,
+  className,
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  const classes = ["pipeline-list", className].filter(Boolean).join(" ");
+  return <div className={classes}>{children}</div>;
 }

@@ -11,6 +11,8 @@ import unittest
 
 import support  # noqa: F401
 from comfy_live_preview import (
+    enrich_live_status_node_titles,
+    prompt_node_label,
     BINARY_EVENT_PREVIEW_IMAGE,
     BINARY_EVENT_PREVIEW_IMAGE_WITH_METADATA,
     DEFAULT_CLIENT_IDS,
@@ -193,6 +195,22 @@ class CacheTests(unittest.TestCase):
         st = cache.status_items(["later"])[0]
         self.assertTrue(st["has_preview"])
         self.assertEqual(st["frames_count"], 1)
+
+    def test_prompt_node_label_from_api_prompt(self) -> None:
+        prompt = {
+            "462": {
+                "class_type": "KSampler",
+                "_meta": {"title": "SAMPLER: main"},
+            }
+        }
+        self.assertEqual(prompt_node_label(prompt, "462"), "SAMPLER: main")
+        self.assertEqual(prompt_node_label(prompt, "999"), None)
+
+    def test_enrich_live_status_node_titles(self) -> None:
+        items = [{"prompt_id": "p1", "node": "462", "value": 1, "max": 10}]
+        prompt = {"462": {"class_type": "KSampler", "_meta": {"title": "KSampler"}}}
+        out = enrich_live_status_node_titles(items, prompt_for_id=lambda pid: prompt if pid == "p1" else None)
+        self.assertEqual(out[0]["node_title"], "KSampler")
 
     def test_progress_state_maps_running_node(self) -> None:
         cache = LivePreviewCache(max_entries=8)

@@ -274,6 +274,12 @@ body {
   border-color: rgba(255, 90, 122, 0.35);
   color: #ff8a80;
 }
+.queue-monitor-sort-row {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
 .queue-monitor-sort {
   display: inline-flex;
   align-items: center;
@@ -13839,6 +13845,104 @@ button.home-backlog-linkish {
   margin: 8px 0 4px;
 }
 
+.queue-monitor-sections.pipeline-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.queue-monitor-section {
+  margin: 0;
+}
+
+.queue-monitor-section__summary {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg, #0f1114);
+  border-radius: 6px;
+  flex-wrap: wrap;
+  row-gap: 6px;
+  align-items: center;
+}
+
+.queue-monitor-section__hint {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: min(42vw, 280px);
+  font-size: 11px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.92;
+}
+
+.queue-monitor-section__summary-extra {
+  flex: 1 1 220px;
+  min-width: min(100%, 200px);
+  max-width: 100%;
+}
+
+.queue-monitor-section__live-metrics.work-product-live__metrics--summary {
+  gap: 3px;
+}
+
+.queue-monitor-section__live-metrics .work-product-live__timing--summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.queue-monitor-section__live-metrics .work-product-live__timing--summary > span:not(:last-child)::after {
+  content: "·";
+  margin-left: 8px;
+  opacity: 0.55;
+}
+
+.queue-monitor-section__live-metrics .work-product-live__step--summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: min(14rem, 38vw);
+  font-size: 9px;
+  font-weight: 400;
+  line-height: 1.15;
+  color: var(--muted);
+  opacity: 0.92;
+}
+
+.queue-monitor-section__live-metrics .work-product-live__progress--compact {
+  height: 4px;
+  border-radius: 2px;
+  border: none;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.queue-monitor-section__live-metrics .work-product-live__progress--compact .work-product-live__bar {
+  border-radius: 2px;
+}
+
+.work-products-index__section--running > .queue-monitor-section__summary .work-products-index__section-badges {
+  margin-left: auto;
+}
+
+.queue-monitor-section__rows > .pipeline-row:first-child {
+  margin-top: 2px;
+}
+
+.queue-monitor-section--history > .queue-monitor-section__summary,
+.work-products-index__section--history > .queue-monitor-section__summary {
+  color: var(--text);
+}
+
 /* Status chips reuse .work-products-status-toggle classes. */
 /* ---- Work products (construction debug) ----------------------------- */
 
@@ -15389,6 +15493,16 @@ button.home-backlog-linkish {
   color: #fff;
 }
 
+.work-product-live__badge--tagging {
+  background: rgba(70, 130, 220, 0.88);
+  color: #fff;
+}
+
+.work-product-live__badge--done {
+  background: rgba(46, 125, 79, 0.82);
+  color: rgba(255, 255, 255, 0.95);
+}
+
 .work-product-live__badge--queued {
   background: rgba(46, 125, 79, 0.75);
   color: rgba(255, 255, 255, 0.92);
@@ -15570,7 +15684,49 @@ button.home-backlog-linkish {
   width: 100%;
 }
 
-.work-product-live__prog-label,
+.work-product-live__step,
+.work-product-live__prog-step {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.work-product-live__step {
+  flex: 1 1 8rem;
+  max-width: 100%;
+  font-weight: 500;
+}
+
+.work-product-live__prog-label {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 16px;
+  padding: 0 6px;
+  color: var(--muted);
+}
+
+.work-product-live__prog-step {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.work-product-live__prog-sep {
+  flex: 0 0 auto;
+  opacity: 0.55;
+}
+
+.work-product-live__prog-fraction {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
 .work-product-live__progress--text {
   position: relative;
   z-index: 1;
@@ -16143,6 +16299,63 @@ button.home-backlog-linkish {
   background: color-mix(in srgb, var(--panel, #151a24) 86%, black);
 }
 
+.work-product-live--still-tag {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-width: min(100%, 520px);
+}
+
+.work-product-live__frame--still-tag {
+  min-height: 200px;
+  max-height: min(62vh, 520px);
+}
+
+.work-product-live__frame--still-tag.work-product-live__frame--live {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent, #6cf) 45%, transparent);
+}
+
+.work-product-live__img--still-tag {
+  display: block;
+  width: 100%;
+  max-height: min(58vh, 480px);
+  object-fit: contain;
+}
+
+.work-product-viewer__still-tag-cid {
+  font-size: 0.75rem;
+  opacity: 0.75;
+}
+
+.work-product-viewer__still-tag {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-width: 420px;
+}
+
+.work-product-viewer__still-tag-img {
+  display: block;
+  width: 100%;
+  max-height: 360px;
+  object-fit: contain;
+  border-radius: 6px;
+  background: var(--surface-2, #111);
+}
+
+.work-product-viewer__still-tag-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.work-product-viewer__still-tag-tags {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.35;
+  color: var(--text-muted, #aaa);
+}
+
 .work-product-viewer__live-source-img {
   width: 100%;
   height: 100%;
@@ -16370,6 +16583,32 @@ button.home-backlog-linkish {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: rgba(0, 0, 0, 0.16);
+}
+
+.work-product-edit-finish {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.work-product-edit-finish--sticky {
+  position: sticky;
+  bottom: 8px;
+  z-index: 3;
+  box-shadow: 0 -10px 28px rgba(0, 0, 0, 0.38);
+}
+
+.work-product-edit-finish .work-product-quick-queue__hint {
+  margin: 0 0 6px;
+}
+
+.work-product-quick-queue__done {
+  font-weight: 600;
+  padding: 3px 12px;
+  border-color: rgba(72, 148, 220, 0.55);
+  background: rgba(72, 148, 220, 0.18);
 }
 
 .work-product-quick-queue--actions {

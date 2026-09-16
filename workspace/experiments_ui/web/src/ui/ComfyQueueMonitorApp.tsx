@@ -24,6 +24,19 @@ import { nextQueueSectionShowForDoubleClick } from "./filterGroupDoubleClick";
 import { PromptPeekButton } from "./PromptPeek";
 import { jobPromptVariantDisplayName } from "./submitFamily";
 import { queryKeys } from "./queryKeys";
+import {
+  isHistoryProblem,
+  sortQueueHistoryItems,
+  sortQueueLiveItems,
+  type QueueHistorySortMode,
+  type QueueLiveSortMode,
+} from "./queueMonitorSort";
+import {
+  queueHistorySectionHint,
+  queueRunningSectionHint,
+  queueWaitingSectionHint,
+  type QueueMonitorSectionId,
+} from "./queueMonitorSections";
 import type {
   ComfyHistoryItem,
   ComfyLogEntry,
@@ -274,49 +287,7 @@ function historyStatusVisual(status?: string): string {
   return "muted";
 }
 
-function isHistoryProblem(item: { status?: string }): boolean {
-  const v = historyStatusVisual(item.status);
-  return v === "error" || v === "interrupted";
-}
-
 type StatusFilter = "all" | "errors" | "ok";
-type SortMode = "newest" | "oldest" | "errors_first" | "queue_index";
-
-function itemSortKeyChanged(item: {
-  changed_at?: string | null;
-  queued_at?: string | null;
-  queue_index?: number | null;
-}): number {
-  const iso = item.changed_at || item.queued_at;
-  if (iso) {
-    const t = Date.parse(iso);
-    if (!Number.isNaN(t)) return t;
-  }
-  if (typeof item.queue_index === "number") return item.queue_index;
-  return 0;
-}
-
-function sortQueueItems<
-  T extends { changed_at?: string | null; queued_at?: string | null; queue_index?: number | null; status?: string },
->(items: T[], mode: SortMode): T[] {
-  const copy = items.slice();
-  copy.sort((a, b) => {
-    if (mode === "errors_first") {
-      const ae = isHistoryProblem(a) ? 0 : 1;
-      const be = isHistoryProblem(b) ? 0 : 1;
-      if (ae !== be) return ae - be;
-      return itemSortKeyChanged(b) - itemSortKeyChanged(a);
-    }
-    if (mode === "queue_index") {
-      const ai = typeof a.queue_index === "number" ? a.queue_index : -1;
-      const bi = typeof b.queue_index === "number" ? b.queue_index : -1;
-      return bi - ai;
-    }
-    if (mode === "oldest") return itemSortKeyChanged(a) - itemSortKeyChanged(b);
-    return itemSortKeyChanged(b) - itemSortKeyChanged(a);
-  });
-  return copy;
-}
 
 function queueThumb(item: QueueComfyItem): string | null {
   if (item.input_thumb_url) return item.input_thumb_url;
@@ -380,8 +351,8 @@ function StatusChip({
       }
       title={
         on
-          ? `Hide ${label}${onFocusSolo ? " · double-click to show only this · again to show all" : ""}`
-          : `Show ${label}${onFocusSolo ? " · double-click to show only this · again to show all" : ""}`
+          ? `Collapse ${label} section${onFocusSolo ? " · double-click to expand only this · again to expand all" : ""}`
+          : `Expand ${label} section${onFocusSolo ? " · double-click to expand only this · again to expand all" : ""}`
       }
     >
       <span className="work-products-status-toggle__label">{label}</span>
@@ -808,7 +779,62 @@ function HistoryItemRow({ item, deepLinkHit }: { item: ComfyHistoryItem; deepLin
   );
 }
 
-type SectionKey = "running" | "pending" | "history";
+type SectionKey = QueueMonitorSectionId;
+
+function QueueMonitorSection({
+  id,
+  label,
+  hint,
+  count,
+  tone,
+  open,
+  onOpenChange,
+  hidden,
+  summaryExtra,
+  children,
+}: {
+  id: SectionKey;
+  label: string;
+  hint: string;
+  count: number;
+  tone: "running" | "queued" | "ok" | "error";
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  hidden?: boolean;
+  /** Shown in the summary row (e.g. live progress for Running). */
+  summaryExtra?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  if (hidden) return null;
+  return (
+    <details
+      className={`queue-monitor-section work-products-index__section work-products-index__section--${id}`}
+      open={open}
+      onToggle={(e) => {
+        const next = e.currentTarget.open;
+        if (next !== open) onOpenChange(next);
+      }}
+    >
+      <summary className="work-products-index__section-summary queue-monitor-section__summary" title={hint}>
+        <span className="work-products-index__section-label">{label}</span>
+        <span className="queue-monitor-section__hint">{hint}</span>
+        {!open && summaryExtra ? (
+          <div className="queue-monitor-section__summary-extra" onClick={(e) => e.stopPropagation()}>
+            {summaryExtra}
+          </div>
+        ) : null}
+        <span className="work-products-index__section-badges">
+          <span className={`work-products-index__section-badge work-products-index__section-badge--${tone}`}>
+            <span className="work-products-index__section-badge-count">{count}</span>
+          </span>
+        </span>
+      </summary>
+      <div className="queue-monitor-section__rows" role="group" aria-label={label}>
+        {children}
+      </div>
+    </details>
+  );
+}
 
 function formatLogStamp(t?: string | null): string {
   if (!t) return "";
@@ -1330,7 +1356,8 @@ export function ComfyQueueMonitorApp() {
   const [movingPromptId, setMovingPromptId] = useState<string | null>(null);
   const [pageTab, setPageTab] = useState<"queue" | "ledger">("queue");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [sortMode, setSortMode] = useState<SortMode>("newest");
+  const [liveSortMode, setLiveSortMode] = useState<QueueLiveSortMode>("queue_index");
+  const [historySortMode, setHistorySortMode] = useState<QueueHistorySortMode>("newest");
   const [show, setShow] = useState<Record<SectionKey, boolean>>({
     running: true,
     pending: true,
@@ -1447,16 +1474,16 @@ export function ComfyQueueMonitorApp() {
     let rows = history;
     if (statusFilter === "errors") rows = rows.filter((h) => isHistoryProblem(h));
     else if (statusFilter === "ok") rows = rows.filter((h) => !isHistoryProblem(h));
-    return sortQueueItems(rows, sortMode);
-  }, [history, statusFilter, sortMode]);
+    return sortQueueHistoryItems(rows, historySortMode);
+  }, [history, statusFilter, historySortMode]);
   const filteredRunning = useMemo(() => {
     if (statusFilter === "errors") return [];
-    return sortQueueItems(runningRaw, sortMode === "errors_first" ? "newest" : sortMode);
-  }, [runningRaw, statusFilter, sortMode]);
+    return sortQueueLiveItems(runningRaw, liveSortMode);
+  }, [runningRaw, statusFilter, liveSortMode]);
   const filteredPending = useMemo(() => {
     if (statusFilter === "errors") return [];
-    return sortQueueItems(pendingRaw, sortMode === "errors_first" ? "newest" : sortMode);
-  }, [pendingRaw, statusFilter, sortMode]);
+    return sortQueueLiveItems(pendingRaw, liveSortMode);
+  }, [pendingRaw, statusFilter, liveSortMode]);
 
   const matchQueueDeepLink = useCallback(
     (item: { prompt_id?: string | null; job_key?: string | null }) => {
@@ -1545,12 +1572,31 @@ export function ComfyQueueMonitorApp() {
     historyErrorCount,
   ]);
 
+  const setSectionOpen = (key: SectionKey, open: boolean) => setShow((s) => ({ ...s, [key]: open }));
   const toggle = (key: SectionKey) => setShow((s) => ({ ...s, [key]: !s[key] }));
+
+  const runningHint = useMemo(() => queueRunningSectionHint(filteredRunning), [filteredRunning]);
+  const primaryRunning = filteredRunning[0] ?? null;
+  const primaryRunningPid = String(primaryRunning?.prompt_id || "").trim();
+  const runningSummaryMetrics =
+    primaryRunningPid ? (
+      <ComfyLiveMetricsBar
+        promptId={primaryRunningPid}
+        submittedAt={primaryRunning?.queued_at}
+        variant="summary"
+        className="queue-monitor-section__live-metrics"
+      />
+    ) : null;
+  const waitingHint = useMemo(() => queueWaitingSectionHint(filteredPending), [filteredPending]);
+  const historyHint = useMemo(
+    () => queueHistorySectionHint(filteredHistory, historyErrorCount, statusFilter === "errors"),
+    [filteredHistory, historyErrorCount, statusFilter],
+  );
 
   const setErrorsFilter = () => {
     setStatusFilter("errors");
     setShow((s) => ({ ...s, history: true, running: false, pending: false }));
-    setSortMode("errors_first");
+    setHistorySortMode("errors_first");
   };
 
   return (
@@ -1632,7 +1678,7 @@ export function ComfyQueueMonitorApp() {
                 status="running"
                 label="running"
                 count={filteredRunning.length}
-                on={show.running && statusFilter !== "errors"}
+                on={show.running}
                 onToggle={() => {
                   setStatusFilter("all");
                   toggle("running");
@@ -1646,7 +1692,7 @@ export function ComfyQueueMonitorApp() {
                 status="pending"
                 label="waiting"
                 count={filteredPending.length}
-                on={show.pending && statusFilter !== "errors"}
+                on={show.pending}
                 onToggle={() => {
                   setStatusFilter("all");
                   toggle("pending");
@@ -1696,19 +1742,35 @@ export function ComfyQueueMonitorApp() {
                 <span className="work-products-status-toggle__count">{historyErrorCount}</span>
               </button>
             </PipelineFilterRow>
-            <label className="queue-monitor-sort">
-              <span className="queue-monitor-sort__label">Sort</span>
-              <select
-                value={sortMode}
-                onChange={(e) => setSortMode(e.target.value as SortMode)}
-                aria-label="Sort queue items"
-              >
-                <option value="newest">Newest change</option>
-                <option value="oldest">Oldest change</option>
-                <option value="errors_first">Errors first</option>
-                <option value="queue_index">Queue index</option>
-              </select>
-            </label>
+            <div className="queue-monitor-sort-row">
+              <label className="queue-monitor-sort">
+                <span className="queue-monitor-sort__label">Live queue</span>
+                <select
+                  value={liveSortMode}
+                  onChange={(e) => setLiveSortMode(e.target.value as QueueLiveSortMode)}
+                  aria-label="Sort running and waiting Comfy queue items"
+                  title="Running and waiting — default is Comfy run order (next to execute at top)"
+                >
+                  <option value="queue_index">Run order</option>
+                  <option value="newest">Newest change</option>
+                  <option value="oldest">Oldest change</option>
+                </select>
+              </label>
+              <label className="queue-monitor-sort">
+                <span className="queue-monitor-sort__label">History</span>
+                <select
+                  value={historySortMode}
+                  onChange={(e) => setHistorySortMode(e.target.value as QueueHistorySortMode)}
+                  aria-label="Sort queue history items"
+                  title="Completed / failed runs from Comfy history"
+                >
+                  <option value="newest">Newest change</option>
+                  <option value="oldest">Oldest change</option>
+                  <option value="errors_first">Errors first</option>
+                  <option value="queue_index">Queue index</option>
+                </select>
+              </label>
+            </div>
             {statusFilter !== "all" ? (
               <button
                 type="button"
@@ -1726,66 +1788,78 @@ export function ComfyQueueMonitorApp() {
           {queueActionMsg ? <div className="queue-monitor-error">{queueActionMsg}</div> : null}
           <div className="queue-monitor-split">
             <PipelineScroll>
-              <PipelineList>
-                {show.running && statusFilter !== "errors" ? (
-                  <>
-                    <div className="pipeline-section-label">Running</div>
-                    {filteredRunning.length ? (
-                      filteredRunning.map((item, i) => (
-                        <QueueItemRow
-                          key={`${item.prompt_id ?? "run"}:${i}`}
-                          item={item}
-                          kind="running"
-                          movingPromptId={movingPromptId}
-                          onRefresh={() => void invalidateQueue()}
-                          deepLinkHit={isDeepLinkHit(item)}
-                        />
-                      ))
-                    ) : (
-                      <div className="pipeline-empty">(idle)</div>
-                    )}
-                  </>
-                ) : null}
-                {show.pending && statusFilter !== "errors" ? (
-                  <>
-                    <div className="pipeline-section-label">Waiting</div>
-                    {filteredPending.length ? (
-                      filteredPending.map((item, i) => (
-                        <QueueItemRow
-                          key={`${item.prompt_id ?? "pend"}:${i}`}
-                          item={item}
-                          kind="waiting"
-                          movingPromptId={movingPromptId}
-                          onMovePrompt={movePendingPrompt}
-                          onRefresh={() => void invalidateQueue()}
-                          deepLinkHit={isDeepLinkHit(item)}
-                        />
-                      ))
-                    ) : (
-                      <div className="pipeline-empty">(none)</div>
-                    )}
-                  </>
-                ) : null}
-                {show.history ? (
-                  <>
-                    <div className="pipeline-section-label">
-                      History
-                      {statusFilter === "errors" ? " · errors only" : ""}
-                      {historyErrorCount ? (
-                        <span className="queue-history-error-count"> {historyErrorCount} failed</span>
-                      ) : null}
+              <PipelineList className="queue-monitor-sections">
+                <QueueMonitorSection
+                  id="running"
+                  label="Running"
+                  hint={runningHint}
+                  count={filteredRunning.length}
+                  tone="running"
+                  open={show.running}
+                  onOpenChange={(open) => setSectionOpen("running", open)}
+                  hidden={statusFilter === "errors"}
+                  summaryExtra={runningSummaryMetrics}
+                >
+                  {filteredRunning.length ? (
+                    filteredRunning.map((item, i) => (
+                      <QueueItemRow
+                        key={`${item.prompt_id ?? "run"}:${i}`}
+                        item={item}
+                        kind="running"
+                        movingPromptId={movingPromptId}
+                        onRefresh={() => void invalidateQueue()}
+                        deepLinkHit={isDeepLinkHit(item)}
+                      />
+                    ))
+                  ) : (
+                    <div className="pipeline-empty">(idle)</div>
+                  )}
+                </QueueMonitorSection>
+                <QueueMonitorSection
+                  id="pending"
+                  label="Waiting"
+                  hint={waitingHint}
+                  count={filteredPending.length}
+                  tone="queued"
+                  open={show.pending}
+                  onOpenChange={(open) => setSectionOpen("pending", open)}
+                  hidden={statusFilter === "errors"}
+                >
+                  {filteredPending.length ? (
+                    filteredPending.map((item, i) => (
+                      <QueueItemRow
+                        key={`${item.prompt_id ?? "pend"}:${i}`}
+                        item={item}
+                        kind="waiting"
+                        movingPromptId={movingPromptId}
+                        onMovePrompt={movePendingPrompt}
+                        onRefresh={() => void invalidateQueue()}
+                        deepLinkHit={isDeepLinkHit(item)}
+                      />
+                    ))
+                  ) : (
+                    <div className="pipeline-empty">(none)</div>
+                  )}
+                </QueueMonitorSection>
+                <QueueMonitorSection
+                  id="history"
+                  label={statusFilter === "errors" ? "History · errors only" : "History"}
+                  hint={historyHint}
+                  count={filteredHistory.length}
+                  tone={historyErrorCount ? "error" : "ok"}
+                  open={show.history}
+                  onOpenChange={(open) => setSectionOpen("history", open)}
+                >
+                  {filteredHistory.length ? (
+                    filteredHistory.map((h) => (
+                      <HistoryItemRow key={h.prompt_id} item={h} deepLinkHit={isDeepLinkHit(h)} />
+                    ))
+                  ) : (
+                    <div className="pipeline-empty">
+                      {statusFilter === "errors" ? "(no errors in recent history)" : "(no history)"}
                     </div>
-                    {filteredHistory.length ? (
-                      filteredHistory.map((h) => (
-                        <HistoryItemRow key={h.prompt_id} item={h} deepLinkHit={isDeepLinkHit(h)} />
-                      ))
-                    ) : (
-                      <div className="pipeline-empty">
-                        {statusFilter === "errors" ? "(no errors in recent history)" : "(no history)"}
-                      </div>
-                    )}
-                  </>
-                ) : null}
+                  )}
+                </QueueMonitorSection>
               </PipelineList>
             </PipelineScroll>
             <ComfyLogPanel />

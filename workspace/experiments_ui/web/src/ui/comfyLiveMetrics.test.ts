@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { liveTimingParts } from "./comfyLiveMetrics";
+import { formatDurationMmSs, liveStepLabel, liveTimingParts } from "./comfyLiveMetrics";
 import type { ComfyLiveStatusItem } from "./types";
 
 function item(partial: Partial<ComfyLiveStatusItem>): ComfyLiveStatusItem {
@@ -9,6 +9,26 @@ function item(partial: Partial<ComfyLiveStatusItem>): ComfyLiveStatusItem {
     ...partial,
   };
 }
+
+describe("liveStepLabel", () => {
+  it("prefers node_title over node id", () => {
+    expect(liveStepLabel({ prompt_id: "p1", has_preview: false, node: "462", node_title: "KSampler" })).toBe(
+      "KSampler",
+    );
+    expect(liveStepLabel({ prompt_id: "p1", has_preview: false, node: "462" })).toBe("node 462");
+  });
+});
+
+describe("formatDurationMmSs", () => {
+  it("formats sub-hour durations as m:ss", () => {
+    expect(formatDurationMmSs(45)).toBe("0:45");
+    expect(formatDurationMmSs(725)).toBe("12:05");
+  });
+
+  it("formats hour-plus as h:mm:ss", () => {
+    expect(formatDurationMmSs(3665)).toBe("1:01:05");
+  });
+});
 
 describe("liveTimingParts", () => {
   it("computes determinate percent from value/max", () => {

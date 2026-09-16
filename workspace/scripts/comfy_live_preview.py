@@ -333,6 +333,60 @@ def parse_preview_binary(
     return None
 
 
+def prompt_node_label(prompt: Any, node_id: Optional[str]) -> Optional[str]:
+    """Human label for a Comfy node id from API prompt or workflow JSON."""
+    nid = str(node_id or "").strip()
+    if not nid or not isinstance(prompt, dict):
+        return None
+    node = prompt.get(nid)
+    if isinstance(node, dict):
+        meta = node.get("_meta") if isinstance(node.get("_meta"), dict) else {}
+        for key in ("title",):
+            raw = meta.get(key) or node.get(key)
+            if isinstance(raw, str) and raw.strip():
+                return raw.strip()
+        class_type = node.get("class_type")
+        if isinstance(class_type, str) and class_type.strip():
+            return class_type.strip()
+    nodes = prompt.get("nodes")
+    if isinstance(nodes, list):
+        for row in nodes:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("id")) != nid:
+                continue
+            for key in ("title", "type"):
+                raw = row.get(key)
+                if isinstance(raw, str) and raw.strip():
+                    return raw.strip()
+    return None
+
+
+def enrich_live_status_node_titles(
+    items: List[Dict[str, Any]],
+    *,
+    prompt_for_id: Optional[Any] = None,
+) -> List[Dict[str, Any]]:
+    """Attach ``node_title`` from prompt graphs when only a numeric node id is known."""
+    if not items:
+        return items
+    lookup = prompt_for_id
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("node_title") or "").strip():
+            continue
+        node = item.get("node")
+        if node is None or not str(node).strip():
+            continue
+        pid = str(item.get("prompt_id") or "").strip()
+        prompt = lookup(pid) if callable(lookup) and pid else None
+        label = prompt_node_label(prompt, str(node))
+        if label:
+            item["node_title"] = label
+    return items
+
+
 @dataclass
 class LivePreviewEntry:
     prompt_id: str
@@ -341,6 +395,7 @@ class LivePreviewEntry:
     value: Optional[int] = None
     max: Optional[int] = None
     node: Optional[str] = None
+    node_title: Optional[str] = None
     status: str = "unknown"  # running | done | error | interrupted | unknown
     updated_at: float = field(default_factory=time.time)
     finished_at: Optional[float] = None
@@ -381,6 +436,7 @@ class LivePreviewEntry:
             "value": self.value,
             "max": self.max,
             "node": self.node,
+            "node_title": self.node_title,
             "status": self.status,
             "updated_at": self.updated_at,
             "finished_at": self.finished_at,
@@ -632,11 +688,13 @@ class LivePreviewCache:
             if pick is None:
                 vals = [n for n in nodes.values() if isinstance(n, dict)]
                 pick = vals[-1] if vals else {}
+            node_title = pick.get("display_node_name") or pick.get("title") or pick.get("name")
             data = {
                 "prompt_id": pid,
                 "value": pick.get("value"),
                 "max": pick.get("max"),
                 "node": pick.get("node_id") or pick.get("display_node_id") or pick.get("real_node_id"),
+                "node_title": str(node_title).strip() if node_title else None,
             }
             msg_type = "progress"
 
@@ -692,6 +750,9 @@ class LivePreviewCache:
                 node = data.get("node")
                 if node is not None and str(node).strip():
                     ent.node = str(node)
+                node_title = data.get("node_title")
+                if isinstance(node_title, str) and node_title.strip():
+                    ent.node_title = node_title.strip()
                 ent.status = "running"
                 ent.finished_at = None
                 if ent.started_at is None:
@@ -777,6 +838,7 @@ class LivePreviewCache:
                 value=ent.value,
                 max=ent.max,
                 node=ent.node,
+                node_title=ent.node_title,
                 status=ent.status,
                 updated_at=ent.updated_at,
                 finished_at=ent.finished_at,
@@ -818,6 +880,7 @@ class LivePreviewCache:
                 "value": None,
                 "max": None,
                 "node": None,
+                "node_title": None,
                 "status": "unknown",
                 "updated_at": None,
                 "finished_at": None,
@@ -1093,11 +1156,18 @@ def start_bridge(
         return bridge
 
 
-def live_status_payload(prompt_ids: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+def live_status_payload(
+    prompt_ids: Optional[Sequence[str]] = None,
+    *,
+    prompt_for_id: Optional[Any] = None,
+) -> Dict[str, Any]:
     bridge = get_bridge()
     if bridge is None:
         return {"ok": True, "bridge": False, "items": [], "count": 0}
-    items = bridge.cache.status_items(prompt_ids)
+    items = enrich_live_status_node_titles(
+        bridge.cache.status_items(prompt_ids),
+        prompt_for_id=prompt_for_id,
+    )
     return {"ok": True, "bridge": True, "items": items, "count": len(items)}
 
 

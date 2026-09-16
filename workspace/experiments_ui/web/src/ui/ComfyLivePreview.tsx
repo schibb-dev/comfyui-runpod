@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { comfyLivePreviewUrl, fetchComfyLiveStatus } from "./api";
-import { liveTimingParts } from "./comfyLiveMetrics";
+import { formatDurationMmSs, liveStepLabel, liveTimingParts } from "./comfyLiveMetrics";
 import type { ComfyLiveStatusItem } from "./types";
 
 const LIVE_STATUS_POLL_MS = 2000;
@@ -60,15 +60,6 @@ function subscribeLiveStatus(promptId: string, cb: LiveStatusListener): () => vo
   };
 }
 
-function formatDuration(seconds: number | null | undefined): string {
-  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return "—";
-  const s = Math.floor(seconds);
-  const m = Math.floor(s / 60);
-  const r = s % 60;
-  if (m <= 0) return `${r}s`;
-  return `${m}m ${r.toString().padStart(2, "0")}s`;
-}
-
 function useComfyLiveStatus(promptId: string) {
   const [status, setStatus] = useState<ComfyLiveStatusItem | null>(null);
   const [nowTick, setNowTick] = useState(() => Date.now());
@@ -98,37 +89,64 @@ function LiveProgressTrack({
   max,
   pct,
   running,
+  showLabel = true,
+  stepLabel = null,
 }: {
   status: ComfyLiveStatusItem | null;
   value: number | null | undefined;
   max: number | null | undefined;
   pct: number | null;
   running: boolean;
+  showLabel?: boolean;
+  stepLabel?: string | null;
 }) {
+  const step = stepLabel || liveStepLabel(status);
+  const progressTitle =
+    pct != null
+      ? `${value}/${max}${step ? ` · ${step}` : ""}`
+      : step || "Waiting for sampler progress";
   if (pct != null) {
     return (
       <div
-        className="work-product-live__progress"
-        title={`${value}/${max}${status?.node ? ` · node ${status.node}` : ""}`}
+        className={[
+          "work-product-live__progress",
+          showLabel ? "" : "work-product-live__progress--compact",
+        ]
+          .filter(Boolean)
+          .join(" ")}
+        title={progressTitle}
       >
         <div className="work-product-live__bar" style={{ width: `${pct}%` }} />
-        <span className="work-product-live__prog-label">
-          {value}/{max}
-          {status?.node ? ` · ${status.node}` : ""}
-        </span>
+        {showLabel ? (
+          <span className="work-product-live__prog-label">
+            {step ? <span className="work-product-live__prog-step">{step}</span> : null}
+            {step ? <span className="work-product-live__prog-sep">·</span> : null}
+            <span className="work-product-live__prog-fraction">
+              {value}/{max}
+            </span>
+          </span>
+        ) : null}
       </div>
     );
   }
   if (!running) return null;
   return (
     <div
-      className="work-product-live__progress work-product-live__progress--indeterminate"
-      title={status?.node ? `node ${status.node}` : "Waiting for sampler progress"}
+      className={[
+        "work-product-live__progress",
+        "work-product-live__progress--indeterminate",
+        showLabel ? "" : "work-product-live__progress--compact",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      title={progressTitle}
     >
       <div className="work-product-live__bar" />
-      <span className="work-product-live__prog-label">
-        {status?.node ? `node ${status.node}` : "running"}
-      </span>
+      {showLabel ? (
+        <span className="work-product-live__prog-label">
+          <span className="work-product-live__prog-step">{step || "running"}</span>
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -137,28 +155,60 @@ function LiveMetricsBlock({
   status,
   nowTick,
   submittedAt,
+  variant = "full",
 }: {
   status: ComfyLiveStatusItem | null;
   nowTick: number;
   submittedAt?: string | null;
+  variant?: "full" | "summary";
 }) {
   const { value, max, pct, elapsedClient, eta, running } = liveTimingParts(status, nowTick, submittedAt);
+  const summary = variant === "summary";
+  const step = liveStepLabel(status);
   return (
     <>
-      <div className="work-product-live__timing" title={status?.node ? `node ${status.node}` : undefined}>
-        <span>Elapsed {formatDuration(elapsedClient)}</span>
-        <span>ETA {eta != null ? `~${formatDuration(eta)}` : "—"}</span>
-        {pct != null ? (
-          <span>
-            {value}/{max}
-          </span>
-        ) : status?.status ? (
-          <span>{status.status}</span>
-        ) : running ? (
-          <span>running</span>
-        ) : null}
+      <div
+        className={[
+          "work-product-live__timing",
+          summary ? "work-product-live__timing--summary" : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
+        title={step || undefined}
+      >
+        {summary ? (
+          <>
+            <span title="Elapsed">{formatDurationMmSs(elapsedClient)}</span>
+            {step ? (
+              <span className="work-product-live__step work-product-live__step--summary" title={step}>
+                {step}
+              </span>
+            ) : running ? (
+              <span>running</span>
+            ) : null}
+            {pct != null ? (
+              <span>
+                {value}/{max}
+              </span>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <span>Elapsed {formatDurationMmSs(elapsedClient)}</span>
+            <span>ETA {eta != null ? formatDurationMmSs(eta) : "—"}</span>
+          </>
+        )}
+        {summary ? <span>ETA {eta != null ? formatDurationMmSs(eta) : "—"}</span> : null}
       </div>
-      <LiveProgressTrack status={status} value={value} max={max} pct={pct} running={running} />
+      <LiveProgressTrack
+        status={status}
+        value={value}
+        max={max}
+        pct={pct}
+        running={running}
+        showLabel={!summary}
+        stepLabel={step}
+      />
     </>
   );
 }
@@ -168,16 +218,27 @@ export function ComfyLiveMetricsBar({
   promptId,
   submittedAt,
   className,
+  variant = "full",
 }: {
   promptId: string;
   submittedAt?: string | null;
   className?: string;
+  /** Collapsed queue section: thin bar + ETA only. */
+  variant?: "full" | "summary";
 }) {
   const { status, nowTick } = useComfyLiveStatus(promptId);
 
   return (
-    <div className={["work-product-live__metrics", className].filter(Boolean).join(" ")}>
-      <LiveMetricsBlock status={status} nowTick={nowTick} submittedAt={submittedAt} />
+    <div
+      className={[
+        "work-product-live__metrics",
+        variant === "summary" ? "work-product-live__metrics--summary" : "",
+        className,
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    >
+      <LiveMetricsBlock status={status} nowTick={nowTick} submittedAt={submittedAt} variant={variant} />
     </div>
   );
 }
