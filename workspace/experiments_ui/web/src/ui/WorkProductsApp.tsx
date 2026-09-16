@@ -89,7 +89,15 @@ import {
   type FocusedGoneReason,
 } from "./workProductMediaFocus";
 import { prefetchAssetRatings } from "./assetRatingsCache";
-import { loadClipsForMedia, rememberFamiliesFromWorkProducts } from "./shapeFactorySessionCache";
+import {
+  loadClipsForMedia,
+  peekWorkProductsListEntry,
+  prefetchWorkProductsList,
+  putWorkProductsList,
+  rememberFamiliesFromWorkProducts,
+  workProductsListCacheKey,
+} from "./shapeFactorySessionCache";
+import { formatCacheAgeMs, workbenchLoadingHint } from "./workbenchLoadingHint";
 import { distinctiveFamilyLabels, familyPickerOptionLabel, familyPickerOptionTitle, familyPromptProfiles, familySlugIsQuarantined, familySwapTargets, isDefaultPromptVariant, isExtendFamilyOption, isStillMediaPath, jobPromptVariantDisplayName, jobPromptVariantName, jobPromptVariantSlug, pickQuickExtendFamily, pickRerunPromptPreset, pickRerunStack, promptProfileOptionLabel, promptTextIsOverridden, promptVariantName, promptVariantSlug, rerunPromptPresetDiffers, specDisplayJoined, stackPickerOptionLabel, workProductCanQuickExtend, workProductHasExtendableOutput } from "./submitFamily";
 import { recencyStamp } from "./workProductRecency";
 import {

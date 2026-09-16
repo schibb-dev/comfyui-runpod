@@ -17,10 +17,21 @@ function shortId(value: string | null | undefined, max = 14): string {
   return s.length <= max ? s : `${s.slice(0, max)}…`;
 }
 
-export function queueComfyItemTitle(item: Pick<QueueComfyItem, "glance" | "input_media_relpath" | "workflow_name" | "prompt_id">): string {
+export function queueComfyItemTitle(
+  item: Pick<
+    QueueComfyItem,
+    "glance" | "input_media_relpath" | "workflow_name" | "prompt_id" | "work_kind" | "display_title"
+  >,
+): string {
+  const displayTitle = String(item.display_title || "").trim();
+  if (displayTitle) return displayTitle;
   const family = String(item.glance?.family_slug || "").trim();
+  if (family && family !== "still-tag") return family;
+  if (String(item.glance?.workflow_kind || "").trim().toLowerCase() === "still_tag" || item.work_kind === "still_tag") {
+    const progress = String(item.glance?.step || "").trim();
+    return progress ? `Still tag · ${progress}` : "Still tag";
+  }
   return (
-    family ||
     basename(item.input_media_relpath) ||
     String(item.workflow_name || "").trim() ||
     shortId(item.prompt_id, 16)

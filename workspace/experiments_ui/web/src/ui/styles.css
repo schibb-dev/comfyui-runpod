@@ -13615,6 +13615,11 @@ button.home-backlog-linkish {
   background: rgba(24, 72, 52, 0.88);
 }
 
+.pipeline-row__kind-badge--still-tag {
+  border-color: rgba(210, 160, 255, 0.55);
+  background: rgba(72, 40, 98, 0.88);
+}
+
 .pipeline-row__body--player {
   grid-template-columns: auto minmax(0, 1fr);
 }

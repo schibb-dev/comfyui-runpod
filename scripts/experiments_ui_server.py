@@ -11849,6 +11849,25 @@ def _files_url_for_rel(rel: Optional[str]) -> Optional[str]:
     return "/files/" + urllib.parse.quote(norm)
 
 
+def _queue_apply_still_tag_enrichment(
+    row: Dict[str, Any],
+    prompt_obj: Any,
+) -> Dict[str, Any]:
+    """Label Florence still-tag prompts in queue/history rows."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    try:
+        from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+        from shape_factory_work_products import enrich_comfy_queue_still_tag  # type: ignore
+
+        data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+        enrich_comfy_queue_still_tag(row, prompt_obj, data_root=data_root)
+    except Exception:
+        pass
+    return row
+
+
 def _queue_resolve_input_media(cfg: "ServerConfig", prompt_obj: Any) -> Dict[str, Any]:
     """Resolve input media path/URL/thumb for a queued Comfy prompt."""
     raw_rel, kind = _extract_input_media_from_prompt(prompt_obj)
@@ -12691,28 +12710,28 @@ class Handler(BaseHTTPRequestHandler):
                         known_rec = known_rec if isinstance(known_rec, dict) else {}
                         queued_at = known_rec.get("first_seen_at") if isinstance(known_rec.get("first_seen_at"), str) else None
                         changed_at = known_rec.get("last_seen_at") if isinstance(known_rec.get("last_seen_at"), str) else None
-                        out.append(
-                            {
-                                "prompt_id": pid,
-                                "raw": it,
-                                "external": mapped is None,
-                                "exp_id": mapped.get("exp_id") if isinstance(mapped, dict) else None,
-                                "run_id": mapped.get("run_id") if isinstance(mapped, dict) else None,
-                                "workflow_name": workflow_name,
-                                "job_key": job_key,
-                                "queue_index": queue_index,
-                                "queued_at": queued_at,
-                                "changed_at": changed_at,
-                                "input_media_relpath": media.get("input_media_relpath"),
-                                "input_media_url": media.get("input_media_url"),
-                                "input_media_kind": media.get("input_media_kind"),
-                                "input_thumb_url": media.get("input_thumb_url"),
-                                "key_params": key_params,
-                                "vhs_window": vhs_window,
-                                "glance": glance,
-                                "prompt_profile": prompt_profile,
-                            }
-                        )
+                        row: Dict[str, Any] = {
+                            "prompt_id": pid,
+                            "raw": it,
+                            "external": mapped is None,
+                            "exp_id": mapped.get("exp_id") if isinstance(mapped, dict) else None,
+                            "run_id": mapped.get("run_id") if isinstance(mapped, dict) else None,
+                            "workflow_name": workflow_name,
+                            "job_key": job_key,
+                            "queue_index": queue_index,
+                            "queued_at": queued_at,
+                            "changed_at": changed_at,
+                            "input_media_relpath": media.get("input_media_relpath"),
+                            "input_media_url": media.get("input_media_url"),
+                            "input_media_kind": media.get("input_media_kind"),
+                            "input_thumb_url": media.get("input_thumb_url"),
+                            "key_params": key_params,
+                            "vhs_window": vhs_window,
+                            "glance": glance,
+                            "prompt_profile": prompt_profile,
+                        }
+                        _queue_apply_still_tag_enrichment(row, prompt_obj)
+                        out.append(row)
 
             return _json_response(
                 self,
@@ -12808,34 +12827,34 @@ class Handler(BaseHTTPRequestHandler):
                             if bn:
                                 title = bn
                                 break
-                    items_out.append(
-                        {
-                            "prompt_id": pid,
-                            "status": status_info.get("status") or "complete",
-                            "queued_at": status_info.get("queued_at"),
-                            "changed_at": status_info.get("changed_at"),
-                            "error_message": status_info.get("error_message"),
-                            "error_node": status_info.get("error_node"),
-                            "hollow_success": bool(status_info.get("hollow_success")),
-                            "workflow_name": title,
-                            "job_key": job_key,
-                            "key_params": key_params,
-                            "vhs_window": vhs_window,
-                            "glance": glance,
-                            "prompt_profile": prompt_profile,
-                            "queue_index": _history_queue_index(record),
-                            "primary_video_relpath": pv,
-                            "primary_image_relpath": pi,
-                            "primary_video_url": primary_video_url,
-                            "primary_image_url": primary_image_url,
-                            "output_thumb_url": output_thumb,
-                            "input_media_relpath": media.get("input_media_relpath"),
-                            "input_media_url": media.get("input_media_url"),
-                            "input_media_kind": media.get("input_media_kind"),
-                            "input_thumb_url": media.get("input_thumb_url"),
-                            "outputs": [{**o, "url": _mk_url(o.get("relpath"))} for o in outs],
-                        }
-                    )
+                    hist_row: Dict[str, Any] = {
+                        "prompt_id": pid,
+                        "status": status_info.get("status") or "complete",
+                        "queued_at": status_info.get("queued_at"),
+                        "changed_at": status_info.get("changed_at"),
+                        "error_message": status_info.get("error_message"),
+                        "error_node": status_info.get("error_node"),
+                        "hollow_success": bool(status_info.get("hollow_success")),
+                        "workflow_name": title,
+                        "job_key": job_key,
+                        "key_params": key_params,
+                        "vhs_window": vhs_window,
+                        "glance": glance,
+                        "prompt_profile": prompt_profile,
+                        "queue_index": _history_queue_index(record),
+                        "primary_video_relpath": pv,
+                        "primary_image_relpath": pi,
+                        "primary_video_url": primary_video_url,
+                        "primary_image_url": primary_image_url,
+                        "output_thumb_url": output_thumb,
+                        "input_media_relpath": media.get("input_media_relpath"),
+                        "input_media_url": media.get("input_media_url"),
+                        "input_media_kind": media.get("input_media_kind"),
+                        "input_thumb_url": media.get("input_thumb_url"),
+                        "outputs": [{**o, "url": _mk_url(o.get("relpath"))} for o in outs],
+                    }
+                    _queue_apply_still_tag_enrichment(hist_row, prompt_obj)
+                    items_out.append(hist_row)
             return _json_response(self, 200, {"items": items_out})
 
         if path == "/api/orchestrator/state":

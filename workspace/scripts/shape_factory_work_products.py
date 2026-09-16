@@ -3520,6 +3520,66 @@ def _still_tag_run_work_product(
     return item
 
 
+def enrich_comfy_queue_still_tag(
+    item: Dict[str, Any],
+    prompt_obj: Any,
+    *,
+    data_root: Path,
+) -> Dict[str, Any]:
+    """In-place enrich a Comfy queue/history row when the prompt is Florence still-tag."""
+    if not isinstance(item, dict) or not _prompt_is_florence_still_tag(prompt_obj):
+        return item
+    content_id = _content_id_from_florence_prompt(prompt_obj)
+    run_map = _still_tag_content_to_run_map(data_root)
+    run_id: Optional[str] = run_map.get(content_id) if content_id else None
+    if not run_id:
+        try:
+            from vision_still_tags import list_recent_still_tag_runs  # type: ignore
+
+            active = list_recent_still_tag_runs(
+                data_root=data_root,
+                limit=5,
+                statuses=("queued", "running"),
+            )
+            if len(active) == 1:
+                run_id = str(active[0].get("run_id") or "").strip() or None
+        except Exception:
+            pass
+    progress: Optional[str] = None
+    if run_id:
+        try:
+            from vision_still_tags import connect, default_db_path, get_run  # type: ignore
+
+            con = connect(default_db_path(data_root=data_root))
+            try:
+                run = get_run(con, run_id)
+            finally:
+                con.close()
+            if isinstance(run, dict):
+                total = int(run.get("total") or 0)
+                done = int(run.get("done_count") or 0)
+                errors = int(run.get("error_count") or 0)
+                if total:
+                    progress = f"{done}/{total} tagged" + (f" · {errors} err" if errors else "")
+        except Exception:
+            pass
+    display_title = f"Still tag · {progress}" if progress else "Still tag"
+    glance = item.get("glance") if isinstance(item.get("glance"), dict) else {}
+    glance = dict(glance)
+    glance["workflow_kind"] = "still_tag"
+    glance.setdefault("family_slug", "still-tag")
+    if progress:
+        glance["step"] = progress
+    item["work_kind"] = "still_tag"
+    item["display_title"] = display_title
+    item["still_tag_run_id"] = run_id
+    item["content_id"] = content_id
+    item["glance"] = glance
+    if run_id and not str(item.get("job_key") or "").strip():
+        item["job_key"] = run_id
+    return item
+
+
 def attach_still_tag_runs(
     payload: Dict[str, Any],
     *,

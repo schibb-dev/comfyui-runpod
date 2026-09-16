@@ -1629,5 +1629,21 @@ class TestWorkProducts(unittest.TestCase):
             self.assertTrue(payload["item"]["from_experiment"])
 
 
+    def test_enrich_comfy_queue_still_tag_labels_florence_prompt(self):
+        from shape_factory_work_products import enrich_comfy_queue_still_tag
+
+        cid = "a" * 64
+        prompt = {
+            "1": {"class_type": "LoadImage", "inputs": {"image": f"SSS{cid}.jpeg"}},
+            "2": {"class_type": "Florence2Run", "inputs": {"text_input": "describe"}},
+        }
+        row = {"external": True, "job_key": None, "glance": {}}
+        out = enrich_comfy_queue_still_tag(row, prompt, data_root=Path("/nonexistent"))
+        self.assertEqual(out.get("work_kind"), "still_tag")
+        self.assertEqual(out.get("display_title"), "Still tag")
+        self.assertEqual(out["glance"].get("workflow_kind"), "still_tag")
+        self.assertEqual(out.get("content_id"), cid)
+
+
 if __name__ == "__main__":
     unittest.main()

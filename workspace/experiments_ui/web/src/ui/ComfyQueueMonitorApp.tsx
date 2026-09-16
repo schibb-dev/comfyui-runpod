@@ -35,8 +35,14 @@ import {
   queueHistorySectionHint,
   queueRunningSectionHint,
   queueWaitingSectionHint,
+  queueComfyItemTitle,
   type QueueMonitorSectionId,
 } from "./queueMonitorSections";
+import {
+  isQueueStillTagItem,
+  queueStillTagGlanceRows,
+  queueStillTagStatusLabel,
+} from "./queueStillTag";
 import type {
   ComfyHistoryItem,
   ComfyLogEntry,
@@ -119,12 +125,20 @@ function queueGlanceRows(
     input_media_relpath?: string | null;
     job_key?: string | null;
     external?: boolean;
+    work_kind?: "still_tag" | null;
+    still_tag_run_id?: string | null;
+    content_id?: string | null;
     prompt_profile?: WorkProductPromptProfile | null;
   },
   opts?: { trimBadge?: { text: string; title: string } | null },
 ): QueueGlanceRow[] {
   const g = item.glance || {};
   const rows: QueueGlanceRow[] = [];
+  if (isQueueStillTagItem(item)) {
+    for (const row of queueStillTagGlanceRows(item)) {
+      rows.push(row);
+    }
+  }
   const push = (
     key: string,
     label: string,
@@ -198,7 +212,9 @@ function queueGlanceRows(
   const source = g.source_name || (item.input_media_relpath ? basename(item.input_media_relpath) : "");
   push("source", "Source", source || null);
   push("identity", "Identity", g.identity_name || null);
-  if (item.external) push("origin", "Origin", "external", "Not mapped to an experiments run");
+  if (item.external && !isQueueStillTagItem(item)) {
+    push("origin", "Origin", "external", "Not mapped to an experiments run");
+  }
   const jobKey = String(item.job_key || "").trim();
   if (jobKey) {
     rows.push({
@@ -214,10 +230,18 @@ function queueGlanceRows(
 }
 
 function queueWorkflowKindBadge(item: {
+  work_kind?: "still_tag" | null;
   glance?: QueueJobGlance | null;
   input_media_kind?: string | null;
   input_media_relpath?: string | null;
-}): { label: "Image" | "Extend"; title: string; className: string } | null {
+}): { label: "Image" | "Extend" | "Still tag"; title: string; className: string } | null {
+  if (isQueueStillTagItem(item)) {
+    return {
+      label: "Still tag",
+      title: "Florence auto-tag batch (vision still-tag drain)",
+      className: "pipeline-row__kind-badge--still-tag",
+    };
+  }
   const fromGlance = String(item.glance?.workflow_kind || "").trim().toLowerCase();
   if (fromGlance === "image") {
     return { label: "Image", title: "Still-source / image workflow", className: "pipeline-row__kind-badge--image" };
@@ -530,17 +554,13 @@ function QueueItemRow({
   const jobKey = String(item.job_key || "").trim() || null;
   const workbenchUrl = workbenchHref({ jobKey, promptId: pid || null });
   // Waiting on Comfy (== queued factory jobs), not factory "pending" (not submitted yet).
+  const stillTag = isQueueStillTagItem(item);
   const editUrl =
-    kind === "waiting" && jobKey
+    kind === "waiting" && jobKey && !stillTag
       ? submitHref({ editJob: jobKey, origin: "queue" })
       : null;
   const cancelKind = kind === "waiting" ? "pending" : "running";
-  const family = String(item.glance?.family_slug || "").trim();
-  const title =
-    family ||
-    basename(item.input_media_relpath) ||
-    item.workflow_name ||
-    shortId(pid, 16);
+  const title = queueComfyItemTitle(item);
   const trim = queueTrimFromItem(item);
   const trimBadge = queueTrimBadge(item);
   const glanceRows = queueGlanceRows(
@@ -549,10 +569,20 @@ function QueueItemRow({
       input_media_relpath: item.input_media_relpath,
       job_key: jobKey,
       external: item.external,
+      work_kind: item.work_kind,
+      still_tag_run_id: item.still_tag_run_id,
+      content_id: item.content_id,
       prompt_profile: item.prompt_profile,
     },
     { trimBadge },
   );
+  const statusLabel = stillTag
+    ? queueStillTagStatusLabel(kind)
+    : kind === "running"
+      ? "running"
+      : item.external
+        ? "external"
+        : "queued";
 
   const sourcePlayer = (
     <PipelineMediaPlayer
@@ -587,7 +617,7 @@ function QueueItemRow({
   return (
     <QueuePipelineRow
       title={title}
-      statusLabel={kind === "running" ? "running" : item.external ? "external" : "queued"}
+      statusLabel={statusLabel}
       statusVisual={kind === "running" ? "running" : "queued"}
       promptId={pid}
       jobKey={jobKey}
@@ -696,9 +726,9 @@ function HistoryItemRow({ item, deepLinkHit }: { item: ComfyHistoryItem; deepLin
   const videoUrl = item.primary_video_url || null;
   const jobKey = String(item.job_key || "").trim() || null;
   const pid = String(item.prompt_id || "").trim();
-  const family = String(item.glance?.family_slug || "").trim();
+  const stillTag = isQueueStillTagItem(item);
   const title =
-    family ||
+    queueComfyItemTitle(item) ||
     item.workflow_name ||
     basename(item.primary_video_relpath) ||
     basename(item.primary_image_relpath) ||
@@ -718,8 +748,9 @@ function HistoryItemRow({ item, deepLinkHit }: { item: ComfyHistoryItem; deepLin
     { trimBadge },
   );
   const statusVisual = historyStatusVisual(item.status);
-  const statusLabel =
-    statusVisual === "error"
+  const statusLabel = stillTag
+    ? queueStillTagStatusLabel("history", item.status)
+    : statusVisual === "error"
       ? item.hollow_success
         ? "no output"
         : "error"

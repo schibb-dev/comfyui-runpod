@@ -10,7 +10,8 @@ import {
   type ShapeFactoryClipsListResponse,
 } from "./api";
 import { clearSessionListCache, getSessionListCache, setSessionListCache } from "./sessionListCache";
-import type { GenerationStackOption, WorkProductFamilyOption } from "./types";
+import { fetchShapeFactoryWorkProducts } from "./api";
+import type { GenerationStackOption, WorkProductFamilyOption, WorkProductsResponse } from "./types";
 
 export type FamiliesBootstrap = {
   families: WorkProductFamilyOption[];
@@ -23,8 +24,11 @@ export type FamiliesBootstrap = {
 };
 
 const FAMILIES_KEY = "sf:families-bootstrap-v4";
+const WORK_PRODUCTS_KEY_PREFIX = "sf:work-products-v1";
 /** Config-only endpoint — long TTL; fingerprint still refreshes on soft reload. */
 const FAMILIES_TTL_MS = 60 * 60 * 1000;
+/** Stale-while-revalidate for Workbench job list between navigations. */
+const WORK_PRODUCTS_TTL_MS = 5 * 60 * 1000;
 const CLIPS_TTL_MS = 5 * 60 * 1000;
 const IDENTITY_TTL_MS = 5 * 60 * 1000;
 
@@ -143,6 +147,56 @@ export async function loadFamiliesBootstrap(opts?: {
 /** Fire-and-forget warm for routes that often precede Submit. */
 export function prefetchFamiliesBootstrap(): void {
   void loadFamiliesBootstrap().catch(() => {
+    /* ignore */
+  });
+}
+
+export function workProductsListCacheKey(opts: { limit: number; hourlyOnly: boolean }): string {
+  return `${WORK_PRODUCTS_KEY_PREFIX}:${Math.max(1, opts.limit)}:${opts.hourlyOnly ? 1 : 0}`;
+}
+
+export function peekWorkProductsListEntry(
+  key: string,
+): { value: WorkProductsResponse; fetchedAt: number } | null {
+  const hit = getSessionListCache<WorkProductsResponse>(key);
+  if (!hit?.value) return null;
+  return { value: hit.value, fetchedAt: hit.fetchedAt };
+}
+
+export function peekWorkProductsList(key: string): WorkProductsResponse | null {
+  const hit = peekWorkProductsListEntry(key);
+  if (!hit) return null;
+  if (!fresh(hit.fetchedAt, WORK_PRODUCTS_TTL_MS)) return null;
+  return hit.value;
+}
+
+export function putWorkProductsList(key: string, value: WorkProductsResponse): void {
+  setSessionListCache(key, value);
+}
+
+/** Fetch work-products; reuse session cache when fresh unless force=true. */
+export async function loadWorkProductsList(opts: {
+  limit: number;
+  hourlyOnly: boolean;
+  force?: boolean;
+}): Promise<WorkProductsResponse> {
+  const key = workProductsListCacheKey(opts);
+  const hit = peekWorkProductsListEntry(key);
+  if (!opts.force && hit && fresh(hit.fetchedAt, WORK_PRODUCTS_TTL_MS)) {
+    return hit.value;
+  }
+  const res = await fetchShapeFactoryWorkProducts({ limit: opts.limit, hourlyOnly: opts.hourlyOnly });
+  putWorkProductsList(key, res);
+  rememberFamiliesFromWorkProducts(res);
+  return res;
+}
+
+/** Warm Workbench list in the background (e.g. from Home). */
+export function prefetchWorkProductsList(opts?: { limit?: number; hourlyOnly?: boolean }): void {
+  void loadWorkProductsList({
+    limit: opts?.limit ?? 40,
+    hourlyOnly: opts?.hourlyOnly ?? false,
+  }).catch(() => {
     /* ignore */
   });
 }

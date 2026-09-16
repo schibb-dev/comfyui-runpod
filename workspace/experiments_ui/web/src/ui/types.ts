@@ -107,14 +107,19 @@ export type QueueJobGlance = {
   teacache?: number | string | null;
   teacache_coefficients?: string | null;
   virtual_vram_gb?: number | null;
-  /** Still-source vs video-extend workflow (for media overlay badge). */
-  workflow_kind?: "image" | "extend" | null;
+  /** Still-source vs video-extend vs Florence still-tag (for media overlay badge). */
+  workflow_kind?: "image" | "extend" | "still_tag" | null;
 };
 
 export type QueueComfyItem = {
   prompt_id?: string | null;
   raw?: unknown;
   external: boolean;
+  /** Pluggable work kind when queue row is not a factory I2V job. */
+  work_kind?: "still_tag" | null;
+  display_title?: string | null;
+  still_tag_run_id?: string | null;
+  content_id?: string | null;
   exp_id?: string | null;
   run_id?: string | null;
   workflow_name?: string | null;
@@ -162,6 +167,10 @@ export type ComfyHistoryItem = {
   /** True when Comfy said success but no image/video outputs were produced. */
   hollow_success?: boolean;
   workflow_name?: string | null;
+  work_kind?: "still_tag" | null;
+  display_title?: string | null;
+  still_tag_run_id?: string | null;
+  content_id?: string | null;
   /** Shape-factory job_key when workflow_name maps to a factory job. */
   job_key?: string | null;
   queue_index?: number | null;
