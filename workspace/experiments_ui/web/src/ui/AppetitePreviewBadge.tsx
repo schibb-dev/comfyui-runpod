@@ -8,6 +8,7 @@ import { appetiteRowTitle } from "./discoveryRatingsRollup";
 import type { Appetite, AppetiteFacet } from "./types";
 import { useAssetAppetite } from "./WorkProductAppetiteStrip";
 import { afterAppetiteCommitted } from "./workProductAppetite";
+import { WorkbenchPreviewLink, type WorkbenchSurfaceTarget } from "./workbenchSurfaceLink";
 
 const HOVER_CLOSE_MS = 220;
 const UNSET_GLYPH = "?";
@@ -215,6 +216,7 @@ export function AppetitePreviewFrame({
   jobKey,
   familySlug,
   defaultFacet,
+  workbench,
   children,
 }: {
   relpath?: string | null;
@@ -223,11 +225,28 @@ export function AppetitePreviewFrame({
   jobKey?: string | null;
   familySlug?: string | null;
   defaultFacet?: AppetiteFacet;
+  /** When set, show a Workbench shortcut on the preview (job/prompt overrides media). */
+  workbench?: boolean | WorkbenchSurfaceTarget;
   children: React.ReactNode;
 }) {
+  const workbenchTarget =
+    workbench === true
+      ? { relpath, jobKey, promptId: null, name: null }
+      : workbench && typeof workbench === "object"
+        ? { relpath, jobKey, ...workbench }
+        : null;
   return (
     <div className={["appetite-preview-host", className].filter(Boolean).join(" ")}>
       {children}
+      {workbenchTarget ? (
+        <WorkbenchPreviewLink
+          relpath={workbenchTarget.relpath}
+          jobKey={workbenchTarget.jobKey}
+          promptId={workbenchTarget.promptId}
+          name={workbenchTarget.name}
+          size={size}
+        />
+      ) : null}
       <AppetitePreviewBadge
         relpath={relpath}
         size={size}

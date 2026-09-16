@@ -17,7 +17,7 @@ import { PageHeader } from "./PageHeader";
 import { queryKeys } from "./queryKeys";
 import { SubmitComposerModal } from "./SubmitComposerModal";
 import { prefetchFamiliesBootstrap } from "./shapeFactorySessionCache";
-import { AppetitePreviewBadge } from "./AppetitePreviewBadge";
+import { AppetitePreviewBadge, AppetitePreviewFrame } from "./AppetitePreviewBadge";
 import { WorkProductAppetiteStrip } from "./WorkProductAppetiteStrip";
 import type { InputCurationCollection, InputCurationStillItem, StillTagEvent } from "./types";
 
@@ -527,7 +527,7 @@ export function StillGalleryApp() {
       })
     : null;
   const libraryHref = selectedRel ? discoveryLibraryHref(selectedRel) : null;
-  const workbenchHref = selected
+  const selectedWorkbenchHref = selected
     ? workbenchHrefForMedia({
         relpath: selectedRel,
         name: selected.basename,
@@ -839,12 +839,13 @@ export function StillGalleryApp() {
                 ) : null}
                 {selected.url || selected.thumb_url ? (
                   <div className="still-gallery__preview-wrap">
-                    <img
-                      className="still-gallery__preview"
-                      src={selected.url || selected.thumb_url}
-                      alt={selected.basename || ""}
-                    />
-                    <AppetitePreviewBadge relpath={selectedRel} />
+                    <AppetitePreviewFrame relpath={selectedRel} workbench>
+                      <img
+                        className="still-gallery__preview"
+                        src={selected.url || selected.thumb_url}
+                        alt={selected.basename || ""}
+                      />
+                    </AppetitePreviewFrame>
                   </div>
                 ) : null}
                 <p className="mono still-gallery__path">{selectedRel}</p>
@@ -890,8 +891,8 @@ export function StillGalleryApp() {
                       Library
                     </a>
                   ) : null}
-                  {workbenchHref ? (
-                    <a className="drt-btn" href={workbenchHref} title="Find jobs that used this still">
+                  {selectedWorkbenchHref ? (
+                    <a className="drt-btn" href={selectedWorkbenchHref} title="Find jobs that used this still">
                       Workbench
                     </a>
                   ) : null}

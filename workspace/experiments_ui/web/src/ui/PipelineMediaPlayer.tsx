@@ -87,7 +87,7 @@ export function PipelineMediaPlayer({
     return (
       <div className={["work-product-viewer", "pipeline-media-player", className].filter(Boolean).join(" ")}>
         <div className="work-product-viewer__main">
-          <AppetitePreviewFrame relpath={appetiteRelpath}>
+          <AppetitePreviewFrame relpath={appetiteRelpath} workbench>
             <video
               ref={videoRef}
               className="work-product-viewer__video"
@@ -145,7 +145,7 @@ export function PipelineMediaPlayer({
     return (
       <div className={["work-product-viewer", "pipeline-media-player", className].filter(Boolean).join(" ")}>
         <div className="work-product-viewer__main">
-          <AppetitePreviewFrame relpath={appetiteRelpath}>
+          <AppetitePreviewFrame relpath={appetiteRelpath} workbench>
             <img className="work-product-viewer__img" src={thumbUrl} alt={alt} />
           </AppetitePreviewFrame>
         </div>

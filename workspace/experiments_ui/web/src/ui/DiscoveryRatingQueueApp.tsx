@@ -29,6 +29,7 @@ import { DISPOSITION_CLEAR_ALL, optimisticDispositionToggle } from "./dispositio
 import { DispositionCatalogEditor } from "./DispositionCatalogEditor";
 import { DispositionStatusPanel } from "./DispositionStatusPanel";
 import { discoveryLibraryHref } from "./discoveryDeepLink";
+import { WorkbenchSurfaceLink } from "./workbenchSurfaceLink";
 import { afterAppetiteCommitted } from "./workProductAppetite";
 import {
   TRIM_CONTEXT_DISCOVERY_PLAYER,
@@ -1812,6 +1813,7 @@ export function DiscoveryRatingQueueApp() {
                   <a className="drt-btn" href={discoveryLibraryHref(current.relpath)}>
                     Open in Library
                   </a>
+                  <WorkbenchSurfaceLink relpath={current.relpath} name={current.name} />
                   <a className="drt-btn" href={fileUrlFromRel(current.relpath)} target="_blank" rel="noreferrer">
                     Open file
                   </a>

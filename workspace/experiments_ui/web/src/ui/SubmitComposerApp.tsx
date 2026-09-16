@@ -36,6 +36,7 @@ import {
   type SubmitDeepLink,
 } from "./discoveryDeepLink";
 import { PageHeader } from "./PageHeader";
+import { WorkbenchSurfaceLink } from "./workbenchSurfaceLink";
 import {
   invalidateIdentityStill,
   loadFamiliesBootstrap,
@@ -1314,6 +1315,7 @@ function SubmitEditJobApp({
                 Clips
               </a>
             ) : null}
+            <WorkbenchSurfaceLink relpath={mediaRelpath} jobKey={editJob} />
           </div>
         </div>
 
@@ -1321,11 +1323,11 @@ function SubmitEditJobApp({
           <div className="work-product-viewer">
             <div className="work-product-viewer__main">
               {playUrl && isStill ? (
-                <AppetitePreviewFrame relpath={mediaRelpath}>
+                <AppetitePreviewFrame relpath={mediaRelpath} workbench={{ jobKey: editJob }}>
                   <img className="work-product-viewer__video" src={posterUrl || playUrl} alt="" />
                 </AppetitePreviewFrame>
               ) : isVideo && playUrl ? (
-                <AppetitePreviewFrame relpath={mediaRelpath}>
+                <AppetitePreviewFrame relpath={mediaRelpath} workbench={{ jobKey: editJob }}>
                   <video
                     ref={videoRef}
                     className="work-product-viewer__video"
@@ -1982,7 +1984,6 @@ function SubmitAdvanceComposerApp({
   const playUrl = mediaRelpath.trim() ? filesUrl(mediaRelpath.trim()) : null;
   const posterUrl = mediaRelpath.trim() ? thumbUrlForMedia(mediaRelpath.trim()) : null;
   const mediaKey = mediaRelpath.trim() || "submit-empty";
-
   useTrimPlaybackEnforcement(videoRef, {
     mediaKey,
     markIn,
@@ -2835,6 +2836,7 @@ function SubmitAdvanceComposerApp({
                   Clips
                 </a>
               ) : null}
+              <WorkbenchSurfaceLink relpath={mediaRelpath} jobKey={intent.fromJob} />
             </div>
           </div>
 
@@ -2842,11 +2844,17 @@ function SubmitAdvanceComposerApp({
             <div className="work-product-viewer">
               <div className="work-product-viewer__main">
                 {playUrl && isStill ? (
-                  <AppetitePreviewFrame relpath={mediaRelpath}>
+                  <AppetitePreviewFrame
+                    relpath={mediaRelpath}
+                    workbench={{ jobKey: intent.fromJob || null }}
+                  >
                     <img className="work-product-viewer__video" src={posterUrl || playUrl} alt="" />
                   </AppetitePreviewFrame>
                 ) : playUrl ? (
-                  <AppetitePreviewFrame relpath={mediaRelpath}>
+                  <AppetitePreviewFrame
+                    relpath={mediaRelpath}
+                    workbench={{ jobKey: intent.fromJob || null }}
+                  >
                     <video
                       ref={videoRef}
                       className="work-product-viewer__video"

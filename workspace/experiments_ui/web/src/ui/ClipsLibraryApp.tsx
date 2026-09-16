@@ -9,7 +9,8 @@ import {
   type ShapeFactoryClipDerivedItem,
   type ShapeFactoryClipsLibraryParent,
 } from "./api";
-import { AppetitePreviewBadge } from "./AppetitePreviewBadge";
+import { AppetitePreviewBadge, AppetitePreviewFrame } from "./AppetitePreviewBadge";
+import { WorkbenchSurfaceLink } from "./workbenchSurfaceLink";
 import { ClipBookmarksRail, formatClipTimecode } from "./ClipBookmarksRail";
 import { DiscoveryQueueFromClip } from "./DiscoveryQueueFromClip";
 import { discoveryLibraryHref, parseClipsDeepLink, workbenchHref } from "./discoveryDeepLink";
@@ -1306,17 +1307,21 @@ export function ClipsLibraryApp() {
                     <div className="clips-lib-stage clips-lib-stage--stacked">
                       <div className="clips-lib-stage__viewer">
                         <div className="clips-lib-player-wrap">
-                          <video
-                            key={derivedOutRel}
-                            className="clips-lib-player"
-                            src={fileUrlFromRel(derivedOutRel)}
-                            controls
-                            playsInline
-                            preload="metadata"
-                            autoPlay={videoAutoplay}
-                            muted={videoAutoplay}
-                          />
-                          <AppetitePreviewBadge relpath={derivedOutRel} />
+                          <AppetitePreviewFrame
+                            relpath={derivedOutRel}
+                            workbench={{ jobKey: selectedDerived.job_key }}
+                          >
+                            <video
+                              key={derivedOutRel}
+                              className="clips-lib-player"
+                              src={fileUrlFromRel(derivedOutRel)}
+                              controls
+                              playsInline
+                              preload="metadata"
+                              autoPlay={videoAutoplay}
+                              muted={videoAutoplay}
+                            />
+                          </AppetitePreviewFrame>
                         </div>
                       </div>
                     </div>
@@ -1398,6 +1403,7 @@ export function ClipsLibraryApp() {
                     <a className="drt-btn" href={discoveryLibraryHref(mediaRelpath)}>
                       Library
                     </a>
+                    <WorkbenchSurfaceLink relpath={mediaRelpath} name={selected.media_basename} />
                     <button
                       type="button"
                       className="drt-btn"
@@ -1421,29 +1427,30 @@ export function ClipsLibraryApp() {
                 >
                   <div className="clips-lib-stage__viewer">
                     <div className="clips-lib-player-wrap">
-                      <video
-                        key={mediaRelpath + "::" + selected.clip_id}
-                        ref={videoRef}
-                        className="clips-lib-player"
-                        src={fileUrlFromRel(mediaRelpath)}
-                        controls
-                        playsInline
-                        preload="metadata"
-                        autoPlay={videoAutoplay}
-                        muted={videoAutoplay}
-                        onLoadedMetadata={(e) => {
-                          const d = e.currentTarget.duration;
-                          if (Number.isFinite(d) && d > 0) setVideoDuration(d);
-                          setVideoTime(e.currentTarget.currentTime || 0);
-                        }}
-                        onDurationChange={(e) => {
-                          const d = e.currentTarget.duration;
-                          if (Number.isFinite(d) && d > 0) setVideoDuration(d);
-                        }}
-                        onTimeUpdate={(e) => setVideoTime(e.currentTarget.currentTime || 0)}
-                        onSeeked={(e) => setVideoTime(e.currentTarget.currentTime || 0)}
-                      />
-                      <AppetitePreviewBadge relpath={mediaRelpath} />
+                      <AppetitePreviewFrame relpath={mediaRelpath} workbench>
+                        <video
+                          key={mediaRelpath + "::" + selected.clip_id}
+                          ref={videoRef}
+                          className="clips-lib-player"
+                          src={fileUrlFromRel(mediaRelpath)}
+                          controls
+                          playsInline
+                          preload="metadata"
+                          autoPlay={videoAutoplay}
+                          muted={videoAutoplay}
+                          onLoadedMetadata={(e) => {
+                            const d = e.currentTarget.duration;
+                            if (Number.isFinite(d) && d > 0) setVideoDuration(d);
+                            setVideoTime(e.currentTarget.currentTime || 0);
+                          }}
+                          onDurationChange={(e) => {
+                            const d = e.currentTarget.duration;
+                            if (Number.isFinite(d) && d > 0) setVideoDuration(d);
+                          }}
+                          onTimeUpdate={(e) => setVideoTime(e.currentTarget.currentTime || 0)}
+                          onSeeked={(e) => setVideoTime(e.currentTarget.currentTime || 0)}
+                        />
+                      </AppetitePreviewFrame>
                     </div>
 
                     <VideoTrimControls

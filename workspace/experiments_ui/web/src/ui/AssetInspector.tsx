@@ -5,6 +5,7 @@ import { DiscoveryAssetLineagePanel } from "./DiscoveryAssetLineagePanel";
 import { DiscoveryAssetRatingsPanel } from "./DiscoveryAssetRatingsPanel";
 import { DiscoveryWorkflowFacetsPanel } from "./DiscoveryWorkflowFacetsPanel";
 import { discoveryLibraryHref, isLineageInputStill, lineageSummaryHref } from "./discoveryDeepLink";
+import { WorkbenchSurfaceLink } from "./workbenchSurfaceLink";
 import type { DiscoveryAssetLineageItemSummary, DiscoveryLibraryItem, DiscoveryWorkflowFacetsResponse } from "./types";
 
 /** Minimal selection the Inspector needs. Any screen (Library / Factory / Rate) can build one. */
@@ -128,6 +129,7 @@ export function AssetInspector({
           <a className="drt-btn" href={discoveryLibraryHref(asset.relpath)}>
             Library
           </a>
+          <WorkbenchSurfaceLink relpath={asset.relpath} name={asset.name} />
           <a className="drt-btn" href={fileUrlFromRel(asset.relpath)} target="_blank" rel="noreferrer">
             File
           </a>
