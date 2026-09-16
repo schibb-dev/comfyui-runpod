@@ -5,6 +5,7 @@ from pathlib import Path
 
 import support  # noqa: F401  — injects workspace/scripts onto sys.path
 from shape_factory_work_products import (
+    _comfy_queue_entries,
     _family_from_output_prefix,
     _factory_job_key_heuristic,
     _filename_prefix_from_prompt,
@@ -15,6 +16,7 @@ from shape_factory_work_products import (
     attach_comfy_history_failures,
     attach_experiment_runs,
     attach_live_comfy_queue,
+    trim_work_products_completed_history,
     construction_from_plan,
     decode_prompt_markup,
     experiment_job_key,
@@ -366,6 +368,58 @@ class TestWorkProducts(unittest.TestCase):
             (jobs / "hourly__keep.job.json").write_text(json.dumps(live) + "\n", encoding="utf-8")
             payload = list_recent_work_products(data_root=data, output_root=out, limit=10, hourly_only=True)
             self.assertEqual([it["job_key"] for it in payload["items"]], ["hourly__keep"])
+
+    def test_list_recent_limit_applies_per_nav_section(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            data = root / "data"
+            out = root / "output"
+            jobs = data / "shape_factory" / "jobs" / "DEMO"
+            jobs.mkdir(parents=True)
+            out.mkdir(parents=True)
+            for i, st in enumerate(["error", "interrupted", "failed"]):
+                job = {
+                    "created_at": f"2026-09-{10 + i:02d}T12:00:00+00:00",
+                    "family_slug": "DEMO",
+                    "job_key": f"hourly__err{i}",
+                    "submit": {"status": st, "error": "boom"},
+                }
+                (jobs / f"hourly__err{i}.job.json").write_text(json.dumps(job) + "\n", encoding="utf-8")
+            for i in range(5):
+                job = {
+                    "created_at": f"2026-09-{20 + i:02d}T12:00:00+00:00",
+                    "family_slug": "DEMO",
+                    "job_key": f"hourly__done{i}",
+                    "submit": {"status": "complete"},
+                }
+                (jobs / f"hourly__done{i}.job.json").write_text(json.dumps(job) + "\n", encoding="utf-8")
+            payload = list_recent_work_products(data_root=data, output_root=out, limit=2, hourly_only=True)
+            keys = [it["job_key"] for it in payload["items"]]
+            self.assertEqual(len([k for k in keys if k.startswith("hourly__err")]), 2)
+            self.assertEqual(
+                [k for k in keys if k.startswith("hourly__err")],
+                ["hourly__err2", "hourly__err0"],
+            )
+            self.assertEqual(
+                [k for k in keys if k.startswith("hourly__done")],
+                ["hourly__done4", "hourly__done3"],
+            )
+
+    def test_trim_work_products_completed_history_caps_pending_errors_and_done(self):
+        items = [
+            {"job_key": "live", "status": "running", "live_from_comfy": True},
+            {"job_key": "pend_a", "status": "pending"},
+            {"job_key": "pend_b", "status": "pending"},
+            {"job_key": "err_a", "status": "error"},
+            {"job_key": "err_b", "status": "error"},
+            {"job_key": "done_a", "status": "complete"},
+            {"job_key": "done_b", "status": "complete"},
+        ]
+        trimmed = trim_work_products_completed_history(items, limit=1)
+        self.assertEqual(
+            [it["job_key"] for it in trimmed],
+            ["live", "pend_a", "err_a", "done_a"],
+        )
 
     def test_get_work_product_loads_job_outside_recent_window(self):
         with tempfile.TemporaryDirectory() as td:
@@ -758,6 +812,35 @@ class TestWorkProducts(unittest.TestCase):
         self.assertEqual(out["items"][0]["family_slug"], "FB9_GEX_FACIAL")
         self.assertEqual(out["items"][1]["job_key"], "hourly__done")
 
+    def test_attach_live_preserves_completed_history_limit(self):
+        payload = {
+            "ok": True,
+            "limit": 1,
+            "families": [{"slug": "DEMO"}],
+            "items": [
+                {"job_key": "hourly__done_a", "prompt_id": "pa", "status": "complete"},
+                {"job_key": "hourly__done_b", "prompt_id": "pb", "status": "complete"},
+            ],
+        }
+        prompt = {
+            "80": {
+                "class_type": "VHS_VideoCombine",
+                "inputs": {"filename_prefix": "output/og/x/DEMO_shape"},
+            }
+        }
+        out = attach_live_comfy_queue(
+            payload,
+            queue_running=[[0, "live-pid", prompt]],
+            queue_pending=[],
+        )
+        self.assertEqual(out.get("live_comfy_count"), 1)
+        self.assertEqual(len(out["items"]), 2)
+        self.assertEqual(out["items"][0]["status"], "running")
+        self.assertEqual(
+            [it["job_key"] for it in out["items"] if it.get("status") == "complete"],
+            ["hourly__done_a"],
+        )
+
     def test_demote_stale_inflight_items(self):
         from shape_factory_work_products import demote_stale_inflight_items
 
@@ -1070,9 +1153,17 @@ class TestWorkProducts(unittest.TestCase):
         self.assertEqual(out["items"][0]["prompt_id"], "new-pid")
         self.assertEqual(out["items"][0]["status"], "queued")
         self.assertTrue(out["items"][0].get("live_from_comfy"))
+        self.assertEqual(out["items"][0].get("queue_index"), 1)
         # Interrupted row was promoted — not duplicated underneath.
         keys = [it.get("job_key") for it in out["items"]]
         self.assertEqual(keys.count(key), 1)
+
+    def test_comfy_queue_entries_stamps_queue_index(self):
+        rows = _comfy_queue_entries(
+            [[-12, "pid-a", {}], [8, "pid-b", {}]],
+            status="queued",
+        )
+        self.assertEqual([r["queue_index"] for r in rows], [-12, 8])
 
     def test_attach_live_dedupes_multiple_prompts_for_same_job_key(self):
         key = "FB9_GEX2__prompt_profile-abc__source_video-x__000_e_ui1"

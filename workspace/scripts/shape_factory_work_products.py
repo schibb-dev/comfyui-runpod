@@ -805,6 +805,7 @@ def _run_spec_for_job(
             shape or job,
             data_root=Path(data_root),
             template_path=str(job.get("template_path") or shape.get("template") or "") or None,
+            job=job,
         )
     except Exception:
         return spec
@@ -2387,8 +2388,8 @@ def list_recent_work_products(
     """
     List recent factory jobs as work products with viewer URLs + construction details.
 
-    Prefer jobs that have outputs; still include queued/incomplete so the pipeline
-    can be inspected mid-flight.
+    ``limit`` caps each Workbench nav section (pending, errors, completed) independently.
+    Live Comfy queue rows (attached later) are always included and are not capped.
     """
     data_root = data_root.resolve()
     output_root = output_root.resolve()
@@ -2458,7 +2459,15 @@ def list_recent_work_products(
                 work_items_for_item=work_items_for_item,
             )
         )
-    other_items: List[Dict[str, Any]] = []
+    pending_items.sort(
+        key=lambda it: _parse_created_at_ts(it.get("created_at")) or 0.0,
+        reverse=True,
+    )
+    pending_items = pending_items[:limit]
+
+    live_items: List[Dict[str, Any]] = []
+    error_items: List[Dict[str, Any]] = []
+    done_items: List[Dict[str, Any]] = []
     for path in paths:
         job = _load_job(path)
         if job is None or is_pending_queue_job(job):
@@ -2473,10 +2482,16 @@ def list_recent_work_products(
         )
         if finished_work_product_missing_media(job, item):
             continue
-        other_items.append(item)
-        if len(other_items) >= limit:
-            break
-    items = pending_items + other_items
+        section = _work_product_item_nav_section(item)
+        if section == "done":
+            if len(done_items) < limit:
+                done_items.append(item)
+        elif section == "error":
+            if len(error_items) < limit:
+                error_items.append(item)
+        elif section == "live":
+            live_items.append(item)
+    items = pending_items + live_items + error_items + done_items
     attach_pending_queue_meta(items)
 
     families = list_shape_families(
@@ -2495,6 +2510,8 @@ def list_recent_work_products(
             if isinstance(it, dict):
                 it.setdefault("markers", {})
 
+    items = trim_work_products_completed_history(items, limit=limit)
+
     return {
         "ok": True,
         "schema_version": "comfyui-runpod.work-products.v0",
@@ -2511,6 +2528,32 @@ def list_recent_work_products(
     }
 
 
+def _comfy_queue_number(row: Any) -> Optional[int]:
+    """Comfy queue tuple leading number — lower runs sooner (may be negative for front inserts)."""
+    if not isinstance(row, list) or not row:
+        return None
+    qn = row[0]
+    if isinstance(qn, bool):
+        return None
+    if isinstance(qn, int):
+        return qn
+    if isinstance(qn, float) and qn.is_integer():
+        return int(qn)
+    if isinstance(qn, str) and qn.strip().lstrip("-").isdigit():
+        try:
+            return int(qn.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _stamp_row_queue_index(row: Dict[str, Any], ent: Dict[str, Any]) -> Dict[str, Any]:
+    qi = ent.get("queue_index")
+    if isinstance(qi, int):
+        row["queue_index"] = qi
+    return row
+
+
 def _comfy_queue_entries(queue_rows: Any, *, status: str) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     if not isinstance(queue_rows, list):
@@ -2525,6 +2568,9 @@ def _comfy_queue_entries(queue_rows: Any, *, status: str) -> List[Dict[str, Any]
         extra = row[3] if len(row) >= 4 and isinstance(row[3], dict) else None
         job_key = _job_key_from_comfy_extra(extra) or _job_key_from_filename_prefix(prompt)
         entry: Dict[str, Any] = {"prompt_id": pid.strip(), "status": status, "prompt": prompt}
+        qn = _comfy_queue_number(row)
+        if qn is not None:
+            entry["queue_index"] = qn
         if isinstance(extra, dict):
             entry["extra_data"] = extra
         if job_key:
@@ -3111,6 +3157,69 @@ IN_FLIGHT_STATUSES: frozenset[str] = frozenset(
     {"queued", "running", "submitted", "unknown"}
 )
 
+_WORK_PRODUCT_ERROR_STATUSES: frozenset[str] = frozenset(
+    {"error", "failed", "interrupted", "abandoned"}
+)
+_WORK_PRODUCT_PENDING_STATUSES: frozenset[str] = frozenset(
+    {"", "pending", "editing", "draft"}
+)
+
+
+def _work_product_list_bucket(status: Optional[str]) -> str:
+    """Mirror Workbench ``workProductListBucket`` (running/queued/pending/error/done)."""
+    s = str(status or "").lower().strip()
+    if s == "running":
+        return "running"
+    if s in {"queued", "submitted"}:
+        return "queued"
+    if s in _WORK_PRODUCT_PENDING_STATUSES:
+        return "pending"
+    if s in _WORK_PRODUCT_ERROR_STATUSES:
+        return "error"
+    return "done"
+
+
+def _work_product_item_nav_section(item: Dict[str, Any]) -> str:
+    """Mirror Workbench nav sections: live / pending / error / done."""
+    if item.get("live_from_comfy"):
+        return "live"
+    bucket = _work_product_list_bucket(str(item.get("status") or ""))
+    if bucket in {"running", "queued"}:
+        return "live"
+    if bucket == "pending":
+        return "pending"
+    if bucket == "error":
+        return "error"
+    return "done"
+
+
+def trim_work_products_completed_history(
+    items: List[Any],
+    *,
+    limit: int,
+) -> List[Dict[str, Any]]:
+    """
+    Keep all live Comfy rows; cap pending, error, and completed sections each at ``limit``.
+
+    Workbench ``Show`` applies ``limit`` per nav section (pending / errors / completed).
+    """
+    cap = max(1, min(200, int(limit)))
+    kept: List[Dict[str, Any]] = []
+    section_kept = {"pending": 0, "error": 0, "done": 0}
+    for raw in items:
+        if not isinstance(raw, dict):
+            continue
+        section = _work_product_item_nav_section(raw)
+        if section == "live":
+            kept.append(raw)
+            continue
+        n = section_kept.get(section, 0)
+        if n >= cap:
+            continue
+        section_kept[section] = n + 1
+        kept.append(raw)
+    return kept
+
 
 def _queue_prompt_id_sets(
     queue_running: Any = None,
@@ -3461,7 +3570,7 @@ def attach_live_comfy_queue(
             if live_vhs is not None:
                 row["applied_vhs"] = live_vhs
                 row["details"] = _detail_rows(row)
-        return row
+        return _stamp_row_queue_index(row, ent)
 
     for ent in entries:
         pid = ent["prompt_id"]
@@ -3530,7 +3639,7 @@ def attach_live_comfy_queue(
                     "construction": _synthesize_construction(found_job),
                 }
                 row["details"] = _detail_rows(row)
-            live_items.append(row)
+            live_items.append(_stamp_row_queue_index(row, ent))
             emitted_live_prompt_ids.add(pid)
             row_job_key = str(row.get("job_key") or "").strip()
             if row_job_key:
@@ -3544,7 +3653,7 @@ def attach_live_comfy_queue(
             family_slugs=family_slugs,
             output_root=out_root,
         )
-        live_items.append(row)
+        live_items.append(_stamp_row_queue_index(row, ent))
         emitted_live_prompt_ids.add(pid)
         row_job_key = str(row.get("job_key") or "").strip()
         if row_job_key:
@@ -3552,9 +3661,8 @@ def attach_live_comfy_queue(
 
     rest = [it for i, it in enumerate(items) if i not in used_indices]
     merged = live_items + rest
-    # Keep roughly within limit + room for live rows.
-    limit = int(payload.get("limit") or len(merged))
-    payload["items"] = merged[: max(limit, len(live_items))]
+    cap = int(payload.get("limit") or len(merged))
+    payload["items"] = trim_work_products_completed_history(merged, limit=cap)
     payload["count"] = len(payload["items"])
     payload["live_comfy_count"] = len(live_items)
     return payload
@@ -3958,9 +4066,8 @@ def attach_comfy_history_failures(
     if failure_rows:
         # Failures first (newest history), then existing items (live already prepended earlier).
         merged = failure_rows + items
-        limit = int(payload.get("limit") or len(merged))
-        # Keep room for attached failures even when over limit.
-        payload["items"] = merged[: max(limit, len(failure_rows))]
+        cap = int(payload.get("limit") or len(merged))
+        payload["items"] = trim_work_products_completed_history(merged, limit=cap)
         payload["count"] = len(payload["items"])
     else:
         payload["items"] = items

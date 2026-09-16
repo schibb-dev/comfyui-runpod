@@ -1,4 +1,7 @@
 import type { WorkProductItem } from "./types";
+import { compareQueueIndex } from "./queueMonitorSort";
+import { pendingQueueIndex } from "./workProductPendingQueue";
+import { recencyMs } from "./workProductRecency";
 
 /** Workbench list buckets. Failures are their own scheduling surface. */
 export type WorkProductListBucket = "running" | "queued" | "pending" | "error" | "done";
@@ -153,4 +156,75 @@ export function workProductNavSectionBadges(
   const badges: WorkProductNavBadge[] = [];
   if (items.length) badges.push({ key: "ok", count: items.length, label: "", tone: "ok" });
   return badges;
+}
+
+/** Sort live Comfy rows by queue number (next to run first). */
+export function compareLiveComfyQueue(
+  a: Pick<WorkProductItem, "queue_index" | "created_at" | "submitted_at" | "job_key">,
+  b: Pick<WorkProductItem, "queue_index" | "created_at" | "submitted_at" | "job_key">,
+): number {
+  const byIndex = compareQueueIndex(a, b);
+  if (byIndex !== 0) return byIndex;
+  return recencyMs(a) - recencyMs(b);
+}
+
+export type WorkProductCompletedSort =
+  | "created_desc"
+  | "created_asc"
+  | "appetite"
+  | "family_asc"
+  | "family_desc"
+  | "status"
+  | "pick_mode";
+
+/** Running → queued (Comfy order) → pending FIFO → errors → completed (operator sort). */
+export function sortWorkProductList(
+  items: WorkProductItem[],
+  completedSort: WorkProductCompletedSort,
+  appetiteSortRank: (item: WorkProductItem) => number,
+): WorkProductItem[] {
+  const running: WorkProductItem[] = [];
+  const queued: WorkProductItem[] = [];
+  const pending: WorkProductItem[] = [];
+  const errored: WorkProductItem[] = [];
+  const done: WorkProductItem[] = [];
+  for (const it of items) {
+    const bucket = workProductListBucket(it.status);
+    if (bucket === "running") running.push(it);
+    else if (bucket === "queued") queued.push(it);
+    else if (bucket === "pending") pending.push(it);
+    else if (bucket === "error") errored.push(it);
+    else done.push(it);
+  }
+
+  const byRecentFirst = (a: WorkProductItem, b: WorkProductItem) => recencyMs(b) - recencyMs(a);
+  const cmp = (a: WorkProductItem, b: WorkProductItem): number => {
+    switch (completedSort) {
+      case "created_asc":
+        return recencyMs(a) - recencyMs(b);
+      case "family_asc":
+        return String(a.family_slug || "").localeCompare(String(b.family_slug || "")) || byRecentFirst(a, b);
+      case "family_desc":
+        return String(b.family_slug || "").localeCompare(String(a.family_slug || "")) || byRecentFirst(a, b);
+      case "status":
+        return byRecentFirst(a, b);
+      case "pick_mode":
+        return (
+          String(a.pick_mode || a.step || "").localeCompare(String(b.pick_mode || b.step || "")) ||
+          byRecentFirst(a, b)
+        );
+      case "appetite":
+        return appetiteSortRank(a) - appetiteSortRank(b) || byRecentFirst(a, b);
+      case "created_desc":
+      default:
+        return byRecentFirst(a, b);
+    }
+  };
+
+  running.sort(compareLiveComfyQueue);
+  queued.sort(compareLiveComfyQueue);
+  pending.sort((a, b) => pendingQueueIndex(a) - pendingQueueIndex(b) || recencyMs(a) - recencyMs(b));
+  errored.sort(byRecentFirst);
+  done.sort(cmp);
+  return [...running, ...queued, ...pending, ...errored, ...done];
 }

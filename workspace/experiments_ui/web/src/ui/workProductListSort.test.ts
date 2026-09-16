@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  compareLiveComfyQueue,
   groupWorkProductsByNavSection,
   isHourlyWorkProduct,
+  sortWorkProductList,
   workProductListBucket,
   workProductListSortRank,
   workProductNavSection,
@@ -95,5 +97,23 @@ describe("workProductListSort", () => {
     expect(workProductNavSectionBadges("done", [{ status: "complete" }, { status: "deposited" }])).toEqual([
       { key: "ok", count: 2, label: "", tone: "ok" },
     ]);
+  });
+
+  it("orders live Comfy rows by ascending queue_index", () => {
+    expect(
+      compareLiveComfyQueue({ queue_index: 5, job_key: "b" }, { queue_index: -2, job_key: "a" }),
+    ).toBeGreaterThan(0);
+    const sorted = sortWorkProductList(
+      [
+        { job_key: "q3", status: "queued", queue_index: 8 },
+        { job_key: "q1", status: "queued", queue_index: -10 },
+        { job_key: "p2", status: "pending", pending_index: 1 },
+        { job_key: "p1", status: "pending", pending_index: 0 },
+        { job_key: "done", status: "complete", created_at: "2026-01-01T00:00:00Z" },
+      ],
+      "created_desc",
+      () => 0,
+    );
+    expect(sorted.map((it) => it.job_key)).toEqual(["q1", "q3", "p1", "p2", "done"]);
   });
 });

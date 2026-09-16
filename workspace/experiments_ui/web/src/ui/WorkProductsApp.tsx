@@ -4,10 +4,12 @@ import { createPortal } from "react-dom";
 import { discardShapeFactoryJob, fetchDispositionBuckets, fetchShapeFactoryQuarantine, fetchShapeFactoryWorkProduct, fetchShapeFactoryWorkProducts, finishShapeFactoryEdit, claimShapeFactoryFromQueue, movePendingQueue, promoteShapeFactoryTemplate, remediateShapeFactoryJob, replayShapeFactory, swapShapeFactoryFamily, unqueueShapeFactory, updatePendingShapeFactoryTrim, updateShapeFactoryOwnedLoras, updateShapeFactoryOwnedParams, updateShapeFactoryOwnedPrompt } from "./api";
 import {
   groupWorkProductsByNavSection,
+  sortWorkProductList,
   workProductListBucket,
   workProductNavSection,
   workProductNavSectionBadges,
   workProductsInOpenNavSections,
+  type WorkProductCompletedSort,
   type WorkProductNavBadge,
   type WorkProductNavSectionId,
 } from "./workProductListSort";
@@ -89,7 +91,7 @@ import {
 import { prefetchAssetRatings } from "./assetRatingsCache";
 import { loadClipsForMedia, rememberFamiliesFromWorkProducts } from "./shapeFactorySessionCache";
 import { distinctiveFamilyLabels, familyPickerOptionLabel, familyPickerOptionTitle, familyPromptProfiles, familySlugIsQuarantined, familySwapTargets, isDefaultPromptVariant, isExtendFamilyOption, isStillMediaPath, jobPromptVariantDisplayName, jobPromptVariantName, jobPromptVariantSlug, pickQuickExtendFamily, pickRerunPromptPreset, pickRerunStack, promptProfileOptionLabel, promptTextIsOverridden, promptVariantName, promptVariantSlug, rerunPromptPresetDiffers, specDisplayJoined, stackPickerOptionLabel, workProductCanQuickExtend, workProductHasExtendableOutput } from "./submitFamily";
-import { recencyMs, recencyStamp } from "./workProductRecency";
+import { recencyStamp } from "./workProductRecency";
 import { failurePrimaryLabel, workProductFailure, workProductFlowEvents } from "./workProductFailure";
 import { queryKeys } from "./queryKeys";
 import type {
@@ -125,14 +127,7 @@ const MARKER_FILTER_OFF_KEY = "work-products-marker-filter-off";
 const CHROME_KEY = "work-products-chrome-v2";
 const FILTER_CHIP_DBLCLICK_HINT = "double-click to show only this · again to show all";
 
-type WorkProductSort =
-  | "created_desc"
-  | "created_asc"
-  | "appetite"
-  | "family_asc"
-  | "family_desc"
-  | "status"
-  | "pick_mode";
+type WorkProductSort = WorkProductCompletedSort;
 
 /** Display order for status filter toggles (unknown statuses sort after these). */
 const STATUS_FILTER_ORDER = [
@@ -615,53 +610,6 @@ function sourceThumbPreviewMeta(item: WorkProductItem): { label: string; visual:
   if (s === "submitted") return { label: "submitted", visual: "queued" };
   if (s === "complete" || s === "deposited") return { label: s, visual: "muted" };
   return { label: s, visual: "pending" };
-}
-
-function sortWorkProducts(items: WorkProductItem[], sort: WorkProductSort): WorkProductItem[] {
-  const running: WorkProductItem[] = [];
-  const queued: WorkProductItem[] = [];
-  const pending: WorkProductItem[] = [];
-  const errored: WorkProductItem[] = [];
-  const done: WorkProductItem[] = [];
-  for (const it of items) {
-    const bucket = workProductListBucket(workProductStatusKey(it));
-    if (bucket === "running") running.push(it);
-    else if (bucket === "queued") queued.push(it);
-    else if (bucket === "pending") pending.push(it);
-    else if (bucket === "error") errored.push(it);
-    else done.push(it);
-  }
-
-  const byRecentFirst = (a: WorkProductItem, b: WorkProductItem) => recencyMs(b) - recencyMs(a);
-  const cmp = (a: WorkProductItem, b: WorkProductItem): number => {
-    switch (sort) {
-      case "created_asc":
-        return recencyMs(a) - recencyMs(b);
-      case "family_asc":
-        return String(a.family_slug || "").localeCompare(String(b.family_slug || "")) || byRecentFirst(a, b);
-      case "family_desc":
-        return String(b.family_slug || "").localeCompare(String(a.family_slug || "")) || byRecentFirst(a, b);
-      case "status":
-        return byRecentFirst(a, b);
-      case "pick_mode":
-        return (
-          String(a.pick_mode || a.step || "").localeCompare(String(b.pick_mode || b.step || "")) ||
-          byRecentFirst(a, b)
-        );
-      case "appetite":
-        return appetiteSortRank(a) - appetiteSortRank(b) || byRecentFirst(a, b);
-      case "created_desc":
-      default:
-        return byRecentFirst(a, b);
-    }
-  };
-
-  running.sort(byRecentFirst);
-  queued.sort(byRecentFirst);
-  pending.sort((a, b) => pendingQueueIndex(a) - pendingQueueIndex(b) || recencyMs(a) - recencyMs(b));
-  errored.sort(byRecentFirst);
-  done.sort(cmp);
-  return [...running, ...queued, ...pending, ...errored, ...done];
 }
 
 function filterWorkProductsByName(items: WorkProductItem[], query: string): WorkProductItem[] {
@@ -6392,12 +6340,13 @@ export function WorkProductsApp() {
     const mediaRows = mediaMissing
       ? []
       : filterWorkProductsByMedia(named, focusMedia, { producersOnly: Boolean(focusMedia) });
-    const rows = sortWorkProducts(
+    const rows = sortWorkProductList(
       filterWorkProductsByAppetite(
         filterWorkProductsByMarker(filterWorkProductsByStatus(mediaRows, statusOff), markerOff),
         appetiteOff,
       ),
       sort,
+      appetiteSortRank,
     );
     if (mediaMissing) return rows;
     if (!focusedItem) return rows;
@@ -6917,7 +6866,7 @@ export function WorkProductsApp() {
             />
           </label>
           <label className="work-products-limit">
-            Sort
+            Completed sort
             <select
               value={sort}
               onChange={(e) => {
@@ -6925,8 +6874,8 @@ export function WorkProductsApp() {
                 setSort(next);
                 persistSort(next);
               }}
-              aria-label="Sort work products"
-              title="Running, then queued, then pending. Complete and errors share the rest."
+              aria-label="Sort completed work products"
+              title="Comfy queue and pending backlog use run order / FIFO. This control sorts completed jobs only."
             >
               {SORT_OPTIONS.map((o) => (
                 <option key={o.id} value={o.id}>
@@ -7157,12 +7106,15 @@ export function WorkProductsApp() {
                 <span className="work-products-index__toolbar-label">{followUpSet ? "Follow-up" : "Jobs"}</span>
               )}
               {followUpSet ? null : (
-              <label className="work-products-limit work-products-limit--index">
+              <label
+                className="work-products-limit work-products-limit--index"
+                title="Per-section cap — Comfy queue is always shown. Pending, errors, and completed each respect this limit."
+              >
                 Show
                 <select
                   value={limit}
                   onChange={(e) => setLimit(Number(e.target.value))}
-                  aria-label="How many recent work products to load"
+                  aria-label="Per-section job list limit (pending, errors, completed)"
                 >
                   {[20, 30, 50, 80, 120].map((n) => (
                     <option key={n} value={n}>
@@ -7173,7 +7125,7 @@ export function WorkProductsApp() {
               </label>
               )}
               <label className="work-products-limit work-products-limit--index">
-                Sort
+                Completed sort
                 <select
                   value={sort}
                   onChange={(e) => {
@@ -7181,8 +7133,8 @@ export function WorkProductsApp() {
                     setSort(next);
                     persistSort(next);
                   }}
-                  aria-label="Sort work products"
-                  title="Running, then queued, then pending. Complete and errors share the rest. Newest is video generated time."
+                  aria-label="Sort completed work products"
+                  title="Comfy queue and pending backlog use run order / FIFO. This control sorts completed jobs only."
                 >
                   {SORT_OPTIONS.map((o) => (
                     <option key={o.id} value={o.id}>
