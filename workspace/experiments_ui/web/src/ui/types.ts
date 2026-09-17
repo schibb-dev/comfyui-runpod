@@ -2982,6 +2982,35 @@ export type InputCurationStateResponse = {
   detail?: string;
 };
 
+export type StillSimilarHit = {
+  content_id: string;
+  score: number;
+  reasons?: string[];
+  provider?: string;
+  model_version?: string | null;
+  shared_tags?: string[];
+  path?: string;
+  basename?: string;
+  relpath?: string;
+  url?: string;
+  thumb_url?: string;
+};
+
+export type StillSimilarResponse = {
+  ok: boolean;
+  content_id?: string;
+  provider?: string;
+  requested_provider?: string | null;
+  default_provider?: string;
+  items?: StillSimilarHit[];
+  count?: number;
+  index?: { count?: number; models?: { model_id: string; count: number }[]; path?: string };
+  notes?: string[];
+  query?: StillSimilarHit;
+  error?: string;
+  detail?: string;
+};
+
 export type InputCurationStillsResponse = {
   ok: boolean;
   data_root?: string;

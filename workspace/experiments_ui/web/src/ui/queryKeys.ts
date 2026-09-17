@@ -38,6 +38,8 @@ export const queryKeys = {
     stillTagBacklog: ["shapeFactory", "inputCuration", "stillTagBacklog"] as const,
     stillTagSchedule: ["shapeFactory", "inputCuration", "stillTagSchedule"] as const,
     stillTagResults: (runId: string) => ["shapeFactory", "inputCuration", "stillTagResults", runId] as const,
+    stillSimilar: (contentId: string, provider: string) =>
+      ["shapeFactory", "inputCuration", "stillSimilar", contentId, provider] as const,
     workProductsRoot: ["shapeFactory", "workProducts"] as const,
     workProducts: (opts: { limit: number; hourlyOnly: boolean; family?: string | null }) =>
       ["shapeFactory", "workProducts", opts] as const,

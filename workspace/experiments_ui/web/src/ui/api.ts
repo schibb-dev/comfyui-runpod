@@ -73,6 +73,7 @@ import type {
   ShapeFactoryTemplatePromotionsResponse,
   InputCurationStateResponse,
   InputCurationStillsResponse,
+  StillSimilarResponse,
   InputCurationEffectiveSourcesResponse,
   StillTagEnqueueResponse,
   StillTagEvent,
@@ -515,6 +516,29 @@ export async function fetchShapeFactoryInputCurationStills(opts?: {
     const detail = [j.error, j.detail].filter(Boolean).join(": ");
     throw new Error(
       `GET /api/shape-factory/input-curation/stills failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function fetchShapeFactoryStillSimilar(opts: {
+  contentId: string;
+  provider?: string;
+  limit?: number;
+}): Promise<StillSimilarResponse> {
+  const cid = String(opts.contentId || "").trim().toLowerCase();
+  const sp = new URLSearchParams();
+  if (opts.provider?.trim()) sp.set("provider", opts.provider.trim());
+  if (opts.limit != null) sp.set("limit", String(opts.limit));
+  const qs = sp.toString();
+  const r = await fetch(
+    `/api/shape-factory/input-curation/stills/${encodeURIComponent(cid)}/similar${qs ? `?${qs}` : ""}`,
+  );
+  const j = (await r.json().catch(() => ({}))) as StillSimilarResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET similar stills failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
     );
   }
   return j;

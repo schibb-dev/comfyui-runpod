@@ -20,6 +20,7 @@ import { prefetchFamiliesBootstrap } from "./shapeFactorySessionCache";
 import { AppetitePreviewFrame } from "./AppetitePreviewBadge";
 import { WorkProductAppetiteStrip } from "./WorkProductAppetiteStrip";
 import { StillTagTagsPanel } from "./StillTagResultTags";
+import { StillSimilarPanel } from "./StillSimilarPanel";
 import {
   StillGalleryDeckView,
   StillGalleryFocusView,
@@ -1073,6 +1074,10 @@ export function StillGalleryApp() {
                     <span className="factory-muted">No content_id in filename — tags need a sha256 in the name.</span>
                   ) : null}
                 </label>
+                <StillSimilarPanel
+                  contentId={selected.content_id ? String(selected.content_id) : null}
+                  onFilterTag={(tag) => setTagFilter(tag)}
+                />
               </>
             ) : (
               <p className="factory-muted">Select a still to launch, tag, or collect.</p>

@@ -4422,6 +4422,24 @@ def _shape_factory_input_curation_state_payload(cfg: ServerConfig) -> Dict[str, 
     }
 
 
+def _shape_factory_input_curation_stills_similar_payload(
+    cfg: ServerConfig, content_id: str, q: Dict[str, List[str]]
+) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+    from still_similarity import find_similar_stills  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    limit = _safe_int((q.get("limit") or ["24"])[0]) or 24
+    limit = max(1, min(96, int(limit)))
+    provider = str((q.get("provider") or [""])[0] or "").strip() or None
+    payload = find_similar_stills(content_id, data_root=data_root, provider=provider, limit=limit)
+    payload["data_root"] = str(data_root)
+    return payload
+
+
 def _shape_factory_input_curation_stills_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
     d = _workspace_scripts_dir()
     if d.is_dir() and str(d) not in sys.path:
@@ -13132,6 +13150,20 @@ class Handler(BaseHTTPRequestHandler):
                 return _json_response(self, 200, payload)
             except Exception as e:
                 return _json_response(self, 500, {"ok": False, "error": "input_curation_stills_failed", "detail": str(e)})
+
+        if path.startswith("/api/shape-factory/input-curation/stills/") and path.endswith("/similar"):
+            rest = path[len("/api/shape-factory/input-curation/stills/") :].strip("/")
+            parts = [p for p in rest.split("/") if p]
+            if len(parts) != 2 or parts[1] != "similar" or not parts[0]:
+                return _json_response(self, 404, {"ok": False, "error": "not_found"})
+            try:
+                payload = _shape_factory_input_curation_stills_similar_payload(cfg, parts[0], q)
+                code = 200 if payload.get("ok") else 400
+                return _json_response(self, code, payload)
+            except Exception as e:
+                return _json_response(
+                    self, 500, {"ok": False, "error": "input_curation_stills_similar_failed", "detail": str(e)}
+                )
 
         if path == "/api/shape-factory/input-curation/stills/tag/backlog":
             try:
