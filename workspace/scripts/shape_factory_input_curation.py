@@ -595,6 +595,13 @@ def list_catalog_stills(
     collect_all = bool(appetite_filt or sort_mode == "appetite")
     need = None if collect_all else (off + lim)
     exhausted = False
+    ident = None
+    try:
+        from still_identity import load_identity  # type: ignore
+
+        ident = load_identity(data_root)
+    except Exception:
+        ident = None
 
     def _push_resolved(resolved: Path, *, catalog_path: str = "", mtime: float = 0.0, first_seen: float = 0.0, last_seen: float = 0.0, size: int = 0) -> bool:
         nonlocal skipped_download_copies
@@ -606,7 +613,11 @@ def list_catalog_stills(
             skipped_download_copies += 1
             return False
         seen_resolved.add(resolved_key)
-        content_id = _extract_content_id(str(resolved)) or _extract_content_id(catalog_path)
+        content_id = None
+        if ident is not None:
+            content_id = ident.content_id_for_path(str(resolved)) or ident.content_id_for_path(catalog_path)
+        if not content_id:
+            content_id = _extract_content_id(str(resolved)) or _extract_content_id(catalog_path)
         if tagged_ids is not None and (not content_id or content_id not in tagged_ids):
             return False
         if qn:
