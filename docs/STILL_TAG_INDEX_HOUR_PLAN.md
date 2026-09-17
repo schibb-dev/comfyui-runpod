@@ -37,10 +37,13 @@ Index-hour drainer →  Comfy /prompt Florence (prefer front) [reserved window]
 2. **Reserved window (“index hour”).** A schedule defines when the drainer may burn the
    backlog on the configured Comfy. Early backlog days may be multi-hour windows
    (“index evening”) — same mechanism, longer duration.
-3. **Front-of-queue refill, circumspect depth.** During the window, tag prompts are
-   submitted with Comfy `front: true` so they outrank normal I2V, **but** we cap how many
-   tag prompts are in flight / piled so we do not dump the entire backlog ahead of
-   everything forever in one shot.
+3. **Exclusive GPU occupancy (model-set class).** A job’s class is the **set of large
+   models it needs**. When a Florence tagging job *starts*, park every Comfy queue item
+   whose large-model set is not that Florence set (interrupt+park if one is running).
+   Same rule if Wan I2V or CLIP embed starts. Related = **exact same set** (not subset:
+   `{CLIP-H}` is not related to `{Wan, CLIP-H}`). GPU is available again after that set
+   finishes and `/free`. Clock windows may start a set; they do not share VRAM.
+   CLIP embed backfill declares `{CLIP-ViT-H-…}` and parks the whole Comfy queue.
 4. **Same job body.** Local concert Comfy or RunPod Comfy — `VISION_COMFY_SERVER` /
    schedule override only. No second tagger product.
 5. **Not shape-factory Work Products.** Tagging stays still-tag runs/events, not `.job.json`
@@ -61,8 +64,10 @@ Index-hour drainer →  Comfy /prompt Florence (prefer front) [reserved window]
 | `comfy_server` | Optional override (else env / `127.0.0.1:8188`) |
 | `auto_drain_on_enqueue` | Escape hatch for smokes (default **false**) |
 
-Future (not required for first slice): hard “pause I2V” gate; urgency `drain_now` for a
-single still; RunPod spin/tear recipes; V2 shared worker claiming the same queued runs.
+Future polish: occupancy-state JSON + UI (“GPU: tagging / generation / embed / idle”);
+urgency `drain_now` for a single still; RunPod spin/tear recipes; V2 shared worker
+claiming the same queued runs. **Hard pause of I2V is no longer future** — it is the
+locked occupancy rule (park + `/free` before Florence).
 
 ---
 
@@ -136,8 +141,8 @@ Lock enqueue≠drain, schedule knobs, front+inflight story.
 
 ### IH3 — Ops polish
 
+- Occupancy lease (park generation + `/free`) before Florence drain — required, not optional
 - Home / Experiments schedule card (mirror hourly controls)
-- Optional hard pause of I2V during window
 - Documented RunPod drain recipe
 - Live GPU smoke of events while draining (optional; dry-run path covers UI)
 
@@ -147,6 +152,7 @@ Lock enqueue≠drain, schedule knobs, front+inflight story.
 
 - [x] Gallery tag actions only grow the backlog by default (no surprise Florence mid-I2V) — IH1 enqueue policy
 - [x] Index-hour drain can front-load Florence prompts with an in-flight/item cap — CLI/API drain (`max_inflight` recorded; sequential wait in IH1)
+- [ ] Tagging drain only runs while holding the tagging GPU lease (generation parked + `/free`; no I2V interleave)
 - [x] Schedule knobs changeable without schema migration
 - [x] Multi-hour windows work (backlog burn) without new code paths
 - [x] Gallery shows backlog / window / drain controls (demo without GPU via dry-run)

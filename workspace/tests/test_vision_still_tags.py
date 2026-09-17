@@ -175,6 +175,91 @@ class VisionStillTagsTests(unittest.TestCase):
             finally:
                 con2.close()
 
+    def test_rekey_filename_hex_to_byte_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            from still_content_account import account
+            from vision_still_tags import rekey_items_to_byte_hash, upsert_provisional
+
+            root = Path(td)
+            data = root / "data"
+            (data / "shape_factory").mkdir(parents=True)
+            inp = root / "input"
+            inp.mkdir()
+            blob = b"\xff\xd8" + b"tagged-bytes" * 20
+            fake_hex = "b" * 64
+            still = inp / f"qqqfx-{fake_hex}.jpg"
+            still.write_bytes(blob)
+            import hashlib
+
+            real = hashlib.sha256(blob).hexdigest()
+            db_acct = data / "shape_factory" / "still_content_accounting.sqlite"
+            account(input_root=inp, data_root=data, db_path=db_acct, workers=1)
+            tag_db = default_db_path(data_root=data)
+            ensure_db(tag_db)
+            con = connect(tag_db)
+            try:
+                upsert_provisional(
+                    con,
+                    content_id=fake_hex,
+                    tags=["from_name"],
+                    model_pin="test",
+                    pin_policy="test",
+                    run_id="r1",
+                )
+                con.commit()
+            finally:
+                con.close()
+            out = rekey_items_to_byte_hash(data_root=data)
+            self.assertEqual(out["moved"], 1)
+            con = connect(tag_db)
+            try:
+                self.assertIsNone(get_item(con, fake_hex))
+                item = get_item(con, real)
+                self.assertIsNotNone(item)
+                assert item is not None
+                self.assertIn("from_name", item["provisional_tags"])
+            finally:
+                con.close()
+
+    def test_enqueue_unnamed_still_via_accounting(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            from still_content_account import account
+            import hashlib
+
+            root = Path(td)
+            data = root / "data"
+            status = root / "status"
+            status.mkdir()
+            (data / "shape_factory").mkdir(parents=True)
+            inp = root / "input"
+            inp.mkdir()
+            blob = b"\xff\xd8" + b"no-hash-name" * 16
+            still = inp / "camille-rowe.jpg"
+            still.write_bytes(blob)
+            real = hashlib.sha256(blob).hexdigest()
+            account(
+                input_root=inp,
+                data_root=data,
+                db_path=data / "shape_factory" / "still_content_accounting.sqlite",
+                workers=1,
+            )
+            import os
+
+            os.environ["COMFYUI_BIND_INPUT_DIR"] = str(inp)
+            os.environ["SHAPE_FACTORY_DATA_ROOT"] = str(data)
+            enq = enqueue_run(data_root=data, only_missing=True, limit=12, dry_run=True, status_dir=status)
+            self.assertEqual(enq["enqueued"], 1)
+            out = process_run(data_root=data, run_id=enq["run_id"], status_dir=status)
+            self.assertTrue(out["ok"])
+            con = connect(default_db_path(data_root=data))
+            try:
+                item = get_item(con, real)
+                self.assertIsNotNone(item)
+                assert item is not None
+                self.assertTrue(item["provisional_tags"])
+            finally:
+                con.close()
+
 
 if __name__ == "__main__":
     unittest.main()

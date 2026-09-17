@@ -48,12 +48,24 @@ def main(argv: list[str] | None = None) -> int:
         load_schedule,
     )
 
-    repo = scripts.parents[1]
-    data_root = Path(
-        args.data_root
-        or os.environ.get("SHAPE_FACTORY_DATA_ROOT")
-        or (repo / ".data")
-    ).expanduser().resolve()
+    def _default_data_root() -> Path:
+        candidates = [
+            Path(os.environ.get("SHAPE_FACTORY_DATA_ROOT") or ""),
+            Path("/workspace/.data"),
+            scripts.parent / ".data",  # container: /workspace/.data
+            scripts.parents[1] / ".data",  # host: <repo>/.data
+        ]
+        for cand in candidates:
+            if not str(cand).strip() or str(cand) in (".", "/"):
+                continue
+            try:
+                if (cand / "shape_factory").is_dir():
+                    return cand.expanduser().resolve()
+            except OSError:
+                continue
+        return (scripts.parents[1] / ".data").expanduser().resolve()
+
+    data_root = Path(args.data_root).expanduser().resolve() if args.data_root else _default_data_root()
     status_dir = Path(
         args.status_dir
         or os.environ.get("VISION_STATUS_DIR")

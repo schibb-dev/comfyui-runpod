@@ -14,13 +14,14 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import os
 import shutil
 import time
 import urllib.parse
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional, Protocol, runtime_checkable
+from typing import Any, Dict, List, Optional, Protocol, Sequence, runtime_checkable
 from http_retry import http_json_with_retry, urlopen_read_with_retry
 
 DEFAULT_COMFY_MODEL = "microsoft/Florence-2-base"
@@ -136,7 +137,8 @@ def _http_upload_image(
 
 def build_florence_caption_prompt(
     *,
-    image_name: str,
+    image_name: Optional[str] = None,
+    image_names: Optional[Sequence[str]] = None,
     model: str = DEFAULT_COMFY_MODEL,
     task: str = DEFAULT_COMFY_TASK,
     precision: str = "fp16",
@@ -146,60 +148,118 @@ def build_florence_caption_prompt(
     num_beams: int = 3,
     do_sample: bool = False,
     seed: int = 1,
+    scale_size: int = 768,
 ) -> Dict[str, Any]:
     """
     LoadImage → Florence load → Florence2Run → ShowText (caption sink).
 
-    ShowText|pysssss is an OUTPUT_NODE so the STRING appears in /history.
-    (PreviewImage alone only persists the image; Florence's caption was missing.)
+    One image keeps the original 4-node graph. Several images are scaled to a
+    common square, ImageBatch'd, and run through one Florence2Run (the node
+    loops ``generate`` per batch element).
     """
     task = normalize_comfy_task(task)
-    return {
-        "1": {
-            "class_type": "LoadImage",
-            "inputs": {"image": image_name},
-        },
-        "2": {
-            "class_type": "DownloadAndLoadFlorence2Model",
-            "inputs": {
-                "model": model,
-                "precision": precision,
-                "attention": attention,
-                "convert_to_safetensors": False,
-            },
-        },
-        "3": {
-            "class_type": "Florence2Run",
-            "inputs": {
-                "image": ["1", 0],
-                "florence2_model": ["2", 0],
-                "text_input": "",
-                "task": task,
-                "fill_mask": True,
-                "keep_model_loaded": keep_model_loaded,
-                "max_new_tokens": int(max_new_tokens),
-                "num_beams": int(num_beams),
-                "do_sample": bool(do_sample),
-                "output_mask_select": "",
-                "seed": int(seed),
-            },
-        },
-        "4": {
-            "class_type": "ShowText|pysssss",
-            "inputs": {"text": ["3", 2]},
+    names = [str(n).strip() for n in (image_names or []) if str(n).strip()]
+    if not names and image_name:
+        names = [str(image_name).strip()]
+    if not names:
+        raise ValueError("image_name or image_names required")
+    model_node = {
+        "class_type": "DownloadAndLoadFlorence2Model",
+        "inputs": {
+            "model": model,
+            "precision": precision,
+            "attention": attention,
+            "convert_to_safetensors": False,
         },
     }
+    run_inputs = {
+        "florence2_model": ["2", 0],
+        "text_input": "",
+        "task": task,
+        "fill_mask": True,
+        "keep_model_loaded": keep_model_loaded,
+        "max_new_tokens": int(max_new_tokens),
+        "num_beams": int(num_beams),
+        "do_sample": bool(do_sample),
+        "output_mask_select": "",
+        "seed": int(seed),
+    }
+    if len(names) == 1:
+        return {
+            "1": {"class_type": "LoadImage", "inputs": {"image": names[0]}},
+            "2": model_node,
+            "3": {"class_type": "Florence2Run", "inputs": {**run_inputs, "image": ["1", 0]}},
+            "4": {"class_type": "ShowText|pysssss", "inputs": {"text": ["3", 2]}},
+        }
+    prompt: Dict[str, Any] = {"2": model_node}
+    scaled_ids: List[str] = []
+    side = max(1, int(scale_size or 768))
+    for i, name in enumerate(names):
+        lid = str(10 + i)
+        sid = str(40 + i)
+        prompt[lid] = {"class_type": "LoadImage", "inputs": {"image": name}}
+        prompt[sid] = {
+            "class_type": "ImageScale",
+            "inputs": {
+                "image": [lid, 0],
+                "upscale_method": "lanczos",
+                "width": side,
+                "height": side,
+                "crop": "center",
+            },
+        }
+        scaled_ids.append(sid)
+    batched = scaled_ids[0]
+    for j, sid in enumerate(scaled_ids[1:], start=1):
+        bid = str(70 + j)
+        prompt[bid] = {
+            "class_type": "ImageBatch",
+            "inputs": {"image1": [batched, 0], "image2": [sid, 0]},
+        }
+        batched = bid
+    prompt["3"] = {"class_type": "Florence2Run", "inputs": {**run_inputs, "image": [batched, 0]}}
+    prompt["4"] = {"class_type": "ShowText|pysssss", "inputs": {"text": ["3", 2]}}
+    return prompt
 
 
 def extract_caption_from_history(history_entry: Dict[str, Any], *, run_node_id: str = "3") -> str:
     """Pull caption STRING from ShowText sink and/or Florence2Run in /history."""
+    texts = extract_captions_from_history(history_entry, expected=1, run_node_id=run_node_id)
+    if not texts:
+        raise RuntimeError("could not parse caption from history outputs")
+    return texts[0]
+
+
+def _coerce_text_list(val: Any) -> List[str]:
+    if val is None:
+        return []
+    if isinstance(val, str):
+        s = val.strip()
+        return [s] if s else []
+    if isinstance(val, list):
+        out: List[str] = []
+        for x in val:
+            out.extend(_coerce_text_list(x))
+        return out
+    s = str(val).strip()
+    return [s] if s else []
+
+
+def extract_captions_from_history(
+    history_entry: Dict[str, Any],
+    *,
+    expected: int = 1,
+    run_node_id: str = "3",
+) -> List[str]:
     outputs = history_entry.get("outputs") if isinstance(history_entry, dict) else None
     if not isinstance(outputs, dict):
         raise RuntimeError("history entry missing outputs")
-
-    # Prefer explicit text sink (node "4" in our template), then Florence node, then any text blob.
-    order = ["4", str(run_node_id), run_node_id, *list(outputs.keys())]
+    want = max(1, int(expected or 1))
+    # Batched Florence STRING is on the run node; ShowText often joins the list.
+    prefer = [str(run_node_id), "4"] if want > 1 else ["4", str(run_node_id)]
+    order = [*prefer, run_node_id, *list(outputs.keys())]
     seen = set()
+    best: List[str] = []
     for nid in order:
         if nid in seen:
             continue
@@ -208,14 +268,20 @@ def extract_caption_from_history(history_entry: Dict[str, Any], *, run_node_id: 
         if not isinstance(node_out, dict):
             continue
         for key in ("text", "string", "caption"):
-            val = node_out.get(key)
-            if isinstance(val, list) and val:
-                s = str(val[0]).strip()
-                if s:
-                    return s
-            if isinstance(val, str) and val.strip():
-                return val.strip()
-    raise RuntimeError(f"could not parse caption from history outputs keys={list(outputs.keys())}")
+            texts = _coerce_text_list(node_out.get(key))
+            if len(texts) >= want:
+                return texts[:want]
+            if len(texts) > len(best):
+                best = texts
+    if want > 1 and len(best) == 1 and "\n" in best[0]:
+        lines = [ln.strip() for ln in best[0].splitlines() if ln.strip()]
+        if len(lines) >= want:
+            return lines[:want]
+    if want == 1 and best:
+        return best[:1]
+    raise RuntimeError(
+        f"could not parse {want} caption(s) from history outputs keys={list(outputs.keys())} got={len(best)}"
+    )
 
 
 @dataclass
@@ -226,6 +292,7 @@ class ComfyRunnerConfig:
     image_mode:
       - upload: POST /upload/image (works when runner FS ≠ Comfy FS; preferred for RunPod)
       - input_copy: copy into comfy_input_root/subfolder (shared bind mounts)
+      - input_ref: LoadImage the file already under Comfy's input bind (no copy/upload)
     """
 
     server: str = "http://127.0.0.1:8188"
@@ -233,7 +300,7 @@ class ComfyRunnerConfig:
     task: str = DEFAULT_COMFY_TASK
     client_id: str = DEFAULT_CLIENT_ID
     runner_label: str = "comfy"  # comfy | runpod | docker
-    image_mode: str = "upload"  # upload | input_copy
+    image_mode: str = "upload"  # upload | input_copy | input_ref
     input_subdir: str = "vision_v1"
     comfy_input_root: Optional[Path] = None  # required for input_copy
     keep_model_loaded: bool = True
@@ -244,9 +311,38 @@ class ComfyRunnerConfig:
     do_sample: bool = False
     seed: int = 1
     timeout_s: float = 900.0
-    poll_interval_s: float = 1.0
+    poll_interval_s: float = 0.15
     submit_timeout_s: float = 60.0
     front: bool = False
+
+
+def _comfy_input_load_name(
+    image_path: Path,
+    *,
+    relpath: str = "",
+    extra_root: Optional[Path] = None,
+) -> str:
+    """LoadImage name relative to Comfy's input bind (no ``input/`` prefix)."""
+    raw = str(relpath or "").replace("\\", "/").strip().lstrip("/")
+    if raw.lower().startswith("input/"):
+        raw = raw[6:]
+    roots: List[Path] = []
+    if extra_root is not None:
+        roots.append(Path(extra_root))
+    env_root = os.environ.get("COMFYUI_BIND_INPUT_DIR", "").strip()
+    if env_root:
+        roots.append(Path(env_root))
+    roots.extend([Path("/ComfyUI/input"), Path("/workspace/input")])
+    try:
+        resolved = image_path.expanduser().resolve()
+        for root in roots:
+            try:
+                return resolved.relative_to(Path(root).expanduser().resolve()).as_posix()
+            except (ValueError, OSError):
+                continue
+    except OSError:
+        pass
+    return raw or image_path.name
 
 
 class ComfyCaptionRunner:
@@ -259,7 +355,7 @@ class ComfyCaptionRunner:
     def close(self) -> None:
         return None
 
-    def _image_ref_for_load_image(self, image_path: Path) -> str:
+    def _image_ref_for_load_image(self, image_path: Path, *, relpath: str = "") -> str:
         cfg = self.cfg
         if cfg.image_mode == "upload":
             up = _http_upload_image(
@@ -281,6 +377,9 @@ class ComfyCaptionRunner:
             if dest.resolve() != image_path.resolve():
                 shutil.copy2(image_path, dest)
             return f"{cfg.input_subdir}/{image_path.name}".replace("\\", "/")
+
+        if cfg.image_mode == "input_ref":
+            return _comfy_input_load_name(image_path, relpath=relpath, extra_root=cfg.comfy_input_root)
 
         raise ValueError(f"unknown image_mode: {cfg.image_mode}")
 
@@ -304,15 +403,24 @@ class ComfyCaptionRunner:
         )
 
     def caption(self, req: CaptionRequest) -> CaptionResult:
-        image_path = Path(req.image_path)
-        if not image_path.is_file() or image_path.stat().st_size == 0:
-            raise FileNotFoundError(f"missing/empty frame: {image_path}")
+        return self.caption_many([req])[0]
 
+    def caption_many(self, reqs: Sequence[CaptionRequest]) -> List[CaptionResult]:
+        items = list(reqs)
+        if not items:
+            return []
         t0 = time.perf_counter()
-        image_ref = self._image_ref_for_load_image(image_path)
+        refs: List[str] = []
+        for req in items:
+            image_path = Path(req.image_path)
+            if not image_path.is_file() or image_path.stat().st_size == 0:
+                raise FileNotFoundError(f"missing/empty frame: {image_path}")
+            refs.append(
+                self._image_ref_for_load_image(image_path, relpath=req.asset_relpath)
+            )
         t_upload = time.perf_counter()
         prompt = build_florence_caption_prompt(
-            image_name=image_ref,
+            image_names=refs,
             model=self.cfg.model,
             task=self.cfg.task,
             precision=self.cfg.precision,
@@ -323,7 +431,7 @@ class ComfyCaptionRunner:
             do_sample=self.cfg.do_sample,
             seed=self.cfg.seed,
         )
-        payload = {"prompt": prompt, "client_id": self.cfg.client_id}
+        payload: Dict[str, Any] = {"prompt": prompt, "client_id": self.cfg.client_id}
         if self.cfg.front:
             payload["front"] = True
         submit = _http_json(
@@ -339,25 +447,32 @@ class ComfyCaptionRunner:
 
         entry = self._wait_history(prompt_id)
         t_done = time.perf_counter()
-        caption = extract_caption_from_history(entry, run_node_id="3")
-        return CaptionResult(
-            caption=caption,
-            provider="comfy_florence2",
-            model_pin=self.cfg.model,
-            runner=self.cfg.runner_label,
-            raw={
-                "prompt_id": prompt_id,
-                "image_ref": image_ref,
-                "server": self.server,
-                "task": self.cfg.task,
-                "timing": {
-                    "upload_s": round(t_upload - t0, 3),
-                    "submit_s": round(t_submit - t_upload, 3),
-                    "wait_s": round(t_done - t_submit, 3),
-                    "total_s": round(t_done - t0, 3),
-                },
-            },
-        )
+        captions = extract_captions_from_history(entry, expected=len(refs), run_node_id="3")
+        timing = {
+            "upload_s": round(t_upload - t0, 3),
+            "submit_s": round(t_submit - t_upload, 3),
+            "wait_s": round(t_done - t_submit, 3),
+            "total_s": round(t_done - t0, 3),
+            "batch": len(refs),
+        }
+        out: List[CaptionResult] = []
+        for req, image_ref, caption in zip(items, refs, captions):
+            out.append(
+                CaptionResult(
+                    caption=caption,
+                    provider="comfy_florence2",
+                    model_pin=self.cfg.model,
+                    runner=self.cfg.runner_label,
+                    raw={
+                        "prompt_id": prompt_id,
+                        "image_ref": image_ref,
+                        "server": self.server,
+                        "task": self.cfg.task,
+                        "timing": timing,
+                    },
+                )
+            )
+        return out
 
 
 class DryRunCaptionRunner:
@@ -383,6 +498,9 @@ class DryRunCaptionRunner:
             raw={"timing": {"total_s": round(time.perf_counter() - t0, 3)}},
         )
 
+    def caption_many(self, reqs: Sequence[CaptionRequest]) -> List[CaptionResult]:
+        return [self.caption(r) for r in reqs]
+
 
 def make_runner(
     *,
@@ -397,6 +515,7 @@ def make_runner(
     task: str = DEFAULT_COMFY_TASK,
     max_new_tokens: int = 64,
     front: bool = False,
+    poll_interval_s: float = 0.15,
 ) -> CaptionRunner:
     """
     Factory used by vision_slice_caption_run.
@@ -421,6 +540,7 @@ def make_runner(
                 image_mode=image_mode,
                 comfy_input_root=comfy_input_root,
                 front=bool(front),
+                poll_interval_s=float(poll_interval_s),
             )
         )
 

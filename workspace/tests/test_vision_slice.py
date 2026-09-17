@@ -334,11 +334,41 @@ class ComfyRunnerApiTests(unittest.TestCase):
         self.assertEqual(prompt["4"]["class_type"], "ShowText|pysssss")
         self.assertEqual(prompt["4"]["inputs"]["text"], ["3", 2])
 
+    def test_build_florence_prompt_batch_shape(self) -> None:
+        prompt = build_florence_caption_prompt(
+            image_names=["a.jpg", "b.jpg", "c.jpg"],
+            model="microsoft/Florence-2-base",
+        )
+        self.assertEqual(prompt["10"]["class_type"], "LoadImage")
+        self.assertEqual(prompt["11"]["inputs"]["image"], "b.jpg")
+        self.assertEqual(prompt["40"]["class_type"], "ImageScale")
+        self.assertEqual(prompt["40"]["inputs"]["width"], 768)
+        self.assertEqual(prompt["40"]["inputs"]["crop"], "center")
+        self.assertEqual(prompt["71"]["class_type"], "ImageBatch")
+        self.assertEqual(prompt["72"]["class_type"], "ImageBatch")
+        self.assertEqual(prompt["3"]["class_type"], "Florence2Run")
+        self.assertEqual(prompt["3"]["inputs"]["image"], ["72", 0])
+        self.assertEqual(prompt["4"]["inputs"]["text"], ["3", 2])
+
     def test_extract_caption_from_history(self) -> None:
         entry = {"outputs": {"4": {"text": ["a person sitting outdoors"]}}}
         self.assertEqual(extract_caption_from_history(entry), "a person sitting outdoors")
         entry2 = {"outputs": {"3": {"string": ["hello"]}}}
         self.assertEqual(extract_caption_from_history(entry2), "hello")
+
+    def test_extract_captions_from_history_batch(self) -> None:
+        from vision_slice_runner import extract_captions_from_history
+
+        entry = {"outputs": {"3": {"string": ["one", "two", "three"]}}}
+        self.assertEqual(
+            extract_captions_from_history(entry, expected=3),
+            ["one", "two", "three"],
+        )
+        joined = {"outputs": {"4": {"text": ["one\ntwo\nthree"]}}}
+        self.assertEqual(
+            extract_captions_from_history(joined, expected=3),
+            ["one", "two", "three"],
+        )
 
 
 if __name__ == "__main__":

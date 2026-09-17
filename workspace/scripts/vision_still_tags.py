@@ -30,6 +30,9 @@ DEFAULT_PIN_POLICY = "cohort_x2_pg_large_tags"
 DEFAULT_TASK = "prompt_gen_tags"
 DEFAULT_LIMIT = 12
 DEFAULT_COMFY_SERVER = "http://127.0.0.1:8188"
+# Florence2Run loops generate() per IMAGE batch row; graph batch still saves
+# submit/poll/LoadImage round-trips. Override with STILL_TAG_BATCH (1–32).
+DEFAULT_STILL_TAG_BATCH = 8
 SCHEDULE_BASENAME = "still_tag_schedule.json"
 DEFAULT_SCHEDULE: Dict[str, Any] = {
     "schema_version": 1,
@@ -52,6 +55,31 @@ _drain_thread: Optional[threading.Thread] = None
 
 def _utc_now_iso() -> str:
     return _dt.datetime.now(tz=_dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def still_tag_batch_size() -> int:
+    raw = str(os.environ.get("STILL_TAG_BATCH") or DEFAULT_STILL_TAG_BATCH).strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        n = DEFAULT_STILL_TAG_BATCH
+    return max(1, min(n, 32))
+
+
+def still_tag_image_mode() -> str:
+    mode = str(os.environ.get("STILL_TAG_IMAGE_MODE") or "input_ref").strip().lower()
+    if mode in ("upload", "input_copy", "input_ref"):
+        return mode
+    return "input_ref"
+
+
+def still_tag_poll_interval_s() -> float:
+    raw = str(os.environ.get("STILL_TAG_POLL_S") or "0.15").strip()
+    try:
+        v = float(raw)
+    except ValueError:
+        v = 0.15
+    return max(0.05, min(v, 5.0))
 
 
 def _json_dumps(obj: Any) -> str:
@@ -383,6 +411,88 @@ def migrate_editorial_from_json(db_path: Path, json_path: Path) -> int:
         return n
     finally:
         con.close()
+
+
+def rekey_items_to_byte_hash(*, data_root: Path) -> Dict[str, int]:
+    """Move tag rows whose key is a filename hex onto sha256(bytes)."""
+    from still_identity import load_identity  # type: ignore
+
+    ident = load_identity(data_root)
+    if ident is None:
+        return {"moved": 0, "merged": 0, "already_hashed": 0, "unmapped": 0}
+    db_path = default_db_path(data_root=data_root)
+    ensure_db(db_path)
+    moved = merged = already = unmapped = 0
+    con = connect(db_path)
+    try:
+        now = _utc_now_iso()
+        rows = list(con.execute("SELECT * FROM still_tag_items"))
+        for row in rows:
+            old = str(row["content_id"] or "").strip().lower()
+            if not old:
+                continue
+            if old in ident.canonical:
+                already += 1
+                continue
+            real = ident.by_name_hex.get(old)
+            if not real or real == old:
+                unmapped += 1
+                continue
+            dest = con.execute("SELECT * FROM still_tag_items WHERE content_id=?", (real,)).fetchone()
+            if dest is None:
+                con.execute(
+                    "UPDATE still_tag_items SET content_id=?, updated_at=? WHERE content_id=?",
+                    (real, now, old),
+                )
+                moved += 1
+                continue
+            editorial = _dedupe(
+                _json_loads_list(dest["editorial_tags"]) + _json_loads_list(row["editorial_tags"])
+            )
+            dest_prov = _json_loads_list(dest["provisional_tags"])
+            src_prov = _json_loads_list(row["provisional_tags"])
+            use_src_prov = not dest_prov and bool(src_prov)
+            note = str(dest["note"] or "").strip() or str(row["note"] or "").strip() or None
+            con.execute(
+                """
+                UPDATE still_tag_items SET
+                  editorial_tags=?,
+                  note=?,
+                  provisional_tags=?,
+                  provisional_model_pin=?,
+                  provisional_pin_policy=?,
+                  provisional_run_id=?,
+                  provisional_tagged_at=?,
+                  provisional_raw_caption=?,
+                  suppressed_tags=?,
+                  updated_at=?
+                WHERE content_id=?
+                """,
+                (
+                    _json_dumps(editorial),
+                    note,
+                    dest["provisional_tags"] if not use_src_prov else row["provisional_tags"],
+                    dest["provisional_model_pin"] if not use_src_prov else row["provisional_model_pin"],
+                    dest["provisional_pin_policy"] if not use_src_prov else row["provisional_pin_policy"],
+                    dest["provisional_run_id"] if not use_src_prov else row["provisional_run_id"],
+                    dest["provisional_tagged_at"] if not use_src_prov else row["provisional_tagged_at"],
+                    dest["provisional_raw_caption"] if not use_src_prov else row["provisional_raw_caption"],
+                    _json_dumps(
+                        _dedupe(
+                            _json_loads_list(dest["suppressed_tags"])
+                            + _json_loads_list(row["suppressed_tags"])
+                        )
+                    ),
+                    now,
+                    real,
+                ),
+            )
+            con.execute("DELETE FROM still_tag_items WHERE content_id=?", (old,))
+            merged += 1
+        con.commit()
+    finally:
+        con.close()
+    return {"moved": moved, "merged": merged, "already_hashed": already, "unmapped": unmapped}
 
 
 def effective_tags_for_row(row: sqlite3.Row, *, fp_blocklist: Optional[Sequence[str]] = None) -> List[str]:
@@ -917,32 +1027,48 @@ def resolve_targets(
                 break
         if not coll:
             return []
+        from still_identity import load_identity  # type: ignore
+
+        ident = load_identity(data_root)
         for it in coll.get("items") or []:
             path = ""
             if isinstance(it, dict):
                 path = str(it.get("path") or "")
-                cid = str(it.get("content_id") or "").strip().lower() or extract_content_id(path)
+                cid = str(it.get("content_id") or "").strip().lower()
+                if not cid and ident is not None:
+                    cid = ident.content_id_for_path(path) or ""
+                if not cid:
+                    cid = extract_content_id(path) or ""
             else:
                 path = str(it)
-                cid = extract_content_id(path)
+                cid = ""
+                if ident is not None:
+                    cid = ident.content_id_for_path(path) or ""
+                if not cid:
+                    cid = extract_content_id(path) or ""
             if cid:
                 wanted.append(cid)
     else:
-        # Catalog walk: newest first.
-        cat = default_catalog_path(data_root=data_root)
-        if cat.is_file():
-            con_cat = sqlite3.connect(str(cat), timeout=30.0)
-            try:
-                rows = con_cat.execute(
-                    "SELECT path FROM stills ORDER BY first_seen DESC, mtime DESC LIMIT ?",
-                    (max(lim * 20, 400),),
-                ).fetchall()
-            finally:
-                con_cat.close()
-            for (path,) in rows:
-                cid = extract_content_id(str(path))
-                if cid:
-                    wanted.append(cid)
+        from still_identity import iter_unique_stills  # type: ignore
+
+        unique = iter_unique_stills(data_root, min_size=1)
+        if unique:
+            wanted = [cid for cid, _path in unique]
+        else:
+            cat = default_catalog_path(data_root=data_root)
+            if cat.is_file():
+                con_cat = sqlite3.connect(str(cat), timeout=30.0)
+                try:
+                    rows = con_cat.execute(
+                        "SELECT path FROM stills ORDER BY first_seen DESC, mtime DESC LIMIT ?",
+                        (max(lim * 20, 400),),
+                    ).fetchall()
+                finally:
+                    con_cat.close()
+                for (path,) in rows:
+                    cid = extract_content_id(str(path))
+                    if cid:
+                        wanted.append(cid)
 
     # Dedupe preserve order
     seen: set[str] = set()
@@ -963,14 +1089,23 @@ def resolve_targets(
     finally:
         con.close()
 
-    # Resolve paths via catalog
-    cat = default_catalog_path(data_root=data_root)
+    # Resolve paths via byte-hash accounting, then catalog filename match.
+    from still_identity import load_identity  # type: ignore
+
+    ident = load_identity(data_root)
     path_by_cid: Dict[str, str] = {}
+    if ident is not None:
+        for cid in ordered:
+            canon = ident.canonical_path(cid)
+            if canon is not None:
+                path_by_cid[cid] = str(canon)
+    cat = default_catalog_path(data_root=data_root)
     if cat.is_file():
         con_cat = sqlite3.connect(str(cat), timeout=30.0)
         try:
             for cid in ordered:
-                # Match filename containing hash
+                if cid in path_by_cid:
+                    continue
                 row = con_cat.execute(
                     "SELECT path FROM stills WHERE lower(path) LIKE ? LIMIT 1",
                     (f"%{cid}%",),
@@ -1022,6 +1157,7 @@ def enqueue_run(
     ensure_db(db_path)
     # Best-effort migrate G1 JSON once
     migrate_editorial_from_json(db_path, data_root / "shape_factory" / "input_still_tags.json")
+    rekey_items_to_byte_hash(data_root=data_root)
 
     pin = load_pin(pin_path or default_pin_path(status_dir=status_dir))
     server = (comfy_server or os.environ.get("VISION_COMFY_SERVER") or DEFAULT_COMFY_SERVER).rstrip("/")
@@ -1126,6 +1262,9 @@ def process_run(
         server = str(run.get("comfy_server") or DEFAULT_COMFY_SERVER)
         model_pin = str(run.get("model_pin") or pin["model_pin"])
         pin_policy = str(run.get("pin_policy") or pin["pin_policy"])
+        image_mode = still_tag_image_mode()
+        batch_n = still_tag_batch_size()
+        poll_s = still_tag_poll_interval_s()
 
         con.execute(
             "UPDATE still_tag_runs SET status=?, started_at=? WHERE run_id=?",
@@ -1135,7 +1274,10 @@ def process_run(
             con,
             run_id=run_id,
             kind="started",
-            message=f"provider={provider} server={server} front={bool(front)}",
+            message=(
+                f"provider={provider} server={server} front={bool(front)} "
+                f"batch={batch_n} image_mode={image_mode} poll_s={poll_s}"
+            ),
         )
         con.commit()
 
@@ -1149,9 +1291,18 @@ def process_run(
             dry_run=provider in ("dry-run", "dry_run"),
             task=DEFAULT_TASK,
             max_new_tokens=256,
-            image_mode="upload",
+            image_mode=image_mode,
+            poll_interval_s=poll_s,
             front=bool(front),
         )
+
+        ident = None
+        try:
+            from still_identity import load_identity  # type: ignore
+
+            ident = load_identity(data_root)
+        except Exception:
+            ident = None
 
         ndjson_path: Optional[Path] = None
         if status_dir is not None:
@@ -1159,90 +1310,135 @@ def process_run(
             status_dir.mkdir(parents=True, exist_ok=True)
             ndjson_path = status_dir / "vision_still_tags.ndjson"
 
-        done = 0
-        errors = 0
+        done = int(run["done_count"] or 0)
+        errors = int(run["error_count"] or 0)
+
+        def _record_ok(t: Dict[str, Any], cid: str, caption: str, raw: Dict[str, Any], model_used: str) -> None:
+            nonlocal done
+            tags = [x for x in parse_danbooru_tags(caption, max_tags=64) if x not in fp]
+            if not tags and provider in ("dry-run", "dry_run"):
+                tags = _dedupe(caption.split(","))
+            upsert_provisional(
+                con,
+                content_id=cid,
+                tags=tags,
+                model_pin=model_used,
+                pin_policy=pin_policy,
+                run_id=run_id,
+                raw_caption=caption,
+            )
+            done += 1
+            con.execute(
+                "UPDATE still_tag_runs SET done_count=? WHERE run_id=?",
+                (done, run_id),
+            )
+            append_event(
+                con,
+                run_id=run_id,
+                kind="item_done",
+                content_id=cid,
+                message=f"{len(tags)} tags",
+                payload={"tags": tags[:24], "tag_count": len(tags)},
+            )
+            con.commit()
+            if ndjson_path is not None:
+                row = {
+                    "schema": 1,
+                    "content_id": cid,
+                    "relpath": t.get("relpath"),
+                    "tags": tags,
+                    "caption": caption,
+                    "model_pin": model_used,
+                    "pin_policy": pin_policy,
+                    "run_id": run_id,
+                    "provider": provider,
+                    "raw": raw,
+                    "ts": _utc_now_iso(),
+                }
+                with ndjson_path.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+        def _record_err(cid: str, err: BaseException) -> None:
+            nonlocal errors
+            errors += 1
+            con.execute(
+                "UPDATE still_tag_runs SET error_count=? WHERE run_id=?",
+                (errors, run_id),
+            )
+            append_event(
+                con,
+                run_id=run_id,
+                kind="item_error",
+                content_id=cid,
+                message=str(err)[:500],
+            )
+            con.commit()
+
+        def _caption_chunk(chunk: List[Tuple[Dict[str, Any], str, Path]]) -> None:
+            reqs = [
+                CaptionRequest(
+                    image_path=path,
+                    asset_relpath=str(t.get("relpath") or path.name),
+                    meta={"content_id": cid},
+                )
+                for t, cid, path in chunk
+            ]
+            caption_many = getattr(runner, "caption_many", None)
+            try:
+                if len(chunk) > 1 and callable(caption_many):
+                    results = caption_many(reqs)
+                else:
+                    results = [runner.caption(r) for r in reqs]
+                if len(results) != len(chunk):
+                    raise RuntimeError(
+                        f"caption batch size mismatch want={len(chunk)} got={len(results)}"
+                    )
+                for (t, cid, _path), result in zip(chunk, results):
+                    _record_ok(t, cid, result.caption, result.raw, result.model_pin)
+            except Exception as e:
+                if len(chunk) == 1:
+                    _record_err(chunk[0][1], e)
+                    return
+                for item, req in zip(chunk, reqs):
+                    t, cid, _path = item
+                    try:
+                        result = runner.caption(req)
+                        _record_ok(t, cid, result.caption, result.raw, result.model_pin)
+                    except Exception as e2:
+                        _record_err(cid, e2)
+
         try:
+            pending: List[Tuple[Dict[str, Any], str, Path]] = []
             for t in targets:
                 cid = str(t.get("content_id") or "")
-                path = Path(str(t.get("path") or ""))
+                stored = Path(str(t.get("path") or ""))
+                path = stored
                 try:
-                    if provider in ("dry-run", "dry_run"):
-                        # Emit parseable tags so store + UI can be exercised without GPU.
-                        caption = (
-                            "1girl, long hair, looking at viewer, solo, simple background, "
-                            f"tag_smoke_{cid[:8]}"
-                        )
-                        raw = {"dry_run": True}
-                        model_used = "dry-run"
-                    else:
-                        if not path.is_file():
-                            raise FileNotFoundError(f"missing still: {path}")
-                        result = runner.caption(
-                            CaptionRequest(
-                                image_path=path,
-                                asset_relpath=str(t.get("relpath") or path.name),
-                                meta={"content_id": cid},
-                            )
-                        )
-                        caption = result.caption
-                        raw = result.raw
-                        model_used = result.model_pin
+                    live = ident.canonical_path(cid) if ident is not None else None
+                    if live is not None:
+                        path = live
+                except Exception:
+                    path = stored
+                existing = con.execute(
+                    "SELECT provisional_tags FROM still_tag_items WHERE content_id=?",
+                    (cid,),
+                ).fetchone()
+                if existing and _row_has_provisional(existing) and not bool(scope.get("force")):
+                    continue
+                if provider in ("dry-run", "dry_run"):
+                    caption = (
+                        "1girl, long hair, looking at viewer, solo, simple background, "
+                        f"tag_smoke_{cid[:8]}"
+                    )
+                    _record_ok(t, cid, caption, {"dry_run": True}, "dry-run")
+                    continue
+                if not path.is_file():
+                    _record_err(cid, FileNotFoundError(f"missing still: {path}"))
+                    continue
+                pending.append((t, cid, path))
 
-                    tags = [x for x in parse_danbooru_tags(caption, max_tags=64) if x not in fp]
-                    if not tags and provider in ("dry-run", "dry_run"):
-                        tags = _dedupe(caption.split(","))
-
-                    upsert_provisional(
-                        con,
-                        content_id=cid,
-                        tags=tags,
-                        model_pin=model_used,
-                        pin_policy=pin_policy,
-                        run_id=run_id,
-                        raw_caption=caption,
-                    )
-                    done += 1
-                    con.execute(
-                        "UPDATE still_tag_runs SET done_count=? WHERE run_id=?",
-                        (done, run_id),
-                    )
-                    append_event(
-                        con,
-                        run_id=run_id,
-                        kind="item_done",
-                        content_id=cid,
-                        message=f"{len(tags)} tags",
-                        payload={"tags": tags[:24], "tag_count": len(tags)},
-                    )
-                    if ndjson_path is not None:
-                        row = {
-                            "schema": 1,
-                            "content_id": cid,
-                            "relpath": t.get("relpath"),
-                            "tags": tags,
-                            "caption": caption,
-                            "model_pin": model_used,
-                            "pin_policy": pin_policy,
-                            "run_id": run_id,
-                            "provider": provider,
-                            "raw": raw,
-                            "ts": _utc_now_iso(),
-                        }
-                        with ndjson_path.open("a", encoding="utf-8") as f:
-                            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-                except Exception as e:
-                    errors += 1
-                    con.execute(
-                        "UPDATE still_tag_runs SET error_count=? WHERE run_id=?",
-                        (errors, run_id),
-                    )
-                    append_event(
-                        con,
-                        run_id=run_id,
-                        kind="item_error",
-                        content_id=cid,
-                        message=str(e)[:500],
-                    )
+            for i in range(0, len(pending), batch_n):
+                _caption_chunk(pending[i : i + batch_n])
             status = "done" if errors == 0 or done > 0 else "error"
             detail = None if errors == 0 else f"{errors} item error(s)"
             con.execute(

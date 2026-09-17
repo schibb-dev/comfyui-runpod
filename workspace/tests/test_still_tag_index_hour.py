@@ -98,6 +98,39 @@ class StillTagIndexHourTests(unittest.TestCase):
                 runner.caption(CaptionRequest(image_path=img, asset_relpath="x.jpg"))
 
         self.assertIs(captured.get("payload", {}).get("front"), True)
+        self.assertEqual(captured["payload"]["prompt"]["1"]["class_type"], "LoadImage")
+
+    def test_caption_many_builds_imagebatch_graph(self) -> None:
+        from vision_slice_runner import CaptionRequest, ComfyCaptionRunner, ComfyRunnerConfig
+
+        cfg = ComfyRunnerConfig(server="http://127.0.0.1:8188", front=True, image_mode="input_ref")
+        runner = ComfyCaptionRunner(cfg)
+        captured: dict = {}
+
+        def fake_http(method, url, payload=None, timeout_s=30.0):
+            captured["payload"] = payload
+            return {"prompt_id": "batch-pid"}
+
+        with tempfile.TemporaryDirectory() as td:
+            imgs = []
+            for name in ("a.jpg", "b.jpg", "c.jpg"):
+                p = Path(td) / name
+                p.write_bytes(b"fakejpeg-bytes")
+                imgs.append(p)
+            with mock.patch("vision_slice_runner._http_json", side_effect=fake_http), mock.patch.object(
+                runner,
+                "_wait_history",
+                return_value={"outputs": {"3": {"string": ["one", "two", "three"]}}},
+            ):
+                out = runner.caption_many(
+                    [CaptionRequest(image_path=p, asset_relpath=p.name) for p in imgs]
+                )
+
+        self.assertEqual([r.caption for r in out], ["one", "two", "three"])
+        prompt = captured["payload"]["prompt"]
+        self.assertEqual(prompt["71"]["class_type"], "ImageBatch")
+        self.assertEqual(prompt["3"]["inputs"]["image"], ["72", 0])
+        self.assertIs(captured["payload"].get("front"), True)
 
     def test_enqueue_then_force_dry_run_drain(self) -> None:
         """Demo path: backlog enqueue without kick, then force drain with dry-run."""
