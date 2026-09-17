@@ -2946,6 +2946,9 @@ export type InputCurationStillItem = {
   editorial_tags?: string[];
   provisional_tags?: string[];
   effective_tags?: string[];
+  /** untagged | queued (reserved in a batch) | done (provisional tags written). */
+  tag_status?: "untagged" | "queued" | "done" | null;
+  queue_run_id?: string | null;
   note?: string | null;
   appetite?: Appetite | null;
   appetite_facet?: AppetiteFacet | null;
@@ -3118,6 +3121,11 @@ export type StillTagBacklogResponse = {
   running_runs?: number;
   items_total?: number;
   items_with_provisional?: number;
+  /** Stills with Florence provisional tags (alias of items_with_provisional). */
+  items_tagged?: number;
+  /** Stills reserved in queued/running batches, not yet tagged. */
+  items_reserved?: number;
+  items_queued?: number;
   oldest_queued_at?: string | null;
   queued_run_ids?: string[];
   schedule?: StillTagSchedule;

@@ -4343,6 +4343,37 @@ def _shape_factory_input_curation_stills_tag_run_payload(cfg: ServerConfig, run_
     return {"ok": True, "run": run}
 
 
+def _shape_factory_input_curation_stills_tag_results_payload(cfg: ServerConfig, run_id: str) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+    from vision_still_tags import connect, default_db_path, ensure_db, get_run, list_still_tag_run_results  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    db = default_db_path(data_root=data_root)
+    ensure_db(db)
+    con = connect(db)
+    try:
+        run = get_run(con, run_id)
+        if not run:
+            return {"ok": False, "error": "run_not_found", "run_id": run_id}
+        items = list_still_tag_run_results(con, run_id=run_id)
+    finally:
+        con.close()
+    done = sum(1 for it in items if it.get("status") == "done")
+    errors = sum(1 for it in items if it.get("status") in {"error", "missing"})
+    pending = sum(1 for it in items if it.get("status") == "pending")
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "run": run,
+        "items": items,
+        "count": len(items),
+        "summary": {"done": done, "errors": errors, "pending": pending},
+    }
+
+
 def _shape_factory_input_curation_stills_tag_events_payload(
     cfg: ServerConfig, run_id: str, q: Dict[str, List[str]]
 ) -> Dict[str, Any]:
@@ -11457,11 +11488,31 @@ def _history_status_and_times(record: Any) -> Dict[str, Any]:
     return out
 
 
+def _history_has_text_output(record: Any) -> bool:
+    """Florence still-tag graphs succeed with ShowText / Florence2Run text, not image files."""
+    if not isinstance(record, dict):
+        return False
+    outs = record.get("outputs")
+    if not isinstance(outs, dict):
+        return False
+    for node_out in outs.values():
+        if not isinstance(node_out, dict):
+            continue
+        text = node_out.get("text")
+        if isinstance(text, list) and any(str(t).strip() for t in text):
+            return True
+        if isinstance(text, str) and text.strip():
+            return True
+    return False
+
+
 def _demote_hollow_history_success(
     status_info: Dict[str, Any],
     *,
     primary_video: Optional[str],
     primary_image: Optional[str],
+    prompt_obj: Any = None,
+    record: Any = None,
 ) -> Dict[str, Any]:
     """
     Comfy often marks graphs ``success`` even when no media was produced
@@ -11473,6 +11524,18 @@ def _demote_hollow_history_success(
         return status_info
     if primary_video or primary_image:
         return status_info
+    if _history_has_text_output(record):
+        return status_info
+    try:
+        d = _workspace_scripts_dir()
+        if d.is_dir() and str(d) not in sys.path:
+            sys.path.insert(0, str(d))
+        from shape_factory_work_products import _prompt_is_florence_still_tag  # type: ignore
+
+        if _prompt_is_florence_still_tag(prompt_obj):
+            return status_info
+    except Exception:
+        pass
     status_info = dict(status_info)
     status_info["status"] = "error"
     status_info["hollow_success"] = True
@@ -12778,6 +12841,8 @@ class Handler(BaseHTTPRequestHandler):
                         status_info,
                         primary_video=pv,
                         primary_image=pi,
+                        prompt_obj=prompt_obj,
+                        record=record,
                     )
 
                     def _mk_url(rel: Optional[str]) -> Optional[str]:
@@ -13095,6 +13160,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 if len(parts) >= 2 and parts[1] == "events":
                     payload = _shape_factory_input_curation_stills_tag_events_payload(cfg, run_id, q)
+                elif len(parts) >= 2 and parts[1] == "results":
+                    payload = _shape_factory_input_curation_stills_tag_results_payload(cfg, run_id)
                 else:
                     payload = _shape_factory_input_curation_stills_tag_run_payload(cfg, run_id)
                 code = 200 if payload.get("ok") else 404

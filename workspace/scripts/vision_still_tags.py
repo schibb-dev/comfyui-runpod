@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from vision_tag_judgment_tags import parse_danbooru_tags
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DB_BASENAME = "still_tags.sqlite"
 DEFAULT_MODEL_PIN = "MiaoshouAI/Florence-2-large-PromptGen-v2.0"
 # Same weights/task as V3a day-one; x2 cohort had similar F1 and stronger important-tag recall.
@@ -168,6 +168,7 @@ def init_db(con: sqlite3.Connection) -> None:
           provisional_tagged_at TEXT,
           provisional_raw_caption TEXT,
           suppressed_tags TEXT NOT NULL DEFAULT '[]',
+          queue_run_id TEXT,
           updated_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS still_tag_runs (
@@ -199,11 +200,135 @@ def init_db(con: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS still_tag_events_run ON still_tag_events(run_id, id);
         """
     )
+    _apply_still_tag_migrations(con)
     con.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
         (str(SCHEMA_VERSION),),
     )
     con.commit()
+
+
+def _still_tag_item_columns(con: sqlite3.Connection) -> set[str]:
+    return {str(row[1]) for row in con.execute("PRAGMA table_info(still_tag_items)")}
+
+
+def _row_has_provisional(row: sqlite3.Row) -> bool:
+    return bool(_json_loads_list(row["provisional_tags"]))
+
+
+def tag_status_from_row(row: sqlite3.Row) -> str:
+    """Per-still tag lifecycle: untagged → queued (reserved) → done."""
+    if _row_has_provisional(row):
+        return "done"
+    if "queue_run_id" in row.keys() and str(row["queue_run_id"] or "").strip():
+        return "queued"
+    return "untagged"
+
+
+def active_tag_run_ids(con: sqlite3.Connection) -> set[str]:
+    rows = con.execute(
+        "SELECT run_id FROM still_tag_runs WHERE status IN ('queued', 'running')"
+    ).fetchall()
+    return {str(r["run_id"]) for r in rows if r and r["run_id"]}
+
+
+def _apply_still_tag_migrations(con: sqlite3.Connection) -> None:
+    cols = _still_tag_item_columns(con)
+    if "queue_run_id" not in cols:
+        con.execute("ALTER TABLE still_tag_items ADD COLUMN queue_run_id TEXT")
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS still_tag_items_queue_run ON still_tag_items(queue_run_id)"
+    )
+    reconcile_still_tag_reservations(con)
+
+
+def reserve_still_tag_items(
+    con: sqlite3.Connection,
+    run_id: str,
+    content_ids: Sequence[str],
+) -> int:
+    """Mark stills as reserved for a queued/running batch."""
+    want = str(run_id or "").strip()
+    if not want:
+        return 0
+    now = _utc_now_iso()
+    n = 0
+    for raw in content_ids:
+        cid = str(raw or "").strip().lower()
+        if not cid:
+            continue
+        row = con.execute(
+            "SELECT content_id, provisional_tags FROM still_tag_items WHERE content_id=?",
+            (cid,),
+        ).fetchone()
+        if row and _row_has_provisional(row):
+            continue
+        if row:
+            con.execute(
+                "UPDATE still_tag_items SET queue_run_id=?, updated_at=? WHERE content_id=?",
+                (want, now, cid),
+            )
+        else:
+            con.execute(
+                """
+                INSERT INTO still_tag_items(
+                  content_id, editorial_tags, note, provisional_tags, suppressed_tags,
+                  queue_run_id, updated_at
+                ) VALUES (?, '[]', NULL, '[]', '[]', ?, ?)
+                """,
+                (cid, want, now),
+            )
+        n += 1
+    return n
+
+
+def release_still_tag_reservations(con: sqlite3.Connection, run_id: str) -> int:
+    """Drop queue reservation for stills that never received provisional tags."""
+    want = str(run_id or "").strip()
+    if not want:
+        return 0
+    cur = con.execute(
+        """
+        UPDATE still_tag_items
+        SET queue_run_id=NULL, updated_at=?
+        WHERE queue_run_id=?
+          AND (provisional_tags IS NULL OR provisional_tags='[]')
+        """,
+        (_utc_now_iso(), want),
+    )
+    return int(cur.rowcount or 0)
+
+
+def reconcile_still_tag_reservations(con: sqlite3.Connection) -> Dict[str, int]:
+    """Align queue_run_id with active runs; clear stale reservations."""
+    now = _utc_now_iso()
+    cleared = con.execute(
+        """
+        UPDATE still_tag_items
+        SET queue_run_id=NULL, updated_at=?
+        WHERE queue_run_id IS NOT NULL
+          AND queue_run_id NOT IN (
+            SELECT run_id FROM still_tag_runs WHERE status IN ('queued', 'running')
+          )
+          AND (provisional_tags IS NULL OR provisional_tags='[]')
+        """,
+        (now,),
+    ).rowcount
+    backfilled = 0
+    for row in con.execute(
+        "SELECT run_id, scope_json FROM still_tag_runs WHERE status IN ('queued', 'running')"
+    ):
+        run_id = str(row["run_id"] or "").strip()
+        if not run_id:
+            continue
+        try:
+            scope = json.loads(str(row["scope_json"] or "{}"))
+        except Exception:
+            scope = {}
+        cids = scope.get("content_ids") if isinstance(scope.get("content_ids"), list) else []
+        backfilled += reserve_still_tag_items(con, run_id, cids)
+    con.commit()
+    return {"cleared_stale": int(cleared or 0), "backfilled": int(backfilled or 0)}
 
 
 def ensure_db(db_path: Path) -> Path:
@@ -294,6 +419,7 @@ def _item_dict(row: sqlite3.Row, *, fp_blocklist: Optional[Sequence[str]] = None
     editorial = _json_loads_list(row["editorial_tags"])
     provisional = _json_loads_list(row["provisional_tags"])
     suppressed = _json_loads_list(row["suppressed_tags"])
+    queue_run_id = str(row["queue_run_id"] or "").strip() or None if "queue_run_id" in row.keys() else None
     return {
         "content_id": row["content_id"],
         "editorial_tags": editorial,
@@ -305,6 +431,8 @@ def _item_dict(row: sqlite3.Row, *, fp_blocklist: Optional[Sequence[str]] = None
         "provisional_run_id": row["provisional_run_id"],
         "provisional_tagged_at": row["provisional_tagged_at"],
         "suppressed_tags": suppressed,
+        "queue_run_id": queue_run_id,
+        "tag_status": tag_status_from_row(row),
         "effective_tags": effective_tags_for_row(row, fp_blocklist=fp_blocklist),
         "updated_at": row["updated_at"],
     }
@@ -374,6 +502,7 @@ def upsert_provisional(
               provisional_run_id=?,
               provisional_tagged_at=?,
               provisional_raw_caption=?,
+              queue_run_id=NULL,
               updated_at=?
             WHERE content_id=?
             """,
@@ -526,6 +655,110 @@ def list_events(
     return out
 
 
+def _still_tag_file_url(relpath: Optional[str]) -> Optional[str]:
+    import urllib.parse
+
+    rel = str(relpath or "").strip().replace("\\", "/").lstrip("/")
+    if not rel:
+        return None
+    if not rel.lower().startswith("input/"):
+        rel = "input/" + rel
+    return "/files/" + urllib.parse.quote(rel)
+
+
+def list_still_tag_run_results(
+    con: sqlite3.Connection,
+    *,
+    run_id: str,
+) -> List[Dict[str, Any]]:
+    """Per-still rows for a batch: image path, tags, and errors from events + SQLite."""
+    run = get_run(con, run_id)
+    if not run:
+        return []
+    scope = run.get("scope") if isinstance(run.get("scope"), dict) else {}
+    targets = [t for t in (scope.get("targets") or []) if isinstance(t, dict)]
+    events = list_events(con, run_id=run_id, after_id=0, limit=2000)
+    by_cid: Dict[str, List[Dict[str, Any]]] = {}
+    for ev in events:
+        cid = str(ev.get("content_id") or "").strip().lower()
+        if not cid:
+            continue
+        by_cid.setdefault(cid, []).append(ev)
+
+    out: List[Dict[str, Any]] = []
+    for raw in targets:
+        cid = str(raw.get("content_id") or "").strip().lower()
+        if not cid:
+            continue
+        missing = bool(raw.get("missing"))
+        relpath = str(raw.get("relpath") or "").strip().replace("\\", "/")
+        if relpath and not relpath.lower().startswith("input/"):
+            relpath = f"input/{relpath.lstrip('/')}"
+
+        item_meta = get_item(con, cid)
+        prov_tags = list(item_meta.get("provisional_tags") or []) if item_meta else []
+        editorial_tags = list(item_meta.get("editorial_tags") or []) if item_meta else []
+        effective_tags = list(item_meta.get("effective_tags") or []) if item_meta else []
+        tagged_at = (
+            str(item_meta.get("provisional_tagged_at") or "").strip() or None if item_meta else None
+        )
+
+        evs = by_cid.get(cid) or []
+        last_done: Optional[Dict[str, Any]] = None
+        last_err: Optional[Dict[str, Any]] = None
+        for ev in evs:
+            if ev.get("kind") == "item_done":
+                last_done = ev
+            elif ev.get("kind") == "item_error":
+                last_err = ev
+
+        tags: List[str] = []
+        if last_done and isinstance(last_done.get("payload"), dict):
+            raw_tags = last_done["payload"].get("tags")
+            if isinstance(raw_tags, list):
+                tags = [str(t) for t in raw_tags if str(t).strip()]
+        if not tags and prov_tags:
+            tags = prov_tags
+
+        error_message: Optional[str] = None
+        warning: Optional[str] = None
+        if missing:
+            status = "missing"
+            error_message = "Still file missing on disk"
+        elif tags:
+            status = "done"
+            if last_err:
+                warning = str(last_err.get("message") or "").strip() or None
+        elif last_err:
+            status = "error"
+            error_message = str(last_err.get("message") or "").strip() or "tag failed"
+        else:
+            run_status = str(run.get("status") or "").strip().lower()
+            status = "pending" if run_status in {"queued", "running"} else "pending"
+
+        display_tags = tags or prov_tags
+        if not effective_tags and display_tags:
+            effective_tags = display_tags
+        out.append(
+            {
+                "content_id": cid,
+                "relpath": relpath or None,
+                "url": _still_tag_file_url(relpath),
+                "missing": missing,
+                "status": status,
+                "tags": display_tags,
+                "provisional_tags": prov_tags,
+                "editorial_tags": editorial_tags,
+                "effective_tags": effective_tags,
+                "tag_count": len(effective_tags or display_tags),
+                "error_message": error_message,
+                "warning": warning,
+                "tagged_at": (last_done.get("ts") if last_done else None) or tagged_at,
+            }
+        )
+    return out
+
+
 def _parse_created_at_ts(raw: Any) -> Optional[float]:
     if raw is None or raw == "":
         return None
@@ -614,18 +847,39 @@ def current_still_tag_target(
     return ordered[idx]
 
 
-def content_ids_missing_provisional(con: sqlite3.Connection, candidates: Sequence[str]) -> List[str]:
+def content_ids_available_for_tagging(
+    con: sqlite3.Connection,
+    candidates: Sequence[str],
+    *,
+    only_missing: bool = True,
+    force: bool = False,
+) -> List[str]:
+    """Filter catalog candidates: skip tagged stills and those reserved in active batches."""
+    active = active_tag_run_ids(con)
     out: List[str] = []
     for cid in candidates:
         key = str(cid or "").strip().lower()
         if not key:
             continue
-        row = con.execute(
-            "SELECT provisional_tags FROM still_tag_items WHERE content_id=?", (key,)
-        ).fetchone()
-        if not row or not _json_loads_list(row["provisional_tags"]):
+        if force:
             out.append(key)
+            continue
+        row = con.execute(
+            "SELECT provisional_tags, queue_run_id FROM still_tag_items WHERE content_id=?",
+            (key,),
+        ).fetchone()
+        if only_missing and row and _row_has_provisional(row):
+            continue
+        if only_missing and row:
+            qrun = str(row["queue_run_id"] or "").strip()
+            if qrun and qrun in active:
+                continue
+        out.append(key)
     return out
+
+
+def content_ids_missing_provisional(con: sqlite3.Connection, candidates: Sequence[str]) -> List[str]:
+    return content_ids_available_for_tagging(con, candidates, only_missing=True, force=False)
 
 
 def resolve_targets(
@@ -704,7 +958,7 @@ def resolve_targets(
     con = connect(db_path)
     try:
         if only_missing and not force:
-            ordered = content_ids_missing_provisional(con, ordered)
+            ordered = content_ids_available_for_tagging(con, ordered, only_missing=True, force=False)
         ordered = ordered[:lim]
     finally:
         con.close()
@@ -794,6 +1048,7 @@ def enqueue_run(
         "force": force,
         "targets": targets,
     }
+    reserved = 0
     con = connect(db_path)
     try:
         con.execute(
@@ -816,12 +1071,17 @@ def enqueue_run(
                 None,
             ),
         )
+        reserved = reserve_still_tag_items(
+            con,
+            run_id,
+            [str(t.get("content_id") or "") for t in runnable],
+        )
         append_event(
             con,
             run_id=run_id,
             kind="enqueued",
-            message=f"enqueued {len(runnable)} (skipped_missing={len(skipped)})",
-            payload={"total": len(runnable), "skipped": len(skipped)},
+            message=f"enqueued {len(runnable)} (skipped_missing={len(skipped)}, reserved={reserved})",
+            payload={"total": len(runnable), "skipped": len(skipped), "reserved": reserved},
         )
         con.commit()
     finally:
@@ -832,6 +1092,7 @@ def enqueue_run(
         "run_id": run_id,
         "enqueued": len(runnable),
         "skipped": len(skipped),
+        "reserved": reserved,
         "db_path": str(db_path),
         "model_pin": pin["model_pin"],
         "pin_policy": pin["pin_policy"],
@@ -992,12 +1253,13 @@ def process_run(
                 """,
                 (status, _utc_now_iso(), done, errors, detail, run_id),
             )
+            released = release_still_tag_reservations(con, run_id)
             append_event(
                 con,
                 run_id=run_id,
                 kind="finished",
-                message=f"status={status} done={done} errors={errors}",
-                payload={"done": done, "errors": errors, "status": status},
+                message=f"status={status} done={done} errors={errors} released={released}",
+                payload={"done": done, "errors": errors, "status": status, "released": released},
             )
             con.commit()
             return {"ok": True, "run": get_run(con, run_id)}
@@ -1242,7 +1504,16 @@ def backlog_stats(*, data_root: Path) -> Dict[str, Any]:
             WHERE provisional_tags IS NOT NULL AND provisional_tags != '[]'
             """
         ).fetchone()
+        items_reserved = con.execute(
+            """
+            SELECT COUNT(*) AS c FROM still_tag_items
+            WHERE queue_run_id IS NOT NULL
+              AND (provisional_tags IS NULL OR provisional_tags='[]')
+            """
+        ).fetchone()
         queued_targets = sum(int(r["total"] or 0) for r in queued)
+        tagged = int(items_prov["c"] if items_prov else 0)
+        reserved = int(items_reserved["c"] if items_reserved else 0)
         return {
             "ok": True,
             "db_path": str(db_path),
@@ -1250,7 +1521,10 @@ def backlog_stats(*, data_root: Path) -> Dict[str, Any]:
             "queued_targets": queued_targets,
             "running_runs": int(running["c"] if running else 0),
             "items_total": int(items_total["c"] if items_total else 0),
-            "items_with_provisional": int(items_prov["c"] if items_prov else 0),
+            "items_with_provisional": tagged,
+            "items_tagged": tagged,
+            "items_reserved": reserved,
+            "items_queued": reserved,
             "oldest_queued_at": queued[0]["enqueued_at"] if queued else None,
             "queued_run_ids": [str(r["run_id"]) for r in queued[:20]],
         }
@@ -1459,6 +1733,8 @@ def enrich_still_items(
             it["provisional_tags"] = d["provisional_tags"]
             it["effective_tags"] = d["effective_tags"]
             it["tags"] = d["effective_tags"]
+            it["tag_status"] = d["tag_status"]
+            it["queue_run_id"] = d.get("queue_run_id")
             if d.get("note") is not None:
                 it["note"] = d["note"]
     finally:

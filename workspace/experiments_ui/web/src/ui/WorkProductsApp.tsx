@@ -19,6 +19,7 @@ import { ClipBookmarksRail, pickDefaultClip } from "./ClipBookmarksRail";
 import { ComfyLiveMetricsBar, ComfyLivePreview } from "./ComfyLivePreview";
 import { PageHeader } from "./PageHeader";
 import { PipelineScreen } from "./PipelineScreen";
+import { useNarrowLayout } from "./useNarrowLayout";
 import { JsonPeekButton, PromptMarkupTable, PromptPeekButton } from "./PromptPeek";
 import {
   clonePromptRows,
@@ -114,6 +115,7 @@ import {
   workProductRunningLiveDespiteOutput,
   workProductShowFactoryChrome,
 } from "./workProductKind";
+import { StillTagWorkbenchPanel } from "./StillTagWorkbenchPanel";
 import { failurePrimaryLabel, workProductFailure, workProductFlowEvents } from "./workProductFailure";
 import { queryKeys } from "./queryKeys";
 import type {
@@ -5883,14 +5885,20 @@ function WorkProductIndexRow({
         </span>
         <span className="work-product-index-row__sub" title={item.spec_title || formatWhen(recencyStamp(item))}>
           {formatRelativeAge(recencyStamp(item))}
-          {timing ? ` · ${timing.text}` : ""}
-          {specDisplayJoined(item) ? ` · ${specDisplayJoined(item)}` : ""}
+          {workProductKindIs(item, "still_tag") ? (
+            stillTagProgressLabel(item) ? ` · ${stillTagProgressLabel(item)}` : ""
+          ) : (
+            <>
+              {timing ? ` · ${timing.text}` : ""}
+              {specDisplayJoined(item) ? ` · ${specDisplayJoined(item)}` : ""}
+            </>
+          )}
         </span>
         <code className="work-product-index-row__key" title={item.job_key}>
           {workProductIdentityLabel(item)}
         </code>
       </span>
-      {isRunningLiveItem(item) ? null : (
+      {isRunningLiveItem(item) || workProductKindIs(item, "still_tag") ? null : (
         <AppetitePreviewBadge
           relpath={workbenchJobAppetiteRelpath(item)}
           size="sm"
@@ -6002,6 +6010,19 @@ function WorkProductRowInner({
   const [outputTrim, setOutputTrim] = useState<InputTrimState>(() => emptyTrimState(parseFps(item.media_meta?.fps)));
   const [sourceTrim, setSourceTrim] = useState<InputTrimState>(() => emptyTrimState(parseFps(item.media_meta?.fps)));
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+
+  if (workProductKindIs(item, "still_tag")) {
+    return (
+      <article
+        data-job-key={item.job_key || undefined}
+        className={`work-product-row work-product-row--${layout} work-product-row--still-tag work-product-row--status-${statusFilterVisual(
+          item.status || "pending",
+        )}${isLivePreviewItem(item) ? " work-product-row--live" : ""}`}
+      >
+        <StillTagWorkbenchPanel item={item} />
+      </article>
+    );
+  }
 
   return (
     <article
@@ -6219,6 +6240,7 @@ export function WorkProductsApp() {
   const deepLinkScrolled = useRef(false);
   /** Operator clicked a job in a media-focused list — stop snapping to the producer. */
   const mediaPickTouched = useRef(false);
+  const narrowLayout = useNarrowLayout(960);
   const toggleJobList = useCallback(() => setListOpen((open) => !open), []);
   const showJobList = useCallback(() => setListOpen(true), []);
   const hideJobList = useCallback(() => setListOpen(false), []);
@@ -7364,6 +7386,13 @@ export function WorkProductsApp() {
         ) : null}
         {selectedItem ? (
           <div className="work-products-detail">
+            {narrowLayout && !listOpen ? (
+              <div className="work-products-detail__mobile-nav">
+                <button type="button" className="drt-btn" onClick={showJobList}>
+                  ← Jobs
+                </button>
+              </div>
+            ) : null}
             <WorkProductRow
               key={selectedItem.output_relpath || selectedItem.job_key}
               item={selectedItem}

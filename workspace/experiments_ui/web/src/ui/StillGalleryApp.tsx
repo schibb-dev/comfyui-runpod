@@ -17,8 +17,22 @@ import { PageHeader } from "./PageHeader";
 import { queryKeys } from "./queryKeys";
 import { SubmitComposerModal } from "./SubmitComposerModal";
 import { prefetchFamiliesBootstrap } from "./shapeFactorySessionCache";
-import { AppetitePreviewBadge, AppetitePreviewFrame } from "./AppetitePreviewBadge";
+import { AppetitePreviewFrame } from "./AppetitePreviewBadge";
 import { WorkProductAppetiteStrip } from "./WorkProductAppetiteStrip";
+import { StillTagTagsPanel } from "./StillTagResultTags";
+import {
+  StillGalleryDeckView,
+  StillGalleryFocusView,
+  StillGalleryGridView,
+  StillGalleryStripView,
+  StillGalleryViewToggle,
+} from "./StillGalleryViews";
+import {
+  loadStillGalleryViewPreference,
+  persistStillGalleryViewPreference,
+  type StillGalleryViewMode,
+} from "./stillGalleryViews";
+import { useNarrowLayout } from "./useNarrowLayout";
 import type { InputCurationCollection, InputCurationStillItem, StillTagEvent } from "./types";
 
 const PAGE = 96;
@@ -49,6 +63,20 @@ function readStoredSort(): StillSort {
     /* ignore */
   }
   return "newest";
+}
+
+function stillTagStatus(it: Pick<InputCurationStillItem, "tag_status" | "provisional_tags">): "untagged" | "queued" | "done" {
+  const explicit = String(it.tag_status || "").trim().toLowerCase();
+  if (explicit === "done" || explicit === "queued" || explicit === "untagged") {
+    return explicit;
+  }
+  return (it.provisional_tags || []).length ? "done" : "untagged";
+}
+
+function stillTagStatusLabel(status: "untagged" | "queued" | "done"): string {
+  if (status === "done") return "Tagged";
+  if (status === "queued") return "Queued";
+  return "Untagged";
 }
 
 function stillMediaRelpath(it: InputCurationStillItem): string {
@@ -136,6 +164,9 @@ export function StillGalleryApp() {
   const eventAfterId = useRef(0);
   const deepLinkDone = useRef(false);
   const [deepLinkHitPath, setDeepLinkHitPath] = useState<string | null>(null);
+  const narrowLayout = useNarrowLayout(960);
+  const [view, setView] = useState<StillGalleryViewMode>(() => loadStillGalleryViewPreference(narrowLayout));
+  const [deckIndex, setDeckIndex] = useState(0);
 
   useEffect(() => {
     prefetchFamiliesBootstrap();
@@ -256,6 +287,15 @@ export function StillGalleryApp() {
     if (opts?.replaceMulti !== false) setSelectedPaths([path]);
   };
 
+  const focusStill = (it: InputCurationStillItem) => {
+    focusPath(it.path);
+  };
+
+  const setViewMode = (next: StillGalleryViewMode) => {
+    setView(next);
+    persistStillGalleryViewPreference(next);
+  };
+
   const onTileClick = (it: InputCurationStillItem, e: React.MouseEvent) => {
     const path = it.path;
     const meta = e.metaKey || e.ctrlKey;
@@ -332,6 +372,43 @@ export function StillGalleryApp() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [selectedPath, selectedPaths.length, submitModalIntent]);
+
+  useEffect(() => {
+    if (view !== "deck") return;
+    const idx = items.findIndex((it) => it.path === selectedPath);
+    if (idx >= 0) setDeckIndex(idx);
+    else if (items.length && !selectedPath) focusPath(items[0].path);
+  }, [view, selectedPath, items]);
+
+  useEffect(() => {
+    if (view !== "focus" && view !== "strip" && view !== "deck") return;
+    const onKey = (e: KeyboardEvent) => {
+      const vertical = view === "focus";
+      const okKey = vertical
+        ? e.key === "ArrowUp" || e.key === "ArrowDown"
+        : e.key === "ArrowLeft" || e.key === "ArrowRight";
+      if (!okKey) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable=true]")) return;
+      const idx =
+        view === "deck"
+          ? deckIndex
+          : items.findIndex((it) => it.path === selectedPath);
+      if (idx < 0 && items.length) {
+        focusStill(items[0]);
+        return;
+      }
+      e.preventDefault();
+      const back = vertical ? e.key === "ArrowUp" : e.key === "ArrowLeft";
+      const next = back ? Math.max(0, idx - 1) : Math.min(items.length - 1, idx + 1);
+      const it = items[next];
+      if (!it) return;
+      if (view === "deck") setDeckIndex(next);
+      focusStill(it);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [view, items, selectedPath, deckIndex]);
 
   useEffect(() => {
     if (selected) setTagDraft((selected.editorial_tags || selected.tags || []).join(", "));
@@ -559,6 +636,8 @@ export function StillGalleryApp() {
   const sch = backlog?.schedule;
   const queuedTargets = backlog?.queued_targets ?? 0;
   const queuedRuns = backlog?.queued_runs ?? 0;
+  const itemsTagged = backlog?.items_tagged ?? backlog?.items_with_provisional ?? 0;
+  const itemsQueued = backlog?.items_queued ?? backlog?.items_reserved ?? 0;
   const windowLabel = !win
     ? "…"
     : !win.enabled
@@ -615,7 +694,8 @@ export function StillGalleryApp() {
         <div className="still-gallery__index-hour-head">
           <strong>Index hour</strong>
           <span className="factory-muted mono">
-            backlog {queuedTargets} targets · {queuedRuns} runs · {windowLabel}
+            backlog {queuedTargets} targets · {queuedRuns} runs · tagged {itemsTagged} · queued {itemsQueued} ·{" "}
+            {windowLabel}
             {win?.local_now ? ` · local ${win.local_now.slice(11, 16)}` : ""}
           </span>
         </div>
@@ -758,6 +838,7 @@ export function StillGalleryApp() {
           </select>
         </label>
         <span className="factory-muted still-gallery__count">{totalLabel}</span>
+        <StillGalleryViewToggle view={view} onChange={setViewMode} />
         {multiCount > 0 ? (
           <span className="still-gallery__multi-status" aria-live="polite">
             {multiCount} selected
@@ -770,49 +851,44 @@ export function StillGalleryApp() {
         )}
       </div>
 
-      <div className="still-gallery__body">
+      <div className={`still-gallery__body still-gallery__body--${view}`}>
         <div className="still-gallery__main">
           {stillsQuery.isLoading ? <p className="factory-muted">Loading stills…</p> : null}
           {stillsQuery.error instanceof Error ? (
             <p className="factory-error">{stillsQuery.error.message}</p>
           ) : null}
-          <div className="still-gallery__grid" role="listbox" aria-multiselectable="true" aria-label="Stills">
-            {items.map((it) => {
-              const active = selected?.path === it.path;
-              const checked = selectedSet.has(it.path);
-              const deepHit = deepLinkHitPath === it.path;
-              const src = it.thumb_url || it.url;
-              return (
-                <button
-                  key={it.path}
-                  id={stillTileDomId(it)}
-                  type="button"
-                  role="option"
-                  aria-selected={checked || active}
-                  className={
-                    "still-gallery__tile" +
-                    (active ? " still-gallery__tile--active" : "") +
-                    (checked ? " still-gallery__tile--checked" : "") +
-                    (deepHit ? " still-gallery__tile--deep-link" : "")
-                  }
-                  onClick={(e) => onTileClick(it, e)}
-                  title={it.basename || it.path}
-                >
-                  {checked ? <span className="still-gallery__check" aria-hidden="true" /> : null}
-                  <AppetitePreviewBadge relpath={it.relpath || it.path} />
-                  {src ? (
-                    <img className="still-gallery__thumb" src={src} alt="" loading="lazy" />
-                  ) : (
-                    <div className="still-gallery__thumb still-gallery__thumb--empty">No preview</div>
-                  )}
-                  <span className="still-gallery__tile-label">{it.basename || it.relpath}</span>
-                  {(it.tags || []).length ? (
-                    <span className="still-gallery__tile-tags">{(it.tags || []).slice(0, 3).join(" · ")}</span>
-                  ) : null}
-                </button>
-              );
-            })}
-          </div>
+          {view === "grid" && items.length ? (
+            <StillGalleryGridView
+              items={items}
+              focusedPath={selectedPath}
+              selectedPaths={selectedSet}
+              deepLinkHitPath={deepLinkHitPath}
+              onTileClick={onTileClick}
+              stillTileDomId={stillTileDomId}
+              stillMediaRelpath={stillMediaRelpath}
+            />
+          ) : null}
+          {view === "focus" && items.length ? (
+            <StillGalleryFocusView items={items} focusedPath={selectedPath} onFocus={focusStill} />
+          ) : null}
+          {view === "strip" && items.length ? (
+            <StillGalleryStripView items={items} focusedPath={selectedPath} onFocus={focusStill} />
+          ) : null}
+          {view === "deck" && items.length ? (
+            <StillGalleryDeckView
+              items={items}
+              deckIndex={deckIndex}
+              onDeckIndexChange={(idx) => {
+                setDeckIndex(idx);
+                const it = items[idx];
+                if (it) focusStill(it);
+              }}
+              onOpenFocus={focusStill}
+            />
+          ) : null}
+          {!stillsQuery.isLoading && !items.length ? (
+            <p className="factory-muted">No stills match these filters.</p>
+          ) : null}
           <div ref={sentinelRef} className="still-gallery__sentinel" aria-hidden="true" />
           <div className="still-gallery__pager">
             {stillsQuery.isFetchingNextPage ? (
@@ -948,11 +1024,23 @@ export function StillGalleryApp() {
                     Tag now (dry-run)
                   </button>
                 </div>
-                {(selected.provisional_tags || []).length ? (
-                  <p className="factory-muted still-gallery__prov">
-                    Auto: {(selected.provisional_tags || []).slice(0, 8).join(", ")}
-                    {(selected.provisional_tags || []).length > 8 ? "…" : ""}
-                  </p>
+                <p className="factory-muted still-gallery__prov">
+                  Tag status: {stillTagStatusLabel(stillTagStatus(selected))}
+                  {selected.queue_run_id ? ` · batch ${selected.queue_run_id.replace(/^still_tag_/, "").slice(0, 20)}` : ""}
+                </p>
+                {(selected.provisional_tags || selected.effective_tags || selected.editorial_tags || []).length ? (
+                  <div className="still-gallery__auto-tags">
+                    <StillTagTagsPanel
+                      item={{
+                        content_id: String(selected.content_id || ""),
+                        status: stillTagStatus(selected) === "done" ? "done" : "pending",
+                        provisional_tags: selected.provisional_tags || [],
+                        editorial_tags: selected.editorial_tags || selected.tags || [],
+                        effective_tags: selected.effective_tags || [],
+                        relpath: stillMediaRelpath(selected),
+                      }}
+                    />
+                  </div>
                 ) : null}
                 <label className="still-gallery__field">
                   <span>Tags (comma-separated)</span>

@@ -729,6 +729,23 @@ export async function fetchShapeFactoryStillTagRun(runId: string): Promise<{ ok:
   return j;
 }
 
+export async function fetchShapeFactoryStillTagResults(runId: string): Promise<import("./stillTagResults").StillTagResultsResponse> {
+  const r = await fetch(
+    `/api/shape-factory/input-curation/stills/tag/runs/${encodeURIComponent(runId)}/results`,
+  );
+  const j = (await r.json().catch(() => ({}))) as import("./stillTagResults").StillTagResultsResponse & {
+    error?: string;
+    detail?: string;
+  };
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET stills/tag/results failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
 export async function fetchShapeFactoryStillTagEvents(
   runId: string,
   opts?: { after_id?: number; limit?: number },

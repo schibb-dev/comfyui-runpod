@@ -37,6 +37,7 @@ export const queryKeys = {
       ["shapeFactory", "inputCuration", "appetiteSeeds", familySlug] as const,
     stillTagBacklog: ["shapeFactory", "inputCuration", "stillTagBacklog"] as const,
     stillTagSchedule: ["shapeFactory", "inputCuration", "stillTagSchedule"] as const,
+    stillTagResults: (runId: string) => ["shapeFactory", "inputCuration", "stillTagResults", runId] as const,
     workProductsRoot: ["shapeFactory", "workProducts"] as const,
     workProducts: (opts: { limit: number; hourlyOnly: boolean; family?: string | null }) =>
       ["shapeFactory", "workProducts", opts] as const,

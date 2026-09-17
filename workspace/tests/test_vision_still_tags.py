@@ -116,5 +116,65 @@ class VisionStillTagsTests(unittest.TestCase):
             self.assertIn("1girl", items2[0]["effective_tags"])
 
 
+    def test_enqueue_reserves_stills_for_second_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            data = root / "data"
+            status = root / "status"
+            status.mkdir()
+            (data / "shape_factory").mkdir(parents=True)
+
+            inp = root / "input"
+            inp.mkdir()
+            cids = [f"{i:064x}" for i in range(3)]
+            stills = []
+            for cid in cids:
+                p = inp / f"SSS{cid}.jpeg"
+                p.write_bytes(b"fakejpeg")
+                stills.append(p)
+
+            import sqlite3
+            import os
+
+            cat = data / "shape_factory" / "input_still_catalog.sqlite"
+            con = sqlite3.connect(str(cat))
+            con.execute(
+                "CREATE TABLE stills (path TEXT PRIMARY KEY, size INT, mtime REAL, first_seen REAL, last_seen REAL)"
+            )
+            for p in stills:
+                con.execute(
+                    "INSERT INTO stills VALUES (?,?,?,?,?)",
+                    (str(p), p.stat().st_size, float(stills.index(p)), float(stills.index(p)), float(stills.index(p))),
+                )
+            con.commit()
+            con.close()
+
+            os.environ["COMFYUI_BIND_INPUT_DIR"] = str(inp)
+            os.environ["SHAPE_FACTORY_DATA_ROOT"] = str(data)
+
+            first = enqueue_run(data_root=data, only_missing=True, limit=2, dry_run=True, status_dir=status)
+            second = enqueue_run(data_root=data, only_missing=True, limit=2, dry_run=True, status_dir=status)
+            self.assertEqual(first["enqueued"], 2)
+            self.assertEqual(second["enqueued"], 1)
+
+            db = default_db_path(data_root=data)
+            con2 = connect(db)
+            try:
+                run_a = get_run(con2, first["run_id"])
+                run_b = get_run(con2, second["run_id"])
+                assert run_a and run_b
+                scope_a = set(run_a["scope"]["content_ids"])
+                scope_b = set(run_b["scope"]["content_ids"])
+                self.assertEqual(len(scope_a), 2)
+                self.assertEqual(len(scope_b), 1)
+                self.assertFalse(scope_a & scope_b)
+                rows = con2.execute(
+                    "SELECT content_id, queue_run_id FROM still_tag_items WHERE queue_run_id IS NOT NULL"
+                ).fetchall()
+                self.assertEqual(len(rows), 3)
+            finally:
+                con2.close()
+
+
 if __name__ == "__main__":
     unittest.main()
