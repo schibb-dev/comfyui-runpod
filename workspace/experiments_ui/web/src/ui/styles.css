@@ -14740,15 +14740,107 @@ button.home-backlog-linkish {
 }
 
 .work-products-detail {
+  display: flex;
+  flex-direction: column;
   min-height: 0;
   min-width: 0;
-  overflow: auto;
+  overflow: hidden;
+}
+
+.work-products-detail > .work-product-row {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.work-products-detail .work-product-row__head {
+  flex: 0 0 auto;
+}
+
+.work-products-detail .work-product-row__body {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.work-products-detail .work-product-row--split .work-product-row__body {
+  grid-template-columns: minmax(0, 1.15fr) minmax(280px, 1fr);
+}
+
+.work-products-detail .work-product-row--stacked .work-product-row__body {
+  grid-template-rows: minmax(0, 1.25fr) minmax(0, 1fr);
+}
+
+.work-products-detail .work-product-viewer {
+  min-height: 0;
+  height: 100%;
+  max-width: none;
+  overflow: hidden;
+}
+
+.work-products-detail .work-product-row--split .work-product-viewer {
+  max-width: none;
+}
+
+.work-products-detail .work-product-details {
+  min-height: 0;
+  max-height: none;
+  height: 100%;
+}
+
+.work-products-detail .work-product-viewer__main {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-width: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.work-products-detail .work-product-viewer__main > .appetite-preview-host,
+.work-products-detail .work-product-viewer__live-plus-source,
+.work-products-detail .work-product-viewer__queued-source,
+.work-products-detail .work-product-viewer__still-tag {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-width: none;
+}
+
+.work-products-detail .appetite-preview-host {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.work-products-detail .work-product-live {
+  height: 100%;
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.work-products-detail .work-product-live__frame {
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.work-products-detail .work-product-viewer__video,
+.work-products-detail .work-product-viewer__img,
+.work-products-detail .work-product-live__img,
+.work-products-detail .work-product-live__canvas {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  object-fit: contain;
 }
 
 @media (max-width: 960px) {
-  .work-products-shell {
+  .work-products-shell,
+  .work-products-shell:not(.work-products-shell--list-collapsed) {
     grid-template-columns: 1fr;
-    grid-template-rows: minmax(0, min(38vh, 320px)) minmax(0, 1fr);
+    grid-template-rows: minmax(140px, 38vh) minmax(0, 1fr);
     overflow: hidden;
   }
 
@@ -14763,15 +14855,11 @@ button.home-backlog-linkish {
   }
 
   .work-products-detail {
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    overflow: auto;
+    overflow: hidden;
   }
 
-  .work-products-detail > .work-product-row {
-    flex: 1 1 auto;
-    min-height: 0;
+  .work-products-detail .work-product-row--split .work-product-row__body {
+    grid-template-rows: minmax(0, 1.25fr) minmax(0, 1fr);
   }
 
   .work-products-detail__mobile-nav {
@@ -15450,8 +15538,7 @@ button.home-backlog-linkish {
 }
 
 .work-product-row--split .work-product-row__body {
-  /* Portrait outputs: keep the viewer narrow; give details most of the row. */
-  grid-template-columns: clamp(160px, 22vw, 280px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1.15fr) minmax(280px, 1fr);
 }
 
 .work-product-row--stacked .work-product-row__body {
@@ -15461,6 +15548,11 @@ button.home-backlog-linkish {
 @media (max-width: 900px) {
   .work-product-row--split .work-product-row__body {
     grid-template-columns: 1fr;
+  }
+
+  .work-products-detail .work-product-row--split .work-product-row__body {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1.25fr) minmax(0, 1fr);
   }
 }
 
@@ -15475,7 +15567,7 @@ button.home-backlog-linkish {
 
 .work-product-row--split .work-product-viewer {
   justify-self: stretch;
-  max-width: 280px;
+  max-width: none;
 }
 
 .work-product-row--stacked .work-product-viewer {
@@ -15485,7 +15577,7 @@ button.home-backlog-linkish {
 }
 
 .work-product-row--stacked .work-product-viewer__main {
-  max-width: 320px;
+  max-width: none;
 }
 
 .appetite-preview-host {
@@ -16254,7 +16346,7 @@ button.home-backlog-linkish {
   max-width: min(720px, 100%);
 }
 
-/* Side-by-side: give the Use stage real width (Workbench list cards stay narrow). */
+/* Side-by-side: give the Use stage real width. */
 .submit-composer__stage.work-product-row--split .work-product-row__body {
   grid-template-columns: minmax(320px, 1.15fr) minmax(280px, 0.85fr);
 }
@@ -17351,7 +17443,7 @@ button.home-backlog-linkish {
 }
 
 .work-product-row--split .work-product-details {
-  max-height: min(70vh, 720px);
+  max-height: none;
 }
 
 .work-product-details__chips {
