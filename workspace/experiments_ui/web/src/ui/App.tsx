@@ -22,7 +22,6 @@ import { ExperimentDetailPanel } from "./ExperimentDetailPanel";
 import type { WipFormParams } from "./WipTuneLauncher";
 import type { CreateSource, WipPlannedExperiment } from "./types";
 import { createExperimentFromWip, fetchWip } from "./api";
-import { DeviceProvider } from "./viewport";
 
 type ExpandedMedia =
   | { kind: "video"; title: string; url: string }
@@ -3638,7 +3637,6 @@ export function App() {
   }
 
   return (
-    <DeviceProvider>
     <div
       className={`app ${focusPreview ? "focus-preview" : ""}`}
       style={
@@ -5026,7 +5024,6 @@ export function App() {
         </div>
       ) : null}
     </div>
-    </DeviceProvider>
   );
 }
 

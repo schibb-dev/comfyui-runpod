@@ -43,7 +43,7 @@ import {
   TRIM_HANDLE_MIN_GAP_SEC,
   trimStopAtEndSeekedClamp,
 } from "./phoneTrimModel";
-import { DeviceProvider, useDeviceContext } from "./viewport";
+import { useDeviceContext } from "./viewport";
 import {
   DiscoveryComfyQuickEditsSection,
   findNoiseSeedQuickEdit,
@@ -3148,11 +3148,7 @@ function DiscoveryDesktopPreview({
 }
 
 export function DiscoveryLibraryApp() {
-  return (
-    <DeviceProvider>
-      <DiscoveryLibraryInner />
-    </DeviceProvider>
-  );
+  return <DiscoveryLibraryInner />;
 }
 
 function DiscoveryLibraryInner() {

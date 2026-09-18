@@ -37,8 +37,13 @@ function getViewportState(): ViewportState {
   if (typeof window === "undefined") {
     return { device: "desktop", width: 1024, height: 768 };
   }
+  // Breakpoints follow the layout viewport (CSS media queries). Do not use
+  // visualViewport.width — pinch-zoom would flip desktop ↔ phone.
   const w = window.innerWidth;
-  const h = window.innerHeight;
+  // Height tracks the visible webview. Safari, Aloha, and other iOS WebKit
+  // browsers show/hide their own chrome; visualViewport follows that, while
+  // innerHeight can stay at the overlay layout size.
+  const h = Math.round(window.visualViewport?.height ?? window.innerHeight);
   return {
     device: getDeviceType(w),
     width: w,
@@ -56,7 +61,14 @@ export function useDevice(): ViewportState {
   useEffect(() => {
     const onResize = () => setState(getViewportState());
     window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    const vv = window.visualViewport;
+    vv?.addEventListener("resize", onResize);
+    vv?.addEventListener("scroll", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      vv?.removeEventListener("resize", onResize);
+      vv?.removeEventListener("scroll", onResize);
+    };
   }, []);
 
   return state;

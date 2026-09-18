@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AppShell } from "./ui/AppShell";
 import { canHandleClientPath, resolveRouteId, type AppRouteId } from "./ui/routes";
+import { DeviceProvider } from "./ui/viewport";
 import "./ui/styles.css";
 
 /** Lazy screens so a broken module (bad HMR transform) cannot blank every route. */
@@ -124,18 +125,20 @@ function RouterRoot() {
   const active = resolveRouteId(pathname);
   const RootView = pathname.startsWith("/vision/tag-judge") ? VisionTagJudgeApp : SCREENS[active];
   return (
-    <AppShell active={active}>
-      <ScreenErrorBoundary>
-        <Suspense
-          fallback={
-            <div className="panel" style={{ margin: 16, padding: 16, color: "var(--muted, #aab2c5)" }}>
-              Loading…
-            </div>
-          }
-        >
-          <RootView key={href} />
-        </Suspense>
-      </ScreenErrorBoundary>
-    </AppShell>
+    <DeviceProvider>
+      <AppShell active={active}>
+        <ScreenErrorBoundary>
+          <Suspense
+            fallback={
+              <div className="panel" style={{ margin: 16, padding: 16, color: "var(--muted, #aab2c5)" }}>
+                Loading…
+              </div>
+            }
+          >
+            <RootView key={href} />
+          </Suspense>
+        </ScreenErrorBoundary>
+      </AppShell>
+    </DeviceProvider>
   );
 }
