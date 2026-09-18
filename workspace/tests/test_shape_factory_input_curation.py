@@ -181,6 +181,100 @@ class TestShapeFactoryInputCuration(unittest.TestCase):
         self.assertEqual(items[0]["appetite"], "fast_track")
         self.assertEqual(items[0]["content_id"], "c" * 64)
 
+    def test_tag_filter_and_toggle_semantics(self) -> None:
+        self.assertEqual(curation.parse_still_tag_filter("1girl, Sitting; 1girl"), ["1girl", "sitting"])
+        self.assertTrue(curation.tags_match_filter(["1girl", "sitting", "solo"], ["1girl", "sitting"]))
+        self.assertFalse(curation.tags_match_filter(["1girl", "solo"], ["1girl", "sitting"]))
+
+    def test_list_catalog_stills_skips_identity_and_tags_on_hashed_names(self) -> None:
+        import os
+        from unittest.mock import patch
+
+        from input_still_catalog import scan_input_stills
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            data_root = root / ".data"
+            (data_root / "shape_factory").mkdir(parents=True, exist_ok=True)
+            input_root = root / "input"
+            input_root.mkdir()
+            h = "e" * 64
+            still = input_root / f"SSS{h}.jpeg"
+            still.write_bytes(b"canon")
+            cat = data_root / "shape_factory" / "input_still_catalog.sqlite"
+            prev = os.environ.get("COMFYUI_BIND_INPUT_DIR")
+            prev_cat = os.environ.get("HOURLY_INPUT_STILL_CATALOG_PATH")
+            try:
+                os.environ["COMFYUI_BIND_INPUT_DIR"] = str(input_root)
+                os.environ["HOURLY_INPUT_STILL_CATALOG_PATH"] = str(cat)
+                scan_input_stills(input_root=input_root, catalog_path=cat)
+                with patch.object(
+                    curation, "load_still_tags", side_effect=AssertionError("tags json")
+                ) as tags_mock, patch(
+                    "still_identity.load_identity", side_effect=AssertionError("identity")
+                ) as ident_mock:
+                    payload = curation.list_catalog_stills(data_root=data_root, limit=12, offset=0)
+            finally:
+                if prev is None:
+                    os.environ.pop("COMFYUI_BIND_INPUT_DIR", None)
+                else:
+                    os.environ["COMFYUI_BIND_INPUT_DIR"] = prev
+                if prev_cat is None:
+                    os.environ.pop("HOURLY_INPUT_STILL_CATALOG_PATH", None)
+                else:
+                    os.environ["HOURLY_INPUT_STILL_CATALOG_PATH"] = prev_cat
+
+        items = payload.get("items") or []
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].get("content_id"), h)
+        tags_mock.assert_not_called()
+        ident_mock.assert_not_called()
+
+    def test_list_catalog_stills_loads_tags_json_when_filtering(self) -> None:
+        import os
+        from unittest.mock import patch
+
+        from input_still_catalog import scan_input_stills
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            data_root = root / ".data"
+            (data_root / "shape_factory").mkdir(parents=True, exist_ok=True)
+            input_root = root / "input"
+            input_root.mkdir()
+            h = "f" * 64
+            still = input_root / f"SSS{h}.jpeg"
+            still.write_bytes(b"canon")
+            cat = data_root / "shape_factory" / "input_still_catalog.sqlite"
+            prev = os.environ.get("COMFYUI_BIND_INPUT_DIR")
+            prev_cat = os.environ.get("HOURLY_INPUT_STILL_CATALOG_PATH")
+            try:
+                os.environ["COMFYUI_BIND_INPUT_DIR"] = str(input_root)
+                os.environ["HOURLY_INPUT_STILL_CATALOG_PATH"] = str(cat)
+                scan_input_stills(input_root=input_root, catalog_path=cat)
+                with patch.object(
+                    curation,
+                    "load_still_tags",
+                    return_value={"items": {h: {"tags": ["portrait"]}}},
+                ) as tags_mock:
+                    payload = curation.list_catalog_stills(
+                        data_root=data_root, limit=12, offset=0, tag="portrait"
+                    )
+            finally:
+                if prev is None:
+                    os.environ.pop("COMFYUI_BIND_INPUT_DIR", None)
+                else:
+                    os.environ["COMFYUI_BIND_INPUT_DIR"] = prev
+                if prev_cat is None:
+                    os.environ.pop("HOURLY_INPUT_STILL_CATALOG_PATH", None)
+                else:
+                    os.environ["HOURLY_INPUT_STILL_CATALOG_PATH"] = prev_cat
+
+        tags_mock.assert_called()
+        items = payload.get("items") or []
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].get("content_id"), h)
+
 
 if __name__ == "__main__":
     unittest.main()

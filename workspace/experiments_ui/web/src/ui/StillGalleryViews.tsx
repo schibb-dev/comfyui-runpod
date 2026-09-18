@@ -1,10 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useRef } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppetitePreviewBadge, AppetitePreviewFrame } from "./AppetitePreviewBadge";
 import { StillTagTagsPanel } from "./StillTagResultTags";
 import { scrollFocusItemIntoView, useScrollCenterFocus } from "./stillTagScrollFocus";
 import type { InputCurationStillItem } from "./types";
-import type { StillGalleryViewMode } from "./stillGalleryViews";
-import { stillGalleryItemPath, stillGalleryItemUrl } from "./stillGalleryViews";
+import type { StillGalleryViewMode, StillMediaLoadMode } from "./stillGalleryViews";
+import { GRID_EAGER_THUMBS, stillFocusMediaLoadMode, stillGalleryItemPath, stillGalleryItemUrl } from "./stillGalleryViews";
+import { StillSwapImg } from "./StillSwapImg";
 
 type TagState = "untagged" | "queued" | "done";
 
@@ -107,49 +108,197 @@ function StillGalleryFilmstrip({
   );
 }
 
-function StillGalleryCompactCard({ it }: { it: InputCurationStillItem }) {
+function StillGalleryCompactCard({
+  it,
+  onToggleTag,
+  activeTags,
+  mediaOnly = false,
+  mediaLoad = "eager",
+}: {
+  it: InputCurationStillItem;
+  onToggleTag?: (tag: string) => void;
+  activeTags?: Iterable<string>;
+  mediaOnly?: boolean;
+  mediaLoad?: StillMediaLoadMode;
+}) {
   const url = stillGalleryItemUrl(it);
   const rel = String(it.relpath || it.path || "").trim();
   const status = tagStateOf(it);
   const hasTags =
     (it.provisional_tags || it.effective_tags || it.editorial_tags || it.tags || []).length > 0;
 
+  const media =
+    url && mediaLoad !== "off" ? (
+      mediaLoad === "eager" ? (
+        <StillSwapImg className="still-gallery__compact-img" src={url} alt="" fetchPriority="high" />
+      ) : (
+        <img className="still-gallery__compact-img" src={url} alt="" loading="lazy" decoding="async" />
+      )
+    ) : (
+      <div className="still-gallery__compact-empty">{url ? "" : "No preview"}</div>
+    );
+
   return (
-    <div className="still-gallery__compact-card">
+    <div className={"still-gallery__compact-card" + (mediaOnly ? " still-gallery__compact-card--media" : "")}>
       <div className="still-gallery__compact-media">
-        {url ? (
-          <AppetitePreviewFrame relpath={rel}>
-            <img className="still-gallery__compact-img" src={url} alt="" />
-          </AppetitePreviewFrame>
+        {mediaOnly || !url || mediaLoad === "off" ? (
+          media
         ) : (
-          <div className="still-gallery__compact-empty">No preview</div>
+          <AppetitePreviewFrame relpath={rel}>{media}</AppetitePreviewFrame>
         )}
         <span className={`still-gallery__tag-state still-gallery__tag-state--${status === "done" ? "done" : status === "queued" ? "queued" : ""}`}>
           {tagStateLabel(status)}
         </span>
       </div>
-      <div className="still-gallery__compact-body">
-        <strong className="still-gallery__compact-name">{it.basename || rel}</strong>
-        {it.content_id ? (
-          <code className="still-gallery__compact-cid" title={it.content_id}>
-            {it.content_id.slice(0, 16)}…
-          </code>
-        ) : null}
-        {hasTags ? (
-          <StillTagTagsPanel
-            item={{
-              content_id: String(it.content_id || ""),
-              status: status === "done" ? "done" : "pending",
-              provisional_tags: it.provisional_tags || [],
-              editorial_tags: it.editorial_tags || it.tags || [],
-              effective_tags: it.effective_tags || [],
-              relpath: rel,
-            }}
-            layout="effective_only"
-          />
-        ) : (
-          <p className="factory-muted">No tags yet</p>
-        )}
+      {mediaOnly ? null : (
+        <div className="still-gallery__compact-body">
+          <strong className="still-gallery__compact-name">{it.basename || rel}</strong>
+          {it.content_id ? (
+            <code className="still-gallery__compact-cid" title={it.content_id}>
+              {it.content_id.slice(0, 16)}…
+            </code>
+          ) : null}
+          {hasTags ? (
+            <StillTagTagsPanel
+              item={{
+                content_id: String(it.content_id || ""),
+                status: status === "done" ? "done" : "pending",
+                provisional_tags: it.provisional_tags || [],
+                editorial_tags: it.editorial_tags || it.tags || [],
+                effective_tags: it.effective_tags || it.tags || [],
+                relpath: rel,
+              }}
+              layout="effective_only"
+              onTagClick={onToggleTag}
+              activeTags={activeTags}
+            />
+          ) : (
+            <p className="factory-muted">No tags yet</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const SWIPE_AXIS_LOCK_PX = 12;
+const SWIPE_COMMIT_PX = 56;
+
+/** Phone: swipe right → Submit, swipe left → tags/tasks. Vertical pan still browses. */
+function StillSwipeActionsLayer({
+  enabled,
+  onSwipeRight,
+  onSwipeLeft,
+  children,
+}: {
+  enabled: boolean;
+  onSwipeRight?: () => void;
+  onSwipeLeft?: () => void;
+  children: React.ReactNode;
+}) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const startRef = useRef<{ x: number; y: number; id: number } | null>(null);
+  const axisRef = useRef<null | "x" | "y">(null);
+  const [tx, setTx] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const rightRef = useRef(onSwipeRight);
+  const leftRef = useRef(onSwipeLeft);
+  rightRef.current = onSwipeRight;
+  leftRef.current = onSwipeLeft;
+
+  useEffect(() => {
+    if (!enabled) return;
+    const el = rootRef.current;
+    if (!el) return;
+
+    const reset = () => {
+      startRef.current = null;
+      axisRef.current = null;
+      setTx(0);
+      setDragging(false);
+    };
+
+    const onDown = (e: PointerEvent) => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      const target = e.target;
+      if (target instanceof Element && target.closest("button, a, input, textarea, select")) return;
+      startRef.current = { x: e.clientX, y: e.clientY, id: e.pointerId };
+      axisRef.current = null;
+    };
+
+    const onMove = (e: PointerEvent) => {
+      const start = startRef.current;
+      if (!start || e.pointerId !== start.id) return;
+      const dx = e.clientX - start.x;
+      const dy = e.clientY - start.y;
+      if (!axisRef.current) {
+        if (Math.abs(dx) < SWIPE_AXIS_LOCK_PX && Math.abs(dy) < SWIPE_AXIS_LOCK_PX) return;
+        axisRef.current = Math.abs(dx) > Math.abs(dy) * 1.15 ? "x" : "y";
+        if (axisRef.current === "x") {
+          try {
+            el.setPointerCapture(e.pointerId);
+          } catch {
+            /* ignore */
+          }
+          setDragging(true);
+        }
+      }
+      if (axisRef.current !== "x") return;
+      e.preventDefault();
+      const min = leftRef.current ? -128 : 0;
+      const max = rightRef.current ? 128 : 0;
+      setTx(Math.min(max, Math.max(min, dx)));
+    };
+
+    const onUp = (e: PointerEvent) => {
+      const start = startRef.current;
+      if (!start || e.pointerId !== start.id) return;
+      const dx = e.clientX - start.x;
+      const dy = e.clientY - start.y;
+      const horizontal = axisRef.current === "x" && Math.abs(dx) > Math.abs(dy);
+      reset();
+      if (!horizontal) return;
+      if (dx >= SWIPE_COMMIT_PX) rightRef.current?.();
+      else if (dx <= -SWIPE_COMMIT_PX) leftRef.current?.();
+    };
+
+    el.addEventListener("pointerdown", onDown);
+    el.addEventListener("pointermove", onMove, { passive: false });
+    el.addEventListener("pointerup", onUp);
+    el.addEventListener("pointercancel", reset);
+    return () => {
+      el.removeEventListener("pointerdown", onDown);
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerup", onUp);
+      el.removeEventListener("pointercancel", reset);
+    };
+  }, [enabled]);
+
+  return (
+    <div className="still-gallery__swipe-submit" ref={rootRef}>
+      {enabled && onSwipeRight ? (
+        <div
+          className="still-gallery__swipe-submit-action still-gallery__swipe-submit-action--right"
+          style={{ opacity: tx > 0 ? Math.min(1, tx / SWIPE_COMMIT_PX) : 0 }}
+          aria-hidden="true"
+        >
+          Submit
+        </div>
+      ) : null}
+      {enabled && onSwipeLeft ? (
+        <div
+          className="still-gallery__swipe-submit-action still-gallery__swipe-submit-action--left"
+          style={{ opacity: tx < 0 ? Math.min(1, -tx / SWIPE_COMMIT_PX) : 0 }}
+          aria-hidden="true"
+        >
+          Tags
+        </div>
+      ) : null}
+      <div
+        className={"still-gallery__swipe-submit-card" + (dragging ? " is-dragging" : "")}
+        style={tx ? { transform: `translateX(${tx}px)` } : undefined}
+      >
+        {children}
       </div>
     </div>
   );
@@ -159,10 +308,18 @@ export function StillGalleryFocusView({
   items,
   focusedPath,
   onFocus,
+  onToggleTag,
+  activeTags,
+  onSwipeSubmit,
+  onSwipeDetails,
 }: {
   items: InputCurationStillItem[];
   focusedPath: string | null;
   onFocus: (it: InputCurationStillItem) => void;
+  onToggleTag?: (tag: string) => void;
+  activeTags?: Iterable<string>;
+  onSwipeSubmit?: (it: InputCurationStillItem) => void;
+  onSwipeDetails?: (it: InputCurationStillItem) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const sectionRefs = useRef<Map<string, HTMLElement>>(new Map());
@@ -212,13 +369,16 @@ export function StillGalleryFocusView({
       <div className="still-tag-focus__rail">
         <StillGalleryFilmstrip items={items} focusedPath={focusedPath} onSelect={jumpTo} scrollFocus={false} />
         <p className="still-tag-focus__hint factory-muted">
-          Scroll to focus · {focusIndex >= 0 ? `${focusIndex + 1} / ${items.length}` : items.length} stills
+          {onSwipeSubmit || onSwipeDetails
+            ? `← Tags · Submit → · ${focusIndex >= 0 ? `${focusIndex + 1} / ${items.length}` : items.length} stills`
+            : `Scroll to focus · ${focusIndex >= 0 ? `${focusIndex + 1} / ${items.length}` : items.length} stills`}
         </p>
       </div>
       <div className="still-tag-focus__scroll still-gallery__focus-scroll" ref={scrollRef} aria-label="Scroll stills">
-        {items.map((it) => {
+        {items.map((it, i) => {
           const path = stillGalleryItemPath(it);
           const focused = path === focusedPath;
+          const mediaLoad = stillFocusMediaLoadMode(i, focusIndex);
           return (
             <section
               key={path}
@@ -229,7 +389,19 @@ export function StillGalleryFocusView({
               className={`still-tag-focus__section still-gallery__focus-section${focused ? " is-focused" : ""}`}
               aria-current={focused ? "true" : undefined}
             >
-              <StillGalleryCompactCard it={it} />
+              <StillSwipeActionsLayer
+                enabled={Boolean((onSwipeSubmit || onSwipeDetails) && focused)}
+                onSwipeRight={onSwipeSubmit ? () => onSwipeSubmit(it) : undefined}
+                onSwipeLeft={onSwipeDetails ? () => onSwipeDetails(it) : undefined}
+              >
+                <StillGalleryCompactCard
+                  it={it}
+                  mediaOnly={Boolean(onSwipeSubmit || onSwipeDetails)}
+                  mediaLoad={mediaLoad}
+                  onToggleTag={onToggleTag}
+                  activeTags={activeTags}
+                />
+              </StillSwipeActionsLayer>
             </section>
           );
         })}
@@ -242,17 +414,25 @@ export function StillGalleryStripView({
   items,
   focusedPath,
   onFocus,
+  onToggleTag,
+  activeTags,
 }: {
   items: InputCurationStillItem[];
   focusedPath: string | null;
   onFocus: (it: InputCurationStillItem) => void;
+  onToggleTag?: (tag: string) => void;
+  activeTags?: Iterable<string>;
 }) {
   const focused = items.find((it) => stillGalleryItemPath(it) === focusedPath) || items[0] || null;
   return (
     <div className="still-tag-results__stack still-gallery__strip">
       <StillGalleryFilmstrip items={items} focusedPath={focusedPath} onSelect={onFocus} />
       <div className="still-tag-results__stack-detail still-gallery__strip-detail">
-        {focused ? <StillGalleryCompactCard it={focused} /> : <p className="factory-muted">Select a still from the strip.</p>}
+        {focused ? (
+          <StillGalleryCompactCard it={focused} onToggleTag={onToggleTag} activeTags={activeTags} />
+        ) : (
+          <p className="factory-muted">Select a still from the strip.</p>
+        )}
       </div>
     </div>
   );
@@ -266,6 +446,8 @@ export function StillGalleryGridView({
   onTileClick,
   stillTileDomId,
   stillMediaRelpath,
+  onToggleTag,
+  activeTags,
 }: {
   items: InputCurationStillItem[];
   focusedPath: string | null;
@@ -274,22 +456,29 @@ export function StillGalleryGridView({
   onTileClick: (it: InputCurationStillItem, e: React.MouseEvent) => void;
   stillTileDomId: (it: InputCurationStillItem) => string;
   stillMediaRelpath: (it: InputCurationStillItem) => string;
+  onToggleTag?: (tag: string) => void;
+  activeTags?: Iterable<string>;
 }) {
+  const activeSet = new Set(
+    [...(activeTags || [])].map((t) => String(t || "").trim().toLowerCase()).filter(Boolean),
+  );
   return (
     <div className="still-gallery__grid" role="listbox" aria-multiselectable="true" aria-label="Stills">
-      {items.map((it) => {
+      {items.map((it, i) => {
         const path = stillGalleryItemPath(it);
         const active = focusedPath === path;
         const checked = selectedPaths.has(path);
         const deepHit = deepLinkHitPath === path;
         const src = stillGalleryItemUrl(it);
         const tagState = tagStateOf(it);
+        const tileTags = (it.effective_tags || it.tags || []).slice(0, 4);
+        const eager = i < GRID_EAGER_THUMBS;
         return (
-          <button
+          <div
             key={path}
             id={stillTileDomId(it)}
-            type="button"
             role="option"
+            tabIndex={0}
             aria-selected={checked || active}
             className={
               "still-gallery__tile" +
@@ -298,6 +487,11 @@ export function StillGalleryGridView({
               (deepHit ? " still-gallery__tile--deep-link" : "")
             }
             onClick={(e) => onTileClick(it, e)}
+            onKeyDown={(e) => {
+              if (e.key !== "Enter" && e.key !== " ") return;
+              e.preventDefault();
+              onTileClick(it, e as unknown as React.MouseEvent);
+            }}
             title={it.basename || it.path}
           >
             {checked ? <span className="still-gallery__check" aria-hidden="true" /> : null}
@@ -314,15 +508,41 @@ export function StillGalleryGridView({
             ) : null}
             <AppetitePreviewBadge relpath={stillMediaRelpath(it)} />
             {src ? (
-              <img className="still-gallery__thumb" src={src} alt="" loading="lazy" />
+              <img
+                className="still-gallery__thumb"
+                src={src}
+                alt=""
+                loading={eager ? "eager" : "lazy"}
+                fetchPriority={eager ? "high" : "low"}
+                decoding="async"
+              />
             ) : (
               <div className="still-gallery__thumb still-gallery__thumb--empty">No preview</div>
             )}
             <span className="still-gallery__tile-label">{it.basename || it.relpath}</span>
-            {(it.tags || []).length ? (
-              <span className="still-gallery__tile-tags">{(it.tags || []).slice(0, 3).join(" · ")}</span>
+            {tileTags.length ? (
+              <div className="still-gallery__tile-tags">
+                {tileTags.map((tag) => {
+                  const on = activeSet.has(String(tag).trim().toLowerCase());
+                  return (
+                    <button
+                      key={tag}
+                      type="button"
+                      className={"still-gallery__tile-tag" + (on ? " is-on" : "")}
+                      aria-pressed={on}
+                      title={on ? `Remove ${tag} from filter` : `Add ${tag} to filter`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onToggleTag?.(tag);
+                      }}
+                    >
+                      {tag}
+                    </button>
+                  );
+                })}
+              </div>
             ) : null}
-          </button>
+          </div>
         );
       })}
     </div>
@@ -334,11 +554,15 @@ export function StillGalleryDeckView({
   deckIndex,
   onDeckIndexChange,
   onOpenFocus,
+  onToggleTag,
+  activeTags,
 }: {
   items: InputCurationStillItem[];
   deckIndex: number;
   onDeckIndexChange: (index: number) => void;
   onOpenFocus: (it: InputCurationStillItem) => void;
+  onToggleTag?: (tag: string) => void;
+  activeTags?: Iterable<string>;
 }) {
   const deckItem = items[deckIndex] || null;
   if (!deckItem) return null;
@@ -359,7 +583,7 @@ export function StillGalleryDeckView({
           Next →
         </button>
       </div>
-      <StillGalleryCompactCard it={deckItem} />
+      <StillGalleryCompactCard it={deckItem} onToggleTag={onToggleTag} activeTags={activeTags} />
       <button type="button" className="drt-btn" onClick={() => onOpenFocus(deckItem)}>
         Use in launch pad →
       </button>

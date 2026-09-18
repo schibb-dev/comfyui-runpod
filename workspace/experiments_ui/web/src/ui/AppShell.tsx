@@ -1,13 +1,13 @@
-import React, { useEffect, useId, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   APP_ROUTES,
-  phoneMoreRoutes,
-  phoneTabRoutes,
   resolveRouteId,
+  routeLabel,
   routesForGroup,
   type AppRoute,
   type AppRouteId,
 } from "./routes";
+import { usePhoneOverflowItems } from "./phoneChrome";
 import { useDeviceContext } from "./viewport";
 
 function NavLink({
@@ -58,84 +58,107 @@ function NavLink({
   );
 }
 
-function PhoneTabBar({ active }: { active: AppRouteId }) {
-  const [moreOpen, setMoreOpen] = useState(false);
-  const titleId = useId();
-  const moreRoutes = phoneMoreRoutes();
-  const moreActive = moreRoutes.some((r) => r.id === active);
+function PhoneMenu({ active }: { active: AppRouteId }) {
+  const [open, setOpen] = useState(false);
+  const overflow = usePhoneOverflowItems();
 
   useEffect(() => {
-    setMoreOpen(false);
+    setOpen(false);
   }, [active]);
 
   useEffect(() => {
-    if (!moreOpen) return;
+    if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setMoreOpen(false);
+      if (e.key === "Escape") setOpen(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [moreOpen]);
+  }, [open]);
 
   return (
     <>
-      {moreOpen ? (
-        <div className="app-more">
-          <button
-            type="button"
-            className="app-more__backdrop"
-            aria-label="Close more destinations"
-            onClick={() => setMoreOpen(false)}
-          />
-          <div className="app-more__sheet" role="dialog" aria-modal="true" aria-labelledby={titleId}>
-            <div className="app-more__head">
-              <h2 id={titleId} className="app-more__title">
-                More
-              </h2>
-              <button type="button" className="app-more__close" onClick={() => setMoreOpen(false)}>
-                Close
-              </button>
-            </div>
-            <nav className="app-more__list" aria-label="More destinations">
-              {moreRoutes.map((r) => (
+      <header className="app-phonebar">
+        <button
+          type="button"
+          className="app-phonebar__burger"
+          aria-label="Menu"
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+        >
+          <span className="app-phonebar__burger-lines" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </span>
+        </button>
+        <h1 className="app-phonebar__title">{routeLabel(active)}</h1>
+      </header>
+      {open ? (
+        <div className="app-drawer">
+          <div className="app-drawer__panel" role="dialog" aria-modal="true" aria-label="Menu">
+            {overflow.length ? (
+              <>
+                <p className="app-drawer__section-label">This screen</p>
+                <div className="app-drawer__nav">
+                  {overflow.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className="app-drawer__link"
+                      title={item.hint}
+                      onClick={() => {
+                        setOpen(false);
+                        item.onSelect();
+                      }}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : null}
+            <p className="app-drawer__section-label">Pipeline</p>
+            <nav className="app-drawer__nav" aria-label="Pipeline">
+              {routesForGroup("pipeline").map((r) => (
                 <NavLink
                   key={r.id}
                   route={r}
                   active={r.id === active}
-                  className="app-more__link"
-                  onNavigate={() => setMoreOpen(false)}
+                  className="app-drawer__link"
+                  onNavigate={() => setOpen(false)}
+                />
+              ))}
+            </nav>
+            <p className="app-drawer__section-label">Tools</p>
+            <nav className="app-drawer__nav" aria-label="Tools">
+              {routesForGroup("tools").map((r) => (
+                <NavLink
+                  key={r.id}
+                  route={r}
+                  active={r.id === active}
+                  className="app-drawer__link"
+                  onNavigate={() => setOpen(false)}
                 />
               ))}
             </nav>
           </div>
+          <button
+            type="button"
+            className="app-drawer__backdrop"
+            aria-label="Close menu"
+            onClick={() => setOpen(false)}
+          />
         </div>
       ) : null}
-      <nav className="app-tabbar" aria-label="Primary">
-        {phoneTabRoutes().map((r) => (
-          <NavLink key={r.id} route={r} active={r.id === active} className="app-tabbar__tab">
-            {r.id === "workbench" ? "Bench" : r.label}
-          </NavLink>
-        ))}
-        <button
-          type="button"
-          className={`app-tabbar__tab app-tabbar__more${moreActive || moreOpen ? " app-tabbar__tab--active" : ""}`}
-          aria-expanded={moreOpen}
-          aria-current={moreActive ? "page" : undefined}
-          onClick={() => setMoreOpen((open) => !open)}
-        >
-          More
-        </button>
-      </nav>
     </>
   );
 }
 
 /**
- * Global application frame: desktop top nav, phone bottom tabs, plus a content
- * region the screen fills.
+ * Global application frame: desktop top nav, phone hamburger + focused screen,
+ * plus a content region the screen fills.
  *
- * Pipeline peers (Library · Clips · Factory · Rating · Workbench · Queue) are flat —
- * Submit is intent-modal (doors only, not in nav); Workbench tracks job status; Queue monitors Comfy.
+ * Submit is intent-modal (doors only, not in nav).
  */
 export function AppShell({
   active,
@@ -152,7 +175,9 @@ export function AppShell({
 
   return (
     <>
-      {phone ? null : (
+      {phone ? (
+        <PhoneMenu active={current} />
+      ) : (
         <header className="app-nav" aria-label="Primary">
           <a href="/" className="app-nav__brand" title="ComfyUI Runpod — Experiments UI">
             <span className="app-nav__brand-dot" aria-hidden="true" />
@@ -172,7 +197,6 @@ export function AppShell({
         </header>
       )}
       <div className={`app-shell__main${phone ? " app-shell__main--phone" : ""}`}>{children}</div>
-      {phone ? <PhoneTabBar active={current} /> : null}
     </>
   );
 }

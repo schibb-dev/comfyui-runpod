@@ -4465,7 +4465,8 @@ def _shape_factory_input_curation_stills_payload(cfg: ServerConfig, q: Dict[str,
     appetite = str((q.get("appetite") or [""])[0] or "").strip()
     sort = str((q.get("sort") or ["newest"])[0] or "newest").strip() or "newest"
     scan = str((q.get("scan") or ["0"])[0]).strip().lower() in {"1", "true", "yes"}
-    appetite_doc = _discovery_load_appetite_index(cfg)
+    need_appetite = bool(appetite) or sort.lower() == "appetite"
+    appetite_doc = _discovery_load_appetite_index(cfg) if need_appetite else None
     payload = list_catalog_stills(
         data_root=data_root,
         q=qtext,

@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AppShell } from "./ui/AppShell";
 import { canHandleClientPath, resolveRouteId, type AppRouteId } from "./ui/routes";
 import { DeviceProvider } from "./ui/viewport";
+import { PhoneOverflowProvider } from "./ui/phoneChrome";
 import "./ui/styles.css";
 
 /** Lazy screens so a broken module (bad HMR transform) cannot blank every route. */
@@ -126,7 +127,8 @@ function RouterRoot() {
   const RootView = pathname.startsWith("/vision/tag-judge") ? VisionTagJudgeApp : SCREENS[active];
   return (
     <DeviceProvider>
-      <AppShell active={active}>
+      <PhoneOverflowProvider>
+        <AppShell active={active}>
         <ScreenErrorBoundary>
           <Suspense
             fallback={
@@ -138,7 +140,8 @@ function RouterRoot() {
             <RootView key={href} />
           </Suspense>
         </ScreenErrorBoundary>
-      </AppShell>
+        </AppShell>
+      </PhoneOverflowProvider>
     </DeviceProvider>
   );
 }

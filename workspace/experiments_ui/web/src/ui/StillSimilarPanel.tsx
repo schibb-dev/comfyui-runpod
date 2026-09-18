@@ -29,9 +29,13 @@ function persistProvider(p: SimilarProvider) {
 export function StillSimilarPanel({
   contentId,
   onFilterTag,
+  onSelectHit,
+  activeTags,
 }: {
   contentId: string | null;
   onFilterTag: (tag: string) => void;
+  onSelectHit?: (hit: StillSimilarHit) => void;
+  activeTags?: Iterable<string>;
 }) {
   const cid = String(contentId || "").trim().toLowerCase();
   const [provider, setProvider] = useState<SimilarProvider>(() => readStoredProvider());
@@ -47,7 +51,7 @@ export function StillSimilarPanel({
     return (
       <section className="still-gallery__panel still-gallery__similar" aria-label="Similar stills">
         <h2>Similar stills</h2>
-        <p className="factory-muted">Select a still with a content hash in its name.</p>
+        <p className="factory-muted">Select a still to find look-alikes.</p>
       </section>
     );
   }
@@ -102,7 +106,13 @@ export function StillSimilarPanel({
       {items.length ? (
         <ul className="still-gallery__similar-grid">
           {items.map((hit) => (
-            <SimilarTile key={hit.content_id} hit={hit} onFilterTag={onFilterTag} />
+            <SimilarTile
+              key={hit.content_id}
+              hit={hit}
+              onFilterTag={onFilterTag}
+              onSelectHit={onSelectHit}
+              activeTags={activeTags}
+            />
           ))}
         </ul>
       ) : null}
@@ -113,16 +123,31 @@ export function StillSimilarPanel({
 function SimilarTile({
   hit,
   onFilterTag,
+  onSelectHit,
+  activeTags,
 }: {
   hit: StillSimilarHit;
   onFilterTag: (tag: string) => void;
+  onSelectHit?: (hit: StillSimilarHit) => void;
+  activeTags?: Iterable<string>;
 }) {
   const href = stillsHref({ contentId: hit.content_id, relpath: hit.relpath || null });
   const score = Number.isFinite(hit.score) ? hit.score.toFixed(3) : "";
   const src = hit.thumb_url || hit.url;
+  const active = new Set(
+    [...(activeTags || [])].map((t) => String(t || "").trim().toLowerCase()).filter(Boolean),
+  );
   return (
     <li className="still-gallery__similar-tile">
-      <a href={href} title={hit.basename || hit.content_id}>
+      <a
+        href={href}
+        title={hit.basename || hit.content_id}
+        onClick={(e) => {
+          if (!onSelectHit || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+          e.preventDefault();
+          onSelectHit(hit);
+        }}
+      >
         {src ? (
           <img src={src} alt={hit.basename || hit.content_id.slice(0, 8)} />
         ) : (
@@ -136,8 +161,13 @@ function SimilarTile({
             <li key={tag}>
               <button
                 type="button"
-                className="still-gallery__similar-tag"
-                title={`Filter gallery by ${tag}`}
+                className={"still-gallery__similar-tag" + (active.has(String(tag).trim().toLowerCase()) ? " is-on" : "")}
+                aria-pressed={active.has(String(tag).trim().toLowerCase())}
+                title={
+                  active.has(String(tag).trim().toLowerCase())
+                    ? `Remove ${tag} from filter`
+                    : `Add ${tag} to filter`
+                }
                 onClick={() => onFilterTag(tag)}
               >
                 {tag}

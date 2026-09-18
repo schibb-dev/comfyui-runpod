@@ -501,6 +501,26 @@ def _still_appetite_matches(state: str, filt: str) -> bool:
     return s == filt
 
 
+def parse_still_tag_filter(tag: str) -> List[str]:
+    """Comma/semicolon tag terms, lowercased, unique, AND-matched."""
+    out: List[str] = []
+    seen: set[str] = set()
+    for raw in str(tag or "").replace(";", ",").split(","):
+        n = raw.strip().lower()
+        if not n or n in seen:
+            continue
+        seen.add(n)
+        out.append(n)
+    return out
+
+
+def tags_match_filter(tags: Sequence[Any], terms: Sequence[str]) -> bool:
+    if not terms:
+        return True
+    have = {str(t).strip().lower() for t in tags if str(t).strip()}
+    return all(term in have for term in terms)
+
+
 def list_catalog_stills(
     *,
     data_root: Path,
@@ -528,7 +548,9 @@ def list_catalog_stills(
     cat = default_catalog_path(data_root=data_root)
     appetite_filt = _normalize_still_appetite_filter(appetite)
     sort_mode = _normalize_still_sort(sort)
-    appetite_by_key = _still_appetite_lookup_maps(appetite_doc) if (appetite_filt or sort_mode == "appetite" or appetite_doc) else {}
+    appetite_by_key = (
+        _still_appetite_lookup_maps(appetite_doc) if (appetite_filt or sort_mode == "appetite") else {}
+    )
     need_appetite_join = bool(appetite_filt or sort_mode == "appetite" or appetite_by_key)
     if not cat.is_file():
         return {
@@ -549,21 +571,29 @@ def list_catalog_stills(
     if qn:
         where += " AND lower(path) LIKE ? "
         args.append(f"%{qn}%")
-    tag_n = str(tag or "").strip().lower()
-    tags_doc = load_still_tags(data_root)
-    tags_items = tags_doc.get("items") if isinstance(tags_doc.get("items"), dict) else {}
+    tag_terms = parse_still_tag_filter(tag)
+    tag_n = ",".join(tag_terms)
+    tags_doc: Dict[str, Any] = {"items": {}}
+    tags_items: Dict[str, Any] = {}
     tagged_ids: Optional[set[str]] = None
-    if tag_n:
-        tagged_ids = set()
+    if tag_terms:
+        tags_doc = load_still_tags(data_root)
+        tags_items = tags_doc.get("items") if isinstance(tags_doc.get("items"), dict) else {}
+        bag: Dict[str, set[str]] = {}
         for cid, meta in tags_items.items():
+            key = str(cid).strip().lower()
+            if not key:
+                continue
             tags = []
             if isinstance(meta, dict):
                 tags = meta.get("tags") or []
             elif isinstance(meta, list):
                 tags = meta
-            if any(str(t).strip().lower() == tag_n for t in tags):
-                tagged_ids.add(str(cid).strip().lower())
-        # Also match SQLite effective / provisional tags when present.
+            have = bag.setdefault(key, set())
+            for t in tags:
+                n = str(t).strip().lower()
+                if n:
+                    have.add(n)
         try:
             from vision_still_tags import connect, default_db_path, effective_tags_for_row, ensure_db  # type: ignore
 
@@ -572,15 +602,21 @@ def list_catalog_stills(
                 con_tags = connect(dbp)
                 try:
                     for row in con_tags.execute("SELECT * FROM still_tag_items"):
-                        eff = effective_tags_for_row(row)
-                        if any(t == tag_n for t in eff):
-                            tagged_ids.add(str(row["content_id"]).lower())
+                        key = str(row["content_id"] or "").strip().lower()
+                        if not key:
+                            continue
+                        have = bag.setdefault(key, set())
+                        for t in effective_tags_for_row(row):
+                            n = str(t).strip().lower()
+                            if n:
+                                have.add(n)
                 finally:
                     con_tags.close()
             else:
                 ensure_db(dbp)
         except Exception:
             pass
+        tagged_ids = {cid for cid, have in bag.items() if tags_match_filter(have, tag_terms)}
 
     total = 0
     items: List[Dict[str, Any]] = []
@@ -592,16 +628,22 @@ def list_catalog_stills(
     # Positive appetite filters are tiny vs the catalog — resolve marks first.
     positive_appetite = appetite_filt in {"any", "more", "fast_track", "less", "neutral"}
     # Appetite filter/sort needs a full filtered set before paging so totals stay honest.
-    collect_all = bool(appetite_filt or sort_mode == "appetite")
+    collect_all = bool(appetite_filt or sort_mode == "appetite" or tag_terms)
     need = None if collect_all else (off + lim)
     exhausted = False
-    ident = None
-    try:
-        from still_identity import load_identity  # type: ignore
+    ident_box: Dict[str, Any] = {"ident": None, "tried": False}
 
-        ident = load_identity(data_root)
-    except Exception:
-        ident = None
+    def _ident() -> Any:
+        if ident_box["tried"]:
+            return ident_box["ident"]
+        ident_box["tried"] = True
+        try:
+            from still_identity import load_identity  # type: ignore
+
+            ident_box["ident"] = load_identity(data_root)
+        except Exception:
+            ident_box["ident"] = None
+        return ident_box["ident"]
 
     def _push_resolved(resolved: Path, *, catalog_path: str = "", mtime: float = 0.0, first_seen: float = 0.0, last_seen: float = 0.0, size: int = 0) -> bool:
         nonlocal skipped_download_copies
@@ -613,12 +655,13 @@ def list_catalog_stills(
             skipped_download_copies += 1
             return False
         seen_resolved.add(resolved_key)
-        content_id = None
-        if ident is not None:
-            content_id = ident.content_id_for_path(str(resolved)) or ident.content_id_for_path(catalog_path)
+        content_id = _extract_content_id(str(resolved)) or _extract_content_id(catalog_path)
         if not content_id:
-            content_id = _extract_content_id(str(resolved)) or _extract_content_id(catalog_path)
-        if tagged_ids is not None and (not content_id or content_id not in tagged_ids):
+            ident = _ident()
+            if ident is not None:
+                content_id = ident.content_id_for_path(str(resolved)) or ident.content_id_for_path(catalog_path)
+        cid_key = str(content_id or "").strip().lower()
+        if tagged_ids is not None and (not cid_key or cid_key not in tagged_ids):
             return False
         if qn:
             hay = f"{resolved} {catalog_path} {resolved.name}".lower()
@@ -650,18 +693,19 @@ def list_catalog_stills(
             _attach_still_appetite(item, appetite_by_key)
             if not _still_appetite_matches(str(item.get("appetite") or ""), appetite_filt):
                 return False
-        try:
-            st = resolved.stat()
-            if not item["mtime"]:
-                item["mtime"] = float(st.st_mtime)
-            if not item["size"]:
-                item["size"] = int(st.st_size)
-            if not item["first_seen"]:
-                item["first_seen"] = float(st.st_mtime)
-            if not item["last_seen"]:
-                item["last_seen"] = float(st.st_mtime)
-        except OSError:
-            pass
+        if not item["mtime"] or not item["size"]:
+            try:
+                st = resolved.stat()
+                if not item["mtime"]:
+                    item["mtime"] = float(st.st_mtime)
+                if not item["size"]:
+                    item["size"] = int(st.st_size)
+                if not item["first_seen"]:
+                    item["first_seen"] = float(st.st_mtime)
+                if not item["last_seen"]:
+                    item["last_seen"] = float(st.st_mtime)
+            except OSError:
+                pass
         items.append(item)
         return True
 

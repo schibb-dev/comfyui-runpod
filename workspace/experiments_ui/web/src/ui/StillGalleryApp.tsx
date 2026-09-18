@@ -28,15 +28,20 @@ import {
   StillGalleryStripView,
   StillGalleryViewToggle,
 } from "./StillGalleryViews";
+import { StillSwapImg } from "./StillSwapImg";
+import { parseStillTagFilter, serializeStillTagFilter, toggleStillTagFilter } from "./stillTagFilter";
 import {
   loadStillGalleryViewPreference,
   persistStillGalleryViewPreference,
   type StillGalleryViewMode,
 } from "./stillGalleryViews";
+import { useRegisterPhoneOverflow } from "./phoneChrome";
+import { BP_PHONE_MAX, useDeviceContext } from "./viewport";
 import { useNarrowLayout } from "./useNarrowLayout";
 import type { InputCurationCollection, InputCurationStillItem, StillTagEvent } from "./types";
 
-const PAGE = 96;
+const PAGE = 24;
+const PREFETCH_UNTIL = 48;
 const TAG_BATCH_DEFAULT = 12;
 const APPETITE_FILTER_KEY = "still-gallery.appetiteFilter";
 const SORT_KEY = "still-gallery.sort";
@@ -123,7 +128,8 @@ export function StillGalleryApp() {
   const deep = useMemo(() => parseStillDeepLink(), []);
   const [q, setQ] = useState(() => deep.q || "");
   const [qDebounced, setQDebounced] = useState(q);
-  const [tagFilter, setTagFilter] = useState("");
+  const [tagFilter, setTagFilter] = useState<string[]>(() => parseStillTagFilter(deep.tag));
+  const [tagFilterDraft, setTagFilterDraft] = useState("");
   const [appetiteFilter, setAppetiteFilter] = useState<StillAppetiteFilter>(() => {
     const fromUrl = String(new URLSearchParams(window.location.search).get("appetite") || "")
       .trim()
@@ -166,8 +172,17 @@ export function StillGalleryApp() {
   const deepLinkDone = useRef(false);
   const [deepLinkHitPath, setDeepLinkHitPath] = useState<string | null>(null);
   const narrowLayout = useNarrowLayout(960);
-  const [view, setView] = useState<StillGalleryViewMode>(() => loadStillGalleryViewPreference(narrowLayout));
+  const [view, setView] = useState<StillGalleryViewMode>(() => {
+    const inspecting = Boolean(deep.contentId || deep.relpath);
+    const phoneInit = typeof window !== "undefined" && window.innerWidth <= BP_PHONE_MAX;
+    if (phoneInit) return inspecting ? "focus" : "grid";
+    if (inspecting) return loadStillGalleryViewPreference(narrowLayout);
+    return "grid";
+  });
   const [deckIndex, setDeckIndex] = useState(0);
+  const { device } = useDeviceContext();
+  const phone = device === "phone";
+  const [phonePane, setPhonePane] = useState<null | "filters" | "tagging" | "launch" | "details">(null);
 
   useEffect(() => {
     prefetchFamiliesBootstrap();
@@ -195,12 +210,28 @@ export function StillGalleryApp() {
     }
   }, [sortMode]);
 
+  const tagFilterKey = serializeStillTagFilter(tagFilter);
   const stillsKey = {
     q: qDebounced,
-    tag: tagFilter.trim(),
+    tag: tagFilterKey,
     appetite: appetiteFilter,
     sort: sortMode,
     limit: PAGE,
+  };
+
+  const toggleTagFilter = (tag: string) => {
+    setTagFilter((prev) => toggleStillTagFilter(prev, tag));
+  };
+
+  const addTypedTagFilter = () => {
+    const next = parseStillTagFilter(tagFilterDraft);
+    if (!next.length) return;
+    setTagFilter((prev) => {
+      const have = new Set(parseStillTagFilter(prev));
+      for (const t of next) have.add(t);
+      return [...have];
+    });
+    setTagFilterDraft("");
   };
 
   const stillsQuery = useInfiniteQuery({
@@ -222,6 +253,7 @@ export function StillGalleryApp() {
       return next;
     },
     staleTime: 15_000,
+    placeholderData: (prev) => prev,
   });
 
   const stateQuery = useQuery({
@@ -265,6 +297,10 @@ export function StillGalleryApp() {
     null;
 
   const selectedSet = useMemo(() => new Set(selectedPaths), [selectedPaths]);
+  const focusIndex = useMemo(
+    () => items.findIndex((it) => it.path === selectedPath),
+    [items, selectedPath],
+  );
   const selectedItems = useMemo(
     () => items.filter((it) => selectedSet.has(it.path)),
     [items, selectedSet],
@@ -336,6 +372,9 @@ export function StillGalleryApp() {
       return;
     }
     focusPath(path);
+    if (phone && !meta && !e.shiftKey) {
+      setViewMode("focus");
+    }
   };
 
   const clearSelection = () => {
@@ -455,17 +494,19 @@ export function StillGalleryApp() {
 
   useEffect(() => {
     const next = stillsHref({
-      contentId: selected?.content_id || deep.contentId || null,
-      relpath: selected ? stillMediaRelpath(selected) || null : deep.relpath,
+      contentId: selected?.content_id || null,
+      relpath: selected ? stillMediaRelpath(selected) || null : null,
       q: qDebounced || null,
+      tag: tagFilterKey || null,
       appetite: appetiteFilter || null,
       sort: sortMode === "newest" ? null : sortMode,
     });
     if (`${window.location.pathname}${window.location.search}` === next) return;
     window.history.replaceState(null, "", next);
-  }, [selected, qDebounced, appetiteFilter, sortMode, deep.contentId, deep.relpath]);
+  }, [selected, qDebounced, tagFilterKey, appetiteFilter, sortMode]);
 
   useEffect(() => {
+    if (phone && view !== "grid") return;
     const el = sentinelRef.current;
     const root = scrollRef.current;
     if (!el) return;
@@ -480,7 +521,34 @@ export function StillGalleryApp() {
     );
     obs.observe(el);
     return () => obs.disconnect();
-  }, [stillsQuery.hasNextPage, stillsQuery.isFetchingNextPage, stillsQuery.fetchNextPage]);
+  }, [phone, view, stillsQuery.hasNextPage, stillsQuery.isFetchingNextPage, stillsQuery.fetchNextPage]);
+
+  useEffect(() => {
+    if (!stillsQuery.isSuccess || stillsQuery.isFetchingNextPage) return;
+    if (!stillsQuery.hasNextPage) return;
+    if (items.length >= PREFETCH_UNTIL) return;
+    void stillsQuery.fetchNextPage();
+  }, [
+    stillsQuery.isSuccess,
+    stillsQuery.hasNextPage,
+    stillsQuery.isFetchingNextPage,
+    stillsQuery.fetchNextPage,
+    items.length,
+  ]);
+
+  useEffect(() => {
+    if (view !== "focus") return;
+    if (!stillsQuery.hasNextPage || stillsQuery.isFetchingNextPage) return;
+    if (focusIndex < 0 || focusIndex < items.length - 3) return;
+    void stillsQuery.fetchNextPage();
+  }, [
+    view,
+    focusIndex,
+    items.length,
+    stillsQuery.hasNextPage,
+    stillsQuery.isFetchingNextPage,
+    stillsQuery.fetchNextPage,
+  ]);
 
   const invalidate = async () => {
     await Promise.all([
@@ -619,6 +687,19 @@ export function StillGalleryApp() {
     if (submitIntent) setSubmitModalIntent(submitIntent);
   };
 
+  const openSubmitForStill = (it: InputCurationStillItem) => {
+    const rel = stillMediaRelpath(it);
+    if (!rel) return;
+    focusStill(it);
+    setPhonePane(null);
+    setSubmitModalIntent(buildSubmitDeepLink({ mediaRelpath: rel, origin: "gallery" }));
+  };
+
+  const openDetailsForStill = (it: InputCurationStillItem) => {
+    focusStill(it);
+    setPhonePane("details");
+  };
+
   const focusCollections = () => {
     collectionsPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   };
@@ -647,8 +728,92 @@ export function StillGalleryApp() {
         ? "in window"
         : "outside window";
 
+  const phoneOverflow = useMemo(
+    () =>
+      phone
+        ? [
+            ...(selected
+              ? [
+                  {
+                    id: "submit",
+                    label: "Submit this still",
+                    hint: selectedRel || undefined,
+                    onSelect: () => {
+                      setPhonePane(null);
+                      openSubmitModal();
+                    },
+                  },
+                ]
+              : []),
+            {
+              id: "filters",
+              label: "Search & filters",
+              onSelect: () => setPhonePane("filters"),
+            },
+            {
+              id: "tagging",
+              label: "Tagging backlog",
+              hint: `${itemsTagged} tagged · ${itemsQueued} queued`,
+              onSelect: () => setPhonePane("tagging"),
+            },
+            {
+              id: "details",
+              label: "Tags & tasks",
+              onSelect: () => setPhonePane("details"),
+            },
+            {
+              id: "grid",
+              label: "Browse grid",
+              onSelect: () => {
+                setPhonePane(null);
+                setViewMode("grid");
+              },
+            },
+            {
+              id: "swipe",
+              label: "Swipe through stills",
+              onSelect: () => {
+                setPhonePane(null);
+                setViewMode("focus");
+              },
+            },
+            {
+              id: "queue-untagged",
+              label: `Queue untagged (${TAG_BATCH_DEFAULT})`,
+              onSelect: () =>
+                void tagRunMut
+                  .mutateAsync({ only_missing: true, limit: TAG_BATCH_DEFAULT })
+                  .catch((e) => setMsg(e instanceof Error ? e.message : String(e))),
+            },
+            {
+              id: "rescan",
+              label: "Rescan input",
+              onSelect: () =>
+                void fetchShapeFactoryInputCurationStills({
+                  q: qDebounced || undefined,
+                  tag: tagFilterKey || undefined,
+                  limit: PAGE,
+                  offset: 0,
+                  scan: true,
+                })
+                  .then(() => invalidate())
+                  .then(() => setMsg("Catalog rescanned"))
+                  .catch((e) => setMsg(e instanceof Error ? e.message : String(e))),
+            },
+          ]
+        : [],
+    [phone, itemsTagged, itemsQueued, tagRunMut, qDebounced, tagFilterKey, selected, selectedRel],
+  );
+  useRegisterPhoneOverflow(phoneOverflow);
+
   return (
-    <div className="pipeline-screen layout still-gallery">
+    <div
+      className={
+        "pipeline-screen layout still-gallery" +
+        (phone ? " still-gallery--phone" : "") +
+        (phone && view !== "grid" ? " still-gallery--phone-swipe" : "")
+      }
+    >
       <PageHeader
         title="Stills"
         subtitle="Browse input stills · collections · tags · launch I2V via Submit"
@@ -673,7 +838,7 @@ export function StillGalleryApp() {
               onClick={() =>
                 void fetchShapeFactoryInputCurationStills({
                   q: qDebounced || undefined,
-                  tag: tagFilter.trim() || undefined,
+                  tag: tagFilterKey || undefined,
                   limit: PAGE,
                   offset: 0,
                   scan: true,
@@ -691,17 +856,47 @@ export function StillGalleryApp() {
 
       {msg ? <p className="factory-muted still-gallery__msg">{msg}</p> : null}
 
-      <div className="still-gallery__index-hour" aria-live="polite">
-        <div className="still-gallery__index-hour-head">
-          <strong>Index hour</strong>
+      {phone && view !== "grid" ? (
+        <div className="still-gallery__phone-focus-bar">
+          <button
+            type="button"
+            className="drt-btn still-gallery__phone-back"
+            onClick={() => setViewMode("grid")}
+          >
+            ← Grid
+          </button>
+          <p className="factory-muted still-gallery__phone-swipe-hint">← Tags · Submit →</p>
+        </div>
+      ) : null}
+      {phone && view === "grid" ? (
+        <p className="factory-muted still-gallery__msg">Tap a still to swipe · ☰ for tagging and filters</p>
+      ) : null}
+
+      <details
+        className={
+          "still-gallery__index-hour" + (phone && phonePane === "tagging" ? " still-gallery__phone-sheet" : "")
+        }
+        hidden={phone && phonePane !== "tagging"}
+        open={phone && phonePane === "tagging" ? true : undefined}
+        aria-live="polite"
+      >
+        <summary className="still-gallery__index-hour-head">
+          <strong>Tagging backlog</strong>
           <span className="factory-muted mono">
-            backlog {queuedTargets} targets · {queuedRuns} runs · tagged {itemsTagged} · queued {itemsQueued} ·{" "}
-            {windowLabel}
+            {itemsTagged} tagged · {itemsQueued} queued · {windowLabel}
             {win?.local_now ? ` · local ${win.local_now.slice(11, 16)}` : ""}
           </span>
-        </div>
+        </summary>
+        {phone && phonePane === "tagging" ? (
+          <div className="still-gallery__phone-sheet-head">
+            <h2>Tagging backlog</h2>
+            <button type="button" className="drt-btn" onClick={() => setPhonePane(null)}>
+              Close
+            </button>
+          </div>
+        ) : null}
         <p className="factory-muted still-gallery__index-hour-hint">
-          Queue anytime; Florence runs in the reserved window (or Drain now). Avoids GPU thrash with I2V.
+          Queue tags anytime. Florence runs in the reserved window (or Drain now). Ops controls stay in this drawer.
         </p>
         <div className="still-gallery__index-hour-actions">
           <label className="still-gallery__index-hour-toggle">
@@ -768,7 +963,7 @@ export function StillGalleryApp() {
         {backlogQuery.error instanceof Error ? (
           <p className="factory-error">{backlogQuery.error.message}</p>
         ) : null}
-      </div>
+      </details>
 
       {activeRunId ? (
         <div className="still-gallery__run" aria-live="polite">
@@ -796,7 +991,18 @@ export function StillGalleryApp() {
       ) : null}
 
       <div className="pipeline-scroll still-gallery__scroll" ref={scrollRef}>
-      <div className="still-gallery__toolbar">
+      <div
+        className={"still-gallery__toolbar" + (phone && phonePane === "filters" ? " still-gallery__phone-sheet" : "")}
+        hidden={phone && phonePane !== "filters"}
+      >
+        {phone && phonePane === "filters" ? (
+          <div className="still-gallery__phone-sheet-head">
+            <h2>Search & filters</h2>
+            <button type="button" className="drt-btn" onClick={() => setPhonePane(null)}>
+              Close
+            </button>
+          </div>
+        ) : null}
         <input
           className="still-gallery__search"
           value={q}
@@ -804,13 +1010,44 @@ export function StillGalleryApp() {
           placeholder="Search path / filename…"
           aria-label="Search stills"
         />
-        <input
-          className="still-gallery__search still-gallery__search--tag"
-          value={tagFilter}
-          onChange={(e) => setTagFilter(e.target.value)}
-          placeholder="Filter tag…"
-          aria-label="Filter by tag"
-        />
+        <div className="still-gallery__tag-filter">
+          <input
+            className="still-gallery__search still-gallery__search--tag"
+            value={tagFilterDraft}
+            onChange={(e) => setTagFilterDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                addTypedTagFilter();
+              }
+            }}
+            placeholder="Add tag filter…"
+            aria-label="Add tag filter"
+          />
+          {tagFilter.length ? (
+            <ul className="still-gallery__active-tags" aria-label="Active tag filters">
+              {tagFilter.map((tag) => (
+                <li key={tag}>
+                  <button
+                    type="button"
+                    className="still-gallery__active-tag is-on"
+                    aria-pressed="true"
+                    title={`Remove ${tag} from filter`}
+                    onClick={() => toggleTagFilter(tag)}
+                  >
+                    {tag}
+                    <span aria-hidden="true"> ×</span>
+                  </button>
+                </li>
+              ))}
+              <li>
+                <button type="button" className="drt-btn" onClick={() => setTagFilter([])}>
+                  Clear tags
+                </button>
+              </li>
+            </ul>
+          ) : null}
+        </div>
         <label className="still-gallery__opt">
           <span className="factory-muted">Appetite</span>
           <select
@@ -839,7 +1076,12 @@ export function StillGalleryApp() {
           </select>
         </label>
         <span className="factory-muted still-gallery__count">{totalLabel}</span>
-        <StillGalleryViewToggle view={view} onChange={setViewMode} />
+        {phone ? null : (
+          <>
+            <StillGalleryViewToggle view={view} onChange={setViewMode} />
+            <span className="factory-muted still-gallery__view-hint">Grid to browse · Focus/Strip/Deck to inspect</span>
+          </>
+        )}
         {multiCount > 0 ? (
           <span className="still-gallery__multi-status" aria-live="polite">
             {multiCount} selected
@@ -854,7 +1096,13 @@ export function StillGalleryApp() {
 
       <div className={`still-gallery__body still-gallery__body--${view}`}>
         <div className="still-gallery__main">
-          {stillsQuery.isLoading ? <p className="factory-muted">Loading stills…</p> : null}
+          {stillsQuery.isLoading && !items.length ? (
+            <div className="still-gallery__grid" aria-busy="true" aria-label="Loading stills">
+              {Array.from({ length: 12 }, (_, i) => (
+                <div key={i} className="still-gallery__tile still-gallery__tile--skeleton" />
+              ))}
+            </div>
+          ) : null}
           {stillsQuery.error instanceof Error ? (
             <p className="factory-error">{stillsQuery.error.message}</p>
           ) : null}
@@ -867,13 +1115,29 @@ export function StillGalleryApp() {
               onTileClick={onTileClick}
               stillTileDomId={stillTileDomId}
               stillMediaRelpath={stillMediaRelpath}
+              onToggleTag={toggleTagFilter}
+              activeTags={tagFilter}
             />
           ) : null}
           {view === "focus" && items.length ? (
-            <StillGalleryFocusView items={items} focusedPath={selectedPath} onFocus={focusStill} />
+            <StillGalleryFocusView
+              items={items}
+              focusedPath={selectedPath}
+              onFocus={focusStill}
+              onToggleTag={toggleTagFilter}
+              activeTags={tagFilter}
+              onSwipeSubmit={phone ? openSubmitForStill : undefined}
+              onSwipeDetails={phone ? openDetailsForStill : undefined}
+            />
           ) : null}
           {view === "strip" && items.length ? (
-            <StillGalleryStripView items={items} focusedPath={selectedPath} onFocus={focusStill} />
+            <StillGalleryStripView
+              items={items}
+              focusedPath={selectedPath}
+              onFocus={focusStill}
+              onToggleTag={toggleTagFilter}
+              activeTags={tagFilter}
+            />
           ) : null}
           {view === "deck" && items.length ? (
             <StillGalleryDeckView
@@ -885,6 +1149,8 @@ export function StillGalleryApp() {
                 if (it) focusStill(it);
               }}
               onOpenFocus={focusStill}
+              onToggleTag={toggleTagFilter}
+              activeTags={tagFilter}
             />
           ) : null}
           {!stillsQuery.isLoading && !items.length ? (
@@ -904,7 +1170,19 @@ export function StillGalleryApp() {
           </div>
         </div>
 
-        <aside className="still-gallery__side" aria-label="Still launch pad">
+        <aside
+          className={"still-gallery__side" + (phone && phonePane === "launch" ? " still-gallery__phone-sheet" : "")}
+          hidden={phone && phonePane !== "launch"}
+          aria-label="Still launch pad"
+        >
+          {phone && phonePane === "launch" ? (
+            <div className="still-gallery__phone-sheet-head">
+              <h2>Launch pad</h2>
+              <button type="button" className="drt-btn" onClick={() => setPhonePane(null)}>
+                Close
+              </button>
+            </div>
+          ) : null}
           <section className="still-gallery__panel">
             <h2>{multiCount > 1 ? `Selected (${multiCount})` : "Selected"}</h2>
             {selected ? (
@@ -917,9 +1195,9 @@ export function StillGalleryApp() {
                 {selected.url || selected.thumb_url ? (
                   <div className="still-gallery__preview-wrap">
                     <AppetitePreviewFrame relpath={selectedRel} workbench>
-                      <img
+                      <StillSwapImg
                         className="still-gallery__preview"
-                        src={selected.url || selected.thumb_url}
+                        src={selected.url || selected.thumb_url || ""}
                         alt={selected.basename || ""}
                       />
                     </AppetitePreviewFrame>
@@ -1037,9 +1315,11 @@ export function StillGalleryApp() {
                         status: stillTagStatus(selected) === "done" ? "done" : "pending",
                         provisional_tags: selected.provisional_tags || [],
                         editorial_tags: selected.editorial_tags || selected.tags || [],
-                        effective_tags: selected.effective_tags || [],
+                        effective_tags: selected.effective_tags || selected.tags || [],
                         relpath: stillMediaRelpath(selected),
                       }}
+                      onTagClick={toggleTagFilter}
+                      activeTags={tagFilter}
                     />
                   </div>
                 ) : null}
@@ -1071,12 +1351,37 @@ export function StillGalleryApp() {
                     </button>
                   </div>
                   {!selected.content_id ? (
-                    <span className="factory-muted">No content_id in filename — tags need a sha256 in the name.</span>
-                  ) : null}
+                    <span className="factory-muted">
+                      No byte-hash id for this file yet — tags and similar neighbors need sha256(bytes),
+                      not the filename.
+                    </span>
+                  ) : (
+                    <span className="factory-muted mono still-gallery__cid">id {String(selected.content_id).slice(0, 16)}…</span>
+                  )}
                 </label>
                 <StillSimilarPanel
                   contentId={selected.content_id ? String(selected.content_id) : null}
-                  onFilterTag={(tag) => setTagFilter(tag)}
+                  onFilterTag={toggleTagFilter}
+                  activeTags={tagFilter}
+                  onSelectHit={(hit) => {
+                    const cid = String(hit.content_id || "").trim().toLowerCase();
+                    const rel = String(hit.relpath || "").replace(/\\/g, "/");
+                    const found =
+                      items.find((it) => String(it.content_id || "").trim().toLowerCase() === cid) ||
+                      (rel
+                        ? items.find((it) => stillMediaRelpath(it).replace(/\\/g, "/") === rel)
+                        : null);
+                    if (found) {
+                      focusStill(found);
+                      try {
+                        window.history.replaceState(null, "", stillsHref({ contentId: cid || null, relpath: rel || null }));
+                      } catch {
+                        /* ignore */
+                      }
+                      return;
+                    }
+                    window.location.assign(stillsHref({ contentId: cid || null, relpath: rel || null }));
+                  }}
                 />
               </>
             ) : (
@@ -1174,6 +1479,186 @@ export function StillGalleryApp() {
         </aside>
       </div>
       </div>
+      {phone && phonePane === "details" ? (
+        <div className="still-gallery__phone-sheet still-gallery__phone-details" role="dialog" aria-modal="true" aria-label="Tags and tasks">
+          <div className="still-gallery__phone-sheet-head">
+            <h2>Tags</h2>
+            <button type="button" className="drt-btn" onClick={() => setPhonePane(null)}>
+              Close
+            </button>
+          </div>
+          {selected ? (
+            <>
+              <p className="mono still-gallery__path">{selected.basename || selectedRel}</p>
+              <p className="factory-muted still-gallery__prov">
+                {stillTagStatusLabel(stillTagStatus(selected))}
+                {selected.queue_run_id ? ` · batch ${selected.queue_run_id.replace(/^still_tag_/, "").slice(0, 20)}` : ""}
+              </p>
+              {(selected.provisional_tags || selected.effective_tags || selected.editorial_tags || []).length ? (
+                <StillTagTagsPanel
+                  item={{
+                    content_id: String(selected.content_id || ""),
+                    status: stillTagStatus(selected) === "done" ? "done" : "pending",
+                    provisional_tags: selected.provisional_tags || [],
+                    editorial_tags: selected.editorial_tags || selected.tags || [],
+                    effective_tags: selected.effective_tags || selected.tags || [],
+                    relpath: stillMediaRelpath(selected),
+                  }}
+                  onTagClick={toggleTagFilter}
+                  activeTags={tagFilter}
+                />
+              ) : (
+                <p className="factory-muted">No tags yet</p>
+              )}
+              <label className="still-gallery__field">
+                <span>Add tags</span>
+                <div className="still-gallery__tag-row">
+                  <input
+                    value={tagDraft}
+                    onChange={(e) => setTagDraft(e.target.value)}
+                    disabled={!selected.content_id || tagsMut.isPending}
+                    placeholder="kneel, portrait…"
+                  />
+                  <button
+                    type="button"
+                    className="drt-btn"
+                    disabled={!selected.content_id || tagsMut.isPending}
+                    onClick={() => {
+                      const tags = tagDraft
+                        .split(",")
+                        .map((t) => t.trim())
+                        .filter(Boolean);
+                      void tagsMut
+                        .mutateAsync({ content_id: String(selected.content_id), tags })
+                        .then(() => setMsg("Tags saved"))
+                        .catch((e) => setMsg(e instanceof Error ? e.message : String(e)));
+                    }}
+                  >
+                    Save
+                  </button>
+                </div>
+              </label>
+              <div className="still-gallery__actions">
+                <button
+                  type="button"
+                  className="drt-btn"
+                  disabled={!selectedContentIds.length || tagRunMut.isPending}
+                  onClick={() =>
+                    void tagRunMut
+                      .mutateAsync({
+                        content_ids: selectedContentIds,
+                        force: true,
+                        limit: Math.max(1, selectedContentIds.length),
+                      })
+                      .catch((e) => setMsg(e instanceof Error ? e.message : String(e)))
+                  }
+                >
+                  Queue tag
+                </button>
+                <button
+                  type="button"
+                  className="drt-btn"
+                  disabled={!selectedContentIds.length || tagRunMut.isPending || drainMut.isPending}
+                  onClick={() =>
+                    void tagRunMut
+                      .mutateAsync({
+                        content_ids: selectedContentIds,
+                        force: true,
+                        limit: Math.max(1, selectedContentIds.length),
+                        dry_run: true,
+                        drain_now: true,
+                      })
+                      .catch((e) => setMsg(e instanceof Error ? e.message : String(e)))
+                  }
+                >
+                  Tag now
+                </button>
+              </div>
+
+              <h2 className="still-gallery__phone-details-tasks-title">Tasks</h2>
+              {selectedRel ? (
+                <WorkProductAppetiteStrip
+                  relpath={selectedRel}
+                  defaultFacet="source"
+                  disabledHint="Appetite needs an input/ path"
+                  onSaved={(appetite) => {
+                    setMsg(`Appetite ${appetite}`);
+                    void queryClient.invalidateQueries({
+                      queryKey: queryKeys.shapeFactory.inputCurationRoot,
+                    });
+                  }}
+                />
+              ) : null}
+              <div className="still-gallery__phone-tasks" role="group" aria-label="Still tasks">
+                <button
+                  type="button"
+                  className="still-gallery__phone-task"
+                  disabled={!selectedCollection}
+                  onClick={() =>
+                    void addSelectionToCollection().catch((e) =>
+                      setMsg(e instanceof Error ? e.message : String(e)),
+                    )
+                  }
+                >
+                  Add to {selectedCollection?.name || "collection"}
+                </button>
+                <button
+                  type="button"
+                  className="still-gallery__phone-task"
+                  disabled={!selectedRel}
+                  onClick={() => void stashAsIdentity()}
+                >
+                  Stash as identity
+                </button>
+                {libraryHref ? (
+                  <a className="still-gallery__phone-task" href={libraryHref}>
+                    Open in Library
+                  </a>
+                ) : null}
+                <a className="still-gallery__phone-task" href={factoryMapHref}>
+                  Factory map
+                </a>
+                {selectedWorkbenchHref ? (
+                  <a className="still-gallery__phone-task" href={selectedWorkbenchHref}>
+                    Workbench jobs
+                  </a>
+                ) : null}
+                <button
+                  type="button"
+                  className="still-gallery__phone-task still-gallery__phone-task--primary"
+                  disabled={!submitIntent}
+                  onClick={() => {
+                    setPhonePane(null);
+                    openSubmitModal();
+                  }}
+                >
+                  Submit
+                </button>
+              </div>
+              <StillSimilarPanel
+                contentId={selected.content_id ? String(selected.content_id) : null}
+                onFilterTag={toggleTagFilter}
+                activeTags={tagFilter}
+                onSelectHit={(hit) => {
+                  const cid = String(hit.content_id || "").trim().toLowerCase();
+                  const rel = String(hit.relpath || "").replace(/\\/g, "/");
+                  const found =
+                    items.find((it) => String(it.content_id || "").trim().toLowerCase() === cid) ||
+                    (rel ? items.find((it) => stillMediaRelpath(it).replace(/\\/g, "/") === rel) : null);
+                  if (found) {
+                    focusStill(found);
+                    setPhonePane(null);
+                    return;
+                  }
+                  window.location.assign(stillsHref({ contentId: cid || null, relpath: rel || null }));
+                }}
+              />
+            </>
+          ) : (
+            <p className="factory-muted">Select a still first.</p>
+          )}
+        </div>
+      ) : null}
       <SubmitComposerModal
         intent={submitModalIntent}
         onClose={() => setSubmitModalIntent(null)}

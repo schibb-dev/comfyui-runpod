@@ -51,7 +51,6 @@ export function useScrollCenterFocus({
     };
 
     root.addEventListener("scroll", onScroll, { passive: true });
-    pick();
     return () => {
       root.removeEventListener("scroll", onScroll);
       cancelAnimationFrame(raf);

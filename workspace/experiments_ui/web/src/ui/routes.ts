@@ -130,19 +130,9 @@ export function routesForGroup(group: AppNavGroup): AppRoute[] {
   return APP_ROUTES.filter((r) => r.group === group && r.nav !== false);
 }
 
-/** Phone bottom tabs (thumb zone). Remaining nav routes go under More. */
-export const PHONE_TAB_IDS: readonly AppRouteId[] = ["home", "library", "stills", "rate", "workbench"];
-
+/** Destinations listed in the phone hamburger (every nav route). */
 export function phoneTabRoutes(): AppRoute[] {
-  return PHONE_TAB_IDS.map((id) => ROUTES_BY_ID[id]).filter(Boolean);
-}
-
-export function isPhoneTabRoute(id: AppRouteId): boolean {
-  return (PHONE_TAB_IDS as readonly string[]).includes(id);
-}
-
-export function phoneMoreRoutes(): AppRoute[] {
-  return APP_ROUTES.filter((r) => r.nav !== false && !isPhoneTabRoute(r.id));
+  return APP_ROUTES.filter((r) => r.nav !== false);
 }
 
 export function routeLabel(id: AppRouteId): string {

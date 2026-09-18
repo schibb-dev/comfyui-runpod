@@ -22,17 +22,48 @@ async function copyText(text: string): Promise<boolean> {
   return false;
 }
 
-function TagChipList({ tags, emptyLabel }: { tags: string[]; emptyLabel?: string }) {
+function TagChipList({
+  tags,
+  emptyLabel,
+  onTagClick,
+  activeTags,
+}: {
+  tags: string[];
+  emptyLabel?: string;
+  onTagClick?: (tag: string) => void;
+  activeTags?: Iterable<string>;
+}) {
   if (!tags.length) {
     return emptyLabel ? <p className="factory-muted still-tag-tags__empty">{emptyLabel}</p> : null;
   }
+  const active = new Set(
+    [...(activeTags || [])].map((t) => String(t || "").trim().toLowerCase()).filter(Boolean),
+  );
   return (
     <ul className="still-tag-tags__chips">
-      {tags.map((tag) => (
-        <li key={tag}>
-          <span className="still-tag-tags__chip">{tag}</span>
-        </li>
-      ))}
+      {tags.map((tag) => {
+        const on = active.has(String(tag).trim().toLowerCase());
+        return (
+          <li key={tag}>
+            {onTagClick ? (
+              <button
+                type="button"
+                className={"still-tag-tags__chip still-tag-tags__chip--btn" + (on ? " is-on" : "")}
+                aria-pressed={on}
+                title={on ? `Remove ${tag} from filter` : `Add ${tag} to filter`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onTagClick(tag);
+                }}
+              >
+                {tag}
+              </button>
+            ) : (
+              <span className={"still-tag-tags__chip" + (on ? " is-on" : "")}>{tag}</span>
+            )}
+          </li>
+        );
+      })}
     </ul>
   );
 }
@@ -40,9 +71,13 @@ function TagChipList({ tags, emptyLabel }: { tags: string[]; emptyLabel?: string
 export function StillTagTagsPanel({
   item,
   layout = "sections",
+  onTagClick,
+  activeTags,
 }: {
   item: StillTagResultItem;
   layout?: "sections" | "effective_only";
+  onTagClick?: (tag: string) => void;
+  activeTags?: Iterable<string>;
 }) {
   const groups = stillTagResultTagGroups(item);
   const [copied, setCopied] = useState<string | null>(null);
@@ -64,7 +99,12 @@ export function StillTagTagsPanel({
             </button>
           ) : null}
         </div>
-        <TagChipList tags={groups.effective} emptyLabel="No tags yet" />
+        <TagChipList
+          tags={groups.effective}
+          emptyLabel="No tags yet"
+          onTagClick={onTagClick}
+          activeTags={activeTags}
+        />
       </div>
     );
   }
@@ -87,7 +127,7 @@ export function StillTagTagsPanel({
 
       <section className="still-tag-tags__section" aria-label="Effective tags">
         <h4 className="still-tag-tags__section-title">Effective tags</h4>
-        <TagChipList tags={groups.effective} emptyLabel="No tags yet" />
+        <TagChipList tags={groups.effective} emptyLabel="No tags yet" onTagClick={onTagClick} activeTags={activeTags} />
       </section>
 
       {groups.auto.length ? (
@@ -98,7 +138,7 @@ export function StillTagTagsPanel({
               {copied === "auto" ? "Copied" : "Copy"}
             </button>
           </div>
-          <TagChipList tags={groups.auto} />
+          <TagChipList tags={groups.auto} onTagClick={onTagClick} activeTags={activeTags} />
         </section>
       ) : null}
 
@@ -110,7 +150,7 @@ export function StillTagTagsPanel({
               {copied === "editorial" ? "Copied" : "Copy"}
             </button>
           </div>
-          <TagChipList tags={groups.editorial} />
+          <TagChipList tags={groups.editorial} onTagClick={onTagClick} activeTags={activeTags} />
         </section>
       ) : null}
     </div>

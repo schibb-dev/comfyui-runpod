@@ -8,7 +8,7 @@ The Experiments UI is a **single React SPA**. Phone is a layout mode of that app
 |----------|----------------|---------------|--------|
 | **Desktop** | ≥ 1024       | Yes           | Mouse/keyboard, top nav, sidebar + main. |
 | **Tablet**  | 768–1023     | Later         | Still uses desktop top nav for now. |
-| **Phone**   | ≤ 767        | **In progress** | Bottom tabs, one surface at a time, sheets. |
+| **Phone**   | ≤ 767        | **In progress** | Hamburger destinations, one focused surface, swipe + drill-down. |
 
 ## Browsers (iPhone)
 
@@ -29,11 +29,12 @@ Every iOS browser uses WKWebView. CSS, touch, and `env(safe-area-inset-*)` work 
 
 - **`web/src/ui/AppShell.tsx`**
   - Desktop: top pipeline + tools nav.
-  - Phone: bottom tabs **Home · Library · Stills · Rate · Workbench** plus **More** (Clips, Factory, Queue, Follow-up, tools). Submit stays a door, not a tab.
-  - Route lists: `phoneTabRoutes()` / `phoneMoreRoutes()` in `routes.ts`.
+  - Phone: hamburger (☰) + screen title. Drawer has **Go to** (every destination) and **This screen** (actions the current page registered). No bottom tab strip.
+  - Screens register actions with `useRegisterPhoneOverflow()` from `phoneChrome.tsx`.
+  - Content is swipe + drill-down: one focused surface, not a dashboard of panels.
 
 - **`web/src/ui/styles.css`**
-  - `--bp-phone`, `--bp-tablet`, `--app-tabbar-h`.
+  - `--bp-phone`, `--bp-tablet`, `--app-phonebar-h`.
   - `html` / `body` / `#root` use `100dvh` so the column matches the visible webview.
 
 - **`index.html`**
@@ -41,15 +42,15 @@ Every iOS browser uses WKWebView. CSS, touch, and `env(safe-area-inset-*)` work 
 
 ## Course (phone affordances)
 
-1. **Shell (done / current):** DeviceProvider, `viewport-fit=cover`, visualViewport height, bottom tabs + More. Browser-agnostic.
-2. **Shared contract:** one scroll root per screen; 44px targets; filters in sheets; don’t duplicate the tab label in a fat page header.
-3. **Library:** already list → fullscreen viewer. Next: swipe between items; keep it the pattern other screens copy.
-4. **Rate:** one clip + bottom actions (appetite / disposition).
-5. **Stills:** thumb grid → inspect; filters as a sheet.
-6. **Workbench:** job list only; tap → fullscreen clip; metadata/tools as sheets (desktop split stays desktop).
+1. **Shell (current):** hamburger destinations + per-screen actions; `viewport-fit=cover`; visualViewport height. Browser-agnostic (Aloha / Safari / …).
+2. **Stills (current):** phone main page is a **grid**. Tap drills into **swipe-through stills** (image only). **Swipe right** opens Submit. **Swipe left** opens tags and tasks for that still. Tagging backlog and filters stay in hamburger → This screen. First paint is a skeleton plus a small stills page (24), then more pages fill in; focus only decodes the current still and neighbors.
+3. **Shared contract:** one scroll root; 44px targets; PageHeader hidden on phone (title lives in the bar).
+4. **Library:** already list → fullscreen viewer. Align overflow actions with the hamburger.
+5. **Rate:** one clip + bottom/context actions.
+6. **Workbench:** job list → tap fullscreen clip; metadata in a sheet.
 7. **Submit:** stacked composer from existing doors.
 
-Defer Factory map, Workflows, Family A/B, Orchestrator, Experiments to More. Capacitor / home-screen icons only after the web shell is usable in Aloha.
+Factory map, Workflows, Family A/B, Orchestrator, and Experiments stay in the hamburger Tools section. Capacitor / home-screen icons only after the web shell is usable in Aloha.
 
 ## Changing breakpoints
 
