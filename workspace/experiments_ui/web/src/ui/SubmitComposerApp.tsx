@@ -84,8 +84,10 @@ import { VideoTrimControls, type VideoTrimPlaybackMode } from "./VideoTrimContro
 import { useTrimPlaybackEnforcement } from "./useTrimPlayback";
 import { marksToVhsWindow } from "./workProductTrim";
 import {
+  lastSubmitFamily,
   pickSubmitStack,
   pickSubmitStackForOpen,
+  rememberSubmitFamily,
   rememberSubmitStack,
   resolveSubmitRouteKind,
 } from "./submitStackPrefs";
@@ -1811,8 +1813,9 @@ function SubmitAdvanceComposerApp({
   const [i2vFamily, setI2vFamily] = useState(() => {
     if (!isStillMediaPath(intent.mediaRelpath)) return "";
     if (intent.family) return intent.family;
-    if (!cachedFamiliesBoot) return "";
-    return pickDefaultI2VFamily(cachedFamiliesBoot.families || [], intent.family);
+    const remembered = lastSubmitFamily("still");
+    if (!cachedFamiliesBoot) return remembered;
+    return pickDefaultI2VFamily(cachedFamiliesBoot.families || [], remembered);
   });
   const [i2vPromptProfile, setI2vPromptProfile] = useState("");
   const [extendPromptProfile, setExtendPromptProfile] = useState("");
@@ -1851,8 +1854,9 @@ function SubmitAdvanceComposerApp({
   const initialI2vFamily = useMemo(() => {
     if (!isStillMediaPath(intent.mediaRelpath)) return "";
     if (intent.family) return intent.family;
-    if (!cachedFamiliesBoot) return "";
-    return pickDefaultI2VFamily(cachedFamiliesBoot.families || [], intent.family);
+    const remembered = lastSubmitFamily("still");
+    if (!cachedFamiliesBoot) return remembered;
+    return pickDefaultI2VFamily(cachedFamiliesBoot.families || [], remembered);
   }, [cachedFamiliesBoot, intent.family, intent.mediaRelpath]);
   const [submitStack, setSubmitStack] = useState(() =>
     pickSubmitStackForOpen(cachedFamiliesBoot?.stacks || [], {
@@ -1867,10 +1871,12 @@ function SubmitAdvanceComposerApp({
   const [deriveOn, setDeriveOn] = useState(initialRoutes.derive);
   const [extendFamily, setExtendFamily] = useState(() => {
     if (intent.family) return intent.family;
-    if (!cachedFamiliesBoot) return "";
+    const remembered = lastSubmitFamily("video");
+    if (!cachedFamiliesBoot) return remembered;
     const pool = cachedFamiliesBoot.extend_families?.length
       ? cachedFamiliesBoot.extend_families
       : cachedFamiliesBoot.families;
+    if (remembered && pool.some((f) => f.slug === remembered && isExtendFamilyOption(f))) return remembered;
     return pickDefaultExtendFamily(
       pool,
       cachedFamiliesBoot.extend_family_defaults,
@@ -1930,12 +1936,17 @@ function SubmitAdvanceComposerApp({
       const routeSeedFamily = String(intent.family || "").trim() || extendDefault;
       setExtendFamily((prev) => {
         const prevOk = Boolean(prev) && extendRows.some((f) => f.slug === prev && isExtendFamilyOption(f));
-        return prevOk ? prev : extendDefault;
+        if (prevOk) return prev;
+        const remembered = lastSubmitFamily("video");
+        if (remembered && extendRows.some((f) => f.slug === remembered && isExtendFamilyOption(f))) {
+          return remembered;
+        }
+        return extendDefault;
       });
       setVaryFamily((prev) => prev || routeSeedFamily);
       setDeriveFamily((prev) => prev || routeSeedFamily);
       if (isStillMediaPath(mediaRelpath || intent.mediaRelpath)) {
-        const i2vDefault = pickDefaultI2VFamily(rows, intent.family);
+        const i2vDefault = pickDefaultI2VFamily(rows, String(intent.family || "").trim() || lastSubmitFamily("still"));
         setI2vFamily((prev) => {
           const prevOk = Boolean(prev) && rows.some((f) => f.slug === prev && isI2VFamilyOption(f));
           return prevOk ? prev : i2vDefault;
@@ -2254,6 +2265,16 @@ function SubmitAdvanceComposerApp({
     },
     [durationFamily, stacks, submitRouteKind],
   );
+
+  const chooseI2vFamily = useCallback((slug: string) => {
+    setI2vFamily(slug);
+    rememberSubmitFamily(slug, "still");
+  }, []);
+
+  const chooseExtendFamily = useCallback((slug: string) => {
+    setExtendFamily(slug);
+    rememberSubmitFamily(slug, "video");
+  }, []);
 
   useEffect(() => {
     setParamDraft({});
@@ -3009,7 +3030,7 @@ function SubmitAdvanceComposerApp({
                   <div className="work-product-quick-queue__families">
                     {familySelect(
                       i2vFamily,
-                      setI2vFamily,
+                      chooseI2vFamily,
                       "I2V family",
                       "Still → video origin family (Kneel / FaceBlast / Bounce…)",
                       i2vFamilyOpts,
@@ -3149,7 +3170,7 @@ function SubmitAdvanceComposerApp({
                     {extendOn
                       ? familySelect(
                           extendFamily,
-                          setExtendFamily,
+                          chooseExtendFamily,
                           "Extend",
                           "Family whose shape runs this Extend (video source_video)",
                           extendFamilyOpts,

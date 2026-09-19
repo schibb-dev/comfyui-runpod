@@ -10,6 +10,8 @@ const MAX_AGE_DAYS = 365;
 
 export type SubmitStackPrefs = {
   lastByRoute: Partial<Record<SubmitRouteKind, string>>;
+  /** Last workflow family the operator picked or submitted, per still/video route. */
+  lastFamilyByRoute: Partial<Record<SubmitRouteKind, string>>;
   /** `${route}:${familySlug}` — workflow family is route-specific; do not bleed across still/video. */
   byFamilyRoute: Record<string, string>;
   recentByRoute: Partial<Record<SubmitRouteKind, string[]>>;
@@ -24,7 +26,7 @@ export type RememberSubmitStackOpts = {
 };
 
 function emptyPrefs(): SubmitStackPrefs {
-  return { lastByRoute: {}, byFamilyRoute: {}, recentByRoute: {}, modelSignature: "" };
+  return { lastByRoute: {}, lastFamilyByRoute: {}, byFamilyRoute: {}, recentByRoute: {}, modelSignature: "" };
 }
 
 type CookieStore = {
@@ -145,6 +147,14 @@ function normalizePrefs(raw: unknown): SubmitStackPrefs {
     }
   }
 
+  const lastFamilyByRoute: Partial<Record<SubmitRouteKind, string>> = {};
+  if (doc.lastFamilyByRoute && typeof doc.lastFamilyByRoute === "object") {
+    for (const route of ["still", "video"] as const) {
+      const slug = String(doc.lastFamilyByRoute[route] || "").trim();
+      if (slug) lastFamilyByRoute[route] = slug;
+    }
+  }
+
   const byFamilyRoute: Record<string, string> = {};
   if (doc.byFamilyRoute && typeof doc.byFamilyRoute === "object") {
     for (const [key, val] of Object.entries(doc.byFamilyRoute)) {
@@ -166,6 +176,7 @@ function normalizePrefs(raw: unknown): SubmitStackPrefs {
 
   return {
     lastByRoute,
+    lastFamilyByRoute,
     byFamilyRoute,
     recentByRoute,
     modelSignature: String(doc.modelSignature || "").trim().toLowerCase(),
@@ -236,7 +247,11 @@ export function rememberSubmitStack(stackId: string, opts: RememberSubmitStackOp
   if (sig) prefs.modelSignature = sig;
 
   const familyKey = familyRouteKey(routeKind, opts.familySlug);
-  if (familyKey) prefs.byFamilyRoute[familyKey] = sid;
+  if (familyKey) {
+    prefs.byFamilyRoute[familyKey] = sid;
+    const family = String(opts.familySlug || "").trim();
+    if (family) prefs.lastFamilyByRoute[routeKind] = family;
+  }
 
   const recent = [sid, ...(prefs.recentByRoute[routeKind] || []).filter((id) => id !== sid)].slice(0, MAX_RECENT);
   prefs.recentByRoute[routeKind] = recent;
@@ -296,6 +311,20 @@ export function pickSubmitStack(
 
 export function resolveSubmitRouteKind(isStill: boolean): SubmitRouteKind {
   return isStill ? "still" : "video";
+}
+
+/** Last I2V (still) or extend (video) family the operator used. */
+export function lastSubmitFamily(routeKind: SubmitRouteKind): string {
+  return String(readSubmitStackPrefs().lastFamilyByRoute?.[routeKind] || "").trim();
+}
+
+/** Remember a family pick immediately so the next stills/video compose reopens it. */
+export function rememberSubmitFamily(slug: string, routeKind: SubmitRouteKind): void {
+  const family = String(slug || "").trim();
+  if (!family) return;
+  const prefs = readSubmitStackPrefs();
+  prefs.lastFamilyByRoute[routeKind] = family;
+  writeSubmitStackPrefs(prefs);
 }
 
 /** Initial stack for Submit compose (cookie + catalog, before async family boot). */

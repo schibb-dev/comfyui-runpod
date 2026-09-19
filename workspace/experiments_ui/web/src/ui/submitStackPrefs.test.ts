@@ -2,9 +2,11 @@ import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import {
   familyRouteKey,
   findStackIdByModelSignature,
+  lastSubmitFamily,
   pickSubmitStack,
   pickSubmitStackForOpen,
   readSubmitStackPrefs,
+  rememberSubmitFamily,
   rememberSubmitStack,
   setSubmitStackCookieStoreForTests,
   stackModelSignature,
@@ -47,6 +49,7 @@ describe("submitStackPrefs", () => {
   it("round-trips v2 prefs through the cookie", () => {
     const prefs: SubmitStackPrefs = {
       lastByRoute: { still: "i2v-720p-Q5", video: "i2v-480p-Q8" },
+      lastFamilyByRoute: { still: "FB9-FaceBlast", video: "FB9_GEX2" },
       byFamilyRoute: { "video:FB9": "i2v-480p-Q5" },
       recentByRoute: { video: ["i2v-480p-Q8", "i2v-720p-Q5"] },
       modelSignature: "480p:q8",
@@ -58,6 +61,7 @@ describe("submitStackPrefs", () => {
   it("does not apply video family stack to still route but can reuse the model", () => {
     writeSubmitStackPrefs({
       lastByRoute: { video: "i2v-480p-Q8" },
+      lastFamilyByRoute: {},
       byFamilyRoute: { "video:FB9-FaceBlast": "i2v-480p-Q5" },
       recentByRoute: {},
       modelSignature: "480p:q8",
@@ -74,6 +78,7 @@ describe("submitStackPrefs", () => {
   it("applies cross-route model preference when family default differs", () => {
     writeSubmitStackPrefs({
       lastByRoute: { video: "i2v-480p-Q8" },
+      lastFamilyByRoute: {},
       byFamilyRoute: {},
       recentByRoute: {},
       modelSignature: "480p:q8",
@@ -90,6 +95,7 @@ describe("submitStackPrefs", () => {
   it("prefers job stack, then route+family cookie, then family default", () => {
     writeSubmitStackPrefs({
       lastByRoute: { still: "i2v-480p-Q8" },
+      lastFamilyByRoute: {},
       byFamilyRoute: { "still:FB9": "i2v-480p-Q5" },
       recentByRoute: {},
       modelSignature: "",
@@ -123,6 +129,7 @@ describe("submitStackPrefs", () => {
     rememberSubmitStack("i2v-480p-Q8", { routeKind: "video", familySlug: "GEX2", stacks });
     expect(readSubmitStackPrefs()).toEqual({
       lastByRoute: { still: "i2v-720p-Q5", video: "i2v-480p-Q8" },
+      lastFamilyByRoute: { still: "FB9", video: "GEX2" },
       byFamilyRoute: {
         [familyRouteKey("still", "FB9")]: "i2v-720p-Q5",
         [familyRouteKey("video", "GEX2")]: "i2v-480p-Q8",
@@ -135,9 +142,20 @@ describe("submitStackPrefs", () => {
     });
   });
 
+  it("remembers I2V / extend family independently of stack and restores it next open", () => {
+    rememberSubmitFamily("BounceDanceA", "still");
+    rememberSubmitFamily("FB9_GEX2", "video");
+    expect(lastSubmitFamily("still")).toBe("BounceDanceA");
+    expect(lastSubmitFamily("video")).toBe("FB9_GEX2");
+    rememberSubmitStack("i2v-720p-Q5", { routeKind: "still", familySlug: "FB9-FaceBlast", stacks });
+    expect(lastSubmitFamily("still")).toBe("FB9-FaceBlast");
+    expect(lastSubmitFamily("video")).toBe("FB9_GEX2");
+  });
+
   it("pickSubmitStackForOpen uses still route and saved model signature", () => {
     writeSubmitStackPrefs({
       lastByRoute: { video: "i2v-720p-Q5" },
+      lastFamilyByRoute: {},
       byFamilyRoute: {},
       recentByRoute: {},
       modelSignature: "480p:q8",

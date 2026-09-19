@@ -6,6 +6,7 @@ import {
   isExtendFamilyOption,
   jobPromptVariantDisplayName,
   jobPromptVariantName,
+  pickDefaultI2VFamily,
   pickQuickExtendFamily,
   pickRerunPromptPreset,
   familyStackId,
@@ -174,6 +175,26 @@ const i2vFamily = (slug: string): WorkProductFamilyOption => ({
   slug,
   chain_role: "origin",
   io_class: "I2V",
+});
+
+describe("pickDefaultI2VFamily", () => {
+  const families = [
+    i2vFamily("BounceDanceA"),
+    i2vFamily("X-KNEEL-FB9"),
+    i2vFamily("FB9-FaceBlast"),
+    extendFamily("FB9_GEX"),
+  ];
+
+  it("keeps an operator hint when that family is still an I2V option", () => {
+    expect(pickDefaultI2VFamily(families, "BounceDanceA")).toBe("BounceDanceA");
+    expect(pickDefaultI2VFamily(families, "FB9-FaceBlast")).toBe("FB9-FaceBlast");
+  });
+
+  it("ignores a stale or extend hint and falls back to preferred I2V", () => {
+    expect(pickDefaultI2VFamily(families, "FB9_GEX")).toBe("X-KNEEL-FB9");
+    expect(pickDefaultI2VFamily(families, "gone")).toBe("X-KNEEL-FB9");
+    expect(pickDefaultI2VFamily(families)).toBe("X-KNEEL-FB9");
+  });
 });
 
 describe("isExtendFamilyOption", () => {
