@@ -14,6 +14,7 @@ runnable workflow JSON + job metadata.
   python3 shape_factory.py status --family FB9_GEX2 --wait --deposit
   python3 shape_factory.py timings summary --family FB9_GEX2
   python3 shape_factory.py timings compare --baseline job_a.job.json --candidate job_b.job.json
+  python3 shape_factory.py reuse-stats --apply
   python3 shape_factory.py validate --catalog --comfy-check
   python3 shape_factory.py quarantine list --status quarantined
   python3 shape_factory.py quarantine release --workflow path/to/workflow.json --note "reviewed"
@@ -75,6 +76,7 @@ from shape_factory_job_output_index import add_job_output_index_subparser
 from shape_factory_seed_sources import add_seed_sources_subparser
 from shape_factory_backfill import add_backfill_subparser
 from shape_factory_hygiene import add_hygiene_subparser
+from shape_factory_reuse_stats import add_reuse_stats_subparser
 from shape_factory_flow import (
     append_flow_event,
     status_allows_begin_edit,
@@ -9455,6 +9457,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     add_adopt_subparser(sub)
     add_hygiene_subparser(sub)
+    add_reuse_stats_subparser(sub)
 
     return parser
 

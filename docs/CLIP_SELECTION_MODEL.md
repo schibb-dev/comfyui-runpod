@@ -91,6 +91,8 @@ Cleanup UIs can filter **unused** (+ unstarred / retired) without guessing which
 
 **Shipped (library):** rows annotated with `used` / `use_count` from a jobs-tree scan; filters `unused_only` / `used_only`; hard-delete refuses used clips when `jobs_root` is provided.
 
+**Shipped (reuse stats):** `shape_factory.py reuse-stats` scans `*.job.json` and records seed/recipe rankings, split **hourly vs operator**. Hourly seed-family suggestions are **appetite-weighted**: operator `more`/`fast_track` is the strong prior, hourly appetite is a second vote, and unrated adhoc/hourly experiments keep a low floor so outliers stay possible without steering. Still `content_id` looking “invariant” is mostly a Stills→I2V affordance artifact. **Seed:** still `content_id`, `clip_id`, parent video, adhoc Use. **Recipe:** family, prompt variant, prompt text hash, family+prompt, frames/steps/overlap overrides, stack, family+prompt+stack. Snapshot: `.data/shape_factory/reuse_stats.json` (`--apply`). Each ranking uses `reuse_rate * log1p(unique)`; recipe ranking also requires the layer to cover ≥10% of that cohort.
+
 **Shipped (prefs):** `asset_clip_stars` multi-★ set (schema v5); legacy `default_clip_id` migrates into ★ and remains an alias. Automation uses `pick_seed_clip` (★ recency-weighted → usable-trim sidecar → full). See [HOURLY_UTILITY_PLAN.md](./HOURLY_UTILITY_PLAN.md) (U0).
 
 **Utility (not online path):** `shape_factory.py mine-clips-from-jobs` recovers bookmarks from historical job `vhs_window` Use marks — skips whole-file windows and near-dups; dry-run unless `--apply`; does not auto-★.
