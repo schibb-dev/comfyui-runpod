@@ -13719,6 +13719,12 @@ tr.disabled:hover td {
 .home-hourly-controls__field--num input {
   width: 64px;
 }
+.home-hourly-controls__field--wide input {
+  min-width: 180px;
+}
+.home-hourly-controls--explore {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
 .home-hourly-controls__toggle {
   display: flex;
   align-items: center;

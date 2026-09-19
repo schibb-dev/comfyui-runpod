@@ -213,7 +213,8 @@ Do **not** use “newer” to pull unstarred bookmarks into hourly. Rough v1:
 1. `simulate-picks --count 32` — family mix + backlog + clip when bound
 2. `hourly-state.json` — last family / step / cursor
 3. `hourly.log` — `phase=facial|seed|…`
-4. Home schedule — interval / queue min-max / pending max only
+4. Home schedule — interval / queue min-max / pending max, plus a time-boxed **explore** overlay (family / prompt / still / clip) with no appetite prior
+5. Factory MCP — same explore / status / simulate verbs without opening the planner ([FACTORY_MCP.md](./FACTORY_MCP.md))
 
 Debugging “why not GEX2?”: seed weights → whether tick was facial / i2v→gex
 cadence → whether seed path even reached GEX2.
@@ -243,6 +244,7 @@ cadence → whether seed path even reached GEX2.
 
 ## Related
 
+- [`FACTORY_MCP.md`](./FACTORY_MCP.md) — agent verbs over the same schedule / explore record
 - [`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md)
 - [`.data/WORKFLOW_FACTORY_NEXT.md`](../.data/WORKFLOW_FACTORY_NEXT.md)
 - [`CLIP_SELECTION_MODEL.md`](./CLIP_SELECTION_MODEL.md)

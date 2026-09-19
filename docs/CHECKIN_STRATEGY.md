@@ -18,7 +18,7 @@ This document defines what to commit, what to ignore, and a phased approach for 
 ### Root / infra
 - `.gitignore`, `.gitattributes`
 - `.cursor/rules/*.mdc` (shared agent guidance)
-- `.cursor/mcp.json` — project MCP servers that every clone should get. **Do** check this in when it has no secrets (this repo: Playwright via `npx`). **Do not** put API keys, OAuth client secrets, or tokens in it; use `${env:NAME}` (and each operator’s local env). Personal / all-workspace servers stay in `~/.cursor/mcp.json`, which is never in git.
+- `.cursor/mcp.json` — project MCP servers that every clone should get. **Do** check this in when it has no secrets (this repo: Playwright via `npx`, Factory hourly verbs via `workspace/scripts/factory_mcp.py`). **Do not** put API keys, OAuth client secrets, or tokens in it; use `${env:NAME}` (and each operator’s local env). Personal / all-workspace servers stay in `~/.cursor/mcp.json`, which is never in git. Factory MCP: [`FACTORY_MCP.md`](./FACTORY_MCP.md).
 - `Dockerfile`, `docker-compose.yml`
 - `entrypoint.sh`
 - `Makefile`, `package.json`

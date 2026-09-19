@@ -91,6 +91,7 @@ Use **`npm run up:minimal`** or **`make up-minimal`** only if you intentionally 
 | Document | What it is |
 |----------|------------|
 | [docs/CHECKIN_STRATEGY.md](docs/CHECKIN_STRATEGY.md) | Check-in / layering strategy for repo changes. |
+| [docs/FACTORY_MCP.md](docs/FACTORY_MCP.md) | Factory MCP verbs (hourly explore / status / simulate). |
 | [docs/KRITA_AI_SETUP.md](docs/KRITA_AI_SETUP.md) | Krita AI setup notes. |
 | [docs/LINEAGE_INDEX_SKETCH.md](docs/LINEAGE_INDEX_SKETCH.md) | Lineage index sketch / planning. |
 | [docs/PROJECT_ORGANIZATION_PROPOSAL.md](docs/PROJECT_ORGANIZATION_PROPOSAL.md) | Project organization proposal. |

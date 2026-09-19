@@ -53,6 +53,7 @@ nav:
     - Asset lifecycle: ASSET_LIFECYCLE_PLAN.md
     - Workflow repair: WORKFLOW_REPAIR_PLAN.md
     - Run spec display: RUN_SPEC_DISPLAY_PLAN.md
+    - Factory MCP: FACTORY_MCP.md
   - Reference:
     - All docs index: INDEX.md
     - Output path mitigation: OUTPUT_PATH_MITIGATION.md

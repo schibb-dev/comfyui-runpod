@@ -46,6 +46,7 @@ This page mirrors the planning-relevant sections of the repo-root [DOCUMENTATION
 | [DISPOSITION_BUCKET_MODEL.md](DISPOSITION_BUCKET_MODEL.md) | Bucket model reference (diagram-first). |
 | [CLIP_SELECTION_MODEL.md](CLIP_SELECTION_MODEL.md) | Asset / Clip / Use, starring, soft-delete. |
 | [HOURLY_UTILITY_PLAN.md](HOURLY_UTILITY_PLAN.md) | Hourlies as ruleset utility: policy file, clip ★+newer bind, decision ledger, Home UI. |
+| [FACTORY_MCP.md](FACTORY_MCP.md) | Factory MCP: hourly explore / status / simulate; same record as Home. |
 | [STILL_GALLERY_HUB_PLAN.md](STILL_GALLERY_HUB_PLAN.md) | Still gallery as launch hub: Submit / collections / map / ratings from one image. |
 | [STILL_AUTO_TAGGER_PLAN.md](STILL_AUTO_TAGGER_PLAN.md) | Still auto-tagger (PromptGen-large pin → provisional gallery tags). |
 | [STILL_TAG_INDEX_HOUR_PLAN.md](STILL_TAG_INDEX_HOUR_PLAN.md) | Index-hour drain: enqueue≠GPU; reserved window + front/inflight caps. |

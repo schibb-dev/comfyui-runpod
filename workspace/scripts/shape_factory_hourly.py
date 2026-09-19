@@ -2822,10 +2822,28 @@ def _seed_family_weights() -> List[Tuple[str, int]]:
     return out
 
 
-def select_seed_family(cursor: int = 0) -> str:
-    """Deterministic weighted family pick for an idle seed tick."""
+def select_seed_family(
+    cursor: int = 0,
+    *,
+    data_root: Optional[Path] = None,
+    schedule: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Deterministic weighted family pick for an idle seed tick.
+
+    An active explore overlay (family target) reserves a share of seed ticks
+    without requiring appetite. Simulate and live fills use the same function;
+    only ``mark_hourly_tick`` consumes remaining_ticks.
+    """
     weights = _seed_family_weights()
     rng = random.Random(int(cursor) ^ 0xFA21)
+    explore = hourly_explore_active(schedule=schedule, data_root=data_root)
+    explore_family = ""
+    if explore:
+        explore_family = str(explore.get("family") or "").strip()
+        if explore.get("kind") == "family":
+            explore_family = explore_family or str(explore.get("target") or "").strip()
+    if explore_family and rng.random() < float(explore.get("share") or EXPLORE_SHARE["boost"]):
+        return explore_family
     total = sum(w for _, w in weights)
     pick = rng.random() * float(total)
     acc = 0.0
@@ -3588,7 +3606,7 @@ def simulate_hourly_picks(
                 }
             )
         else:
-            family = select_seed_family(cursor)
+            family = select_seed_family(cursor, data_root=data_root)
             plan = plan_hourly_step(cursor=cursor, data_root=data_root, job_dir=job_root, family=family)
             if plan.get("family"):
                 family = str(plan.get("family"))
@@ -3602,6 +3620,12 @@ def simulate_hourly_picks(
             )
             video = preview.get("source_video") or picks_map.get("source_video") or plan.get("source_video")
             prompt = preview.get("prompt_profile") or picks_map.get("prompt_profile")
+            explore = hourly_explore_active(data_root=data_root)
+            reason = "prior"
+            if explore and explore.get("kind") == "family" and family == explore.get("family"):
+                reason = "explore"
+            elif explore and explore.get("kind") == "prompt":
+                reason = "explore"
             pick.update(
                 {
                     "family": family,
@@ -3616,6 +3640,7 @@ def simulate_hourly_picks(
                     "rating_kind": plan.get("rating_kind"),
                     "upgraded_from": plan.get("upgraded_from"),
                     "identity_anchor": plan.get("identity_anchor"),
+                    "reason": reason,
                 }
             )
         pick["input"] = _pick_input_summary(pick)
@@ -3643,6 +3668,7 @@ def simulate_hourly_picks(
             "seed_over_chain_share": _seed_over_chain_share(),
             "facial_lookback_days": _facial_lookback_days(),
             "advance_cursor_every_tick": advance_cursor_every_tick,
+            "explore": hourly_explore_active(data_root=data_root),
         },
     }
 
@@ -4148,6 +4174,9 @@ def pick_hourly_gex_catalog_prompt(
     if not catalogs:
         return None
     by_stem = {p.stem: p for p in catalogs}
+    explore = hourly_explore_active(data_root=data_root)
+    if not prefer_stem and explore and explore.get("kind") == "prompt":
+        prefer_stem = str(explore.get("prompt") or explore.get("target") or "").strip() or None
     if prefer_stem and prefer_stem in by_stem:
         return by_stem[prefer_stem]
     faceblast = by_stem.get("catalog-faceblast-extend")
@@ -4532,9 +4561,14 @@ DEFAULT_HOURLY_SCHEDULE: Dict[str, Any] = {
     "still_promo_boost": 16,
     "faceblast_promo_until": None,
     "faceblast_promo_boost": 16,
+    "explore": None,
     "last_tick_at": None,
     "updated_at": None,
 }
+
+EXPLORE_KINDS = ("family", "prompt", "still", "clip")
+EXPLORE_STRENGTHS = ("boost", "focus")
+EXPLORE_SHARE = {"boost": 0.50, "focus": 0.80}
 
 
 def default_hourly_schedule_path(*, data_root: Optional[Path] = None) -> Path:
@@ -4560,6 +4594,192 @@ def _parse_iso_ts(raw: Any) -> Optional[datetime]:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+def normalize_hourly_explore(raw: Any) -> Optional[Dict[str, Any]]:
+    """Normalize one operator explore overlay (no appetite prior required)."""
+    if raw in (None, "", False, {}):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    kind = str(raw.get("kind") or "").strip().lower()
+    target = str(raw.get("target") or "").strip()
+    family = str(raw.get("family") or "").strip()
+    prompt = str(raw.get("prompt") or "").strip()
+    still = str(raw.get("still") or "").strip()
+    clip = str(raw.get("clip") or "").strip()
+    if kind not in EXPLORE_KINDS:
+        if family:
+            kind = "family"
+        elif prompt:
+            kind = "prompt"
+        elif still:
+            kind = "still"
+        elif clip:
+            kind = "clip"
+        elif target:
+            kind = "family"
+        else:
+            return None
+    if kind == "family":
+        family = family or target
+        target = family
+    elif kind == "prompt":
+        prompt = prompt or target
+        target = prompt
+    elif kind == "still":
+        still = still or target or "recent"
+        target = still
+    elif kind == "clip":
+        clip = clip or target
+        target = clip
+    if not target:
+        return None
+    strength = str(raw.get("strength") or "boost").strip().lower()
+    if strength not in EXPLORE_STRENGTHS:
+        strength = "boost"
+    until_raw = raw.get("until")
+    until = None
+    if until_raw not in (None, "", False):
+        parsed = _parse_iso_ts(until_raw)
+        until = parsed.isoformat() if parsed else None
+    ticks = raw.get("remaining_ticks")
+    remaining: Optional[int] = None
+    if ticks not in (None, ""):
+        try:
+            remaining = max(0, int(ticks))
+        except (TypeError, ValueError):
+            remaining = None
+        if remaining == 0:
+            return None
+    set_at = raw.get("set_at")
+    set_iso = None
+    if set_at not in (None, ""):
+        parsed_set = _parse_iso_ts(set_at)
+        set_iso = parsed_set.isoformat() if parsed_set else None
+    return {
+        "kind": kind,
+        "target": target,
+        "family": family or (target if kind == "family" else ""),
+        "prompt": prompt,
+        "still": still,
+        "clip": clip,
+        "strength": strength,
+        "share": EXPLORE_SHARE[strength],
+        "until": until,
+        "remaining_ticks": remaining,
+        "set_at": set_iso,
+    }
+
+
+def hourly_explore_active(
+    *,
+    now: Optional[datetime] = None,
+    schedule: Optional[Dict[str, Any]] = None,
+    data_root: Optional[Path] = None,
+) -> Optional[Dict[str, Any]]:
+    """Return the live explore overlay, or None if expired / unset."""
+    sch = schedule if isinstance(schedule, dict) else load_hourly_schedule(data_root=data_root)
+    row = normalize_hourly_explore(sch.get("explore") if isinstance(sch, dict) else None)
+    if not row:
+        return None
+    ts = now or datetime.now(tz=timezone.utc)
+    until = _parse_iso_ts(row.get("until"))
+    if until is not None and ts >= until:
+        return None
+    ticks = row.get("remaining_ticks")
+    if ticks is not None and int(ticks) <= 0:
+        return None
+    return row
+
+
+def set_hourly_explore(
+    *,
+    kind: str = "family",
+    target: str = "",
+    family: str = "",
+    prompt: str = "",
+    still: str = "",
+    clip: str = "",
+    strength: str = "boost",
+    hours: Optional[float] = None,
+    ticks: Optional[int] = None,
+    until: Optional[str] = None,
+    schedule: Optional[Dict[str, Any]] = None,
+    data_root: Optional[Path] = None,
+    path: Optional[Path] = None,
+    apply: bool = True,
+) -> Dict[str, Any]:
+    """Write one explore overlay onto the shared hourly schedule."""
+    sch = dict(schedule if isinstance(schedule, dict) else load_hourly_schedule(path=path, data_root=data_root))
+    until_iso = until
+    if hours is not None and until_iso in (None, ""):
+        try:
+            hrs = float(hours)
+        except (TypeError, ValueError):
+            hrs = 0.0
+        if hrs > 0:
+            until_iso = (_utc_now() + timedelta(hours=hrs)).isoformat()
+    row = normalize_hourly_explore(
+        {
+            "kind": kind,
+            "target": target,
+            "family": family,
+            "prompt": prompt,
+            "still": still,
+            "clip": clip,
+            "strength": strength,
+            "until": until_iso,
+            "remaining_ticks": ticks,
+            "set_at": _utc_now().isoformat(),
+        }
+    )
+    sch["explore"] = row
+    # Cheap migration onto the two existing promo windows.
+    if row and row.get("kind") == "prompt" and "faceblast" in str(row.get("prompt") or row.get("target") or "").lower():
+        sch["faceblast_promo_until"] = row.get("until")
+    if row and row.get("kind") == "still" and str(row.get("still") or "") in {"", "recent"}:
+        sch["still_promo_until"] = row.get("until")
+    if apply:
+        sch = save_hourly_schedule(sch, path=path, data_root=data_root)
+    return {
+        "ok": True,
+        "explore": hourly_explore_active(schedule=sch, data_root=data_root),
+        "schedule": sch,
+    }
+
+
+def clear_hourly_explore(
+    *,
+    schedule: Optional[Dict[str, Any]] = None,
+    data_root: Optional[Path] = None,
+    path: Optional[Path] = None,
+    apply: bool = True,
+    clear_migrated_promos: bool = False,
+) -> Dict[str, Any]:
+    sch = dict(schedule if isinstance(schedule, dict) else load_hourly_schedule(path=path, data_root=data_root))
+    sch["explore"] = None
+    if clear_migrated_promos:
+        sch["still_promo_until"] = None
+        sch["faceblast_promo_until"] = None
+    if apply:
+        sch = save_hourly_schedule(sch, path=path, data_root=data_root)
+    return {"ok": True, "explore": None, "schedule": sch}
+
+
+def consume_explore_tick(schedule: Dict[str, Any]) -> Dict[str, Any]:
+    """Decrement remaining_ticks on a real fill. Simulate must not call this."""
+    sch = dict(schedule)
+    row = normalize_hourly_explore(sch.get("explore"))
+    if not row or row.get("remaining_ticks") is None:
+        return sch
+    left = int(row["remaining_ticks"]) - 1
+    if left <= 0:
+        sch["explore"] = None
+    else:
+        row["remaining_ticks"] = left
+        sch["explore"] = row
+    return sch
 
 
 def normalize_hourly_schedule(raw: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -4628,6 +4848,7 @@ def normalize_hourly_schedule(raw: Optional[Dict[str, Any]] = None) -> Dict[str,
     except (TypeError, ValueError):
         fb_boost = float(out["faceblast_promo_boost"])
     out["faceblast_promo_boost"] = max(1.0, min(50.0, fb_boost))
+    out["explore"] = normalize_hourly_explore(src.get("explore"))
     out["last_tick_at"] = src.get("last_tick_at")
     out["updated_at"] = src.get("updated_at")
     return out
@@ -4688,6 +4909,7 @@ def mark_hourly_tick(
 ) -> Dict[str, Any]:
     sch = normalize_hourly_schedule(schedule)
     sch["last_tick_at"] = (at or _utc_now()).isoformat()
+    sch = consume_explore_tick(sch)
     return save_hourly_schedule(sch, path=path, data_root=data_root)
 
 
@@ -4713,6 +4935,7 @@ def hourly_schedule_status(
         "submit_modes": list(HOURLY_SUBMIT_MODES),
         "still_promo": still_promo_active(now=ts, schedule=sch, data_root=data_root),
         "faceblast_promo": faceblast_promo_active(now=ts, schedule=sch, data_root=data_root),
+        "explore": hourly_explore_active(now=ts, schedule=sch, data_root=data_root),
     }
 
 
@@ -4998,6 +5221,14 @@ def main() -> int:
     sset.add_argument("--faceblast-promo-clear", action="store_true", help="End the FaceBlast-extend prompt promo")
     sset.add_argument("--faceblast-promo-boost", type=float, default=None, help="Weight multiplier for faceblast-extend prompt recipes")
     sset.add_argument("--mark-tick", action="store_true", help="Set last_tick_at=now")
+    sset.add_argument("--explore-clear", action="store_true", help="Clear the operator explore overlay")
+    sset.add_argument("--explore-family", type=str, default=None, help="Explore this family (no appetite required)")
+    sset.add_argument("--explore-prompt", type=str, default=None, help="Pin this catalog prompt stem")
+    sset.add_argument("--explore-still", type=str, default=None, help="Explore a still hash or 'recent'")
+    sset.add_argument("--explore-clip", type=str, default=None, help="Explore this clip id")
+    sset.add_argument("--explore-strength", type=str, default="boost", choices=list(EXPLORE_STRENGTHS))
+    sset.add_argument("--explore-hours", type=float, default=None)
+    sset.add_argument("--explore-ticks", type=int, default=None)
 
     args = p.parse_args()
     data_root = args.data_root.expanduser().resolve() if getattr(args, "data_root", None) else None
@@ -5137,6 +5368,36 @@ def main() -> int:
                 sch["faceblast_promo_until"] = (_utc_now() + timedelta(hours=hours)).isoformat()
         if getattr(args, "faceblast_promo_boost", None) is not None:
             sch["faceblast_promo_boost"] = float(args.faceblast_promo_boost)
+        if getattr(args, "explore_clear", False):
+            sch["explore"] = None
+        elif any(
+            getattr(args, key, None)
+            for key in ("explore_family", "explore_prompt", "explore_still", "explore_clip")
+        ):
+            kind = "family"
+            target = ""
+            if args.explore_family:
+                kind, target = "family", str(args.explore_family)
+            elif args.explore_prompt:
+                kind, target = "prompt", str(args.explore_prompt)
+            elif args.explore_still:
+                kind, target = "still", str(args.explore_still)
+            elif args.explore_clip:
+                kind, target = "clip", str(args.explore_clip)
+            built = set_hourly_explore(
+                kind=kind,
+                target=target,
+                family=str(args.explore_family or ""),
+                prompt=str(args.explore_prompt or ""),
+                still=str(args.explore_still or ""),
+                clip=str(args.explore_clip or ""),
+                strength=str(args.explore_strength or "boost"),
+                hours=args.explore_hours,
+                ticks=args.explore_ticks,
+                schedule=sch,
+                apply=False,
+            )
+            sch = built["schedule"]
         if args.mark_tick:
             sch = mark_hourly_tick(sch, path=path, data_root=data_root)
         else:

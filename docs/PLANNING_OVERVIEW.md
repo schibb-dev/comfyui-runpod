@@ -233,6 +233,7 @@ _Use this section during mental exploration. Promote bullets into a program’s 
 | Bucket model Phase 2 (work items, pools) | [`BUCKET_MODEL_PHASE2_PLAN.md`](./BUCKET_MODEL_PHASE2_PLAN.md) |
 | Clips / usable trim / starring / soft-delete | [`CLIP_SELECTION_MODEL.md`](./CLIP_SELECTION_MODEL.md) |
 | Hourly as ruleset utility (policy + clip bind + observability) | [`HOURLY_UTILITY_PLAN.md`](./HOURLY_UTILITY_PLAN.md) |
+| Factory MCP (hourly explore / status / simulate) | [`FACTORY_MCP.md`](./FACTORY_MCP.md) |
 | Still image gallery as launch hub | [`STILL_GALLERY_HUB_PLAN.md`](./STILL_GALLERY_HUB_PLAN.md) |
 | Corpus lifecycle (judgment + generation loop) | [`CORPUS_LIFECYCLE.md`](./CORPUS_LIFECYCLE.md) |
 | Asset lifecycle (file custody / locate / move) | [`ASSET_LIFECYCLE_PLAN.md`](./ASSET_LIFECYCLE_PLAN.md) |

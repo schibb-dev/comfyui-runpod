@@ -2183,6 +2183,24 @@ export type HourlyChainBacklogsResponse = {
 };
 
 export type HourlySubmitMode = "auto" | "comfy" | "pending";
+
+export type HourlyExploreKind = "family" | "prompt" | "still" | "clip" | string;
+export type HourlyExploreStrength = "boost" | "focus" | string;
+
+export type HourlyExplore = {
+  kind?: HourlyExploreKind;
+  target?: string;
+  family?: string;
+  prompt?: string;
+  still?: string;
+  clip?: string;
+  strength?: HourlyExploreStrength;
+  share?: number;
+  until?: string | null;
+  remaining_ticks?: number | null;
+  set_at?: string | null;
+};
+
 export type HourlySchedule = {
   interval_minutes?: number;
   enabled?: boolean;
@@ -2196,6 +2214,7 @@ export type HourlySchedule = {
   still_promo_boost?: number;
   faceblast_promo_until?: string | null;
   faceblast_promo_boost?: number;
+  explore?: HourlyExplore | null;
   last_tick_at?: string | null;
   updated_at?: string | null;
 };
@@ -2224,6 +2243,7 @@ export type HourlyScheduleStatus = {
     until?: string | null;
     boost?: number;
   } | null;
+  explore?: HourlyExplore | null;
   saved?: HourlySchedule;
   error?: string;
   detail?: string;

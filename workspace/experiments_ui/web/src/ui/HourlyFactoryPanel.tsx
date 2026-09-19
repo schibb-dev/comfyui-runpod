@@ -16,6 +16,8 @@ import type {
   HourlyChainBacklog,
   HourlyChainBacklogItem,
   HourlyChainBacklogsResponse,
+  HourlyExploreKind,
+  HourlyExploreStrength,
   HourlyScheduleStatus,
   HourlySubmitMode,
 } from "./types";
@@ -183,8 +185,135 @@ function HourlyScheduleControls({
         {initial?.faceblast_promo?.until
           ? ` · FaceBlast-extend prompts promoted until ${formatDue(initial.faceblast_promo.until)}`
           : ""}
+        {initial?.explore?.target
+          ? ` · exploring ${initial.explore.target} (${initial.explore.strength || "boost"})`
+          : ""}
       </p>
       <p className="home-hourly-controls__hint factory-muted">{ruleHint}</p>
+      {err ? <p className="home-hourly-controls__err">{err}</p> : null}
+    </div>
+  );
+}
+
+function HourlyExploreControls({
+  initial,
+  onSaved,
+}: {
+  initial?: HourlyScheduleStatus | null;
+  onSaved: (s: HourlyScheduleStatus) => void;
+}) {
+  const live = initial?.explore;
+  const [kind, setKind] = useState<HourlyExploreKind>(live?.kind || "family");
+  const [target, setTarget] = useState(live?.target || "");
+  const [strength, setStrength] = useState<HourlyExploreStrength>(live?.strength || "boost");
+  const [hours, setHours] = useState(2);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    if (!live) return;
+    setKind(live.kind || "family");
+    setTarget(live.target || "");
+    setStrength(live.strength || "boost");
+  }, [live]);
+
+  const apply = async () => {
+    const want = target.trim();
+    if (!want) {
+      setErr("Set a family, prompt, still, or clip to explore.");
+      return;
+    }
+    setBusy(true);
+    setErr("");
+    try {
+      const res = await setHourlySchedule({
+        explore: {
+          kind,
+          target: want,
+          strength,
+          hours: hours > 0 ? hours : undefined,
+        },
+      });
+      onSaved(res);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clear = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      const res = await setHourlySchedule({ explore_clear: true });
+      onSaved(res);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="home-hourly-controls home-hourly-controls--explore">
+      <div className="home-hourly-controls__row">
+        <label className="home-hourly-controls__field">
+          <span>Explore</span>
+          <select value={kind} disabled={busy} onChange={(e) => setKind(e.target.value)}>
+            <option value="family">Family</option>
+            <option value="prompt">Prompt</option>
+            <option value="still">Still</option>
+            <option value="clip">Clip</option>
+          </select>
+        </label>
+        <label className="home-hourly-controls__field home-hourly-controls__field--wide">
+          <span>Target</span>
+          <input
+            type="text"
+            value={target}
+            disabled={busy}
+            placeholder="X-KNEEL-FB9-bare"
+            onChange={(e) => setTarget(e.target.value)}
+          />
+        </label>
+        <label className="home-hourly-controls__field">
+          <span>Strength</span>
+          <select value={strength} disabled={busy} onChange={(e) => setStrength(e.target.value)}>
+            <option value="boost">Boost (~half)</option>
+            <option value="focus">Focus (~most)</option>
+          </select>
+        </label>
+        <label className="home-hourly-controls__field home-hourly-controls__field--num">
+          <span>Hours</span>
+          <input
+            type="number"
+            min={0}
+            max={48}
+            step={0.5}
+            value={hours}
+            disabled={busy}
+            onChange={(e) => setHours(Number(e.target.value))}
+          />
+        </label>
+        <button type="button" className="drt-btn" disabled={busy} onClick={() => void apply()}>
+          {busy ? "Saving…" : "Explore"}
+        </button>
+        <button type="button" className="drt-btn" disabled={busy || !live} onClick={() => void clear()}>
+          Clear
+        </button>
+      </div>
+      <p className="home-hourly-controls__hint factory-muted">
+        Time-boxed overlay — no appetite prior. Same record as Factory MCP{" "}
+        <code>hourly_explore</code>.
+        {live?.target
+          ? ` Active: ${live.kind || "family"} ${live.target}${
+              live.until ? ` until ${formatDue(live.until)}` : ""
+            }${
+              typeof live.remaining_ticks === "number" ? ` · ${live.remaining_ticks} ticks left` : ""
+            }.`
+          : " Idle."}
+      </p>
       {err ? <p className="home-hourly-controls__err">{err}</p> : null}
     </div>
   );
@@ -804,6 +933,10 @@ export function HourlyFactoryPanel({ refreshToken = 0 }: { refreshToken?: number
           initial={schedule ?? summary?.hourly?.schedule ?? null}
           onSaved={(s) => setSchedule(s)}
         />
+        <HourlyExploreControls
+          initial={schedule ?? summary?.hourly?.schedule ?? null}
+          onSaved={(s) => setSchedule(s)}
+        />
         <HourlyNextSample sample={summary?.hourly?.next_sample} />
       </Panel>
       <HourlyChainBacklogsCard refreshToken={refreshToken} />
@@ -828,6 +961,9 @@ export function HourlyHomeTeaser({
         hourlies {num(schedule?.factory_hourly_pending)}/{num(sch?.pending_hourly_min ?? 5)}
         {" · "}
         mode {sch?.submit_mode || "auto"}
+        {schedule?.explore?.target
+          ? ` · exploring ${schedule.explore.target}`
+          : ""}
       </p>
       <HourlyNextSample sample={nextSample} />
     </>

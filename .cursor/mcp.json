@@ -3,6 +3,11 @@
     "playwright": {
       "command": "npx",
       "args": ["-y", "@playwright/mcp@latest", "--browser=chromium"]
+    },
+    "factory": {
+      "command": "python3",
+      "args": ["${workspaceFolder}/workspace/scripts/factory_mcp.py"],
+      "cwd": "${workspaceFolder}"
     }
   }
 }

@@ -108,6 +108,7 @@ import type {
   DispositionCatalogMarker,
   HomeSummaryResponse,
   HourlyChainBacklogsResponse,
+  HourlyExplore,
   HourlyScheduleStatus,
   HourlySubmitMode,
   QueueLedgerControlAction,
@@ -187,6 +188,16 @@ export async function setHourlySchedule(body: {
   faceblast_promo_until?: string | null;
   faceblast_promo_clear?: boolean;
   faceblast_promo_boost?: number;
+  explore?: HourlyExplore | null;
+  explore_clear?: boolean;
+  explore_kind?: string;
+  explore_family?: string;
+  explore_prompt?: string;
+  explore_still?: string;
+  explore_clip?: string;
+  explore_strength?: string;
+  explore_hours?: number;
+  explore_ticks?: number;
   mark_tick?: boolean;
 }): Promise<HourlyScheduleStatus> {
   const r = await fetch("/api/shape-factory/hourly-schedule", {

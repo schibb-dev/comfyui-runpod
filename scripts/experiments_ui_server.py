@@ -2463,6 +2463,39 @@ def _hourly_schedule_set_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dic
             ).isoformat()
     if body.get("faceblast_promo_boost") is not None:
         sch["faceblast_promo_boost"] = body.get("faceblast_promo_boost")
+    explore_body = body.get("explore")
+    if body.get("explore_clear") is True or explore_body is None and "explore" in body:
+        from shape_factory_hourly import clear_hourly_explore  # type: ignore
+
+        sch = clear_hourly_explore(schedule=sch, apply=False)["schedule"]
+    elif isinstance(explore_body, dict) or any(
+        body.get(k)
+        for k in ("explore_family", "explore_prompt", "explore_still", "explore_clip")
+    ):
+        from shape_factory_hourly import set_hourly_explore  # type: ignore
+
+        ex = explore_body if isinstance(explore_body, dict) else {}
+        sch = set_hourly_explore(
+            kind=str(ex.get("kind") or body.get("explore_kind") or "family"),
+            target=str(
+                ex.get("target")
+                or body.get("explore_family")
+                or body.get("explore_prompt")
+                or body.get("explore_still")
+                or body.get("explore_clip")
+                or ""
+            ),
+            family=str(ex.get("family") or body.get("explore_family") or ""),
+            prompt=str(ex.get("prompt") or body.get("explore_prompt") or ""),
+            still=str(ex.get("still") or body.get("explore_still") or ""),
+            clip=str(ex.get("clip") or body.get("explore_clip") or ""),
+            strength=str(ex.get("strength") or body.get("explore_strength") or "boost"),
+            hours=ex.get("hours", body.get("explore_hours")),
+            ticks=ex.get("remaining_ticks", body.get("explore_ticks")),
+            until=ex.get("until"),
+            schedule=sch,
+            apply=False,
+        )["schedule"]
     if body.get("mark_tick"):
         save = mark_hourly_tick(sch, path=path, data_root=data_root)
     else:
