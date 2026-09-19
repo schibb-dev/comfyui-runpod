@@ -62,13 +62,17 @@ export function scrollFocusItemIntoView(
   root: HTMLElement | null,
   el: HTMLElement | null,
   axis: Axis = "y",
+  opts?: { align?: "center" | "start"; behavior?: ScrollBehavior },
 ) {
   if (!root || !el) return;
+  const align = opts?.align ?? "center";
+  const behavior = opts?.behavior ?? "smooth";
   if (axis === "y") {
-    const top = el.offsetTop - root.clientHeight / 2 + el.clientHeight / 2;
-    root.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+    const top = align === "start" ? el.offsetTop : el.offsetTop - root.clientHeight / 2 + el.clientHeight / 2;
+    root.scrollTo({ top: Math.max(0, top), behavior });
     return;
   }
-  const left = el.offsetLeft - root.clientWidth / 2 + el.clientWidth / 2;
-  root.scrollTo({ left: Math.max(0, left), behavior: "smooth" });
+  const left =
+    align === "start" ? el.offsetLeft : el.offsetLeft - root.clientWidth / 2 + el.clientWidth / 2;
+  root.scrollTo({ left: Math.max(0, left), behavior });
 }

@@ -12794,7 +12794,6 @@ class Handler(BaseHTTPRequestHandler):
                         changed_at = known_rec.get("last_seen_at") if isinstance(known_rec.get("last_seen_at"), str) else None
                         row: Dict[str, Any] = {
                             "prompt_id": pid,
-                            "raw": it,
                             "external": mapped is None,
                             "exp_id": mapped.get("exp_id") if isinstance(mapped, dict) else None,
                             "run_id": mapped.get("run_id") if isinstance(mapped, dict) else None,
@@ -12820,7 +12819,7 @@ class Handler(BaseHTTPRequestHandler):
                 200,
                 {
                     "experiments": exp_runs,
-                    "comfyui": {"running": comfy_running, "pending": comfy_pending, "raw": queue_obj if isinstance(queue_obj, dict) else {}},
+                    "comfyui": {"running": comfy_running, "pending": comfy_pending},
                 },
             )
 

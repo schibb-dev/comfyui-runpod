@@ -17,7 +17,9 @@ import { comfyHealthIsBackoff, formatComfyRetry } from "./comfyHealth";
 import { ComfyLiveMetricsBar, ComfyLivePreview } from "./ComfyLivePreview";
 import { ComfyUiLink } from "./comfyUiWindow";
 import { discoveryLibraryHref, parseQueueDeepLink, queueHref, submitHref, workbenchHref } from "./discoveryDeepLink";
+import { useRegisterPhoneOverflow } from "./phoneChrome";
 import { PageHeader } from "./PageHeader";
+import { useDeviceContext } from "./viewport";
 import { PipelineMediaPlayer, vhsWindowFromKeyParams } from "./PipelineMediaPlayer";
 import { PipelineFilterRow, PipelineList, PipelineScreen, PipelineScroll } from "./PipelineScreen";
 import { nextQueueSectionShowForDoubleClick } from "./filterGroupDoubleClick";
@@ -31,12 +33,18 @@ import {
   type QueueHistorySortMode,
   type QueueLiveSortMode,
 } from "./queueMonitorSort";
+import { QueueFocusStage, QueueFocusSwipeView } from "./QueueFocusSwipe";
 import {
+  buildQueueSwipeEntries,
   queueHistorySectionHint,
+  queueItemFocusKey,
   queueRunningSectionHint,
+  queueSwipeSectionLabel,
   queueWaitingSectionHint,
   queueComfyItemTitle,
   type QueueMonitorSectionId,
+  type QueueSwipeEntry,
+  type QueueSwipeSection,
 } from "./queueMonitorSections";
 import {
   isQueueStillTagItem,
@@ -385,6 +393,82 @@ function StatusChip({
   );
 }
 
+type QueueLiveKind = "running" | "waiting";
+
+function liveCompactMeta(item: QueueComfyItem, kind: QueueLiveKind) {
+  const stillTag = isQueueStillTagItem(item);
+  const statusLabel = stillTag
+    ? queueStillTagStatusLabel(kind)
+    : kind === "running"
+      ? "running"
+      : item.external
+        ? "external"
+        : "queued";
+  return {
+    title: queueComfyItemTitle(item),
+    statusLabel,
+    statusVisual: kind === "running" ? "running" : "queued",
+    thumb: queueThumb(item),
+  };
+}
+
+function historyCompactMeta(item: ComfyHistoryItem) {
+  const stillTag = isQueueStillTagItem(item);
+  const statusVisual = historyStatusVisual(item.status);
+  const statusLabel = stillTag
+    ? queueStillTagStatusLabel("history", item.status)
+    : statusVisual === "error"
+      ? item.hollow_success
+        ? "no output"
+        : "error"
+      : statusVisual === "interrupted"
+        ? "interrupted"
+        : item.status || "done";
+  const title =
+    queueComfyItemTitle(item) ||
+    item.workflow_name ||
+    basename(item.primary_video_relpath) ||
+    basename(item.primary_image_relpath) ||
+    shortId(item.prompt_id, 16);
+  return { title, statusLabel, statusVisual, thumb: historyThumb(item) };
+}
+
+function QueueCompactCard({
+  title,
+  statusLabel,
+  statusVisual,
+  thumb,
+  active,
+  onOpen,
+}: {
+  title: string;
+  statusLabel: string;
+  statusVisual: string;
+  thumb: string | null;
+  active?: boolean;
+  onOpen: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={`queue-monitor__compact queue-monitor__compact--${statusVisual}${active ? " is-active" : ""}`}
+      onClick={onOpen}
+    >
+      {thumb ? (
+        <img className="queue-monitor__compact-thumb" src={thumb} alt="" loading="lazy" decoding="async" />
+      ) : (
+        <div className="queue-monitor__compact-thumb queue-monitor__compact-thumb--empty" />
+      )}
+      <span className="queue-monitor__compact-body">
+        <span className={`queue-monitor__compact-status queue-monitor__compact-status--${statusVisual}`}>
+          {statusLabel}
+        </span>
+        <strong className="queue-monitor__compact-title">{title}</strong>
+      </span>
+    </button>
+  );
+}
+
 function queueVideoUrl(item: QueueComfyItem): string | null {
   if (item.input_media_kind === "video" && item.input_media_url) return item.input_media_url;
   if (item.input_media_url && /\.(mp4|webm|mov|mkv)(\?|$)/i.test(item.input_media_url)) return item.input_media_url;
@@ -392,6 +476,101 @@ function queueVideoUrl(item: QueueComfyItem): string | null {
     return "/files/" + encodeURIComponent(item.input_media_relpath.replace(/\\/g, "/"));
   }
   return null;
+}
+
+function QueueGlanceList({ rows }: { rows?: QueueGlanceRow[] }) {
+  if (!rows?.length) return null;
+  return (
+    <dl className="pipeline-row__glance" aria-label="Job summary">
+      {rows.map((row) => (
+        <div
+          key={row.key}
+          className={[
+            "pipeline-row__glance-row",
+            row.emphasis ? "pipeline-row__glance-row--emphasis" : "",
+            row.muted ? "pipeline-row__glance-row--muted" : "",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+        >
+          <dt>{row.label}</dt>
+          <dd
+            className={
+              row.prompt
+                ? "pipeline-row__glance-value--prompt"
+                : row.hrefKind === "comfyui"
+                  ? "mono pipeline-row__glance-value--link"
+                  : "mono"
+            }
+            title={row.prompt ? undefined : row.title || row.value}
+          >
+            {row.prompt ? (
+              <PromptPeekButton prompt={row.prompt} label={row.value} />
+            ) : row.hrefKind === "comfyui" ? (
+              <ComfyUiLink title="Open ComfyUI">{row.value}</ComfyUiLink>
+            ) : (
+              row.value
+            )}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function QueueJobDetailsBlock({
+  title,
+  statusLabel,
+  statusVisual,
+  promptId,
+  kindBadge,
+  glanceRows,
+  queuedAt,
+  changedAt,
+  errorMessage,
+}: {
+  title: string;
+  statusLabel: string;
+  statusVisual: string;
+  promptId?: string | null;
+  kindBadge?: { label: string; title: string; className: string } | null;
+  glanceRows?: QueueGlanceRow[];
+  queuedAt?: string | null;
+  changedAt?: string | null;
+  errorMessage?: string | null;
+}) {
+  const isError = statusVisual === "error" || statusVisual === "interrupted";
+  return (
+    <div className="queue-monitor__job-details">
+      <p className="queue-monitor__job-details-title">
+        <span
+          className={`work-products-status-toggle work-products-status-toggle--${statusVisual} is-on${
+            isError ? " queue-status-badge--loud" : ""
+          }`}
+          style={{ pointerEvents: "none" }}
+        >
+          <span className="work-products-status-toggle__label">{statusLabel}</span>
+        </span>
+        <strong>{title}</strong>
+      </p>
+      <div className="pipeline-row__times mono" aria-label="Timestamps">
+        <span title="When this job entered the queue / started">queued {formatQueueWhen(queuedAt)}</span>
+        <span title="Last status change (finished, failed, or updated)">changed {formatQueueWhen(changedAt)}</span>
+        <code className="pipeline-row__key" title={promptId || undefined}>
+          {shortId(promptId, 14)}
+        </code>
+      </div>
+      {kindBadge ? (
+        <div className="pipeline-row__kind">
+          <span className={`pipeline-row__kind-badge ${kindBadge.className}`} title={kindBadge.title}>
+            {kindBadge.label}
+          </span>
+        </div>
+      ) : null}
+      {errorMessage ? <p className="pipeline-row__error-line">{errorMessage}</p> : null}
+      <QueueGlanceList rows={glanceRows} />
+    </div>
+  );
 }
 
 function QueuePipelineRow({
@@ -486,42 +665,7 @@ function QueuePipelineRow({
             </div>
           ) : null}
           {errorMessage ? <p className="pipeline-row__error-line">{errorMessage}</p> : null}
-          {glanceRows && glanceRows.length ? (
-            <dl className="pipeline-row__glance" aria-label="Job summary">
-              {glanceRows.map((row) => (
-                <div
-                  key={row.key}
-                  className={[
-                    "pipeline-row__glance-row",
-                    row.emphasis ? "pipeline-row__glance-row--emphasis" : "",
-                    row.muted ? "pipeline-row__glance-row--muted" : "",
-                  ]
-                    .filter(Boolean)
-                    .join(" ")}
-                >
-                  <dt>{row.label}</dt>
-                  <dd
-                    className={
-                      row.prompt
-                        ? "pipeline-row__glance-value--prompt"
-                        : row.hrefKind === "comfyui"
-                          ? "mono pipeline-row__glance-value--link"
-                          : "mono"
-                    }
-                    title={row.prompt ? undefined : row.title || row.value}
-                  >
-                    {row.prompt ? (
-                      <PromptPeekButton prompt={row.prompt} label={row.value} />
-                    ) : row.hrefKind === "comfyui" ? (
-                      <ComfyUiLink title="Open ComfyUI">{row.value}</ComfyUiLink>
-                    ) : (
-                      row.value
-                    )}
-                  </dd>
-                </div>
-              ))}
-            </dl>
-          ) : null}
+          <QueueGlanceList rows={glanceRows} />
           <div className="pipeline-row__actions">{actions}</div>
         </div>
       </div>
@@ -529,9 +673,135 @@ function QueuePipelineRow({
   );
 }
 
-/** Live Comfy rows: running or waiting. API cancel still uses Comfy's "pending" for waiting. */
-type QueueLiveKind = "running" | "waiting";
+function QueueLiveActions({
+  item,
+  kind,
+  movingPromptId,
+  onMovePrompt,
+  onRefresh,
+}: {
+  item: QueueComfyItem;
+  kind: QueueLiveKind;
+  movingPromptId?: string | null;
+  onMovePrompt?: (item: QueueComfyItem, to: "front" | "back") => Promise<void>;
+  onRefresh: () => void;
+}) {
+  const pid = item.prompt_id ?? "";
+  const moveBusy = Boolean(pid) && movingPromptId === pid;
+  const jobKey = String(item.job_key || "").trim() || null;
+  const workbenchUrl = workbenchHref({ jobKey, promptId: pid || null });
+  const stillTag = isQueueStillTagItem(item);
+  const editUrl =
+    kind === "waiting" && jobKey && !stillTag ? submitHref({ editJob: jobKey, origin: "queue" }) : null;
+  const cancelKind = kind === "waiting" ? "pending" : "running";
+  return (
+    <>
+      <button
+        type="button"
+        disabled={!pid || moveBusy}
+        title={kind === "running" ? "Interrupt current ComfyUI execution" : "Remove from Comfy waiting queue"}
+        onClick={() => {
+          void (async () => {
+            if (!pid) return;
+            await comfyCancel({ prompt_id: pid, kind: cancelKind });
+            onRefresh();
+          })();
+        }}
+      >
+        {kind === "running" ? "Interrupt" : "Cancel"}
+      </button>
+      <button
+        type="button"
+        disabled={moveBusy}
+        title="Save this queue item for later"
+        onClick={() => {
+          void saveQueueItemForLater({
+            title: item.workflow_name || `Saved ${pid || "queue item"}`,
+            prompt_id: pid || undefined,
+            tags: ["comfy-queue"],
+            payload: {
+              workflow_name: item.workflow_name ?? null,
+              input_media_relpath: item.input_media_relpath ?? null,
+              key_params: item.key_params ?? {},
+              source: "comfy-queue-monitor",
+            },
+          });
+        }}
+      >
+        Save
+      </button>
+      {kind === "waiting" && pid ? (
+        <>
+          <button
+            type="button"
+            disabled={moveBusy}
+            title="Move this waiting prompt to the front of the queue"
+            onClick={() => {
+              void onMovePrompt?.(item, "front");
+            }}
+          >
+            {moveBusy ? "Moving…" : "Move to top"}
+          </button>
+          <button
+            type="button"
+            disabled={moveBusy}
+            title="Move this waiting prompt to the back of the queue"
+            onClick={() => {
+              void onMovePrompt?.(item, "back");
+            }}
+          >
+            {moveBusy ? "Moving…" : "Move to bottom"}
+          </button>
+        </>
+      ) : null}
+      <a
+        className="pipeline-row__link"
+        href={workbenchUrl}
+        title={
+          jobKey ? `Open ${jobKey} in Workbench` : pid ? `Find prompt ${pid} in Workbench` : "Open Workbench"
+        }
+      >
+        Workbench
+      </a>
+      {editUrl ? (
+        <a
+          className="drt-btn"
+          href={editUrl}
+          title="Edit this run in Submit (unqueues if waiting on Comfy; holds pending-drain)"
+        >
+          Edit
+        </a>
+      ) : null}
+    </>
+  );
+}
 
+function QueueHistoryActions({ item }: { item: ComfyHistoryItem }) {
+  const jobKey = String(item.job_key || "").trim() || null;
+  const pid = String(item.prompt_id || "").trim();
+  const libraryRel = historyAssetRelpath(item);
+  const workbenchUrl = workbenchHref({ jobKey, promptId: pid || null });
+  return (
+    <>
+      {libraryRel ? (
+        <a className="pipeline-row__link" href={discoveryLibraryHref(libraryRel)} title="Open in Library">
+          Open in Library
+        </a>
+      ) : (
+        <span className="pipeline-row__meta">No library path</span>
+      )}
+      <a
+        className="pipeline-row__link"
+        href={workbenchUrl}
+        title={jobKey ? `Open ${jobKey} in Workbench` : pid ? `Find prompt ${pid} in Workbench` : "Open Workbench"}
+      >
+        Workbench
+      </a>
+    </>
+  );
+}
+
+/** Live Comfy rows: running or waiting. API cancel still uses Comfy's "pending" for waiting. */
 function QueueItemRow({
   item,
   kind,
@@ -539,6 +809,7 @@ function QueueItemRow({
   onMovePrompt,
   onRefresh,
   deepLinkHit,
+  loop,
 }: {
   item: QueueComfyItem;
   kind: QueueLiveKind;
@@ -546,20 +817,13 @@ function QueueItemRow({
   onMovePrompt?: (item: QueueComfyItem, to: "front" | "back") => Promise<void>;
   onRefresh: () => void;
   deepLinkHit?: boolean;
+  loop?: boolean;
 }) {
   const pid = item.prompt_id ?? "";
-  const moveBusy = Boolean(pid) && movingPromptId === pid;
   const thumb = queueThumb(item);
   const videoUrl = queueVideoUrl(item);
   const jobKey = String(item.job_key || "").trim() || null;
-  const workbenchUrl = workbenchHref({ jobKey, promptId: pid || null });
-  // Waiting on Comfy (== queued factory jobs), not factory "pending" (not submitted yet).
   const stillTag = isQueueStillTagItem(item);
-  const editUrl =
-    kind === "waiting" && jobKey && !stillTag
-      ? submitHref({ editJob: jobKey, origin: "queue" })
-      : null;
-  const cancelKind = kind === "waiting" ? "pending" : "running";
   const title = queueComfyItemTitle(item);
   const trim = queueTrimFromItem(item);
   const trimBadge = queueTrimBadge(item);
@@ -591,6 +855,7 @@ function QueueItemRow({
       mediaKey={`queue-${kind}:${pid || item.input_media_relpath || title}`}
       alt={title}
       readOnly
+      loop={loop}
       vhsWindow={trim.window}
       fpsHint={trim.fpsHint}
       markIn={trim.markIn}
@@ -634,98 +899,30 @@ function QueueItemRow({
         ) : null
       }
       actions={
-        <>
-          <button
-            type="button"
-            disabled={!pid || moveBusy}
-            title={kind === "running" ? "Interrupt current ComfyUI execution" : "Remove from Comfy waiting queue"}
-            onClick={() => {
-              void (async () => {
-                if (!pid) return;
-                await comfyCancel({ prompt_id: pid, kind: cancelKind });
-                onRefresh();
-              })();
-            }}
-          >
-            {kind === "running" ? "Interrupt" : "Cancel"}
-          </button>
-          <button
-            type="button"
-            disabled={moveBusy}
-            title="Save this queue item for later"
-            onClick={() => {
-              void saveQueueItemForLater({
-                title: item.workflow_name || `Saved ${pid || "queue item"}`,
-                prompt_id: pid || undefined,
-                tags: ["comfy-queue"],
-                payload: {
-                  workflow_name: item.workflow_name ?? null,
-                  input_media_relpath: item.input_media_relpath ?? null,
-                  key_params: item.key_params ?? {},
-                  source: "comfy-queue-monitor",
-                },
-              });
-            }}
-          >
-            Save
-          </button>
-          {kind === "waiting" && pid ? (
-            <>
-              <button
-                type="button"
-                disabled={moveBusy}
-                title="Move this waiting prompt to the front of the queue"
-                onClick={() => {
-                  void onMovePrompt?.(item, "front");
-                }}
-              >
-                {moveBusy ? "Moving…" : "Move to top"}
-              </button>
-              <button
-                type="button"
-                disabled={moveBusy}
-                title="Move this waiting prompt to the back of the queue"
-                onClick={() => {
-                  void onMovePrompt?.(item, "back");
-                }}
-              >
-                {moveBusy ? "Moving…" : "Move to bottom"}
-              </button>
-            </>
-          ) : null}
-          <a
-            className="pipeline-row__link"
-            href={workbenchUrl}
-            title={
-              jobKey
-                ? `Open ${jobKey} in Workbench`
-                : pid
-                  ? `Find prompt ${pid} in Workbench`
-                  : "Open Workbench"
-            }
-          >
-            Workbench
-          </a>
-          {editUrl ? (
-            <a
-              className="drt-btn"
-              href={editUrl}
-              title="Edit this run in Submit (unqueues if waiting on Comfy; holds pending-drain)"
-            >
-              Edit
-            </a>
-          ) : null}
-        </>
+        <QueueLiveActions
+          item={item}
+          kind={kind}
+          movingPromptId={movingPromptId}
+          onMovePrompt={onMovePrompt}
+          onRefresh={onRefresh}
+        />
       }
     />
   );
 }
 
-function HistoryItemRow({ item, deepLinkHit }: { item: ComfyHistoryItem; deepLinkHit?: boolean }) {
+function HistoryItemRow({
+  item,
+  deepLinkHit,
+  loop,
+}: {
+  item: ComfyHistoryItem;
+  deepLinkHit?: boolean;
+  loop?: boolean;
+}) {
   const thumb = historyThumb(item);
   const videoUrl = item.primary_video_url || null;
   const jobKey = String(item.job_key || "").trim() || null;
-  const pid = String(item.prompt_id || "").trim();
   const stillTag = isQueueStillTagItem(item);
   const title =
     queueComfyItemTitle(item) ||
@@ -734,7 +931,6 @@ function HistoryItemRow({ item, deepLinkHit }: { item: ComfyHistoryItem; deepLin
     basename(item.primary_image_relpath) ||
     shortId(item.prompt_id, 16);
   const libraryRel = historyAssetRelpath(item);
-  const workbenchUrl = workbenchHref({ jobKey, promptId: pid || null });
   // Done plays the *output* clip — full timeline (0→end). Source Use-window marks
   // belong on queued/running input preview only; still show Trim in glance for history.
   const trimBadge = queueTrimBadge(item);
@@ -774,6 +970,7 @@ function HistoryItemRow({ item, deepLinkHit }: { item: ComfyHistoryItem; deepLin
           mediaKey={`queue-hist:${item.prompt_id || libraryRel || title}`}
           alt={title}
           readOnly
+          loop={loop}
           appetiteRelpath={libraryRel || item.input_media_relpath}
         />
       }
@@ -782,30 +979,199 @@ function HistoryItemRow({ item, deepLinkHit }: { item: ComfyHistoryItem; deepLin
       queuedAt={item.queued_at}
       changedAt={item.changed_at}
       errorMessage={errLine}
-      actions={
-        <>
-          {libraryRel ? (
-            <a className="pipeline-row__link" href={discoveryLibraryHref(libraryRel)} title="Open in Library">
-              Open in Library
-            </a>
+      actions={<QueueHistoryActions item={item} />}
+    />
+  );
+}
+
+function QueuePlaybackToggles({
+  autoplay,
+  loop,
+  onAutoplay,
+  onLoop,
+}: {
+  autoplay: boolean;
+  loop: boolean;
+  onAutoplay: (on: boolean) => void;
+  onLoop: (on: boolean) => void;
+}) {
+  return (
+    <div className="queue-monitor__playback" role="group" aria-label="Playback">
+      <button
+        type="button"
+        className={"queue-monitor__playback-btn" + (autoplay ? " is-on" : "")}
+        aria-pressed={autoplay}
+        title={autoplay ? "Autoplay on" : "Autoplay off"}
+        onClick={() => onAutoplay(!autoplay)}
+      >
+        Autoplay
+      </button>
+      <button
+        type="button"
+        className={"queue-monitor__playback-btn" + (loop ? " is-on" : "")}
+        aria-pressed={loop}
+        title={loop ? "Loop on" : "Loop off"}
+        onClick={() => onLoop(!loop)}
+      >
+        Loop
+      </button>
+    </div>
+  );
+}
+
+function QueueFocusMedia({
+  entry,
+  decode,
+  focused,
+  autoplay,
+  loop,
+}: {
+  entry: QueueSwipeEntry;
+  decode: boolean;
+  focused?: boolean;
+  autoplay?: boolean;
+  loop?: boolean;
+}) {
+  const play = Boolean(autoplay && focused && decode);
+  if (entry.section === "history") {
+    const item = entry.item;
+    const meta = historyCompactMeta(item);
+    if (!decode) {
+      return (
+        <QueueFocusStage title={meta.title} statusLabel={meta.statusLabel} statusVisual={meta.statusVisual}>
+          {meta.thumb ? (
+            <img className="queue-monitor__focus-img" src={meta.thumb} alt="" />
           ) : (
-            <span className="pipeline-row__meta">No library path</span>
+            <div className="queue-monitor__focus-empty">No preview</div>
           )}
-          <a
-            className="pipeline-row__link"
-            href={workbenchUrl}
-            title={
-              jobKey
-                ? `Open ${jobKey} in Workbench`
-                : pid
-                  ? `Find prompt ${pid} in Workbench`
-                  : "Open Workbench"
-            }
-          >
-            Workbench
-          </a>
-        </>
+        </QueueFocusStage>
+      );
+    }
+    const libraryRel = historyAssetRelpath(item);
+    return (
+      <QueueFocusStage title={meta.title} statusLabel={meta.statusLabel} statusVisual={meta.statusVisual}>
+        <PipelineMediaPlayer
+          videoUrl={item.primary_video_url || null}
+          thumbUrl={meta.thumb}
+          mediaKey={`queue-focus-hist:${item.prompt_id || libraryRel || meta.title}`}
+          alt={meta.title}
+          readOnly
+          autoplay={play}
+          loop={loop}
+          showControls={false}
+          appetiteRelpath={libraryRel || item.input_media_relpath}
+        />
+      </QueueFocusStage>
+    );
+  }
+  const item = entry.item;
+  const kind = entry.section;
+  const meta = liveCompactMeta(item, kind);
+  const pid = item.prompt_id ?? "";
+  if (!decode) {
+    return (
+      <QueueFocusStage title={meta.title} statusLabel={meta.statusLabel} statusVisual={meta.statusVisual}>
+        {meta.thumb ? (
+          <img className="queue-monitor__focus-img" src={meta.thumb} alt="" />
+        ) : (
+          <div className="queue-monitor__focus-empty">No preview</div>
+        )}
+      </QueueFocusStage>
+    );
+  }
+  const trim = queueTrimFromItem(item);
+  const media =
+    kind === "running" && pid ? (
+      <ComfyLivePreview
+        promptId={pid}
+        submittedAt={item.queued_at}
+        className="queue-monitor__focus-live"
+        showMetrics={false}
+      />
+    ) : (
+      <PipelineMediaPlayer
+        videoUrl={queueVideoUrl(item)}
+        thumbUrl={meta.thumb}
+        mediaKey={`queue-focus-${kind}:${pid || item.input_media_relpath || meta.title}`}
+        alt={meta.title}
+        readOnly
+        autoplay={play}
+        loop={loop}
+        showControls={false}
+        vhsWindow={trim.window}
+        fpsHint={trim.fpsHint}
+        markIn={trim.markIn}
+        markOut={trim.markOut}
+        appetiteRelpath={item.input_media_relpath}
+      />
+    );
+  return (
+    <QueueFocusStage
+      title={meta.title}
+      statusLabel={meta.statusLabel}
+      statusVisual={meta.statusVisual}
+      metrics={
+        kind === "running" && pid ? (
+          <ComfyLiveMetricsBar promptId={pid} submittedAt={item.queued_at} variant="summary" />
+        ) : null
       }
+    >
+      {media}
+    </QueueFocusStage>
+  );
+}
+
+function QueueSwipeDetails({ entry }: { entry: QueueSwipeEntry }) {
+  if (entry.section === "history") {
+    const item = entry.item;
+    const meta = historyCompactMeta(item);
+    const errLine = item.error_message ? String(item.error_message).trim() : null;
+    return (
+      <QueueJobDetailsBlock
+        title={meta.title}
+        statusLabel={meta.statusLabel}
+        statusVisual={meta.statusVisual}
+        promptId={item.prompt_id}
+        kindBadge={queueWorkflowKindBadge(item)}
+        glanceRows={queueGlanceRows(
+          {
+            glance: item.glance,
+            input_media_relpath: item.input_media_relpath,
+            job_key: item.job_key,
+            prompt_profile: item.prompt_profile,
+          },
+          { trimBadge: queueTrimBadge(item) },
+        )}
+        queuedAt={item.queued_at}
+        changedAt={item.changed_at}
+        errorMessage={errLine}
+      />
+    );
+  }
+  const item = entry.item;
+  const meta = liveCompactMeta(item, entry.section);
+  return (
+    <QueueJobDetailsBlock
+      title={meta.title}
+      statusLabel={meta.statusLabel}
+      statusVisual={meta.statusVisual}
+      promptId={item.prompt_id}
+      kindBadge={queueWorkflowKindBadge(item)}
+      glanceRows={queueGlanceRows(
+        {
+          glance: item.glance,
+          input_media_relpath: item.input_media_relpath,
+          job_key: item.job_key,
+          external: item.external,
+          work_kind: item.work_kind,
+          still_tag_run_id: item.still_tag_run_id,
+          content_id: item.content_id,
+          prompt_profile: item.prompt_profile,
+        },
+        { trimBadge: queueTrimBadge(item) },
+      )}
+      queuedAt={item.queued_at}
+      changedAt={item.changed_at}
     />
   );
 }
@@ -1373,12 +1739,66 @@ function QueueLedgerPanel({
   );
 }
 
-const QUEUE_HISTORY_LIMIT = 80;
+const QUEUE_HISTORY_FIRST = 16;
+const QUEUE_HISTORY_FULL = 80;
+const QUEUE_AUTOPLAY_KEY = "queue_monitor_video_autoplay";
+const QUEUE_LOOP_KEY = "queue_monitor_loop_playback";
+
+function loadQueueAutoplay(): boolean {
+  try {
+    return localStorage.getItem(QUEUE_AUTOPLAY_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function persistQueueAutoplay(on: boolean) {
+  try {
+    localStorage.setItem(QUEUE_AUTOPLAY_KEY, on ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadQueueLoop(): boolean {
+  try {
+    const raw = localStorage.getItem(QUEUE_LOOP_KEY);
+    if (raw === "0") return false;
+    if (raw === "1") return true;
+  } catch {
+    /* ignore */
+  }
+  return true;
+}
+
+function persistQueueLoop(on: boolean) {
+  try {
+    localStorage.setItem(QUEUE_LOOP_KEY, on ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
 const LEDGER_EVENTS_LIMIT = 30;
 const QUEUE_POLL_MS = 5000;
 
 export function ComfyQueueMonitorApp() {
   const queryClient = useQueryClient();
+  const { device } = useDeviceContext();
+  const phone = device === "phone";
+  const [phonePane, setPhonePane] = useState<null | "filters" | "ledger" | "log" | "details" | "actions">(null);
+  const [phoneSwipe, setPhoneSwipe] = useState(false);
+  const [swipeSection, setSwipeSection] = useState<QueueSwipeSection | null>(null);
+  const [focusKey, setFocusKey] = useState<string | null>(null);
+  const [videoAutoplay, setVideoAutoplay] = useState(loadQueueAutoplay);
+  const [loopPlayback, setLoopPlayback] = useState(loadQueueLoop);
+  const setVideoAutoplayFromUser = useCallback((on: boolean) => {
+    setVideoAutoplay(on);
+    persistQueueAutoplay(on);
+  }, []);
+  const setLoopPlaybackFromUser = useCallback((on: boolean) => {
+    setLoopPlayback(on);
+    persistQueueLoop(on);
+  }, []);
   const deepLink = useMemo(() => parseQueueDeepLink(), []);
   const [deepLinkHitKey, setDeepLinkHitKey] = useState<string | null>(null);
   const [ledgerNotice, setLedgerNotice] = useState("");
@@ -1403,12 +1823,21 @@ export function ComfyQueueMonitorApp() {
     placeholderData: (prev) => prev,
   });
   const historyQuery = useQuery({
-    queryKey: queryKeys.queue.history,
-    queryFn: () => fetchComfyHistory(QUEUE_HISTORY_LIMIT),
+    queryKey: [...queryKeys.queue.history, QUEUE_HISTORY_FIRST],
+    queryFn: () => fetchComfyHistory(QUEUE_HISTORY_FIRST),
     staleTime: 5_000,
     refetchInterval: QUEUE_POLL_MS,
     refetchIntervalInBackground: false,
     placeholderData: (prev) => prev,
+  });
+  const historyFullQuery = useQuery({
+    queryKey: [...queryKeys.queue.history, QUEUE_HISTORY_FULL],
+    queryFn: () => fetchComfyHistory(QUEUE_HISTORY_FULL),
+    enabled: historyQuery.isSuccess,
+    staleTime: 5_000,
+    refetchInterval: QUEUE_POLL_MS,
+    refetchIntervalInBackground: false,
+    placeholderData: (prev) => prev ?? historyQuery.data,
   });
   const ledgerStatusQuery = useQuery({
     queryKey: queryKeys.queue.ledgerStatus,
@@ -1434,14 +1863,21 @@ export function ComfyQueueMonitorApp() {
   });
 
   const data = snapshotQuery.data ?? null;
-  const history = Array.isArray(historyQuery.data?.items) ? historyQuery.data.items : [];
+  const historyFull = Array.isArray(historyFullQuery.data?.items) ? historyFullQuery.data.items : [];
+  const historyFirst = Array.isArray(historyQuery.data?.items) ? historyQuery.data.items : [];
+  const history = historyFull.length ? historyFull : historyFirst;
   const ledger = ledgerStatusQuery.data ?? null;
   const ledgerEvents = Array.isArray(ledgerEventsQuery.data?.events) ? ledgerEventsQuery.data.events : [];
   const hasData = Boolean(data || history.length || ledger || ledgerEvents.length);
-  const loading = !hasData && (snapshotQuery.isLoading || historyQuery.isLoading);
+  const loading = !data && snapshotQuery.isLoading;
+  const historyLoading = !history.length && historyQuery.isLoading;
   const refreshing =
     hasData &&
-    (snapshotQuery.isFetching || historyQuery.isFetching || ledgerStatusQuery.isFetching || ledgerEventsQuery.isFetching);
+    (snapshotQuery.isFetching ||
+      historyQuery.isFetching ||
+      historyFullQuery.isFetching ||
+      ledgerStatusQuery.isFetching ||
+      ledgerEventsQuery.isFetching);
   const errorSource = snapshotQuery.error ?? historyQuery.error;
   const error = errorSource instanceof Error ? errorSource.message : "";
   const ledgerErrSource = ledgerActionErr || (ledgerStatusQuery.error instanceof Error ? ledgerStatusQuery.error.message : "");
@@ -1452,6 +1888,7 @@ export function ComfyQueueMonitorApp() {
     await Promise.all([
       snapshotQuery.refetch(),
       historyQuery.refetch(),
+      historyFullQuery.refetch(),
       ledgerStatusQuery.refetch(),
       ledgerEventsQuery.refetch(),
     ]);
@@ -1548,8 +1985,12 @@ export function ComfyQueueMonitorApp() {
       pendingRaw.find(matchQueueDeepLink) ||
       history.find(matchQueueDeepLink);
     if (!hit) return;
-    const key = `${hit.prompt_id || ""}|${hit.job_key || ""}`;
+    const key = queueItemFocusKey(hit);
     setDeepLinkHitKey(key);
+    if (phone) {
+      setFocusKey(key);
+      setPhoneSwipe(true);
+    }
     const anchor =
       (hit.prompt_id && document.getElementById(`queue-prompt-${hit.prompt_id}`)) ||
       (hit.job_key && document.getElementById(`queue-job-${hit.job_key}`));
@@ -1564,12 +2005,28 @@ export function ComfyQueueMonitorApp() {
     history,
     matchQueueDeepLink,
     pendingRaw,
+    phone,
     runningRaw,
   ]);
 
   const isDeepLinkHit = (item: { prompt_id?: string | null; job_key?: string | null }) => {
     if (!deepLinkHitKey) return false;
-    return deepLinkHitKey === `${item.prompt_id || ""}|${item.job_key || ""}`;
+    return deepLinkHitKey === queueItemFocusKey(item);
+  };
+
+  const openJob = (
+    item: { prompt_id?: string | null; job_key?: string | null },
+    section: QueueSwipeSection,
+  ) => {
+    setFocusKey(queueItemFocusKey(item));
+    setSwipeSection(section);
+    setPhonePane(null);
+    if (phone) setPhoneSwipe(true);
+  };
+
+  const exitSwipe = () => {
+    setPhoneSwipe(false);
+    setPhonePane(null);
   };
 
   const ledgerPaused = Boolean(ledger?.paused || ledger?.ops?.ledger?.paused);
@@ -1630,8 +2087,255 @@ export function ComfyQueueMonitorApp() {
     setHistorySortMode("errors_first");
   };
 
+  const swipeEntries = useMemo(
+    () => buildQueueSwipeEntries(filteredRunning, filteredPending, filteredHistory, swipeSection),
+    [filteredRunning, filteredPending, filteredHistory, swipeSection],
+  );
+  const focusedEntry = useMemo(
+    () => swipeEntries.find((entry) => entry.key === focusKey) ?? swipeEntries[0] ?? null,
+    [swipeEntries, focusKey],
+  );
+
+  useEffect(() => {
+    if (!phoneSwipe || !swipeEntries.length) return;
+    if (focusKey && swipeEntries.some((e) => e.key === focusKey)) return;
+    setFocusKey(swipeEntries[0].key);
+  }, [phoneSwipe, swipeEntries, focusKey]);
+
+  const phoneOverflow = useMemo(
+    () =>
+      phone
+        ? [
+            ...(phoneSwipe
+              ? [
+                  {
+                    id: "list",
+                    label: `Back to ${queueSwipeSectionLabel(swipeSection).toLowerCase()} list`,
+                    onSelect: () => exitSwipe(),
+                  },
+                  {
+                    id: "details",
+                    label: "Job details",
+                    onSelect: () => setPhonePane("details"),
+                  },
+                  {
+                    id: "actions",
+                    label: "Job actions",
+                    onSelect: () => setPhonePane("actions"),
+                  },
+                ]
+              : [
+                  {
+                    id: "swipe",
+                    label: "Swipe through jobs",
+                    onSelect: () => {
+                      setPhonePane(null);
+                      if (!swipeSection) {
+                        setSwipeSection(
+                          filteredRunning.length
+                            ? "running"
+                            : filteredPending.length
+                              ? "waiting"
+                              : "history",
+                        );
+                      }
+                      setPhoneSwipe(true);
+                    },
+                  },
+                ]),
+            {
+              id: "filters",
+              label: "Filters & sort",
+              onSelect: () => setPhonePane("filters"),
+            },
+            {
+              id: "ledger",
+              label: "Ledger",
+              hint: `backlog ${ledgerBacklog}`,
+              onSelect: () => setPhonePane("ledger"),
+            },
+            {
+              id: "log",
+              label: "Comfy logs",
+              onSelect: () => setPhonePane("log"),
+            },
+            {
+              id: "autoplay",
+              label: videoAutoplay ? "Autoplay on" : "Autoplay off",
+              onSelect: () => setVideoAutoplayFromUser(!videoAutoplay),
+            },
+            {
+              id: "loop",
+              label: loopPlayback ? "Loop on" : "Loop off",
+              onSelect: () => setLoopPlaybackFromUser(!loopPlayback),
+            },
+            {
+              id: "refresh",
+              label: refreshing ? "Refreshing…" : "Refresh",
+              onSelect: () => void refresh(),
+            },
+            {
+              id: "clear-waiting",
+              label: "Clear waiting",
+              hint: "Empty Comfy pending only",
+              onSelect: () => {
+                void (async () => {
+                  await comfyClear();
+                  await invalidateQueue();
+                })();
+              },
+            },
+          ]
+        : [],
+    [
+      phone,
+      phoneSwipe,
+      swipeSection,
+      ledgerBacklog,
+      refreshing,
+      filteredRunning.length,
+      filteredPending.length,
+      videoAutoplay,
+      loopPlayback,
+      setVideoAutoplayFromUser,
+      setLoopPlaybackFromUser,
+    ],
+  );
+  useRegisterPhoneOverflow(phoneOverflow);
+
+  const renderQueueFilterControls = () => (
+    <>
+      <PipelineFilterRow aria-label="Queue sections">
+        <StatusChip
+          status="running"
+          label="running"
+          count={filteredRunning.length}
+          on={show.running}
+          onToggle={() => {
+            setStatusFilter("all");
+            toggle("running");
+          }}
+          onFocusSolo={() => {
+            setStatusFilter("all");
+            setShow((s) => nextQueueSectionShowForDoubleClick(s, "running", statusFilter));
+          }}
+        />
+        <StatusChip
+          status="pending"
+          label="waiting"
+          count={filteredPending.length}
+          on={show.pending}
+          onToggle={() => {
+            setStatusFilter("all");
+            toggle("pending");
+          }}
+          onFocusSolo={() => {
+            setStatusFilter("all");
+            setShow((s) => nextQueueSectionShowForDoubleClick(s, "pending", statusFilter));
+          }}
+        />
+        <StatusChip
+          status="ok"
+          label="history"
+          count={filteredHistory.length}
+          on={show.history}
+          onToggle={() => toggle("history")}
+          onFocusSolo={() => {
+            setStatusFilter("all");
+            setShow((s) => nextQueueSectionShowForDoubleClick(s, "history", statusFilter));
+          }}
+        />
+        <button
+          type="button"
+          className={`work-products-status-toggle work-products-status-toggle--error queue-filter-errors${
+            statusFilter === "errors" ? " is-on" : " is-off"
+          }`}
+          aria-pressed={statusFilter === "errors"}
+          onClick={() => {
+            if (statusFilter === "errors") {
+              setStatusFilter("all");
+              setShow((s) => ({ ...s, running: true, pending: true, history: true }));
+            } else {
+              setErrorsFilter();
+            }
+          }}
+          onDoubleClick={(e) => {
+            e.preventDefault();
+            if (statusFilter === "errors") {
+              setStatusFilter("all");
+              setShow({ running: true, pending: true, history: true });
+            } else {
+              setErrorsFilter();
+            }
+          }}
+          title="Show only failed / interrupted history · double-click to focus errors · again to show all"
+        >
+          <span className="work-products-status-toggle__label">errors</span>
+          <span className="work-products-status-toggle__count">{historyErrorCount}</span>
+        </button>
+      </PipelineFilterRow>
+      <div className="queue-monitor-sort-row">
+        <label className="queue-monitor-sort">
+          <span className="queue-monitor-sort__label">Live queue</span>
+          <select
+            value={liveSortMode}
+            onChange={(e) => setLiveSortMode(e.target.value as QueueLiveSortMode)}
+            aria-label="Sort running and waiting Comfy queue items"
+            title="Running and waiting — default is Comfy run order (next to execute at top)"
+          >
+            <option value="queue_index">Run order</option>
+            <option value="newest">Newest change</option>
+            <option value="oldest">Oldest change</option>
+          </select>
+        </label>
+        <label className="queue-monitor-sort">
+          <span className="queue-monitor-sort__label">History</span>
+          <select
+            value={historySortMode}
+            onChange={(e) => setHistorySortMode(e.target.value as QueueHistorySortMode)}
+            aria-label="Sort queue history items"
+            title="Completed / failed runs from Comfy history"
+          >
+            <option value="newest">Newest change</option>
+            <option value="oldest">Oldest change</option>
+            <option value="errors_first">Errors first</option>
+            <option value="queue_index">Queue index</option>
+          </select>
+        </label>
+      </div>
+      {statusFilter !== "all" ? (
+        <button
+          type="button"
+          className="queue-monitor-filter-clear"
+          onClick={() => {
+            setStatusFilter("all");
+            setShow({ running: true, pending: true, history: true });
+          }}
+        >
+          Clear filters
+        </button>
+      ) : null}
+    </>
+  );
+
+  const renderSwipeEntry = (entry: QueueSwipeEntry, mode: "full" | "off", focused: boolean) => (
+    <QueueFocusMedia
+      entry={entry}
+      decode={mode === "full"}
+      focused={focused}
+      autoplay={videoAutoplay}
+      loop={loopPlayback}
+    />
+  );
+
   return (
-    <PipelineScreen className="queue-monitor">
+    <PipelineScreen
+      className={
+        "queue-monitor" +
+        (phone ? " queue-monitor--phone" : "") +
+        (phone && phoneSwipe ? " queue-monitor--phone-swipe" : "")
+      }
+    >
       <PageHeader
         title="Queue"
         subtitle={subtitle}
@@ -1668,7 +2372,33 @@ export function ComfyQueueMonitorApp() {
           </>
         }
       />
-      <div className="wx-screen-tabs" role="tablist" aria-label="Queue page sections">
+      {phone && phoneSwipe ? (
+        <div className="queue-monitor__phone-focus-bar">
+          <button type="button" className="drt-btn queue-monitor__phone-back" onClick={exitSwipe}>
+            ← Back to list
+          </button>
+          <QueuePlaybackToggles
+            autoplay={videoAutoplay}
+            loop={loopPlayback}
+            onAutoplay={setVideoAutoplayFromUser}
+            onLoop={setLoopPlaybackFromUser}
+          />
+          <p className="factory-muted queue-monitor__phone-swipe-hint">
+            {queueSwipeSectionLabel(swipeSection)} · ← Details · Actions →
+          </p>
+        </div>
+      ) : phone ? (
+        <div className="queue-monitor-hint queue-monitor-hint--phone">
+          <p>Tap a job for fullscreen · ☰ for ledger, filters, and logs</p>
+          <QueuePlaybackToggles
+            autoplay={videoAutoplay}
+            loop={loopPlayback}
+            onAutoplay={setVideoAutoplayFromUser}
+            onLoop={setLoopPlaybackFromUser}
+          />
+        </div>
+      ) : null}
+      <div className="wx-screen-tabs" role="tablist" aria-label="Queue page sections" hidden={phone}>
         <button
           type="button"
           role="tab"
@@ -1692,7 +2422,16 @@ export function ComfyQueueMonitorApp() {
           Ledger
         </button>
       </div>
-      {pageTab === "queue" ? (
+      {phone && phoneSwipe ? (
+        <QueueFocusSwipeView
+          entries={swipeEntries}
+          focusedKey={focusKey}
+          onFocus={setFocusKey}
+          onSwipeLeft={() => setPhonePane("details")}
+          onSwipeRight={() => setPhonePane("actions")}
+          renderEntry={renderSwipeEntry}
+        />
+      ) : pageTab === "queue" ? (
         <div
           className="queue-page-tabpanel"
           role="tabpanel"
@@ -1703,120 +2442,26 @@ export function ComfyQueueMonitorApp() {
             <strong>Clear waiting</strong> empties Comfy pending. Ledger restore state is managed on the Ledger tab.
           </p>
           <ComfyHealthBanner health={ledger?.comfy_health || ledger?.ops?.comfy_health} />
-          <div className="queue-monitor-toolbar">
-            <PipelineFilterRow aria-label="Queue sections">
-              <StatusChip
-                status="running"
-                label="running"
-                count={filteredRunning.length}
-                on={show.running}
-                onToggle={() => {
-                  setStatusFilter("all");
-                  toggle("running");
-                }}
-                onFocusSolo={() => {
-                  setStatusFilter("all");
-                  setShow((s) => nextQueueSectionShowForDoubleClick(s, "running", statusFilter));
-                }}
+          {phone ? null : (
+            <div className="queue-monitor-toolbar">
+              {renderQueueFilterControls()}
+              <QueuePlaybackToggles
+                autoplay={videoAutoplay}
+                loop={loopPlayback}
+                onAutoplay={setVideoAutoplayFromUser}
+                onLoop={setLoopPlaybackFromUser}
               />
-              <StatusChip
-                status="pending"
-                label="waiting"
-                count={filteredPending.length}
-                on={show.pending}
-                onToggle={() => {
-                  setStatusFilter("all");
-                  toggle("pending");
-                }}
-                onFocusSolo={() => {
-                  setStatusFilter("all");
-                  setShow((s) => nextQueueSectionShowForDoubleClick(s, "pending", statusFilter));
-                }}
-              />
-              <StatusChip
-                status="ok"
-                label="history"
-                count={filteredHistory.length}
-                on={show.history}
-                onToggle={() => toggle("history")}
-                onFocusSolo={() => {
-                  setStatusFilter("all");
-                  setShow((s) => nextQueueSectionShowForDoubleClick(s, "history", statusFilter));
-                }}
-              />
-              <button
-                type="button"
-                className={`work-products-status-toggle work-products-status-toggle--error queue-filter-errors${
-                  statusFilter === "errors" ? " is-on" : " is-off"
-                }`}
-                aria-pressed={statusFilter === "errors"}
-                onClick={() => {
-                  if (statusFilter === "errors") {
-                    setStatusFilter("all");
-                    setShow((s) => ({ ...s, running: true, pending: true, history: true }));
-                  } else {
-                    setErrorsFilter();
-                  }
-                }}
-                onDoubleClick={(e) => {
-                  e.preventDefault();
-                  if (statusFilter === "errors") {
-                    setStatusFilter("all");
-                    setShow({ running: true, pending: true, history: true });
-                  } else {
-                    setErrorsFilter();
-                  }
-                }}
-                title="Show only failed / interrupted history · double-click to focus errors · again to show all"
-              >
-                <span className="work-products-status-toggle__label">errors</span>
-                <span className="work-products-status-toggle__count">{historyErrorCount}</span>
-              </button>
-            </PipelineFilterRow>
-            <div className="queue-monitor-sort-row">
-              <label className="queue-monitor-sort">
-                <span className="queue-monitor-sort__label">Live queue</span>
-                <select
-                  value={liveSortMode}
-                  onChange={(e) => setLiveSortMode(e.target.value as QueueLiveSortMode)}
-                  aria-label="Sort running and waiting Comfy queue items"
-                  title="Running and waiting — default is Comfy run order (next to execute at top)"
-                >
-                  <option value="queue_index">Run order</option>
-                  <option value="newest">Newest change</option>
-                  <option value="oldest">Oldest change</option>
-                </select>
-              </label>
-              <label className="queue-monitor-sort">
-                <span className="queue-monitor-sort__label">History</span>
-                <select
-                  value={historySortMode}
-                  onChange={(e) => setHistorySortMode(e.target.value as QueueHistorySortMode)}
-                  aria-label="Sort queue history items"
-                  title="Completed / failed runs from Comfy history"
-                >
-                  <option value="newest">Newest change</option>
-                  <option value="oldest">Oldest change</option>
-                  <option value="errors_first">Errors first</option>
-                  <option value="queue_index">Queue index</option>
-                </select>
-              </label>
             </div>
-            {statusFilter !== "all" ? (
-              <button
-                type="button"
-                className="queue-monitor-filter-clear"
-                onClick={() => {
-                  setStatusFilter("all");
-                  setShow({ running: true, pending: true, history: true });
-                }}
-              >
-                Clear filters
-              </button>
-            ) : null}
-          </div>
+          )}
           {error ? <div className="queue-monitor-error">{error}</div> : null}
           {queueActionMsg ? <div className="queue-monitor-error">{queueActionMsg}</div> : null}
+          {loading ? (
+            <div className="queue-monitor__skel" aria-busy="true" aria-label="Loading queue">
+              {Array.from({ length: 8 }, (_, i) => (
+                <div key={i} className="queue-monitor__compact queue-monitor__compact--skeleton" />
+              ))}
+            </div>
+          ) : null}
           <div className="queue-monitor-split">
             <PipelineScroll>
               <PipelineList className="queue-monitor-sections">
@@ -1832,16 +2477,26 @@ export function ComfyQueueMonitorApp() {
                   summaryExtra={runningSummaryMetrics}
                 >
                   {filteredRunning.length ? (
-                    filteredRunning.map((item, i) => (
-                      <QueueItemRow
-                        key={`${item.prompt_id ?? "run"}:${i}`}
-                        item={item}
-                        kind="running"
-                        movingPromptId={movingPromptId}
-                        onRefresh={() => void invalidateQueue()}
-                        deepLinkHit={isDeepLinkHit(item)}
-                      />
-                    ))
+                    filteredRunning.map((item, i) =>
+                      phone ? (
+                        <QueueCompactCard
+                          key={`${item.prompt_id ?? "run"}:${i}`}
+                          {...liveCompactMeta(item, "running")}
+                          active={queueItemFocusKey(item) === focusKey}
+                          onOpen={() => openJob(item, "running")}
+                        />
+                      ) : (
+                        <QueueItemRow
+                          key={`${item.prompt_id ?? "run"}:${i}`}
+                          item={item}
+                          kind="running"
+                          movingPromptId={movingPromptId}
+                          onRefresh={() => void invalidateQueue()}
+                          deepLinkHit={isDeepLinkHit(item)}
+                          loop={loopPlayback}
+                        />
+                      ),
+                    )
                   ) : (
                     <div className="pipeline-empty">(idle)</div>
                   )}
@@ -1857,17 +2512,27 @@ export function ComfyQueueMonitorApp() {
                   hidden={statusFilter === "errors"}
                 >
                   {filteredPending.length ? (
-                    filteredPending.map((item, i) => (
-                      <QueueItemRow
-                        key={`${item.prompt_id ?? "pend"}:${i}`}
-                        item={item}
-                        kind="waiting"
-                        movingPromptId={movingPromptId}
-                        onMovePrompt={movePendingPrompt}
-                        onRefresh={() => void invalidateQueue()}
-                        deepLinkHit={isDeepLinkHit(item)}
-                      />
-                    ))
+                    filteredPending.map((item, i) =>
+                      phone ? (
+                        <QueueCompactCard
+                          key={`${item.prompt_id ?? "pend"}:${i}`}
+                          {...liveCompactMeta(item, "waiting")}
+                          active={queueItemFocusKey(item) === focusKey}
+                          onOpen={() => openJob(item, "waiting")}
+                        />
+                      ) : (
+                        <QueueItemRow
+                          key={`${item.prompt_id ?? "pend"}:${i}`}
+                          item={item}
+                          kind="waiting"
+                          movingPromptId={movingPromptId}
+                          onMovePrompt={movePendingPrompt}
+                          onRefresh={() => void invalidateQueue()}
+                          deepLinkHit={isDeepLinkHit(item)}
+                          loop={loopPlayback}
+                        />
+                      ),
+                    )
                   ) : (
                     <div className="pipeline-empty">(none)</div>
                   )}
@@ -1881,10 +2546,30 @@ export function ComfyQueueMonitorApp() {
                   open={show.history}
                   onOpenChange={(open) => setSectionOpen("history", open)}
                 >
-                  {filteredHistory.length ? (
-                    filteredHistory.map((h) => (
-                      <HistoryItemRow key={h.prompt_id} item={h} deepLinkHit={isDeepLinkHit(h)} />
-                    ))
+                  {historyLoading ? (
+                    <div className="queue-monitor__skel" aria-busy="true" aria-label="Loading history">
+                      {Array.from({ length: 6 }, (_, i) => (
+                        <div key={i} className="queue-monitor__compact queue-monitor__compact--skeleton" />
+                      ))}
+                    </div>
+                  ) : filteredHistory.length ? (
+                    filteredHistory.map((h) =>
+                      phone ? (
+                        <QueueCompactCard
+                          key={h.prompt_id}
+                          {...historyCompactMeta(h)}
+                          active={queueItemFocusKey(h) === focusKey}
+                          onOpen={() => openJob(h, "history")}
+                        />
+                      ) : (
+                        <HistoryItemRow
+                          key={h.prompt_id}
+                          item={h}
+                          deepLinkHit={isDeepLinkHit(h)}
+                          loop={loopPlayback}
+                        />
+                      ),
+                    )
                   ) : (
                     <div className="pipeline-empty">
                       {statusFilter === "errors" ? "(no errors in recent history)" : "(no history)"}
@@ -1893,7 +2578,7 @@ export function ComfyQueueMonitorApp() {
                 </QueueMonitorSection>
               </PipelineList>
             </PipelineScroll>
-            <ComfyLogPanel />
+            {phone ? null : <ComfyLogPanel />}
           </div>
         </div>
       ) : (
@@ -1918,6 +2603,93 @@ export function ComfyQueueMonitorApp() {
           />
         </div>
       )}
+      {phone && phonePane === "filters" ? (
+        <div className="queue-monitor__phone-sheet" role="dialog" aria-label="Filters">
+          <div className="queue-monitor__phone-sheet-head">
+            <h2>Filters & sort</h2>
+            <button type="button" className="drt-btn" onClick={() => setPhonePane(null)}>
+              Close
+            </button>
+          </div>
+          <div className="queue-monitor-toolbar">{renderQueueFilterControls()}</div>
+        </div>
+      ) : null}
+      {phone && phonePane === "ledger" ? (
+        <div className="queue-monitor__phone-sheet" role="dialog" aria-label="Ledger">
+          <div className="queue-monitor__phone-sheet-head">
+            <h2>Ledger</h2>
+            <button type="button" className="drt-btn" onClick={() => setPhonePane(null)}>
+              Close
+            </button>
+          </div>
+          <p className="queue-monitor-hint">
+            <strong>Suspend Comfy</strong> parks live jobs. <strong>Clear ledger</strong> only forgets restore state.
+          </p>
+          <QueueLedgerPanel
+            status={ledger}
+            events={ledgerEvents}
+            busy={ledgerBusy}
+            error={ledgerErrSource}
+            notice={ledgerNotice}
+            onAction={(a) => void runLedgerAction(a)}
+          />
+        </div>
+      ) : null}
+      {phone && phonePane === "log" ? (
+        <div className="queue-monitor__phone-sheet" role="dialog" aria-label="Comfy logs">
+          <div className="queue-monitor__phone-sheet-head">
+            <h2>Comfy logs</h2>
+            <button type="button" className="drt-btn" onClick={() => setPhonePane(null)}>
+              Close
+            </button>
+          </div>
+          <ComfyLogPanel />
+        </div>
+      ) : null}
+      {phone && phoneSwipe && phonePane === "details" && focusedEntry ? (
+        <div className="queue-monitor__phone-sheet" role="dialog" aria-label="Job details">
+          <div className="queue-monitor__phone-sheet-head">
+            <h2>Details</h2>
+            <div className="queue-monitor__phone-sheet-actions">
+              <button type="button" className="drt-btn" onClick={exitSwipe}>
+                ← List
+              </button>
+              <button type="button" className="drt-btn" onClick={() => setPhonePane(null)}>
+                Close
+              </button>
+            </div>
+          </div>
+          <QueueSwipeDetails entry={focusedEntry} />
+        </div>
+      ) : null}
+      {phone && phoneSwipe && phonePane === "actions" && focusedEntry ? (
+        <div className="queue-monitor__phone-sheet" role="dialog" aria-label="Job actions">
+          <div className="queue-monitor__phone-sheet-head">
+            <h2>Actions</h2>
+            <div className="queue-monitor__phone-sheet-actions">
+              <button type="button" className="drt-btn" onClick={exitSwipe}>
+                ← List
+              </button>
+              <button type="button" className="drt-btn" onClick={() => setPhonePane(null)}>
+                Close
+              </button>
+            </div>
+          </div>
+          <div className="queue-monitor__phone-job-actions">
+            {focusedEntry.section === "history" ? (
+              <QueueHistoryActions item={focusedEntry.item} />
+            ) : (
+              <QueueLiveActions
+                item={focusedEntry.item}
+                kind={focusedEntry.section}
+                movingPromptId={movingPromptId}
+                onMovePrompt={movePendingPrompt}
+                onRefresh={() => void invalidateQueue()}
+              />
+            )}
+          </div>
+        </div>
+      ) : null}
     </PipelineScreen>
   );
 }

@@ -46,9 +46,10 @@ Every iOS browser uses WKWebView. CSS, touch, and `env(safe-area-inset-*)` work 
 2. **Stills (current):** phone main page is a **grid**. Tap drills into **swipe-through stills** (image only). **Swipe right** opens Submit. **Swipe left** opens tags and tasks for that still. Tagging backlog and filters stay in hamburger → This screen. First paint is a skeleton plus a small stills page (24), then more pages fill in; focus only decodes the current still and neighbors.
 3. **Shared contract:** one scroll root; 44px targets; PageHeader hidden on phone (title lives in the bar).
 4. **Library:** already list → fullscreen viewer. Align overflow actions with the hamburger.
-5. **Rate:** one clip + bottom/context actions.
-6. **Workbench:** job list → tap fullscreen clip; metadata in a sheet.
-7. **Submit:** stacked composer from existing doors.
+5. **Queue (current):** phone main page is a **compact job list**. Tap opens that job **fullscreen**. **Up / down** stays inside the section you opened (Running, Waiting, or History) and snaps to the next job. **Swipe left** opens details, **swipe right** opens actions. **← Back to list** returns to the compact list. **Autoplay** and **Loop** toggles sit on the list and the swipe bar. Ledger, filters, and Comfy logs stay in hamburger → This screen. Snapshot paints without waiting on history; history fills in after the first 16.
+6. **Rate:** one clip + bottom/context actions.
+7. **Workbench (current):** phone main page is the **job list**. Tap opens that job **fullscreen**. **← Back to list** returns to the list. **Details** (or ☰ → Job details) opens metadata in a sheet. Working set, search, and filters stay in hamburger → This screen. Desktop keeps the two-column tools/list/detail chrome.
+8. **Submit:** stacked composer from existing doors.
 
 Factory map, Workflows, Family A/B, Orchestrator, and Experiments stay in the hamburger Tools section. Capacitor / home-screen icons only after the web shell is usable in Aloha.
 

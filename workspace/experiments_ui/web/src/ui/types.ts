@@ -153,7 +153,7 @@ export type QueueResponse = {
   comfyui: {
     running: QueueComfyItem[];
     pending: QueueComfyItem[];
-    raw: Record<string, unknown>;
+    raw?: Record<string, unknown>;
   };
 };
 
@@ -2183,7 +2183,6 @@ export type HourlyChainBacklogsResponse = {
 };
 
 export type HourlySubmitMode = "auto" | "comfy" | "pending";
-
 export type HourlySchedule = {
   interval_minutes?: number;
   enabled?: boolean;

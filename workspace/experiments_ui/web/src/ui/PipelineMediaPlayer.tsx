@@ -21,6 +21,9 @@ export function PipelineMediaPlayer({
   markIn: markInProp,
   markOut: markOutProp,
   appetiteRelpath,
+  autoplay = false,
+  loop,
+  showControls,
 }: {
   videoUrl?: string | null;
   thumbUrl?: string | null;
@@ -37,11 +40,17 @@ export function PipelineMediaPlayer({
   /** Optional Use marks in seconds (factory vhs_window). */
   markIn?: number | null;
   markOut?: number | null;
+  autoplay?: boolean;
+  /** When set, overrides the trim transport loop/stop mode. */
+  loop?: boolean;
+  /** Default: native controls when there is no trim window. */
+  showControls?: boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
-  const [mode, setMode] = useState<VideoTrimPlaybackMode>("repeat");
+  const [mode, setMode] = useState<VideoTrimPlaybackMode>(loop === false ? "stop_at_end" : "repeat");
+  const trimMode: VideoTrimPlaybackMode = loop == null ? mode : loop ? "repeat" : "stop_at_end";
   const fps = parseFps(fpsHint, 18);
   const syncKey = mediaKey || videoUrl || thumbUrl || "pipeline-media";
 
@@ -74,7 +83,7 @@ export function PipelineMediaPlayer({
     mediaKey: syncKey,
     markIn: marks.markIn,
     markOut: marks.markOut,
-    mode,
+    mode: trimMode,
     enabled: Boolean(videoUrl) && hasTrimIntent,
   });
 
@@ -82,6 +91,16 @@ export function PipelineMediaPlayer({
     setDuration(0);
     setCurrentTime(0);
   }, [syncKey, videoUrl]);
+
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    v.loop = Boolean(loop) && !hasTrimIntent;
+    if (autoplay && videoUrl) {
+      v.muted = true;
+      void v.play().catch(() => undefined);
+    }
+  }, [autoplay, loop, videoUrl, syncKey, hasTrimIntent]);
 
   if (videoUrl) {
     return (
@@ -93,9 +112,11 @@ export function PipelineMediaPlayer({
               className="work-product-viewer__video"
               src={videoUrl}
               poster={thumbUrl || undefined}
-            controls={!hasTrimIntent}
+            controls={showControls ?? !hasTrimIntent}
             playsInline
             muted
+            autoPlay={autoplay}
+            loop={Boolean(loop) && !hasTrimIntent}
             preload="metadata"
             onLoadedMetadata={(e) => {
               const d = e.currentTarget.duration;
@@ -120,7 +141,7 @@ export function PipelineMediaPlayer({
               currentTime={currentTime}
               markIn={marks.markIn}
               markOut={marks.markOut}
-              mode={mode}
+              mode={trimMode}
               mediaSyncKey={syncKey}
               readOnly
               onSeek={setCurrentTime}

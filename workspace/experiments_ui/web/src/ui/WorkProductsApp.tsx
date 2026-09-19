@@ -19,7 +19,9 @@ import { ClipBookmarksRail, pickDefaultClip } from "./ClipBookmarksRail";
 import { ComfyLiveMetricsBar, ComfyLivePreview } from "./ComfyLivePreview";
 import { PageHeader } from "./PageHeader";
 import { PipelineScreen } from "./PipelineScreen";
+import { useRegisterPhoneOverflow } from "./phoneChrome";
 import { useNarrowLayout } from "./useNarrowLayout";
+import { useDeviceContext } from "./viewport";
 import { JsonPeekButton, PromptMarkupTable, PromptPeekButton } from "./PromptPeek";
 import {
   clonePromptRows,
@@ -6241,8 +6243,16 @@ export function WorkProductsApp() {
   /** Operator clicked a job in a media-focused list — stop snapping to the producer. */
   const mediaPickTouched = useRef(false);
   const narrowLayout = useNarrowLayout(960);
+  const { device } = useDeviceContext();
+  const phone = device === "phone";
+  const [phonePane, setPhonePane] = useState<null | "filters" | "tools" | "details">(null);
+  const phoneList = phone && listOpen;
+  const phoneFocus = phone && !listOpen;
   const toggleJobList = useCallback(() => setListOpen((open) => !open), []);
-  const showJobList = useCallback(() => setListOpen(true), []);
+  const showJobList = useCallback(() => {
+    setPhonePane(null);
+    setListOpen(true);
+  }, []);
   const hideJobList = useCallback(() => setListOpen(false), []);
   const clearResourceFocus = useCallback(() => {
     setFocusPinned(false);
@@ -6564,7 +6574,11 @@ export function WorkProductsApp() {
     setFocusPromptId(null);
     mediaPickTouched.current = true;
     deepLinkScrolled.current = true;
-  }, []);
+    if (phone) {
+      setPhonePane(null);
+      setListOpen(false);
+    }
+  }, [phone]);
 
   useEffect(() => {
     const key = String(selectedItem?.job_key || "").trim();
@@ -6864,8 +6878,76 @@ export function WorkProductsApp() {
           ? `${focusCaption.kind} focus — close to return to the full jobs list.`
           : "";
 
+  const phoneOverflow = useMemo(
+    () =>
+      phone
+        ? [
+            ...(phoneFocus && selectedItem
+              ? [
+                  {
+                    id: "list",
+                    label: "Back to list",
+                    onSelect: () => showJobList(),
+                  },
+                  {
+                    id: "details",
+                    label: phonePane === "details" ? "Close job details" : "Job details",
+                    onSelect: () => setPhonePane((pane) => (pane === "details" ? null : "details")),
+                  },
+                ]
+              : []),
+            {
+              id: "tools",
+              label: "Working set & search",
+              onSelect: () => setPhonePane("tools"),
+            },
+            {
+              id: "filters",
+              label: "Filters",
+              onSelect: () => setPhonePane("filters"),
+            },
+            {
+              id: "refresh",
+              label: refreshing ? "Refreshing…" : "Refresh",
+              onSelect: () => void refresh(),
+            },
+            ...(listOpen && failedVisible.length
+              ? [
+                  {
+                    id: "delete-failed",
+                    label: clearFailedBusy
+                      ? "Deleting failed…"
+                      : `Delete failed (${failedVisible.length})`,
+                    onSelect: () => void clearFailedVisible(),
+                  },
+                ]
+              : []),
+          ]
+        : [],
+    [
+      phone,
+      phoneFocus,
+      phonePane,
+      selectedItem,
+      showJobList,
+      refreshing,
+      listOpen,
+      failedVisible.length,
+      clearFailedBusy,
+    ],
+  );
+  useRegisterPhoneOverflow(phoneOverflow);
+
   return (
-    <PipelineScreen className="work-products">
+    <PipelineScreen
+      className={
+        "work-products" +
+        (phone ? " work-products--phone" : "") +
+        (phoneList ? " work-products--phone-list" : "") +
+        (phoneFocus ? " work-products--phone-focus" : "") +
+        (phone && phonePane === "details" ? " work-products--phone-sheet-details" : "")
+      }
+    >
       <PageHeader
         title="Workbench"
         actions={
@@ -6962,7 +7044,38 @@ export function WorkProductsApp() {
           </>
         }
       />
-      {toolsOpen ? (
+      {phone && phoneFocus ? (
+        <div className="work-products__phone-focus-bar">
+          <button type="button" className="drt-btn work-products__phone-back" onClick={showJobList}>
+            ← Back to list
+          </button>
+          {selectedItem ? (
+            <button
+              type="button"
+              className="drt-btn"
+              onClick={() => setPhonePane((pane) => (pane === "details" ? null : "details"))}
+            >
+              {phonePane === "details" ? "Close details" : "Details"}
+            </button>
+          ) : null}
+        </div>
+      ) : phone ? (
+        <p className="work-products__phone-hint">Tap a job for fullscreen · ☰ for filters</p>
+      ) : null}
+      {(toolsOpen && !phone) || (phone && phonePane === "tools") ? (
+        <div
+          className={phone ? "work-products__phone-sheet" : "work-products-chrome-slot"}
+          role={phone ? "dialog" : undefined}
+          aria-label={phone ? "Working set" : undefined}
+        >
+          {phone ? (
+            <div className="work-products__phone-sheet-head">
+              <h2>Working set & search</h2>
+              <button type="button" className="drt-btn" onClick={() => setPhonePane(null)}>
+                Close
+              </button>
+            </div>
+          ) : null}
         <div id="workbench-tools" className="work-products-tools" role="group" aria-label="Workbench tools">
           <label className="pipeline-tray-switch" title="Recent jobs, or a follow-up pile of marked videos">
             <span>Working set</span>
@@ -7042,8 +7155,22 @@ export function WorkProductsApp() {
             </div>
           </div>
         </div>
+        </div>
       ) : null}
-      {listOpen && filtersOpen ? (
+      {(listOpen && filtersOpen && !phone) || (phone && phonePane === "filters") ? (
+      <div
+        className={phone ? "work-products__phone-sheet" : "work-products-chrome-slot"}
+        role={phone ? "dialog" : undefined}
+        aria-label={phone ? "Filters" : undefined}
+      >
+        {phone ? (
+          <div className="work-products__phone-sheet-head">
+            <h2>Filters</h2>
+            <button type="button" className="drt-btn" onClick={() => setPhonePane(null)}>
+              Close
+            </button>
+          </div>
+        ) : null}
       <div
         id="workbench-filters"
         className="work-products-status-filters pipeline-filter-row"
@@ -7176,6 +7303,7 @@ export function WorkProductsApp() {
           </>
         ) : null}
       </div>
+      </div>
       ) : null}
 
       <RemoveReviewBanner enabled={!appetiteOff.has("remove")} />
@@ -7210,6 +7338,7 @@ export function WorkProductsApp() {
             onKeyDown={onIndexKeyDown}
           >
             <div className="work-products-index__toolbar">
+              {phone ? null : (
               <button
                 type="button"
                 className="work-products-index__collapse"
@@ -7221,6 +7350,7 @@ export function WorkProductsApp() {
               >
                 ‹
               </button>
+              )}
               {focusPinned ? (
                 <span className="work-products-index__toolbar-focus">
                   <span className="work-products-index__toolbar-label">Focused</span>
@@ -7256,6 +7386,7 @@ export function WorkProductsApp() {
                 </select>
               </label>
               )}
+              {phone ? null : (
               <label className="work-products-limit work-products-limit--index">
                 Completed sort
                 <select
@@ -7275,6 +7406,7 @@ export function WorkProductsApp() {
                   ))}
                 </select>
               </label>
+              )}
               {focusCaption ? (
                 <div className="work-products-index__focus">
                   <span className="work-products-index__focus-kind">{focusCaption.kind}</span>
@@ -7343,7 +7475,7 @@ export function WorkProductsApp() {
               </div>
             )}
           </nav>
-        ) : !listOpen ? (
+        ) : !listOpen && !phone ? (
           <div
             id="workbench-jobs-index"
             className={`work-products-index-rail${focusPinned ? " work-products-index-rail--focused" : ""}`}
@@ -7384,9 +7516,9 @@ export function WorkProductsApp() {
             ) : null}
           </div>
         ) : null}
-        {selectedItem ? (
+        {selectedItem && !phoneList ? (
           <div className="work-products-detail">
-            {narrowLayout && !listOpen ? (
+            {narrowLayout && !listOpen && !phone ? (
               <div className="work-products-detail__mobile-nav">
                 <button type="button" className="drt-btn" onClick={showJobList}>
                   ← Jobs
@@ -7396,7 +7528,7 @@ export function WorkProductsApp() {
             <WorkProductRow
               key={selectedItem.output_relpath || selectedItem.job_key}
               item={selectedItem}
-              layout={layout}
+              layout={phone ? "stacked" : layout}
               families={families}
               stacks={stacks}
               extendFamilyDefaults={extendFamilyDefaults}
@@ -7405,7 +7537,7 @@ export function WorkProductsApp() {
               onFocusJobKey={focusJobKey}
             />
           </div>
-        ) : focusedGoneReason ? (
+        ) : focusedGoneReason && !phoneList ? (
           <div className="work-products-detail">
             <div className="work-products-empty work-products-empty--gone">
               <p className="work-products-empty__title">{focusedGoneMessage(focusedGoneReason)}</p>
@@ -7416,7 +7548,7 @@ export function WorkProductsApp() {
               ) : null}
             </div>
           </div>
-        ) : listOpen && visibleItems.length ? (
+        ) : listOpen && visibleItems.length && !phone ? (
           <div className="work-products-detail">
             <div className="work-products-empty">
               Select {followUpSet ? "a video" : "a job"} from the list.
