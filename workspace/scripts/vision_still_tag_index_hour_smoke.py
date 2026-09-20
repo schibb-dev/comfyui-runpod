@@ -53,7 +53,7 @@ def main(argv: list[str] | None = None) -> int:
     ).expanduser()
 
     sch = load_schedule(data_root=data_root)
-    win = index_window_status(sch)
+    win = index_window_status(sch, data_root=data_root)
     before = backlog_stats(data_root=data_root)
     print(
         json.dumps(

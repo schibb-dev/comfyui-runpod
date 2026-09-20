@@ -38,14 +38,31 @@ DEFAULT_SCHEDULE: Dict[str, Any] = {
     "schema_version": 1,
     "enabled": False,
     "timezone": "America/New_York",
+    # sla: attempt queued stills within max_wait_hours; clock: fixed local window.
+    "mode": "sla",
+    "max_wait_hours": 3,
+    "manual_max_wait_hours": 1,
+    "scan_interval_min": 15,
+    "evaluate_interval_min": 15,
+    "auto_enqueue_untagged": True,
+    "auto_enqueue_limit": 96,
+    "session_minutes": 15,
+    "kill_after_min": 60,
+    "resume_gap_min": 20,
+    "sec_per_still": 12,
+    "occupy_gpu": True,
     "window_start": "03:00",
-    "window_duration_min": 120,
+    "window_duration_min": 15,
     "front": True,
     "max_inflight": 1,
     "max_items_per_tick": 96,
     "comfy_server": None,
     "auto_drain_on_enqueue": False,
 }
+SESSION_BASENAME = "still_tag_session.json"
+TICK_BASENAME = "still_tag_tick.json"
+DEFAULT_SEC_PER_STILL = 12.0
+MAX_COMFY_BATCH = 32
 _SHA256_RE = re.compile(r"([0-9a-f]{64})", re.IGNORECASE)
 
 _worker_lock = threading.Lock()
@@ -57,13 +74,464 @@ def _utc_now_iso() -> str:
     return _dt.datetime.now(tz=_dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def still_tag_batch_size() -> int:
+def still_tag_batch_size(override: Optional[int] = None) -> int:
+    if override is not None:
+        try:
+            return max(1, min(int(override), MAX_COMFY_BATCH))
+        except (TypeError, ValueError):
+            pass
     raw = str(os.environ.get("STILL_TAG_BATCH") or DEFAULT_STILL_TAG_BATCH).strip()
     try:
         n = int(raw)
     except ValueError:
         n = DEFAULT_STILL_TAG_BATCH
-    return max(1, min(n, 32))
+    return max(1, min(n, MAX_COMFY_BATCH))
+
+
+def scale_batch_for_session(
+    *,
+    session_minutes: float = 15,
+    sec_per_still: float = DEFAULT_SEC_PER_STILL,
+    pending_count: Optional[int] = None,
+) -> int:
+    """Size one Comfy Florence batch to roughly fill the target window."""
+    sec = max(2.0, float(sec_per_still or DEFAULT_SEC_PER_STILL))
+    minutes = max(1.0, float(session_minutes or 15))
+    fit = max(1, int((minutes * 60.0) / sec))
+    batch = min(MAX_COMFY_BATCH, fit)
+    if pending_count is not None:
+        batch = min(batch, max(1, int(pending_count)))
+    return max(1, batch)
+
+
+def default_session_path(*, data_root: Optional[Path] = None) -> Path:
+    root = Path(data_root) if data_root is not None else Path(".")
+    return root / "shape_factory" / SESSION_BASENAME
+
+
+def load_tag_session(*, data_root: Optional[Path] = None, path: Optional[Path] = None) -> Dict[str, Any]:
+    p = Path(path) if path is not None else default_session_path(data_root=data_root)
+    if not p.is_file():
+        return {"status": "idle"}
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {"status": "idle"}
+    return raw if isinstance(raw, dict) else {"status": "idle"}
+
+
+def save_tag_session(
+    session: Dict[str, Any],
+    *,
+    data_root: Optional[Path] = None,
+    path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    p = Path(path) if path is not None else default_session_path(data_root=data_root)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    payload = dict(session)
+    payload["updated_at"] = _utc_now_iso()
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(p)
+    return payload
+
+
+def default_tick_path(*, data_root: Optional[Path] = None) -> Path:
+    root = Path(data_root) if data_root is not None else Path(".")
+    return root / "shape_factory" / TICK_BASENAME
+
+
+def load_tag_tick(*, data_root: Optional[Path] = None, path: Optional[Path] = None) -> Dict[str, Any]:
+    p = Path(path) if path is not None else default_tick_path(data_root=data_root)
+    if not p.is_file():
+        return {}
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def save_tag_tick(
+    tick: Dict[str, Any],
+    *,
+    data_root: Optional[Path] = None,
+    path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    p = Path(path) if path is not None else default_tick_path(data_root=data_root)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    payload = dict(tick)
+    payload["updated_at"] = _utc_now_iso()
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(p)
+    return payload
+
+
+def interval_elapsed(
+    last_iso: Any,
+    minutes: float,
+    *,
+    now: Optional[_dt.datetime] = None,
+) -> bool:
+    """True when *last_iso* is missing or at least *minutes* old."""
+    minutes = max(0.0, float(minutes or 0))
+    if minutes <= 0:
+        return True
+    last = _parse_iso_ts(last_iso)
+    if last is None:
+        return True
+    clock = now or _dt.datetime.now(tz=_dt.timezone.utc)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=_dt.timezone.utc)
+    return (clock.astimezone(_dt.timezone.utc) - last).total_seconds() >= minutes * 60.0
+
+
+def estimate_sec_per_still(
+    *,
+    data_root: Optional[Path] = None,
+    fallback: float = DEFAULT_SEC_PER_STILL,
+) -> float:
+    """Median seconds/still from recent successful runs; ignore timeout-scale outliers."""
+    if data_root is None:
+        return max(2.0, float(fallback))
+    db_path = default_db_path(data_root=data_root)
+    if not db_path.is_file():
+        return max(2.0, float(fallback))
+    con = connect(db_path)
+    try:
+        rows = con.execute(
+            """
+            SELECT started_at, finished_at, done_count
+            FROM still_tag_runs
+            WHERE status='done' AND done_count > 0 AND started_at IS NOT NULL AND finished_at IS NOT NULL
+            ORDER BY finished_at DESC
+            LIMIT 8
+            """
+        ).fetchall()
+    finally:
+        con.close()
+    samples: List[float] = []
+    for row in rows:
+        start = _parse_iso_ts(row["started_at"])
+        end = _parse_iso_ts(row["finished_at"])
+        done = int(row["done_count"] or 0)
+        if start is None or end is None or done < 1:
+            continue
+        sec = (end - start).total_seconds() / float(done)
+        if 2.0 <= sec <= 90.0:
+            samples.append(sec)
+    if not samples:
+        return max(2.0, float(fallback))
+    samples.sort()
+    return samples[len(samples) // 2]
+
+
+def _parse_iso_ts(raw: Any) -> Optional[_dt.datetime]:
+    if raw in (None, ""):
+        return None
+    try:
+        s = str(raw).strip().replace("Z", "+00:00")
+        out = _dt.datetime.fromisoformat(s)
+    except Exception:
+        return None
+    if out.tzinfo is None:
+        out = out.replace(tzinfo=_dt.timezone.utc)
+    return out.astimezone(_dt.timezone.utc)
+
+
+def _schedule_mode(sch: Dict[str, Any]) -> str:
+    mode = str(sch.get("mode") or "sla").strip().lower()
+    return mode if mode in ("sla", "clock") else "sla"
+
+
+def _schedule_float(sch: Dict[str, Any], key: str, default: float) -> float:
+    try:
+        return float(sch.get(key) if sch.get(key) is not None else default)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def session_item_budget(
+    *,
+    session_minutes: float = 15,
+    sec_per_still: float = DEFAULT_SEC_PER_STILL,
+    cap: Optional[int] = None,
+) -> int:
+    """How many stills fit in the target window (uncapped except optional *cap*)."""
+    sec = max(2.0, float(sec_per_still or DEFAULT_SEC_PER_STILL))
+    minutes = max(1.0, float(session_minutes or 15))
+    fit = max(1, int((minutes * 60.0) / sec))
+    if cap is not None:
+        try:
+            fit = min(fit, max(1, int(cap)))
+        except (TypeError, ValueError):
+            pass
+    return fit
+
+
+def _is_dry_provider(provider: Optional[str]) -> bool:
+    return str(provider or "").strip().lower() in {"dry-run", "dry_run"}
+
+
+def _still_unreadable_reason(path: Path) -> Optional[str]:
+    """Reject files that will make Comfy LoadImage fail the whole Florence batch."""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as f:
+            head = f.read(8)
+    except OSError as e:
+        return str(e)
+    if size < 32:
+        return f"truncated still ({size} bytes)"
+    if head == b"\x89PNG\r\n\x1a\n":
+        try:
+            with path.open("rb") as f:
+                f.seek(max(0, size - 32))
+                tail = f.read()
+            if b"IEND" not in tail:
+                return "truncated PNG (missing IEND)"
+        except OSError as e:
+            return str(e)
+    return None
+
+
+def _is_comfy_ref_error(err: BaseException) -> bool:
+    msg = str(err or "").lower()
+    return (
+        "400" in msg
+        or "bad request" in msg
+        or "loadimage" in msg
+        or "invalid image file" in msg
+    )
+
+
+def _default_output_root() -> Path:
+    return Path(os.environ.get("COMFYUI_BIND_OUTPUT_DIR") or "/home/yuji/comfyui-runpod-data/output")
+
+
+def session_is_stale(
+    session: Dict[str, Any],
+    *,
+    now: Optional[_dt.datetime] = None,
+    stale_after_min: float = 90,
+) -> bool:
+    status = str(session.get("status") or "idle").strip().lower()
+    if status not in {"occupying", "running", "releasing"}:
+        return False
+    stamp = _parse_iso_ts(session.get("updated_at") or session.get("started_at"))
+    if stamp is None:
+        return True
+    clock = now or _dt.datetime.now(tz=_dt.timezone.utc)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=_dt.timezone.utc)
+    return (clock - stamp).total_seconds() >= float(stale_after_min) * 60.0
+
+
+def _scope_from_raw(raw: Any) -> Dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        obj = json.loads(str(raw))
+    except Exception:
+        return {}
+    return obj if isinstance(obj, dict) else {}
+
+
+def _scope_is_manual(scope: Optional[Dict[str, Any]]) -> bool:
+    sch = scope or {}
+    if sch.get("manual") is True:
+        return True
+    if sch.get("manual") is False:
+        return False
+    return str(sch.get("request") or "").strip().lower() == "manual"
+
+
+def run_sla_hours(scope: Optional[Dict[str, Any]], schedule: Optional[Dict[str, Any]] = None) -> float:
+    sch = dict(schedule or DEFAULT_SCHEDULE)
+    if _scope_is_manual(scope):
+        return max(0.25, _schedule_float(sch, "manual_max_wait_hours", 1))
+    return max(0.25, _schedule_float(sch, "max_wait_hours", 3))
+
+
+def infer_manual_request(
+    *,
+    content_ids: Optional[Sequence[str]] = None,
+    collection_id: Optional[str] = None,
+    manual: Optional[bool] = None,
+) -> bool:
+    if manual is not None:
+        return bool(manual)
+    if collection_id and str(collection_id).strip():
+        return True
+    return bool(content_ids)
+
+
+def sla_due_status(
+    *,
+    schedule: Dict[str, Any],
+    backlog: Optional[Dict[str, Any]] = None,
+    session: Optional[Dict[str, Any]] = None,
+    now: Optional[_dt.datetime] = None,
+) -> Dict[str, Any]:
+    """Whether an SLA session should start (or continue) for queued stills."""
+    sch = dict(schedule or {})
+    enabled = bool(sch.get("enabled"))
+    clock = now or _dt.datetime.now(tz=_dt.timezone.utc)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=_dt.timezone.utc)
+    clock = clock.astimezone(_dt.timezone.utc)
+    sess = dict(session or {"status": "idle"})
+    stats = dict(backlog or {})
+    queued_runs = int(stats.get("queued_runs") or 0)
+    queued_targets = int(stats.get("queued_targets") or 0)
+    running_runs = int(stats.get("running_runs") or 0)
+    oldest = _parse_iso_ts(stats.get("oldest_queued_at"))
+    oldest_manual = _parse_iso_ts(stats.get("oldest_manual_queued_at"))
+    oldest_backlog = _parse_iso_ts(stats.get("oldest_backlog_queued_at"))
+    wait_hours = None
+    if oldest is not None:
+        wait_hours = max(0.0, (clock - oldest).total_seconds() / 3600.0)
+    bulk_max = max(0.25, _schedule_float(sch, "max_wait_hours", 3))
+    manual_max = max(0.25, _schedule_float(sch, "manual_max_wait_hours", 1))
+    candidates: List[Tuple[str, float, float]] = []
+    if oldest_manual is not None:
+        candidates.append(
+            ("manual", max(0.0, (clock - oldest_manual).total_seconds() / 3600.0), manual_max)
+        )
+    if oldest_backlog is not None:
+        candidates.append(
+            ("backlog", max(0.0, (clock - oldest_backlog).total_seconds() / 3600.0), bulk_max)
+        )
+    elif oldest is not None and oldest_manual is None:
+        candidates.append(("backlog", wait_hours or 0.0, bulk_max))
+    sla_class = "backlog"
+    max_wait = bulk_max
+    if candidates:
+        sla_class, wait_hours, max_wait = max(candidates, key=lambda c: c[1] / c[2] if c[2] else 0.0)
+    gap_min = max(0.0, _schedule_float(sch, "resume_gap_min", 20))
+    sess_status = str(sess.get("status") or "idle").strip().lower()
+    stale = session_is_stale(sess, now=clock)
+
+    base = {
+        "wait_hours": wait_hours,
+        "max_wait_hours": max_wait,
+        "manual_max_wait_hours": manual_max,
+        "sla_class": sla_class,
+        "queued_runs": queued_runs,
+        "queued_targets": queued_targets,
+        "session_status": sess_status,
+        "stale_session": stale,
+    }
+    if not enabled:
+        return {"due": False, "reason": "disabled", **base}
+    if sess_status in {"occupying", "running"} and not stale:
+        return {"due": True, "reason": "session_active", **base, "stale_session": False}
+    if queued_targets < 1 and running_runs < 1:
+        return {"due": False, "reason": "no_backlog", **base}
+
+    last_end = _parse_iso_ts(sess.get("ended_at"))
+    gap_ok = True
+    gap_remaining_min = 0.0
+    if last_end is not None and gap_min > 0:
+        elapsed = (clock - last_end).total_seconds()
+        gap_ok = elapsed >= gap_min * 60.0
+        if not gap_ok:
+            gap_remaining_min = max(0.0, (gap_min * 60.0 - elapsed) / 60.0)
+
+    sla_hit = wait_hours is not None and wait_hours >= max_wait
+    overdue = wait_hours is not None and wait_hours >= max_wait * 1.1
+    if sla_hit and (gap_ok or overdue):
+        return {
+            "due": True,
+            "reason": "sla_due",
+            **base,
+            "gap_remaining_min": 0.0 if gap_ok or overdue else gap_remaining_min,
+        }
+    if not gap_ok:
+        return {
+            "due": False,
+            "reason": "resume_gap",
+            **base,
+            "gap_remaining_min": gap_remaining_min,
+        }
+    return {"due": False, "reason": "waiting_sla", **base}
+
+
+class _TagJobKilled(Exception):
+    """Raised when a Florence job is interrupted after kill_after_min."""
+
+
+def interrupt_comfy_tag_job(server: str, prompt_id: Optional[str] = None) -> Dict[str, Any]:
+    """Stop an in-flight Comfy prompt so a stuck Florence batch cannot run past the hard cap."""
+    from vision_slice_runner import _http_json  # type: ignore
+
+    server = str(server or DEFAULT_COMFY_SERVER).rstrip("/")
+    out: Dict[str, Any] = {"server": server}
+    try:
+        _http_json("POST", f"{server}/interrupt", timeout_s=10)
+        out["interrupt"] = True
+    except Exception as e:
+        out["interrupt"] = False
+        out["interrupt_error"] = str(e)
+    if prompt_id:
+        try:
+            _http_json("POST", f"{server}/queue", {"delete": [str(prompt_id)]}, timeout_s=10)
+            out["deleted"] = str(prompt_id)
+        except Exception as e:
+            out["delete_error"] = str(e)
+    return out
+
+
+def occupy_gpu_for_tagging(
+    *,
+    data_root: Path,
+    comfy_server: str,
+    output_root: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Pause hourlies and park Comfy/ledger so Florence can own the GPU."""
+    from suspend_comfy_queue import do_suspend, set_hourlies_enabled  # type: ignore
+
+    hourly_was_enabled = False
+    try:
+        from shape_factory_hourly import load_hourly_schedule  # type: ignore
+
+        hourly_was_enabled = bool(load_hourly_schedule(data_root=data_root).get("enabled"))
+    except Exception:
+        hourly_was_enabled = False
+    hourly_out: Dict[str, Any] = {}
+    if hourly_was_enabled:
+        hourly_out = set_hourlies_enabled(enabled=False, data_root=data_root)
+    out_root = Path(output_root) if output_root is not None else _default_output_root()
+    suspend = do_suspend(
+        server=str(comfy_server).rstrip("/"),
+        data_root=Path(data_root),
+        output_root=out_root,
+    )
+    return {
+        "ok": bool(suspend.get("ok")),
+        "hourly_was_enabled": hourly_was_enabled,
+        "hourly": hourly_out,
+        "suspend": suspend,
+    }
+
+
+def release_gpu_after_tagging(
+    *,
+    data_root: Path,
+    hourly_was_enabled: bool = True,
+    output_root: Optional[Path] = None,
+) -> Dict[str, Any]:
+    from suspend_comfy_queue import do_resume, set_hourlies_enabled  # type: ignore
+
+    out_root = Path(output_root) if output_root is not None else _default_output_root()
+    resume = do_resume(output_root=out_root, feeders=True)
+    hourly_out: Dict[str, Any] = {}
+    if hourly_was_enabled:
+        hourly_out = set_hourlies_enabled(enabled=True, data_root=data_root)
+    return {"ok": bool(resume.get("ok")), "resume": resume, "hourly": hourly_out}
 
 
 def still_tag_image_mode() -> str:
@@ -308,6 +776,45 @@ def reserve_still_tag_items(
             )
         n += 1
     return n
+
+
+def cancel_empty_queued_runs(*, data_root: Path) -> int:
+    """Cancel queued runs with no stills so they cannot occupy the GPU."""
+    db_path = default_db_path(data_root=data_root)
+    if not db_path.is_file():
+        return 0
+    con = connect(db_path)
+    try:
+        rows = con.execute(
+            """
+            SELECT run_id FROM still_tag_runs
+            WHERE status='queued' AND (total IS NULL OR total<=0)
+            """
+        ).fetchall()
+        n = 0
+        now = _utc_now_iso()
+        for row in rows:
+            rid = str(row["run_id"])
+            con.execute(
+                """
+                UPDATE still_tag_runs
+                SET status=?, finished_at=?, detail=?
+                WHERE run_id=? AND status='queued'
+                """,
+                ("cancelled", now, "empty enqueue (nothing left to reserve)", rid),
+            )
+            append_event(
+                con,
+                run_id=rid,
+                kind="cancelled",
+                message="empty enqueue (nothing left to reserve)",
+            )
+            n += 1
+        if n:
+            con.commit()
+        return n
+    finally:
+        con.close()
 
 
 def release_still_tag_reservations(con: sqlite3.Connection, run_id: str) -> int:
@@ -992,6 +1499,74 @@ def content_ids_missing_provisional(con: sqlite3.Connection, candidates: Sequenc
     return content_ids_available_for_tagging(con, candidates, only_missing=True, force=False)
 
 
+def _catalog_newest_content_ids(data_root: Path, *, limit: int = 400) -> List[str]:
+    from input_still_catalog import default_catalog_path  # type: ignore
+
+    cat = default_catalog_path(data_root=data_root)
+    if not cat.is_file():
+        return []
+    lim = max(1, int(limit))
+    con_cat = sqlite3.connect(str(cat), timeout=30.0)
+    try:
+        rows = con_cat.execute(
+            "SELECT path FROM stills ORDER BY first_seen DESC, mtime DESC LIMIT ?",
+            (lim,),
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        con_cat.close()
+    out: List[str] = []
+    seen: set[str] = set()
+    for (path,) in rows:
+        cid = extract_content_id(str(path))
+        if cid and cid not in seen:
+            seen.add(cid)
+            out.append(cid)
+    return out
+
+
+def _ensure_still_under_comfy_input(
+    path: Path,
+    *,
+    data_root: Path,
+    input_root: Optional[Path] = None,
+) -> Path:
+    """Hardlink/copy *path* into Comfy's input bind when it lives under output/.
+
+    LoadImage only sees the input root. Factory jobs already stage through
+    ``input/_factory/<content_id><ext>``; tagging must do the same.
+    """
+    from input_still_catalog import default_input_root  # type: ignore
+
+    src = Path(path).expanduser()
+    try:
+        src = src.resolve()
+    except OSError:
+        pass
+    root = Path(input_root or default_input_root()).expanduser()
+    try:
+        root = root.resolve()
+        if src.is_relative_to(root):
+            return src
+    except (ValueError, OSError):
+        pass
+    from shape_factory import (  # type: ignore
+        _resolve_load_image_stage_root,
+        stage_load_image_for_comfy,
+    )
+
+    stage_root = root if root.is_dir() else _resolve_load_image_stage_root(Path(data_root))
+    widget, _warn = stage_load_image_for_comfy(src, stage_root)
+    dest = stage_root / widget
+    try:
+        if dest.is_file():
+            return dest.resolve()
+    except OSError:
+        pass
+    return src
+
+
 def resolve_targets(
     *,
     data_root: Path,
@@ -1052,23 +1627,9 @@ def resolve_targets(
         from still_identity import iter_unique_stills  # type: ignore
 
         unique = iter_unique_stills(data_root, min_size=1)
-        if unique:
-            wanted = [cid for cid, _path in unique]
-        else:
-            cat = default_catalog_path(data_root=data_root)
-            if cat.is_file():
-                con_cat = sqlite3.connect(str(cat), timeout=30.0)
-                try:
-                    rows = con_cat.execute(
-                        "SELECT path FROM stills ORDER BY first_seen DESC, mtime DESC LIMIT ?",
-                        (max(lim * 20, 400),),
-                    ).fetchall()
-                finally:
-                    con_cat.close()
-                for (path,) in rows:
-                    cid = extract_content_id(str(path))
-                    if cid:
-                        wanted.append(cid)
+        wanted = [cid for cid, _path in unique]
+        # Fresh catalog drops (filename hash) even if content-accounting is stale.
+        wanted = _catalog_newest_content_ids(data_root, limit=max(lim * 20, 400)) + wanted
 
     # Dedupe preserve order
     seen: set[str] = set()
@@ -1127,6 +1688,12 @@ def resolve_targets(
         if resolved is None:
             out.append({"content_id": cid, "path": None, "relpath": None, "missing": True})
             continue
+        try:
+            resolved = _ensure_still_under_comfy_input(
+                resolved, data_root=data_root, input_root=input_root
+            )
+        except Exception:
+            pass
         rel = still_relpath_for_comfy(resolved, input_root=input_root)
         out.append(
             {
@@ -1152,6 +1719,7 @@ def enqueue_run(
     dry_run: bool = False,
     pin_path: Optional[Path] = None,
     status_dir: Optional[Path] = None,
+    manual: Optional[bool] = None,
 ) -> Dict[str, Any]:
     db_path = default_db_path(data_root=data_root)
     ensure_db(db_path)
@@ -1174,6 +1742,23 @@ def enqueue_run(
     )
     runnable = [t for t in targets if not t.get("missing")]
     skipped = [t for t in targets if t.get("missing")]
+    is_manual = infer_manual_request(
+        content_ids=content_ids,
+        collection_id=collection_id,
+        manual=manual,
+    )
+    sla_hours = run_sla_hours({"manual": is_manual, "request": "manual" if is_manual else "backlog"})
+    if not runnable:
+        return {
+            "ok": True,
+            "run_id": None,
+            "enqueued": 0,
+            "skipped": len(skipped),
+            "reserved": 0,
+            "db_path": str(db_path),
+            "manual": is_manual,
+            "sla_hours": sla_hours,
+        }
 
     run_id = f"still_tag_{_utc_now_iso().replace(':', '').replace('-', '')}_{uuid.uuid4().hex[:8]}"
     scope = {
@@ -1182,6 +1767,9 @@ def enqueue_run(
         "only_missing": only_missing,
         "limit": limit,
         "force": force,
+        "manual": is_manual,
+        "request": "manual" if is_manual else "backlog",
+        "sla_hours": sla_hours,
         "targets": targets,
     }
     reserved = 0
@@ -1217,7 +1805,13 @@ def enqueue_run(
             run_id=run_id,
             kind="enqueued",
             message=f"enqueued {len(runnable)} (skipped_missing={len(skipped)}, reserved={reserved})",
-            payload={"total": len(runnable), "skipped": len(skipped), "reserved": reserved},
+            payload={
+                "total": len(runnable),
+                "skipped": len(skipped),
+                "reserved": reserved,
+                "manual": is_manual,
+                "sla_hours": sla_hours,
+            },
         )
         con.commit()
     finally:
@@ -1234,6 +1828,8 @@ def enqueue_run(
         "pin_policy": pin["pin_policy"],
         "provider": provider,
         "comfy_server": server,
+        "manual": is_manual,
+        "sla_hours": sla_hours,
     }
 
 
@@ -1243,6 +1839,8 @@ def process_run(
     run_id: str,
     status_dir: Optional[Path] = None,
     front: bool = False,
+    batch_n: Optional[int] = None,
+    hard_deadline: Optional[float] = None,
 ) -> Dict[str, Any]:
     db_path = default_db_path(data_root=data_root)
     con = connect(db_path)
@@ -1263,7 +1861,7 @@ def process_run(
         model_pin = str(run.get("model_pin") or pin["model_pin"])
         pin_policy = str(run.get("pin_policy") or pin["pin_policy"])
         image_mode = still_tag_image_mode()
-        batch_n = still_tag_batch_size()
+        batch_n = still_tag_batch_size(batch_n)
         poll_s = still_tag_poll_interval_s()
 
         con.execute(
@@ -1374,6 +1972,46 @@ def process_run(
             )
             con.commit()
 
+        def _caption_one(req: Any, t: Dict[str, Any], cid: str) -> None:
+            try:
+                result = runner.caption(req)
+                _record_ok(t, cid, result.caption, result.raw, result.model_pin)
+                return
+            except _TagJobKilled:
+                raise
+            except TimeoutError as e:
+                pid = getattr(runner, "last_prompt_id", None)
+                interrupt_comfy_tag_job(server, str(pid) if pid else None)
+                if hard_deadline is not None and time.time() >= hard_deadline:
+                    raise _TagJobKilled(str(e)) from e
+                _record_err(cid, e)
+                return
+            except Exception as e:
+                cfg = getattr(runner, "cfg", None)
+                mode = str(getattr(cfg, "image_mode", "") or "")
+                if cfg is not None and mode != "upload" and _is_comfy_ref_error(e):
+                    prev = cfg.image_mode
+                    try:
+                        cfg.image_mode = "upload"
+                        result = runner.caption(req)
+                        _record_ok(t, cid, result.caption, result.raw, result.model_pin)
+                        return
+                    except _TagJobKilled:
+                        raise
+                    except TimeoutError as e2:
+                        pid = getattr(runner, "last_prompt_id", None)
+                        interrupt_comfy_tag_job(server, str(pid) if pid else None)
+                        if hard_deadline is not None and time.time() >= hard_deadline:
+                            raise _TagJobKilled(str(e2)) from e2
+                        _record_err(cid, e2)
+                        return
+                    except Exception as e2:
+                        _record_err(cid, e2)
+                        return
+                    finally:
+                        cfg.image_mode = prev
+                _record_err(cid, e)
+
         def _caption_chunk(chunk: List[Tuple[Dict[str, Any], str, Path]]) -> None:
             reqs = [
                 CaptionRequest(
@@ -1395,17 +2033,19 @@ def process_run(
                     )
                 for (t, cid, _path), result in zip(chunk, results):
                     _record_ok(t, cid, result.caption, result.raw, result.model_pin)
-            except Exception as e:
-                if len(chunk) == 1:
-                    _record_err(chunk[0][1], e)
-                    return
-                for item, req in zip(chunk, reqs):
-                    t, cid, _path = item
-                    try:
-                        result = runner.caption(req)
-                        _record_ok(t, cid, result.caption, result.raw, result.model_pin)
-                    except Exception as e2:
-                        _record_err(cid, e2)
+                return
+            except _TagJobKilled:
+                raise
+            except TimeoutError as e:
+                pid = getattr(runner, "last_prompt_id", None)
+                interrupt_comfy_tag_job(server, str(pid) if pid else None)
+                if hard_deadline is not None and time.time() >= hard_deadline:
+                    raise _TagJobKilled(str(e)) from e
+            except Exception:
+                pass
+            for item, req in zip(chunk, reqs):
+                t, cid, _path = item
+                _caption_one(req, t, cid)
 
         try:
             pending: List[Tuple[Dict[str, Any], str, Path]] = []
@@ -1425,20 +2065,90 @@ def process_run(
                 ).fetchone()
                 if existing and _row_has_provisional(existing) and not bool(scope.get("force")):
                     continue
-                if provider in ("dry-run", "dry_run"):
-                    caption = (
-                        "1girl, long hair, looking at viewer, solo, simple background, "
-                        f"tag_smoke_{cid[:8]}"
-                    )
-                    _record_ok(t, cid, caption, {"dry_run": True}, "dry-run")
-                    continue
-                if not path.is_file():
+                if not _is_dry_provider(provider) and not path.is_file():
                     _record_err(cid, FileNotFoundError(f"missing still: {path}"))
                     continue
+                if not _is_dry_provider(provider) and path.is_file():
+                    try:
+                        path = _ensure_still_under_comfy_input(path, data_root=data_root)
+                    except Exception:
+                        pass
+                if not _is_dry_provider(provider):
+                    bad = _still_unreadable_reason(path)
+                    if bad:
+                        _record_err(cid, OSError(f"{bad}: {path}"))
+                        continue
                 pending.append((t, cid, path))
 
+            # Soft session_minutes is a start/budget target only. Once a run is
+            # underway, finish remaining stills unless kill_after_min is hit.
+            killed = False
+            kill_reason: Optional[str] = None
+            remaining_after = 0
             for i in range(0, len(pending), batch_n):
-                _caption_chunk(pending[i : i + batch_n])
+                if hard_deadline is not None and time.time() >= hard_deadline:
+                    killed = True
+                    kill_reason = "kill_after_min"
+                    remaining_after = len(pending) - i
+                    break
+                if hard_deadline is not None:
+                    cfg = getattr(runner, "cfg", None)
+                    if cfg is not None:
+                        remain = max(5.0, hard_deadline - time.time())
+                        try:
+                            current = float(getattr(cfg, "timeout_s", 900) or 900)
+                        except (TypeError, ValueError):
+                            current = 900.0
+                        cfg.timeout_s = min(current, remain)
+                chunk = pending[i : i + batch_n]
+                try:
+                    if _is_dry_provider(provider):
+                        for t, cid, _path in chunk:
+                            caption = (
+                                "1girl, long hair, looking at viewer, solo, simple background, "
+                                f"tag_smoke_{cid[:8]}"
+                            )
+                            _record_ok(t, cid, caption, {"dry_run": True}, "dry-run")
+                    else:
+                        _caption_chunk(chunk)
+                except _TagJobKilled:
+                    killed = True
+                    kill_reason = "kill_after_min"
+                    remaining_after = len(pending) - i
+                    break
+
+            if killed:
+                detail = f"killed:{kill_reason} remaining={remaining_after}"
+                con.execute(
+                    """
+                    UPDATE still_tag_runs
+                    SET status=?, finished_at=NULL, done_count=?, error_count=?, detail=?
+                    WHERE run_id=?
+                    """,
+                    ("queued", done, errors, detail, run_id),
+                )
+                append_event(
+                    con,
+                    run_id=run_id,
+                    kind="killed",
+                    message=detail,
+                    payload={
+                        "reason": kill_reason,
+                        "remaining": remaining_after,
+                        "done": done,
+                        "errors": errors,
+                    },
+                )
+                con.commit()
+                return {
+                    "ok": True,
+                    "killed": True,
+                    "paused": True,
+                    "reason": kill_reason,
+                    "remaining": remaining_after,
+                    "run": get_run(con, run_id),
+                }
+
             status = "done" if errors == 0 or done > 0 else "error"
             detail = None if errors == 0 else f"{errors} item error(s)"
             con.execute(
@@ -1458,7 +2168,7 @@ def process_run(
                 payload={"done": done, "errors": errors, "status": status, "released": released},
             )
             con.commit()
-            return {"ok": True, "run": get_run(con, run_id)}
+            return {"ok": True, "paused": False, "run": get_run(con, run_id)}
         finally:
             try:
                 runner.close()
@@ -1596,15 +2306,20 @@ def index_window_status(
     schedule: Optional[Dict[str, Any]] = None,
     *,
     now: Optional[_dt.datetime] = None,
+    data_root: Optional[Path] = None,
+    backlog: Optional[Dict[str, Any]] = None,
+    session: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Return whether *now* is inside the configured index window."""
+    """Return whether a drain tick should start (SLA due or clock window)."""
     sch = dict(DEFAULT_SCHEDULE)
     if isinstance(schedule, dict):
         sch.update(schedule)
     enabled = bool(sch.get("enabled"))
     start = _parse_hhmm(sch.get("window_start")) or (2, 0)
-    duration = max(1, int(sch.get("window_duration_min") or 180))
+    session_minutes = max(1.0, _schedule_float(sch, "session_minutes", 15))
+    duration = max(1, int(sch.get("window_duration_min") or session_minutes or 15))
     tz_name = str(sch.get("timezone") or "").strip() or None
+    mode = _schedule_mode(sch)
 
     if now is None:
         now = _dt.datetime.now(tz=_dt.timezone.utc)
@@ -1631,7 +2346,7 @@ def index_window_status(
     catch_duration = max(1, int(sch.get("catch_up_window_duration_min") or 120))
     catch_start_dt: Optional[_dt.datetime] = None
     catch_end_dt: Optional[_dt.datetime] = None
-    if catch_up_enabled and catch_start is not None:
+    if mode == "clock" and catch_up_enabled and catch_start is not None:
         catch_in, catch_start_dt, catch_end_dt = _local_window_bounds(
             local, start_hhmm=catch_start, duration_min=catch_duration
         )
@@ -1643,8 +2358,33 @@ def index_window_status(
     reason = "ok" if (enabled and in_window) else (
         "disabled" if not enabled else "outside_window"
     )
+    stats = backlog
+    if stats is None and data_root is not None:
+        try:
+            stats = backlog_stats(data_root=Path(data_root))
+        except Exception:
+            stats = None
+    sess = session
+    if sess is None and data_root is not None:
+        sess = load_tag_session(data_root=Path(data_root))
+    sla: Optional[Dict[str, Any]] = None
+    if mode == "sla":
+        sla = sla_due_status(schedule=sch, backlog=stats, session=sess, now=now)
+        in_window = bool(enabled and sla.get("due"))
+        reason = str(sla.get("reason") or reason)
+        window_kind = "sla" if in_window else None
+        end_dt = local + _dt.timedelta(minutes=session_minutes)
+        start_dt = local
+
+    sec_per_still = max(2.0, _schedule_float(sch, "sec_per_still", DEFAULT_SEC_PER_STILL))
+    batch_n = scale_batch_for_session(
+        session_minutes=session_minutes,
+        sec_per_still=sec_per_still,
+        pending_count=int((stats or {}).get("queued_targets") or 0) or None,
+    )
     out: Dict[str, Any] = {
         "enabled": enabled,
+        "mode": mode,
         "in_window": bool(in_window),
         "reason": reason,
         "window_kind": window_kind if in_window else None,
@@ -1654,13 +2394,40 @@ def index_window_status(
         "window_start_local": start_dt.replace(microsecond=0).isoformat(),
         "window_end_local": end_dt.replace(microsecond=0).isoformat(),
         "window_duration_min": duration,
+        "session_minutes": session_minutes,
+        "kill_after_min": max(1.0, _schedule_float(sch, "kill_after_min", 60)),
+        "max_wait_hours": max(0.25, _schedule_float(sch, "max_wait_hours", 3)),
+        "manual_max_wait_hours": max(0.25, _schedule_float(sch, "manual_max_wait_hours", 1)),
+        "scan_interval_min": max(0.0, _schedule_float(sch, "scan_interval_min", 15)),
+        "evaluate_interval_min": max(0.0, _schedule_float(sch, "evaluate_interval_min", 15)),
+        "auto_enqueue_untagged": bool(sch.get("auto_enqueue_untagged", True)),
+        "auto_enqueue_limit": max(1, int(sch.get("auto_enqueue_limit") or 96)),
+        "resume_gap_min": max(0.0, _schedule_float(sch, "resume_gap_min", 20)),
+        "sec_per_still": sec_per_still,
+        "occupy_gpu": bool(sch.get("occupy_gpu", True)),
+        "scaled_batch": batch_n,
         "front": bool(sch.get("front", True)),
         "max_inflight": max(1, int(sch.get("max_inflight") or 1)),
         "max_items_per_tick": max(1, int(sch.get("max_items_per_tick") or 48)),
         "auto_drain_on_enqueue": bool(sch.get("auto_drain_on_enqueue")),
         "comfy_server": sch.get("comfy_server"),
     }
-    if catch_up_enabled and catch_start is not None and catch_start_dt is not None and catch_end_dt is not None:
+    if sla is not None:
+        out["wait_hours"] = sla.get("wait_hours")
+        out["max_wait_hours"] = sla.get("max_wait_hours", out["max_wait_hours"])
+        out["sla_class"] = sla.get("sla_class")
+        out["session_status"] = sla.get("session_status")
+        out["stale_session"] = sla.get("stale_session")
+        if sla.get("gap_remaining_min") is not None:
+            out["gap_remaining_min"] = sla.get("gap_remaining_min")
+    if sess:
+        out["session"] = {
+            "status": sess.get("status"),
+            "started_at": sess.get("started_at"),
+            "ended_at": sess.get("ended_at"),
+            "batch_n": sess.get("batch_n"),
+        }
+    if mode == "clock" and catch_up_enabled and catch_start is not None and catch_start_dt is not None and catch_end_dt is not None:
         out["catch_up_enabled"] = True
         out["catch_up_window_start_local"] = catch_start_dt.replace(microsecond=0).isoformat()
         out["catch_up_window_end_local"] = catch_end_dt.replace(microsecond=0).isoformat()
@@ -1688,7 +2455,7 @@ def backlog_stats(*, data_root: Path) -> Dict[str, Any]:
     con = connect(db_path)
     try:
         queued = con.execute(
-            "SELECT run_id, total, enqueued_at, provider FROM still_tag_runs WHERE status='queued' ORDER BY enqueued_at ASC"
+            "SELECT run_id, total, enqueued_at, provider, scope_json FROM still_tag_runs WHERE status='queued' ORDER BY enqueued_at ASC"
         ).fetchall()
         running = con.execute(
             "SELECT COUNT(*) AS c FROM still_tag_runs WHERE status='running'"
@@ -1710,11 +2477,18 @@ def backlog_stats(*, data_root: Path) -> Dict[str, Any]:
         queued_targets = sum(int(r["total"] or 0) for r in queued)
         tagged = int(items_prov["c"] if items_prov else 0)
         reserved = int(items_reserved["c"] if items_reserved else 0)
+        manual_ids = {
+            str(r["run_id"]) for r in queued if _scope_is_manual(_scope_from_raw(r["scope_json"]))
+        }
+        manual_rows = [r for r in queued if str(r["run_id"]) in manual_ids]
+        backlog_rows = [r for r in queued if str(r["run_id"]) not in manual_ids]
         return {
             "ok": True,
             "db_path": str(db_path),
             "queued_runs": len(queued),
             "queued_targets": queued_targets,
+            "queued_manual_runs": len(manual_rows),
+            "queued_manual_targets": sum(int(r["total"] or 0) for r in manual_rows),
             "running_runs": int(running["c"] if running else 0),
             "items_total": int(items_total["c"] if items_total else 0),
             "items_with_provisional": tagged,
@@ -1722,10 +2496,131 @@ def backlog_stats(*, data_root: Path) -> Dict[str, Any]:
             "items_reserved": reserved,
             "items_queued": reserved,
             "oldest_queued_at": queued[0]["enqueued_at"] if queued else None,
+            "oldest_manual_queued_at": manual_rows[0]["enqueued_at"] if manual_rows else None,
+            "oldest_backlog_queued_at": backlog_rows[0]["enqueued_at"] if backlog_rows else None,
             "queued_run_ids": [str(r["run_id"]) for r in queued[:20]],
         }
     finally:
         con.close()
+
+
+def scan_new_stills(*, data_root: Path) -> Dict[str, Any]:
+    """Incremental input catalog scan so freshly dropped stills are visible."""
+    from input_still_catalog import default_catalog_path, default_input_root, scan_input_stills  # type: ignore
+
+    return scan_input_stills(
+        input_root=default_input_root(),
+        catalog_path=default_catalog_path(data_root=data_root),
+    )
+
+
+def run_scheduled_tick(
+    *,
+    data_root: Path,
+    status_dir: Optional[Path] = None,
+    front: Optional[bool] = None,
+    max_items: Optional[int] = None,
+    until_minutes: Optional[float] = None,
+    provider_override: Optional[str] = None,
+    comfy_server_override: Optional[str] = None,
+    now: Optional[_dt.datetime] = None,
+    force_scan: bool = False,
+    force_evaluate: bool = False,
+) -> Dict[str, Any]:
+    """
+    Periodic tick: scan for new stills, enqueue untagged backlog, then evaluate SLAs.
+
+    Timer may wake often; *scan_interval_min* / *evaluate_interval_min* gate the work.
+    """
+    data_root = Path(data_root)
+    sch = load_schedule(data_root=data_root)
+    cancel_empty_queued_runs(data_root=data_root)
+    if not bool(sch.get("enabled")):
+        win = index_window_status(sch, data_root=data_root, now=now)
+        return {"ok": True, "skipped": True, "reason": "schedule_disabled", "window": win}
+
+    clock = now or _dt.datetime.now(tz=_dt.timezone.utc)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=_dt.timezone.utc)
+    tick = load_tag_tick(data_root=data_root)
+    scan_min = max(0.0, _schedule_float(sch, "scan_interval_min", 15))
+    eval_min = max(0.0, _schedule_float(sch, "evaluate_interval_min", 15))
+    do_scan = bool(force_scan) or interval_elapsed(tick.get("last_scan_at"), scan_min, now=clock)
+    do_eval = bool(force_evaluate) or interval_elapsed(tick.get("last_evaluate_at"), eval_min, now=clock)
+    if not do_scan and not do_eval:
+        win = index_window_status(sch, data_root=data_root, now=now)
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "tick_wait",
+            "window": win,
+            "tick": tick,
+            "scan_interval_min": scan_min,
+            "evaluate_interval_min": eval_min,
+        }
+
+    scan_out: Optional[Dict[str, Any]] = None
+    enq_out: Optional[Dict[str, Any]] = None
+    if do_scan:
+        try:
+            scan_out = scan_new_stills(data_root=data_root)
+        except Exception as e:
+            scan_out = {"ok": False, "error": str(e)}
+        if bool(sch.get("auto_enqueue_untagged", True)):
+            limit = max(1, int(sch.get("auto_enqueue_limit") or sch.get("max_items_per_tick") or 96))
+            try:
+                enq_out = enqueue_run(
+                    data_root=data_root,
+                    only_missing=True,
+                    force=False,
+                    limit=limit,
+                    manual=False,
+                    status_dir=status_dir,
+                )
+            except Exception as e:
+                enq_out = {"ok": False, "error": str(e), "enqueued": 0}
+        tick["last_scan_at"] = _utc_now_iso()
+        tick["last_scan"] = {
+            "inserted": (scan_out or {}).get("inserted"),
+            "updated": (scan_out or {}).get("updated"),
+            "enqueued": (enq_out or {}).get("enqueued") or 0,
+        }
+
+    drain_out: Optional[Dict[str, Any]] = None
+    if do_eval:
+        tick["last_evaluate_at"] = _utc_now_iso()
+        save_tag_tick(tick, data_root=data_root)
+        drain_out = drain_backlog(
+            data_root=data_root,
+            status_dir=status_dir,
+            force=False,
+            respect_schedule=True,
+            front=front,
+            max_items=max_items,
+            until_minutes=until_minutes,
+            provider_override=provider_override,
+            comfy_server_override=comfy_server_override,
+        )
+    else:
+        save_tag_tick(tick, data_root=data_root)
+
+    win = (drain_out or {}).get("window") if isinstance(drain_out, dict) else None
+    if not isinstance(win, dict):
+        win = index_window_status(sch, data_root=data_root, now=now)
+    return {
+        "ok": True,
+        "skipped": False,
+        "reason": "tick",
+        "scanned": do_scan,
+        "evaluated": do_eval,
+        "scan": scan_out,
+        "enqueue": enq_out,
+        "drain": drain_out,
+        "window": win,
+        "tick": load_tag_tick(data_root=data_root),
+        "scan_interval_min": scan_min,
+        "evaluate_interval_min": eval_min,
+    }
 
 
 def drain_backlog(
@@ -1741,112 +2636,297 @@ def drain_backlog(
     comfy_server_override: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Process queued still-tag runs until empty, item budget, or time/window end.
+    Process queued still-tag runs until empty, item budget, or session target.
 
-    ``max_inflight`` is recorded for ops; IH1 processes runs sequentially (one Florence
-    prompt outstanding via process_run's wait loop). Raising inflight is a later pipeline.
+    The 15-minute session is a *start* target: do not begin another run after it,
+    but always let an in-flight Florence run finish. ``max_inflight`` is recorded
+    for ops; processing stays sequential.
     """
+    data_root = Path(data_root)
     sch = load_schedule(data_root=data_root)
-    win = index_window_status(sch)
+    cancel_empty_queued_runs(data_root=data_root)
+    stats = backlog_stats(data_root=data_root)
+    sess = load_tag_session(data_root=data_root)
+    kill_after_min = max(1.0, _schedule_float(sch, "kill_after_min", 60))
+    stale_after_min = max(90.0, kill_after_min + 30.0)
+    if session_is_stale(sess, stale_after_min=stale_after_min):
+        try:
+            if sess.get("occupied"):
+                release_gpu_after_tagging(
+                    data_root=data_root,
+                    hourly_was_enabled=bool(sess.get("hourly_was_enabled")),
+                )
+        except Exception:
+            pass
+        sess = save_tag_session(
+            {"status": "idle", "note": "stale_recovered", "ended_at": _utc_now_iso()},
+            data_root=data_root,
+        )
+    win = index_window_status(sch, data_root=data_root, backlog=stats, session=sess)
     if respect_schedule and not force:
         if not win["enabled"]:
             return {"ok": True, "skipped": True, "reason": "schedule_disabled", "window": win}
         if not win["in_window"]:
-            return {"ok": True, "skipped": True, "reason": "outside_window", "window": win}
+            skip_reason = (
+                "outside_window" if win.get("mode") == "clock" else str(win.get("reason") or "outside_window")
+            )
+            return {"ok": True, "skipped": True, "reason": skip_reason, "window": win}
+    if int(stats.get("queued_targets") or 0) < 1 and int(stats.get("running_runs") or 0) < 1:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "no_backlog",
+            "window": win,
+            "session": sess,
+        }
+
+    dry = _is_dry_provider(provider_override)
+    sess_status = str((sess or {}).get("status") or "idle").strip().lower()
+    if sess_status in {"occupying", "running"} and not force:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "session_active",
+            "window": win,
+            "session": sess,
+        }
 
     use_front = bool(win["front"] if front is None else front)
-    budget = int(max_items if max_items is not None else win["max_items_per_tick"])
-    budget = max(1, budget)
-    deadline = time.time() + float(until_minutes) * 60.0 if until_minutes else None
-    if respect_schedule and not force and win.get("window_end_local"):
+    session_minutes = float(until_minutes if until_minutes is not None else win.get("session_minutes") or 15)
+    sec_est = estimate_sec_per_still(
+        data_root=data_root,
+        fallback=float(win.get("sec_per_still") or DEFAULT_SEC_PER_STILL),
+    )
+    pending_n = int(stats.get("queued_targets") or 0) or None
+    batch_n = scale_batch_for_session(
+        session_minutes=session_minutes,
+        sec_per_still=sec_est,
+        pending_count=pending_n,
+    )
+    tick_cap = max(1, int(win.get("max_items_per_tick") or 48))
+    if max_items is not None:
+        budget = max(1, int(max_items))
+    else:
+        budget = session_item_budget(
+            session_minutes=session_minutes,
+            sec_per_still=sec_est,
+            cap=tick_cap,
+        )
+    deadline = time.time() + float(session_minutes) * 60.0
+    hard_deadline = time.time() + float(kill_after_min) * 60.0
+    if win.get("mode") == "clock" and respect_schedule and not force and win.get("window_end_local"):
         try:
             end_local = _dt.datetime.fromisoformat(str(win["window_end_local"]))
             if end_local.tzinfo is None:
                 end_local = end_local.replace(tzinfo=_dt.timezone.utc)
-            deadline_win = end_local.timestamp()
-            deadline = min(deadline, deadline_win) if deadline is not None else deadline_win
+            deadline = min(deadline, end_local.timestamp())
         except Exception:
             pass
+
+    occupy = bool(win.get("occupy_gpu", True)) and not dry
+    occupy_out: Optional[Dict[str, Any]] = None
+    hourly_was = False
+    session_started = _utc_now_iso()
+    save_tag_session(
+        {
+            "status": "occupying" if occupy else "running",
+            "started_at": session_started,
+            "batch_n": batch_n,
+            "sec_per_still": sec_est,
+            "session_minutes": session_minutes,
+            "kill_after_min": kill_after_min,
+            "occupied": occupy,
+            "force": bool(force),
+        },
+        data_root=data_root,
+    )
+    if occupy:
+        server = str(
+            comfy_server_override
+            or win.get("comfy_server")
+            or os.environ.get("VISION_COMFY_SERVER")
+            or DEFAULT_COMFY_SERVER
+        ).rstrip("/")
+        try:
+            occupy_out = occupy_gpu_for_tagging(data_root=data_root, comfy_server=server)
+            hourly_was = bool(occupy_out.get("hourly_was_enabled"))
+            if not occupy_out.get("ok"):
+                save_tag_session(
+                    {
+                        "status": "idle",
+                        "ended_at": _utc_now_iso(),
+                        "note": "occupy_failed",
+                        "occupy": occupy_out,
+                    },
+                    data_root=data_root,
+                )
+                return {
+                    "ok": False,
+                    "skipped": True,
+                    "reason": "occupy_failed",
+                    "window": win,
+                    "occupy": occupy_out,
+                }
+        except Exception as e:
+            save_tag_session(
+                {
+                    "status": "idle",
+                    "ended_at": _utc_now_iso(),
+                    "note": f"occupy_error:{e}",
+                },
+                data_root=data_root,
+            )
+            return {
+                "ok": False,
+                "skipped": True,
+                "reason": "occupy_failed",
+                "window": win,
+                "error": str(e),
+            }
+        save_tag_session(
+            {
+                "status": "running",
+                "started_at": session_started,
+                "batch_n": batch_n,
+                "sec_per_still": sec_est,
+                "session_minutes": session_minutes,
+                "kill_after_min": kill_after_min,
+                "occupied": True,
+                "hourly_was_enabled": hourly_was,
+                "occupy": {"ok": True},
+            },
+            data_root=data_root,
+        )
+    else:
+        save_tag_session(
+            {
+                "status": "running",
+                "started_at": session_started,
+                "batch_n": batch_n,
+                "sec_per_still": sec_est,
+                "session_minutes": session_minutes,
+                "kill_after_min": kill_after_min,
+                "occupied": False,
+            },
+            data_root=data_root,
+        )
 
     ensure_db(default_db_path(data_root=data_root))
     done_items = 0
     runs_processed = 0
     errors = 0
     run_results: List[Dict[str, Any]] = []
+    order_sql = "ASC" if win.get("mode") == "sla" else "DESC"
 
-    while done_items < budget:
-        if deadline is not None and time.time() >= deadline:
-            break
-        if respect_schedule and not force:
-            win_now = index_window_status(sch)
-            if not win_now["in_window"]:
+    try:
+        while done_items < budget:
+            if time.time() >= hard_deadline:
+                break
+            if deadline is not None and time.time() >= deadline and runs_processed > 0:
                 break
 
-        con = connect(default_db_path(data_root=data_root))
-        try:
-            row = con.execute(
-                """
-                SELECT run_id, total FROM still_tag_runs
-                WHERE status='queued'
-                ORDER BY enqueued_at DESC
-                LIMIT 1
-                """
-            ).fetchone()
-        finally:
-            con.close()
-        if not row:
-            break
-
-        run_id = str(row["run_id"])
-        # Optional: skip starting a huge run when almost out of budget and already did work
-        total = int(row["total"] or 0)
-        if done_items > 0 and total > (budget - done_items) and (budget - done_items) < total:
-            break
-
-        if comfy_server_override or provider_override:
             con = connect(default_db_path(data_root=data_root))
             try:
-                if comfy_server_override:
-                    con.execute(
-                        "UPDATE still_tag_runs SET comfy_server=? WHERE run_id=?",
-                        (str(comfy_server_override).rstrip("/"), run_id),
-                    )
-                if provider_override:
-                    con.execute(
-                        "UPDATE still_tag_runs SET provider=? WHERE run_id=?",
-                        (str(provider_override), run_id),
-                    )
-                con.commit()
+                rows = con.execute(
+                    f"""
+                    SELECT run_id, total, enqueued_at, scope_json FROM still_tag_runs
+                    WHERE status='queued'
+                    ORDER BY enqueued_at {order_sql}
+                    """
+                ).fetchall()
             finally:
                 con.close()
+            if not rows:
+                break
+            if win.get("mode") == "sla":
+                manuals = [r for r in rows if _scope_is_manual(_scope_from_raw(r["scope_json"]))]
+                row = manuals[0] if manuals else rows[0]
+            else:
+                row = rows[0]
 
-        try:
-            out = process_run(
-                data_root=data_root,
-                run_id=run_id,
-                status_dir=status_dir,
-                front=use_front,
+            run_id = str(row["run_id"])
+            total = int(row["total"] or 0)
+            if total <= 0:
+                cancel_empty_queued_runs(data_root=data_root)
+                continue
+            if done_items > 0 and total > (budget - done_items) and (budget - done_items) < total:
+                break
+
+            if comfy_server_override or provider_override:
+                con = connect(default_db_path(data_root=data_root))
+                try:
+                    if comfy_server_override:
+                        con.execute(
+                            "UPDATE still_tag_runs SET comfy_server=? WHERE run_id=?",
+                            (str(comfy_server_override).rstrip("/"), run_id),
+                        )
+                    if provider_override:
+                        con.execute(
+                            "UPDATE still_tag_runs SET provider=? WHERE run_id=?",
+                            (str(provider_override), run_id),
+                        )
+                    con.commit()
+                finally:
+                    con.close()
+
+            try:
+                out = process_run(
+                    data_root=data_root,
+                    run_id=run_id,
+                    status_dir=status_dir,
+                    front=use_front,
+                    batch_n=batch_n,
+                    hard_deadline=hard_deadline,
+                )
+            except Exception as e:
+                errors += 1
+                run_results.append({"run_id": run_id, "ok": False, "error": str(e)})
+                time.sleep(0.2)
+                continue
+
+            runs_processed += 1
+            dc = int((out.get("run") or {}).get("done_count") or out.get("done_count") or 0)
+            if not dc and out.get("ok"):
+                r2 = out.get("run") if isinstance(out.get("run"), dict) else {}
+                dc = int(r2.get("done_count") or 0)
+            done_items += max(0, dc)
+            run_results.append(
+                {
+                    "run_id": run_id,
+                    "ok": bool(out.get("ok")),
+                    "done_count": dc,
+                    "killed": bool(out.get("killed")),
+                    "error": out.get("error"),
+                }
             )
-        except Exception as e:
-            errors += 1
-            run_results.append({"run_id": run_id, "ok": False, "error": str(e)})
-            time.sleep(0.2)
-            continue
-
-        runs_processed += 1
-        dc = int((out.get("run") or {}).get("done_count") or out.get("done_count") or 0)
-        if not dc and out.get("ok"):
-            # fall back: count from returned run
-            r2 = out.get("run") if isinstance(out.get("run"), dict) else {}
-            dc = int(r2.get("done_count") or 0)
-        done_items += max(0, dc)
-        run_results.append(
+            if out.get("killed"):
+                break
+    finally:
+        release_out: Optional[Dict[str, Any]] = None
+        if occupy:
+            try:
+                release_out = release_gpu_after_tagging(
+                    data_root=data_root,
+                    hourly_was_enabled=hourly_was,
+                )
+            except Exception as e:
+                release_out = {"ok": False, "error": str(e)}
+        save_tag_session(
             {
-                "run_id": run_id,
-                "ok": bool(out.get("ok")),
-                "done_count": dc,
-                "error": out.get("error"),
-            }
+                "status": "idle",
+                "started_at": session_started,
+                "ended_at": _utc_now_iso(),
+                "batch_n": batch_n,
+                "sec_per_still": sec_est,
+                "session_minutes": session_minutes,
+                "kill_after_min": kill_after_min,
+                "occupied": occupy,
+                "hourly_was_enabled": hourly_was,
+                "done_items": done_items,
+                "runs_processed": runs_processed,
+                "release": release_out,
+            },
+            data_root=data_root,
         )
 
     return {
@@ -1855,6 +2935,12 @@ def drain_backlog(
         "front": use_front,
         "max_inflight": win["max_inflight"],
         "budget": budget,
+        "batch_n": batch_n,
+        "sec_per_still": sec_est,
+        "session_minutes": session_minutes,
+        "kill_after_min": kill_after_min,
+        "occupied": occupy,
+        "occupy": occupy_out,
         "done_items": done_items,
         "runs_processed": runs_processed,
         "errors": errors,

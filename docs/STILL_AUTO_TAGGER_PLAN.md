@@ -32,9 +32,14 @@
 6. **GPU placement stays flexible until load is known.** Do not hard-pick “always drain” vs
    “always remote.” Worker targets a **CaptionRunner** endpoint (same V1 contract); ops
    chooses local Comfy (concert / quiet periods) or remote Comfy (RunPod) per run or env.
-7. **Index hour (2026-08-28):** Enqueue ≠ drain. Gallery builds a SQLite backlog anytime;
-   a reserved window drains Florence prompts (prefer Comfy `front`, capped in-flight) so
-   tagging does not thrash with I2V mid-day. See [`STILL_TAG_INDEX_HOUR_PLAN.md`](./STILL_TAG_INDEX_HOUR_PLAN.md).
+7. **Index hour / SLA session (2026-09-19):** Enqueue ≠ drain. Gallery builds a SQLite
+   backlog anytime; a 15-minute tick scans new stills and evaluates SLAs (Queue
+   tag within `manual_max_wait_hours` (1h), everything else within
+   `max_wait_hours` (3h)). Florence aims at `session_minutes` (~15 min)
+   exclusive session (hourlies paused). In-flight tagging runs finish unless
+   they exceed `kill_after_min` (60). Knobs are adjustable in schedule JSON
+   and the gallery Tagging backlog panel. See
+   [`STILL_TAG_INDEX_HOUR_PLAN.md`](./STILL_TAG_INDEX_HOUR_PLAN.md).
 
 ---
 

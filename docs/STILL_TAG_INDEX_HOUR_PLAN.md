@@ -1,7 +1,11 @@
 # Still-tag index hour — plan
 
-**Status:** Active (2026-08-28). **IH1 + gallery demo** landed (enqueue≠drain, schedule,
-front drain, Still gallery index-hour panel, dry-run smoke).  
+**Status:** Active (2026-09-19). **SLA sessions** — attempt queued stills within
+`max_wait_hours` (default **3h**; gallery Queue tag uses `manual_max_wait_hours`,
+default **1h**). Exclusive Florence burst aims at `session_minutes` (default **15**);
+hourlies paused, Comfy parked to pending. The session is a start/budget **target**;
+in-flight tagging runs finish unless they exceed `kill_after_min` (default **60**).
+All knobs live in `still_tag_schedule.json` and the gallery Tagging backlog panel.
 **Parent:** [`STILL_AUTO_TAGGER_PLAN.md`](./STILL_AUTO_TAGGER_PLAN.md) (T1 store/UI enqueue already landed).
 
 **Related:** [`SCHEDULED_AND_CONTAINER_JOBS_RUNDOWN.md`](./SCHEDULED_AND_CONTAINER_JOBS_RUNDOWN.md),
@@ -34,9 +38,20 @@ Index-hour drainer →  Comfy /prompt Florence (prefer front) [reserved window]
 
 1. **Enqueue ≠ drain.** UI/API default is backlog-only. No Florence in the request path;
    no automatic GPU kick on enqueue (unless an explicit opt-in flag/env for smoke).
-2. **Reserved window (“index hour”).** A schedule defines when the drainer may burn the
-   backlog on the configured Comfy. Early backlog days may be multi-hour windows
-   (“index evening”) — same mechanism, longer duration.
+2. **SLA session (default) or clock window.** A periodic tick (default
+   `evaluate_interval_min` **15**) scans input (`scan_interval_min` **15**) for
+   new stills and evaluates SLAs. `mode=sla`: start a drain when the oldest
+   **manual** request has waited `manual_max_wait_hours` (1) or the oldest bulk
+   backlog still has waited `max_wait_hours` (3). Each session aims at
+   `session_minutes` (15) of Florence — batch size is scaled from recent
+   seconds/still (cap 32). Manual runs are drained first. `mode=clock` keeps a
+   fixed local window. After a session, wait `resume_gap_min` (20) unless the
+   SLA is already overdue. Empty ticks are a brief no-op (no GPU occupy).
+   A started run is not cut at the session target; `/interrupt` only after
+   `kill_after_min` (60). All of these numbers are adjustable. LoadImage
+   `input_ref` is used when the file is under Comfy's input bind; otherwise
+   the still is uploaded. HTTP 400 / bad-ref errors retry once via upload.
+   Empty queued runs are cancelled and never occupy the GPU.
 3. **Exclusive GPU occupancy (model-set class).** A job’s class is the **set of large
    models it needs**. When a Florence tagging job *starts*, park every Comfy queue item
    whose large-model set is not that Florence set (interrupt+park if one is running).
@@ -56,7 +71,19 @@ Index-hour drainer →  Comfy /prompt Florence (prefer front) [reserved window]
 | Knob | Purpose |
 |------|---------|
 | `enabled` | Master switch for schedule-gated drain |
-| `window_start` + `window_duration_min` | Local clock window (multi-hour OK) |
+| `mode` | `sla` (default) or `clock` |
+| `max_wait_hours` | SLA: attempt bulk/untagged backlog within this many hours (default **3**) |
+| `manual_max_wait_hours` | SLA: attempt gallery **Queue tag** (selected stills) within this many hours (default **1**) |
+| `scan_interval_min` | How often the tick scans input for new stills (default **15**) |
+| `evaluate_interval_min` | How often the tick evaluates SLAs and may start a session (default **15**) |
+| `auto_enqueue_untagged` | On each scan, enqueue newest untagged stills (default **true**) |
+| `auto_enqueue_limit` | Max stills to enqueue per scan (default **96**) |
+| `session_minutes` | Target exclusive session length (default **15**); runs already started finish |
+| `kill_after_min` | Hard cap: interrupt Comfy and requeue remainder (default **60**) |
+| `resume_gap_min` | Minimum idle after a session before the next (default **20**) |
+| `sec_per_still` | Fallback seconds/still for batch scale (live median from recent done runs) |
+| `occupy_gpu` | Pause hourlies + park Comfy/ledger for the session (default **true**; skipped on dry-run) |
+| `window_start` + `window_duration_min` | Clock mode only; SLA uses `session_minutes` as the target |
 | `timezone` | Interpret start (default host / explicit IANA) |
 | `front` | Submit tag prompts to front of Comfy queue (default **true** in window) |
 | `max_inflight` | Max concurrent outstanding Florence prompts (start **1**) |
@@ -80,19 +107,32 @@ locked occupancy rule (park + `/free` before Florence).
   "schema_version": 1,
   "enabled": false,
   "timezone": "America/New_York",
-  "window_start": "02:00",
-  "window_duration_min": 180,
+  "mode": "sla",
+  "max_wait_hours": 3,
+  "manual_max_wait_hours": 1,
+  "scan_interval_min": 15,
+  "evaluate_interval_min": 15,
+  "auto_enqueue_untagged": true,
+  "auto_enqueue_limit": 96,
+  "session_minutes": 15,
+  "kill_after_min": 60,
+  "resume_gap_min": 20,
+  "sec_per_still": 12,
+  "occupy_gpu": true,
+  "window_start": "03:00",
+  "window_duration_min": 15,
   "front": true,
   "max_inflight": 1,
-  "max_items_per_tick": 48,
+  "max_items_per_tick": 96,
   "comfy_server": null,
   "auto_drain_on_enqueue": false
 }
 ```
 
-Drainer (CLI or API kick) loads this file, checks `in_window`, applies knobs. Cron or an
+Drainer (CLI or API kick) loads this file, checks SLA-due / `in_window`, applies knobs.
+Lease sidecar: `<data_root>/shape_factory/still_tag_session.json`. Cron or an
 Experiments tick can call `vision_still_tag_drain.py --respect-schedule` every minute;
-outside the window it no-ops.
+when not due it no-ops. Stale leases older than 90 minutes are recovered.
 
 ---
 
@@ -152,7 +192,7 @@ Lock enqueue≠drain, schedule knobs, front+inflight story.
 
 - [x] Gallery tag actions only grow the backlog by default (no surprise Florence mid-I2V) — IH1 enqueue policy
 - [x] Index-hour drain can front-load Florence prompts with an in-flight/item cap — CLI/API drain (`max_inflight` recorded; sequential wait in IH1)
-- [ ] Tagging drain only runs while holding the tagging GPU lease (generation parked + `/free`; no I2V interleave)
+- [x] Tagging drain only runs while holding the tagging GPU lease (hourlies paused, Comfy parked to pending; no I2V interleave) — skipped on dry-run
 - [x] Schedule knobs changeable without schema migration
 - [x] Multi-hour windows work (backlog burn) without new code paths
 - [x] Gallery shows backlog / window / drain controls (demo without GPU via dry-run)

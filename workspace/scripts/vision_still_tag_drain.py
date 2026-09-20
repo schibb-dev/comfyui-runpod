@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Index-hour / ops drain for still auto-tagger.
+SLA-session / ops drain for still auto-tagger.
 
-Gallery enqueue builds a SQLite backlog; this command burns it on Comfy
-(prefer front-of-queue) inside the configured window — or immediately with --force.
+Periodic tick (--respect-schedule): scan new stills, enqueue untagged, then
+drain when the 3h backlog / 1h manual SLA is due. --force drains immediately.
+The 15-minute session is a start target; in-flight tagging runs finish.
 
 Examples:
   python3 workspace/scripts/vision_still_tag_drain.py --respect-schedule
@@ -46,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
         drain_backlog,
         index_window_status,
         load_schedule,
+        run_scheduled_tick,
     )
 
     def _default_data_root() -> Path:
@@ -77,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
         payload: dict = {
             "db_path": str(default_db_path(data_root=data_root)),
             "schedule": sch,
-            "window": index_window_status(sch),
+            "window": index_window_status(sch, data_root=data_root),
         }
         if args.show_backlog:
             payload["backlog"] = backlog_stats(data_root=data_root)
@@ -95,17 +97,28 @@ def main(argv: list[str] | None = None) -> int:
     else:
         front = None
 
-    out = drain_backlog(
-        data_root=data_root,
-        status_dir=status_dir,
-        force=bool(args.force),
-        respect_schedule=bool(args.respect_schedule) and not bool(args.force),
-        front=front,
-        max_items=args.max_items,
-        until_minutes=args.until_minutes,
-        provider_override=args.provider,
-        comfy_server_override=args.comfy_server,
-    )
+    if bool(args.respect_schedule) and not bool(args.force):
+        out = run_scheduled_tick(
+            data_root=data_root,
+            status_dir=status_dir,
+            front=front,
+            max_items=args.max_items,
+            until_minutes=args.until_minutes,
+            provider_override=args.provider,
+            comfy_server_override=args.comfy_server,
+        )
+    else:
+        out = drain_backlog(
+            data_root=data_root,
+            status_dir=status_dir,
+            force=bool(args.force),
+            respect_schedule=False,
+            front=front,
+            max_items=args.max_items,
+            until_minutes=args.until_minutes,
+            provider_override=args.provider,
+            comfy_server_override=args.comfy_server,
+        )
     print(json.dumps(out, indent=2))
     return 0 if out.get("ok") else 1
 

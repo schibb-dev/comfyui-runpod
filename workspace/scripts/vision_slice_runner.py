@@ -321,11 +321,12 @@ def _comfy_input_load_name(
     *,
     relpath: str = "",
     extra_root: Optional[Path] = None,
-) -> str:
-    """LoadImage name relative to Comfy's input bind (no ``input/`` prefix)."""
-    raw = str(relpath or "").replace("\\", "/").strip().lstrip("/")
-    if raw.lower().startswith("input/"):
-        raw = raw[6:]
+) -> Optional[str]:
+    """LoadImage name if *image_path* is under a Comfy input bind; else None.
+
+    Factory outputs (``output/og/…``) are not in ``input/``. Pretending they are
+    makes Comfy return HTTP 400 from LoadImage.
+    """
     roots: List[Path] = []
     if extra_root is not None:
         roots.append(Path(extra_root))
@@ -333,6 +334,9 @@ def _comfy_input_load_name(
     if env_root:
         roots.append(Path(env_root))
     roots.extend([Path("/ComfyUI/input"), Path("/workspace/input")])
+    raw = str(relpath or "").replace("\\", "/").strip().lstrip("/")
+    if raw.lower().startswith("input/"):
+        raw = raw[6:]
     try:
         resolved = image_path.expanduser().resolve()
         for root in roots:
@@ -340,9 +344,54 @@ def _comfy_input_load_name(
                 return resolved.relative_to(Path(root).expanduser().resolve()).as_posix()
             except (ValueError, OSError):
                 continue
+        if raw:
+            for root in roots:
+                try:
+                    base = Path(root).expanduser().resolve()
+                    for cand in (base / raw, base / Path(raw).name):
+                        if cand.is_file():
+                            return cand.relative_to(base).as_posix()
+                except (ValueError, OSError):
+                    continue
     except OSError:
         pass
-    return raw or image_path.name
+    return None
+
+
+def history_execution_error(entry: Any) -> Optional[str]:
+    """If Comfy already finished this prompt with an error, return a short reason.
+
+    ``/history`` entries for failed LoadImage jobs often have ``status_str=error``
+    and empty ``outputs``. Waiting for outputs then burns the full timeout.
+    """
+    if not isinstance(entry, dict):
+        return None
+    status = entry.get("status")
+    if not isinstance(status, dict):
+        return None
+    status_str = str(status.get("status_str") or "").strip().lower()
+    msgs = status.get("messages") or []
+    err_txt = ""
+    interrupted = False
+    if isinstance(msgs, list):
+        for m in msgs:
+            if not (isinstance(m, (list, tuple)) and m):
+                continue
+            kind = str(m[0] or "")
+            payload = m[1] if len(m) > 1 and isinstance(m[1], dict) else {}
+            if kind == "execution_error":
+                node = payload.get("node_type") or payload.get("node_id") or "node"
+                ex = payload.get("exception_message") or payload.get("exception_type") or "error"
+                err_txt = f"{node}: {ex}"
+            elif kind == "execution_interrupted":
+                interrupted = True
+    if err_txt:
+        return err_txt
+    if status_str == "error":
+        return "Comfy execution error"
+    if status_str == "interrupted" or interrupted:
+        return "Comfy execution interrupted"
+    return None
 
 
 class ComfyCaptionRunner:
@@ -351,22 +400,27 @@ class ComfyCaptionRunner:
     def __init__(self, cfg: ComfyRunnerConfig) -> None:
         self.cfg = cfg
         self.server = cfg.server.rstrip("/")
+        self.last_prompt_id: Optional[str] = None
 
     def close(self) -> None:
         return None
 
+    def _upload_image_ref(self, image_path: Path) -> str:
+        cfg = self.cfg
+        up = _http_upload_image(
+            self.server,
+            image_path,
+            subfolder=cfg.input_subdir,
+            timeout_s=cfg.submit_timeout_s,
+        )
+        name = str(up.get("name") or image_path.name)
+        sub = str(up.get("subfolder") or cfg.input_subdir or "").strip().strip("/")
+        return f"{sub}/{name}" if sub else name
+
     def _image_ref_for_load_image(self, image_path: Path, *, relpath: str = "") -> str:
         cfg = self.cfg
         if cfg.image_mode == "upload":
-            up = _http_upload_image(
-                self.server,
-                image_path,
-                subfolder=cfg.input_subdir,
-                timeout_s=cfg.submit_timeout_s,
-            )
-            name = str(up.get("name") or image_path.name)
-            sub = str(up.get("subfolder") or cfg.input_subdir or "").strip().strip("/")
-            return f"{sub}/{name}" if sub else name
+            return self._upload_image_ref(image_path)
 
         if cfg.image_mode == "input_copy":
             if not cfg.comfy_input_root:
@@ -379,7 +433,11 @@ class ComfyCaptionRunner:
             return f"{cfg.input_subdir}/{image_path.name}".replace("\\", "/")
 
         if cfg.image_mode == "input_ref":
-            return _comfy_input_load_name(image_path, relpath=relpath, extra_root=cfg.comfy_input_root)
+            ref = _comfy_input_load_name(image_path, relpath=relpath, extra_root=cfg.comfy_input_root)
+            if ref:
+                return ref
+            # Output-tree / recovered stills: file is real, but LoadImage cannot see it.
+            return self._upload_image_ref(image_path)
 
         raise ValueError(f"unknown image_mode: {cfg.image_mode}")
 
@@ -392,8 +450,13 @@ class ComfyCaptionRunner:
                 doc = _http_json("GET", url, timeout_s=min(30.0, self.cfg.submit_timeout_s))
                 if isinstance(doc, dict) and prompt_id in doc:
                     entry = doc[prompt_id]
+                    fail = history_execution_error(entry)
+                    if fail:
+                        raise RuntimeError(fail)
                     if isinstance(entry, dict) and entry.get("outputs"):
                         return entry
+            except RuntimeError:
+                raise
             except Exception as e:
                 last_err = e
             time.sleep(float(self.cfg.poll_interval_s))
@@ -444,6 +507,7 @@ class ComfyCaptionRunner:
         prompt_id = submit.get("prompt_id")
         if not isinstance(prompt_id, str) or not prompt_id.strip():
             raise RuntimeError(f"Comfy submit missing prompt_id: {submit}")
+        self.last_prompt_id = prompt_id
 
         entry = self._wait_history(prompt_id)
         t_done = time.perf_counter()

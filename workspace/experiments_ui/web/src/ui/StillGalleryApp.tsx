@@ -38,7 +38,7 @@ import {
 import { useRegisterPhoneOverflow } from "./phoneChrome";
 import { BP_PHONE_MAX, useDeviceContext } from "./viewport";
 import { useNarrowLayout } from "./useNarrowLayout";
-import type { InputCurationCollection, InputCurationStillItem, StillTagEvent } from "./types";
+import type { InputCurationCollection, InputCurationStillItem, StillTagEvent, StillTagSchedule } from "./types";
 
 const PAGE = 24;
 const PREFETCH_UNTIL = 48;
@@ -69,6 +69,59 @@ function readStoredSort(): StillSort {
     /* ignore */
   }
   return "newest";
+}
+
+function formatScheduleHours(n: number | undefined, fallback: number): string {
+  const v = Number(n);
+  const hours = Number.isFinite(v) ? v : fallback;
+  return Number.isInteger(hours) ? `${hours}h` : `${hours}h`;
+}
+
+function ScheduleKnob({
+  label,
+  hint,
+  value,
+  min,
+  step,
+  disabled,
+  onCommit,
+}: {
+  label: string;
+  hint: string;
+  value: number;
+  min?: number;
+  step?: number;
+  disabled?: boolean;
+  onCommit: (n: number) => void;
+}) {
+  const [local, setLocal] = React.useState(String(value));
+  useEffect(() => {
+    setLocal(String(value));
+  }, [value]);
+  return (
+    <label className="still-gallery__sched-knob">
+      <span className="still-gallery__sched-knob-label">{label}</span>
+      <input
+        type="number"
+        min={min ?? 0}
+        step={step ?? 1}
+        value={local}
+        disabled={disabled}
+        onChange={(e) => setLocal(e.target.value)}
+        onBlur={() => {
+          const n = Number(local);
+          if (!Number.isFinite(n)) {
+            setLocal(String(value));
+            return;
+          }
+          const clamped = Math.max(min ?? 0, n);
+          setLocal(String(clamped));
+          if (clamped !== value) onCommit(clamped);
+        }}
+      />
+      <span className="factory-muted still-gallery__sched-knob-hint">{hint}</span>
+    </label>
+  );
 }
 
 function stillTagStatus(it: Pick<InputCurationStillItem, "tag_status" | "provisional_tags">): "untagged" | "queued" | "done" {
@@ -578,7 +631,13 @@ export function StillGalleryApp() {
         setRunStatus(res.drain_kicked ? "running" : "queued");
         const n = res.enqueued ?? 0;
         if (res.queued_for_index_hour) {
-          setMsg(`Queued ${n} for index hour · run ${res.run_id} (no GPU yet)`);
+          const slaH = Number(res.sla_hours);
+          const sla = Number.isFinite(slaH)
+            ? formatScheduleHours(slaH, res.manual ? 1 : 3)
+            : res.manual
+              ? "1h"
+              : "3h";
+          setMsg(`Queued ${n} · ${sla} SLA · run ${res.run_id} (no GPU yet)`);
         } else if (res.drain_kicked) {
           setMsg(`Tag run ${res.run_id} · enqueued ${n} · drain kicked`);
         } else {
@@ -624,6 +683,11 @@ export function StillGalleryApp() {
       setMsg("Schedule updated");
     },
   });
+  const patchSchedule = (patch: Partial<StillTagSchedule>) => {
+    void scheduleMut
+      .mutateAsync(patch)
+      .catch((err) => setMsg(err instanceof Error ? err.message : String(err)));
+  };
 
   useEffect(() => {
     if (!activeRunId) return;
@@ -724,9 +788,21 @@ export function StillGalleryApp() {
     ? "…"
     : !win.enabled
       ? "schedule off"
-      : win.in_window
-        ? "in window"
-        : "outside window";
+      : win.mode === "sla"
+        ? win.in_window
+          ? win.reason === "session_active"
+            ? "tagging now"
+            : "SLA due"
+          : win.reason === "waiting_sla"
+            ? `SLA ${Number(win.wait_hours ?? 0).toFixed(1)}h / ${Number(win.max_wait_hours ?? sch?.max_wait_hours ?? 3)}h`
+            : win.reason === "resume_gap"
+              ? "resume gap"
+              : win.reason === "no_backlog"
+                ? "no backlog"
+                : String(win.reason || "waiting")
+        : win.in_window
+          ? "in window"
+          : "outside window";
 
   const phoneOverflow = useMemo(
     () =>
@@ -896,21 +972,115 @@ export function StillGalleryApp() {
           </div>
         ) : null}
         <p className="factory-muted still-gallery__index-hour-hint">
-          Queue tags anytime. Florence runs in the reserved window (or Drain now). Ops controls stay in this drawer.
+          New stills are scanned every {Number(sch?.scan_interval_min ?? 15)} min and queued
+          automatically. Queue tag is attempted within{" "}
+          {formatScheduleHours(sch?.manual_max_wait_hours, 1)}; everything else within{" "}
+          {formatScheduleHours(sch?.max_wait_hours, 3)}. Florence aims at a ~
+          {Number(sch?.session_minutes ?? 15)} min exclusive session. In-flight runs finish
+          unless they exceed {Number(sch?.kill_after_min ?? 60)} min. Empty ticks are a brief
+          no-op. Drain now still works anytime.
         </p>
+        <div className="still-gallery__sched-knobs" aria-label="Adjustable tagging schedule">
+          <ScheduleKnob
+            label="Scan"
+            hint="min"
+            value={Number(sch?.scan_interval_min ?? 15)}
+            min={0}
+            step={1}
+            disabled={scheduleMut.isPending || backlogQuery.isLoading}
+            onCommit={(n) => patchSchedule({ scan_interval_min: n })}
+          />
+          <ScheduleKnob
+            label="Evaluate"
+            hint="min"
+            value={Number(sch?.evaluate_interval_min ?? 15)}
+            min={0}
+            step={1}
+            disabled={scheduleMut.isPending || backlogQuery.isLoading}
+            onCommit={(n) => patchSchedule({ evaluate_interval_min: n })}
+          />
+          <ScheduleKnob
+            label="Backlog SLA"
+            hint="hours"
+            value={Number(sch?.max_wait_hours ?? 3)}
+            min={0.25}
+            step={0.25}
+            disabled={scheduleMut.isPending || backlogQuery.isLoading}
+            onCommit={(n) => patchSchedule({ max_wait_hours: n })}
+          />
+          <ScheduleKnob
+            label="Queue tag SLA"
+            hint="hours"
+            value={Number(sch?.manual_max_wait_hours ?? 1)}
+            min={0.25}
+            step={0.25}
+            disabled={scheduleMut.isPending || backlogQuery.isLoading}
+            onCommit={(n) => patchSchedule({ manual_max_wait_hours: n })}
+          />
+          <ScheduleKnob
+            label="Session target"
+            hint="min"
+            value={Number(sch?.session_minutes ?? 15)}
+            min={1}
+            step={1}
+            disabled={scheduleMut.isPending || backlogQuery.isLoading}
+            onCommit={(n) => patchSchedule({ session_minutes: n })}
+          />
+          <ScheduleKnob
+            label="Hard kill"
+            hint="min"
+            value={Number(sch?.kill_after_min ?? 60)}
+            min={1}
+            step={1}
+            disabled={scheduleMut.isPending || backlogQuery.isLoading}
+            onCommit={(n) => patchSchedule({ kill_after_min: n })}
+          />
+          <ScheduleKnob
+            label="Resume gap"
+            hint="min"
+            value={Number(sch?.resume_gap_min ?? 20)}
+            min={0}
+            step={1}
+            disabled={scheduleMut.isPending || backlogQuery.isLoading}
+            onCommit={(n) => patchSchedule({ resume_gap_min: n })}
+          />
+          <ScheduleKnob
+            label="Auto enqueue"
+            hint="stills/scan"
+            value={Number(sch?.auto_enqueue_limit ?? 96)}
+            min={1}
+            step={1}
+            disabled={scheduleMut.isPending || backlogQuery.isLoading}
+            onCommit={(n) => patchSchedule({ auto_enqueue_limit: n })}
+          />
+        </div>
         <div className="still-gallery__index-hour-actions">
           <label className="still-gallery__index-hour-toggle">
             <input
               type="checkbox"
               checked={Boolean(sch?.enabled)}
               disabled={scheduleMut.isPending || backlogQuery.isLoading}
-              onChange={(e) =>
-                void scheduleMut
-                  .mutateAsync({ enabled: e.target.checked })
-                  .catch((err) => setMsg(err instanceof Error ? err.message : String(err)))
-              }
+              onChange={(e) => patchSchedule({ enabled: e.target.checked })}
             />
             Schedule enabled
+          </label>
+          <label className="still-gallery__index-hour-toggle">
+            <input
+              type="checkbox"
+              checked={sch?.auto_enqueue_untagged !== false}
+              disabled={scheduleMut.isPending || backlogQuery.isLoading}
+              onChange={(e) => patchSchedule({ auto_enqueue_untagged: e.target.checked })}
+            />
+            Auto-queue new stills
+          </label>
+          <label className="still-gallery__index-hour-toggle">
+            <input
+              type="checkbox"
+              checked={sch?.occupy_gpu !== false}
+              disabled={scheduleMut.isPending || backlogQuery.isLoading}
+              onChange={(e) => patchSchedule({ occupy_gpu: e.target.checked })}
+            />
+            Occupy GPU
           </label>
           <button
             type="button"
@@ -1276,6 +1446,7 @@ export function StillGalleryApp() {
                         .mutateAsync({
                           content_ids: selectedContentIds,
                           force: true,
+                          manual: true,
                           limit: Math.max(1, selectedContentIds.length),
                         })
                         .catch((e) => setMsg(e instanceof Error ? e.message : String(e)))
@@ -1548,6 +1719,7 @@ export function StillGalleryApp() {
                       .mutateAsync({
                         content_ids: selectedContentIds,
                         force: true,
+                        manual: true,
                         limit: Math.max(1, selectedContentIds.length),
                       })
                       .catch((e) => setMsg(e instanceof Error ? e.message : String(e)))

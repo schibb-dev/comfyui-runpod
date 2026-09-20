@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install user systemd timer: still-tag index-hour drain (Florence backlog).
-# Wakes every minute; real drains are gated by .data/shape_factory/still_tag_schedule.json
-# (default 03:00–05:00 local, front-of-queue). Re-run after schedule edits.
+# Wakes every minute; scan/SLA evaluate are gated by still_tag_schedule.json
+# (default: scan+evaluate every 15m, 3h backlog / 1h manual). Re-run after schedule edits.
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 USER_SYSTEMD="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
@@ -20,8 +20,20 @@ if [ ! -f "$SCHEDULE" ]; then
   "schema_version": 1,
   "enabled": true,
   "timezone": "America/New_York",
+  "mode": "sla",
+  "max_wait_hours": 3,
+  "manual_max_wait_hours": 1,
+  "scan_interval_min": 15,
+  "evaluate_interval_min": 15,
+  "auto_enqueue_untagged": true,
+  "auto_enqueue_limit": 96,
+  "session_minutes": 15,
+  "kill_after_min": 60,
+  "resume_gap_min": 20,
+  "sec_per_still": 12,
+  "occupy_gpu": true,
   "window_start": "03:00",
-  "window_duration_min": 120,
+  "window_duration_min": 15,
   "front": true,
   "max_inflight": 1,
   "max_items_per_tick": 96,
