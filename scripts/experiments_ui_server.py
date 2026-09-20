@@ -2069,6 +2069,99 @@ def _shape_factory_map_payload_cached(cfg: ServerConfig, q: Dict[str, List[str]]
     return payload
 
 
+def _shape_factory_pool_members_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory import list_pool_members_for_review  # type: ignore
+    from shape_factory_map import _path_media_row, resolve_shape_factory_data_root  # type: ignore
+
+    family = ""
+    for v in q.get("family", []):
+        if isinstance(v, str) and v.strip():
+            family = v.strip()
+            break
+    if not family:
+        return {"ok": False, "error": "missing_family"}
+
+    pool_id = ""
+    for v in q.get("pool_id", []):
+        if isinstance(v, str) and v.strip():
+            pool_id = v.strip()
+            break
+
+    standing = "all"
+    for v in q.get("standing", []):
+        if isinstance(v, str) and v.strip():
+            standing = v.strip().lower()
+            break
+
+    offset = 0
+    for v in q.get("offset", []):
+        n = _safe_int(v)
+        if n is not None and n >= 0:
+            offset = int(n)
+            break
+
+    limit = 24
+    for v in q.get("limit", []):
+        n = _safe_int(v)
+        if n is not None and n > 0:
+            limit = min(int(n), 200)
+            break
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    payload = list_pool_members_for_review(
+        family=family,
+        data_root=data_root,
+        pool_id=pool_id,
+        standing=standing,
+        offset=offset,
+        limit=limit,
+    )
+
+    def url_for(rel: str) -> str:
+        return "/files/" + urllib.parse.quote(_normalize_rel_posix(rel))
+
+    for item in payload.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        media = _path_media_row(
+            str(item.get("path") or ""),
+            output_root=cfg.output_root,
+            url_for=url_for,
+            wip_root=cfg.wip_root,
+            workspace_root=cfg.workspace_root,
+            file_exists=lambda rel: _discovery_rel_file_exists(cfg, rel),
+            companion_png=str(item.get("companion_png") or ""),
+        )
+        for key in ("url", "thumb_url", "relpath", "thumb_relpath"):
+            if media.get(key):
+                item[key] = media[key]
+    return payload
+
+
+def _shape_factory_pool_member_standing_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory import set_pool_member_standing  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    family = str(body.get("family") or body.get("family_slug") or "").strip()
+    if not family:
+        return {"ok": False, "error": "missing_family"}
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    return set_pool_member_standing(
+        family=family,
+        standing=str(body.get("standing") or ""),
+        data_root=data_root,
+        path=str(body.get("path") or ""),
+        job_key=str(body.get("job_key") or ""),
+        pool_id=str(body.get("pool_id") or ""),
+    )
+
+
 def _asset_recovery_context(cfg: ServerConfig) -> Tuple[Any, Path, Optional[Path]]:
     """Import asset_recovery + resolve shape-factory data_root and registry path."""
     d = _workspace_scripts_dir()
@@ -4221,6 +4314,11 @@ def _shape_factory_input_curation_stills_tag_enqueue_payload(cfg: ServerConfig, 
     provider = str(body.get("provider") or ("dry-run" if dry_run else "comfy")).strip() or "comfy"
     comfy_server = str(body.get("comfy_server") or "").strip() or None
     drain_now = body.get("drain_now") is True
+    manual: Optional[bool]
+    if "manual" in body:
+        manual = body.get("manual") is True
+    else:
+        manual = None
     status_dir = _shape_factory_still_tag_status_dir(cfg)
     enq = enqueue_run(
         data_root=data_root,
@@ -4233,6 +4331,7 @@ def _shape_factory_input_curation_stills_tag_enqueue_payload(cfg: ServerConfig, 
         comfy_server=comfy_server,
         dry_run=dry_run,
         status_dir=status_dir,
+        manual=manual,
     )
     auto = should_auto_drain_on_enqueue(data_root=data_root, drain_now=drain_now)
     if auto:
@@ -4254,7 +4353,7 @@ def _shape_factory_input_curation_stills_tag_backlog_payload(cfg: ServerConfig) 
     sch = load_schedule(data_root=data_root)
     stats = backlog_stats(data_root=data_root)
     stats["schedule"] = sch
-    stats["window"] = index_window_status(sch)
+    stats["window"] = index_window_status(sch, data_root=data_root, backlog=stats)
     return stats
 
 
@@ -4275,7 +4374,7 @@ def _shape_factory_input_curation_stills_tag_schedule_payload(cfg: ServerConfig)
         "ok": True,
         "path": str(default_schedule_path(data_root=data_root)),
         "schedule": sch,
-        "window": index_window_status(sch),
+        "window": index_window_status(sch, data_root=data_root),
     }
 
 
@@ -4306,7 +4405,7 @@ def _shape_factory_input_curation_stills_tag_schedule_set_payload(
         "ok": True,
         "path": str(default_schedule_path(data_root=data_root)),
         "schedule": saved,
-        "window": index_window_status(saved),
+        "window": index_window_status(saved, data_root=data_root),
     }
 
 
@@ -12985,6 +13084,14 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return _json_response(self, 500, {"ok": False, "error": "shape_factory_map_failed", "detail": str(e)})
 
+        if path == "/api/shape-factory/pool-members":
+            try:
+                payload = _shape_factory_pool_members_payload(cfg, q)
+                code = 200 if payload.get("ok") else 400
+                return _json_response(self, code, payload)
+            except Exception as e:
+                return _json_response(self, 500, {"ok": False, "error": "pool_members_failed", "detail": str(e)})
+
         if path == "/api/shape-factory/prompt-profile":
             try:
                 payload = _shape_factory_prompt_profile_payload(cfg, q)
@@ -13616,9 +13723,26 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_shape_factory_input_curation_stills_tag_drain_post()
         if path == "/api/shape-factory/hourly-schedule":
             return self._handle_shape_factory_hourly_schedule_post()
+        if path == "/api/shape-factory/pool-member-standing":
+            return self._handle_shape_factory_pool_member_standing_post()
         if path == "/api/vision/tag-judgment":
             return self._handle_vision_tag_judgment_post()
         return _json_response(self, 404, {"error": "unknown_api_route", "path": path})
+
+    def _handle_shape_factory_pool_member_standing_post(self) -> None:
+        """POST /api/shape-factory/pool-member-standing — promote / demote / reset a deposit member."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"error": "bad_json"})
+        if not isinstance(body, dict):
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _shape_factory_pool_member_standing_payload(cfg, body)
+            code = 200 if payload.get("ok") else 400
+            return _json_response(self, code, payload)
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "pool_member_standing_failed", "detail": str(e)})
 
     def _handle_shape_factory_hourly_schedule_post(self) -> None:
         """

@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from shape_factory import load_yaml, requires_by_slot
+from shape_factory import load_yaml, lookup_pool_member_standing, pool_standing_lookup, requires_by_slot
 from shape_factory_heuristics import _og_group_id_from_relpath
 from shape_factory_map import _combo_key_from_job_bindings, _combo_key_from_slot_paths, normalize_combo_key
 from shape_factory_prompt_recover import (
@@ -49,6 +49,27 @@ def _recipe_source_path(recipe: dict[str, Any]) -> str:
         if raw:
             return str(raw)
     return ""
+
+
+def _recipe_media_paths(recipe: dict[str, Any]) -> List[str]:
+    """Output + bound media (not prompt files) — hops appetite can inherit through."""
+    out: List[str] = []
+    seen: set[str] = set()
+
+    def add(raw: Any) -> None:
+        text = str(raw or "").strip()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        out.append(text)
+
+    add(recipe.get("output_path"))
+    picks = recipe.get("picks") if isinstance(recipe.get("picks"), dict) else {}
+    for slot, raw in picks.items():
+        if str(slot) == "prompt_profile":
+            continue
+        add(raw)
+    return out
 
 
 def _is_kneel_source(path: str) -> bool:
@@ -711,12 +732,15 @@ def _recipe_promotion_mult(
     y2025_b = max(1.0, float(os.environ.get("HOURLY_2025_SOURCE_BOOST", "2.0")))
     fam = str(family or recipe.get("family") or "").strip()
     src = _recipe_source_path(recipe)
-    paths = [src, str(recipe.get("output_path") or "")]
+    paths = _recipe_media_paths(recipe) or [src, str(recipe.get("output_path") or "")]
     try:
-        from shape_factory_ratings import path_blocks_factory
+        from shape_factory_ratings import factory_appetite_for_paths, path_blocks_factory
     except ImportError:
         path_blocks_factory = None  # type: ignore
+        factory_appetite_for_paths = None  # type: ignore
     if path_blocks_factory is not None and any(path_blocks_factory(p, appetite_doc) for p in paths if p):
+        return 0.0
+    if factory_appetite_for_paths is not None and factory_appetite_for_paths(paths, appetite_doc) == "remove":
         return 0.0
     mult = 1.0
     if any(_is_kneel_source(p) for p in paths):
@@ -731,6 +755,23 @@ def _recipe_promotion_mult(
     if fb and _recipe_uses_faceblast_extend_prompt(recipe):
         mult *= float(fb.get("boost") or 16)
     return mult
+
+
+def _apply_pool_standing_boost(
+    recipes: List[dict[str, Any]],
+    weights: List[float],
+    *,
+    factor: float = 3.0,
+) -> List[float]:
+    """Boost deposit-pool members marked promoted in the review UI."""
+    out = list(weights)
+    boost = max(1.0, float(factor))
+    for i, recipe in enumerate(recipes):
+        if i >= len(out):
+            break
+        if str(recipe.get("pool_standing") or "") == "promoted":
+            out[i] = float(out[i]) * boost
+    return out
 
 
 def _apply_source_promotion(
@@ -1459,18 +1500,59 @@ def _load_heuristics_index(data_root: Path) -> Optional[dict[str, Any]]:
         return None
 
 
+def _appetite_og_root(data_root: Path) -> Optional[Path]:
+    """Og root for appetite lookup.
+
+    Isolated test data_roots must not inherit the live library index (basename
+    collisions would demote unrelated stills). Production ``.data`` still uses
+    the shared og appetite store.
+    """
+    env = str(os.environ.get("SHAPE_FACTORY_OG_ROOT") or "").strip()
+    if env:
+        p = Path(env).expanduser()
+        return p if p.is_dir() else None
+    local = Path(data_root) / "output" / "og"
+    if local.is_dir():
+        return local.resolve()
+    known = str(os.environ.get("SHAPE_FACTORY_DATA_ROOT") or "").strip()
+    try:
+        resolved = Path(data_root).resolve()
+        if known and resolved == Path(known).expanduser().resolve():
+            return _default_og_root(resolved)
+        if resolved.name == ".data" and (resolved / "shapes").is_dir():
+            return _default_og_root(resolved)
+    except OSError:
+        return None
+    return None
+
+
 def _load_appetite_index(data_root: Path) -> Optional[dict[str, Any]]:
     try:
         from shape_factory_ratings import load_appetite_doc, ratings_db_path_for_index
     except ImportError:
         return None
-    path = default_appetite_index_path(_default_og_root(data_root))
+    og_root = _appetite_og_root(data_root)
+    if og_root is None:
+        return None
+    path = default_appetite_index_path(og_root)
     db_path = ratings_db_path_for_index(path)
     if not path.is_file() and not db_path.is_file():
         return None
     try:
         doc = load_appetite_doc(path)
-        return doc if isinstance(doc, dict) else None
+        if not isinstance(doc, dict):
+            return None
+        try:
+            from shape_factory_job_output_index import default_job_output_index_path
+            from shape_factory_ratings import attach_ancestry_appetite_blocks
+
+            doc = attach_ancestry_appetite_blocks(
+                doc,
+                job_index_path=default_job_output_index_path(og_root),
+            )
+        except Exception:
+            pass
+        return doc
     except Exception:
         return None
 
@@ -1875,9 +1957,17 @@ def collect_pool_slot_members(
     if not isinstance(pool_def, dict):
         return []
     try:
-        return list(resolve_pool_members(pool_def))
+        members = list(resolve_pool_members(pool_def))
     except Exception:
         return []
+    appetite_doc = _load_appetite_index(data_root)
+    if not appetite_doc:
+        return members
+    try:
+        from shape_factory_ratings import factory_appetite_for_path
+    except ImportError:
+        return members
+    return [p for p in members if factory_appetite_for_path(str(p), appetite_doc) != "remove"]
 
 
 def collect_pool_source_videos(
@@ -1915,11 +2005,29 @@ def collect_replay_recipes(
 
     by_combo: Dict[str, dict[str, Any]] = {}
     ingested_job_keys: Set[str] = set()
+    standing_by_id: Dict[str, str] = {}
+    appetite_doc = _load_appetite_index(data_root)
+    try:
+        from shape_factory_ratings import factory_appetite_for_paths
+    except ImportError:
+        factory_appetite_for_paths = None  # type: ignore
+    index_path = data_root / "pools" / family / "index.json"
+    if index_path.is_file():
+        try:
+            standing_by_id = pool_standing_lookup(json.loads(index_path.read_text(encoding="utf-8")))
+        except Exception:
+            standing_by_id = {}
 
     def add_recipe(recipe: dict[str, Any]) -> None:
         ck = str(recipe.get("combo_key") or "")
         if not ck:
             return
+        if factory_appetite_for_paths is not None:
+            try:
+                if factory_appetite_for_paths(_recipe_media_paths(recipe), appetite_doc) == "remove":
+                    return
+            except Exception:
+                pass
         by_combo[ck] = recipe
 
     # 1) Factory jobs (recent replays)
@@ -1932,24 +2040,27 @@ def collect_replay_recipes(
                 continue
             if not _job_is_replayable(job):
                 continue
+            job_key = str(job.get("job_key") or path.stem)
+            deposit = job.get("deposit") if isinstance(job.get("deposit"), dict) else {}
+            videos = deposit.get("videos") if isinstance(deposit.get("videos"), list) else []
+            first_vid = str(videos[0] or "") if videos else ""
+            standing = lookup_pool_member_standing(standing_by_id, job_key, first_vid)
+            if standing == "demoted":
+                continue
             picks = _picks_from_job(job, shape=shape, data_root=data_root)
             if not picks:
                 continue
-            job_key = str(job.get("job_key") or path.stem)
             ingested_job_keys.add(job_key)
-            add_recipe(
-                _recipe_from_picks(
-                    family=family,
-                    picks=picks,
-                    source=job_key,
-                    output_path=(job.get("deposit") or {}).get("videos", [None])[0]
-                    if isinstance(job.get("deposit"), dict)
-                    else None,
-                )
+            recipe = _recipe_from_picks(
+                family=family,
+                picks=picks,
+                source=job_key,
+                output_path=first_vid or None,
             )
+            recipe["pool_standing"] = standing
+            add_recipe(recipe)
 
     # 2) Deposit pool index — includes pre-factory OG runs (early April, etc.)
-    index_path = data_root / "pools" / family / "index.json"
     if index_path.is_file():
         try:
             index_doc = json.loads(index_path.read_text(encoding="utf-8"))
@@ -1960,6 +2071,13 @@ def collect_replay_recipes(
                 continue
             for member in pool.get("members") or []:
                 if not isinstance(member, dict):
+                    continue
+                standing = lookup_pool_member_standing(
+                    standing_by_id,
+                    member.get("job_key"),
+                    member.get("path"),
+                )
+                if standing == "demoted":
                     continue
                 out_mp4 = str(member.get("path") or "")
                 if not out_mp4.lower().endswith(".mp4"):
@@ -1987,14 +2105,14 @@ def collect_replay_recipes(
                 )
                 if picks is None:
                     continue
-                add_recipe(
-                    _recipe_from_picks(
-                        family=family,
-                        picks=picks,
-                        source=f"og:{out_path}",
-                        output_path=str(out_path),
-                    )
+                recipe = _recipe_from_picks(
+                    family=family,
+                    picks=picks,
+                    source=f"og:{out_path}",
+                    output_path=str(out_path),
                 )
+                recipe["pool_standing"] = standing
+                add_recipe(recipe)
 
     return list(by_combo.values())
 
@@ -2050,6 +2168,7 @@ def plan_hourly_replay(
     weights = _apply_source_promotion(
         recipes, weights, weight_meta, family=family, data_root=data_root
     )
+    weights = _apply_pool_standing_boost(recipes, weights)
     weights = _apply_archive_age_spread(recipes, weights, weight_meta)
 
     eligible_recipes: List[dict[str, Any]] = []

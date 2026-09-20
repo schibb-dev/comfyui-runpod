@@ -1873,6 +1873,16 @@ def queue_from_request_body(
             if not og_root.is_dir():
                 og_root = Path(output_root)
             appetite_doc = load_appetite_doc(default_appetite_index_path(og_root))
+            try:
+                from shape_factory_job_output_index import default_job_output_index_path
+                from shape_factory_ratings import attach_ancestry_appetite_blocks
+
+                appetite_doc = attach_ancestry_appetite_blocks(
+                    appetite_doc,
+                    job_index_path=default_job_output_index_path(og_root),
+                )
+            except Exception:
+                pass
             blocked = [
                 f"{slot}={path}"
                 for slot, path in bindings.items()

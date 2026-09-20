@@ -67,7 +67,9 @@ import { ComfyHealthBanner, useComfyHealthRetrySec } from "./ComfyHealthBanner";
 import { comfyHealthIsBackoff, formatComfyRetry } from "./comfyHealth";
 import { RemoveReviewBanner } from "./RemoveReviewBanner";
 import { SubmitComposerModal } from "./SubmitComposerModal";
-import { useAssetRatingsTick, WorkProductAppetiteStrip } from "./WorkProductAppetiteStrip";
+import { useAssetRatingsTick } from "./WorkProductAppetiteStrip";
+import { ProvenanceAppetitePanel } from "./ProvenanceAppetitePanel";
+import { layersFromWorkProduct } from "./provenanceAppetite";
 import { WorkProductDispositionStrip } from "./WorkProductDispositionStrip";
 import {
   APPETITE_FILTER_KEYS,
@@ -5607,14 +5609,15 @@ function WorkProductDetails({
         );
       })()}
       <FlowEventTimeline item={item} />
-      <WorkProductAppetiteStrip
-        relpath={workbenchJobAppetiteRelpath(item)}
+      <ProvenanceAppetitePanel
+        layers={layersFromWorkProduct(item)}
+        seedRelpath={workbenchJobAppetiteRelpath(item) || workbenchSourceMediaRelpath(item)}
         jobKey={item.job_key}
         familySlug={item.family_slug}
         disabledHint={
           isLivePreviewItem(item) || String(item.status || "") === "pending"
-            ? "Appetite available once this job has an output"
-            : "Appetite needs an output path"
+            ? "Appetite available once this job has an output or a source binding"
+            : "Appetite needs a media path"
         }
       />
       <WorkProductDispositionStrip

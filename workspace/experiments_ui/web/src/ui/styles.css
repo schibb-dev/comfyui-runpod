@@ -18725,6 +18725,193 @@ button.home-backlog-linkish {
   gap: 8px 12px;
 }
 
+.prov-appetite {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.prov-appetite__head {
+  margin-bottom: 8px;
+}
+
+.prov-appetite__title {
+  margin: 0 0 4px;
+  font-size: 14px;
+}
+
+.prov-appetite__hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.prov-appetite__layers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.prov-appetite-layer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 10px;
+  align-items: center;
+  padding: 6px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.prov-appetite-layer--selected {
+  border-color: rgba(90, 162, 255, 0.55);
+  background: rgba(90, 162, 255, 0.08);
+}
+
+.prov-appetite-layer__pick {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  text-align: left;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.prov-appetite-layer__thumb {
+  position: relative;
+  width: 44px;
+  height: 56px;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.prov-appetite-layer__thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.prov-appetite-layer__thumb-empty {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.prov-appetite-layer__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.prov-appetite-layer__role {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.prov-appetite-layer__path {
+  font-size: 11px;
+  opacity: 0.7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prov-appetite-layer__msg {
+  grid-column: 1 / -1;
+  font-size: 11px;
+}
+
+.sfmap-pool-review {
+  margin: 16px 0 8px;
+}
+
+.sfmap-pool-review__title {
+  margin: 0 0 4px;
+  font-size: 14px;
+}
+
+.sfmap-pool-review__hint {
+  margin: 0 0 10px;
+  font-size: 12px;
+}
+
+.sfmap-pool-review__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.sfmap-pool-review-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.sfmap-pool-review-card--on {
+  border-color: rgba(90, 162, 255, 0.65);
+  background: rgba(90, 162, 255, 0.12);
+}
+
+.sfmap-pool-review-card__thumb {
+  position: relative;
+  display: block;
+  aspect-ratio: 9 / 16;
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.sfmap-pool-review-card__thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.sfmap-pool-review-card__empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  font-size: 10px;
+  opacity: 0.6;
+}
+
+.sfmap-pool-review-card__name {
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sfmap-pool-review__more {
+  margin-bottom: 10px;
+}
+
+.sfmap-deposit-review-link {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 12px;
+}
+
 .wp-appetite-strip--disabled {
   opacity: 0.75;
 }
@@ -22039,6 +22226,35 @@ button.home-backlog-linkish {
 .still-gallery__index-hour-hint {
   margin: 0 0 8px;
   font-size: 12px;
+}
+.still-gallery__sched-knobs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  gap: 8px 10px;
+  margin: 0 0 10px;
+}
+.still-gallery__sched-knob {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--muted, #9aa3b5);
+}
+.still-gallery__sched-knob-label {
+  font-weight: 600;
+  color: var(--fg, #e6e8ee);
+}
+.still-gallery__sched-knob input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  border: 1px solid var(--border, #444);
+  background: var(--bg, #0d0f14);
+  color: inherit;
+  font: inherit;
+}
+.still-gallery__sched-knob-hint {
+  font-size: 11px;
 }
 .still-gallery__index-hour-actions {
   display: flex;

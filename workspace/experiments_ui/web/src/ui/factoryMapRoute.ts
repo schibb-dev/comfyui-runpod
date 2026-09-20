@@ -4,14 +4,15 @@ export type FactoryMapRoute =
   | { view: "family"; familySlug: string }
   | { view: "pipeline"; pipelineId: string };
 
-/** Hash focus on factory-map pages (#pools / #curation[=slug] / #job=key). */
+/** Hash focus on factory-map pages (#pools / #review-pool / #curation[=slug] / #job=key). */
 export type FactoryMapFocus =
   | { kind: "pools" }
+  | { kind: "review" }
   | { kind: "curation"; familySlug?: string }
   | { kind: "job"; jobKey: string };
 
 export type FactoryMapFamilyFocusOpts = {
-  focus?: "pools" | "curation" | "job";
+  focus?: "pools" | "review" | "curation" | "job";
   jobKey?: string;
 };
 
@@ -40,6 +41,7 @@ export function parseFactoryMapFocus(hash: string = typeof window !== "undefined
   if (!raw) return null;
   // Ignore unrelated hashes (e.g. still=…)
   if (raw === "pools") return { kind: "pools" };
+  if (raw === "review-pool" || raw === "review") return { kind: "review" };
   if (raw === "curation") return { kind: "curation" };
   if (raw.startsWith("curation=")) {
     const familySlug = decodeURIComponent(raw.slice("curation=".length)).trim();
@@ -72,6 +74,7 @@ export function factoryMapFamilyHref(familySlug: string, opts?: FactoryMapFamily
     return key ? `${base}#job=${encodeURIComponent(key)}` : base;
   }
   if (opts.focus === "pools") return `${base}#pools`;
+  if (opts.focus === "review") return `${base}#review-pool`;
   if (opts.focus === "curation") return `${base}#curation`;
   return base;
 }

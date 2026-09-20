@@ -42,6 +42,7 @@ import type {
   AbJudgmentRequest,
   AbQueueRequest,
   ShapeFactoryMapResponse,
+  ShapeFactoryPoolMembersResponse,
   ShapeFactoryMapQueueRequest,
   ShapeFactoryMapQueueResponse,
   ShapeFactoryPipelineRunGetResponse,
@@ -334,6 +335,33 @@ export async function fetchShapeFactoryMap(opts?: {
   if (!r.ok) {
     const detail = [j.error, j.detail].filter(Boolean).join(": ");
     throw new Error(`GET /api/shape-factory/map failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`);
+  }
+  return j;
+}
+
+export async function fetchShapeFactoryPoolMembers(opts: {
+  family: string;
+  pool_id?: string;
+  standing?: string;
+  offset?: number;
+  limit?: number;
+}): Promise<ShapeFactoryPoolMembersResponse> {
+  const sp = new URLSearchParams();
+  sp.set("family", opts.family);
+  if (opts.pool_id) sp.set("pool_id", opts.pool_id);
+  if (opts.standing) sp.set("standing", opts.standing);
+  if (opts.offset != null && opts.offset >= 0) sp.set("offset", String(opts.offset));
+  if (opts.limit != null && opts.limit > 0) sp.set("limit", String(opts.limit));
+  const r = await fetch(`/api/shape-factory/pool-members?${sp.toString()}`);
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryPoolMembersResponse & {
+    error?: string;
+    detail?: string;
+  };
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET /api/shape-factory/pool-members failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
   }
   return j;
 }
@@ -669,6 +697,7 @@ export async function enqueueShapeFactoryStillTagRun(body: {
   comfy_server?: string;
   drain_now?: boolean;
   front?: boolean;
+  manual?: boolean;
 }): Promise<StillTagEnqueueResponse> {
   const r = await fetch("/api/shape-factory/input-curation/stills/tag", {
     method: "POST",

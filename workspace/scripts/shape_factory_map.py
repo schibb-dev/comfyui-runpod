@@ -239,6 +239,9 @@ def _member_preview(
     }
     if member.get("job_key"):
         row["job_key"] = member.get("job_key")
+    standing = str(member.get("standing") or "").strip().lower()
+    if standing in {"promoted", "neutral", "demoted"}:
+        row["standing"] = standing
     row.update(
         _path_media_row(
             path,

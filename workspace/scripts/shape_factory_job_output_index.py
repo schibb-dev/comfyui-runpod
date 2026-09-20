@@ -280,6 +280,25 @@ def upsert_from_job(
     return n
 
 
+def iter_parent_child_edges(con: sqlite3.Connection) -> List[Tuple[str, str]]:
+    """(parent_output, child_output_relpath) pairs used to inherit appetite down a chain."""
+    rows = con.execute(
+        """
+        SELECT parent_output, output_relpath
+        FROM job_output
+        WHERE parent_output IS NOT NULL AND TRIM(parent_output) != ''
+          AND output_relpath IS NOT NULL AND TRIM(output_relpath) != ''
+        """
+    ).fetchall()
+    out: List[Tuple[str, str]] = []
+    for row in rows:
+        parent = str(row[0] or "").strip()
+        child = str(row[1] or "").strip()
+        if parent and child:
+            out.append((parent, child))
+    return out
+
+
 def lookup_by_relpath(
     con: sqlite3.Connection,
     relpath: str,

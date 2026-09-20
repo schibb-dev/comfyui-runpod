@@ -189,8 +189,178 @@ def path_appetite_state(path: str, appetite_doc: Optional[Dict[str, Any]]) -> st
     return ""
 
 
+def appetite_lookup_keys(path: str) -> List[str]:
+    """Normalized keys used to match an asset across abs / rel / basename forms."""
+    raw = str(path or "").replace("\\", "/").strip()
+    if not raw:
+        return []
+    keys: List[str] = [raw, Path(raw).name]
+    stripped = raw.lstrip("/")
+    if stripped.startswith("output/"):
+        keys.append(stripped[len("output/") :])
+    if "/output/" in raw:
+        keys.append(raw.split("/output/", 1)[-1])
+    if "/og/" in raw:
+        tail = raw.split("/og/", 1)[-1].lstrip("/")
+        keys.append(f"og/{tail}")
+        keys.append(f"output/og/{tail}")
+    if "/input/" in raw:
+        keys.append("input/" + raw.split("/input/", 1)[-1].lstrip("/"))
+    elif raw.lower().startswith("input/"):
+        keys.append(raw)
+    expanded: List[str] = []
+    seen: set[str] = set()
+    for key in keys:
+        key = str(key or "").replace("\\", "/").strip().lstrip("/")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        expanded.append(key)
+        for suffix in (".mp4", ".MP4", ".png", ".PNG", ".webm", ".WEBM", ".jpeg", ".jpg", ".webp"):
+            if key.endswith(suffix):
+                stem = key[: -len(suffix)]
+                if stem and stem not in seen:
+                    seen.add(stem)
+                    expanded.append(stem)
+    return expanded
+
+
+def expand_appetite_blocks(
+    appetite_doc: Optional[Dict[str, Any]],
+    *,
+    parent_child_edges: Optional[List[Tuple[str, str]]] = None,
+    job_index_path: Optional[Path] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Map path keys → {appetite, via} for explicit marks plus descendants.
+
+    A ``remove`` / ``less`` mark on an ancestor applies to every child linked
+    via ``job_output.parent_output`` (pool members that reused that work).
+    ``remove`` wins over ``less`` when both apply.
+    """
+    table = (appetite_doc or {}).get("by_output_relpath") if isinstance(appetite_doc, dict) else None
+    seeds: Dict[str, str] = {}
+    if isinstance(table, dict):
+        for key, row in table.items():
+            if not isinstance(row, dict):
+                continue
+            state = normalize_appetite(row.get("appetite"))
+            if state not in {"remove", "less"}:
+                continue
+            for lookup in appetite_lookup_keys(str(key)):
+                if seeds.get(lookup) == "remove":
+                    continue
+                seeds[lookup] = state
+
+    edges = list(parent_child_edges or [])
+    if not edges and job_index_path is not None:
+        try:
+            from shape_factory_job_output_index import iter_parent_child_edges, open_job_output_index
+
+            idx = Path(job_index_path)
+            if idx.is_file():
+                con = open_job_output_index(idx)
+                try:
+                    edges = iter_parent_child_edges(con)
+                finally:
+                    con.close()
+        except Exception:
+            edges = []
+
+    children: Dict[str, List[str]] = {}
+    for parent, child in edges:
+        child_s = str(child or "").strip()
+        if not child_s:
+            continue
+        for pk in appetite_lookup_keys(str(parent or "")):
+            children.setdefault(pk, []).append(child_s)
+
+    blocked: Dict[str, Dict[str, Any]] = {
+        key: {"appetite": state, "via": "direct"} for key, state in seeds.items()
+    }
+    queue = list(seeds.keys())
+    while queue:
+        cur = queue.pop()
+        state = str((blocked.get(cur) or {}).get("appetite") or "")
+        if state not in {"remove", "less"}:
+            continue
+        for child in children.get(cur, []):
+            for ck in appetite_lookup_keys(child):
+                # Inherited marks stay path-qualified so a basename like newstill.jpeg
+                # cannot poison unrelated files in another tree.
+                if "/" not in ck:
+                    continue
+                prev = blocked.get(ck)
+                prev_state = str((prev or {}).get("appetite") or "")
+                if prev_state == "remove":
+                    continue
+                if prev_state == "less" and state != "remove":
+                    continue
+                blocked[ck] = {"appetite": state, "via": "ancestor", "from": cur}
+                queue.append(ck)
+    return blocked
+
+
+def attach_ancestry_appetite_blocks(
+    appetite_doc: Optional[Dict[str, Any]],
+    *,
+    parent_child_edges: Optional[List[Tuple[str, str]]] = None,
+    job_index_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    doc = dict(appetite_doc or {})
+    doc["_ancestry_blocks"] = expand_appetite_blocks(
+        doc,
+        parent_child_edges=parent_child_edges,
+        job_index_path=job_index_path,
+    )
+    return doc
+
+
+def lookup_ancestry_appetite(path: str, appetite_doc: Optional[Dict[str, Any]]) -> str:
+    """Inherited remove/less from an ancestor (empty when the path itself is unmarked)."""
+    blocks = (appetite_doc or {}).get("_ancestry_blocks") if isinstance(appetite_doc, dict) else None
+    if not isinstance(blocks, dict):
+        return ""
+    for key in appetite_lookup_keys(path):
+        row = blocks.get(key)
+        if isinstance(row, dict):
+            state = normalize_appetite(row.get("appetite"))
+            if state and str(row.get("via") or "") == "ancestor":
+                return state
+        elif isinstance(row, str):
+            state = normalize_appetite(row)
+            if state:
+                return state
+    return ""
+
+
+def factory_appetite_for_path(path: str, appetite_doc: Optional[Dict[str, Any]]) -> str:
+    """Appetite that gates factory use: own remove, else inherited remove/less, else own mark."""
+    own = path_appetite_state(path, appetite_doc)
+    inherited = lookup_ancestry_appetite(path, appetite_doc)
+    if own == "remove" or inherited == "remove":
+        return "remove"
+    if own:
+        return own
+    return inherited
+
+
+def factory_appetite_for_paths(
+    paths: Iterable[str],
+    appetite_doc: Optional[Dict[str, Any]],
+) -> str:
+    worst = ""
+    for raw in paths:
+        state = factory_appetite_for_path(str(raw or ""), appetite_doc)
+        if state == "remove":
+            return "remove"
+        if state == "less":
+            worst = "less"
+    return worst
+
+
 def path_blocks_factory(path: str, appetite_doc: Optional[Dict[str, Any]]) -> bool:
-    return appetite_blocks_factory(path_appetite_state(path, appetite_doc))
+    return appetite_blocks_factory(factory_appetite_for_path(path, appetite_doc))
 
 
 def normalize_appetite_facet(value: Any) -> str:

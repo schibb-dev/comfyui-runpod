@@ -525,7 +525,35 @@ def score_recipe(
     floor = float(explore_floor if explore_floor is not None else os.environ.get("HOURLY_RATING_EXPLORE_FLOOR", "0.35"))
     meta: dict[str, Any] = {"rating_effective": None, "evidence": [], "signals": {}}
 
+    if appetite_doc:
+        try:
+            from shape_factory_ratings import factory_appetite_for_paths
+
+            media_paths: List[str] = []
+            if recipe.get("output_path"):
+                media_paths.append(str(recipe.get("output_path")))
+            picks_early = recipe.get("picks") if isinstance(recipe.get("picks"), dict) else {}
+            for slot, raw in picks_early.items():
+                if str(slot) == "prompt_profile" or not raw:
+                    continue
+                media_paths.append(str(raw))
+            inherited = factory_appetite_for_paths(media_paths, appetite_doc)
+            if inherited == "remove":
+                meta["omit"] = True
+                meta["appetite"] = "remove"
+                meta["appetite_via"] = "ancestry"
+                meta["evidence"].append("ancestry_remove")
+                return 0.0, meta
+            if inherited == "less":
+                meta["appetite"] = "less"
+                meta["appetite_via"] = "ancestry"
+                meta["evidence"].append("ancestry_less")
+        except Exception:
+            pass
+
     if not ratings_doc and not heuristics_doc:
+        if meta.get("appetite") == "less":
+            return max(0.0, floor * 0.15), meta
         return floor, meta
 
     rating_value: Optional[float] = None
@@ -692,7 +720,14 @@ def score_recipe(
             meta["fast_track"] = True
         best_weight = best_weight * _appetite_light_mult(appetite_value)
 
+    if meta.get("appetite") == "less" and meta.get("appetite_via") == "ancestry":
+        if appetite_state != "less":
+            best_weight = max(0.0, best_weight * 0.15)
+            meta["evidence"].append("ancestry_less_mult")
+
     if rating_value is None and appetite_value is None:
+        if meta.get("appetite") == "less":
+            return max(0.0, floor * 0.15), meta
         return floor, meta
 
     meta["rating_effective"] = rating_value

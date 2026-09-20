@@ -68,6 +68,24 @@ class TestLoadImageStage(unittest.TestCase):
             self.assertEqual(widget, f"{FACTORY_LOAD_IMAGE_SUBDIR}/{sha}.jpeg")
             self.assertTrue((input_root / FACTORY_LOAD_IMAGE_SUBDIR / f"{sha}.jpeg").is_file())
 
+    def test_stage_replaces_truncated_dest(self) -> None:
+        from shape_factory import FACTORY_LOAD_IMAGE_SUBDIR, stage_load_image_for_comfy
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            input_root = root / "input"
+            input_root.mkdir()
+            src = root / "og.png"
+            payload = b"\x89PNG\r\n\x1a\n" + (b"x" * 80)
+            src.write_bytes(payload)
+            digest = hashlib.sha256(payload).hexdigest()
+            dest = input_root / FACTORY_LOAD_IMAGE_SUBDIR / f"{digest}.png"
+            dest.parent.mkdir()
+            dest.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 19)
+            widget, _ = stage_load_image_for_comfy(src, input_root)
+            self.assertEqual(widget, f"{FACTORY_LOAD_IMAGE_SUBDIR}/{digest}.png")
+            self.assertEqual(dest.read_bytes(), payload)
+
     def test_stage_missing_source_raises(self) -> None:
         from shape_factory import stage_load_image_for_comfy
 

@@ -989,9 +989,14 @@ def stage_load_image_for_comfy(src: Path, input_root: Path) -> tuple[str, list[s
                 return widget, warnings
         except OSError:
             pass
-        # Content-addressed name already present: reuse (idempotent across jobs).
+        # Content-addressed name already present: reuse unless the staged
+        # file is a different size (truncated leftover, partial copy).
         if dest.is_file() and not dest.is_symlink():
-            return widget, warnings
+            try:
+                if dest.stat().st_size == src.stat().st_size:
+                    return widget, warnings
+            except OSError:
+                pass
         try:
             dest.unlink()
         except OSError as e:
@@ -1270,7 +1275,68 @@ def load_pool_index(path: Path) -> dict[str, Any]:
     return obj
 
 
-def pool_index_member_paths(index_doc: dict[str, Any], pool_id: str) -> list[Path]:
+POOL_MEMBER_STANDINGS = ("promoted", "neutral", "demoted")
+
+
+def normalize_pool_member_standing(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in POOL_MEMBER_STANDINGS:
+        return raw
+    return "neutral"
+
+
+def pool_index_path_for_family(family: str, *, data_root: Optional[Path] = None) -> Path:
+    slug = family_for_pool_id(str(family or "").strip())
+    if data_root is None:
+        return DEFAULT_POOLS_ROOT / slug / "index.json"
+    return Path(data_root) / "pools" / slug / "index.json"
+
+
+def pool_standing_lookup(index_doc: dict[str, Any]) -> dict[str, str]:
+    """Map member path, basename, and job_key → standing."""
+    out: dict[str, str] = {}
+    pools = index_doc.get("pools") if isinstance(index_doc.get("pools"), dict) else {}
+    for pool in pools.values() if isinstance(pools, dict) else []:
+        if not isinstance(pool, dict):
+            continue
+        for member in pool.get("members") or []:
+            if not isinstance(member, dict):
+                continue
+            standing = normalize_pool_member_standing(member.get("standing"))
+            path = str(member.get("path") or "").replace("\\", "/").strip()
+            job_key = str(member.get("job_key") or "").strip()
+            if path:
+                out[path] = standing
+                name = Path(path).name
+                if name:
+                    out[name] = standing
+            if job_key:
+                out[job_key] = standing
+    return out
+
+
+def lookup_pool_member_standing(
+    lookup: dict[str, str],
+    *keys: Any,
+) -> str:
+    for raw in keys:
+        key = str(raw or "").replace("\\", "/").strip()
+        if not key:
+            continue
+        if key in lookup:
+            return normalize_pool_member_standing(lookup[key])
+        name = Path(key).name
+        if name and name in lookup:
+            return normalize_pool_member_standing(lookup[name])
+    return "neutral"
+
+
+def pool_index_member_paths(
+    index_doc: dict[str, Any],
+    pool_id: str,
+    *,
+    include_demoted: bool = False,
+) -> list[Path]:
     pools = index_doc.get("pools") if isinstance(index_doc.get("pools"), dict) else {}
     pool = pools.get(pool_id) if isinstance(pools, dict) else None
     if not isinstance(pool, dict):
@@ -1278,6 +1344,8 @@ def pool_index_member_paths(index_doc: dict[str, Any], pool_id: str) -> list[Pat
     out: list[Path] = []
     for member in pool.get("members") or []:
         if not isinstance(member, dict):
+            continue
+        if not include_demoted and normalize_pool_member_standing(member.get("standing")) == "demoted":
             continue
         raw = member.get("path")
         if isinstance(raw, str) and raw.strip():
@@ -1374,9 +1442,171 @@ def upsert_pool_index_members(
         if not isinstance(p, str) or p in existing_paths:
             continue
         existing_paths.add(p)
+        rec.setdefault("standing", "neutral")
         members.append(rec)
         added += 1
     return added
+
+
+def _iter_pool_index_members(
+    index_doc: dict[str, Any],
+    *,
+    pool_id: str = "",
+) -> list[tuple[str, dict[str, Any]]]:
+    out: list[tuple[str, dict[str, Any]]] = []
+    pools = index_doc.get("pools") if isinstance(index_doc.get("pools"), dict) else {}
+    for pid, pool in pools.items() if isinstance(pools, dict) else []:
+        if pool_id and str(pid) != pool_id:
+            continue
+        if not isinstance(pool, dict):
+            continue
+        for member in pool.get("members") or []:
+            if isinstance(member, dict):
+                out.append((str(pid), member))
+    return out
+
+
+def _match_pool_members(
+    index_doc: dict[str, Any],
+    *,
+    path: str = "",
+    job_key: str = "",
+    pool_id: str = "",
+) -> list[tuple[str, dict[str, Any]]]:
+    want_path = str(path or "").replace("\\", "/").strip()
+    want_key = str(job_key or "").strip()
+    want_base = Path(want_path).name if want_path else ""
+    exact: list[tuple[str, dict[str, Any]]] = []
+    by_key: list[tuple[str, dict[str, Any]]] = []
+    by_base: list[tuple[str, dict[str, Any]]] = []
+    for pid, member in _iter_pool_index_members(index_doc, pool_id=pool_id):
+        mp = str(member.get("path") or "").replace("\\", "/").strip()
+        mk = str(member.get("job_key") or "").strip()
+        rec = (pid, member)
+        if want_path and mp == want_path:
+            exact.append(rec)
+        elif want_key and mk == want_key:
+            by_key.append(rec)
+        elif want_base and Path(mp).name == want_base:
+            by_base.append(rec)
+    if exact:
+        return exact
+    if by_key:
+        return by_key
+    if len(by_base) == 1:
+        return by_base
+    if len(by_base) > 1:
+        raise ValueError("ambiguous_basename")
+    return []
+
+
+def list_pool_members_for_review(
+    *,
+    family: str,
+    data_root: Path,
+    pool_id: str = "",
+    standing: str = "all",
+    offset: int = 0,
+    limit: int = 24,
+) -> dict[str, Any]:
+    slug = family_for_pool_id(str(family or "").strip())
+    index_path = pool_index_path_for_family(slug, data_root=data_root)
+    doc = load_pool_index(index_path)
+    want = str(standing or "all").strip().lower()
+    if want in {"", "all", "*"}:
+        want = ""
+    elif want not in POOL_MEMBER_STANDINGS:
+        want = ""
+    counts = {"all": 0, "promoted": 0, "neutral": 0, "demoted": 0}
+    items: list[dict[str, Any]] = []
+    chosen_pool = str(pool_id or "").strip()
+    for pid, member in _iter_pool_index_members(doc, pool_id=chosen_pool):
+        if not chosen_pool:
+            chosen_pool = pid
+        path = str(member.get("path") or "")
+        st = normalize_pool_member_standing(member.get("standing"))
+        counts[st] += 1
+        counts["all"] += 1
+        if want and st != want:
+            continue
+        items.append(
+            {
+                "pool_id": pid,
+                "path": path,
+                "job_key": str(member.get("job_key") or ""),
+                "standing": st,
+                "added_at": str(member.get("added_at") or ""),
+                "basename": Path(path).name if path else "",
+                "companion_png": str(member.get("companion_png") or ""),
+                "kind": str(member.get("kind") or ""),
+            }
+        )
+    items.sort(key=lambda row: (str(row.get("added_at") or ""), str(row.get("basename") or "")), reverse=True)
+    start = max(0, int(offset or 0))
+    page_size = max(1, min(int(limit or 24), 200))
+    return {
+        "ok": True,
+        "family": slug,
+        "pool_id": chosen_pool,
+        "index_path": str(index_path),
+        "index_exists": index_path.is_file(),
+        "counts": counts,
+        "total": len(items),
+        "offset": start,
+        "limit": page_size,
+        "items": items[start : start + page_size],
+    }
+
+
+def set_pool_member_standing(
+    *,
+    family: str,
+    standing: str,
+    data_root: Path,
+    path: str = "",
+    job_key: str = "",
+    pool_id: str = "",
+) -> dict[str, Any]:
+    slug = family_for_pool_id(str(family or "").strip())
+    raw_standing = str(standing or "").strip().lower()
+    if raw_standing in {"", "clear"}:
+        want = "neutral"
+    elif raw_standing not in POOL_MEMBER_STANDINGS:
+        return {"ok": False, "error": "bad_standing", "standing": raw_standing}
+    else:
+        want = raw_standing
+    index_path = pool_index_path_for_family(slug, data_root=data_root)
+    if not index_path.is_file():
+        return {"ok": False, "error": "pool_index_missing", "index_path": str(index_path)}
+    try:
+        doc = load_pool_index(index_path)
+    except Exception as exc:
+        return {"ok": False, "error": "pool_index_unreadable", "detail": str(exc)}
+    try:
+        matched = _match_pool_members(doc, path=path, job_key=job_key, pool_id=pool_id)
+    except ValueError:
+        return {"ok": False, "error": "ambiguous_basename"}
+    if not matched:
+        return {"ok": False, "error": "member_not_found"}
+    updated: list[dict[str, Any]] = []
+    for pid, member in matched:
+        member["standing"] = want
+        updated.append(
+            {
+                "pool_id": pid,
+                "path": str(member.get("path") or ""),
+                "job_key": str(member.get("job_key") or ""),
+                "standing": want,
+            }
+        )
+    atomic_write_json(index_path, doc)
+    return {
+        "ok": True,
+        "family": slug,
+        "standing": want,
+        "updated": updated,
+        "index_path": str(index_path),
+    }
 
 
 def parse_pool_ref(value: str) -> str:

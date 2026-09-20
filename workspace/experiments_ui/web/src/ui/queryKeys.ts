@@ -51,12 +51,15 @@ export const queryKeys = {
       ["shapeFactory", "submitAttempts", opts || { limit: 12, errorsOnly: true }] as const,
     pipelineRunRoot: ["shapeFactory", "pipelineRun"] as const,
     pipelineRun: (runId: string) => ["shapeFactory", "pipelineRun", runId] as const,
+    poolMembers: (opts: { family: string; standing?: string; offset?: number; limit?: number }) =>
+      ["shapeFactory", "poolMembers", opts] as const,
   },
   discovery: {
     assetRemoveReview: ["discovery", "assetRemoveReview"] as const,
     dispositionCatalog: ["discovery", "dispositionCatalog"] as const,
     dispositionBuckets: (entry?: string | null) =>
       ["discovery", "dispositionBuckets", entry || "all"] as const,
+    assetLineage: (relpath: string) => ["discovery", "assetLineage", relpath] as const,
   },
   queue: {
     root: ["queue"] as const,

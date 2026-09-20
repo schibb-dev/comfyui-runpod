@@ -26,6 +26,9 @@ import { MediaFullscreenModal, type MediaFullscreenPayload } from "./MediaFullsc
 import { formatIsoDateTime } from "./locale";
 import { AppetitePreviewBadge } from "./AppetitePreviewBadge";
 import { WorkProductAppetiteStrip, normalizeAppetiteRelpath } from "./WorkProductAppetiteStrip";
+import { FactoryPoolReview } from "./FactoryPoolReview";
+import { ProvenanceAppetitePanel } from "./ProvenanceAppetitePanel";
+import { pairFromFactorySelection } from "./provenanceAppetite";
 import {
   buildSourceOutputPairs,
   countPairPhases,
@@ -828,12 +831,12 @@ function DetailPanel({
 
       {(selectedPair == null || selectedPair.phase !== "future") ? (
         <section className="sfmap-detail-section">
-          <h3>Appetite</h3>
-          <WorkProductAppetiteStrip
-            relpath={appetiteRelpath || null}
+          <ProvenanceAppetitePanel
+            layers={pairFromFactorySelection({ pair: selectedPair, job })}
+            seedRelpath={appetiteRelpath || source?.relpath || null}
             jobKey={job?.job_key}
             familySlug={job?.family_slug || familySlug}
-            disabledHint="Appetite available once this run has an output"
+            disabledHint="Appetite available once this run has a source or output path"
           />
         </section>
       ) : null}
@@ -914,6 +917,7 @@ function DetailPanel({
             {job.family_slug ? (
               <div className="sfmap-detail-actions sfmap-detail-factory-links">
                 <a href={factoryMapFamilyHref(job.family_slug, { focus: "pools" })}>Pools</a>
+                <a href={factoryMapFamilyHref(job.family_slug, { focus: "review" })}>Review deposits</a>
                 <a href={factoryMapFamilyHref(job.family_slug, { focus: "curation" })}>Curate</a>
                 {job.job_key ? (
                   <a href={factoryMapFamilyHref(job.family_slug, { focus: "job", jobKey: job.job_key })}>
@@ -1380,6 +1384,11 @@ function FamilyGraph({
             onOpenMedia={onOpenMedia}
             emptyLabel={deposit ? "No deposit preview" : "No deposit pool"}
           />
+          {family.family_slug ? (
+            <a className="sfmap-deposit-review-link" href={factoryMapFamilyHref(family.family_slug, { focus: "review" })}>
+              Review deposits →
+            </a>
+          ) : null}
         </section>
       </div>
     </div>
@@ -2856,6 +2865,10 @@ function FactoryMapFamilyView({
       scrollTo("sfmap-family-pools");
       return;
     }
+    if (mapFocus.kind === "review") {
+      scrollTo("sfmap-pool-review");
+      return;
+    }
     if (mapFocus.kind === "curation") {
       scrollTo("sfmap-family-curate");
       return;
@@ -2885,6 +2898,7 @@ function FactoryMapFamilyView({
       <div className="sfmap-family-block">
         <FamilyGraph family={family} onOpenMedia={openMedia} />
         {showCurate ? <FamilyCurateSourcesStrip familySlug={family.family_slug} /> : null}
+        <FactoryPoolReview familySlug={family.family_slug} depositPool={depositPool} />
         <section className="sfmap-pool-members sfmap-pair-section">
           <h3 className="sfmap-pool-members__title">
             Source → Output

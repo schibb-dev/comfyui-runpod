@@ -1555,6 +1555,34 @@ export type ShapeFactoryMapDepositPool = {
   latest_member?: ShapeFactoryMapMember | null;
 };
 
+export type ShapeFactoryPoolMember = {
+  pool_id?: string;
+  path?: string;
+  job_key?: string;
+  standing?: string;
+  added_at?: string;
+  basename?: string;
+  companion_png?: string;
+  kind?: string;
+  url?: string;
+  thumb_url?: string;
+  relpath?: string;
+  thumb_relpath?: string;
+};
+
+export type ShapeFactoryPoolMembersResponse = {
+  ok: boolean;
+  error?: string;
+  family?: string;
+  pool_id?: string;
+  index_exists?: boolean;
+  counts?: { all?: number; promoted?: number; neutral?: number; demoted?: number };
+  total?: number;
+  offset?: number;
+  limit?: number;
+  items?: ShapeFactoryPoolMember[];
+};
+
 export type ShapeFactoryMapInputPool = {
   name?: string;
   slot?: string;
@@ -3128,6 +3156,8 @@ export type StillTagEnqueueResponse = {
   comfy_server?: string;
   drain_kicked?: boolean;
   queued_for_index_hour?: boolean;
+  manual?: boolean;
+  sla_hours?: number;
   error?: string;
   detail?: string;
 };
@@ -3136,6 +3166,18 @@ export type StillTagSchedule = {
   schema_version?: number;
   enabled?: boolean;
   timezone?: string;
+  mode?: "sla" | "clock" | string;
+  max_wait_hours?: number;
+  manual_max_wait_hours?: number;
+  scan_interval_min?: number;
+  evaluate_interval_min?: number;
+  auto_enqueue_untagged?: boolean;
+  auto_enqueue_limit?: number;
+  session_minutes?: number;
+  kill_after_min?: number;
+  resume_gap_min?: number;
+  sec_per_still?: number;
+  occupy_gpu?: boolean;
   window_start?: string;
   window_duration_min?: number;
   front?: boolean;
@@ -3147,6 +3189,7 @@ export type StillTagSchedule = {
 
 export type StillTagWindowStatus = {
   enabled?: boolean;
+  mode?: "sla" | "clock" | string;
   in_window?: boolean;
   reason?: string;
   timezone?: string | null;
@@ -3154,6 +3197,19 @@ export type StillTagWindowStatus = {
   window_start_local?: string;
   window_end_local?: string;
   window_duration_min?: number;
+  session_minutes?: number;
+  kill_after_min?: number;
+  max_wait_hours?: number;
+  manual_max_wait_hours?: number;
+  scan_interval_min?: number;
+  evaluate_interval_min?: number;
+  sla_class?: "manual" | "backlog" | string;
+  resume_gap_min?: number;
+  sec_per_still?: number;
+  occupy_gpu?: boolean;
+  scaled_batch?: number;
+  wait_hours?: number | null;
+  session_status?: string;
   front?: boolean;
   max_inflight?: number;
   max_items_per_tick?: number;
@@ -3175,6 +3231,10 @@ export type StillTagBacklogResponse = {
   items_reserved?: number;
   items_queued?: number;
   oldest_queued_at?: string | null;
+  oldest_manual_queued_at?: string | null;
+  oldest_backlog_queued_at?: string | null;
+  queued_manual_runs?: number;
+  queued_manual_targets?: number;
   queued_run_ids?: string[];
   schedule?: StillTagSchedule;
   window?: StillTagWindowStatus;
