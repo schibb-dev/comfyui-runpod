@@ -20,6 +20,19 @@ export function isStillTagWorkProduct(item: Pick<WorkProductItem, "work_kind" | 
   return step === "still_tag";
 }
 
+/** Factory jobs first; still-tag stubs prepend when the lazy query arrives. */
+export function mergeStillTagWorkProducts(
+  jobs: WorkProductItem[],
+  stillTags: WorkProductItem[] | null | undefined,
+): WorkProductItem[] {
+  const factory = jobs.filter((it) => !isStillTagWorkProduct(it));
+  const tags = (stillTags || []).filter((it) => isStillTagWorkProduct(it));
+  if (!tags.length) return factory;
+  const tagKeys = new Set(tags.map((it) => String(it.job_key || "")).filter(Boolean));
+  const rest = factory.filter((it) => !tagKeys.has(String(it.job_key || "")));
+  return [...tags, ...rest];
+}
+
 export function stillTagProgressLabel(item: WorkProductItem): string | null {
   const out = item.still_tag_output;
   const total = Number(out?.total ?? item.construction?.total ?? 0);

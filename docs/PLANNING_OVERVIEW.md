@@ -180,7 +180,7 @@ Each program has: **intent**, **today**, **next** (actionable), **later**, **key
 | **Today** | Docker compose, RunPod doc, GPU guides, Krita optional env, check-in strategy |
 | **Next** | Batch vision **only via portable V1 runners** (local idle / Docker / optional RunPod); tear down paid pods when done |
 | **Later** | Submodule split per organization proposal |
-| **Docs** | [`DOCUMENTATION.md`](../DOCUMENTATION.md), `RUNPOD.md`, [`CHECKIN_STRATEGY.md`](./CHECKIN_STRATEGY.md), [`PROJECT_ORGANIZATION_PROPOSAL.md`](./PROJECT_ORGANIZATION_PROPOSAL.md), [`KRITA_AI_SETUP.md`](./KRITA_AI_SETUP.md) |
+| **Docs** | [`DOCUMENTATION.md`](../DOCUMENTATION.md), `RUNPOD.md`, [`CHECKIN_STRATEGY.md`](./CHECKIN_STRATEGY.md), [`PROJECT_ORGANIZATION_PROPOSAL.md`](./PROJECT_ORGANIZATION_PROPOSAL.md), [`KRITA_AI_SETUP.md`](./KRITA_AI_SETUP.md), [`EXPERIMENTS_UI_API_CONCURRENCY.md`](./EXPERIMENTS_UI_API_CONCURRENCY.md) |
 
 ---
 
@@ -218,6 +218,8 @@ _Use this section during mental exploration. Promote bullets into a program’s 
 - **V1 retrospective (2026-07-16): Keep time slices.** Offline 2s windows + whole-video A/B and the Vision slices review UI were enough to keep span-aware captions/tags on the path (index span rows later; V2 should enqueue the same portable scripts). Separately, blind tag judgment (48 samples) pinned **PromptGen-large** as the V3a day-one tagger; **base∪large** (or an informed union: large always, add base-only when ★/prior-good and not FP-blocked) stays deferred. Artifacts: `_status/vision_tag_judgments.ndjson`, `vision_v3a_tag_pin.json`.
 - **Hourly policy → managed config (2026-08-20):** Facial/i2v drain every-N, seed weights, lookbacks, boosts, etc. are first-order operator concerns but live in code/env today. See [`HOURLY_UTILITY_PLAN.md`](./HOURLY_UTILITY_PLAN.md).
 - **Heuristic engine north star (2026-08-29):** Appetite marks + similarity (tags / provenance / later embeds) → desire↔technique map; “more like this” = find **and** generate; exploit vs explore; classical heuristics tuned by models. Orientation doc: [`HEURISTIC_ENGINE_NORTH_STAR.md`](./HEURISTIC_ENGINE_NORTH_STAR.md).
+- **Experiments UI concurrency (2026-09-21):** Server is already `ThreadingHTTPServer`. GIL + bind-mount `.job.json` walks starve `/api/queue` during Workbench loads; more threads will not fix it. Staged lite → enrich → still-tag stubs is the current path. Revisit only via a job index or a scan sidecar: [`EXPERIMENTS_UI_API_CONCURRENCY.md`](./EXPERIMENTS_UI_API_CONCURRENCY.md).
+- **Queue listing missing thumbs (2026-09-21):** Empty “No preview” was often factory jobs citing Comfy scratch `vision_v1/<sha>.jpg` (tagger upload folder) instead of a gallery still. Catalog + LoadImage now skip `vision_v1` / `clipspace` / `_factory` as sources; rewrite to a same-hash gallery file or `_factory/`. Tagging may still upload into `vision_v1/`. See [`ASSET_LIFECYCLE_PLAN.md`](./ASSET_LIFECYCLE_PLAN.md) and TROUBLESHOOTING.
 
 ---
 ## Doc index (quick links)
@@ -239,6 +241,7 @@ _Use this section during mental exploration. Promote bullets into a program’s 
 | Asset lifecycle (file custody / locate / move) | [`ASSET_LIFECYCLE_PLAN.md`](./ASSET_LIFECYCLE_PLAN.md) |
 | Output path drift (prevent / detect / recover) | [`OUTPUT_PATH_MITIGATION.md`](./OUTPUT_PATH_MITIGATION.md) |
 | Queue & containers | [`SCHEDULED_AND_CONTAINER_JOBS_RUNDOWN.md`](./SCHEDULED_AND_CONTAINER_JOBS_RUNDOWN.md) |
+| Experiments UI API concurrency (parked) | [`EXPERIMENTS_UI_API_CONCURRENCY.md`](./EXPERIMENTS_UI_API_CONCURRENCY.md) |
 | Workspace projects & resubmit MVP | [`WORKSPACE_PROJECTS_RUNDOWN.md`](./WORKSPACE_PROJECTS_RUNDOWN.md) |
 | Repo split proposal | [`PROJECT_ORGANIZATION_PROPOSAL.md`](./PROJECT_ORGANIZATION_PROPOSAL.md) |
 | Workflow node upgrades | [`WORKFLOW_COMPATIBILITY.md`](./WORKFLOW_COMPATIBILITY.md) |

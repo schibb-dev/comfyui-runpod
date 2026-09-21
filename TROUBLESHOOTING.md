@@ -247,6 +247,10 @@ If you run **Vite on the host** with the proxy target set to `http://127.0.0.1:8
 
 After changing `experiments_ui_server.py`, restart only that process (do not restart the whole Comfy container): kill and respawn `python3 /workspace/scripts/experiments_ui_server.py` as user `ubuntu`.
 
+**Queue / Workbench freeze while one fat GET runs:** the API is already `ThreadingHTTPServer`. A work-products job-JSON walk still holds the GIL and the bind-mount disk, so `/api/queue` waits. More threads will not help — see [`docs/EXPERIMENTS_UI_API_CONCURRENCY.md`](docs/EXPERIMENTS_UI_API_CONCURRENCY.md).
+
+**Queue listing: missing preview images:** the Queue page shows “No preview” when `input_thumb_url` / `input_media_url` never resolve. Factory jobs that cited Comfy scratch `vision_v1/<sha>.jpg` (Florence upload folder) were a common case; catalog/LoadImage now skip those dirs and rewrite to a gallery twin or `input/_factory/`. Tagging jobs may still LoadImage from `vision_v1/` on purpose. Remaining gaps: basename-only videos, and error/interrupted history rows with no output image.
+
 **Permission denied (EACCES) on `.data/shape_factory/*.json`:** the file is `root:root` from a `docker exec` that ran as root. UI/hourly run as uid 1000. Fix: `docker exec -u 0 comfyui0-runpod /workspace/scripts/reclaim_runtime_ownership.sh`. Prefer `docker exec -u ubuntu` for later writes.
 
 **Promote template `EROFS` / Read-only file system on `.data/pools/.../catalog-default.json`:** the catalog bind is `:ro` except `shape_factory/`, `pools/`, and `shapes/`. If you still see EROFS, the container was created before those writable binds — `docker compose up -d` to recreate (this restarts ComfyUI). Then retry overwrite.

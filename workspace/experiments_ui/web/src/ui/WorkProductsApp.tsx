@@ -97,15 +97,21 @@ import { prefetchAssetRatings } from "./assetRatingsCache";
 import {
   loadClipsForMedia,
   peekWorkProductsListEntry,
-  prefetchWorkProductsList,
   putWorkProductsList,
   rememberFamiliesFromWorkProducts,
   workProductsListCacheKey,
 } from "./shapeFactorySessionCache";
-import { formatCacheAgeMs, workbenchLoadingHint } from "./workbenchLoadingHint";
+import {
+  activeWorkbenchPhases,
+  formatCacheAgeMs,
+  lastLoadPhaseLabel,
+  workbenchLoadingHint,
+} from "./workbenchLoadingHint";
+import { WorkbenchLoadStatus } from "./WorkbenchLoadStatus";
 import { distinctiveFamilyLabels, familyPickerOptionLabel, familyPickerOptionTitle, familyPromptProfiles, familySlugIsQuarantined, familySwapTargets, isDefaultPromptVariant, isExtendFamilyOption, isStillMediaPath, jobPromptVariantDisplayName, jobPromptVariantName, jobPromptVariantSlug, pickQuickExtendFamily, pickRerunPromptPreset, pickRerunStack, promptProfileOptionLabel, promptTextIsOverridden, promptVariantName, promptVariantSlug, rerunPromptPresetDiffers, specDisplayJoined, stackPickerOptionLabel, workProductCanQuickExtend, workProductHasExtendableOutput } from "./submitFamily";
 import { recencyStamp } from "./workProductRecency";
 import {
+  mergeStillTagWorkProducts,
   stillTagCurrentContentId,
   stillTagProgressLabel,
   stillTagStatusLabel,
@@ -6287,11 +6293,47 @@ export function WorkProductsApp() {
   }, [workingSet]);
   const jobListLimit = followUpSet ? 120 : limit;
   const jobListHourly = followUpSet ? false : hourlyOnly;
-  const queryState = useQuery({
-    queryKey: queryKeys.shapeFactory.workProducts({ limit: jobListLimit, hourlyOnly: jobListHourly, family: null }),
-    queryFn: () => fetchShapeFactoryWorkProducts({ limit: jobListLimit, hourlyOnly: jobListHourly }),
+  const jobListCacheKey = workProductsListCacheKey({ limit: jobListLimit, hourlyOnly: jobListHourly });
+  const cachedListEntry = peekWorkProductsListEntry(jobListCacheKey);
+  const cachedList = cachedListEntry?.value;
+  const hasCachedList = Boolean(cachedList?.ok);
+  const liteQuery = useQuery({
+    queryKey: queryKeys.shapeFactory.workProducts({
+      limit: jobListLimit,
+      hourlyOnly: jobListHourly,
+      family: null,
+      lite: true,
+    }),
+    queryFn: async () => {
+      const res = await fetchShapeFactoryWorkProducts({
+        limit: jobListLimit,
+        hourlyOnly: jobListHourly,
+        lite: true,
+      });
+      putWorkProductsList(jobListCacheKey, res);
+      rememberFamiliesFromWorkProducts(res);
+      return res;
+    },
+    enabled: !hasCachedList,
+    staleTime: 12_000,
+    placeholderData: (prev) => prev ?? cachedList,
+  });
+  const enrichQuery = useQuery({
+    queryKey: queryKeys.shapeFactory.workProducts({
+      limit: jobListLimit,
+      hourlyOnly: jobListHourly,
+      family: null,
+      lite: false,
+    }),
+    queryFn: async () => {
+      const res = await fetchShapeFactoryWorkProducts({ limit: jobListLimit, hourlyOnly: jobListHourly });
+      putWorkProductsList(jobListCacheKey, res);
+      rememberFamiliesFromWorkProducts(res);
+      return res;
+    },
     staleTime: 30_000,
-    placeholderData: (prev) => prev,
+    enabled: hasCachedList || liteQuery.isFetched,
+    placeholderData: (prev) => prev ?? liteQuery.data ?? cachedList,
     refetchInterval: (query) => {
       if (typeof document !== "undefined" && document.hidden) return false;
       const rows = (query.state.data?.items || []) as WorkProductItem[];
@@ -6302,6 +6344,23 @@ export function WorkProductsApp() {
     },
     refetchIntervalInBackground: false,
   });
+  const stillTagsQuery = useQuery({
+    queryKey: queryKeys.shapeFactory.workProducts({
+      limit: jobListLimit,
+      hourlyOnly: jobListHourly,
+      family: null,
+      stillTagsOnly: true,
+    }),
+    queryFn: () =>
+      fetchShapeFactoryWorkProducts({
+        limit: jobListLimit,
+        hourlyOnly: jobListHourly,
+        stillTagsOnly: true,
+      }),
+    staleTime: 30_000,
+    enabled: !followUpSet && (enrichQuery.isFetched || enrichQuery.isError),
+  });
+  const queryState = enrichQuery.data ? enrichQuery : liteQuery;
   const bucketsQuery = useQuery({
     queryKey: queryKeys.discovery.dispositionBuckets(null),
     queryFn: () => fetchDispositionBuckets(),
@@ -6310,10 +6369,11 @@ export function WorkProductsApp() {
   const recentItems = queryState.data?.items;
   const items = useMemo(() => {
     const jobs = recentItems || [];
-    if (!followUpSet) return jobs;
+    const merged = mergeStillTagWorkProducts(jobs, stillTagsQuery.data?.items);
+    if (!followUpSet) return merged;
     const rows = filterFollowUpBucketItems(bucketsQuery.data?.items || [], workingSet);
-    return rows.map((row) => workProductFromFollowUpItem(row, jobs));
-  }, [followUpSet, workingSet, bucketsQuery.data?.items, recentItems]);
+    return rows.map((row) => workProductFromFollowUpItem(row, merged));
+  }, [followUpSet, workingSet, bucketsQuery.data?.items, recentItems, stillTagsQuery.data?.items]);
   const comfyHealth = queryState.data?.comfy_health;
   const comfyHealthRetrySec = useComfyHealthRetrySec(comfyHealth);
   const comfyHealthBackoff = comfyHealthIsBackoff(comfyHealth);
@@ -6409,6 +6469,55 @@ export function WorkProductsApp() {
         !focusedItem &&
         !mediaMissing &&
         !historyResolved));
+  const listFetching = followUpSet
+    ? bucketsQuery.isFetching
+    : liteQuery.isFetching || enrichQuery.isFetching || stillTagsQuery.isFetching;
+  const enriching =
+    !followUpSet &&
+    enrichQuery.isFetching &&
+    Boolean((queryState.data?.items || []).length) &&
+    (enrichQuery.isPlaceholderData || enrichQuery.data?.lite === true || !enrichQuery.data);
+  const stillTagsLoading = Boolean(
+    !followUpSet && stillTagsQuery.isFetching && !stillTagsQuery.data && !enriching,
+  );
+  const [loadNow, setLoadNow] = useState(() => Date.now());
+  const loadStartedRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!listFetching && !focusedLoading) {
+      loadStartedRef.current = null;
+      return;
+    }
+    if (loadStartedRef.current == null) loadStartedRef.current = Date.now();
+    setLoadNow(Date.now());
+    const t = window.setInterval(() => setLoadNow(Date.now()), 250);
+    return () => window.clearInterval(t);
+  }, [listFetching, focusedLoading]);
+  const loadElapsedMs =
+    loadStartedRef.current != null ? Math.max(0, loadNow - loadStartedRef.current) : null;
+  const loadPhases = activeWorkbenchPhases({
+    liteFetching: liteQuery.isFetching,
+    enrichFetching: enrichQuery.isFetching,
+    stillTagsFetching: stillTagsQuery.isFetching,
+    hasJobList: Boolean((queryState.data?.items || []).length) || hasCachedList,
+    litePhases: liteQuery.data?.load_phases,
+    enrichPhases: enrichQuery.data?.load_phases,
+  });
+  const loadHint = workbenchLoadingHint({
+    followUpSet,
+    followUpLoading: Boolean(followUpSet && bucketsQuery.isLoading && !items.length),
+    followUpRefreshing: Boolean(followUpSet && bucketsQuery.isFetching && !bucketsQuery.isLoading),
+    jobListLoading: Boolean(!followUpSet && (liteQuery.isFetching || queryState.isLoading) && !enriching && !stillTagsLoading),
+    jobListRefreshing: Boolean(!followUpSet && refreshing && !enriching && !stillTagsLoading),
+    hasJobList: Boolean((queryState.data?.items || []).length),
+    jobHistoryLoading: Boolean(focusedLoading && historyQuery.isFetching),
+    jobHistoryLabel: historyLookupJobKey || historyLookupPromptId,
+    mediaProbeLoading: Boolean(focusedLoading && mediaProbePending && !historyQuery.isFetching),
+    cacheAgeLabel: formatCacheAgeMs(cachedListEntry?.fetchedAt, loadNow) || undefined,
+    enriching,
+    stillTagsLoading,
+    phaseLabel: lastLoadPhaseLabel(loadPhases),
+    elapsedMs: loadElapsedMs,
+  });
   const focusedGoneReason: FocusedGoneReason | null = (() => {
     if (!focusPinned || focusedLoading) return null;
     if (historyError === "deleted") return "deleted";
@@ -7314,8 +7423,16 @@ export function WorkProductsApp() {
 
       <div className={`work-products-shell${listOpen ? "" : " work-products-shell--list-collapsed"}`}>
         {error && listOpen ? <div className="work-products-error">{error}</div> : null}
-        {focusedLoading ? <div className="work-products-empty">Loading…</div> : null}
-        {loading && !items.length && listOpen ? <div className="work-products-empty">Loading…</div> : null}
+        {focusedLoading ? (
+          <WorkbenchLoadStatus hint={loadHint || "Loading focused job…"} phases={loadPhases} fetching />
+        ) : null}
+        {loading && !items.length && listOpen ? (
+          <WorkbenchLoadStatus
+            hint={loadHint || "Loading jobs…"}
+            phases={loadPhases}
+            fetching={listFetching}
+          />
+        ) : null}
         {!loading && !error && !items.length && listOpen && !focusedItem ? (
           <div className="work-products-empty">
             {followUpSet
@@ -7370,6 +7487,9 @@ export function WorkProductsApp() {
               ) : (
                 <span className="work-products-index__toolbar-label">{followUpSet ? "Follow-up" : "Jobs"}</span>
               )}
+              {loadHint && (items.length || focusPinned) ? (
+                <WorkbenchLoadStatus hint={loadHint} phases={loadPhases} fetching={listFetching} compact />
+              ) : null}
               {followUpSet ? null : (
               <label
                 className="work-products-limit work-products-limit--index"

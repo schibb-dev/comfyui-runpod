@@ -115,6 +115,48 @@ class VisionStillTagsTests(unittest.TestCase):
             self.assertIn("manual_mark", items2[0]["effective_tags"])
             self.assertIn("1girl", items2[0]["effective_tags"])
 
+    def test_list_recent_still_tag_runs_can_omit_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            data = root / "data"
+            status = root / "status"
+            status.mkdir()
+            (data / "shape_factory").mkdir(parents=True)
+            inp = root / "input"
+            inp.mkdir()
+            cid = "b" * 64
+            (inp / f"SSS{cid}.jpeg").write_bytes(b"fakejpeg")
+            import sqlite3
+            import os
+
+            cat = data / "shape_factory" / "input_still_catalog.sqlite"
+            con = sqlite3.connect(str(cat))
+            con.execute(
+                "CREATE TABLE stills (path TEXT PRIMARY KEY, size INT, mtime REAL, first_seen REAL, last_seen REAL)"
+            )
+            con.execute("INSERT INTO stills VALUES (?,?,?,?,?)", (f"input/SSS{cid}.jpeg", 8, 1.0, 1.0, 1.0))
+            con.commit()
+            con.close()
+            os.environ["COMFYUI_BIND_INPUT_DIR"] = str(inp)
+            os.environ["SHAPE_FACTORY_DATA_ROOT"] = str(data)
+            enq = enqueue_run(
+                data_root=data,
+                content_ids=[cid],
+                only_missing=False,
+                force=True,
+                limit=12,
+                dry_run=True,
+                status_dir=status,
+            )
+            self.assertTrue(enq.get("ok"), enq)
+            from vision_still_tags import list_recent_still_tag_runs
+
+            stubs = list_recent_still_tag_runs(data_root=data, limit=10, include_scope=False)
+            self.assertTrue(stubs)
+            self.assertNotIn("scope", stubs[0])
+            self.assertEqual(stubs[0]["run_id"], enq["run_id"])
+            full = list_recent_still_tag_runs(data_root=data, limit=10, include_scope=True)
+            self.assertIn("scope", full[0])
 
     def test_enqueue_reserves_stills_for_second_batch(self) -> None:
         with tempfile.TemporaryDirectory() as td:

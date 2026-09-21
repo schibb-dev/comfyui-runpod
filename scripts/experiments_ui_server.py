@@ -930,11 +930,108 @@ def _discovery_index_health_path(path: Path) -> Path:
     return path.with_name("discovery_index_health.json")
 
 
+def _discovery_bind_input_roots(cfg: "ServerConfig") -> List[Path]:
+    """Comfy LoadImage roots: ``workspace/input``, ``default_input_root``, bind env."""
+    roots: List[Path] = []
+    seen: set[str] = set()
+
+    def add(raw: Any) -> None:
+        if raw is None:
+            return
+        try:
+            p = Path(raw).expanduser()
+        except (TypeError, ValueError):
+            return
+        try:
+            p = p.resolve()
+        except OSError:
+            pass
+        key = str(p)
+        if key in seen:
+            return
+        try:
+            if not p.is_dir():
+                return
+        except OSError:
+            return
+        seen.add(key)
+        roots.append(p)
+
+    try:
+        add(Path(cfg.workspace_root) / "input")
+    except Exception:
+        pass
+    try:
+        d = _workspace_scripts_dir()
+        if d.is_dir() and str(d) not in sys.path:
+            sys.path.insert(0, str(d))
+        from input_still_catalog import default_input_root  # type: ignore
+
+        add(default_input_root())
+    except Exception:
+        pass
+    env = str(os.environ.get("COMFYUI_BIND_INPUT_DIR") or "").strip()
+    if env:
+        add(Path(env))
+    return roots
+
+
+def _discovery_bind_input_rel_candidates(norm: str) -> List[str]:
+    """Relpaths to try under a Comfy input root (LoadImage is relative to that root)."""
+    out: List[str] = []
+
+    def push(p: str) -> None:
+        n = _normalize_rel_posix(p)
+        if n and n not in out:
+            out.append(n)
+
+    push(norm)
+    low = norm.lower()
+    if low.startswith("input/"):
+        rest = norm[6:]
+        if rest:
+            push(rest)
+    bn = Path(norm).name
+    if bn and bn not in {".", ".."}:
+        push(bn)
+        push(f"vision_v1/{bn}")
+        push(f"_factory/{bn}")
+    return out
+
+
+def _discovery_input_relpath_for_file(cfg: "ServerConfig", full: Path) -> Optional[str]:
+    """Workspace- or bind-relative ``input/...`` path for ``/files/`` URLs."""
+    try:
+        resolved = full.resolve()
+    except OSError:
+        resolved = full
+    for bind in _discovery_bind_input_roots(cfg):
+        try:
+            rel = resolved.relative_to(bind)
+        except ValueError:
+            continue
+        posix = str(rel).replace("\\", "/")
+        if not posix or posix.startswith(".."):
+            continue
+        if posix.lower().startswith("input/"):
+            return posix
+        return f"input/{posix}"
+    try:
+        rel = resolved.relative_to(Path(cfg.workspace_root).resolve())
+        posix = str(rel).replace("\\", "/")
+        if posix.lower().startswith("input/"):
+            return posix
+    except Exception:
+        pass
+    return None
+
+
 def _discovery_resolve_media_file(cfg: "ServerConfig", relpath: Any) -> Optional[Path]:
     """Resolve a relpath to an on-disk file under output_root, workspace_root, or bind input.
 
     Comfy ``input/`` uploads often live under ``COMFYUI_BIND_INPUT_DIR`` (host data root),
-    not the empty ``workspace/input`` checkout tree.
+    not the empty ``workspace/input`` checkout tree. LoadImage cites paths relative to
+    that input root, including subdirs such as ``vision_v1/<sha>.jpg``.
     """
     if not isinstance(relpath, str) or not relpath.strip():
         return None
@@ -945,29 +1042,19 @@ def _discovery_resolve_media_file(cfg: "ServerConfig", relpath: Any) -> Optional
         full = _safe_join(root, norm)
         if full is not None and full.is_file():
             return full
-    # input/<file> → bind input root (gallery / factory stills)
-    if norm.lower().startswith("input/"):
-        bn = Path(norm).name
-        if bn and bn not in {".", ".."} and "/" not in bn:
-            try:
-                d = _workspace_scripts_dir()
-                if d.is_dir() and str(d) not in sys.path:
-                    sys.path.insert(0, str(d))
-                from input_still_catalog import default_input_root  # type: ignore
-
-                cand = default_input_root() / bn
-                if cand.is_file():
-                    return cand.resolve()
-            except Exception:
-                pass
-            env = str(os.environ.get("COMFYUI_BIND_INPUT_DIR") or "").strip()
-            if env:
-                cand = Path(env).expanduser() / bn
-                if cand.is_file():
-                    try:
-                        return cand.resolve()
-                    except OSError:
-                        return cand
+        # Comfy LoadImage is relative to input/, not workspace root.
+        if not norm.lower().startswith("input/"):
+            full = _safe_join(root, f"input/{norm}")
+            if full is not None and full.is_file():
+                return full
+    for bind in _discovery_bind_input_roots(cfg):
+        for rel in _discovery_bind_input_rel_candidates(norm):
+            full = _safe_join(bind, rel)
+            if full is not None and full.is_file():
+                try:
+                    return full.resolve()
+                except OSError:
+                    return full
     return None
 
 
@@ -997,8 +1084,11 @@ def _discovery_workspace_input_relpath_for_source(cfg: "ServerConfig", raw: Any)
 
     push(s)
     bn = Path(s).name
-    if bn and not s.lower().startswith("input/"):
-        push(f"input/{bn}")
+    if not s.lower().startswith("input/"):
+        # Keep subdirs (vision_v1/<sha>.jpg), not only input/<basename>.
+        push(f"input/{s}")
+        if bn:
+            push(f"input/{bn}")
     if "/" not in s0.replace("\\", "/") and ".." not in s0 and bn:
         push(f"input/{bn}")
 
@@ -1006,6 +1096,16 @@ def _discovery_workspace_input_relpath_for_source(cfg: "ServerConfig", raw: Any)
         full = _safe_join(cfg.workspace_root, cand)
         if full is not None and full.is_file():
             return cand
+    for cand in candidates:
+        hit = _discovery_resolve_media_file(cfg, cand)
+        if hit is None:
+            continue
+        bind_rel = _discovery_input_relpath_for_file(cfg, hit)
+        if bind_rel:
+            return bind_rel
+        if cand.lower().startswith("input/"):
+            return cand
+        return f"input/{cand}"
     return None
 
 
@@ -5016,7 +5116,15 @@ def _shape_factory_template_promotions_set_payload(cfg: ServerConfig, body: Dict
 
 
 def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
-    """GET /api/shape-factory/work-products — recent jobs with construction debug details."""
+    """GET /api/shape-factory/work-products — recent jobs with construction debug details.
+
+    ``lite=1`` skips Comfy ``/history`` so Workbench can paint the factory job list
+    before history-failure rows. ``still_tags_only=1`` returns tagging-batch stubs
+    (counts/status, no catalog walk) and is loaded last by the UI. Each response
+    includes ``load_phases`` timings.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
     d = _workspace_scripts_dir()
     if d.is_dir() and str(d) not in sys.path:
         sys.path.insert(0, str(d))
@@ -5039,14 +5147,67 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
         limit = 40
     hourly_only = str((q.get("hourly_only") or ["1"])[0]).strip().lower() not in {"0", "false", "no"}
     family = str((q.get("family") or [""])[0]).strip() or None
+    lite = str((q.get("lite") or ["0"])[0]).strip().lower() in {"1", "true", "yes"}
+    still_tags_only = str((q.get("still_tags_only") or ["0"])[0]).strip().lower() in {"1", "true", "yes"}
     cache_key = json.dumps(
-        [str(cfg.output_root), str(cfg.comfy_server), str(data_root), limit, hourly_only, family or ""],
+        [
+            str(cfg.output_root),
+            str(cfg.comfy_server),
+            str(data_root),
+            limit,
+            hourly_only,
+            family or "",
+            int(lite),
+            int(still_tags_only),
+        ],
         sort_keys=True,
     )
     now = time.monotonic()
     hit = _SHAPE_FACTORY_WORK_PRODUCTS_CACHE.get(cache_key)
     if hit and (now - hit[0]) < _SHAPE_FACTORY_WORK_PRODUCTS_CACHE_TTL_S:
-        return hit[1]
+        cached = dict(hit[1]) if isinstance(hit[1], dict) else hit[1]
+        if isinstance(cached, dict):
+            cached["load_cached"] = True
+        return cached
+
+    t0 = time.perf_counter()
+    phases: List[Dict[str, Any]] = []
+
+    def _mark(phase_id: str, label: str) -> None:
+        phases.append(
+            {
+                "id": phase_id,
+                "label": label,
+                "ms": int(round((time.perf_counter() - t0) * 1000)),
+            }
+        )
+
+    if still_tags_only:
+        payload: Dict[str, Any] = {
+            "ok": True,
+            "items": [],
+            "still_tags_only": True,
+            "lite": False,
+        }
+        payload = attach_still_tag_runs(
+            payload,
+            data_root=data_root,
+            output_root=cfg.output_root,
+            limit=max(limit, 30),
+            stub=True,
+        )
+        _mark("still_tags", "Still-tag stubs")
+        payload["load_cached"] = False
+        payload["load_ms"] = int(round((time.perf_counter() - t0) * 1000))
+        payload["load_phases"] = phases
+        _SHAPE_FACTORY_WORK_PRODUCTS_CACHE[cache_key] = (time.monotonic(), payload)
+        return payload
+
+    def _comfy_get(url: str, timeout_s: int, err: str) -> Any:
+        try:
+            return _http_json("GET", url, timeout_s=timeout_s, retry_attempts=1)
+        except Exception as e:
+            return {"error": err, "detail": str(e)}
 
     # Comfy /queue is canonical for in-flight. Reconcile job.json before listing so
     # the UI never shows ghost running/queued rows after clears/restarts.
@@ -5054,16 +5215,22 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
     queue_obj: Any = None
     history_obj: Any = None
     reconcile: Dict[str, Any] | None = None
-    try:
-        queue_obj = _http_json("GET", f"{comfy}/queue", timeout_s=8)
-    except Exception as e:
-        queue_obj = {"error": "comfy_queue_fetch_failed", "detail": str(e)}
-    try:
-        # Same window as Queue monitor history so failures align.
-        history_obj = _http_json("GET", f"{comfy}/history?max_items=80", timeout_s=30)
-    except Exception as e:
-        history_obj = {"error": "comfy_history_fetch_failed", "detail": str(e)}
-    if isinstance(queue_obj, dict) and "error" not in queue_obj:
+    if lite:
+        queue_obj = _comfy_get(f"{comfy}/queue", 4, "comfy_queue_fetch_failed")
+        _mark("comfy_queue", "Comfy queue")
+    else:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut_q = pool.submit(_comfy_get, f"{comfy}/queue", 8, "comfy_queue_fetch_failed")
+            fut_h = pool.submit(
+                _comfy_get,
+                f"{comfy}/history?max_items=80",
+                12,
+                "comfy_history_fetch_failed",
+            )
+            queue_obj = fut_q.result()
+            history_obj = fut_h.result()
+        _mark("comfy_queue_history", "Comfy queue + history")
+    if isinstance(queue_obj, dict) and "error" not in queue_obj and not lite:
         try:
             reconcile = reconcile_inflight_jobs_with_comfy(
                 data_root=data_root,
@@ -5078,6 +5245,7 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
             )
         except Exception as e:
             reconcile = {"ok": False, "error": "reconcile_failed", "detail": str(e)}
+        _mark("reconcile", "Reconcile in-flight jobs")
 
     payload = list_recent_work_products(
         data_root=data_root,
@@ -5085,13 +5253,9 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
         limit=limit,
         hourly_only=hourly_only,
         family=family,
+        lite=lite,
     )
-    payload = attach_still_tag_runs(
-        payload,
-        data_root=data_root,
-        output_root=cfg.output_root,
-        limit=max(limit, 30),
-    )
+    _mark("factory_jobs", "Factory job list")
     if isinstance(queue_obj, dict) and "error" not in queue_obj:
         payload = attach_live_comfy_queue(
             payload,
@@ -5099,27 +5263,31 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
             queue_pending=queue_obj.get("queue_pending"),
             data_root=data_root,
             output_root=cfg.output_root,
+            locate_jobs=not lite,
+            still_tag_lookup=False,
         )
-        try:
-            payload = attach_experiment_runs(
-                payload,
-                output_root=cfg.output_root,
-                queue_running=queue_obj.get("queue_running"),
-                queue_pending=queue_obj.get("queue_pending"),
-            )
-        except Exception as e:
-            payload["experiment_attach_error"] = str(e)
+        if not lite:
+            try:
+                payload = attach_experiment_runs(
+                    payload,
+                    output_root=cfg.output_root,
+                    queue_running=queue_obj.get("queue_running"),
+                    queue_pending=queue_obj.get("queue_pending"),
+                )
+            except Exception as e:
+                payload["experiment_attach_error"] = str(e)
         payload = demote_stale_inflight_items(
             payload,
             queue_running=queue_obj.get("queue_running"),
             queue_pending=queue_obj.get("queue_pending"),
         )
-    else:
+    elif not lite:
         try:
             payload = attach_experiment_runs(payload, output_root=cfg.output_root)
         except Exception as e:
             payload["experiment_attach_error"] = str(e)
-    if isinstance(history_obj, dict) and "error" not in history_obj:
+    _mark("queue_attach", "Live queue")
+    if not lite and isinstance(history_obj, dict) and "error" not in history_obj:
         try:
             payload = attach_comfy_history_failures(
                 payload,
@@ -5130,25 +5298,32 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
             )
         except Exception as e:
             payload["history_attach_error"] = str(e)
-    elif isinstance(history_obj, dict) and history_obj.get("error"):
+        _mark("history_failures", "Comfy history failures")
+    elif not lite and isinstance(history_obj, dict) and history_obj.get("error"):
         payload["history_attach_error"] = history_obj.get("detail") or history_obj.get("error")
+        _mark("history_failures", "Comfy history failures")
     if reconcile is not None:
         payload["comfy_reconcile"] = reconcile
-    try:
-        from shape_factory_comfy_health import snapshot_comfy_health  # type: ignore
+    if not lite:
+        try:
+            from shape_factory_comfy_health import snapshot_comfy_health  # type: ignore
 
-        payload["comfy_health"] = snapshot_comfy_health(data_root)
-    except Exception:
-        pass
-    # Re-attach after live/history rows so synthetic items also get markers when resolvable.
-    try:
-        from shape_factory_markers import attach_markers_to_work_products  # type: ignore
+            payload["comfy_health"] = snapshot_comfy_health(data_root)
+        except Exception:
+            pass
+        # Re-attach after live/history rows so synthetic items also get markers when resolvable.
+        try:
+            from shape_factory_markers import attach_markers_to_work_products  # type: ignore
 
-        items = payload.get("items") if isinstance(payload.get("items"), list) else []
-        attach_markers_to_work_products(items, output_root=cfg.output_root)
-    except Exception:
-        pass
-    _SHAPE_FACTORY_WORK_PRODUCTS_CACHE[cache_key] = (now, payload)
+            items = payload.get("items") if isinstance(payload.get("items"), list) else []
+            attach_markers_to_work_products(items, output_root=cfg.output_root)
+        except Exception:
+            pass
+    payload["lite"] = lite
+    payload["load_cached"] = False
+    payload["load_ms"] = int(round((time.perf_counter() - t0) * 1000))
+    payload["load_phases"] = phases
+    _SHAPE_FACTORY_WORK_PRODUCTS_CACHE[cache_key] = (time.monotonic(), payload)
     return payload
 
 
@@ -12110,13 +12285,17 @@ def _queue_resolve_input_media(cfg: "ServerConfig", prompt_obj: Any) -> Dict[str
             if ws_in and hit == _safe_join(cfg.workspace_root, ws_in):
                 resolved_rel = ws_in
             else:
-                try:
-                    resolved_rel = str(hit.relative_to(cfg.output_root.resolve())).replace("\\", "/")
-                except Exception:
+                bind_rel = _discovery_input_relpath_for_file(cfg, hit)
+                if bind_rel:
+                    resolved_rel = bind_rel
+                else:
                     try:
-                        resolved_rel = str(hit.relative_to(cfg.workspace_root.resolve())).replace("\\", "/")
+                        resolved_rel = str(hit.relative_to(cfg.output_root.resolve())).replace("\\", "/")
                     except Exception:
-                        resolved_rel = cand
+                        try:
+                            resolved_rel = str(hit.relative_to(cfg.workspace_root.resolve())).replace("\\", "/")
+                        except Exception:
+                            resolved_rel = cand
             full = hit
             break
     url = _files_url_for_rel(resolved_rel) if full is not None else None

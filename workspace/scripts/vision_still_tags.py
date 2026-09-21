@@ -1189,24 +1189,36 @@ def get_run(con: sqlite3.Connection, run_id: str) -> Optional[Dict[str, Any]]:
     }
 
 
+_STILL_TAG_STUB_COLS = (
+    "run_id, status, enqueued_at, started_at, finished_at, total, done_count, "
+    "error_count, skipped_count, pin_policy, model_pin, provider, detail"
+)
+
+
 def list_recent_still_tag_runs(
     *,
     data_root: Path,
     limit: int = 30,
     statuses: Optional[Sequence[str]] = None,
+    include_scope: bool = True,
 ) -> List[Dict[str, Any]]:
-    """Recent still-tag runs for Workbench (newest enqueue first)."""
+    """Recent still-tag runs for Workbench (newest enqueue first).
+
+    ``include_scope=False`` skips parsing ``scope_json`` (often thousands of
+    targets). Workbench list stubs only need counts + status.
+    """
     db_path = default_db_path(data_root=data_root)
     if not db_path.is_file():
         return []
     allowed = tuple(statuses or ("queued", "running", "done", "error"))
     placeholders = ",".join("?" for _ in allowed)
     lim = max(1, min(200, int(limit)))
+    select = "SELECT *" if include_scope else f"SELECT {_STILL_TAG_STUB_COLS}"
     con = connect(db_path)
     try:
         rows = con.execute(
             f"""
-            SELECT * FROM still_tag_runs
+            {select} FROM still_tag_runs
             WHERE status IN ({placeholders})
             ORDER BY enqueued_at DESC
             LIMIT ?
@@ -1215,9 +1227,28 @@ def list_recent_still_tag_runs(
         ).fetchall()
         out: List[Dict[str, Any]] = []
         for r in rows:
-            run = get_run(con, str(r["run_id"]))
-            if run:
-                out.append(run)
+            if include_scope:
+                run = get_run(con, str(r["run_id"]))
+                if run:
+                    out.append(run)
+                continue
+            out.append(
+                {
+                    "run_id": r["run_id"],
+                    "status": r["status"],
+                    "enqueued_at": r["enqueued_at"],
+                    "started_at": r["started_at"],
+                    "finished_at": r["finished_at"],
+                    "total": int(r["total"] or 0),
+                    "done_count": int(r["done_count"] or 0),
+                    "error_count": int(r["error_count"] or 0),
+                    "skipped_count": int(r["skipped_count"] or 0),
+                    "pin_policy": r["pin_policy"],
+                    "model_pin": r["model_pin"],
+                    "provider": r["provider"],
+                    "detail": r["detail"],
+                }
+            )
         return out
     finally:
         con.close()

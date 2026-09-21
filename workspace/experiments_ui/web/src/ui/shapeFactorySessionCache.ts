@@ -185,7 +185,11 @@ export async function loadWorkProductsList(opts: {
   if (!opts.force && hit && fresh(hit.fetchedAt, WORK_PRODUCTS_TTL_MS)) {
     return hit.value;
   }
-  const res = await fetchShapeFactoryWorkProducts({ limit: opts.limit, hourlyOnly: opts.hourlyOnly });
+  const res = await fetchShapeFactoryWorkProducts({
+    limit: opts.limit,
+    hourlyOnly: opts.hourlyOnly,
+    lite: true,
+  });
   putWorkProductsList(key, res);
   rememberFamiliesFromWorkProducts(res);
   return res;

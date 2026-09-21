@@ -427,11 +427,15 @@ export async function fetchShapeFactoryWorkProducts(opts?: {
   limit?: number;
   hourlyOnly?: boolean;
   family?: string;
+  lite?: boolean;
+  stillTagsOnly?: boolean;
 }): Promise<WorkProductsResponse> {
   const sp = new URLSearchParams();
   if (opts?.limit != null) sp.set("limit", String(opts.limit));
   if (opts?.hourlyOnly === false) sp.set("hourly_only", "0");
   if (opts?.family) sp.set("family", opts.family);
+  if (opts?.lite) sp.set("lite", "1");
+  if (opts?.stillTagsOnly) sp.set("still_tags_only", "1");
   const qs = sp.toString();
   const r = await fetch(`/api/shape-factory/work-products${qs ? `?${qs}` : ""}`);
   const j = (await r.json().catch(() => ({}))) as WorkProductsResponse;

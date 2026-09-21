@@ -13,6 +13,7 @@ from shape_factory_work_products import (
     _keeper_output_rel,
     _relpath_under,
     _shape_view,
+    _still_tag_run_work_product,
     attach_comfy_history_failures,
     attach_experiment_runs,
     attach_live_comfy_queue,
@@ -181,6 +182,11 @@ class TestWorkProducts(unittest.TestCase):
             self.assertEqual(payload["count"], 1)
             item = payload["items"][0]
             self.assertEqual(item["job_key"], "hourly__demo")
+            lite = list_recent_work_products(
+                data_root=data, output_root=out, limit=10, hourly_only=True, lite=True
+            )
+            self.assertTrue(lite["ok"])
+            self.assertEqual(lite["items"][0]["job_key"], "hourly__demo")
             self.assertEqual(item["pick_mode"], "derive")
             self.assertEqual(item["step"], "derive")
             self.assertTrue(item.get("is_hourly"))
@@ -194,6 +200,32 @@ class TestWorkProducts(unittest.TestCase):
             self.assertIn("prompt", binding["value"].lower())
             self.assertEqual(item.get("flow_phase"), "terminal")
             self.assertEqual(len(item.get("flow_events") or []), 1)
+
+    def test_still_tag_stub_is_counts_only(self) -> None:
+        run = {
+            "run_id": "still_tag_stub_1",
+            "status": "running",
+            "total": 400,
+            "done_count": 12,
+            "error_count": 1,
+            "enqueued_at": "2026-09-21T00:00:00+00:00",
+            "provider": "comfy",
+            "scope": {
+                "targets": [{"content_id": f"{i:064x}"} for i in range(400)],
+            },
+        }
+        item = _still_tag_run_work_product(
+            run,
+            data_root=Path("/tmp"),
+            output_root=Path("/tmp"),
+            stub=True,
+        )
+        self.assertEqual(item["work_kind"], "still_tag")
+        self.assertTrue(item.get("still_tag_stub"))
+        self.assertIsNone(item.get("output_url"))
+        self.assertEqual(item["still_tag_output"]["done_count"], 12)
+        self.assertEqual(item["still_tag_output"]["total"], 400)
+        self.assertEqual(item["still_tag_output"]["tags"], [])
 
     def test_keeper_output_prefers_final_not_preview(self) -> None:
         with tempfile.TemporaryDirectory() as td:

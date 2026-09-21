@@ -64,6 +64,7 @@ This page mirrors the planning-relevant sections of the repo-root [DOCUMENTATION
 | Document | What it is |
 |----------|------------|
 | [CHECKIN_STRATEGY.md](CHECKIN_STRATEGY.md) | Check-in / layering strategy. |
+| [EXPERIMENTS_UI_API_CONCURRENCY.md](EXPERIMENTS_UI_API_CONCURRENCY.md) | Parked: Experiments UI is already threaded; GIL + bind-mount job scans starve `/api`. |
 | [KRITA_AI_SETUP.md](KRITA_AI_SETUP.md) | Krita AI setup. |
 | [WSL_MOVE_TO_E_FOLLOWUP.md](WSL_MOVE_TO_E_FOLLOWUP.md) | WSL vhdx move follow-up. |
 | [CURSOR_AGENT_SUDO_ASKPASS.md](CURSOR_AGENT_SUDO_ASKPASS.md) | Cursor agent sudo/askpass. |

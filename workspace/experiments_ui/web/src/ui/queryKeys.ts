@@ -41,8 +41,13 @@ export const queryKeys = {
     stillSimilar: (contentId: string, provider: string) =>
       ["shapeFactory", "inputCuration", "stillSimilar", contentId, provider] as const,
     workProductsRoot: ["shapeFactory", "workProducts"] as const,
-    workProducts: (opts: { limit: number; hourlyOnly: boolean; family?: string | null }) =>
-      ["shapeFactory", "workProducts", opts] as const,
+    workProducts: (opts: {
+      limit: number;
+      hourlyOnly: boolean;
+      family?: string | null;
+      lite?: boolean;
+      stillTagsOnly?: boolean;
+    }) => ["shapeFactory", "workProducts", opts] as const,
     workProductRoot: ["shapeFactory", "workProduct"] as const,
     workProduct: (opts: { jobKey?: string | null; promptId?: string | null }) =>
       ["shapeFactory", "workProduct", opts] as const,

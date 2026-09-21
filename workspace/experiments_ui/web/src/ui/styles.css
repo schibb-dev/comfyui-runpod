@@ -14839,6 +14839,39 @@ button.home-backlog-linkish {
   color: var(--muted);
 }
 
+.work-products-load-status--compact {
+  flex: 1 1 10rem;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.work-products-empty--loading {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 28px 16px;
+}
+
+.work-products-load-phases {
+  margin: 0;
+  padding: 0 0 0 1.15em;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.work-products-load-phases__ms {
+  margin-left: 8px;
+  font-size: 11px;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  opacity: 0.75;
+}
+
 .work-products-index__toolbar-focus {
   display: inline-flex;
   align-items: center;

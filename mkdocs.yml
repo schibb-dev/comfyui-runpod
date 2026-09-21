@@ -59,6 +59,7 @@ nav:
     - Output path mitigation: OUTPUT_PATH_MITIGATION.md
     - Current goal: CURRENT_GOAL.md
     - Check-in strategy: CHECKIN_STRATEGY.md
+    - Experiments UI API concurrency: EXPERIMENTS_UI_API_CONCURRENCY.md
     - Krita AI setup: KRITA_AI_SETUP.md
     - WSL move follow-up: WSL_MOVE_TO_E_FOLLOWUP.md
     - Cursor agent sudo: CURSOR_AGENT_SUDO_ASKPASS.md

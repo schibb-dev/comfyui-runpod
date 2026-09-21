@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1828,6 +1829,35 @@ def _timing_summary(timings: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
 
 
+def _job_mtime_ts(path: Path) -> float:
+    try:
+        return float(path.stat().st_mtime)
+    except Exception:
+        return 0.0
+
+
+_JOB_PATHS_MTIME_CACHE: Dict[str, Tuple[float, List[Path]]] = {}
+_JOB_PATHS_MTIME_TTL_S = 20.0
+
+
+def _iter_job_paths_mtime_sorted(jobs_root: Path, *, hourly_only: bool) -> List[Path]:
+    """rglob + mtime sort, cached — the cold walk is expensive on bind mounts."""
+    key = f"{jobs_root.resolve()}:{int(hourly_only)}"
+    now = time.monotonic()
+    hit = _JOB_PATHS_MTIME_CACHE.get(key)
+    if hit and now - hit[0] < _JOB_PATHS_MTIME_TTL_S:
+        return list(hit[1])
+    paths = list(iter_job_paths(jobs_root, hourly_only=hourly_only))
+    paths.sort(key=_job_mtime_ts, reverse=True)
+    _JOB_PATHS_MTIME_CACHE[key] = (now, paths)
+    return list(paths)
+
+
+def _mtime_newest(paths: List[Path], cap: int) -> List[Path]:
+    """Prefix of an already mtime-sorted list."""
+    return list(paths[: max(1, int(cap))])
+
+
 def _job_recency_ts(path: Path) -> float:
     """Prefer job created_at over file mtime (backfills/rewrites inflate mtime)."""
     try:
@@ -2384,24 +2414,38 @@ def list_recent_work_products(
     limit: int = 40,
     hourly_only: bool = True,
     family: Optional[str] = None,
+    lite: bool = False,
 ) -> Dict[str, Any]:
     """
     List recent factory jobs as work products with viewer URLs + construction details.
 
     ``limit`` caps each Workbench nav section (pending, errors, completed) independently.
     Live Comfy queue rows (attached later) are always included and are not capped.
+
+    ``lite`` skips the full-tree JSON recency pass so Workbench can paint quickly.
+    It ranks by mtime and only opens a prefix of job files; the enrich call then
+    re-ranks that prefix by ``created_at``.
     """
     data_root = data_root.resolve()
     output_root = output_root.resolve()
     jobs_root = data_root / "shape_factory" / "jobs"
     limit = max(1, min(200, int(limit)))
 
-    paths = list(iter_job_paths(jobs_root, hourly_only=hourly_only))
-    # Newest-first by job created_at (not file mtime — deposit/backfill rewrites bump mtime).
-    paths.sort(key=_job_recency_ts, reverse=True)
-    pending_scan = (
-        list(iter_job_paths(jobs_root, hourly_only=False)) if hourly_only else list(paths)
-    )
+    paths = _iter_job_paths_mtime_sorted(jobs_root, hourly_only=hourly_only)
+    if lite:
+        # Stat-only order + a small open cap. Reading every job.json here is what
+        # made Workbench sit on a blank "Loading…" for a minute.
+        paths = _mtime_newest(paths, max(80, min(160, limit * 6)))
+        pending_scan = list(paths)
+    else:
+        # created_at is the accurate order, but only parse a mtime window rather
+        # than all ~thousands of job files.
+        paths = _mtime_newest(paths, max(250, limit * 12))
+        paths.sort(key=_job_recency_ts, reverse=True)
+        pending_all = (
+            _iter_job_paths_mtime_sorted(jobs_root, hourly_only=False) if hourly_only else list(paths)
+        )
+        pending_scan = _mtime_newest(pending_all, max(400, limit * 20))
 
     work_items_doc = None
     work_items_for_item = None
@@ -3422,8 +3466,14 @@ def _still_tag_run_work_product(
     data_root: Path,
     output_root: Path,
     con: Any = None,
+    stub: bool = True,
 ) -> Dict[str, Any]:
-    """Build a Workbench work-product row from a still_tag_runs record."""
+    """Build a Workbench work-product row from a still_tag_runs record.
+
+    ``stub=True`` (default) is counts/status only — no catalog recency walk,
+    no event-tag sample, no preview still. Full rows are expensive and the
+    tagging UI is getting a separate pass.
+    """
     from vision_still_tags import (  # type: ignore
         connect,
         current_still_tag_target,
@@ -3432,22 +3482,25 @@ def _still_tag_run_work_product(
     )
 
     run_id = str(run.get("run_id") or "").strip()
-    scope = run.get("scope") if isinstance(run.get("scope"), dict) else {}
     total = int(run.get("total") or 0)
     done = int(run.get("done_count") or 0)
     errors = int(run.get("error_count") or 0)
-    current = current_still_tag_target(scope, data_root=data_root, done_count=done)
-    current_cid, preview_rel = _still_tag_relpath_from_target(current)
-
     tags: List[str] = []
-    own_con = con is None
-    if own_con:
-        con = connect(default_db_path(data_root=data_root))
-    try:
-        tags = _still_tag_sample_tags(con, run_id=run_id, content_id=current_cid)
-    finally:
+    current = None
+    current_cid = ""
+    preview_rel = ""
+    if not stub:
+        scope = run.get("scope") if isinstance(run.get("scope"), dict) else {}
+        current = current_still_tag_target(scope, data_root=data_root, done_count=done)
+        current_cid, preview_rel = _still_tag_relpath_from_target(current)
+        own_con = con is None
         if own_con:
-            con.close()
+            con = connect(default_db_path(data_root=data_root))
+        try:
+            tags = _still_tag_sample_tags(con, run_id=run_id, content_id=current_cid)
+        finally:
+            if own_con:
+                con.close()
 
     wp_status = still_tag_run_workbench_status(str(run.get("status") or ""))
     still_url = _file_url(preview_rel) if preview_rel else None
@@ -3516,7 +3569,11 @@ def _still_tag_run_work_product(
     }
     if tags:
         item["details"].append({"label": "Sample tags", "value": ", ".join(tags[:12]) + ("…" if len(tags) > 12 else "")})
-    _apply_still_tag_target_to_item(item, current, tags=tags)
+    if stub:
+        item["still_tag_stub"] = True
+        item["details"].append({"label": "Preview", "value": "stub — details load separately"})
+    else:
+        _apply_still_tag_target_to_item(item, current, tags=tags)
     return item
 
 
@@ -3586,8 +3643,13 @@ def attach_still_tag_runs(
     data_root: Path,
     output_root: Path,
     limit: int = 30,
+    stub: bool = True,
 ) -> Dict[str, Any]:
-    """Merge still-tag runs into Workbench work-products (first-class jobs, v0 output = still + tags)."""
+    """Merge still-tag runs into Workbench work-products.
+
+    Workbench loads these last and as stubs so factory jobs are not blocked on
+    catalog walks inside each tagging batch.
+    """
     if not isinstance(payload, dict) or not payload.get("ok"):
         return payload
     try:
@@ -3597,15 +3659,16 @@ def attach_still_tag_runs(
         return payload
 
     cap = max(1, min(200, int(limit or 30)))
-    runs = list_recent_still_tag_runs(data_root=data_root, limit=cap)
+    runs = list_recent_still_tag_runs(data_root=data_root, limit=cap, include_scope=not stub)
     if not runs:
         payload["still_tag_count"] = 0
+        payload["still_tag_stub"] = bool(stub)
         return payload
 
     from vision_still_tags import connect, default_db_path  # type: ignore
 
     db_path = default_db_path(data_root=data_root)
-    con = connect(db_path) if db_path.is_file() else None
+    con = None if stub else (connect(db_path) if db_path.is_file() else None)
     try:
         tag_items = [
             _still_tag_run_work_product(
@@ -3613,6 +3676,7 @@ def attach_still_tag_runs(
                 data_root=data_root,
                 output_root=output_root,
                 con=con,
+                stub=stub,
             )
             for run in runs
         ]
@@ -3628,6 +3692,7 @@ def attach_still_tag_runs(
     ]
     payload["items"] = tag_items + rest
     payload["still_tag_count"] = len(tag_items)
+    payload["still_tag_stub"] = bool(stub)
     return payload
 
 
@@ -3941,6 +4006,8 @@ def attach_live_comfy_queue(
     queue_pending: Any = None,
     data_root: Optional[Path] = None,
     output_root: Optional[Path] = None,
+    locate_jobs: bool = True,
+    still_tag_lookup: bool = True,
 ) -> Dict[str, Any]:
     """
     Ensure Comfy running/pending prompts appear at the top of work-products.
@@ -3976,7 +4043,9 @@ def attach_live_comfy_queue(
     jobs_root = Path(data_root) / "shape_factory" / "jobs" if data_root else None
     out_root = Path(output_root).resolve() if output_root else None
     data_r = Path(data_root).resolve() if data_root else None
-    still_tag_cid_to_run = _still_tag_content_to_run_map(data_r) if data_r is not None else {}
+    still_tag_cid_to_run = (
+        _still_tag_content_to_run_map(data_r) if still_tag_lookup and data_r is not None else {}
+    )
     live_items: List[Dict[str, Any]] = []
     used_indices: set[int] = set()
     emitted_live_job_keys: set[str] = set()
@@ -4059,7 +4128,7 @@ def attach_live_comfy_queue(
             continue
 
         found_path, found_job = (None, None)
-        if jobs_root is not None:
+        if locate_jobs and jobs_root is not None:
             found_path, found_job = _find_job_by_prompt_id(jobs_root, pid)
             if found_path is None and ent_job_key:
                 # Recovered prompt: old prompt_id on disk, new id on Comfy — match by job_key.

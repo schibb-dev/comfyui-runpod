@@ -2837,6 +2837,8 @@ export type WorkProductItem = {
   /** Still auto-tagger batch (`still_tag_runs` in SQLite). */
   work_kind?: "still_tag" | "factory" | string;
   still_tag_run_id?: string | null;
+  /** List-row stub: counts/status only, no preview still or tag sample. */
+  still_tag_stub?: boolean | null;
   /** Human label for Workbench list rows (e.g. Still tag · 3/200 tagged). */
   display_title?: string | null;
   /** v0 tag output — still preview + provisional tag sample (iterate later). */
@@ -3294,6 +3296,12 @@ export type WorkProductTiming = {
   label?: string | null;
 };
 
+export type WorkProductsLoadPhase = {
+  id?: string;
+  label?: string;
+  ms?: number;
+};
+
 export type WorkProductsResponse = {
   ok: boolean;
   error?: string;
@@ -3311,6 +3319,14 @@ export type WorkProductsResponse = {
   extend_family_defaults?: Record<string, string>;
   items?: WorkProductItem[];
   comfy_health?: ComfyHealthStatus | null;
+  /** Skip Comfy `/history` so the job list can paint first. */
+  lite?: boolean;
+  still_tags_only?: boolean;
+  still_tag_stub?: boolean;
+  still_tag_count?: number;
+  load_cached?: boolean;
+  load_ms?: number;
+  load_phases?: WorkProductsLoadPhase[];
 };
 
 /** GET /api/shape-factory/work-product?job_key=… | ?prompt_id=… — one job from full history. */
