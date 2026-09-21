@@ -1007,6 +1007,8 @@ export type AssetRemoveReviewResponse = {
 export type AssetRemovePurgeResult = {
   ok: boolean;
   error?: string;
+  detail?: string;
+  appetite?: string;
   relpath?: string;
   blockers?: string[];
   deleted_files?: string[];

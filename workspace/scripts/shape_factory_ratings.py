@@ -204,6 +204,10 @@ def appetite_lookup_keys(path: str) -> List[str]:
         tail = raw.split("/og/", 1)[-1].lstrip("/")
         keys.append(f"og/{tail}")
         keys.append(f"output/og/{tail}")
+    elif stripped.startswith("og/"):
+        tail = stripped[len("og/") :]
+        keys.append(f"og/{tail}")
+        keys.append(f"output/og/{tail}")
     if "/input/" in raw:
         keys.append("input/" + raw.split("/input/", 1)[-1].lstrip("/"))
     elif raw.lower().startswith("input/"):
@@ -2151,30 +2155,7 @@ def lookup_output_appetite(output_path: str, appetite_doc: dict[str, Any]) -> Op
     table = (appetite_doc or {}).get("by_output_relpath") or {}
     if not isinstance(table, dict):
         return None
-    raw = str(output_path or "").strip().replace("\\", "/")
-    if not raw:
-        return None
-    keys = [raw, Path(raw).name]
-    if "/output/output/" in raw:
-        keys.append(re.sub(r"^.*?/output/output/", "output/", raw))
-    if "/og/" in raw:
-        tail = raw.split("/og/", 1)[-1]
-        keys.append(f"output/og/{tail.rstrip('/')}")
-        keys.append(f"og/{tail.rstrip('/')}")
-    expanded: List[str] = []
-    for key in keys:
-        key = key.strip().replace("\\", "/")
-        if not key:
-            continue
-        expanded.append(key)
-        for suffix in (".mp4", ".MP4", ".png", ".PNG", ".webm", ".WEBM"):
-            if key.endswith(suffix):
-                expanded.append(key[: -len(suffix)])
-    seen: set[str] = set()
-    for key in expanded:
-        if not key or key in seen:
-            continue
-        seen.add(key)
+    for key in appetite_lookup_keys(output_path):
         row = table.get(key)
         if isinstance(row, dict):
             return row

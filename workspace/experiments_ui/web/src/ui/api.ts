@@ -134,8 +134,11 @@ import type {
   InputCurationAppetiteSeedsResponse,
 } from "./types";
 
-function experimentsUiStaleApiHint(): string {
+function experimentsUiStaleApiHint(httpStatus?: number): string {
   if (!import.meta.env.DEV) return "";
+  // 409/400 are application refusals (e.g. purge not_remove). Only 404 means the
+  // proxied process is likely an old experiments_ui_server without this route.
+  if (httpStatus != null && httpStatus !== 404) return "";
   const t = typeof __DEV_EXPERIMENTS_PROXY_TARGET__ !== "undefined" ? __DEV_EXPERIMENTS_PROXY_TARGET__ : "";
   if (!t) return "";
   return (
@@ -1147,9 +1150,9 @@ export async function purgeAssetRemove(body: {
   if (!r.ok || j.ok === false) {
     const detail = [j.error, j.detail].filter(Boolean).join(": ");
     const first = (j.results || []).find((row) => !row.ok);
-    const extra = first?.blockers?.join("; ") || first?.error || "";
+    const extra = first?.blockers?.join("; ") || first?.detail || first?.error || "";
     throw new Error(
-      `POST /api/discovery/asset-remove/purge failed: ${r.status}${detail ? `: ${detail}` : ""}${extra ? ` (${extra})` : ""}${experimentsUiStaleApiHint()}`,
+      `POST /api/discovery/asset-remove/purge failed: ${r.status}${detail ? `: ${detail}` : ""}${extra ? ` (${extra})` : ""}${experimentsUiStaleApiHint(r.status)}`,
     );
   }
   if (!Array.isArray(j.results)) j.results = [];

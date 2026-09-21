@@ -154,6 +154,25 @@ class RemoveReviewTests(unittest.TestCase):
         self.assertTrue(lone["purge_ready"])
         self.assertEqual(lone["blockers"], [])
 
+    def test_analyze_matches_stem_to_mp4_source(self) -> None:
+        analysis = analyze_remove_item(
+            "og/2026-09-12/hourly/clip_00001",
+            as_output={},
+            as_source={
+                "og/2026-09-12/hourly/clip_00001.mp4": [
+                    {"job_key": "child", "family": "FAM", "status": "complete"}
+                ]
+            },
+            pools={
+                "og/2026-09-12/hourly/clip_00001.mp4": [
+                    {"family": "FAM", "pool": "X", "path": "/workspace/output/og/2026-09-12/hourly/clip_00001.mp4"}
+                ]
+            },
+        )
+        self.assertFalse(analysis["purge_ready"])
+        self.assertEqual(analysis["counts"]["as_source_jobs"], 1)
+        self.assertEqual(analysis["counts"]["pool_memberships"], 1)
+
     def test_build_remove_review_scans_jobs_and_pools(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -351,6 +370,7 @@ class RemovePurgeTests(unittest.TestCase):
             )
             self.assertFalse(out.get("ok"))
             self.assertEqual(out.get("error"), "not_remove")
+            self.assertEqual(out.get("appetite"), "more")
             self.assertTrue(media.is_file())
 
     def test_purge_keeps_producing_job_when_other_video_remains(self) -> None:
@@ -404,6 +424,40 @@ class RemovePurgeTests(unittest.TestCase):
             self.assertEqual((out.get("producing_jobs") or [{}])[0].get("action"), "stripped")
             saved = json.loads(job_path.read_text(encoding="utf-8"))
             self.assertEqual(saved["submit"]["outputs"], ["og/clip_00002.mp4"])
+
+    def test_purge_finds_discovery_key_without_extension(self) -> None:
+        """Live store keys are output/og/…stem (no .mp4); review lists og/…stem."""
+        from shape_factory_ratings import lookup_output_appetite, path_appetite_state
+        from shape_factory_remove_review import list_remove_relpaths, purge_remove_asset
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            hourly = root / "og" / "2026-09-12" / "hourly"
+            hourly.mkdir(parents=True)
+            media = hourly / "clip_00001.mp4"
+            media.write_bytes(b"fake")
+            (root / "jobs").mkdir()
+            (root / "pools").mkdir()
+            appetite_path = root / "appetite_index.json"
+            discovery = "output/og/2026-09-12/hourly/clip_00001"
+            appetite_path.write_text(
+                json.dumps({"by_output_relpath": {discovery: {"appetite": "remove"}}}),
+                encoding="utf-8",
+            )
+            doc = {"by_output_relpath": {discovery: {"appetite": "remove"}}}
+            listed = list_remove_relpaths(doc)
+            self.assertEqual(listed[0]["relpath"], "og/2026-09-12/hourly/clip_00001")
+            self.assertEqual(path_appetite_state("og/2026-09-12/hourly/clip_00001.mp4", doc), "remove")
+            self.assertIsNotNone(lookup_output_appetite("og/2026-09-12/hourly/clip_00001", doc))
+            out = purge_remove_asset(
+                listed[0]["relpath"],
+                appetite_index_path=appetite_path,
+                jobs_dir=root / "jobs",
+                pools_root=root / "pools",
+                search_roots=[root],
+            )
+            self.assertTrue(out.get("ok"), out)
+            self.assertFalse(media.is_file())
 
 
 if __name__ == "__main__":

@@ -28,13 +28,35 @@ def _path_keys(raw: Any) -> Set[str]:
     low = text.lower()
     if "/og/" in low:
         keys.add("og/" + text.split("/og/", 1)[-1].lstrip("/"))
+    elif low.startswith("og/"):
+        keys.add("output/" + text)
     if "/input/" in low:
         keys.add("input/" + text.split("/input/", 1)[-1].lstrip("/"))
     elif low.startswith("input/"):
         keys.add(text)
     if "/output/" in low:
         keys.add(text.split("/output/", 1)[-1].lstrip("/"))
-    return {k.lower() for k in keys if k}
+    elif low.startswith("output/"):
+        keys.add(text[len("output/") :].lstrip("/"))
+    out: Set[str] = set()
+    suffixes = tuple(s.lower() for s in _MEDIA_SUFFIXES)
+    for key in keys:
+        if not key:
+            continue
+        kl = key.lower()
+        out.add(kl)
+        suf = Path(kl).suffix
+        if suf in suffixes:
+            stem = kl[: -len(suf)]
+            if stem:
+                out.add(stem)
+                out.add(Path(stem).name)
+        else:
+            out.add(kl + ".mp4")
+            name = Path(kl).name
+            if name:
+                out.add(name + ".mp4")
+    return {k for k in out if k}
 
 
 def _canonical_relpath(raw: Any) -> str:
@@ -573,8 +595,19 @@ def purge_remove_asset(
         return {"ok": False, "error": "missing_relpath"}
     appetite_doc = load_appetite_doc(appetite_index_path)
     state = path_appetite_state(relpath, appetite_doc) or path_appetite_state(rel, appetite_doc)
-    if normalize_appetite(state) != "remove":
-        return {"ok": False, "error": "not_remove", "relpath": rel}
+    listed = {
+        str(row.get("relpath") or "")
+        for row in list_remove_relpaths(appetite_doc)
+    }
+    is_remove = normalize_appetite(state) == "remove" or rel in listed or _posix(relpath) in listed
+    if not is_remove:
+        return {
+            "ok": False,
+            "error": "not_remove",
+            "relpath": rel,
+            "appetite": state or "unset",
+            "detail": "not marked appetite=remove",
+        }
     as_output, as_source = _index_jobs(jobs_dir)
     pools = _index_pools(pools_root)
     analysis = analyze_remove_item(rel, as_output=as_output, as_source=as_source, pools=pools)
