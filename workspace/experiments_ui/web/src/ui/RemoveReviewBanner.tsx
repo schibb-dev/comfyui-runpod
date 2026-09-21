@@ -1,15 +1,119 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchAssetRemoveReview, purgeAssetRemove } from "./api";
 import { patchCachedAppetite, peekAssetRatings, subscribeAssetRatings } from "./assetRatingsCache";
 import { discoveryPoolsHref, workbenchHrefForMedia } from "./discoveryDeepLink";
 import { queryKeys } from "./queryKeys";
+import { removeReviewPreviewUrls } from "./removeReviewPreview";
 import type { AssetRemoveReviewResponse } from "./types";
+
+function RemoveCandidatePreview({ relpath }: { relpath: string }) {
+  const { poster, video } = removeReviewPreviewUrls(relpath);
+  const [imgFailed, setImgFailed] = useState(false);
+  const [videoFailed, setVideoFailed] = useState(false);
+  useEffect(() => {
+    setImgFailed(false);
+    setVideoFailed(false);
+  }, [relpath]);
+  const name = relpath.split("/").pop() || relpath;
+  if (!poster && !video) return <p className="remove-review-preview__empty">No preview</p>;
+  const showPoster = Boolean(poster) && !imgFailed;
+  const showVideo = Boolean(video) && !videoFailed && !showPoster;
+  return (
+    <>
+      {showPoster ? (
+        <img
+          className="remove-review-preview__media"
+          src={poster}
+          alt=""
+          onError={() => setImgFailed(true)}
+        />
+      ) : showVideo ? (
+        <video
+          className="remove-review-preview__media"
+          src={video}
+          muted
+          loop
+          autoPlay
+          playsInline
+          preload="metadata"
+          onError={() => setVideoFailed(true)}
+        />
+      ) : (
+        <p className="remove-review-preview__empty">File missing</p>
+      )}
+      <p className="remove-review-preview__name">{name}</p>
+    </>
+  );
+}
 
 export function RemoveReviewBanner({ enabled }: { enabled: boolean }) {
   const queryClient = useQueryClient();
   const [msg, setMsg] = useState("");
   const [listOpen, setListOpen] = useState(false);
+  const [hoverRel, setHoverRel] = useState<string | null>(null);
+  const [hoverPos, setHoverPos] = useState<{ top: number; left: number } | null>(null);
+  const hoverAnchorRef = useRef<HTMLElement | null>(null);
+  const hoverCloseTimer = useRef<number | null>(null);
+
+  const cancelHoverClose = useCallback(() => {
+    if (hoverCloseTimer.current != null) {
+      window.clearTimeout(hoverCloseTimer.current);
+      hoverCloseTimer.current = null;
+    }
+  }, []);
+
+  const closeHoverSoon = useCallback(() => {
+    cancelHoverClose();
+    hoverCloseTimer.current = window.setTimeout(() => {
+      setHoverRel(null);
+      hoverAnchorRef.current = null;
+    }, 160);
+  }, [cancelHoverClose]);
+
+  const openHover = useCallback(
+    (relpath: string, el: HTMLElement) => {
+      cancelHoverClose();
+      hoverAnchorRef.current = el;
+      setHoverRel(relpath);
+    },
+    [cancelHoverClose],
+  );
+
+  useEffect(() => () => cancelHoverClose(), [cancelHoverClose]);
+
+  useEffect(() => {
+    if (listOpen) return;
+    cancelHoverClose();
+    setHoverRel(null);
+    hoverAnchorRef.current = null;
+  }, [listOpen, cancelHoverClose]);
+
+  useLayoutEffect(() => {
+    if (!hoverRel || !hoverAnchorRef.current) {
+      setHoverPos(null);
+      return;
+    }
+    const place = () => {
+      const r = hoverAnchorRef.current?.getBoundingClientRect();
+      if (!r) return;
+      const width = 220;
+      const height = 180;
+      const gap = 8;
+      const placeAbove = r.bottom + gap + height > window.innerHeight - 8 && r.top > height + gap;
+      const top = placeAbove ? r.top - height - gap : r.bottom + gap;
+      const left = Math.min(Math.max(8, r.left), window.innerWidth - width - 8);
+      setHoverPos({ top, left });
+    };
+    place();
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [hoverRel]);
   const q = useQuery({
     queryKey: queryKeys.discovery.assetRemoveReview,
     queryFn: () => fetchAssetRemoveReview({ limit: 80 }),
@@ -55,7 +159,7 @@ export function RemoveReviewBanner({ enabled }: { enabled: boolean }) {
   const busy = purgeMutation.isPending;
   const hasMarked = count > 0 || items.length > 0;
   if (!enabled) return null;
-  if (!hasMarked && !busy && !q.isError) return null;
+  if (!hasMarked && !busy && !q.isError && !q.isLoading && !q.isFetching) return null;
 
   const hint = q.isLoading
     ? "Scanning references…"
@@ -135,8 +239,13 @@ export function RemoveReviewBanner({ enabled }: { enabled: boolean }) {
                 const href = workbenchHrefForMedia({ relpath: it.relpath });
                 const blockers = (it.blockers || []).join(" · ");
                 return (
-                  <li key={it.relpath} className={it.purge_ready ? "is-ready" : "has-refs"}>
-                    <a href={href} title={it.relpath}>
+                  <li
+                    key={it.relpath}
+                    className={it.purge_ready ? "is-ready" : "has-refs"}
+                    onMouseEnter={(e) => openHover(it.relpath, e.currentTarget)}
+                    onMouseLeave={closeHoverSoon}
+                  >
+                    <a href={href} title={`${it.relpath} — hover to preview`}>
                       {it.relpath.split("/").pop() || it.relpath}
                     </a>
                     <span>
@@ -159,6 +268,19 @@ export function RemoveReviewBanner({ enabled }: { enabled: boolean }) {
           ) : null}
         </div>
       ) : null}
+      {hoverRel
+        ? createPortal(
+            <div
+              className="remove-review-preview"
+              role="tooltip"
+              aria-label={`Preview ${hoverRel.split("/").pop() || hoverRel}`}
+              style={hoverPos ? { top: hoverPos.top, left: hoverPos.left } : { visibility: "hidden", top: 0, left: 0 }}
+            >
+              <RemoveCandidatePreview relpath={hoverRel} />
+            </div>,
+            document.body,
+          )
+        : null}
     </aside>
   );
 }
