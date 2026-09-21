@@ -1,14 +1,17 @@
 import { peekAssetRatings, patchCachedDisposition } from "./assetRatingsCache";
+import { flattenScratchInputRelpath } from "./discoveryDeepLink";
 import { queryKeys } from "./queryKeys";
 import type { Appetite, WorkProductItem } from "./types";
 import { isCompletedWorkProduct } from "./workProductRecency";
 import type { QueryClient } from "@tanstack/react-query";
 
 export function normalizeAppetiteRelpath(raw: string | null | undefined): string {
-  return String(raw || "")
-    .trim()
-    .replace(/\\/g, "/")
-    .replace(/^\/+/, "");
+  return flattenScratchInputRelpath(
+    String(raw || "")
+      .trim()
+      .replace(/\\/g, "/")
+      .replace(/^\/+/, ""),
+  );
 }
 
 export const APPETITE_FILTER_KEYS = ["unset", "remove", "less", "neutral", "more", "fast_track"] as const;

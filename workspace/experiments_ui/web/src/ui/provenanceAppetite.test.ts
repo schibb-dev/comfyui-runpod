@@ -72,4 +72,52 @@ describe("provenanceAppetite layers", () => {
     expect(merged[2]?.label).toBe("This output");
     expect(merged[0]?.role).toBe("source");
   });
+
+  it("does not call a pending job's source still This output", () => {
+    const job = layersFromWorkProduct({
+      job_key: "X-KNEEL-FB9__pp-catalog-default__still-3928097__00_ui1790016840",
+      status: "running",
+      parent_output_relpath:
+        "input/_factory/3928097ab7b04c98055e5957b18be598aa2fa6600f19f8e528918fd9d4c33a07.jpg",
+      bindings: {
+        source_still: {
+          relpath:
+            "input/_factory/3928097ab7b04c98055e5957b18be598aa2fa6600f19f8e528918fd9d4c33a07.jpg",
+          thumb_url:
+            "/files/input%2F_factory%2F3928097ab7b04c98055e5957b18be598aa2fa6600f19f8e528918fd9d4c33a07.jpg",
+        },
+      },
+    } as WorkProductItem);
+    expect(job).toHaveLength(1);
+    expect(job[0]?.label).toBe("Source still");
+    expect(job[0]?.role).toBe("source");
+    expect(job[0]?.relpath).toBe(
+      "input/3928097ab7b04c98055e5957b18be598aa2fa6600f19f8e528918fd9d4c33a07.jpg",
+    );
+    expect(job[0]?.thumbUrl).toBe(
+      "/files/input%2F3928097ab7b04c98055e5957b18be598aa2fa6600f19f8e528918fd9d4c33a07.jpg",
+    );
+
+    const lineage = layersFromLineage({
+      ok: true,
+      provenance_chain: [
+        {
+          depth: 0,
+          role: "seed",
+          item: {
+            relpath:
+              "input/_factory/3928097ab7b04c98055e5957b18be598aa2fa6600f19f8e528918fd9d4c33a07.jpg",
+            name: "3928097ab7b04c98055e5957b18be598aa2fa6600f19f8e528918fd9d4c33a07.jpg",
+          },
+        },
+      ],
+    });
+    const merged = mergeAppetiteLayers(lineage, job);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.label).toBe("Source still");
+    expect(merged[0]?.role).toBe("source");
+    expect(merged[0]?.relpath).toBe(
+      "input/3928097ab7b04c98055e5957b18be598aa2fa6600f19f8e528918fd9d4c33a07.jpg",
+    );
+  });
 });

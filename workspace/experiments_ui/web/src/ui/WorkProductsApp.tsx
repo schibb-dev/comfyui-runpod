@@ -77,10 +77,12 @@ import {
   appetiteSortRank,
   filterWorkProductsByAppetite,
   workProductAppetiteKey,
+  normalizeAppetiteRelpath,
   workProductAppetiteRelpath,
 } from "./workProductAppetite";
 import { nextOffSetForGroupDoubleClick } from "./filterGroupDoubleClick";
 import {
+  filesUrlForRelpath,
   filterWorkProductsByMedia,
   inferJobKeyFromMediaPath,
   isMediaOutputOfJob,
@@ -928,7 +930,7 @@ function workbenchSourceIsVideo(item: WorkProductItem): boolean {
 /** Relpath for advancing / submitting from this job's input (not its output). */
 function workbenchSourceMediaRelpath(item: WorkProductItem): string | null {
   const source = workbenchSourceBinding(item);
-  let rel = String(source?.relpath || item.parent_output_relpath || "").trim().replace(/\\/g, "/");
+  let rel = normalizeAppetiteRelpath(source?.relpath || item.parent_output_relpath);
   if (!rel) return null;
   if (isStillMediaPath(rel) && !rel.includes("/") && !rel.toLowerCase().startsWith("input/")) {
     rel = `input/${rel}`;
@@ -938,12 +940,15 @@ function workbenchSourceMediaRelpath(item: WorkProductItem): string | null {
 
 function sourcePreviewUrls(item: WorkProductItem): { thumb: string | null; video: string | null; label: string } {
   const source = workbenchSourceBinding(item);
+  const rel = workbenchSourceMediaRelpath(item);
+  const galleryStill = rel && isStillMediaPath(rel) ? filesUrlForRelpath(rel) : null;
   const thumb =
+    galleryStill ||
     source?.thumb_url ||
     item.parent_output_thumb_url ||
     (source?.url && /\.(png|jpe?g|webp)(\?|$)/i.test(source.url) ? source.url : null) ||
     null;
-  const video = source?.url || item.parent_output_url || null;
+  const video = galleryStill || source?.url || item.parent_output_url || null;
   return {
     thumb,
     video,
@@ -2283,7 +2288,7 @@ function filesHrefForRelpath(relpath: string): string {
 
 /** Deep link for a binding asset: Discovery / Stills gallery / raw file. */
 function bindingAssetHref(row: WorkProductDetailRow): string | null {
-  const rel = String(row.relpath || "").trim().replace(/^\/+/, "").replace(/\\/g, "/");
+  const rel = normalizeAppetiteRelpath(row.relpath);
   const asset = String(row.asset_url || "").trim();
   if (rel) {
     if (/^(og|wip)\//i.test(rel)) {
@@ -2314,8 +2319,12 @@ function bindingOpenLabel(href: string | null): string {
 }
 
 function BindingDetailValue({ row }: { row: WorkProductDetailRow }) {
-  const thumb = String(row.thumb_url || "").trim() || null;
-  const href = bindingAssetHref(row);
+  const rel = normalizeAppetiteRelpath(row.relpath);
+  const thumb =
+    (rel && isStillMediaPath(rel) ? filesUrlForRelpath(rel) : null) ||
+    String(row.thumb_url || "").trim() ||
+    null;
+  const href = bindingAssetHref({ ...row, relpath: rel || row.relpath });
   const label = enrichRoleMentions(row.value);
   const openLabel = bindingOpenLabel(href);
   return (
@@ -2338,7 +2347,7 @@ function BindingDetailValue({ row }: { row: WorkProductDetailRow }) {
         {href ? (
           <a className="work-product-binding-media__link" href={href}>
             {openLabel}
-            {row.relpath ? ` · ${row.relpath}` : ""}
+            {rel || row.relpath ? ` · ${rel || row.relpath}` : ""}
           </a>
         ) : row.relpath ? (
           <span className="work-product-binding-media__link work-product-binding-media__link--muted">
@@ -5335,8 +5344,10 @@ function workProductLineageSeed(item: WorkProductItem): {
       mtime: 0,
       size: 0,
       sha256: "",
-      url: source?.url || item.parent_output_url || "",
-      thumb_url: source?.thumb_url || item.parent_output_thumb_url || undefined,
+      url: (isStillMediaPath(srcRel) ? filesUrlForRelpath(srcRel) : source?.url || item.parent_output_url) || "",
+      thumb_url:
+        (isStillMediaPath(srcRel) ? filesUrlForRelpath(srcRel) : source?.thumb_url || item.parent_output_thumb_url) ||
+        undefined,
     } as DiscoveryLibraryItem,
   };
 }

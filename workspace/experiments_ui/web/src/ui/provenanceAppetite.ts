@@ -1,3 +1,5 @@
+import { isInputAssetRelpath } from "./discoveryDeepLink";
+import { filesUrlForRelpath } from "./workProductMediaFocus";
 import { normalizeAppetiteRelpath } from "./workProductAppetite";
 import type {
   DiscoveryAssetLineageAncestryNavEntry,
@@ -49,15 +51,43 @@ function mediaRelpath(media?: { relpath?: string | null; path?: string | null } 
   return "";
 }
 
+function isScratchFilesUrl(url?: string | null): boolean {
+  return /(?:\/|%2F)(?:_factory|visiontest|clipspace|vision_v\d+)(?:\/|%2F)/i.test(String(url || ""));
+}
+
+function inputLayerRole(role: ProvenanceAppetiteRole): ProvenanceAppetiteRole {
+  return role === "output" ? "source" : role;
+}
+
+function inputLayerLabel(layer: Omit<ProvenanceAppetiteLayer, "id">, rel: string): string {
+  if (layer.slot) return slotLabel(layer.slot);
+  if (layer.label && layer.label !== "This output") return layer.label;
+  if (layer.role === "source" || layer.role === "binding") return "Source still";
+  return /\.(png|jpe?g|webp|gif)$/i.test(rel) ? "This still" : "Source";
+}
+
 function addLayer(
   layers: ProvenanceAppetiteLayer[],
   seen: Set<string>,
   layer: Omit<ProvenanceAppetiteLayer, "id">,
 ): void {
+  const rawRel = String(layer.relpath || "")
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "");
   const rel = normalizeAppetiteRelpath(layer.relpath);
   if (!rel || seen.has(rel)) return;
   seen.add(rel);
-  layers.push({ ...layer, relpath: rel, id: rel });
+  const input = isInputAssetRelpath(rel);
+  const role = input ? inputLayerRole(layer.role) : layer.role;
+  const label = input ? inputLayerLabel(layer, rel) : layer.label;
+  const remapped = rawRel !== rel;
+  let thumbUrl = layer.thumbUrl;
+  if (input && (remapped || isScratchFilesUrl(thumbUrl) || isScratchFilesUrl(layer.url))) {
+    thumbUrl = filesUrlForRelpath(rel);
+  }
+  const url =
+    input && (remapped || isScratchFilesUrl(layer.url)) ? filesUrlForRelpath(rel) : layer.url;
+  layers.push({ ...layer, relpath: rel, id: rel, role, label, thumbUrl, url });
 }
 
 export function layersFromWorkProduct(item: WorkProductItem): ProvenanceAppetiteLayer[] {
@@ -90,8 +120,8 @@ export function layersFromWorkProduct(item: WorkProductItem): ProvenanceAppetite
   const output = normalizeAppetiteRelpath(item.output_relpath);
   if (output) {
     addLayer(layers, seen, {
-      role: "output",
-      label: "This output",
+      role: isInputAssetRelpath(output) ? "source" : "output",
+      label: isInputAssetRelpath(output) ? "This still" : "This output",
       relpath: output,
       thumbUrl: item.output_thumb_url,
       url: item.output_url,
@@ -174,14 +204,17 @@ export function layersFromLineage(
     if (!rel) continue;
     const isSeed = entry.role === "seed";
     const isSource = Boolean(entry.external) || entry.role === "source" || entry.role === "root";
+    const input = isInputAssetRelpath(rel);
     addLayer(layers, seen, {
-      role: isSeed ? "output" : isSource ? "source" : "ancestor",
+      role: isSeed && !input ? "output" : isSource || input ? "source" : "ancestor",
       label: isSeed
-        ? "This output"
-        : isSource
+        ? input
+          ? "This still"
+          : "This output"
+        : isSource || input
           ? item?.name
             ? `Source · ${item.name}`
-            : "Source"
+            : "Source still"
           : item?.name
             ? `Ancestor · ${item.name}`
             : "Ancestor",
@@ -206,16 +239,28 @@ export function mergeAppetiteLayers(...groups: Array<ProvenanceAppetiteLayer[] |
         order.push(rel);
         continue;
       }
+      const input = isInputAssetRelpath(rel);
+      const slot = layer.slot || prev.slot;
+      const role = input
+        ? inputLayerRole(layer.role !== "output" ? layer.role : prev.role)
+        : layer.role === "output" || prev.role === "output"
+          ? "output"
+          : layer.role || prev.role;
+      const label = input
+        ? inputLayerLabel({ ...prev, ...layer, role, slot, relpath: rel }, rel)
+        : layer.role === "output" || prev.role !== "output"
+          ? layer.label || prev.label
+          : prev.label;
       byRel.set(rel, {
         ...prev,
         ...layer,
         relpath: rel,
         id: rel,
-        label: layer.role === "output" || prev.role !== "output" ? layer.label || prev.label : prev.label,
-        role: layer.role === "output" || prev.role === "output" ? "output" : layer.role || prev.role,
+        label,
+        role,
         thumbUrl: layer.thumbUrl || prev.thumbUrl,
         url: layer.url || prev.url,
-        slot: layer.slot || prev.slot,
+        slot,
       });
     }
   }

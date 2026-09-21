@@ -5,7 +5,9 @@ from pathlib import Path
 
 import support  # noqa: F401  — injects workspace/scripts onto sys.path
 from shape_factory_work_products import (
+    _canonical_input_still_relpath,
     _comfy_queue_entries,
+    _flatten_scratch_input_relpath,
     _family_from_output_prefix,
     _factory_job_key_heuristic,
     _filename_prefix_from_prompt,
@@ -39,6 +41,25 @@ from shape_factory_work_products import (
 
 
 class TestWorkProducts(unittest.TestCase):
+    def test_flatten_scratch_input_relpath(self):
+        self.assertEqual(
+            _flatten_scratch_input_relpath(
+                "input/_factory/3928097ab7b04c98055e5957b18be598aa2fa6600f19f8e528918fd9d4c33a07.jpg"
+            ),
+            "input/3928097ab7b04c98055e5957b18be598aa2fa6600f19f8e528918fd9d4c33a07.jpg",
+        )
+        self.assertEqual(
+            _flatten_scratch_input_relpath("input/vision_v1/face.jpg"),
+            "input/face.jpg",
+        )
+        self.assertEqual(_flatten_scratch_input_relpath("input/face.jpg"), "input/face.jpg")
+        self.assertEqual(
+            _canonical_input_still_relpath(
+                "input/_factory/3928097ab7b04c98055e5957b18be598aa2fa6600f19f8e528918fd9d4c33a07.jpg"
+            ),
+            "input/3928097ab7b04c98055e5957b18be598aa2fa6600f19f8e528918fd9d4c33a07.jpg",
+        )
+
     def test_prefer_target_family(self):
         self.assertEqual(prefer_target_family("FB9_GEX2", "FB9_GEX"), "FB9_GEX2")
         self.assertEqual(prefer_target_family("", "FB9_GEX"), "FB9_GEX")

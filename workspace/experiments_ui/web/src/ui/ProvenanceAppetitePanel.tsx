@@ -5,9 +5,10 @@ import { APPETITE_KEYMAP, AppetiteBar } from "./AppetiteBar";
 import { AppetitePreviewBadge } from "./AppetitePreviewBadge";
 import { patchCachedAppetite, revalidateAssetRatings } from "./assetRatingsCache";
 import { layersFromLineage, mergeAppetiteLayers, type ProvenanceAppetiteLayer } from "./provenanceAppetite";
+import { filesUrlForRelpath } from "./workProductMediaFocus";
 import { queryKeys } from "./queryKeys";
 import type { Appetite, AppetiteFacet } from "./types";
-import { afterAppetiteCommitted } from "./workProductAppetite";
+import { afterAppetiteCommitted, normalizeAppetiteRelpath } from "./workProductAppetite";
 import { useAssetAppetite } from "./WorkProductAppetiteStrip";
 
 function LayerAppetiteRow({
@@ -58,7 +59,14 @@ function LayerAppetiteRow({
     [key, busy, appetite, facet, jobKey, familySlug, queryClient],
   );
 
-  const thumb = layer.thumbUrl || (/\.(png|jpe?g|webp|gif)(\?|$)/i.test(layer.url || "") ? layer.url : "");
+  const galleryStill =
+    layer.relpath.toLowerCase().startsWith("input/") && /\.(png|jpe?g|webp|gif)$/i.test(layer.relpath)
+      ? filesUrlForRelpath(layer.relpath)
+      : "";
+  const thumb =
+    galleryStill ||
+    layer.thumbUrl ||
+    (/\.(png|jpe?g|webp|gif)(\?|$)/i.test(layer.url || "") ? layer.url : "");
 
   return (
     <div
@@ -73,7 +81,9 @@ function LayerAppetiteRow({
         <span className="prov-appetite-layer__meta">
           <span className="prov-appetite-layer__role">{layer.label}</span>
           <span className="prov-appetite-layer__path" title={layer.relpath}>
-            {layer.relpath.split("/").pop() || layer.relpath}
+            {layer.relpath.toLowerCase().startsWith("input/")
+              ? layer.relpath
+              : layer.relpath.split("/").pop() || layer.relpath}
           </span>
         </span>
       </button>
@@ -108,7 +118,9 @@ export function ProvenanceAppetitePanel({
   fetchLineage?: boolean;
   disabledHint?: string;
 }) {
-  const seed = String(seedRelpath || layers.find((layer) => layer.role === "output")?.relpath || "").trim();
+  const seed = normalizeAppetiteRelpath(
+    seedRelpath || layers.find((layer) => layer.role === "output")?.relpath || "",
+  );
   const lineageQuery = useQuery({
     queryKey: queryKeys.discovery.assetLineage(seed),
     queryFn: () =>

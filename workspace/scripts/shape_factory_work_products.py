@@ -616,6 +616,46 @@ _VIDEO_FILE_EXTS = (".mp4", ".webm", ".mov")
 _IMAGE_FILE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 
 
+_SCRATCH_INPUT_REL_RE = re.compile(
+    r"^(input/)(?:_factory|visiontest|clipspace|vision_v\d+)/(.*)$",
+    re.IGNORECASE,
+)
+
+
+def _flatten_scratch_input_relpath(rel: str) -> str:
+    """``input/_factory|vision_v1|…/<file>`` → ``input/<file>``."""
+    norm = str(rel or "").replace("\\", "/").lstrip("/")
+    m = _SCRATCH_INPUT_REL_RE.match(norm)
+    if not m:
+        return norm
+    name = Path(m.group(2)).name
+    return f"{m.group(1)}{name}" if name else norm
+
+
+def _canonical_input_still_relpath(rel: Optional[str]) -> Optional[str]:
+    """Prefer the gallery twin over Comfy staging copies for UI/appetite identity."""
+    if not rel:
+        return rel
+    norm = str(rel).replace("\\", "/").lstrip("/")
+    try:
+        from input_still_catalog import (  # type: ignore
+            default_input_root,
+            find_canonical_input_still,
+            is_scratch_input_path,
+        )
+    except Exception:
+        return _flatten_scratch_input_relpath(norm)
+    if not is_scratch_input_path(norm):
+        return norm
+    try:
+        canon = find_canonical_input_still(norm, input_root=default_input_root())
+    except Exception:
+        canon = None
+    if canon is not None:
+        return f"input/{canon.name}"
+    return _flatten_scratch_input_relpath(norm)
+
+
 def _binding_media_relpath(abs_p: Any, *, data_root: Path, output_root: Path) -> Optional[str]:
     """Map a binding path to a /files/-servable relpath (output/… or input/…)."""
     raw = str(abs_p or "").strip()
@@ -625,7 +665,7 @@ def _binding_media_relpath(abs_p: Any, *, data_root: Path, output_root: Path) ->
     if rel is None:
         rel = _relpath_under(data_root, raw)
     if rel is not None:
-        return rel
+        return _canonical_input_still_relpath(rel)
     # Host bind-dir / checkout input aliases → input/<name>
     try:
         from shape_factory_map import _relpath_guess_from_abs  # type: ignore
@@ -634,7 +674,7 @@ def _binding_media_relpath(abs_p: Any, *, data_root: Path, output_root: Path) ->
     if _relpath_guess_from_abs is not None:
         guessed = _relpath_guess_from_abs(raw)
         if guessed:
-            return guessed
+            return _canonical_input_still_relpath(guessed)
     # Basename lookup under known input roots (empty workspace/input → bind dir).
     bn = Path(raw.replace("\\", "/")).name
     if not bn or bn == raw.rstrip("/"):
@@ -3367,6 +3407,7 @@ def _still_tag_relpath_from_target(target: Optional[Dict[str, Any]]) -> Tuple[st
     preview_rel = str(target.get("relpath") or "").strip().replace("\\", "/")
     if preview_rel and not preview_rel.lower().startswith("input/"):
         preview_rel = f"input/{preview_rel.lstrip('/')}"
+    preview_rel = _canonical_input_still_relpath(preview_rel) or preview_rel
     return cid, preview_rel
 
 

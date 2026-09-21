@@ -341,12 +341,33 @@ export function workbenchHref(opts?: {
   return qs ? `/workbench?${qs}` : "/workbench";
 }
 
-/** Normalize a lineage/input path to ``input/<file>`` when it is a Comfy input still. */
-export function normalizeInputStillRelpath(relpath?: string | null): string | null {
-  let norm = String(relpath || "")
+/** Comfy upload/staging folders under the input bind — not gallery identity. */
+const INPUT_SCRATCH_DIR = /^(input\/)(?:_factory|visiontest|clipspace|vision_v\d+)\//i;
+
+/** Map ``input/_factory|vision_v1|…/<file>`` to the gallery twin ``input/<file>``. */
+export function flattenScratchInputRelpath(relpath: string): string {
+  const n = String(relpath || "")
     .trim()
     .replace(/\\/g, "/")
     .replace(/^\/+/, "");
+  const m = n.match(INPUT_SCRATCH_DIR);
+  if (!m) return n;
+  const name = n
+    .slice(m[0].length)
+    .split("/")
+    .filter(Boolean)
+    .pop();
+  return name ? `${m[1]}${name}` : n;
+}
+
+export function isInputAssetRelpath(relpath: string): boolean {
+  const n = flattenScratchInputRelpath(relpath).toLowerCase();
+  return n.startsWith("input/") || n.startsWith("workspace/input/");
+}
+
+/** Normalize a lineage/input path to ``input/<file>`` when it is a Comfy input still. */
+export function normalizeInputStillRelpath(relpath?: string | null): string | null {
+  const norm = flattenScratchInputRelpath(relpath || "");
   if (!norm) return null;
   if (norm.toLowerCase().startsWith("input/")) return norm;
   // Bare basename stills (common in lineage external rows).
