@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
+
+import support  # noqa: F401
 
 
 class TestLoadImageStage(unittest.TestCase):
@@ -118,6 +121,95 @@ class TestLoadImageStage(unittest.TestCase):
                     os.environ["COMFYUI_BIND_INPUT_DIR"] = old
             self.assertEqual(rel, "already_here.png")
             self.assertIsNone(warn)
+
+    def test_vision_v1_rewrites_to_gallery_twin(self) -> None:
+        from shape_factory import comfy_load_image_relpath
+
+        sha = "e" * 64
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            data_root = root / "data"
+            input_root = data_root / "input"
+            vision = input_root / "vision_v1"
+            vision.mkdir(parents=True)
+            gallery = input_root / f"000-{sha}.jpeg"
+            gallery.write_bytes(b"same-bytes")
+            scratch = vision / f"{sha}.jpg"
+            scratch.write_bytes(b"same-bytes")
+            old = os.environ.get("COMFYUI_BIND_INPUT_DIR")
+            os.environ["COMFYUI_BIND_INPUT_DIR"] = str(input_root)
+            try:
+                rel, warn = comfy_load_image_relpath(scratch, data_root)
+            finally:
+                if old is None:
+                    os.environ.pop("COMFYUI_BIND_INPUT_DIR", None)
+                else:
+                    os.environ["COMFYUI_BIND_INPUT_DIR"] = old
+            self.assertEqual(rel, gallery.name)
+            self.assertIsNotNone(warn)
+            self.assertIn("vision_v1", str(warn))
+
+    def test_vision_v1_without_gallery_twin_stages_factory(self) -> None:
+        from shape_factory import FACTORY_LOAD_IMAGE_SUBDIR, comfy_load_image_relpath
+
+        sha = "f" * 64
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            data_root = root / "data"
+            input_root = data_root / "input"
+            vision = input_root / "vision_v1"
+            vision.mkdir(parents=True)
+            scratch = vision / f"{sha}.jpg"
+            scratch.write_bytes(b"only-scratch")
+            old = os.environ.get("COMFYUI_BIND_INPUT_DIR")
+            os.environ["COMFYUI_BIND_INPUT_DIR"] = str(input_root)
+            try:
+                rel, warn = comfy_load_image_relpath(scratch, data_root)
+            finally:
+                if old is None:
+                    os.environ.pop("COMFYUI_BIND_INPUT_DIR", None)
+                else:
+                    os.environ["COMFYUI_BIND_INPUT_DIR"] = old
+            self.assertEqual(rel, f"{FACTORY_LOAD_IMAGE_SUBDIR}/{sha}.jpg")
+            self.assertTrue((input_root / FACTORY_LOAD_IMAGE_SUBDIR / f"{sha}.jpg").is_file())
+            self.assertIsNotNone(warn)
+
+    def test_rewrite_job_scratch_source_still_prefers_gallery(self) -> None:
+        from shape_factory import rewrite_job_scratch_source_stills
+
+        sha = "a1" + ("b" * 62)
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            input_root = root / "input"
+            vision = input_root / "vision_v1"
+            vision.mkdir(parents=True)
+            gallery = input_root / f"FAV{sha}.jpeg"
+            gallery.write_bytes(b"px")
+            scratch = vision / f"{sha}.jpg"
+            scratch.write_bytes(b"px")
+            job_path = root / "jobs" / "FAM" / "one.job.json"
+            job_path.parent.mkdir(parents=True)
+            job_path.write_text(
+                json.dumps(
+                    {
+                        "bindings": {
+                            "source_still": {
+                                "binding_type": "load_image",
+                                "path": str(scratch),
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            stats = rewrite_job_scratch_source_stills(
+                jobs_dir=root / "jobs",
+                input_root=input_root,
+                apply=True,
+            )
+            self.assertEqual(stats["rewritten"], 1)
+            doc = json.loads(job_path.read_text(encoding="utf-8"))
+            self.assertEqual(doc["bindings"]["source_still"]["path"], str(gallery.resolve()))
 
 
 if __name__ == "__main__":

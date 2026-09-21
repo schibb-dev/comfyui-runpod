@@ -18,7 +18,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 STILL_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
-SKIP_DIR_NAMES = {"_factory", "__pycache__"}
+# Comfy/tagging scratch — never gallery seeds. ``_factory`` is LoadImage staging only.
+SKIP_DIR_NAMES = {"_factory", "__pycache__", "vision_v1", "visiontest", "clipspace"}
+_VISION_VER_DIR_RE = re.compile(r"^vision_v\d+$", re.IGNORECASE)
+_CONTENT_SHA256_RE = re.compile(r"[0-9a-f]{64}", re.IGNORECASE)
 CATALOG_BASENAME = "input_still_catalog.sqlite"
 
 # Windows / browser accidental re-download: ``foo (1).jpeg``, ``foo (2).png``.
@@ -81,6 +84,87 @@ def default_catalog_path(*, data_root: Optional[Path] = None) -> Path:
     return (Path(data_root).expanduser().resolve() / "shape_factory" / CATALOG_BASENAME)
 
 
+def is_scratch_input_dir_name(name: str) -> bool:
+    """True for Comfy upload/staging folders under the input bind."""
+    n = str(name or "").strip().lower()
+    if not n:
+        return False
+    if n in SKIP_DIR_NAMES:
+        return True
+    return bool(_VISION_VER_DIR_RE.match(n))
+
+
+def is_scratch_input_path(path: Any) -> bool:
+    """True when *path* lives under ``input/<scratch>/…`` (vision_v1, _factory, …)."""
+    parts = Path(str(path or "")).as_posix().replace("\\", "/").split("/")
+    for i, part in enumerate(parts):
+        if part.lower() == "input" and i + 1 < len(parts):
+            return is_scratch_input_dir_name(parts[i + 1])
+    return any(is_scratch_input_dir_name(p) for p in parts)
+
+
+def find_canonical_input_still(
+    src: Any,
+    *,
+    input_root: Optional[Path] = None,
+) -> Optional[Path]:
+    """Gallery still for the same basename/content_id, ignoring scratch copies."""
+    root = (input_root or default_input_root()).expanduser()
+    try:
+        root = root.resolve()
+    except OSError:
+        pass
+    raw = Path(str(src or "")).expanduser()
+    try:
+        src_path = raw.resolve() if raw.exists() else raw
+    except OSError:
+        src_path = raw
+
+    def _ok(p: Path) -> bool:
+        try:
+            return p.is_file() and not is_scratch_input_path(p)
+        except OSError:
+            return False
+
+    try:
+        if _ok(src_path) and src_path.is_relative_to(root):
+            return src_path
+    except (ValueError, OSError):
+        pass
+
+    basename = src_path.name
+    cid_m = _CONTENT_SHA256_RE.search(basename)
+    cid = cid_m.group(0).lower() if cid_m else None
+    found: List[Path] = []
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        entries = []
+    for ent in entries:
+        try:
+            if not ent.is_file() or not _is_still_file(ent.name):
+                continue
+        except OSError:
+            continue
+        if is_download_copy_name(ent.name):
+            continue
+        name = ent.name
+        if name == basename or (cid and cid in name.lower()):
+            if _ok(ent):
+                found.append(ent)
+    if not found:
+        return None
+
+    def _score(p: Path) -> tuple:
+        n = p.name
+        exact = 0 if n == basename else 1
+        cid_exact = 0 if cid and n.lower().startswith(cid) else 1
+        return (exact, cid_exact, len(n), n.lower())
+
+    found.sort(key=_score)
+    return found[0]
+
+
 def default_input_root() -> Path:
     env = os.environ.get("COMFYUI_BIND_INPUT_DIR", "").strip()
     if env:
@@ -110,8 +194,12 @@ def resolve_catalog_still_path(stored: str, *, input_root: Optional[Path] = None
     except OSError:
         pass
     p = Path(raw).expanduser()
+    if is_scratch_input_path(raw) or is_scratch_input_path(p):
+        gallery = find_canonical_input_still(p, input_root=root)
+        if gallery is not None:
+            return gallery
     try:
-        if p.is_file():
+        if p.is_file() and not is_scratch_input_path(p):
             # Prefer the canonical sibling over an accidental `` (1)`` re-download.
             if is_download_copy_name(p.name):
                 canon = strip_download_copy_suffix(p.name)
@@ -236,11 +324,9 @@ def _skip_dir_name(name: str) -> bool:
     n = str(name or "").strip().lower()
     if not n or n.startswith("."):
         return True
-    if n in SKIP_DIR_NAMES:
-        return True
     if n.endswith("_files"):
         return True
-    return False
+    return is_scratch_input_dir_name(n)
 
 
 def _is_still_file(name: str) -> bool:
@@ -370,6 +456,19 @@ def scan_input_stills(
                 )
 
         visit(root)
+        scratch_pruned = 0
+        for row in con.execute("SELECT path FROM stills").fetchall():
+            pth = str(row["path"])
+            if not is_scratch_input_path(pth):
+                continue
+            con.execute("DELETE FROM stills WHERE path=?", (pth,))
+            scratch_pruned += 1
+        stats["removed"] += scratch_pruned
+        stats["scratch_pruned"] = scratch_pruned
+        for row in list(con.execute("SELECT path FROM dirs")):
+            dpath = str(row["path"])
+            if is_scratch_input_path(dpath) or is_scratch_input_dir_name(Path(dpath).name):
+                con.execute("DELETE FROM dirs WHERE path=?", (dpath,))
         if not already:
             _meta_set(con, "bootstrapped", "1")
         _meta_set(con, "last_scan_at", str(int(now)))
@@ -402,6 +501,9 @@ def list_recent_stills(
             SELECT path FROM stills
             WHERE ext IN ({placeholders})
               AND path NOT LIKE '%/_factory/%'
+              AND path NOT LIKE '%/vision_v1/%'
+              AND path NOT LIKE '%/visiontest/%'
+              AND path NOT LIKE '%/clipspace/%'
             ORDER BY first_seen DESC
             LIMIT ?
             """,
@@ -412,6 +514,8 @@ def list_recent_stills(
     out: List[Path] = []
     for row in rows:
         p = Path(str(row["path"]))
+        if is_scratch_input_path(p):
+            continue
         if not p.is_file():
             continue
         out.append(p)

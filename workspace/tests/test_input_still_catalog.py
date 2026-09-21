@@ -9,6 +9,8 @@ import time
 import unittest
 from pathlib import Path
 
+import support  # noqa: F401
+
 
 class InputStillCatalogTests(unittest.TestCase):
     def test_bootstrap_uses_mtime_then_new_files_use_wall_clock(self) -> None:
@@ -63,6 +65,69 @@ class InputStillCatalogTests(unittest.TestCase):
             self.assertGreaterEqual(again["dirs_skipped"], 1)
             self.assertEqual(again["inserted"], 0)
             self.assertEqual(len(load_first_seen_map(cat)), 1)
+
+    def test_skips_and_prunes_vision_scratch_dirs(self) -> None:
+        from input_still_catalog import (
+            find_canonical_input_still,
+            is_scratch_input_path,
+            list_recent_stills,
+            load_first_seen_map,
+            resolve_catalog_still_path,
+            scan_input_stills,
+        )
+
+        sha = "c" * 64
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "input"
+            vision = root / "vision_v1"
+            vision.mkdir(parents=True)
+            gallery = root / f"SSS{sha}.jpeg"
+            gallery.write_bytes(b"gallery")
+            scratch = vision / f"{sha}.jpg"
+            scratch.write_bytes(b"gallery")
+            cat = Path(td) / "cat.sqlite"
+            now = time.time()
+            scan_input_stills(input_root=root, catalog_path=cat, now_ts=now)
+            seen = load_first_seen_map(cat)
+            self.assertEqual(set(seen), {str(gallery.resolve())})
+            self.assertTrue(is_scratch_input_path(scratch))
+            self.assertFalse(is_scratch_input_path(gallery))
+            self.assertEqual(
+                find_canonical_input_still(scratch, input_root=root).resolve(),
+                gallery.resolve(),
+            )
+            self.assertEqual(
+                resolve_catalog_still_path(str(scratch), input_root=root).resolve(),
+                gallery.resolve(),
+            )
+            recent = list_recent_stills(catalog_path=cat, exts=[".jpeg"], limit=10)
+            self.assertEqual([p.resolve() for p in recent], [gallery.resolve()])
+
+    def test_scan_prunes_legacy_vision_v1_catalog_rows(self) -> None:
+        from input_still_catalog import connect, load_first_seen_map, scan_input_stills
+
+        sha = "d" * 64
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "input"
+            vision = root / "vision_v1"
+            vision.mkdir(parents=True)
+            keep = root / "keep.png"
+            keep.write_bytes(b"keep")
+            scratch = vision / f"{sha}.jpg"
+            scratch.write_bytes(b"scratch")
+            cat = Path(td) / "cat.sqlite"
+            con = connect(cat)
+            con.execute(
+                "INSERT INTO stills(path, size, mtime, ext, first_seen, last_seen) VALUES(?,?,?,?,?,?)",
+                (str(scratch.resolve()), 7, time.time(), ".jpg", time.time(), time.time()),
+            )
+            con.commit()
+            con.close()
+            stats = scan_input_stills(input_root=root, catalog_path=cat, now_ts=time.time())
+            self.assertGreaterEqual(stats.get("scratch_pruned") or 0, 1)
+            seen = load_first_seen_map(cat)
+            self.assertNotIn(str(scratch.resolve()), seen)
+            self.assertIn(str(keep.resolve()), seen)
 
     def test_resolve_glob_uses_catalog_for_input_stills(self) -> None:
         from input_still_catalog import scan_input_stills

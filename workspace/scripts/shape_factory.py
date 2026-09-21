@@ -1086,7 +1086,9 @@ def comfy_workspace_relpath(path: Path, data_root: Path) -> tuple[str, Optional[
 def comfy_load_image_relpath(path: Path, data_root: Path) -> tuple[str, Optional[str]]:
     """Comfy LoadImage value: path relative to ``/ComfyUI/input`` (not ``input/...``).
 
-    Paths already under an input root are returned as-is (basename or nested).
+    Paths already under an input root are returned as-is (basename or nested),
+    except Comfy scratch dirs (``vision_v1/``, ``clipspace/``, …): those rewrite
+    to a gallery twin when one exists, otherwise ``input/_factory/<content_id>``.
     Paths outside input (e.g. ``output/og/…/*.png`` identity anchors) are staged
     into ``input/_factory/<content_id><ext>`` so Comfy can resolve them.
     """
@@ -1108,12 +1110,48 @@ def comfy_load_image_relpath(path: Path, data_root: Path) -> tuple[str, Optional
             if not path.is_relative_to(root):
                 continue
             rel = path.relative_to(root)
-            # Flat files → basename; nested under input → keep subdir/file.
-            # Strip accidental Windows/browser `` (1)`` download-copy suffixes.
+            # Flat files → basename; nested under input → keep subdir/file
+            # unless that subdir is tagging/Comfy scratch (vision_v1, clipspace, …).
             try:
-                from input_still_catalog import strip_download_copy_suffix  # type: ignore
+                from input_still_catalog import (  # type: ignore
+                    find_canonical_input_still,
+                    is_scratch_input_dir_name,
+                    strip_download_copy_suffix,
+                )
             except Exception:  # pragma: no cover
                 strip_download_copy_suffix = lambda n: n  # type: ignore
+
+                def find_canonical_input_still(*_a, **_k):  # type: ignore
+                    return None
+
+                def is_scratch_input_dir_name(name: str) -> bool:  # type: ignore
+                    return str(name or "").strip().lower() in {
+                        "vision_v1",
+                        "visiontest",
+                        "clipspace",
+                    }
+
+            first = rel.parts[0] if rel.parts else ""
+            if (
+                first
+                and first != FACTORY_LOAD_IMAGE_SUBDIR
+                and is_scratch_input_dir_name(first)
+            ):
+                canon = find_canonical_input_still(path, input_root=root)
+                if canon is not None:
+                    try:
+                        crel = canon.relative_to(root)
+                    except ValueError:
+                        crel = Path(canon.name)
+                    if crel.parent == Path("."):
+                        out = strip_download_copy_suffix(canon.name) or canon.name
+                    else:
+                        out = strip_download_copy_suffix(crel.as_posix()) or crel.as_posix()
+                    return out, f"rewrote scratch LoadImage {rel.as_posix()} → {out}"
+                widget, warns = stage_load_image_for_comfy(path, root)
+                return widget, (
+                    warns[0] if warns else f"staged scratch LoadImage {rel.as_posix()} → {widget}"
+                )
             if rel.parent == Path("."):
                 return strip_download_copy_suffix(path.name) or path.name, None
             return strip_download_copy_suffix(rel.as_posix()) or rel.as_posix(), None
@@ -1190,6 +1228,18 @@ def _resolve_glob_via_input_still_catalog(spec: dict[str, Any], expanded: str) -
     return paths if paths else None
 
 
+def _is_scratch_pool_still(path: Path | str) -> bool:
+    text = str(path).replace("\\", "/")
+    if "/_factory/" in text:
+        return True
+    try:
+        from input_still_catalog import is_scratch_input_path  # type: ignore
+
+        return bool(is_scratch_input_path(path))
+    except Exception:
+        return False
+
+
 def resolve_glob(spec: dict[str, Any]) -> list[Path]:
     pattern = str(spec.get("glob") or "").strip()
     if not pattern:
@@ -1211,7 +1261,7 @@ def resolve_glob(spec: dict[str, Any]) -> list[Path]:
     paths = [
         Path(p).resolve()
         for p in raw_paths
-        if Path(p).is_file() and "/_factory/" not in str(Path(p)).replace("\\", "/")
+        if Path(p).is_file() and not _is_scratch_pool_still(p)
     ]
     # Unique while keeping a stable iteration order before sort.
     uniq: dict[str, Path] = {}
@@ -2446,6 +2496,73 @@ def atomic_write_json(path: Path, value: Any) -> None:
             break
     if last_exc is not None:
         raise last_exc
+
+
+def rewrite_job_scratch_source_stills(
+    *,
+    jobs_dir: Path,
+    input_root: Path,
+    apply: bool = True,
+) -> dict[str, Any]:
+    """Retarget job ``source_still`` (and kin) off vision_v1/clipspace onto gallery or ``_factory/``."""
+    from input_still_catalog import find_canonical_input_still, is_scratch_input_path  # type: ignore
+
+    stats: dict[str, Any] = {
+        "scanned": 0,
+        "rewritten": 0,
+        "staged": 0,
+        "skipped": 0,
+        "files": [],
+    }
+    root = input_root.expanduser().resolve()
+    slots = ("source_still", "identity_anchor", "identity_still", "source_image")
+    if not jobs_dir.is_dir():
+        stats["error"] = "jobs_dir_missing"
+        return stats
+    for path in jobs_dir.rglob("*.job.json"):
+        stats["scanned"] += 1
+        try:
+            job = read_json(path)
+        except Exception:
+            stats["skipped"] += 1
+            continue
+        if not isinstance(job, dict):
+            stats["skipped"] += 1
+            continue
+        binds = job.get("bindings")
+        if not isinstance(binds, dict):
+            continue
+        changed = False
+        for slot in slots:
+            rec = binds.get(slot)
+            if not isinstance(rec, dict):
+                continue
+            raw = str(rec.get("path") or "").strip()
+            if not raw or not is_scratch_input_path(raw):
+                continue
+            src = Path(raw)
+            if not src.is_file():
+                # Container spelling on the host.
+                alt = root / "vision_v1" / src.name
+                if alt.is_file():
+                    src = alt
+            canon = find_canonical_input_still(src if src.is_file() else raw, input_root=root)
+            if canon is None and src.is_file():
+                widget, _warn = stage_load_image_for_comfy(src, root)
+                canon = root / widget
+                stats["staged"] += 1
+            if canon is None:
+                stats["skipped"] += 1
+                continue
+            rec["path"] = str(canon)
+            changed = True
+        if not changed:
+            continue
+        stats["rewritten"] += 1
+        stats["files"].append(str(path))
+        if apply:
+            atomic_write_json(path, job)
+    return stats
 
 
 def iter_job_paths(args: argparse.Namespace, *, apply_limit: bool = True) -> list[Path]:

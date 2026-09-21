@@ -331,6 +331,11 @@ def merged_source_stills(
 
     # Resolve lazily to avoid importing shape_factory_map during tests that mock everything else.
     from shape_factory_map import resolve_existing_path  # type: ignore
+    try:
+        from input_still_catalog import find_canonical_input_still, is_scratch_input_path  # type: ignore
+    except Exception:
+        find_canonical_input_still = None  # type: ignore
+        is_scratch_input_path = None  # type: ignore
 
     merged: List[Path] = []
     seen_path: set[str] = set()
@@ -340,6 +345,13 @@ def merged_source_stills(
     def push(path_obj: Path) -> bool:
         nonlocal deduped
         resolved = _normalize_abs_path(path_obj)
+        if is_scratch_input_path is not None and is_scratch_input_path(resolved):
+            canon = (
+                find_canonical_input_still(resolved) if find_canonical_input_still is not None else None
+            )
+            if canon is None:
+                return False
+            resolved = _normalize_abs_path(canon)
         pkey = str(resolved)
         cid = _extract_content_id(pkey)
         if pkey in seen_path or (cid and cid in seen_content):

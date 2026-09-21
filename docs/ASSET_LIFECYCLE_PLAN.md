@@ -167,6 +167,12 @@ via hardlink → symlink → copy (`stage_load_image_for_comfy` in `shape_factor
 64-hex token in the source basename, else `sha256(bytes)`. This is a managed
 staging area only — not a full input taxonomy; Phase 4 may absorb or relocate it.
 
+**Do not treat Comfy scratch folders as gallery seeds.** `input/vision_v1/` (Florence
+tagger uploads), `input/visiontest/`, `input/clipspace/`, and `input/_factory/` are
+skipped by the still catalog and pool globs. If a factory job is handed a scratch
+path, `comfy_load_image_relpath` rewrites to a same-`content_id` file at the input
+root when one exists, otherwise stages `_factory/`.
+
 ## Design notes / decisions
 - Identity: exact sha256 now; perceptual hash reserved.
 - Storage: SQLite at `output/output/_status/asset_registry.sqlite` (writable in both
