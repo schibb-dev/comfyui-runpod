@@ -387,10 +387,14 @@ def sla_due_status(
     stats = dict(backlog or {})
     queued_runs = int(stats.get("queued_runs") or 0)
     queued_targets = int(stats.get("queued_targets") or 0)
+    untagged_targets = int(stats.get("untagged_targets") or 0)
     running_runs = int(stats.get("running_runs") or 0)
     oldest = _parse_iso_ts(stats.get("oldest_queued_at"))
     oldest_manual = _parse_iso_ts(stats.get("oldest_manual_queued_at"))
     oldest_backlog = _parse_iso_ts(stats.get("oldest_backlog_queued_at"))
+    oldest_untagged = _parse_iso_ts(stats.get("oldest_untagged_at"))
+    if oldest is None and oldest_untagged is not None:
+        oldest = oldest_untagged
     wait_hours = None
     if oldest is not None:
         wait_hours = max(0.0, (clock - oldest).total_seconds() / 3600.0)
@@ -407,6 +411,10 @@ def sla_due_status(
         )
     elif oldest is not None and oldest_manual is None:
         candidates.append(("backlog", wait_hours or 0.0, bulk_max))
+    elif oldest_untagged is not None:
+        candidates.append(
+            ("backlog", max(0.0, (clock - oldest_untagged).total_seconds() / 3600.0), bulk_max)
+        )
     sla_class = "backlog"
     max_wait = bulk_max
     if candidates:
@@ -422,6 +430,7 @@ def sla_due_status(
         "sla_class": sla_class,
         "queued_runs": queued_runs,
         "queued_targets": queued_targets,
+        "untagged_targets": untagged_targets,
         "session_status": sess_status,
         "stale_session": stale,
     }
@@ -429,7 +438,7 @@ def sla_due_status(
         return {"due": False, "reason": "disabled", **base}
     if sess_status in {"occupying", "running"} and not stale:
         return {"due": True, "reason": "session_active", **base, "stale_session": False}
-    if queued_targets < 1 and running_runs < 1:
+    if queued_targets < 1 and running_runs < 1 and untagged_targets < 1:
         return {"due": False, "reason": "no_backlog", **base}
 
     last_end = _parse_iso_ts(sess.get("ended_at"))
@@ -1266,6 +1275,22 @@ def still_tag_run_workbench_status(run_status: str) -> str:
     if s == "error":
         return "error"
     return "pending"
+
+
+def still_tag_run_is_workbench_job(run: Optional[Dict[str, Any]]) -> bool:
+    """True when a still-tag run should appear as a Workbench job.
+
+    The timer checks untagged inventory independently and must not register a
+    factory job for that probe. A job appears only after Florence actually
+    starts (or finishes / errors). Dry-run smoke never counts.
+    """
+    if not isinstance(run, dict):
+        return False
+    provider = str(run.get("provider") or "").strip().lower()
+    if provider in {"dry-run", "dry_run"}:
+        return False
+    status = str(run.get("status") or "").strip().lower()
+    return status in {"running", "done", "error"}
 
 
 def list_events(
@@ -2411,7 +2436,11 @@ def index_window_status(
     batch_n = scale_batch_for_session(
         session_minutes=session_minutes,
         sec_per_still=sec_per_still,
-        pending_count=int((stats or {}).get("queued_targets") or 0) or None,
+        pending_count=(
+            int((stats or {}).get("queued_targets") or 0)
+            or int((stats or {}).get("untagged_targets") or 0)
+            or None
+        ),
     )
     out: Dict[str, Any] = {
         "enabled": enabled,
@@ -2480,6 +2509,68 @@ def should_auto_drain_on_enqueue(
     return bool(sch.get("auto_drain_on_enqueue"))
 
 
+def untagged_need_stats(*, data_root: Path, limit: int = 64) -> Dict[str, Any]:
+    """Count stills that still need tags, without creating a run."""
+    cids = _catalog_newest_content_ids(data_root, limit=max(64, int(limit) * 8))
+    if not cids:
+        return {"untagged_targets": 0}
+    db_path = default_db_path(data_root=data_root)
+    ensure_db(db_path)
+    con = connect(db_path)
+    try:
+        avail = content_ids_available_for_tagging(con, cids, only_missing=True, force=False)
+    finally:
+        con.close()
+    return {"untagged_targets": len(avail)}
+
+
+def sync_untagged_need_tick(tick: Dict[str, Any], *, data_root: Path, now: Optional[_dt.datetime] = None) -> Dict[str, Any]:
+    """Record when untagged stills were first seen. Does not enqueue a job."""
+    need = untagged_need_stats(data_root=data_root)
+    count = int(need.get("untagged_targets") or 0)
+    tick["untagged_targets"] = count
+    if count < 1:
+        tick.pop("untagged_since", None)
+        return tick
+    if not str(tick.get("untagged_since") or "").strip():
+        if now is not None:
+            clock = now if now.tzinfo else now.replace(tzinfo=_dt.timezone.utc)
+            tick["untagged_since"] = (
+                clock.astimezone(_dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            )
+        else:
+            tick["untagged_since"] = _utc_now_iso()
+    return tick
+
+
+def _enqueue_untagged_if_needed(
+    *,
+    data_root: Path,
+    status_dir: Optional[Path] = None,
+    schedule: Optional[Dict[str, Any]] = None,
+    provider_override: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Create a run only when untagged stills exist and nothing is already queued."""
+    sch = schedule if isinstance(schedule, dict) else load_schedule(data_root=data_root)
+    if not bool(sch.get("auto_enqueue_untagged", True)):
+        return None
+    stats = backlog_stats(data_root=data_root)
+    if int(stats.get("queued_targets") or 0) > 0 or int(stats.get("running_runs") or 0) > 0:
+        return None
+    limit = max(1, int(sch.get("auto_enqueue_limit") or sch.get("max_items_per_tick") or 96))
+    dry = _is_dry_provider(provider_override)
+    return enqueue_run(
+        data_root=data_root,
+        only_missing=True,
+        force=False,
+        limit=limit,
+        manual=False,
+        dry_run=dry,
+        provider="dry-run" if dry else "comfy",
+        status_dir=status_dir,
+    )
+
+
 def backlog_stats(*, data_root: Path) -> Dict[str, Any]:
     db_path = default_db_path(data_root=data_root)
     ensure_db(db_path)
@@ -2513,6 +2604,8 @@ def backlog_stats(*, data_root: Path) -> Dict[str, Any]:
         }
         manual_rows = [r for r in queued if str(r["run_id"]) in manual_ids]
         backlog_rows = [r for r in queued if str(r["run_id"]) not in manual_ids]
+        need = untagged_need_stats(data_root=data_root)
+        tick = load_tag_tick(data_root=data_root)
         return {
             "ok": True,
             "db_path": str(db_path),
@@ -2526,9 +2619,11 @@ def backlog_stats(*, data_root: Path) -> Dict[str, Any]:
             "items_tagged": tagged,
             "items_reserved": reserved,
             "items_queued": reserved,
+            "untagged_targets": int(need.get("untagged_targets") or 0),
             "oldest_queued_at": queued[0]["enqueued_at"] if queued else None,
             "oldest_manual_queued_at": manual_rows[0]["enqueued_at"] if manual_rows else None,
             "oldest_backlog_queued_at": backlog_rows[0]["enqueued_at"] if backlog_rows else None,
+            "oldest_untagged_at": tick.get("untagged_since"),
             "queued_run_ids": [str(r["run_id"]) for r in queued[:20]],
         }
     finally:
@@ -2559,9 +2654,11 @@ def run_scheduled_tick(
     force_evaluate: bool = False,
 ) -> Dict[str, Any]:
     """
-    Periodic tick: scan for new stills, enqueue untagged backlog, then evaluate SLAs.
+    Periodic tick: scan for new stills, then evaluate SLAs.
 
-    Timer may wake often; *scan_interval_min* / *evaluate_interval_min* gate the work.
+    Queue testing is independent of factory jobs: the tick records whether
+    untagged stills exist and only starts a run when drain is actually due.
+    If nothing needs tagging, it does nothing.
     """
     data_root = Path(data_root)
     sch = load_schedule(data_root=data_root)
@@ -2597,25 +2694,15 @@ def run_scheduled_tick(
             scan_out = scan_new_stills(data_root=data_root)
         except Exception as e:
             scan_out = {"ok": False, "error": str(e)}
-        if bool(sch.get("auto_enqueue_untagged", True)):
-            limit = max(1, int(sch.get("auto_enqueue_limit") or sch.get("max_items_per_tick") or 96))
-            try:
-                enq_out = enqueue_run(
-                    data_root=data_root,
-                    only_missing=True,
-                    force=False,
-                    limit=limit,
-                    manual=False,
-                    status_dir=status_dir,
-                )
-            except Exception as e:
-                enq_out = {"ok": False, "error": str(e), "enqueued": 0}
         tick["last_scan_at"] = _utc_now_iso()
         tick["last_scan"] = {
             "inserted": (scan_out or {}).get("inserted"),
             "updated": (scan_out or {}).get("updated"),
-            "enqueued": (enq_out or {}).get("enqueued") or 0,
+            "enqueued": 0,
         }
+
+    if do_scan or do_eval:
+        sync_untagged_need_tick(tick, data_root=data_root, now=clock)
 
     drain_out: Optional[Dict[str, Any]] = None
     if do_eval:
@@ -2702,6 +2789,15 @@ def drain_backlog(
                 "outside_window" if win.get("mode") == "clock" else str(win.get("reason") or "outside_window")
             )
             return {"ok": True, "skipped": True, "reason": skip_reason, "window": win}
+    enq_out = _enqueue_untagged_if_needed(
+        data_root=data_root,
+        status_dir=status_dir,
+        schedule=sch,
+        provider_override=provider_override,
+    )
+    if enq_out is not None:
+        stats = backlog_stats(data_root=data_root)
+        win = index_window_status(sch, data_root=data_root, backlog=stats, session=sess)
     if int(stats.get("queued_targets") or 0) < 1 and int(stats.get("running_runs") or 0) < 1:
         return {
             "ok": True,
@@ -2709,6 +2805,7 @@ def drain_backlog(
             "reason": "no_backlog",
             "window": win,
             "session": sess,
+            "enqueue": enq_out,
         }
 
     dry = _is_dry_provider(provider_override)

@@ -20,13 +20,20 @@ export function isStillTagWorkProduct(item: Pick<WorkProductItem, "work_kind" | 
   return step === "still_tag";
 }
 
+/** Queued SLA / dry-run queue tests are not Workbench jobs. */
+export function stillTagBelongsOnWorkbench(item: Pick<WorkProductItem, "status" | "work_kind" | "construction">): boolean {
+  if (!isStillTagWorkProduct(item)) return false;
+  const s = String(item.status || "").toLowerCase();
+  return s === "running" || s === "complete" || s === "done" || s === "error" || s === "failed";
+}
+
 /** Factory jobs first; still-tag stubs prepend when the lazy query arrives. */
 export function mergeStillTagWorkProducts(
   jobs: WorkProductItem[],
   stillTags: WorkProductItem[] | null | undefined,
 ): WorkProductItem[] {
   const factory = jobs.filter((it) => !isStillTagWorkProduct(it));
-  const tags = (stillTags || []).filter((it) => isStillTagWorkProduct(it));
+  const tags = (stillTags || []).filter((it) => stillTagBelongsOnWorkbench(it));
   if (!tags.length) return factory;
   const tagKeys = new Set(tags.map((it) => String(it.job_key || "")).filter(Boolean));
   const rest = factory.filter((it) => !tagKeys.has(String(it.job_key || "")));

@@ -19,6 +19,7 @@ from shape_factory_work_products import (
     attach_comfy_history_failures,
     attach_experiment_runs,
     attach_live_comfy_queue,
+    attach_still_tag_runs,
     trim_work_products_completed_history,
     construction_from_plan,
     decode_prompt_markup,
@@ -247,6 +248,48 @@ class TestWorkProducts(unittest.TestCase):
         self.assertEqual(item["still_tag_output"]["done_count"], 12)
         self.assertEqual(item["still_tag_output"]["total"], 400)
         self.assertEqual(item["still_tag_output"]["tags"], [])
+
+    def test_attach_still_tag_runs_skips_queued_queue_tests(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            data = Path(td) / "data"
+            out = Path(td) / "output"
+            (data / "shape_factory").mkdir(parents=True)
+            from vision_still_tags import connect, default_db_path, ensure_db
+
+            db = default_db_path(data_root=data)
+            ensure_db(db)
+            con = connect(db)
+            try:
+                con.execute(
+                    """
+                    INSERT INTO still_tag_runs(
+                      run_id, status, scope_json, enqueued_at, total, done_count, error_count,
+                      skipped_count, provider
+                    ) VALUES (?, 'queued', '{}', '2026-09-21T18:00:00Z', 23, 0, 0, 0, 'comfy')
+                    """,
+                    ("still_tag_queued_probe",),
+                )
+                con.execute(
+                    """
+                    INSERT INTO still_tag_runs(
+                      run_id, status, scope_json, enqueued_at, total, done_count, error_count,
+                      skipped_count, provider
+                    ) VALUES (?, 'running', '{}', '2026-09-21T18:01:00Z', 8, 1, 0, 0, 'comfy')
+                    """,
+                    ("still_tag_running_real",),
+                )
+                con.commit()
+            finally:
+                con.close()
+            payload = attach_still_tag_runs(
+                {"ok": True, "items": [], "limit": 10},
+                data_root=data,
+                output_root=out,
+                stub=True,
+            )
+            keys = [str(it.get("job_key") or "") for it in (payload.get("items") or [])]
+            self.assertIn("still_tag_running_real", keys)
+            self.assertNotIn("still_tag_queued_probe", keys)
 
     def test_keeper_output_prefers_final_not_preview(self) -> None:
         with tempfile.TemporaryDirectory() as td:

@@ -3694,13 +3694,24 @@ def attach_still_tag_runs(
     if not isinstance(payload, dict) or not payload.get("ok"):
         return payload
     try:
-        from vision_still_tags import list_recent_still_tag_runs  # type: ignore
+        from vision_still_tags import (  # type: ignore
+            list_recent_still_tag_runs,
+            still_tag_run_is_workbench_job,
+        )
     except Exception as e:
         payload["still_tag_attach_error"] = str(e)
         return payload
 
     cap = max(1, min(200, int(limit or 30)))
-    runs = list_recent_still_tag_runs(data_root=data_root, limit=cap, include_scope=not stub)
+
+    # Pull extra rows so dropping queued/dry-run SLA tests still fills the cap.
+    runs = [
+        run
+        for run in list_recent_still_tag_runs(
+            data_root=data_root, limit=min(200, cap * 4), include_scope=not stub
+        )
+        if still_tag_run_is_workbench_job(run)
+    ][:cap]
     if not runs:
         payload["still_tag_count"] = 0
         payload["still_tag_stub"] = bool(stub)

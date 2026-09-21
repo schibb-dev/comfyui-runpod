@@ -693,6 +693,130 @@ class StillTagIndexHourTests(unittest.TestCase):
             occupy.assert_not_called()
             self.assertEqual(cancel_empty_queued_runs(data_root=root), 0)
 
+    def test_sla_due_from_untagged_inventory_without_queued_run(self) -> None:
+        from vision_still_tags import sla_due_status
+
+        sch = {"enabled": True, "mode": "sla", "max_wait_hours": 3, "resume_gap_min": 0}
+        now = dt.datetime(2026, 9, 21, 18, 0, tzinfo=dt.timezone.utc)
+        waiting = sla_due_status(
+            schedule=sch,
+            backlog={
+                "queued_runs": 0,
+                "queued_targets": 0,
+                "untagged_targets": 12,
+                "oldest_untagged_at": "2026-09-21T16:00:00Z",
+            },
+            session={"status": "idle"},
+            now=now,
+        )
+        self.assertFalse(waiting["due"])
+        self.assertEqual(waiting["reason"], "waiting_sla")
+
+        due = sla_due_status(
+            schedule=sch,
+            backlog={
+                "queued_runs": 0,
+                "queued_targets": 0,
+                "untagged_targets": 12,
+                "oldest_untagged_at": "2026-09-21T14:00:00Z",
+            },
+            session={"status": "idle"},
+            now=now,
+        )
+        self.assertTrue(due["due"])
+        self.assertEqual(due["reason"], "sla_due")
+
+        idle = sla_due_status(
+            schedule=sch,
+            backlog={"queued_runs": 0, "queued_targets": 0, "untagged_targets": 0},
+            session={"status": "idle"},
+            now=now,
+        )
+        self.assertFalse(idle["due"])
+        self.assertEqual(idle["reason"], "no_backlog")
+
+    def test_scheduled_tick_does_not_register_queue_test_as_job(self) -> None:
+        import hashlib
+
+        from vision_still_tags import (
+            backlog_stats,
+            enqueue_run,
+            list_recent_still_tag_runs,
+            run_scheduled_tick,
+            save_schedule,
+            still_tag_run_is_workbench_job,
+        )
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "shape_factory").mkdir(parents=True)
+            save_schedule(
+                {
+                    "enabled": True,
+                    "mode": "sla",
+                    "max_wait_hours": 6,
+                    "scan_interval_min": 0,
+                    "evaluate_interval_min": 0,
+                    "auto_enqueue_untagged": True,
+                },
+                data_root=root,
+            )
+            cid = hashlib.sha256(b"tick-no-job").hexdigest()
+            with mock.patch(
+                "vision_still_tags.scan_new_stills",
+                return_value={"ok": True, "inserted": 1, "updated": 0},
+            ), mock.patch(
+                "vision_still_tags.untagged_need_stats",
+                return_value={"untagged_targets": 1},
+            ), mock.patch(
+                "vision_still_tags.resolve_targets",
+                return_value=[
+                    {
+                        "content_id": cid,
+                        "path": str(root / f"SSS{cid}.jpeg"),
+                        "relpath": f"input/SSS{cid}.jpeg",
+                        "missing": False,
+                    }
+                ],
+            ):
+                out = run_scheduled_tick(
+                    data_root=root,
+                    now=dt.datetime(2026, 9, 21, 18, 0, tzinfo=dt.timezone.utc),
+                    force_scan=True,
+                    force_evaluate=True,
+                )
+            self.assertEqual(out.get("reason"), "tick")
+            self.assertIsNone(out.get("enqueue"))
+            self.assertEqual(int(backlog_stats(data_root=root).get("queued_runs") or 0), 0)
+            self.assertFalse(any(still_tag_run_is_workbench_job(r) for r in list_recent_still_tag_runs(data_root=root)))
+
+            self.assertFalse(still_tag_run_is_workbench_job({"status": "queued", "provider": "comfy"}))
+            self.assertFalse(still_tag_run_is_workbench_job({"status": "running", "provider": "dry-run"}))
+            self.assertTrue(still_tag_run_is_workbench_job({"status": "running", "provider": "comfy"}))
+
+            with mock.patch(
+                "vision_still_tags.resolve_targets",
+                return_value=[
+                    {
+                        "content_id": cid,
+                        "path": str(root / f"SSS{cid}.jpeg"),
+                        "relpath": f"input/SSS{cid}.jpeg",
+                        "missing": False,
+                    }
+                ],
+            ):
+                enq = enqueue_run(
+                    data_root=root,
+                    content_ids=[cid],
+                    only_missing=False,
+                    force=True,
+                    limit=1,
+                    dry_run=True,
+                )
+            self.assertTrue(enq.get("run_id"))
+            queued = list_recent_still_tag_runs(data_root=root, limit=5)[0]
+            self.assertFalse(still_tag_run_is_workbench_job(queued))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -17,9 +17,21 @@ describe("mergeStillTagWorkProducts", () => {
 
   it("prepends stub still-tag rows when the lazy query returns", () => {
     const jobs = [job({ job_key: "hourly__a" })];
-    const tags = [job({ job_key: "still_tag_1", work_kind: "still_tag", still_tag_stub: true })];
+    const tags = [job({ job_key: "still_tag_1", work_kind: "still_tag", still_tag_stub: true, status: "running" })];
     expect(mergeStillTagWorkProducts(jobs, tags).map((it) => it.job_key)).toEqual([
       "still_tag_1",
+      "hourly__a",
+    ]);
+  });
+
+  it("does not register queued SLA / queue-test batches as jobs", () => {
+    const jobs = [job({ job_key: "hourly__a" })];
+    const tags = [
+      job({ job_key: "still_tag_queued", work_kind: "still_tag", status: "pending" }),
+      job({ job_key: "still_tag_run", work_kind: "still_tag", status: "running" }),
+    ];
+    expect(mergeStillTagWorkProducts(jobs, tags).map((it) => it.job_key)).toEqual([
+      "still_tag_run",
       "hourly__a",
     ]);
   });
