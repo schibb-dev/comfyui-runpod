@@ -1150,6 +1150,42 @@ def select_job_summaries_for_map(
     return items
 
 
+def _job_index_row(job: Dict[str, Any]) -> Dict[str, Any]:
+    """Cheap job row for counts/selection/combo keys — no media path resolution."""
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    bindings = job.get("bindings") if isinstance(job.get("bindings"), dict) else {}
+    deposits = job.get("deposits") if isinstance(job.get("deposits"), dict) else {}
+    deposit_to = None
+    fv = deposits.get("final_video")
+    if isinstance(fv, dict):
+        deposit_to = fv.get("to_pool")
+    timings = job.get("timings") if isinstance(job.get("timings"), dict) else {}
+    exec_sec = None
+    ex = timings.get("execution")
+    if isinstance(ex, dict) and ex.get("sec") is not None:
+        exec_sec = ex.get("sec")
+    return {
+        "job_key": job.get("job_key"),
+        "family_slug": job.get("family_slug"),
+        "status": _job_status(job),
+        "job_kind": classify_job_kind(job),
+        "graph_hash": job.get("graph_hash"),
+        "shape_id": job.get("shape_id"),
+        "prompt_id": submit.get("prompt_id"),
+        # Raw bindings (path only) — enough for projected-pair combo keys.
+        "bindings": bindings,
+        "deposit_to": deposit_to,
+        "generated_workflow_path": job.get("generated_workflow_path"),
+        "template_path": job.get("template_path"),
+        "outputs": [],
+        "exec_sec": exec_sec,
+        "created_at": job.get("created_at"),
+        "pick_index": job.get("pick_index"),
+        "pick_mode": job.get("pick_mode"),
+        "job_path": job.get("job_path"),
+    }
+
+
 def _job_summary(
     job: Dict[str, Any],
     *,
@@ -1270,7 +1306,22 @@ def _predict_next_hourly_sample(
     chain_doc: Optional[Dict[str, Any]],
     *,
     data_root: Optional[Path] = None,
+    deep: bool = True,
 ) -> Optional[Dict[str, Any]]:
+    """Next-hourly peek.
+
+    ``deep=True`` runs ``predict_hourly_gex2`` (same selection as the shell tick).
+    That planner holds the GIL for tens of seconds, so request paths that only
+    need a label (home, factory map) must pass ``deep=False``.
+    """
+    if not deep:
+        phase = hourly_state.get("phase")
+        note = str(phase or "").strip().replace("_", " ") or None
+        return {
+            "cursor": int(hourly_state.get("sample_cursor") or 0),
+            "phase_if_idle": phase,
+            "note": note,
+        }
     try:
         from shape_factory_hourly import predict_hourly_gex2  # type: ignore
 
@@ -1552,22 +1603,18 @@ def build_shape_factory_map(
         st = _job_status(j)
         counts[st] = counts.get(st, 0) + 1
 
-    # Recent jobs first (by mtime of job file)
+    # Index rows first (no media I/O). Full media summaries only for the selected subset —
+    # summarizing every job (~3k) pegs the GIL for ~60s and wedges the API.
     all_jobs.sort(key=_job_mtime, reverse=True)
-    job_summaries = [
-        _job_summary(
-            j,
-            output_root=output_root,
-            url_for=url_for,
-            wip_root=wip_root,
-            workspace_root=workspace_root,
-            file_exists=file_exists,
-        )
-        for j in all_jobs
-    ]
+    job_index = [_job_index_row(j) for j in all_jobs]
+    jobs_by_key: Dict[str, Dict[str, Any]] = {}
+    for j in all_jobs:
+        jk = j.get("job_key")
+        if isinstance(jk, str) and jk.strip():
+            jobs_by_key[jk] = j
 
     jobs_by_family: Dict[str, List[Dict[str, Any]]] = {}
-    for row in job_summaries:
+    for row in job_index:
         slug = row.get("family_slug")
         if isinstance(slug, str) and slug.strip():
             jobs_by_family.setdefault(slug, []).append(row)
@@ -1591,12 +1638,30 @@ def build_shape_factory_map(
         )
 
     # Payload jobs: per-family recent + every deposit-preview job_key (not global top-N).
-    job_items = select_job_summaries_for_map(
-        job_summaries,
+    selected_index = select_job_summaries_for_map(
+        job_index,
         families,
         jobs_per_family=max(1, int(jobs_per_family)),
         jobs_limit=max(1, int(jobs_limit)),
     )
+    job_items: List[Dict[str, Any]] = []
+    for row in selected_index:
+        jk = row.get("job_key")
+        raw = jobs_by_key.get(jk) if isinstance(jk, str) else None
+        if isinstance(raw, dict):
+            job_items.append(
+                _job_summary(
+                    raw,
+                    output_root=output_root,
+                    url_for=url_for,
+                    wip_root=wip_root,
+                    workspace_root=workspace_root,
+                    file_exists=file_exists,
+                )
+            )
+        else:
+            job_items.append(row)
+    job_summaries = job_index
 
     queue_doc: Dict[str, Any] = {"ok": False, "skipped": True} if skip_queue else _fetch_comfy_queue(comfy_server)
     if not skip_queue and not queue_doc.get("ok"):
@@ -1630,7 +1695,10 @@ def build_shape_factory_map(
 
     hourly_state = _load_hourly_state(data_root)
     chain_path, chain_doc = _load_chain_manifest(data_root)
-    next_sample = _predict_next_hourly_sample(hourly_state, chain_doc, data_root=data_root)
+    # Shallow peek only — the full planner pegs the GIL and wedges every other request.
+    next_sample = _predict_next_hourly_sample(
+        hourly_state, chain_doc, data_root=data_root, deep=False
+    )
 
     pending_jobs = [j for j in job_summaries if j.get("status") == "pending"]
     active_jobs = [j for j in job_summaries if j.get("status") in {"queued", "running", "unknown"}]

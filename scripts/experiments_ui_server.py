@@ -2467,42 +2467,44 @@ def _home_summary_payload(cfg: ServerConfig) -> Dict[str, Any]:
         payload["fresh_outputs"] = []
         payload.setdefault("errors", {})["fresh_outputs"] = str(e)
 
-    # Needs attention + next hourly peek — derived from the shape-factory map (queue skipped
-    # for speed; map building is the same call the Factory screen makes).
+    # Needs attention + job counts — never build the full factory map here (that used to
+    # peg the GIL for ~60s and make every other API look hung). Status counts are a cheap
+    # job.json scan; missing-source chips stay on the Factory screen.
     attention: Dict[str, Any] = {"missing_sources_total": 0, "families": []}
     hourly: Optional[Dict[str, Any]] = None
     try:
-        m = _shape_factory_map_payload(
-            cfg, {"skip_queue": ["1"], "members_limit": ["6"], "jobs_limit": ["200"]}
+        d = _workspace_scripts_dir()
+        if d.is_dir() and str(d) not in sys.path:
+            sys.path.insert(0, str(d))
+        from shape_factory_map import (  # type: ignore
+            _job_status,
+            _load_hourly_state,
+            _load_jobs,
+            _predict_next_hourly_sample,
+            resolve_shape_factory_data_root,
         )
-        if isinstance(m, dict) and m.get("ok"):
-            fams = m.get("families") if isinstance(m.get("families"), list) else []
-            fam_rows: List[Dict[str, Any]] = []
-            total_missing = 0
-            for fam in fams:
-                if not isinstance(fam, dict):
-                    continue
-                pairs = fam.get("projected_pairs") if isinstance(fam.get("projected_pairs"), list) else []
-                miss = sum(
-                    1
-                    for p in pairs
-                    if isinstance(p, dict) and p.get("gap") == "source" and p.get("phase") != "future"
-                )
-                if miss > 0:
-                    fam_rows.append({"family_slug": fam.get("family_slug"), "missing": miss})
-                total_missing += miss
-            fam_rows.sort(key=lambda r: int(r.get("missing") or 0), reverse=True)
-            attention["missing_sources_total"] = total_missing
-            attention["families"] = fam_rows[:6]
-            jobs = m.get("jobs") if isinstance(m.get("jobs"), dict) else {}
-            payload["jobs"] = {
-                "total": jobs.get("total"),
-                "summary": jobs.get("summary") if isinstance(jobs.get("summary"), dict) else {},
-            }
-            if isinstance(m.get("hourly"), dict):
-                hourly = m.get("hourly")
+
+        data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+        jobs_root = data_root / "shape_factory" / "jobs"
+        all_jobs = _load_jobs(jobs_root) if jobs_root.is_dir() else []
+        counts: Dict[str, int] = {}
+        for j in all_jobs:
+            st = _job_status(j)
+            counts[st] = counts.get(st, 0) + 1
+        payload["jobs"] = {"total": len(all_jobs), "summary": counts}
+        hourly_state = _load_hourly_state(data_root)
+        # Phase label only. The full planner (predict_hourly_gex2) holds the GIL
+        # for ~50s and makes every other API look hung.
+        next_sample = _predict_next_hourly_sample(
+            hourly_state, None, data_root=data_root, deep=False
+        )
+        hourly = {
+            "state_path": str(data_root / "shape_factory" / "hourly-state.json"),
+            "state": hourly_state,
+            "next_sample": next_sample,
+        }
     except Exception as e:
-        payload.setdefault("errors", {})["shape_factory_map"] = str(e)
+        payload.setdefault("errors", {})["shape_factory_jobs"] = str(e)
 
     # Library health issues (cheap: already computed alongside the index).
     try:

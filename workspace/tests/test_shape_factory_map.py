@@ -167,8 +167,27 @@ class ShapeFactoryMapTests(unittest.TestCase):
             self.assertIn("pending_combos", nxt)
             self.assertIn("combo_key", nxt)
         else:
-            self.assertEqual(nxt["sample_id"], "b")
+            # Chain-manifest fallback, or a live planner preview (no sample_id).
+            if nxt.get("sample_id"):
+                self.assertEqual(nxt["sample_id"], "b")
+            else:
+                self.assertTrue(nxt.get("phase_if_idle") or nxt.get("family") or nxt.get("step"))
             self.assertEqual(nxt["cursor"], 3)
+
+    def test_predict_next_hourly_sample_shallow_skips_planner(self) -> None:
+        data_root = ROOT / ".data"
+        nxt = _predict_next_hourly_sample(
+            {"sample_cursor": 3, "phase": "gex_from_i2v_queued"},
+            {"samples": [{"id": "should-not-appear", "pick_index": 0}]},
+            data_root=data_root,
+            deep=False,
+        )
+        self.assertIsNotNone(nxt)
+        assert nxt is not None
+        self.assertEqual(nxt["cursor"], 3)
+        self.assertEqual(nxt["phase_if_idle"], "gex_from_i2v_queued")
+        self.assertNotIn("sample_id", nxt)
+        self.assertNotIn("recipe_count", nxt)
 
     def test_relpath_guess_from_host_index_path(self) -> None:
         host = (
