@@ -28,6 +28,8 @@ from shape_factory_work_products import (
     get_work_product,
     is_extend_family_option,
     job_is_hourly_product,
+    job_overrides_detail,
+    job_overrides_summary,
     list_extend_family_defaults,
     list_family_prompt_profiles,
     list_recent_work_products,
@@ -104,6 +106,53 @@ class TestWorkProducts(unittest.TestCase):
                 }
             )
         )
+
+    def test_job_overrides_summary_ignores_seed_only(self):
+        self.assertEqual(
+            job_overrides_summary({"adhoc_overrides": {"parameters": {"seed": 99}}}),
+            {"prompt": False, "loras": False, "params": False, "stack": False},
+        )
+        self.assertEqual(
+            job_overrides_summary({"adhoc_overrides": {"parameters": {"frames": 81, "seed": 99}}})["params"],
+            True,
+        )
+        self.assertTrue(
+            job_overrides_summary({"adhoc_overrides": {"loras": {"entries": [{"lora": "x", "on": True}]}}})["loras"]
+        )
+        self.assertTrue(job_overrides_summary({"adhoc_overrides": {"stack": "i2v-720p-Q5"}})["stack"])
+        self.assertTrue(
+            job_overrides_summary(
+                {"adhoc_overrides": {"prompt_profile": {"scratch_path": "/x/_scratch/draft.json"}}},
+            )["prompt"]
+        )
+        self.assertTrue(job_overrides_summary(None, prompt_profile={"snowflake": True})["prompt"])
+        self.assertTrue(
+            job_overrides_summary(
+                None,
+                params_profile={"snowflake": True, "diffs": {"seed": {"job": 1, "seed": 2}, "frames": {"job": 81, "seed": 65}}},
+            )["params"]
+        )
+        self.assertFalse(
+            job_overrides_summary(None, params_profile={"snowflake": False, "diffs": {"seed": {"job": 1, "seed": 2}}})[
+                "params"
+            ]
+        )
+
+    def test_job_overrides_detail_lists_lora_and_stack_diffs(self):
+        detail = job_overrides_detail(
+            {"adhoc_overrides": {"stack": "i2v-720p-Q5"}},
+            loras_profile={
+                "snowflake": True,
+                "current": [{"lora": "dicks_epoch_100", "on": True, "strength": 0.7}],
+                "seed": [{"lora": "dicks_epoch_100", "on": False, "strength": 0.1}],
+            },
+        )
+        self.assertTrue(detail["flags"]["loras"])
+        self.assertTrue(detail["flags"]["stack"])
+        self.assertEqual(detail["stack"], "i2v-720p-Q5")
+        self.assertEqual(detail["loras"][0]["lora"], "dicks_epoch_100")
+        self.assertEqual(detail["loras"][0]["strength"], 0.7)
+        self.assertEqual(detail["loras"][0]["seed_strength"], 0.1)
 
     def test_construction_from_plan_keeps_selection_fields(self):
         plan = {

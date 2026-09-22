@@ -73,6 +73,31 @@ export type MultiRunsResponse = {
   runs: RunsItem[];
 };
 
+export type JobOverrideKind = "prompt" | "loras" | "params" | "stack";
+
+export type JobOverrides = {
+  prompt?: boolean;
+  loras?: boolean;
+  params?: boolean;
+  stack?: boolean;
+};
+
+export type QueueOverrideLoraDiff = {
+  lora: string;
+  on?: boolean | null;
+  strength?: number | null;
+  seed_on?: boolean | null;
+  seed_strength?: number | null;
+};
+
+export type QueueOverrideDetail = {
+  flags?: JobOverrides;
+  prompt?: string | null;
+  stack?: string | null;
+  loras?: QueueOverrideLoraDiff[];
+  params?: Record<string, { job?: number | string | null; seed?: number | string | null }>;
+};
+
 export type QueueJobGlance = {
   family_slug?: string | null;
   shape_id?: string | null;
@@ -84,6 +109,12 @@ export type QueueJobGlance = {
   prompt_profile?: string | null;
   /** True when owned prompt text diverged from the catalog seed. */
   prompt_snowflake?: boolean;
+  loras_snowflake?: boolean;
+  params_snowflake?: boolean;
+  stack_override?: boolean;
+  stack_id?: string | null;
+  overrides?: JobOverrides;
+  override_detail?: QueueOverrideDetail;
   source_name?: string | null;
   identity_name?: string | null;
   sampler_name?: string | null;
@@ -2796,6 +2827,8 @@ export type WorkProductItem = {
   /** Simple run knobs vs template seed (frames/steps/overlap/seed). */
   params_profile?: WorkProductParamsProfile | null;
   loras_profile?: WorkProductLorasProfile | null;
+  /** Compact override flags (prompt / loras / params / stack). Seed-only does not count. */
+  overrides?: JobOverrides | null;
   shape_profile?: WorkProductShapeProfile | null;
   media_meta?: WorkProductMediaMeta | null;
   /** Compact run timing from job/sidecar (exec, queue wait, …). */

@@ -24,6 +24,8 @@ import { PipelineMediaPlayer, vhsWindowFromKeyParams } from "./PipelineMediaPlay
 import { PipelineFilterRow, PipelineList, PipelineScreen, PipelineScroll } from "./PipelineScreen";
 import { nextQueueSectionShowForDoubleClick } from "./filterGroupDoubleClick";
 import { PromptPeekButton } from "./PromptPeek";
+import { JobOverrideBadge, jobOverrideKinds, jobOverrideTitle } from "./jobOverrides";
+import { OverridePeekButton } from "./OverridePeek";
 import { jobPromptVariantDisplayName } from "./submitFamily";
 import { queryKeys } from "./queryKeys";
 import {
@@ -121,6 +123,9 @@ type QueueGlanceRow = {
   value: string;
   title?: string;
   prompt?: WorkProductPromptProfile | null;
+  overrideItem?: QueueComfyItem | ComfyHistoryItem | { glance?: QueueJobGlance | null; prompt_profile?: WorkProductPromptProfile | null };
+  promptId?: string | null;
+  jobKey?: string | null;
   /** When set, the value is a named-window ComfyUI (or other) link. */
   hrefKind?: "comfyui";
   emphasis?: boolean;
@@ -132,6 +137,7 @@ function queueGlanceRows(
     glance?: QueueJobGlance | null;
     input_media_relpath?: string | null;
     job_key?: string | null;
+    prompt_id?: string | null;
     external?: boolean;
     work_kind?: "still_tag" | null;
     still_tag_run_id?: string | null;
@@ -231,6 +237,25 @@ function queueGlanceRows(
       value: jobKey,
       title: "Open ComfyUI",
       hrefKind: "comfyui",
+    });
+  }
+  const overrideSource = {
+    glance: g,
+    prompt_profile: item.prompt_profile,
+    overrides: g.overrides,
+    override_detail: g.override_detail,
+  };
+  const overrideKinds = jobOverrideKinds(overrideSource);
+  if (overrideKinds.length) {
+    rows.push({
+      key: "overrides",
+      label: "Overrides",
+      value: overrideKinds.join(" · "),
+      title: jobOverrideTitle(overrideSource),
+      overrideItem: overrideSource,
+      jobKey,
+      promptId: item.prompt_id || null,
+      emphasis: true,
     });
   }
 
@@ -496,7 +521,7 @@ function QueueGlanceList({ rows }: { rows?: QueueGlanceRow[] }) {
           <dt>{row.label}</dt>
           <dd
             className={
-              row.prompt
+              row.prompt || row.overrideItem
                 ? "pipeline-row__glance-value--prompt"
                 : row.hrefKind === "comfyui"
                   ? "mono pipeline-row__glance-value--link"
@@ -506,6 +531,13 @@ function QueueGlanceList({ rows }: { rows?: QueueGlanceRow[] }) {
           >
             {row.prompt ? (
               <PromptPeekButton prompt={row.prompt} label={row.value} />
+            ) : row.overrideItem ? (
+              <OverridePeekButton
+                item={row.overrideItem}
+                label={row.value}
+                jobKey={row.jobKey}
+                promptId={row.promptId}
+              />
             ) : row.hrefKind === "comfyui" ? (
               <ComfyUiLink title="Open ComfyUI">{row.value}</ComfyUiLink>
             ) : (
@@ -528,6 +560,7 @@ function QueueJobDetailsBlock({
   queuedAt,
   changedAt,
   errorMessage,
+  overrideItem,
 }: {
   title: string;
   statusLabel: string;
@@ -538,6 +571,7 @@ function QueueJobDetailsBlock({
   queuedAt?: string | null;
   changedAt?: string | null;
   errorMessage?: string | null;
+  overrideItem?: QueueComfyItem | ComfyHistoryItem | null;
 }) {
   const isError = statusVisual === "error" || statusVisual === "interrupted";
   return (
@@ -552,6 +586,7 @@ function QueueJobDetailsBlock({
           <span className="work-products-status-toggle__label">{statusLabel}</span>
         </span>
         <strong>{title}</strong>
+        <JobOverrideBadge item={overrideItem} />
       </p>
       <div className="pipeline-row__times mono" aria-label="Timestamps">
         <span title="When this job entered the queue / started">queued {formatQueueWhen(queuedAt)}</span>
@@ -589,6 +624,7 @@ function QueuePipelineRow({
   live,
   liveMetrics,
   actions,
+  overrideItem,
 }: {
   title: string;
   statusLabel: string;
@@ -605,6 +641,7 @@ function QueuePipelineRow({
   live?: boolean;
   liveMetrics?: React.ReactNode;
   actions: React.ReactNode;
+  overrideItem?: QueueComfyItem | ComfyHistoryItem | null;
 }) {
   const isError = statusVisual === "error" || statusVisual === "interrupted";
   const pid = String(promptId || "").trim();
@@ -635,6 +672,7 @@ function QueuePipelineRow({
               >
                 <span className="work-products-status-toggle__label">{statusLabel}</span>
               </span>
+              <JobOverrideBadge item={overrideItem} />
             </span>
             <span className="pipeline-row__title-text" title={title}>
               {title}
@@ -832,6 +870,7 @@ function QueueItemRow({
       glance: item.glance,
       input_media_relpath: item.input_media_relpath,
       job_key: jobKey,
+      prompt_id: pid,
       external: item.external,
       work_kind: item.work_kind,
       still_tag_run_id: item.still_tag_run_id,
@@ -892,6 +931,7 @@ function QueueItemRow({
       glanceRows={glanceRows}
       queuedAt={item.queued_at}
       changedAt={item.changed_at}
+      overrideItem={item}
       live={kind === "running"}
       liveMetrics={
         kind === "running" && pid ? (
@@ -939,6 +979,7 @@ function HistoryItemRow({
       glance: item.glance,
       input_media_relpath: item.input_media_relpath,
       job_key: jobKey,
+      prompt_id: item.prompt_id,
       prompt_profile: item.prompt_profile,
     },
     { trimBadge },
@@ -979,6 +1020,7 @@ function HistoryItemRow({
       queuedAt={item.queued_at}
       changedAt={item.changed_at}
       errorMessage={errLine}
+      overrideItem={item}
       actions={<QueueHistoryActions item={item} />}
     />
   );
@@ -1138,6 +1180,7 @@ function QueueSwipeDetails({ entry }: { entry: QueueSwipeEntry }) {
             glance: item.glance,
             input_media_relpath: item.input_media_relpath,
             job_key: item.job_key,
+            prompt_id: item.prompt_id,
             prompt_profile: item.prompt_profile,
           },
           { trimBadge: queueTrimBadge(item) },
@@ -1145,6 +1188,7 @@ function QueueSwipeDetails({ entry }: { entry: QueueSwipeEntry }) {
         queuedAt={item.queued_at}
         changedAt={item.changed_at}
         errorMessage={errLine}
+        overrideItem={item}
       />
     );
   }
@@ -1162,6 +1206,7 @@ function QueueSwipeDetails({ entry }: { entry: QueueSwipeEntry }) {
           glance: item.glance,
           input_media_relpath: item.input_media_relpath,
           job_key: item.job_key,
+          prompt_id: item.prompt_id,
           external: item.external,
           work_kind: item.work_kind,
           still_tag_run_id: item.still_tag_run_id,
@@ -1172,6 +1217,7 @@ function QueueSwipeDetails({ entry }: { entry: QueueSwipeEntry }) {
       )}
       queuedAt={item.queued_at}
       changedAt={item.changed_at}
+      overrideItem={item}
     />
   );
 }

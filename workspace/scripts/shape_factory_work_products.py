@@ -1929,6 +1929,181 @@ def _job_stack_id(job: Dict[str, Any]) -> Optional[str]:
     return text or None
 
 
+# Seed / noise is almost always set on UI submits — never an "override" by itself.
+_OVERRIDE_PARAM_KEYS = (
+    "frames",
+    "steps",
+    "overlap",
+    "skip_first_frames",
+    "frame_load_cap",
+    "mark_in",
+    "mark_out",
+)
+
+
+def _prompt_path_is_scratch(profile: Optional[Dict[str, Any]], job: Optional[Dict[str, Any]] = None) -> bool:
+    try:
+        from shape_factory_owned_prompt import is_scratch_prompt_path  # type: ignore
+    except Exception:
+        return False
+    bits: List[Any] = []
+    if isinstance(profile, dict):
+        bits.extend([profile.get("path"), profile.get("basename"), (profile.get("seed") or {}).get("basename")])
+    adhoc = job.get("adhoc_overrides") if isinstance(job, dict) and isinstance(job.get("adhoc_overrides"), dict) else {}
+    pp = adhoc.get("prompt_profile") if isinstance(adhoc, dict) else None
+    if isinstance(pp, dict):
+        bits.extend([pp.get("scratch_path"), pp.get("source_path")])
+    elif pp:
+        bits.append(pp)
+    return any(is_scratch_prompt_path(b) for b in bits if b)
+
+
+def _adhoc_params_overridden(adhoc: Dict[str, Any]) -> bool:
+    params = adhoc.get("parameters") if isinstance(adhoc.get("parameters"), dict) else {}
+    for key in _OVERRIDE_PARAM_KEYS:
+        if key in params and params.get(key) is not None and str(params.get(key)).strip() != "":
+            return True
+    return False
+
+
+def job_overrides_summary(
+    job: Optional[Dict[str, Any]] = None,
+    *,
+    prompt_profile: Optional[Dict[str, Any]] = None,
+    params_profile: Optional[Dict[str, Any]] = None,
+    loras_profile: Optional[Dict[str, Any]] = None,
+) -> Dict[str, bool]:
+    """Compact override flags for Workbench / Queue (seed-only params do not count)."""
+    adhoc = job.get("adhoc_overrides") if isinstance(job, dict) and isinstance(job.get("adhoc_overrides"), dict) else {}
+    prompt = bool(isinstance(prompt_profile, dict) and prompt_profile.get("snowflake"))
+    if not prompt and _prompt_path_is_scratch(prompt_profile, job):
+        prompt = True
+    if not prompt and isinstance(adhoc, dict) and adhoc.get("prompt_profile"):
+        prompt = True
+
+    loras = bool(isinstance(loras_profile, dict) and loras_profile.get("snowflake"))
+    if not loras and isinstance(adhoc, dict) and adhoc.get("loras"):
+        loras = True
+
+    params = bool(isinstance(params_profile, dict) and params_profile.get("snowflake"))
+    if not params and isinstance(adhoc, dict) and _adhoc_params_overridden(adhoc):
+        params = True
+    if isinstance(params_profile, dict) and isinstance(params_profile.get("diffs"), dict):
+        diffs = params_profile["diffs"]
+        if any(k != "seed" and diffs.get(k) for k in diffs):
+            params = True
+
+    stack = bool(isinstance(adhoc, dict) and str(adhoc.get("stack") or adhoc.get("stack_id") or "").strip())
+
+    return {"prompt": bool(prompt), "loras": bool(loras), "params": bool(params), "stack": bool(stack)}
+
+
+def _lora_override_diffs(loras_profile: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not isinstance(loras_profile, dict):
+        return []
+    current = loras_profile.get("current") if isinstance(loras_profile.get("current"), list) else []
+    seed = loras_profile.get("seed") if isinstance(loras_profile.get("seed"), list) else []
+    seed_by: Dict[str, Dict[str, Any]] = {}
+    for row in seed:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("lora") or "").strip()
+        if name:
+            seed_by[name] = row
+    out: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in current:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("lora") or "").strip()
+        if not name:
+            continue
+        seen.add(name)
+        base = seed_by.get(name)
+        on = row.get("on")
+        strength = row.get("strength")
+        if base is None:
+            out.append({"lora": name, "on": on, "strength": strength})
+            continue
+        same_on = bool(on) == bool(base.get("on"))
+        try:
+            same_str = float(strength) == float(base.get("strength"))
+        except (TypeError, ValueError):
+            same_str = strength == base.get("strength")
+        if same_on and same_str:
+            continue
+        out.append(
+            {
+                "lora": name,
+                "on": on,
+                "strength": strength,
+                "seed_on": base.get("on"),
+                "seed_strength": base.get("strength"),
+            }
+        )
+    for name, base in seed_by.items():
+        if name in seen:
+            continue
+        out.append(
+            {
+                "lora": name,
+                "on": False,
+                "strength": None,
+                "seed_on": base.get("on"),
+                "seed_strength": base.get("strength"),
+            }
+        )
+    return out[:12]
+
+
+def job_overrides_detail(
+    job: Optional[Dict[str, Any]] = None,
+    *,
+    prompt_profile: Optional[Dict[str, Any]] = None,
+    params_profile: Optional[Dict[str, Any]] = None,
+    loras_profile: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Glance-sized override notes (kinds + LoRA/params/stack diffs). Seed-only params omitted."""
+    flags = job_overrides_summary(
+        job,
+        prompt_profile=prompt_profile,
+        params_profile=params_profile,
+        loras_profile=loras_profile,
+    )
+    adhoc = job.get("adhoc_overrides") if isinstance(job, dict) and isinstance(job.get("adhoc_overrides"), dict) else {}
+    detail: Dict[str, Any] = {"flags": flags}
+    if flags.get("prompt"):
+        name = ""
+        if isinstance(prompt_profile, dict):
+            name = str(prompt_profile.get("name") or prompt_profile.get("label") or prompt_profile.get("basename") or "").strip()
+        detail["prompt"] = name or "edited"
+    if flags.get("stack"):
+        detail["stack"] = str(adhoc.get("stack") or adhoc.get("stack_id") or "").strip() or None
+    if flags.get("loras"):
+        diffs = _lora_override_diffs(loras_profile)
+        if not diffs and isinstance(adhoc.get("loras"), dict):
+            entries = adhoc["loras"].get("entries") if isinstance(adhoc["loras"].get("entries"), list) else []
+            diffs = [
+                {"lora": str(e.get("lora") or "").strip(), "on": e.get("on"), "strength": e.get("strength")}
+                for e in entries
+                if isinstance(e, dict) and str(e.get("lora") or "").strip()
+            ][:12]
+        if diffs:
+            detail["loras"] = diffs
+    if flags.get("params"):
+        raw = params_profile.get("diffs") if isinstance(params_profile, dict) and isinstance(params_profile.get("diffs"), dict) else {}
+        diffs = {k: v for k, v in raw.items() if k != "seed" and v}
+        if not diffs and isinstance(adhoc.get("parameters"), dict):
+            diffs = {
+                k: {"job": adhoc["parameters"].get(k)}
+                for k in _OVERRIDE_PARAM_KEYS
+                if k in adhoc["parameters"] and adhoc["parameters"].get(k) is not None
+            }
+        if diffs:
+            detail["params"] = diffs
+    return detail
+
+
 def _work_product_item_from_job(
     path: Path,
     job: Dict[str, Any],
@@ -2240,6 +2415,12 @@ def _work_product_item_from_job(
         "prompt_profile": prompt_profile,
         "params_profile": params_profile,
         "loras_profile": loras_profile,
+        "overrides": job_overrides_summary(
+            job,
+            prompt_profile=prompt_profile if isinstance(prompt_profile, dict) else None,
+            params_profile=params_profile if isinstance(params_profile, dict) else None,
+            loras_profile=loras_profile if isinstance(loras_profile, dict) else None,
+        ),
         "shape_profile": shape_profile,
         "media_meta": media_meta or None,
         "timing": timing,

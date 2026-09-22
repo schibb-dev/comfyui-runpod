@@ -12156,6 +12156,56 @@ def _queue_enrich_from_job(
         elif source_slot == "source_video" or "source_video" in binds:
             glance["workflow_kind"] = "extend"
 
+        params_profile = None
+        loras_profile = None
+        try:
+            from shape_factory_owned_params import owned_params_to_profile  # type: ignore
+
+            if data_root is not None:
+                params_profile = owned_params_to_profile(job, data_root=data_root)
+        except Exception:
+            params_profile = None
+        try:
+            from shape_factory_owned_loras import owned_loras_to_profile  # type: ignore
+
+            if data_root is not None:
+                loras_profile = owned_loras_to_profile(job, data_root=data_root)
+        except Exception:
+            loras_profile = None
+        try:
+            from shape_factory_work_products import job_overrides_detail, job_overrides_summary  # type: ignore
+
+            prompt_arg = prompt_profile if isinstance(prompt_profile, dict) else None
+            params_arg = params_profile if isinstance(params_profile, dict) else None
+            loras_arg = loras_profile if isinstance(loras_profile, dict) else None
+            overrides = job_overrides_summary(
+                job,
+                prompt_profile=prompt_arg,
+                params_profile=params_arg,
+                loras_profile=loras_arg,
+            )
+            glance["overrides"] = overrides
+            glance["override_detail"] = job_overrides_detail(
+                job,
+                prompt_profile=prompt_arg,
+                params_profile=params_arg,
+                loras_profile=loras_arg,
+            )
+            if overrides.get("prompt"):
+                glance["prompt_snowflake"] = True
+            if overrides.get("loras"):
+                glance["loras_snowflake"] = True
+            if overrides.get("params"):
+                glance["params_snowflake"] = True
+            if overrides.get("stack"):
+                glance["stack_override"] = True
+                adhoc = job.get("adhoc_overrides") if isinstance(job.get("adhoc_overrides"), dict) else {}
+                stack_name = str(adhoc.get("stack") or adhoc.get("stack_id") or "").strip()
+                if stack_name:
+                    glance["stack_id"] = stack_name
+        except Exception:
+            pass
+
     # Graph seed fallback when no job file.
     if "noise_seed" not in glance:
         for k in ("noise_seed", "seed"):
