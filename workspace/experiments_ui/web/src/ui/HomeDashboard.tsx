@@ -177,6 +177,21 @@ export function HomeDashboard() {
         </Card>
 
         <Card
+          title="Remove review"
+          hint="Permanently delete outputs marked Remove"
+          footer={
+            <a className="home-cta" href={routeHref("remove")}>
+              Open remove review →
+            </a>
+          }
+        >
+          <p className="factory-muted" style={{ margin: 0 }}>
+            Hidden from lists and factory until you restore appetite or delete. Delete only when
+            nothing depends on the clip — not the same as Follow-up Retire (trash).
+          </p>
+        </Card>
+
+        <Card
           title="Needs attention"
           hint="Fix these so generation + provenance stay clean"
           footer={

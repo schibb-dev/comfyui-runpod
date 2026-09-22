@@ -1,25 +1,44 @@
 import React, { useEffect, useState } from "react";
 import {
-  APP_ROUTES,
+  navGroups,
   resolveRouteId,
   routeLabel,
-  routesForGroup,
   type AppRoute,
   type AppRouteId,
 } from "./routes";
 import { usePhoneOverflowItems } from "./phoneChrome";
 import { useDeviceContext } from "./viewport";
 
+const SIDEBAR_KEY = "app-sidebar-collapsed-v1";
+
+function loadSidebarCollapsed(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function persistSidebarCollapsed(collapsed: boolean) {
+  try {
+    localStorage.setItem(SIDEBAR_KEY, collapsed ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+
 function NavLink({
   route,
   active,
   className,
+  collapsed,
   onNavigate,
   children,
 }: {
   route: AppRoute;
   active: boolean;
   className: string;
+  collapsed?: boolean;
   onNavigate?: () => void;
   children?: React.ReactNode;
 }) {
@@ -51,10 +70,48 @@ function NavLink({
       onClick={onClick}
       className={`${className}${active ? ` ${className}--active` : ""}`}
       aria-current={active ? "page" : undefined}
-      title={route.hint}
+      title={route.hint || route.label}
     >
-      {children ?? route.label}
+      {children ?? (
+        <>
+          {collapsed ? <span className="app-sidebar__mark">{route.mark}</span> : route.label}
+        </>
+      )}
     </a>
+  );
+}
+
+function NavSections({
+  active,
+  collapsed,
+  linkClass,
+  onNavigate,
+}: {
+  active: AppRouteId;
+  collapsed?: boolean;
+  linkClass: string;
+  onNavigate?: () => void;
+}) {
+  return (
+    <>
+      {navGroups().map((group) => (
+        <section key={group.id} className="app-nav-section" aria-label={group.label}>
+          {collapsed ? null : <p className="app-nav-section__label">{group.label}</p>}
+          <nav className="app-nav-section__links">
+            {group.routes.map((r) => (
+              <NavLink
+                key={r.id}
+                route={r}
+                active={r.id === active}
+                className={linkClass}
+                collapsed={collapsed}
+                onNavigate={onNavigate}
+              />
+            ))}
+          </nav>
+        </section>
+      ))}
+    </>
   );
 }
 
@@ -117,30 +174,11 @@ function PhoneMenu({ active }: { active: AppRouteId }) {
                 </div>
               </>
             ) : null}
-            <p className="app-drawer__section-label">Pipeline</p>
-            <nav className="app-drawer__nav" aria-label="Pipeline">
-              {routesForGroup("pipeline").map((r) => (
-                <NavLink
-                  key={r.id}
-                  route={r}
-                  active={r.id === active}
-                  className="app-drawer__link"
-                  onNavigate={() => setOpen(false)}
-                />
-              ))}
-            </nav>
-            <p className="app-drawer__section-label">Tools</p>
-            <nav className="app-drawer__nav" aria-label="Tools">
-              {routesForGroup("tools").map((r) => (
-                <NavLink
-                  key={r.id}
-                  route={r}
-                  active={r.id === active}
-                  className="app-drawer__link"
-                  onNavigate={() => setOpen(false)}
-                />
-              ))}
-            </nav>
+            <NavSections
+              active={active}
+              linkClass="app-drawer__link"
+              onNavigate={() => setOpen(false)}
+            />
           </div>
           <button
             type="button"
@@ -154,8 +192,42 @@ function PhoneMenu({ active }: { active: AppRouteId }) {
   );
 }
 
+function DesktopSidebar({ active }: { active: AppRouteId }) {
+  const [collapsed, setCollapsed] = useState(() => loadSidebarCollapsed());
+  const toggle = () => {
+    setCollapsed((prev) => {
+      const next = !prev;
+      persistSidebarCollapsed(next);
+      return next;
+    });
+  };
+  return (
+    <aside className={`app-sidebar${collapsed ? " app-sidebar--collapsed" : ""}`} aria-label="Primary">
+      <div className="app-sidebar__brand">
+        <a href="/" className="app-sidebar__brand-link" title="ComfyUI Runpod — Experiments UI">
+          <span className="app-nav__brand-dot" aria-hidden="true" />
+          {collapsed ? null : <span className="app-sidebar__brand-text">Factory</span>}
+        </a>
+        <button
+          type="button"
+          className="app-sidebar__collapse"
+          aria-expanded={!collapsed}
+          aria-label={collapsed ? "Expand menu" : "Collapse menu"}
+          title={collapsed ? "Expand menu" : "Collapse menu"}
+          onClick={toggle}
+        >
+          {collapsed ? "›" : "‹"}
+        </button>
+      </div>
+      <div className="app-sidebar__nav">
+        <NavSections active={active} collapsed={collapsed} linkClass="app-sidebar__link" />
+      </div>
+    </aside>
+  );
+}
+
 /**
- * Global application frame: desktop top nav, phone hamburger + focused screen,
+ * Global application frame: desktop collapsible sidebar, phone hamburger,
  * plus a content region the screen fills.
  *
  * Submit is intent-modal (doors only, not in nav).
@@ -169,36 +241,12 @@ export function AppShell({
 }) {
   const { device } = useDeviceContext();
   const current = active ?? resolveRouteId(typeof window !== "undefined" ? window.location.pathname : "/");
-  const pipeline = routesForGroup("pipeline");
-  const tools = routesForGroup("tools");
   const phone = device === "phone";
 
   return (
-    <>
-      {phone ? (
-        <PhoneMenu active={current} />
-      ) : (
-        <header className="app-nav" aria-label="Primary">
-          <a href="/" className="app-nav__brand" title="ComfyUI Runpod — Experiments UI">
-            <span className="app-nav__brand-dot" aria-hidden="true" />
-            <span className="app-nav__brand-text">Factory</span>
-          </a>
-          <nav className="app-nav__group app-nav__group--pipeline" aria-label="Pipeline">
-            {pipeline.map((r) => (
-              <NavLink key={r.id} route={r} active={r.id === current} className="app-nav__link" />
-            ))}
-          </nav>
-          <span className="app-nav__spacer" aria-hidden="true" />
-          <nav className="app-nav__group app-nav__group--tools" aria-label="Tools">
-            {tools.map((r) => (
-              <NavLink key={r.id} route={r} active={r.id === current} className="app-nav__link" />
-            ))}
-          </nav>
-        </header>
-      )}
+    <div className={`app-shell${phone ? " app-shell--phone" : " app-shell--desktop"}`}>
+      {phone ? <PhoneMenu active={current} /> : <DesktopSidebar active={current} />}
       <div className={`app-shell__main${phone ? " app-shell__main--phone" : ""}`}>{children}</div>
-    </>
+    </div>
   );
 }
-
-export { APP_ROUTES };

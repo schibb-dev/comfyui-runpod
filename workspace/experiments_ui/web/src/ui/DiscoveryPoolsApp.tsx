@@ -329,7 +329,7 @@ export function DiscoveryPoolsApp() {
       <p className="factory-muted discovery-pools__lead">
         Stack Refine / Investigate / Advance / Park on one video. Retire replaces those marks (and they
         replace Retire). Remove (appetite) hides from lists and factory and also stamps Retire here;
-        Delete lives on Workbench Remove review. Trash is recoverable; Delete is not.
+        Delete lives on <a href="/discovery/remove">Remove review</a>. Trash is recoverable; Delete is not.
       </p>
       <div className="discovery-pools__tabs" role="tablist" aria-label="Follow-up buckets">
         <button
@@ -514,7 +514,7 @@ export function DiscoveryPoolsApp() {
               {isHiddenRemove(selected) ? (
                 <p className="factory-muted">
                   Hidden from lists and factory (Remove appetite). Delete is on{" "}
-                  <a href={workbenchHrefForMedia({ relpath: selected.relpath })}>Workbench Remove review</a>
+                  <a href="/discovery/remove">Remove review</a>
                   {" "}when nothing depends on it. Clearing Retire here leaves it hidden until you change appetite.
                 </p>
               ) : null}

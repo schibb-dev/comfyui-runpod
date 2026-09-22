@@ -14,6 +14,7 @@ export type AppRouteId =
   | "clips"
   | "rate"
   | "pools"
+  | "remove"
   | "workbench"
   | "family-ab"
   | "submit"
@@ -22,13 +23,15 @@ export type AppRouteId =
   | "workflows"
   | "orchestrator";
 
-export type AppNavGroup = "pipeline" | "tools";
+export type AppNavGroup = "now" | "browse" | "produce" | "care" | "labs";
 
 export type AppRoute = {
   id: AppRouteId;
   /** Canonical path used for nav links. */
   path: string;
   label: string;
+  /** Short glyph shown when the desktop sidebar is collapsed. */
+  mark: string;
   /** Short helper text for tooltips. */
   hint?: string;
   group: AppNavGroup;
@@ -39,50 +42,70 @@ export type AppRoute = {
   nav?: boolean;
 };
 
-// Order matters for nav rendering (left → right).
-// Pipeline: Library · Clips · Factory · Rating · Workbench · Queue.
+export const NAV_GROUP_ORDER: AppNavGroup[] = ["now", "browse", "produce", "care", "labs"];
+
+export const NAV_GROUP_LABEL: Record<AppNavGroup, string> = {
+  now: "Now",
+  browse: "Browse",
+  produce: "Produce",
+  care: "Care",
+  labs: "Labs",
+};
+
 // Submit is intent-modal only (doors → /submit?…); not a nav destination.
 export const APP_ROUTES: AppRoute[] = [
-  { id: "home", path: "/", label: "Home", hint: "Resume the loop — rate, triage, generate", group: "pipeline" },
-  { id: "library", path: "/discovery", label: "Library", hint: "Search and find indexed media", group: "pipeline" },
-  { id: "stills", path: "/discovery/stills", label: "Stills", hint: "Input still gallery · collections · I2V launch", group: "pipeline" },
-  { id: "clips", path: "/discovery/clips", label: "Clips", hint: "Browse clip bookmarks across parents", group: "pipeline" },
-  { id: "factory", path: "/discovery/factory-map", label: "Factory", hint: "Families, hourlies, recover / replay", group: "pipeline" },
-  { id: "rate", path: "/discovery/rate", label: "Rating", hint: "Rating bootstrap queue", group: "pipeline" },
+  { id: "home", path: "/", label: "Home", mark: "Ho", hint: "Resume the loop — rate, triage, generate", group: "now" },
+  {
+    id: "workbench",
+    path: "/workbench",
+    label: "Workbench",
+    mark: "Wb",
+    hint: "Job status — pending trim, retry, bindings, discard",
+    group: "now",
+  },
+  { id: "queue", path: "/comfy-queue", label: "Queue", mark: "Q", hint: "What's generating on Comfy right now", group: "now" },
+  { id: "library", path: "/discovery", label: "Library", mark: "Lb", hint: "Search and find indexed media", group: "browse" },
+  { id: "stills", path: "/discovery/stills", label: "Stills", mark: "St", hint: "Input still gallery · collections · I2V launch", group: "browse" },
+  { id: "clips", path: "/discovery/clips", label: "Clips", mark: "Cl", hint: "Browse clip bookmarks across parents", group: "browse" },
+  { id: "factory", path: "/discovery/factory-map", label: "Factory", mark: "Fc", hint: "Families, hourlies, recover / replay", group: "produce" },
   {
     id: "pools",
     path: "/discovery/pools",
     label: "Follow-up",
+    mark: "Fu",
     hint: "Videos marked to fix, look at, or vary later",
-    group: "pipeline",
+    group: "produce",
+  },
+  { id: "rate", path: "/discovery/rate", label: "Rating", mark: "Rt", hint: "Rating bootstrap queue", group: "produce" },
+  {
+    id: "remove",
+    path: "/discovery/remove",
+    label: "Remove",
+    mark: "Rm",
+    hint: "Review and permanently delete Remove-marked outputs",
+    group: "care",
   },
   {
     id: "submit",
     path: "/submit",
     label: "Submit",
+    mark: "Sb",
     hint: "Intent-only compose — open from Library, Clips, or Workbench",
-    group: "pipeline",
+    group: "produce",
     nav: false,
-  },
-  {
-    id: "workbench",
-    path: "/workbench",
-    label: "Workbench",
-    hint: "Job status — pending trim, retry, bindings, discard",
-    group: "pipeline",
   },
   {
     id: "family-ab",
     path: "/family-ab",
     label: "Family A/B",
+    mark: "AB",
     hint: "Exemplar-locked family compare · catalog distinction",
-    group: "tools",
+    group: "labs",
   },
-  { id: "queue", path: "/comfy-queue", label: "Queue", hint: "What's generating on Comfy right now", group: "pipeline" },
-  { id: "vision-slices", path: "/vision/slices", label: "Vision slices", hint: "V1 time-slice captions vs video", group: "tools" },
-  { id: "experiments", path: "/experiments", label: "Experiments", hint: "Tune experiments & runs", group: "tools" },
-  { id: "workflows", path: "/workflow-explorer", label: "Workflows", hint: "Workflow & factory-asset explorer", group: "tools" },
-  { id: "orchestrator", path: "/orchestrator", label: "Orchestrator", hint: "Projects, collections, pipelines", group: "tools" },
+  { id: "vision-slices", path: "/vision/slices", label: "Vision", mark: "Vs", hint: "V1 time-slice captions vs video", group: "labs" },
+  { id: "experiments", path: "/experiments", label: "Experiments", mark: "Ex", hint: "Tune experiments & runs", group: "labs" },
+  { id: "workflows", path: "/workflow-explorer", label: "Workflows", mark: "Wf", hint: "Workflow & factory-asset explorer", group: "labs" },
+  { id: "orchestrator", path: "/orchestrator", label: "Orchestrator", mark: "Or", hint: "Projects, collections, pipelines", group: "labs" },
 ];
 
 const ROUTES_BY_ID: Record<AppRouteId, AppRoute> = APP_ROUTES.reduce(
@@ -102,12 +125,12 @@ const MATCHERS: { id: AppRouteId; test: (p: string) => boolean }[] = [
   { id: "experiments", test: (p) => p.startsWith("/experiments") },
   { id: "family-ab", test: (p) => p.startsWith("/family-ab") },
   { id: "submit", test: (p) => p.startsWith("/submit") },
-  // Canonical /workbench; keep /work-products as a deep-link alias.
   { id: "workbench", test: (p) => p.startsWith("/workbench") || p.startsWith("/work-products") },
   { id: "vision-slices", test: (p) => p.startsWith("/vision") },
   { id: "factory", test: (p) => p.startsWith("/discovery/factory-map") },
   { id: "rate", test: (p) => p.startsWith("/discovery/rate") },
   { id: "pools", test: (p) => p.startsWith("/discovery/pools") || p.startsWith("/discovery/follow-up") },
+  { id: "remove", test: (p) => p.startsWith("/discovery/remove") },
   { id: "stills", test: (p) => p.startsWith("/discovery/stills") },
   { id: "clips", test: (p) => p.startsWith("/discovery/clips") },
   { id: "library", test: (p) => p.startsWith("/discovery") },
@@ -128,6 +151,14 @@ export function routeHref(id: AppRouteId): string {
 
 export function routesForGroup(group: AppNavGroup): AppRoute[] {
   return APP_ROUTES.filter((r) => r.group === group && r.nav !== false);
+}
+
+export function navGroups(): Array<{ id: AppNavGroup; label: string; routes: AppRoute[] }> {
+  return NAV_GROUP_ORDER.map((id) => ({
+    id,
+    label: NAV_GROUP_LABEL[id],
+    routes: routesForGroup(id),
+  })).filter((g) => g.routes.length);
 }
 
 /** Destinations listed in the phone hamburger (every nav route). */

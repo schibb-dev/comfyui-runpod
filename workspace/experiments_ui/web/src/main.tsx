@@ -23,6 +23,7 @@ const SCREENS: Record<AppRouteId, React.LazyExoticComponent<React.ComponentType>
   library: lazy(() => import("./ui/DiscoveryLibraryApp").then((m) => ({ default: m.DiscoveryLibraryApp }))),
   stills: lazy(() => import("./ui/StillGalleryApp").then((m) => ({ default: m.StillGalleryApp }))),
   clips: lazy(() => import("./ui/ClipsLibraryApp").then((m) => ({ default: m.ClipsLibraryApp }))),
+  remove: lazy(() => import("./ui/RemoveReviewApp").then((m) => ({ default: m.RemoveReviewApp }))),
   experiments: lazy(() => import("./ui/App").then((m) => ({ default: m.App }))),
 };
 
