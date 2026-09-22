@@ -1,3 +1,4 @@
+import { jobOverrideSearchLabel } from "./jobOverrides";
 import type { WorkProductItem } from "./types";
 
 export type MediaFocusRelation = "output" | "source";
@@ -36,6 +37,8 @@ export function workProductMediaHaystack(item: WorkProductItem): string {
     item.output_relpath || "",
     item.parent_output_relpath || "",
     item.parent_output || "",
+    item.stack_id || "",
+    jobOverrideSearchLabel(item),
   ];
   const bindings = item.bindings;
   if (bindings && typeof bindings === "object") {

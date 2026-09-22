@@ -22,6 +22,13 @@ import { PipelineScreen } from "./PipelineScreen";
 import { useRegisterPhoneOverflow } from "./phoneChrome";
 import { useNarrowLayout } from "./useNarrowLayout";
 import { useDeviceContext } from "./viewport";
+import {
+  WorkbenchFocusMedia,
+  WorkbenchFocusSwipeView,
+  buildWorkbenchSwipeEntries,
+  workbenchJobSwipeKey,
+  workbenchSwipeSectionLabel,
+} from "./WorkbenchFocusSwipe";
 import { JsonPeekButton, PromptMarkupTable, PromptPeekButton } from "./PromptPeek";
 import {
   clonePromptRows,
@@ -65,7 +72,6 @@ import { AppetitePreviewBadge, AppetitePreviewFrame } from "./AppetitePreviewBad
 import { DiscoveryAssetLineagePanel } from "./DiscoveryAssetLineagePanel";
 import { ComfyHealthBanner, useComfyHealthRetrySec } from "./ComfyHealthBanner";
 import { comfyHealthIsBackoff, formatComfyRetry } from "./comfyHealth";
-import { RemoveReviewBanner } from "./RemoveReviewBanner";
 import { SubmitComposerModal } from "./SubmitComposerModal";
 import { useAssetRatingsTick } from "./WorkProductAppetiteStrip";
 import { ProvenanceAppetitePanel } from "./ProvenanceAppetitePanel";
@@ -81,6 +87,13 @@ import {
   workProductAppetiteRelpath,
 } from "./workProductAppetite";
 import { nextOffSetForGroupDoubleClick } from "./filterGroupDoubleClick";
+import {
+  filterWorkProductsByFamily,
+  filterWorkProductsByOverride,
+  JobOverrideBadge,
+  type OverrideNeed,
+} from "./jobOverrides";
+import { WorkbenchFindPanel } from "./WorkbenchFind";
 import {
   filesUrlForRelpath,
   filterWorkProductsByMedia,
@@ -160,8 +173,12 @@ const NAV_SECTION_OPEN_KEY = "work-products-nav-section-open-v1";
 const HOURLY_ONLY_KEY = "work-products-hourly-only";
 const STATUS_FILTER_OFF_KEY = "work-products-status-filter-off";
 const MARKER_FILTER_OFF_KEY = "work-products-marker-filter-off";
-const CHROME_KEY = "work-products-chrome-v2";
-const FILTER_CHIP_DBLCLICK_HINT = "double-click to show only this · again to show all";
+const CHROME_KEY = "work-products-chrome-v3";
+const CHROME_KEY_V2 = "work-products-chrome-v2";
+const OVERRIDE_FILTER_KEY = "work-products-override-filter-v1";
+const WORKBENCH_AUTOPLAY_KEY = "workbench_video_autoplay";
+const WORKBENCH_LOOP_KEY = "workbench_video_loop";
+const FAMILY_FILTER_KEY = "work-products-family-filter-v1";
 
 type WorkProductSort = WorkProductCompletedSort;
 
@@ -281,23 +298,93 @@ function persistHourlyOnly(hourlyOnly: boolean) {
   }
 }
 
-function loadChrome(): { tools: boolean; filters: boolean } {
+function loadWorkbenchAutoplay(): boolean {
   try {
-    const raw = localStorage.getItem(CHROME_KEY);
-    if (!raw) return { tools: false, filters: false };
-    const parsed = JSON.parse(raw) as { tools?: unknown; filters?: unknown };
-    return {
-      tools: parsed.tools === true,
-      filters: parsed.filters === true,
-    };
+    return localStorage.getItem(WORKBENCH_AUTOPLAY_KEY) === "1";
   } catch {
-    return { tools: false, filters: false };
+    return false;
   }
 }
 
-function persistChrome(next: { tools: boolean; filters: boolean }) {
+function persistWorkbenchAutoplay(on: boolean) {
+  try {
+    localStorage.setItem(WORKBENCH_AUTOPLAY_KEY, on ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadWorkbenchLoop(): boolean {
+  try {
+    const v = localStorage.getItem(WORKBENCH_LOOP_KEY);
+    if (v === "0") return false;
+  } catch {
+    /* ignore */
+  }
+  return true;
+}
+
+function persistWorkbenchLoop(on: boolean) {
+  try {
+    localStorage.setItem(WORKBENCH_LOOP_KEY, on ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadChrome(): { tools: boolean; advanced: boolean } {
+  try {
+    const raw = localStorage.getItem(CHROME_KEY) || localStorage.getItem(CHROME_KEY_V2);
+    if (!raw) return { tools: false, advanced: false };
+    const parsed = JSON.parse(raw) as { tools?: unknown; filters?: unknown; advanced?: unknown };
+    return {
+      tools: parsed.tools === true,
+      advanced: parsed.advanced === true || parsed.filters === true,
+    };
+  } catch {
+    return { tools: false, advanced: false };
+  }
+}
+
+function persistChrome(next: { tools: boolean; advanced: boolean }) {
   try {
     localStorage.setItem(CHROME_KEY, JSON.stringify(next));
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadOverrideNeed(): Set<OverrideNeed> {
+  const allowed = new Set<OverrideNeed>(["any", "prompt", "loras", "params", "stack"]);
+  try {
+    const raw = localStorage.getItem(OVERRIDE_FILTER_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(
+      parsed.map((x) => String(x || "").trim() as OverrideNeed).filter((x) => allowed.has(x)),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+function persistOverrideNeed(need: Set<OverrideNeed>) {
+  persistStringSet(OVERRIDE_FILTER_KEY, need);
+}
+
+function loadFamilyFilter(): string {
+  try {
+    return String(localStorage.getItem(FAMILY_FILTER_KEY) || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function persistFamilyFilter(family: string) {
+  try {
+    if (family.trim()) localStorage.setItem(FAMILY_FILTER_KEY, family.trim());
+    else localStorage.removeItem(FAMILY_FILTER_KEY);
   } catch {
     /* ignore */
   }
@@ -689,34 +776,6 @@ function statusFilterVisual(status: string): string {
   if (s === "complete" || s === "deposited") return "ok";
   if (s === "abandoned" || s === "unknown") return "muted";
   return "pending";
-}
-
-function statusFilterButtonClass(status: string, on: boolean): string {
-  return `work-products-status-toggle work-products-status-toggle--${statusFilterVisual(status)}${
-    on ? " is-on" : " is-off"
-  }`;
-}
-
-function markerFilterVisual(marker: string): string {
-  const s = marker.toLowerCase();
-  if (s === "extend") return "extend";
-  if (s === "replay") return "replay";
-  if (s === "derive" || s === "predicted_derive" || s === "predicted") return "derive";
-  if (s === "product") return "ok";
-  if (s === "other" || s === "unset") return "muted";
-  return "pending";
-}
-
-function markerFilterButtonClass(marker: string, on: boolean): string {
-  return `work-products-status-toggle work-products-status-toggle--${markerFilterVisual(marker)}${
-    on ? " is-on" : " is-off"
-  }`;
-}
-
-function appetiteFilterButtonClass(key: string, on: boolean): string {
-  return `work-products-status-toggle work-products-status-toggle--appetite-${key}${
-    on ? " is-on" : " is-off"
-  }`;
 }
 
 function formatWhen(iso?: string | null): string {
@@ -5881,6 +5940,7 @@ function WorkProductIndexRow({
             </span>
           ) : null}
           {workProductShowFactoryChrome(item) ? <PromptVariantBadge item={item} /> : null}
+          <JobOverrideBadge item={item} />
           {item.is_hourly ? (
             <span className="work-product-badge work-product-badge--hourly" title="Produced by the hourly planner">
               Hourly
@@ -6082,6 +6142,7 @@ function WorkProductRowInner({
               </span>
             ) : null}
             {workProductShowFactoryChrome(item) ? <PromptVariantBadge item={item} /> : null}
+            <JobOverrideBadge item={item} />
             {item.job_key && item.family_slug && workProductShowFactoryChrome(item) ? (
               <a
                 className="work-product-badge work-product-badge--link"
@@ -6239,6 +6300,8 @@ export function WorkProductsApp() {
   const [statusOff, setStatusOff] = useState<Set<string>>(() => loadStatusFilterOff());
   const [markerOff, setMarkerOff] = useState<Set<string>>(() => loadMarkerFilterOff());
   const [appetiteOff, setAppetiteOff] = useState<Set<string>>(() => loadAppetiteFilterOff());
+  const [overrideNeed, setOverrideNeed] = useState<Set<OverrideNeed>>(() => loadOverrideNeed());
+  const [familyFilter, setFamilyFilter] = useState(() => loadFamilyFilter());
   const appetiteTick = useAssetRatingsTick();
   const [clearFailedBusy, setClearFailedBusy] = useState(false);
   const [clearFailedMsg, setClearFailedMsg] = useState<string | null>(null);
@@ -6252,10 +6315,8 @@ export function WorkProductsApp() {
   /** Resource deep-links (job / prompt / media) start pinned + list collapsed. */
   const [focusPinned, setFocusPinned] = useState(() => hasResourceDeepLink);
   const [listOpen, setListOpen] = useState(() => !hasResourceDeepLink);
-  const [toolsOpen, setToolsOpen] = useState(
-    () => Boolean(deepLink.q) || followUpSet || loadChrome().tools,
-  );
-  const [filtersOpen, setFiltersOpen] = useState(() => loadChrome().filters);
+  const [toolsOpen, setToolsOpen] = useState(() => followUpSet || loadChrome().tools);
+  const [advancedOpen, setAdvancedOpen] = useState(() => loadChrome().advanced);
   const [navSectionOpen, setNavSectionOpen] = useState<Record<WorkProductNavSectionId, boolean>>(
     () => loadNavSectionOpen(),
   );
@@ -6265,15 +6326,28 @@ export function WorkProductsApp() {
   const narrowLayout = useNarrowLayout(960);
   const { device } = useDeviceContext();
   const phone = device === "phone";
-  const [phonePane, setPhonePane] = useState<null | "filters" | "tools" | "details">(null);
+  const [phonePane, setPhonePane] = useState<null | "find" | "details" | "actions">(null);
+  const [swipeSection, setSwipeSection] = useState<WorkProductNavSectionId | null>(null);
+  const [videoAutoplay, setVideoAutoplay] = useState(loadWorkbenchAutoplay);
+  const [loopPlayback, setLoopPlayback] = useState(loadWorkbenchLoop);
   const phoneList = phone && listOpen;
-  const phoneFocus = phone && !listOpen;
+  const phoneSwipe = phone && !listOpen;
+  const phoneFocus = phoneSwipe;
   const toggleJobList = useCallback(() => setListOpen((open) => !open), []);
   const showJobList = useCallback(() => {
     setPhonePane(null);
+    setSwipeSection(null);
     setListOpen(true);
   }, []);
   const hideJobList = useCallback(() => setListOpen(false), []);
+  const setVideoAutoplayFromUser = useCallback((on: boolean) => {
+    setVideoAutoplay(on);
+    persistWorkbenchAutoplay(on);
+  }, []);
+  const setLoopPlaybackFromUser = useCallback((on: boolean) => {
+    setLoopPlayback(on);
+    persistWorkbenchLoop(on);
+  }, []);
   const clearResourceFocus = useCallback(() => {
     setFocusPinned(false);
     setFocusMedia(null);
@@ -6606,9 +6680,15 @@ export function WorkProductsApp() {
       ? []
       : filterWorkProductsByMedia(named, focusMedia, { producersOnly: Boolean(focusMedia) });
     const rows = sortWorkProductList(
-      filterWorkProductsByAppetite(
-        filterWorkProductsByMarker(filterWorkProductsByStatus(mediaRows, statusOff), markerOff),
-        appetiteOff,
+      filterWorkProductsByFamily(
+        filterWorkProductsByOverride(
+          filterWorkProductsByAppetite(
+            filterWorkProductsByMarker(filterWorkProductsByStatus(mediaRows, statusOff), markerOff),
+            appetiteOff,
+          ),
+          overrideNeed,
+        ),
+        familyFilter,
       ),
       sort,
       appetiteSortRank,
@@ -6629,6 +6709,8 @@ export function WorkProductsApp() {
     statusOff,
     markerOff,
     appetiteOff,
+    overrideNeed,
+    familyFilter,
     focusedItem,
     appetiteTick,
   ]);
@@ -6698,6 +6780,7 @@ export function WorkProductsApp() {
     mediaPickTouched.current = true;
     deepLinkScrolled.current = true;
     if (phone) {
+      setSwipeSection(workProductNavSection(item.status));
       setPhonePane(null);
       setListOpen(false);
     }
@@ -6830,6 +6913,14 @@ export function WorkProductsApp() {
         persistAppetiteFilterOff(new Set());
         setAppetiteOff(new Set());
       }
+      if (overrideNeed.size) {
+        persistOverrideNeed(new Set());
+        setOverrideNeed(new Set());
+      }
+      if (familyFilter.trim()) {
+        persistFamilyFilter("");
+        setFamilyFilter("");
+      }
       return;
     }
     if (!inVisible) return;
@@ -6860,6 +6951,8 @@ export function WorkProductsApp() {
     markerOff.size,
     statusOff.size,
     appetiteOff.size,
+    overrideNeed.size,
+    familyFilter,
     visibleItems,
     navSectionOpen,
     setNavSectionOpenId,
@@ -6915,6 +7008,182 @@ export function WorkProductsApp() {
     setAppetiteOff(next);
   };
 
+  const toggleOverrideNeed = (id: OverrideNeed) => {
+    setOverrideNeed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      persistOverrideNeed(next);
+      return next;
+    });
+  };
+
+  const focusOverrideNeed = (id: OverrideNeed) => {
+    const next =
+      overrideNeed.size === 1 && overrideNeed.has(id) ? new Set<OverrideNeed>() : new Set<OverrideNeed>([id]);
+    persistOverrideNeed(next);
+    setOverrideNeed(next);
+  };
+
+  const availableFamilies = useMemo(() => {
+    const names = new Set<string>();
+    for (const it of items) {
+      const fam = String(it.family_slug || "").trim();
+      if (fam) names.add(fam);
+    }
+    return [...names].sort((a, b) => a.localeCompare(b));
+  }, [items]);
+
+  const findActive = Boolean(
+    nameQuery.trim() ||
+      hourlyOnly ||
+      statusOff.size ||
+      markerOff.size ||
+      appetiteOff.size ||
+      overrideNeed.size ||
+      familyFilter.trim(),
+  );
+
+  const findActiveSummary = [
+    nameQuery.trim() ? `“${nameQuery.trim()}”` : null,
+    hourlyOnly && !followUpSet ? "hourly" : null,
+    statusOff.size ? `${statusOff.size} status hidden` : null,
+    markerOff.size ? `${markerOff.size} mode hidden` : null,
+    appetiteOff.size ? `${appetiteOff.size} appetite hidden` : null,
+    overrideNeed.size ? [...overrideNeed].join("·") : null,
+    familyFilter.trim() || null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  const clearFind = () => {
+    setNameQuery("");
+    setOverrideNeed(new Set());
+    persistOverrideNeed(new Set());
+    setFamilyFilter("");
+    persistFamilyFilter("");
+    if (hourlyOnly && !followUpSet) {
+      setHourlyOnly(false);
+      persistHourlyOnly(false);
+    }
+    if (statusOff.size) {
+      persistStatusFilterOff(new Set());
+      setStatusOff(new Set());
+    }
+    if (markerOff.size) {
+      persistMarkerFilterOff(new Set());
+      setMarkerOff(new Set());
+    }
+    if (appetiteOff.size) {
+      persistAppetiteFilterOff(new Set());
+      setAppetiteOff(new Set());
+    }
+  };
+
+  const findPanel = (variant: "rail" | "sheet" | "bar") => (
+    <WorkbenchFindPanel
+      variant={variant}
+      nameQuery={nameQuery}
+      onNameQuery={setNameQuery}
+      searchPlaceholder={followUpSet ? "Filename or path…" : "Family, job, override…"}
+      followUpSet={followUpSet}
+      hourlyOnly={hourlyOnly}
+      onHourlyOnly={() => {
+        if (followUpSet) return;
+        const next = !hourlyOnly;
+        setHourlyOnly(next);
+        persistHourlyOnly(next);
+      }}
+      markers={availableMarkers.map((marker) => ({
+        id: marker,
+        label: markerFilterLabel(marker),
+        count: markerCounts.get(marker) || 0,
+        on: !markerOff.has(marker),
+      }))}
+      onToggleMarker={toggleMarkerFilter}
+      onFocusMarker={focusMarkerFilter}
+      appetites={APPETITE_FILTER_KEYS.map((key) => ({
+        id: key,
+        label: APPETITE_FILTER_LABEL[key],
+        count: appetiteCounts.get(key) || 0,
+        on: !appetiteOff.has(key),
+      }))}
+      onToggleAppetite={toggleAppetiteFilter}
+      onFocusAppetite={focusAppetiteFilter}
+      statuses={availableStatuses.map((status) => ({
+        id: status,
+        label: status,
+        count: statusCounts.get(status) || 0,
+        on: !statusOff.has(status),
+      }))}
+      onToggleStatus={toggleStatusFilter}
+      onFocusStatus={focusStatusFilter}
+      overrideNeed={overrideNeed}
+      onToggleOverride={toggleOverrideNeed}
+      onFocusOverride={focusOverrideNeed}
+      families={availableFamilies}
+      familyFilter={familyFilter}
+      onFamilyFilter={(next) => {
+        setFamilyFilter(next);
+        persistFamilyFilter(next);
+      }}
+      advancedOpen={advancedOpen}
+      onAdvancedOpen={(open) => {
+        setAdvancedOpen(open);
+        persistChrome({ tools: toolsOpen, advanced: open });
+      }}
+      onClear={clearFind}
+      activeSummary={findActiveSummary}
+      workingSet={
+        variant === "sheet" ? (
+          <div id="workbench-tools" className="work-products-tools" role="group" aria-label="Workbench tools">
+            <label className="pipeline-tray-switch" title="Recent jobs, or a follow-up pile of marked videos">
+              <span>Working set</span>
+              <select
+                value={workingSet}
+                aria-label="Workbench working set"
+                onChange={(e) => applyWorkingSet(parseWorkingSetId(e.target.value))}
+              >
+                {WORKBENCH_WORKING_SETS.map((s) => {
+                  const n =
+                    s.id === "follow-up"
+                      ? bucketsQuery.data?.count
+                      : s.entry
+                        ? bucketsQuery.data?.counts?.[s.entry]
+                        : undefined;
+                  return (
+                    <option key={s.id} value={s.id}>
+                      {s.label}
+                      {typeof n === "number" ? ` (${n})` : ""}
+                    </option>
+                  );
+                })}
+              </select>
+            </label>
+            <label className="work-products-limit">
+              Completed sort
+              <select
+                value={sort}
+                onChange={(e) => {
+                  const next = e.target.value as WorkProductSort;
+                  setSort(next);
+                  persistSort(next);
+                }}
+                aria-label="Sort completed work products"
+              >
+                {SORT_OPTIONS.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        ) : undefined
+      }
+    />
+  );
+
   const refresh = () => {
     void queryState.refetch();
     void bucketsQuery.refetch();
@@ -6931,10 +7200,10 @@ export function WorkProductsApp() {
       setListOpen(true);
       if (isFollowUpWorkingSet(id)) {
         setToolsOpen(true);
-        persistChrome({ tools: true, filters: filtersOpen });
+        persistChrome({ tools: true, advanced: advancedOpen });
       }
     },
-    [filtersOpen],
+    [advancedOpen],
   );
 
   const clearFailedVisible = async () => {
@@ -7001,15 +7270,39 @@ export function WorkProductsApp() {
           ? `${focusCaption.kind} focus — close to return to the full jobs list.`
           : "";
 
+  const swipeEntries = useMemo(
+    () => buildWorkbenchSwipeEntries(visibleItems, swipeSection),
+    [visibleItems, swipeSection],
+  );
+  const swipeFocusKey = useMemo(() => {
+    if (selectedItem) return workbenchJobSwipeKey(selectedItem);
+    if (focusJob) return focusJob;
+    return swipeEntries[0]?.key ?? null;
+  }, [selectedItem, focusJob, swipeEntries]);
+
+  useEffect(() => {
+    if (!phoneSwipe || !selectedItem) return;
+    setSwipeSection((prev) => prev ?? workProductNavSection(selectedItem.status));
+  }, [phoneSwipe, selectedItem?.job_key, selectedItem?.status]);
+
+  useEffect(() => {
+    if (!phoneSwipe || !swipeEntries.length) return;
+    if (swipeFocusKey && swipeEntries.some((e) => e.key === swipeFocusKey)) return;
+    const first = swipeEntries[0];
+    if (!first) return;
+    const key = String(first.item.job_key || "").trim();
+    if (key) setFocusJob(key);
+  }, [phoneSwipe, swipeEntries, swipeFocusKey]);
+
   const phoneOverflow = useMemo(
     () =>
       phone
         ? [
-            ...(phoneFocus && selectedItem
+            ...(phoneSwipe
               ? [
                   {
                     id: "list",
-                    label: "Back to list",
+                    label: `Back to ${workbenchSwipeSectionLabel(swipeSection).toLowerCase()} list`,
                     onSelect: () => showJobList(),
                   },
                   {
@@ -7017,17 +7310,27 @@ export function WorkProductsApp() {
                     label: phonePane === "details" ? "Close job details" : "Job details",
                     onSelect: () => setPhonePane((pane) => (pane === "details" ? null : "details")),
                   },
+                  {
+                    id: "actions",
+                    label: phonePane === "actions" ? "Close job actions" : "Job actions",
+                    onSelect: () => setPhonePane((pane) => (pane === "actions" ? null : "actions")),
+                  },
+                  {
+                    id: "autoplay",
+                    label: videoAutoplay ? "Autoplay on" : "Autoplay off",
+                    onSelect: () => setVideoAutoplayFromUser(!videoAutoplay),
+                  },
+                  {
+                    id: "loop",
+                    label: loopPlayback ? "Loop on" : "Loop off",
+                    onSelect: () => setLoopPlaybackFromUser(!loopPlayback),
+                  },
                 ]
               : []),
             {
-              id: "tools",
-              label: "Working set & search",
-              onSelect: () => setPhonePane("tools"),
-            },
-            {
-              id: "filters",
-              label: "Filters",
-              onSelect: () => setPhonePane("filters"),
+              id: "find",
+              label: phonePane === "find" ? "Close Find" : findActive ? "Find · on" : "Find",
+              onSelect: () => setPhonePane((pane) => (pane === "find" ? null : "find")),
             },
             {
               id: "refresh",
@@ -7049,7 +7352,8 @@ export function WorkProductsApp() {
         : [],
     [
       phone,
-      phoneFocus,
+      phoneSwipe,
+      swipeSection,
       phonePane,
       selectedItem,
       showJobList,
@@ -7057,6 +7361,11 @@ export function WorkProductsApp() {
       listOpen,
       failedVisible.length,
       clearFailedBusy,
+      findActive,
+      videoAutoplay,
+      loopPlayback,
+      setVideoAutoplayFromUser,
+      setLoopPlaybackFromUser,
     ],
   );
   useRegisterPhoneOverflow(phoneOverflow);
@@ -7067,54 +7376,32 @@ export function WorkProductsApp() {
         "work-products" +
         (phone ? " work-products--phone" : "") +
         (phoneList ? " work-products--phone-list" : "") +
-        (phoneFocus ? " work-products--phone-focus" : "") +
-        (phone && phonePane === "details" ? " work-products--phone-sheet-details" : "")
+        (phoneSwipe ? " work-products--phone-swipe" : "") +
+        (phoneFocus ? " work-products--phone-focus" : "")
       }
     >
       <PageHeader
         title="Workbench"
         actions={
           <>
+            {phone ? null : (
             <button
               type="button"
-              className={`work-products-chrome-toggle${toolsOpen || nameQuery.trim() ? " is-on" : ""}`}
+              className={`work-products-chrome-toggle${toolsOpen ? " is-on" : ""}`}
               aria-expanded={toolsOpen}
               aria-controls="workbench-tools"
-              title={toolsOpen ? "Hide working set, search, and layout" : "Show working set, search, and layout"}
+              title={toolsOpen ? "Hide working set, sort, and layout" : "Show working set, sort, and layout"}
               onClick={() => {
                 setToolsOpen((open) => {
                   const next = !open;
-                  persistChrome({ tools: next, filters: filtersOpen });
+                  persistChrome({ tools: next, advanced: advancedOpen });
                   return next;
                 });
               }}
             >
               Tools
             </button>
-            <button
-              type="button"
-              className={`work-products-chrome-toggle${
-                filtersOpen ||
-                hourlyOnly ||
-                statusOff.size ||
-                markerOff.size ||
-                appetiteOff.size
-                  ? " is-on"
-                  : ""
-              }`}
-              aria-expanded={filtersOpen}
-              aria-controls="workbench-filters"
-              title={filtersOpen ? "Hide filter chips" : "Show filter chips"}
-              onClick={() => {
-                setFiltersOpen((open) => {
-                  const next = !open;
-                  persistChrome({ tools: toolsOpen, filters: next });
-                  return next;
-                });
-              }}
-            >
-              Filters
-            </button>
+            )}
             <button
               type="button"
               className="page-header__refresh"
@@ -7167,38 +7454,40 @@ export function WorkProductsApp() {
           </>
         }
       />
-      {phone && phoneFocus ? (
+      {phone && phoneSwipe ? (
         <div className="work-products__phone-focus-bar">
           <button type="button" className="drt-btn work-products__phone-back" onClick={showJobList}>
             ← Back to list
           </button>
-          {selectedItem ? (
+          <div className="work-products__playback" role="group" aria-label="Playback">
             <button
               type="button"
-              className="drt-btn"
-              onClick={() => setPhonePane((pane) => (pane === "details" ? null : "details"))}
+              className={"work-products__playback-btn" + (videoAutoplay ? " is-on" : "")}
+              aria-pressed={videoAutoplay}
+              title={videoAutoplay ? "Autoplay on" : "Autoplay off"}
+              onClick={() => setVideoAutoplayFromUser(!videoAutoplay)}
             >
-              {phonePane === "details" ? "Close details" : "Details"}
+              Autoplay
             </button>
-          ) : null}
+            <button
+              type="button"
+              className={"work-products__playback-btn" + (loopPlayback ? " is-on" : "")}
+              aria-pressed={loopPlayback}
+              title={loopPlayback ? "Loop on" : "Loop off"}
+              onClick={() => setLoopPlaybackFromUser(!loopPlayback)}
+            >
+              Loop
+            </button>
+          </div>
+          <p className="factory-muted work-products__phone-swipe-hint">
+            {workbenchSwipeSectionLabel(swipeSection)} · ← Details · Actions →
+          </p>
         </div>
       ) : phone ? (
-        <p className="work-products__phone-hint">Tap a job for fullscreen · ☰ for filters</p>
+        <p className="work-products__phone-hint">Tap a job to swipe · ☰ Find</p>
       ) : null}
-      {(toolsOpen && !phone) || (phone && phonePane === "tools") ? (
-        <div
-          className={phone ? "work-products__phone-sheet" : "work-products-chrome-slot"}
-          role={phone ? "dialog" : undefined}
-          aria-label={phone ? "Working set" : undefined}
-        >
-          {phone ? (
-            <div className="work-products__phone-sheet-head">
-              <h2>Working set & search</h2>
-              <button type="button" className="drt-btn" onClick={() => setPhonePane(null)}>
-                Close
-              </button>
-            </div>
-          ) : null}
+      {toolsOpen && !phone ? (
+        <div className="work-products-chrome-slot">
         <div id="workbench-tools" className="work-products-tools" role="group" aria-label="Workbench tools">
           <label className="pipeline-tray-switch" title="Recent jobs, or a follow-up pile of marked videos">
             <span>Working set</span>
@@ -7222,16 +7511,6 @@ export function WorkProductsApp() {
                 );
               })}
             </select>
-          </label>
-          <label className="work-products-search" id="workbench-search">
-            <span className="work-products-search__label">Search</span>
-            <input
-              type="search"
-              value={nameQuery}
-              onChange={(e) => setNameQuery(e.target.value)}
-              placeholder={followUpSet ? "Filename or path…" : "Family or job key…"}
-              aria-label="Filter work products by name"
-            />
           </label>
           <label className="work-products-limit">
             Completed sort
@@ -7280,156 +7559,108 @@ export function WorkProductsApp() {
         </div>
         </div>
       ) : null}
-      {(listOpen && filtersOpen && !phone) || (phone && phonePane === "filters") ? (
-      <div
-        className={phone ? "work-products__phone-sheet" : "work-products-chrome-slot"}
-        role={phone ? "dialog" : undefined}
-        aria-label={phone ? "Filters" : undefined}
-      >
-        {phone ? (
+      {phone && phonePane === "find" ? (
+        <div className="work-products__phone-sheet" role="dialog" aria-label="Find jobs">
           <div className="work-products__phone-sheet-head">
-            <h2>Filters</h2>
+            <h2>Find</h2>
             <button type="button" className="drt-btn" onClick={() => setPhonePane(null)}>
               Close
             </button>
           </div>
-        ) : null}
-      <div
-        id="workbench-filters"
-        className="work-products-status-filters pipeline-filter-row"
-        role="group"
-        aria-label="Work product filters"
-      >
-        <button
-          type="button"
-          className={`work-products-status-toggle work-products-status-toggle--hourly${
-            hourlyOnly && !followUpSet ? " is-on" : " is-off"
-          }`}
-          aria-pressed={hourlyOnly && !followUpSet}
-          disabled={followUpSet}
-          title={
-            followUpSet
-              ? "Hourly filter does not apply to follow-up piles"
-              : hourlyOnly
-                ? "Hourly only — click to show all jobs"
-                : "Showing all jobs — click for hourly only"
-          }
-          onClick={() => {
-            if (followUpSet) return;
-            const next = !hourlyOnly;
-            setHourlyOnly(next);
-            persistHourlyOnly(next);
-          }}
-        >
-          <span className="work-products-status-toggle__label">hourly only</span>
-        </button>
-        {availableMarkers.length ? (
-          <>
-            <span className="work-products-status-filters__sep" aria-hidden="true" />
-            <div className="work-products-status-filters__group" role="group" aria-label="Filter by pick mode">
-              {availableMarkers.map((marker) => {
-                const on = !markerOff.has(marker);
-                const count = markerCounts.get(marker) || 0;
-                const label = markerFilterLabel(marker);
-                return (
-                  <button
-                    key={`marker-${marker}`}
-                    type="button"
-                    className={markerFilterButtonClass(marker, on)}
-                    aria-pressed={on}
-                    title={
-                      on
-                        ? `Showing ${label} (${count}) — click to hide · ${FILTER_CHIP_DBLCLICK_HINT}`
-                        : `Hidden ${label} (${count}) — click to show · ${FILTER_CHIP_DBLCLICK_HINT}`
-                    }
-                    onClick={() => toggleMarkerFilter(marker)}
-                    onDoubleClick={(e) => {
-                      e.preventDefault();
-                      focusMarkerFilter(marker);
-                    }}
-                  >
-                    <span className="work-products-status-toggle__label">{label}</span>
-                    <span className="work-products-status-toggle__count">{count}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </>
-        ) : null}
-        <span className="work-products-status-filters__sep" aria-hidden="true" />
-        <div className="work-products-status-filters__group" role="group" aria-label="Filter by appetite">
-          {APPETITE_FILTER_KEYS.map((key) => {
-            const on = !appetiteOff.has(key);
-            const count = appetiteCounts.get(key) || 0;
-            const label = APPETITE_FILTER_LABEL[key];
-            return (
-              <button
-                key={`appetite-${key}`}
-                type="button"
-                className={appetiteFilterButtonClass(key, on)}
-                aria-pressed={on}
-                title={
-                  key === "unset"
-                    ? on
-                      ? `Showing completed jobs with no appetite (${count}) — click to hide · ${FILTER_CHIP_DBLCLICK_HINT}`
-                      : `Hidden completed jobs with no appetite (${count}) — click to show · ${FILTER_CHIP_DBLCLICK_HINT}`
-                    : key === "remove"
-                      ? on
-                        ? `Showing remove-marked outputs (${count}) — hidden from factory · ${FILTER_CHIP_DBLCLICK_HINT}`
-                        : `Hidden remove-marked outputs (${count}) — click to review · ${FILTER_CHIP_DBLCLICK_HINT}`
-                    : on
-                      ? `Showing ${label} (${count}) — click to hide · ${FILTER_CHIP_DBLCLICK_HINT}`
-                      : `Hidden ${label} (${count}) — click to show · ${FILTER_CHIP_DBLCLICK_HINT}`
-                }
-                onClick={() => toggleAppetiteFilter(key)}
-                onDoubleClick={(e) => {
-                  e.preventDefault();
-                  focusAppetiteFilter(key);
-                }}
-              >
-                <span className="work-products-status-toggle__label">{label}</span>
-                <span className="work-products-status-toggle__count">{count}</span>
-              </button>
-            );
-          })}
+          {findPanel("sheet")}
         </div>
-        {availableStatuses.length ? (
-          <>
-            <span className="work-products-status-filters__sep" aria-hidden="true" />
-            <div className="work-products-status-filters__group" role="group" aria-label="Filter by job status">
-              {availableStatuses.map((status) => {
-                const on = !statusOff.has(status);
-                const count = statusCounts.get(status) || 0;
-                return (
-                  <button
-                    key={`status-${status}`}
-                    type="button"
-                    className={statusFilterButtonClass(status, on)}
-                    aria-pressed={on}
-                    title={
-                      on
-                        ? `Showing ${status} (${count}) — click to hide · ${FILTER_CHIP_DBLCLICK_HINT}`
-                        : `Hidden ${status} (${count}) — click to show · ${FILTER_CHIP_DBLCLICK_HINT}`
-                    }
-                    onClick={() => toggleStatusFilter(status)}
-                    onDoubleClick={(e) => {
-                      e.preventDefault();
-                      focusStatusFilter(status);
-                    }}
-                  >
-                    <span className="work-products-status-toggle__label">{status}</span>
-                    <span className="work-products-status-toggle__count">{count}</span>
-                  </button>
-                );
-              })}
+      ) : null}
+      {phone && phoneSwipe && phonePane === "details" && selectedItem ? (
+        <div
+          className="work-products__phone-sheet work-products__phone-sheet--details"
+          role="dialog"
+          aria-label="Job details"
+        >
+          <div className="work-products__phone-sheet-head">
+            <h2>Details</h2>
+            <div className="work-products__phone-sheet-actions">
+              <button type="button" className="drt-btn" onClick={showJobList}>
+                ← List
+              </button>
+              <button type="button" className="drt-btn" onClick={() => setPhonePane(null)}>
+                Close
+              </button>
             </div>
-          </>
-        ) : null}
-      </div>
-      </div>
+          </div>
+          <WorkProductRow
+            key={`details:${selectedItem.output_relpath || selectedItem.job_key}`}
+            item={selectedItem}
+            layout="stacked"
+            families={families}
+            stacks={stacks}
+            extendFamilyDefaults={extendFamilyDefaults}
+            onOpenSubmit={setSubmitModalIntent}
+            onCommitted={onRowCommitted}
+            onFocusJobKey={focusJobKey}
+          />
+        </div>
+      ) : null}
+      {phone && phoneSwipe && phonePane === "actions" && selectedItem ? (
+        <div
+          className="work-products__phone-sheet work-products__phone-sheet--actions"
+          role="dialog"
+          aria-label="Job actions"
+        >
+          <div className="work-products__phone-sheet-head">
+            <h2>Actions</h2>
+            <div className="work-products__phone-sheet-actions">
+              <button type="button" className="drt-btn" onClick={showJobList}>
+                ← List
+              </button>
+              <button type="button" className="drt-btn" onClick={() => setPhonePane(null)}>
+                Close
+              </button>
+            </div>
+          </div>
+          <WorkProductRow
+            key={`actions:${selectedItem.output_relpath || selectedItem.job_key}`}
+            item={selectedItem}
+            layout="stacked"
+            families={families}
+            stacks={stacks}
+            extendFamilyDefaults={extendFamilyDefaults}
+            onOpenSubmit={setSubmitModalIntent}
+            onCommitted={onRowCommitted}
+            onFocusJobKey={focusJobKey}
+          />
+        </div>
       ) : null}
 
-      <RemoveReviewBanner enabled={!appetiteOff.has("remove")} />
+      {phoneSwipe ? (
+        swipeEntries.length ? (
+          <WorkbenchFocusSwipeView
+            entries={swipeEntries}
+            focusedKey={swipeFocusKey}
+            onFocus={(key) => {
+              const hit = swipeEntries.find((e) => e.key === key);
+              const jobKey = String(hit?.item.job_key || key).trim();
+              if (!jobKey) return;
+              setFocusJob(jobKey);
+              setFocusPromptId(null);
+              setPhonePane(null);
+            }}
+            onSwipeLeft={() => setPhonePane("details")}
+            onSwipeRight={() => setPhonePane("actions")}
+            renderEntry={(entry, mode, focused) => (
+              <WorkbenchFocusMedia
+                item={entry.item}
+                decode={mode === "full"}
+                focused={focused}
+                autoplay={videoAutoplay}
+                loop={loopPlayback}
+              />
+            )}
+          />
+        ) : (
+          <div className="work-products-empty">No jobs in this section.</div>
+        )
+      ) : null}
+
       {listOpen ? <ComfyHealthBanner health={comfyHealth} /> : null}
 
       <div className={`work-products-shell${listOpen ? "" : " work-products-shell--list-collapsed"}`}>
@@ -7453,21 +7684,14 @@ export function WorkProductsApp() {
                 : "No work products found."}
           </div>
         ) : null}
-        {!loading && !error && items.length && !visibleItems.length && listOpen && !focusPinned ? (
-          <div className="work-products-empty">
-            {nameQuery.trim()
-              ? `No work products match “${nameQuery.trim()}”.`
-              : "No work products match the selected filters."}
-          </div>
-        ) : null}
-
-        {listOpen && (visibleItems.length || focusPinned) ? (
+        {listOpen && (visibleItems.length || focusPinned || items.length) ? (
           <nav
             id="workbench-jobs-index"
             className={`work-products-index${focusPinned ? " work-products-index--focused" : ""}`}
             aria-label={focusPinned ? "Focused jobs" : followUpSet ? "Follow-up" : "Workbench jobs"}
             onKeyDown={onIndexKeyDown}
           >
+            <div className="work-products-index__chrome">
             <div className="work-products-index__toolbar">
               {phone ? null : (
               <button
@@ -7552,6 +7776,8 @@ export function WorkProductsApp() {
                 </div>
               ) : null}
             </div>
+            {findPanel(phone ? "bar" : "rail")}
+            </div>
             {visibleItems.length ? (
               <div className="work-products-index__list" role="listbox" aria-label={followUpSet ? "Follow-up" : "Recent jobs"}>
                 {navSections.map((sec) => (
@@ -7601,11 +7827,17 @@ export function WorkProductsApp() {
               </div>
             ) : (
               <div className="work-products-index__empty">
-                {followUpSet
-                  ? "No videos in this follow-up pile."
-                  : focusMedia
-                    ? `No loaded jobs reference this ${focusCaption?.kind.toLowerCase() || "clip"}.`
-                    : "No jobs match this focus."}
+                {nameQuery.trim()
+                  ? `No work products match “${nameQuery.trim()}”.`
+                  : findActive
+                    ? "No work products match the selected filters."
+                    : followUpSet
+                      ? "No videos in this follow-up pile."
+                      : focusMedia
+                        ? `No loaded jobs reference this ${focusCaption?.kind.toLowerCase() || "clip"}.`
+                        : focusPinned
+                          ? "No jobs match this focus."
+                          : "No jobs in this list."}
               </div>
             )}
           </nav>
@@ -7650,7 +7882,7 @@ export function WorkProductsApp() {
             ) : null}
           </div>
         ) : null}
-        {selectedItem && !phoneList ? (
+        {selectedItem && !phoneList && !phoneSwipe ? (
           <div className="work-products-detail">
             {narrowLayout && !listOpen && !phone ? (
               <div className="work-products-detail__mobile-nav">
@@ -7671,7 +7903,7 @@ export function WorkProductsApp() {
               onFocusJobKey={focusJobKey}
             />
           </div>
-        ) : focusedGoneReason && !phoneList ? (
+        ) : focusedGoneReason && !phoneList && !phoneSwipe ? (
           <div className="work-products-detail">
             <div className="work-products-empty work-products-empty--gone">
               <p className="work-products-empty__title">{focusedGoneMessage(focusedGoneReason)}</p>
