@@ -1062,6 +1062,14 @@ def _discovery_rel_file_exists(cfg: "ServerConfig", relpath: Any) -> bool:
     return _discovery_resolve_media_file(cfg, relpath) is not None
 
 
+_OUTPUT_LIBRARY_PREFIXES = ("og/", "wip/", "output/", "experiments/")
+
+
+def _relpath_is_output_library(rel: str) -> bool:
+    n = _normalize_rel_posix(str(rel or "")).lower()
+    return n.startswith(_OUTPUT_LIBRARY_PREFIXES)
+
+
 def _discovery_workspace_input_relpath_for_source(cfg: "ServerConfig", raw: Any) -> Optional[str]:
     """
     Normalize Comfy input uploads to workspace-relative ``input/<filename>``.
@@ -1069,6 +1077,8 @@ def _discovery_workspace_input_relpath_for_source(cfg: "ServerConfig", raw: Any)
     """
     s0 = str(raw or "").strip().replace("\\", "/")
     if not s0:
+        return None
+    if _relpath_is_output_library(s0):
         return None
     if "?" in s0:
         s0 = s0.split("?", 1)[0]
@@ -17208,8 +17218,11 @@ class Handler(BaseHTTPRequestHandler):
         rel = _normalize_rel_posix(rel.lstrip("/"))
         if not rel:
             return _json_response(self, 400, {"error": "bad_path"})
-        in_rel = _discovery_workspace_input_relpath_for_source(cfg, rel) or rel
-        full = _discovery_resolve_media_file(cfg, in_rel)
+        full = _discovery_resolve_media_file(cfg, rel)
+        if full is None:
+            in_rel = _discovery_workspace_input_relpath_for_source(cfg, rel)
+            if in_rel and in_rel != rel:
+                full = _discovery_resolve_media_file(cfg, in_rel)
         if full is None:
             return _json_response(self, 404, {"error": "file_not_found", "relpath": rel})
         ctype, _enc = mimetypes.guess_type(str(full))
