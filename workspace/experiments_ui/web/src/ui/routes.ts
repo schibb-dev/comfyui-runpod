@@ -25,6 +25,16 @@ export type AppRouteId =
 
 export type AppNavGroup = "now" | "browse" | "produce" | "care" | "labs";
 
+/** Nested destinations under a primary nav route (e.g. Factory → Families / Hourlies). */
+export type AppNavChild = {
+  id: string;
+  label: string;
+  path: string;
+  hint?: string;
+  /** Override active detection; default is exact path or path + "/" prefix. */
+  match?: (pathname: string) => boolean;
+};
+
 export type AppRoute = {
   id: AppRouteId;
   /** Canonical path used for nav links. */
@@ -40,6 +50,8 @@ export type AppRoute = {
    * but is omitted from the primary nav. Default true.
    */
   nav?: boolean;
+  /** Optional nested links shown under this item when the sidebar/drawer is expanded. */
+  children?: AppNavChild[];
 };
 
 export const NAV_GROUP_ORDER: AppNavGroup[] = ["now", "browse", "produce", "care", "labs"];
@@ -67,7 +79,40 @@ export const APP_ROUTES: AppRoute[] = [
   { id: "library", path: "/discovery", label: "Library", mark: "Lb", hint: "Search and find indexed media", group: "browse" },
   { id: "stills", path: "/discovery/stills", label: "Stills", mark: "St", hint: "Input still gallery · collections · I2V launch", group: "browse" },
   { id: "clips", path: "/discovery/clips", label: "Clips", mark: "Cl", hint: "Browse clip bookmarks across parents", group: "browse" },
-  { id: "factory", path: "/discovery/factory-map", label: "Factory", mark: "Fc", hint: "Families, hourlies, recover / replay", group: "produce" },
+  {
+    id: "factory",
+    path: "/discovery/factory-map",
+    label: "Factory",
+    mark: "Fc",
+    hint: "Families, hourlies, recover / replay",
+    group: "produce",
+    children: [
+      {
+        id: "factory-families",
+        label: "Families",
+        path: "/discovery/factory-map",
+        hint: "Family map — shapes, pools, recover / replay",
+        match: (p) => {
+          const path = (p || "/").replace(/\/+$/, "") || "/";
+          if (!path.startsWith("/discovery/factory-map")) return false;
+          if (path === "/discovery/factory-map/hourlies" || path === "/discovery/factory-map/hourly") {
+            return false;
+          }
+          return true;
+        },
+      },
+      {
+        id: "factory-hourlies",
+        label: "Hourlies",
+        path: "/discovery/factory-map/hourlies",
+        hint: "Cadence, pending floor, and chain backlogs",
+        match: (p) => {
+          const path = (p || "/").replace(/\/+$/, "") || "/";
+          return path === "/discovery/factory-map/hourlies" || path === "/discovery/factory-map/hourly";
+        },
+      },
+    ],
+  },
   {
     id: "pools",
     path: "/discovery/pools",
@@ -173,6 +218,68 @@ export function routeLabel(id: AppRouteId): string {
 export function routeHint(id: AppRouteId): string | undefined {
   return ROUTES_BY_ID[id]?.hint;
 }
+
+export function navChildIsActive(child: AppNavChild, pathname: string): boolean {
+  const p = (pathname || "/").replace(/\/+$/, "") || "/";
+  if (child.match) return child.match(p);
+  const base = (child.path || "/").replace(/\/+$/, "") || "/";
+  return p === base || p.startsWith(`${base}/`);
+}
+
+/**
+ * Candidates for the same parent→child nav pattern (not all wired yet).
+ * Factory Families/Hourlies are live; the rest are the natural next nests.
+ */
+export const NAV_CHILD_CANDIDATES: Array<{
+  parentId: AppRouteId;
+  children: Array<{ id: string; label: string; note: string }>;
+}> = [
+  {
+    parentId: "factory",
+    children: [
+      { id: "factory-families", label: "Families", note: "wired — factory-map index + family/pipeline detail" },
+      { id: "factory-hourlies", label: "Hourlies", note: "wired — /discovery/factory-map/hourlies" },
+      { id: "factory-pipelines", label: "Pipelines", note: "candidate — pipeline detail already exists under factory-map" },
+    ],
+  },
+  {
+    parentId: "workbench",
+    children: [
+      { id: "wb-live", label: "Comfy Queue", note: "candidate — Workbench nav section" },
+      { id: "wb-pending", label: "Pending", note: "candidate — factory FIFO" },
+      { id: "wb-errors", label: "Errors", note: "candidate — failed / interrupted" },
+      { id: "wb-done", label: "Completed", note: "candidate — finished renders" },
+    ],
+  },
+  {
+    parentId: "queue",
+    children: [
+      { id: "queue-live", label: "Queue", note: "candidate — running/waiting tab" },
+      { id: "queue-ledger", label: "Ledger", note: "candidate — park/resume/ops tab" },
+    ],
+  },
+  {
+    parentId: "stills",
+    children: [
+      { id: "stills-gallery", label: "Gallery", note: "candidate — still grid/focus" },
+      { id: "stills-tagging", label: "Tagging", note: "candidate — Florence index-hour backlog" },
+    ],
+  },
+  {
+    parentId: "library",
+    children: [
+      { id: "library-search", label: "Search", note: "candidate — indexed media find" },
+      { id: "library-rate-doors", label: "Rate doors", note: "candidate — if split from Rating route" },
+    ],
+  },
+  {
+    parentId: "workflows",
+    children: [
+      { id: "wf-browse", label: "Browse", note: "candidate — workflow explorer tabs" },
+      { id: "wf-factory-assets", label: "Factory assets", note: "candidate — explorer tab" },
+    ],
+  },
+];
 
 export function canHandleClientPath(pathname: string): boolean {
   const p = pathname || "/";
