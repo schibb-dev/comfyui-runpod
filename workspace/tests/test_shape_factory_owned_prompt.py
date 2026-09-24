@@ -294,7 +294,7 @@ class OwnedPromptTests(unittest.TestCase):
             self.assertEqual(owned.get("source_profile"), str(catalog))
             ex = owned_prompt_to_excerpt(owned, data_root=root)
             self.assertTrue(ex.get("snowflake"))
-            self.assertEqual(ex.get("name"), "Default")
+            self.assertEqual(ex.get("name"), "Base")  # "Default" is a designation, not a name
             self.assertEqual(ex.get("seed", {}).get("positive"), "SEED")
 
             old = {
@@ -407,6 +407,98 @@ class OwnedPromptTests(unittest.TestCase):
         reserved = slugify_variant_label("Default", fallback="variant")
         self.assertTrue(reserved.startswith("variant-"), reserved)
         self.assertNotEqual(reserved, "default")
+
+    def test_catalog_identity_backfill_rename_default_stamp(self) -> None:
+        from shape_factory_owned_prompt import (
+            backfill_prompt_catalog,
+            fork_owned_prompt_from_profile_file,
+            list_prompt_variants,
+            promote_prompt_to_library,
+            rename_prompt_variant,
+            set_default_prompt_variant,
+            set_prompt_variant_available,
+        )
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            prompts = root / "pools" / "DEMO" / "prompts"
+            prompts.mkdir(parents=True)
+            (prompts / "catalog-default.json").write_text(
+                json.dumps({"label": "catalog-default", "positive": "A", "negative": ""}),
+                encoding="utf-8",
+            )
+            (prompts / "catalog-faceblast-extend.json").write_text(
+                json.dumps(
+                    {
+                        "name": "FaceBlast extend",
+                        "label": "catalog-faceblast-extend",
+                        "positive": "B",
+                        "negative": "",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            dry = backfill_prompt_catalog(root, family_slug="DEMO", apply=False)
+            self.assertTrue(dry["ok"])
+            applied = backfill_prompt_catalog(root, family_slug="DEMO", apply=True)
+            self.assertTrue(applied["ok"])
+            index = json.loads((root / "pools" / "DEMO" / "prompt_catalog.json").read_text(encoding="utf-8"))
+            default_id = index["default_variant_id"]
+            self.assertTrue(default_id)
+
+            rows = list_prompt_variants(root, "DEMO")
+            by_stem = {r["file_stem"]: r for r in rows}
+            self.assertEqual(by_stem["catalog-default"]["name"], "Base")
+            self.assertTrue(by_stem["catalog-default"]["is_default"])
+            self.assertEqual(by_stem["catalog-default"]["variant_id"], default_id)
+
+            owned = fork_owned_prompt_from_profile_file(prompts / "catalog-default.json")
+            self.assertEqual(owned.get("variant_id"), default_id)
+            self.assertEqual(owned.get("variant_name"), "Base")
+            self.assertNotEqual(str(owned.get("variant_name") or "").lower(), "default")
+
+            renamed = rename_prompt_variant(root, "DEMO", default_id, "Kneel base")
+            self.assertTrue(renamed["ok"])
+            self.assertEqual(renamed["doc"]["variant_id"], default_id)
+            self.assertEqual(renamed["doc"]["name"], "Kneel base")
+
+            other = by_stem["catalog-faceblast-extend"]["variant_id"]
+            self.assertTrue(set_default_prompt_variant(root, "DEMO", other)["ok"])
+            rows2 = list_prompt_variants(root, "DEMO")
+            self.assertTrue(next(r for r in rows2 if r["variant_id"] == other)["is_default"])
+            self.assertFalse(next(r for r in rows2 if r["variant_id"] == default_id)["is_default"])
+
+            # Cannot hide the current default
+            self.assertFalse(set_prompt_variant_available(root, "DEMO", other, False)["ok"])
+            # Hide non-default
+            self.assertTrue(set_prompt_variant_available(root, "DEMO", default_id, False)["ok"])
+            avail = list_prompt_variants(root, "DEMO", include_unavailable=False)
+            self.assertEqual([r["variant_id"] for r in avail], [other])
+
+            fork = promote_prompt_to_library(
+                data_root=root,
+                family_slug="DEMO",
+                positive="NEW",
+                negative="",
+                mode="fork",
+                name="Evening crane",
+            )
+            self.assertTrue(fork["ok"])
+            self.assertNotEqual(fork["variant_id"], other)
+            self.assertEqual(fork["doc"]["name"], "Evening crane")
+
+            upd = promote_prompt_to_library(
+                data_root=root,
+                family_slug="DEMO",
+                positive="UPDATED",
+                negative="",
+                mode="update",
+                variant_id=other,
+            )
+            self.assertTrue(upd["ok"])
+            self.assertEqual(upd["variant_id"], other)
+            self.assertEqual(upd["doc"]["positive"], "UPDATED")
+            self.assertEqual(upd["doc"]["name"], "FaceBlast extend")
 
 
 if __name__ == "__main__":

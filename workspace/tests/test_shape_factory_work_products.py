@@ -832,7 +832,8 @@ class TestWorkProducts(unittest.TestCase):
             self.assertEqual(rows[0].get("file_stem"), "catalog-default")
             self.assertEqual(rows[1].get("file_stem"), "catalog-faceblast-extend")
             self.assertEqual(rows[1].get("name"), "FaceBlast extend")
-            self.assertNotIn("name", rows[0])
+            self.assertEqual(rows[0].get("name"), "Base")
+            self.assertTrue(rows[0].get("available", True))
             shapes = data / "shapes"
             shapes.mkdir(parents=True)
             (shapes / "FB9_GEX.shape.yaml").write_text(

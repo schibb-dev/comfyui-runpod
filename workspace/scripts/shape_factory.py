@@ -8064,11 +8064,14 @@ def promote_job_prompt_to_library(
     data_root: Path,
     mode: str = "fork",
     label: Optional[str] = None,
+    name: Optional[str] = None,
     note: Optional[str] = None,
     job_key: Optional[str] = None,
     job_path: Optional[Path] = None,
     positive: Optional[str] = None,
     negative: Optional[str] = None,
+    variant_id: Optional[str] = None,
+    set_as_default: bool = False,
 ) -> dict[str, Any]:
     """
     Write this job's (or provided) prompt text into the family prompt library.
@@ -8079,6 +8082,7 @@ def promote_job_prompt_to_library(
     from shape_factory_owned_prompt import (
         ensure_owned_prompt_from_bindings,
         get_owned_prompt,
+        human_variant_name,
         promote_prompt_to_library,
         resolve_prompt_parent_path,
     )
@@ -8113,7 +8117,11 @@ def promote_job_prompt_to_library(
     pos = str(positive if positive is not None else (owned or {}).get("positive") or "")
     neg = str(negative if negative is not None else (owned or {}).get("negative") or "")
     label_s = str(label or (owned or {}).get("label") or "").strip() or None
+    name_s = str(name or (owned or {}).get("name") or (owned or {}).get("variant_name") or "").strip() or None
     parent = resolve_prompt_parent_path(job)
+    target_vid = str(variant_id or "").strip() or None
+    if not target_vid and str(mode or "").strip().lower() == "update":
+        target_vid = str((owned or {}).get("variant_id") or "").strip() or None
 
     result = promote_prompt_to_library(
         data_root=data_root,
@@ -8122,9 +8130,12 @@ def promote_job_prompt_to_library(
         negative=neg,
         mode=mode,
         label=label_s,
+        name=name_s,
         note=note,
         promoted_from_job=key,
         parent_path=parent,
+        variant_id=target_vid,
+        set_as_default=bool(set_as_default),
     )
     if not result.get("ok"):
         result["job_key"] = key
@@ -8134,10 +8145,18 @@ def promote_job_prompt_to_library(
     if owned is not None and result.get("path"):
         owned["source_profile"] = str(result["path"])
         if result.get("doc") and isinstance(result["doc"], dict):
-            if result["doc"].get("label"):
-                owned["label"] = result["doc"]["label"]
-            if result["doc"].get("content_hash"):
-                owned["content_hash"] = result["doc"]["content_hash"]
+            doc = result["doc"]
+            if doc.get("label"):
+                owned["label"] = doc["label"]
+            if doc.get("content_hash"):
+                owned["content_hash"] = doc["content_hash"]
+            if doc.get("variant_id"):
+                owned["variant_id"] = doc["variant_id"]
+            display = human_variant_name(doc)
+            owned["name"] = display
+            owned["variant_name"] = display
+            if doc.get("slug"):
+                owned["slug"] = doc["slug"]
         job["prompt"] = owned
         # Also refresh binding path so pool pickers see the same file.
         bindings = job.get("bindings") if isinstance(job.get("bindings"), dict) else {}
@@ -9965,7 +9984,38 @@ def build_parser() -> argparse.ArgumentParser:
     add_hygiene_subparser(sub)
     add_reuse_stats_subparser(sub)
 
+    pc = sub.add_parser(
+        "prompt-catalog",
+        help="Prompt variant catalog: backfill ids/names/available + default designation",
+    )
+    pc_sub = pc.add_subparsers(dest="prompt_catalog_cmd", required=True)
+    pc_bf = pc_sub.add_parser(
+        "backfill",
+        help="Mint variant_id / name / available; write pools/<family>/prompt_catalog.json",
+    )
+    pc_bf.add_argument("--family", default=None, help="Limit to one family slug")
+    pc_bf.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write changes (default is dry-run)",
+    )
+    pc_bf.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT), help="Host data root (.data)")
+    pc_bf.set_defaults(func=cmd_prompt_catalog_backfill)
+
     return parser
+
+
+def cmd_prompt_catalog_backfill(args: argparse.Namespace) -> int:
+    from shape_factory_owned_prompt import backfill_prompt_catalog
+
+    data_root = Path(getattr(args, "data_root", None) or DEFAULT_DATA_ROOT).expanduser().resolve()
+    report = backfill_prompt_catalog(
+        data_root,
+        family_slug=getattr(args, "family", None),
+        apply=bool(getattr(args, "apply", False)),
+    )
+    print(json.dumps(report, indent=2, ensure_ascii=False))
+    return 0 if report.get("ok") else 1
 
 
 def main(argv: Optional[list[str]] = None) -> int:

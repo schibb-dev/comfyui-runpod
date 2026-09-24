@@ -8,5 +8,7 @@
   "slug": "default",
   "parent_path": "/workspace/.data/pools/FB9_GEX2_identity_anchor/prompts/catalog-default.json",
   "promoted_from_job": "FB9_GEX2_identity_anchor__id-801f0a0aec2b4ea594d3324b129d8ed5ff48aade750eb897ea6ae94f3750f6aa__pp-catalog-d_ui1789407532",
-  "note": "better default"
+  "note": "better default",
+  "name": "Base",
+  "available": true
 }

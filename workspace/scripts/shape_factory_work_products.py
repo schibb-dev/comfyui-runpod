@@ -261,13 +261,39 @@ def list_family_prompt_profiles(data_root: Path, family_slug: str) -> List[Dict[
     slug = str(family_slug or "").strip()
     if not slug:
         return []
+    try:
+        from shape_factory_owned_prompt import list_prompt_variants
+
+        variants = list_prompt_variants(data_root, slug, include_unavailable=True)
+    except Exception:
+        variants = []
+    if variants:
+        rows: List[Dict[str, Any]] = []
+        for v in variants:
+            row: Dict[str, Any] = {
+                "slug": v.get("slug") or v.get("file_stem") or "",
+                "file_stem": v.get("file_stem"),
+                "label": v.get("label"),
+                "basename": v.get("basename"),
+                "path": v.get("path"),
+                "available": bool(v.get("available", True)),
+                "is_default": bool(v.get("is_default")),
+            }
+            if v.get("name"):
+                row["name"] = v["name"]
+            if v.get("variant_id"):
+                row["variant_id"] = v["variant_id"]
+            rows.append(row)
+        return rows
+
+    # Fallback if catalog helpers unavailable
     prompts_dir = Path(data_root) / "pools" / slug / "prompts"
     if not prompts_dir.is_dir():
         return []
     seen: set[str] = set()
-    rows: List[Dict[str, Any]] = []
+    rows = []
     for path in sorted(prompts_dir.glob("*.json")):
-        if not path.is_file():
+        if not path.is_file() or path.name.startswith("_") or path.name in {"_index.json", "prompt_catalog.json"}:
             continue
         key = str(path.resolve())
         if key in seen:
@@ -276,7 +302,6 @@ def list_family_prompt_profiles(data_root: Path, family_slug: str) -> List[Dict[
         label = ""
         name = ""
         explicit_slug = ""
-        raw: Any = None
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(raw, dict):
@@ -284,23 +309,22 @@ def list_family_prompt_profiles(data_root: Path, family_slug: str) -> List[Dict[
                 name = str(raw.get("name") or "").strip()
                 explicit_slug = str(raw.get("slug") or "").strip()
         except (OSError, json.JSONDecodeError, TypeError):
-            label = ""
-            name = ""
-            explicit_slug = ""
-            raw = None
+            pass
         stem = path.stem
         try:
             from shape_factory_owned_prompt import prompt_variant_slug
 
-            slug = prompt_variant_slug(explicit_slug, name, label, stem) or stem
+            vslug = prompt_variant_slug(explicit_slug, name, label, stem) or stem
         except Exception:
-            slug = explicit_slug or stem
-        row: Dict[str, Any] = {
-            "slug": slug,
+            vslug = explicit_slug or stem
+        row = {
+            "slug": vslug,
             "file_stem": stem,
             "label": label or stem,
             "basename": path.name,
             "path": str(path.resolve()),
+            "available": True,
+            "is_default": path.name == "catalog-default.json",
         }
         if name:
             row["name"] = name
@@ -335,6 +359,15 @@ def _shapes_pipelines_fingerprint(data_root: Path) -> str:
     pools = Path(data_root) / "pools"
     if pools.is_dir():
         for path in pools.glob("*/prompts/*.json"):
+            name = path.name
+            if name.startswith("_") or name in {"_index.json", "prompt_catalog.json"}:
+                continue
+            try:
+                latest = max(latest, float(path.stat().st_mtime))
+                count += 1
+            except OSError:
+                continue
+        for path in pools.glob("*/prompt_catalog.json"):
             try:
                 latest = max(latest, float(path.stat().st_mtime))
                 count += 1

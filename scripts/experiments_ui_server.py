@@ -3701,9 +3701,12 @@ def _shape_factory_promote_template_payload(cfg: ServerConfig, body: Dict[str, A
             job_path=Path(job_path_raw) if job_path_raw else None,
             mode=mode,
             label=str(body.get("label") or "").strip() or None,
+            name=str(body.get("name") or "").strip() or None,
             note=str(body.get("note") or "").strip() or None,
             positive=body.get("positive") if isinstance(body.get("positive"), str) else None,
             negative=body.get("negative") if isinstance(body.get("negative"), str) else None,
+            variant_id=str(body.get("variant_id") or "").strip() or None,
+            set_as_default=bool(body.get("set_as_default")),
         )
         out["results"]["prompt"] = prompt_res
         if not prompt_res.get("ok"):
@@ -4189,6 +4192,69 @@ def _shape_factory_prompt_profile_payload(cfg: ServerConfig, q: Dict[str, List[s
         workspace_root=cfg.workspace_root,
         output_root=cfg.output_root,
     )
+
+
+def _shape_factory_prompt_variants_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
+    """GET /api/shape-factory/prompt-variants?family=… — catalog rows with id/name/available/default."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+    from shape_factory_owned_prompt import list_prompt_variants, load_prompt_catalog_index  # type: ignore
+
+    family = ""
+    include_unavailable = True
+    for key, vals in q.items():
+        if not vals:
+            continue
+        if key == "family":
+            family = str(vals[0] or "").strip()
+        if key in {"include_unavailable", "all"} and str(vals[0]).strip().lower() in {"0", "false", "no"}:
+            include_unavailable = False
+    if not family:
+        raise ValueError("missing_family")
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    variants = list_prompt_variants(data_root, family, include_unavailable=include_unavailable)
+    index = load_prompt_catalog_index(data_root, family)
+    return {
+        "ok": True,
+        "family_slug": family,
+        "default_variant_id": index.get("default_variant_id"),
+        "variants": variants,
+    }
+
+
+def _shape_factory_prompt_variants_mutate_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /api/shape-factory/prompt-variants — rename | set_available | set_default."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+    from shape_factory_owned_prompt import (  # type: ignore
+        rename_prompt_variant,
+        set_default_prompt_variant,
+        set_prompt_variant_available,
+    )
+
+    action = str(body.get("action") or "").strip().lower()
+    family = str(body.get("family") or body.get("family_slug") or "").strip()
+    variant_id = str(body.get("variant_id") or "").strip()
+    if not action:
+        raise ValueError("missing_action")
+    if not family:
+        raise ValueError("missing_family")
+    if not variant_id:
+        raise ValueError("missing_variant_id")
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    if action == "rename":
+        return rename_prompt_variant(data_root, family, variant_id, str(body.get("name") or ""))
+    if action == "set_available":
+        if "available" not in body:
+            raise ValueError("missing_available")
+        return set_prompt_variant_available(data_root, family, variant_id, bool(body.get("available")))
+    if action == "set_default":
+        return set_default_prompt_variant(data_root, family, variant_id)
+    raise ValueError("bad_action")
 
 
 def _shape_factory_families_payload(cfg: ServerConfig) -> Dict[str, Any]:
@@ -12149,14 +12215,25 @@ def _queue_enrich_from_job(
                 continue
             name = Path(raw.replace("\\", "/")).name
             if slot == "prompt_profile":
-                glance["prompt_profile"] = name
+                # Never show designation sidecars (e.g. _index.json → "Index") as the variant.
                 try:
                     from shape_factory_owned_prompt import (  # type: ignore
+                        coerce_library_prompt_path,
                         ensure_owned_prompt_from_bindings,
                         get_owned_prompt,
+                        human_variant_name,
+                        is_prompt_catalog_meta_file,
                         owned_prompt_to_excerpt,
                     )
 
+                    if is_prompt_catalog_meta_file(name) or is_prompt_catalog_meta_file(raw):
+                        coerced = coerce_library_prompt_path(
+                            raw, data_root=data_root, family_slug=fam
+                        )
+                        if coerced is not None:
+                            raw = str(coerced)
+                            name = coerced.name
+                    glance["prompt_profile"] = human_variant_name({"label": name}, name)
                     owned = get_owned_prompt(job) or ensure_owned_prompt_from_bindings(
                         job, data_root=data_root
                     )
@@ -12164,14 +12241,17 @@ def _queue_enrich_from_job(
                         prompt_profile = owned_prompt_to_excerpt(owned, data_root=data_root)
                         display = str(
                             (prompt_profile or {}).get("name")
+                            or owned.get("variant_name")
                             or owned.get("name")
                             or owned.get("label")
                             or ""
                         ).strip()
-                        if display:
-                            glance["prompt_profile"] = display
-                        elif owned.get("source_profile"):
-                            glance["prompt_profile"] = Path(str(owned["source_profile"])).name
+                        display = human_variant_name(
+                            {"name": display, "label": display},
+                            display,
+                            Path(str(owned.get("source_profile") or name)).name,
+                        )
+                        glance["prompt_profile"] = display
                         if prompt_profile.get("snowflake"):
                             glance["prompt_snowflake"] = True
                     else:
@@ -12185,6 +12265,9 @@ def _queue_enrich_from_job(
                         )
                 except Exception:
                     prompt_profile = {"path": raw, "basename": name}
+                    glance["prompt_profile"] = (
+                        "Base" if name.startswith("_") or name in {"_index.json", "prompt_catalog.json"} else name
+                    )
             elif slot in ("source_video", "source_still") and "source_name" not in glance:
                 glance["source_name"] = name
             elif slot == "identity_anchor":
@@ -12192,17 +12275,23 @@ def _queue_enrich_from_job(
         # Jobs with owned prompt but missing binding path still surface prompt.
         if prompt_profile is None:
             try:
-                from shape_factory_owned_prompt import get_owned_prompt, owned_prompt_to_excerpt  # type: ignore
+                from shape_factory_owned_prompt import (  # type: ignore
+                    get_owned_prompt,
+                    human_variant_name,
+                    owned_prompt_to_excerpt,
+                )
 
                 owned = get_owned_prompt(job)
                 if owned is not None:
                     prompt_profile = owned_prompt_to_excerpt(owned, data_root=data_root)
-                    glance["prompt_profile"] = str(
-                        (prompt_profile or {}).get("name")
-                        or owned.get("name")
-                        or owned.get("label")
-                        or Path(str(owned.get("source_profile") or "")).name
-                        or "owned-prompt"
+                    glance["prompt_profile"] = human_variant_name(
+                        prompt_profile if isinstance(prompt_profile, dict) else None,
+                        (prompt_profile or {}).get("name") if isinstance(prompt_profile, dict) else None,
+                        owned.get("variant_name"),
+                        owned.get("name"),
+                        owned.get("label"),
+                        Path(str(owned.get("source_profile") or "")).name,
+                        "Base",
                     )
                     if prompt_profile.get("snowflake"):
                         glance["prompt_snowflake"] = True
@@ -13406,6 +13495,15 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return _json_response(self, 500, {"ok": False, "error": "prompt_profile_failed", "detail": str(e)})
 
+        if path == "/api/shape-factory/prompt-variants":
+            try:
+                payload = _shape_factory_prompt_variants_payload(cfg, q)
+                return _json_response(self, 200, payload)
+            except ValueError as e:
+                return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+            except Exception as e:
+                return _json_response(self, 500, {"ok": False, "error": "prompt_variants_failed", "detail": str(e)})
+
         if path == "/api/shape-factory/families":
             try:
                 payload = _shape_factory_families_payload(cfg)
@@ -14008,6 +14106,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_shape_factory_update_owned_loras_post()
         if path == "/api/shape-factory/promote-template":
             return self._handle_shape_factory_promote_template_post()
+        if path == "/api/shape-factory/prompt-variants":
+            return self._handle_shape_factory_prompt_variants_post()
         if path == "/api/shape-factory/clips":
             return self._handle_shape_factory_clips_post()
         if path == "/api/shape-factory/quarantine/release":
@@ -14633,6 +14733,23 @@ class Handler(BaseHTTPRequestHandler):
             )
         if payload.get("error") == "job_not_found":
             return _json_response(self, 404, payload)
+        code = 200 if payload.get("ok", True) else 400
+        return _json_response(self, code, payload)
+
+    def _handle_shape_factory_prompt_variants_post(self) -> None:
+        """POST /api/shape-factory/prompt-variants — rename / set_available / set_default."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _shape_factory_prompt_variants_mutate_payload(cfg, body if isinstance(body, dict) else {})
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except Exception as e:
+            return _json_response(
+                self, 500, {"ok": False, "error": "prompt_variants_mutate_failed", "detail": str(e)}
+            )
         code = 200 if payload.get("ok", True) else 400
         return _json_response(self, code, payload)
 

@@ -2039,11 +2039,21 @@ def _remap_prompt_profile_binding_for_family(
                 if dir_raw:
                     host_dir = _hostify_pool_dir(dir_raw, data_root=data_root)
                     if host_dir.is_dir():
-                        candidates.extend(sorted(host_dir.glob("*.json")))
+                        candidates.extend(
+                            sorted(
+                                p
+                                for p in host_dir.glob("*.json")
+                                if p.is_file() and not p.name.startswith("_") and p.name != "_index.json"
+                            )
+                        )
     if not candidates:
         prompts_dir = data_root / "pools" / family_slug / "prompts"
         if prompts_dir.is_dir():
-            candidates = sorted(prompts_dir.glob("*.json"))
+            candidates = sorted(
+                p
+                for p in prompts_dir.glob("*.json")
+                if p.is_file() and not p.name.startswith("_") and p.name != "_index.json"
+            )
     if not candidates:
         return dict(bindings), None
 

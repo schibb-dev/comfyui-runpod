@@ -1,10 +1,14 @@
 """Job-owned prompt fork (V1): catalog is a seed; the job holds runtime truth.
 
-See plan: Prompt request/order design — V1 treats each ``.job.json`` as an order
-with inline ``job["prompt"]``. Macros / request-vs-order split come later.
+See ``docs/VARIANT_MANAGEMENT.md`` (prompt application) and
+``docs/CATALOG_IDENTITY.md`` (app-wide id / name / available / default designation).
+
+V1 treats each ``.job.json`` as an order with inline ``job["prompt"]``.
+Macros / request-vs-order split come later.
 
 Template edit + promote: instances carry ``content_hash``; library writes are
-explicit fork/overwrite with provenance (see Template instance promote plan).
+explicit fork/update-by-id with provenance. Default is a designation
+(``default_variant_id``), never a reserved variant name.
 """
 
 from __future__ import annotations
@@ -47,6 +51,8 @@ def fork_owned_prompt(
     slug: Any = None,
     source_profile: Optional[str] = None,
     frozen: bool = False,
+    variant_id: Optional[str] = None,
+    variant_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     out: Dict[str, Any] = {
         "positive": str(positive or ""),
@@ -63,6 +69,16 @@ def fork_owned_prompt(
         out["slug"] = variant_slug
     if source_profile:
         out["source_profile"] = str(source_profile)
+    vid = str(variant_id or "").strip()
+    if vid:
+        out["variant_id"] = vid
+    # Name snapshot at fork time (historical display); prefer explicit snapshot.
+    snap = str(variant_name or display_name or "").strip()
+    if snap and snap.lower() not in {"default", "catalog-default"}:
+        out["variant_name"] = snap
+    elif snap:
+        # Avoid recording "default" as the historical name.
+        out["variant_name"] = "Base"
     attach_content_hash(out)
     return out
 
@@ -72,14 +88,17 @@ def fork_owned_prompt_from_profile_doc(
     *,
     source_profile: Optional[str] = None,
 ) -> Dict[str, Any]:
+    display = human_variant_name(doc)
     return fork_owned_prompt(
         positive=doc.get("positive"),
         negative=doc.get("negative"),
         label=doc.get("label"),
-        name=doc.get("name"),
+        name=doc.get("name") or display,
         slug=doc.get("slug"),
         source_profile=source_profile,
         frozen=False,
+        variant_id=str(doc.get("variant_id") or "").strip() or None,
+        variant_name=display,
     )
 
 
@@ -260,6 +279,24 @@ def ensure_owned_prompt_from_bindings(
         if not existing.get("content_hash"):
             attach_content_hash(existing)
             job["prompt"] = existing
+        # Remap legacy meta sidecar bindings without rewriting frozen text.
+        src = str(existing.get("source_profile") or "").strip()
+        if src and is_prompt_catalog_meta_file(src) and data_root is not None:
+            family = str(job.get("family_slug") or "").strip()
+            coerced = coerce_library_prompt_path(src, data_root=Path(data_root), family_slug=family)
+            if coerced is not None and coerced.is_file():
+                existing["source_profile"] = str(coerced.resolve())
+                if not existing.get("variant_id"):
+                    try:
+                        doc = json.loads(coerced.read_text(encoding="utf-8"))
+                        if isinstance(doc, dict) and doc.get("variant_id"):
+                            existing["variant_id"] = doc["variant_id"]
+                            display = human_variant_name(doc, coerced.stem)
+                            existing["name"] = display
+                            existing["variant_name"] = display
+                    except Exception:
+                        pass
+                job["prompt"] = existing
         return existing
     binds = job.get("bindings") if isinstance(job.get("bindings"), dict) else {}
     meta = binds.get("prompt_profile") if isinstance(binds, dict) else None
@@ -276,6 +313,11 @@ def ensure_owned_prompt_from_bindings(
             path = resolve_job_asset_path(raw, data_root=Path(data_root))
         except Exception:
             return None
+    if data_root is not None and (not path.is_file() or is_prompt_catalog_meta_file(path)):
+        family = str(job.get("family_slug") or "").strip()
+        coerced = coerce_library_prompt_path(raw, data_root=Path(data_root), family_slug=family)
+        if coerced is not None:
+            path = coerced
     if not path.is_file():
         return None
     try:
@@ -358,11 +400,23 @@ def owned_prompt_to_excerpt(
     # the owned text). Treat those as edited unless we can compare a real catalog.
     if is_scratch_prompt_path(source) and (not catalog or is_scratch_prompt_path(catalog)):
         out["snowflake"] = True
-    display_name = str(owned.get("name") or "").strip()
+    display_name = str(owned.get("name") or owned.get("variant_name") or "").strip()
     if not display_name and seed is not None:
         display_name = str(seed.get("name") or "").strip()
-    if display_name:
+    if display_name and display_name.lower() not in _DEFAULTISH_NAMES:
         out["name"] = display_name
+    elif seed is not None:
+        out["name"] = human_variant_name(seed, basename)
+    elif display_name:
+        out["name"] = human_variant_name({"name": display_name}, basename)
+    vid = str(owned.get("variant_id") or "").strip()
+    if not vid and seed is not None:
+        vid = str(seed.get("variant_id") or "").strip()
+    if vid:
+        out["variant_id"] = vid
+    snap = str(owned.get("variant_name") or "").strip()
+    if snap:
+        out["variant_name"] = human_variant_name({"name": snap})
     variant_slug = prompt_variant_slug(
         owned.get("slug"),
         seed.get("slug") if seed else None,
@@ -413,6 +467,13 @@ def _seed_baseline_from_source_profile(
     display_name = str(doc.get("name") or "").strip()
     if display_name:
         seed["name"] = display_name
+    else:
+        seed["name"] = human_variant_name(doc, path.stem)
+    vid = str(doc.get("variant_id") or "").strip()
+    if vid:
+        seed["variant_id"] = vid
+    if "available" in doc:
+        seed["available"] = bool(doc.get("available"))
     variant_slug = prompt_variant_slug(doc.get("slug"), doc.get("label"), path.stem, path.name, display_name)
     if variant_slug:
         seed["slug"] = variant_slug
@@ -482,6 +543,466 @@ def family_prompts_dir(data_root: Path, family_slug: str) -> Path:
     return Path(data_root).expanduser().resolve() / "pools" / str(family_slug).strip() / "prompts"
 
 
+PROMPT_CATALOG_INDEX_NAME = "prompt_catalog.json"
+# Legacy location (inside prompts/) — must never be treated as a variant.
+PROMPT_CATALOG_INDEX_LEGACY_NAME = "_index.json"
+PROMPT_CATALOG_SCHEMA = "comfyui-runpod.prompt-catalog.v0"
+_DEFAULTISH_NAMES = frozenset({"default", "catalog-default", "catalog default"})
+
+
+def human_variant_name(doc: Optional[Dict[str, Any]] = None, *fallbacks: Any, default: str = "Base") -> str:
+    """Operator-facing name; never returns bare 'default' / 'catalog-default'."""
+    candidates: list[Any] = []
+    if isinstance(doc, dict):
+        candidates.extend(
+            [
+                doc.get("name"),
+                doc.get("variant_name"),
+                doc.get("label"),
+                doc.get("slug"),
+            ]
+        )
+    candidates.extend(fallbacks)
+    for cand in candidates:
+        text = str(cand or "").strip()
+        if not text:
+            continue
+        # Strip path / extension noise
+        text = text.replace("\\", "/").rsplit("/", 1)[-1]
+        if text.lower().endswith(".json"):
+            text = text[:-5]
+        lower = text.lower()
+        for prefix in _VARIANT_WRAPPERS:
+            if lower.startswith(prefix):
+                text = text[len(prefix) :]
+                lower = text.lower()
+                break
+        if lower in _DEFAULTISH_NAMES or lower.replace("_", "-") in _DEFAULTISH_NAMES:
+            continue
+        if lower in {"index", "_index"} or text.startswith("_"):
+            continue
+        return text
+    return default
+
+
+def prompt_catalog_index_path(data_root: Path, family_slug: str) -> Path:
+    """Family designation sidecar — sibling of ``prompts/``, not inside it."""
+    return Path(data_root).expanduser().resolve() / "pools" / str(family_slug).strip() / PROMPT_CATALOG_INDEX_NAME
+
+
+def prompt_catalog_index_legacy_path(data_root: Path, family_slug: str) -> Path:
+    return family_prompts_dir(data_root, family_slug) / PROMPT_CATALOG_INDEX_LEGACY_NAME
+
+
+def load_prompt_catalog_index(data_root: Path, family_slug: str) -> Dict[str, Any]:
+    path = prompt_catalog_index_path(data_root, family_slug)
+    legacy = prompt_catalog_index_legacy_path(data_root, family_slug)
+    read_path = path if path.is_file() else legacy if legacy.is_file() else None
+    if read_path is None:
+        return {"schema_version": PROMPT_CATALOG_SCHEMA, "default_variant_id": None}
+    try:
+        raw = json.loads(read_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return {"schema_version": PROMPT_CATALOG_SCHEMA, "default_variant_id": None}
+    if not isinstance(raw, dict):
+        return {"schema_version": PROMPT_CATALOG_SCHEMA, "default_variant_id": None}
+    out = {
+        "schema_version": str(raw.get("schema_version") or PROMPT_CATALOG_SCHEMA),
+        "default_variant_id": str(raw.get("default_variant_id") or "").strip() or None,
+    }
+    return out
+
+
+def save_prompt_catalog_index(
+    data_root: Path,
+    family_slug: str,
+    *,
+    default_variant_id: Optional[str],
+) -> Dict[str, Any]:
+    path = prompt_catalog_index_path(data_root, family_slug)
+    doc = {
+        "schema_version": PROMPT_CATALOG_SCHEMA,
+        "default_variant_id": str(default_variant_id or "").strip() or None,
+    }
+    try:
+        _atomic_write_json(path, doc)
+    except OSError as exc:
+        return _catalog_write_error(exc, path)
+    # Drop legacy prompts/_index.json so pickers never list "Index".
+    legacy = prompt_catalog_index_legacy_path(data_root, family_slug)
+    if legacy.is_file():
+        try:
+            legacy.unlink()
+        except OSError:
+            pass
+    return {"ok": True, "path": str(path.resolve()), "index": doc}
+
+
+def is_prompt_catalog_meta_file(path: Path | str) -> bool:
+    """True for designation sidecars / underscore meta files — not prompt variants."""
+    name = Path(path).name
+    if name in {PROMPT_CATALOG_INDEX_NAME, PROMPT_CATALOG_INDEX_LEGACY_NAME}:
+        return True
+    return name.startswith("_")
+
+
+def family_default_library_prompt_path(
+    data_root: Path,
+    family_slug: str,
+) -> Optional[Path]:
+    """Resolve the designated default library prompt file for a family."""
+    family = str(family_slug or "").strip()
+    if not family:
+        return None
+    index = load_prompt_catalog_index(data_root, family)
+    vid = str(index.get("default_variant_id") or "").strip()
+    if vid:
+        found = find_library_prompt_by_variant_id(data_root, family, vid)
+        if found is not None:
+            return found[0]
+    fallback = family_prompts_dir(data_root, family) / "catalog-default.json"
+    return fallback if fallback.is_file() else None
+
+
+def coerce_library_prompt_path(
+    raw: str,
+    *,
+    data_root: Optional[Path] = None,
+    family_slug: Optional[str] = None,
+) -> Optional[Path]:
+    """Resolve a library prompt path; remap catalog meta files to the family default."""
+    text = str(raw or "").strip()
+    if not text:
+        return None
+
+    def _family_from_path(p: Path | str) -> str:
+        parts = str(p).replace("\\", "/").split("/")
+        if "pools" in parts:
+            i = parts.index("pools")
+            if i + 1 < len(parts):
+                return parts[i + 1]
+        return ""
+
+    family = str(family_slug or "").strip() or _family_from_path(text)
+    # Meta even if the file was deleted (legacy prompts/_index.json).
+    if is_prompt_catalog_meta_file(text):
+        if data_root is None or not family:
+            return None
+        return family_default_library_prompt_path(Path(data_root), family)
+
+    path = _resolve_prompt_profile_path(text, data_root=data_root)
+    if path is None:
+        return None
+    if not is_prompt_catalog_meta_file(path):
+        return path
+    family = family or _family_from_path(path)
+    if data_root is None or not family:
+        return None
+    return family_default_library_prompt_path(Path(data_root), family)
+
+
+def iter_library_prompt_paths(data_root: Path, family_slug: str) -> list[Path]:
+    prompts_dir = family_prompts_dir(data_root, family_slug)
+    if not prompts_dir.is_dir():
+        return []
+    rows: list[Path] = []
+    for path in sorted(prompts_dir.glob("*.json")):
+        if not path.is_file() or is_prompt_catalog_meta_file(path):
+            continue
+        rows.append(path)
+    return rows
+
+
+def _read_library_doc(path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def normalize_library_prompt_doc(
+    doc: Dict[str, Any],
+    *,
+    path: Optional[Path] = None,
+    mint_missing_id: bool = True,
+) -> tuple[Dict[str, Any], bool]:
+    """Ensure variant_id, name, available. Returns (doc, changed)."""
+    changed = False
+    out = dict(doc)
+    vid = str(out.get("variant_id") or "").strip()
+    if not vid and mint_missing_id:
+        out["variant_id"] = str(uuid.uuid4())
+        changed = True
+    stem = path.stem if path is not None else ""
+    name = human_variant_name(out, stem)
+    if str(out.get("name") or "").strip() != name:
+        out["name"] = name
+        changed = True
+    if "available" not in out:
+        out["available"] = True
+        changed = True
+    elif not isinstance(out.get("available"), bool):
+        out["available"] = bool(out.get("available"))
+        changed = True
+    if not out.get("content_hash"):
+        out["content_hash"] = prompt_content_hash(out.get("positive"), out.get("negative"))
+        changed = True
+    # Slug stays stem/label-derived for job-key compatibility; name is display-only.
+    variant_slug = prompt_variant_slug(out.get("slug"), out.get("label"), stem)
+    if variant_slug and str(out.get("slug") or "") != variant_slug:
+        out["slug"] = variant_slug
+        changed = True
+    return out, changed
+
+
+def find_library_prompt_by_variant_id(
+    data_root: Path,
+    family_slug: str,
+    variant_id: str,
+) -> Optional[tuple[Path, Dict[str, Any]]]:
+    want = str(variant_id or "").strip()
+    if not want:
+        return None
+    for path in iter_library_prompt_paths(data_root, family_slug):
+        doc = _read_library_doc(path)
+        if not doc:
+            continue
+        if str(doc.get("variant_id") or "").strip() == want:
+            return path, doc
+    return None
+
+
+def list_prompt_variants(
+    data_root: Path,
+    family_slug: str,
+    *,
+    include_unavailable: bool = True,
+) -> list[Dict[str, Any]]:
+    """Catalog rows with identity fields for APIs / pickers."""
+    family = str(family_slug or "").strip()
+    if not family:
+        return []
+    index = load_prompt_catalog_index(data_root, family)
+    default_id = str(index.get("default_variant_id") or "").strip() or None
+    rows: list[Dict[str, Any]] = []
+    for path in iter_library_prompt_paths(data_root, family):
+        doc = _read_library_doc(path) or {}
+        norm, _ = normalize_library_prompt_doc(doc, path=path, mint_missing_id=False)
+        available = bool(norm.get("available", True))
+        if not include_unavailable and not available:
+            continue
+        vid = str(norm.get("variant_id") or "").strip() or None
+        name = human_variant_name(norm, path.stem)
+        # Prefer stem/label for slug stability (job-key / hourly heuristics); name is display-only.
+        slug = (
+            prompt_variant_slug(norm.get("slug"), norm.get("label"), path.stem, path.name, name)
+            or path.stem
+        )
+        row: Dict[str, Any] = {
+            "variant_id": vid,
+            "name": name,
+            "available": available,
+            "is_default": bool(vid and default_id and vid == default_id),
+            "slug": slug,
+            "file_stem": path.stem,
+            "label": str(norm.get("label") or path.stem),
+            "basename": path.name,
+            "path": str(path.resolve()),
+            "content_hash": str(norm.get("content_hash") or ""),
+        }
+        rows.append(row)
+
+    def _sort_key(row: Dict[str, Any]) -> tuple:
+        if row.get("is_default"):
+            return (0, str(row.get("name") or "").lower())
+        if row.get("available"):
+            return (1, str(row.get("name") or "").lower())
+        return (2, str(row.get("name") or "").lower())
+
+    rows.sort(key=_sort_key)
+    return rows
+
+
+def set_default_prompt_variant(
+    data_root: Path,
+    family_slug: str,
+    variant_id: str,
+) -> Dict[str, Any]:
+    family = str(family_slug or "").strip()
+    vid = str(variant_id or "").strip()
+    if not family or not vid:
+        return {"ok": False, "error": "missing_family_or_variant_id"}
+    found = find_library_prompt_by_variant_id(data_root, family, vid)
+    if found is None:
+        return {"ok": False, "error": "variant_not_found", "variant_id": vid}
+    path, doc = found
+    if not bool(doc.get("available", True)):
+        return {
+            "ok": False,
+            "error": "variant_unavailable",
+            "detail": "Set available=true before designating as default.",
+            "variant_id": vid,
+        }
+    saved = save_prompt_catalog_index(data_root, family, default_variant_id=vid)
+    if not saved.get("ok"):
+        return saved
+    return {
+        "ok": True,
+        "family_slug": family,
+        "default_variant_id": vid,
+        "path": str(path.resolve()),
+        "index_path": saved.get("path"),
+    }
+
+
+def rename_prompt_variant(
+    data_root: Path,
+    family_slug: str,
+    variant_id: str,
+    name: str,
+) -> Dict[str, Any]:
+    family = str(family_slug or "").strip()
+    vid = str(variant_id or "").strip()
+    new_name = str(name or "").strip()
+    if not family or not vid:
+        return {"ok": False, "error": "missing_family_or_variant_id"}
+    if not new_name:
+        return {"ok": False, "error": "missing_name"}
+    if new_name.lower() in _DEFAULTISH_NAMES:
+        return {
+            "ok": False,
+            "error": "invalid_name",
+            "detail": '"default" is a designation, not a variant name.',
+        }
+    found = find_library_prompt_by_variant_id(data_root, family, vid)
+    if found is None:
+        return {"ok": False, "error": "variant_not_found", "variant_id": vid}
+    path, doc = found
+    doc = dict(doc)
+    doc["name"] = new_name
+    doc["slug"] = slugify_variant_label(new_name, fallback="variant", reserved=True)
+    try:
+        _atomic_write_json(path, doc)
+    except OSError as exc:
+        return _catalog_write_error(exc, path)
+    return {"ok": True, "variant_id": vid, "name": new_name, "path": str(path.resolve()), "doc": doc}
+
+
+def set_prompt_variant_available(
+    data_root: Path,
+    family_slug: str,
+    variant_id: str,
+    available: bool,
+) -> Dict[str, Any]:
+    family = str(family_slug or "").strip()
+    vid = str(variant_id or "").strip()
+    if not family or not vid:
+        return {"ok": False, "error": "missing_family_or_variant_id"}
+    found = find_library_prompt_by_variant_id(data_root, family, vid)
+    if found is None:
+        return {"ok": False, "error": "variant_not_found", "variant_id": vid}
+    path, doc = found
+    index = load_prompt_catalog_index(data_root, family)
+    default_id = str(index.get("default_variant_id") or "").strip()
+    if not available and default_id == vid:
+        return {
+            "ok": False,
+            "error": "default_must_stay_available",
+            "detail": "Reassign the family default before hiding this variant.",
+            "variant_id": vid,
+        }
+    doc = dict(doc)
+    doc["available"] = bool(available)
+    try:
+        _atomic_write_json(path, doc)
+    except OSError as exc:
+        return _catalog_write_error(exc, path)
+    return {
+        "ok": True,
+        "variant_id": vid,
+        "available": bool(available),
+        "path": str(path.resolve()),
+        "doc": doc,
+    }
+
+
+def backfill_prompt_catalog(
+    data_root: Path,
+    *,
+    family_slug: Optional[str] = None,
+    apply: bool = False,
+) -> Dict[str, Any]:
+    """Mint variant_id / name / available and write pools/<family>/prompt_catalog.json."""
+    root = Path(data_root).expanduser().resolve()
+    pools = root / "pools"
+    if not pools.is_dir():
+        return {"ok": False, "error": "pools_missing", "path": str(pools)}
+    families: list[str] = []
+    want = str(family_slug or "").strip()
+    if want:
+        families = [want]
+    else:
+        for child in sorted(pools.iterdir()):
+            if child.is_dir() and (child / "prompts").is_dir():
+                families.append(child.name)
+    report: Dict[str, Any] = {"ok": True, "apply": bool(apply), "families": []}
+    for fam in families:
+        fam_report: Dict[str, Any] = {"family_slug": fam, "variants": [], "writes": 0}
+        index = load_prompt_catalog_index(root, fam)
+        default_id = str(index.get("default_variant_id") or "").strip() or None
+        former_default_path: Optional[Path] = None
+        for path in iter_library_prompt_paths(root, fam):
+            doc = _read_library_doc(path) or {}
+            norm, changed = normalize_library_prompt_doc(doc, path=path, mint_missing_id=True)
+            if path.name == "catalog-default.json":
+                former_default_path = path
+            fam_report["variants"].append(
+                {
+                    "path": str(path),
+                    "variant_id": norm.get("variant_id"),
+                    "name": norm.get("name"),
+                    "available": norm.get("available"),
+                    "changed": changed,
+                }
+            )
+            if apply and changed:
+                try:
+                    _atomic_write_json(path, norm)
+                    fam_report["writes"] += 1
+                except OSError as exc:
+                    fam_report["error"] = _catalog_write_error(exc, path)
+                    report["ok"] = False
+                    report["families"].append(fam_report)
+                    return report
+            elif not apply:
+                # Use normalized id for designation preview even when dry-run.
+                pass
+            # Keep latest normalized id for designation when this was catalog-default.
+            if path.name == "catalog-default.json":
+                default_id = default_id or str(norm.get("variant_id") or "").strip() or None
+
+        if not default_id and former_default_path is not None:
+            # Re-read after potential write
+            d = _read_library_doc(former_default_path) or {}
+            if apply:
+                d, _ = normalize_library_prompt_doc(d, path=former_default_path, mint_missing_id=True)
+            default_id = str(d.get("variant_id") or "").strip() or None
+        if not default_id and fam_report["variants"]:
+            default_id = str(fam_report["variants"][0].get("variant_id") or "").strip() or None
+
+        fam_report["default_variant_id"] = default_id
+        if apply and default_id:
+            saved = save_prompt_catalog_index(root, fam, default_variant_id=default_id)
+            if not saved.get("ok"):
+                fam_report["index_error"] = saved
+                report["ok"] = False
+            else:
+                fam_report["index_path"] = saved.get("path")
+        report["families"].append(fam_report)
+    return report
+
+
 def _atomic_write_json(path: Path, doc: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + f".tmp.{uuid.uuid4().hex[:8]}")
@@ -520,22 +1041,27 @@ def build_library_prompt_doc(
     promoted_from_job: Optional[str] = None,
     note: Optional[str] = None,
     variant_id: Optional[str] = None,
+    available: bool = True,
 ) -> Dict[str, Any]:
     vid = str(variant_id or "").strip() or str(uuid.uuid4())
+    display_name = human_variant_name(
+        {"name": name, "label": label},
+        name,
+        label,
+    )
     doc: Dict[str, Any] = {
         "label": label,
         "positive": str(positive or ""),
         "negative": str(negative or ""),
         "variant_id": vid,
+        "name": display_name,
+        "available": bool(available),
         "content_hash": prompt_content_hash(positive, negative),
         "created_at": utc_now_iso(),
     }
-    display_name = str(name or "").strip()
-    if not display_name and str(label or "").strip() and not str(label).lower().startswith("catalog-"):
-        display_name = str(label).strip()
-    if display_name:
-        doc["name"] = display_name
     variant_slug = prompt_variant_slug(doc.get("slug"), display_name, label)
+    if variant_slug in _RESERVED_VARIANT_SLUGS:
+        variant_slug = slugify_variant_label(display_name, fallback="variant", reserved=True)
     if variant_slug:
         doc["slug"] = variant_slug
     if parent_path:
@@ -557,23 +1083,28 @@ def promote_prompt_to_library(
     negative: str,
     mode: str = "fork",
     label: Optional[str] = None,
+    name: Optional[str] = None,
     note: Optional[str] = None,
     promoted_from_job: Optional[str] = None,
     parent_path: Optional[str] = None,
+    variant_id: Optional[str] = None,
+    set_as_default: bool = False,
 ) -> Dict[str, Any]:
     """
     Write a prompt profile into ``pools/<family>/prompts/``.
 
-    ``mode=fork`` (default): new ``<slug>.json`` file.
-    ``mode=overwrite``: replace ``catalog-default.json`` after ``.bak``.
+    ``mode=fork`` (default): new file + new ``variant_id``.
+    ``mode=update``: write text into existing ``variant_id`` (preserves id + name).
+    ``mode=overwrite``: legacy alias — update the designated default (or
+    ``catalog-default.json``), preserving that entry's ``variant_id`` when present.
     """
     family = str(family_slug or "").strip()
     if not family:
         return {"ok": False, "error": "missing_family"}
     prompts_dir = family_prompts_dir(data_root, family)
     mode_s = str(mode or "fork").strip().lower()
-    if mode_s not in {"fork", "overwrite"}:
-        return {"ok": False, "error": "bad_mode", "detail": "mode must be fork|overwrite"}
+    if mode_s not in {"fork", "overwrite", "update"}:
+        return {"ok": False, "error": "bad_mode", "detail": "mode must be fork|update|overwrite"}
 
     parent_variant_id = None
     parent = str(parent_path or "").strip() or None
@@ -585,19 +1116,53 @@ def promote_prompt_to_library(
         except Exception:
             pass
 
-    if mode_s == "overwrite":
-        target = prompts_dir / "catalog-default.json"
-        label_s = str(label or "catalog-default").strip() or "catalog-default"
+    if mode_s in {"overwrite", "update"}:
+        target: Optional[Path] = None
+        existing: Optional[Dict[str, Any]] = None
+        keep_vid = str(variant_id or "").strip() or None
+        if mode_s == "update" or keep_vid:
+            if not keep_vid:
+                return {"ok": False, "error": "missing_variant_id", "detail": "update requires variant_id"}
+            found = find_library_prompt_by_variant_id(data_root, family, keep_vid)
+            if found is None:
+                return {"ok": False, "error": "variant_not_found", "variant_id": keep_vid}
+            target, existing = found
+        else:
+            # overwrite → designated default, else catalog-default.json
+            index = load_prompt_catalog_index(data_root, family)
+            def_id = str(index.get("default_variant_id") or "").strip()
+            if def_id:
+                found = find_library_prompt_by_variant_id(data_root, family, def_id)
+                if found is not None:
+                    target, existing = found
+            if target is None:
+                target = prompts_dir / "catalog-default.json"
+                existing = _read_library_doc(target) if target.is_file() else None
+
+        assert target is not None
+        keep_vid = str((existing or {}).get("variant_id") or keep_vid or "").strip() or str(uuid.uuid4())
+        keep_name = human_variant_name(existing, name, label, target.stem)
+        label_s = str(label or (existing or {}).get("label") or target.stem).strip() or target.stem
         bak = None
         doc = build_library_prompt_doc(
             positive=positive,
             negative=negative,
             label=label_s,
+            name=keep_name if not name else human_variant_name({"name": name}),
             parent_path=parent or (str(target.resolve()) if target.is_file() else None),
             parent_variant_id=parent_variant_id,
             promoted_from_job=promoted_from_job,
             note=note,
+            variant_id=keep_vid,
+            available=bool((existing or {}).get("available", True)),
         )
+        # Preserve created_at / name when updating in place unless rename requested.
+        if existing and existing.get("created_at"):
+            doc["created_at"] = existing["created_at"]
+            doc["updated_at"] = utc_now_iso()
+        if existing and not name:
+            doc["name"] = keep_name
+            doc["slug"] = prompt_variant_slug(existing.get("slug"), keep_name) or doc.get("slug")
         try:
             if target.is_file():
                 bak = _bak_path(target)
@@ -605,16 +1170,22 @@ def promote_prompt_to_library(
             _atomic_write_json(target, doc)
         except OSError as exc:
             return _catalog_write_error(exc, bak or target)
-        return {
+        out: Dict[str, Any] = {
             "ok": True,
-            "mode": "overwrite",
+            "mode": "update" if mode_s == "update" else "overwrite",
             "path": str(target.resolve()),
             "bak_path": str(bak.resolve()) if bak else None,
             "doc": doc,
+            "variant_id": doc["variant_id"],
         }
+        if set_as_default:
+            des = set_default_prompt_variant(data_root, family, doc["variant_id"])
+            out["set_as_default"] = des
+        return out
 
-    label_s = str(label or "").strip() or f"variant-{utc_now_iso()[:10]}"
-    slug = slugify_variant_label(label_s, fallback="variant")
+    display = human_variant_name({"name": name, "label": label}, name, label)
+    label_s = str(label or display).strip() or f"variant-{utc_now_iso()[:10]}"
+    slug = slugify_variant_label(display or label_s, fallback="variant")
     target = prompts_dir / f"{slug}.json"
     n = 2
     while target.is_file():
@@ -624,22 +1195,29 @@ def promote_prompt_to_library(
         positive=positive,
         negative=negative,
         label=label_s,
+        name=display,
         parent_path=parent,
         parent_variant_id=parent_variant_id,
         promoted_from_job=promoted_from_job,
         note=note,
+        variant_id=str(variant_id or "").strip() or None,
     )
     try:
         _atomic_write_json(target, doc)
     except OSError as exc:
         return _catalog_write_error(exc, target)
-    return {
+    out = {
         "ok": True,
         "mode": "fork",
         "path": str(target.resolve()),
         "bak_path": None,
         "doc": doc,
+        "variant_id": doc["variant_id"],
     }
+    if set_as_default:
+        des = set_default_prompt_variant(data_root, family, doc["variant_id"])
+        out["set_as_default"] = des
+    return out
 
 
 def resolve_prompt_parent_path(job: Dict[str, Any]) -> Optional[str]:
