@@ -93,6 +93,11 @@ export function putFamiliesBootstrap(value: FamiliesBootstrap): void {
   setSessionListCache(FAMILIES_KEY, normalizeFamiliesBoot(value));
 }
 
+/** Drop cached families so the next load (or force) hits the server. */
+export function clearFamiliesBootstrap(): void {
+  clearSessionListCache(FAMILIES_KEY);
+}
+
 /** Write families extracted from any work-products response (partial; no discrete sets). */
 export function rememberFamiliesFromWorkProducts(res: {
   families?: WorkProductFamilyOption[] | null;
@@ -116,6 +121,9 @@ export function rememberFamiliesFromWorkProducts(res: {
 export async function loadFamiliesBootstrap(opts?: {
   force?: boolean;
 }): Promise<FamiliesBootstrap> {
+  if (opts?.force) {
+    clearFamiliesBootstrap();
+  }
   const hit = getSessionListCache<FamiliesBootstrap>(FAMILIES_KEY);
   if (!opts?.force && hit && fresh(hit.fetchedAt, FAMILIES_TTL_MS) && hit.value.extend_families?.length) {
     const cachedHasProfiles = (hit.value.families || []).some((f) => (f.prompt_profiles || []).length);

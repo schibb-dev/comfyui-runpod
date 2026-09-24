@@ -125,6 +125,7 @@ import type {
   WorkProductResponse,
   WorkProductsResponse,
   ShapeFactoryFamiliesResponse,
+  WorkProductFamilyPromptProfile,
   VisionSliceCaptionsResponse,
   VisionTagJudgmentResponse,
   VisionTagJudgmentSaveResponse,
@@ -381,6 +382,55 @@ export async function fetchShapeFactoryPromptProfile(path: string): Promise<Shap
     );
   }
   return j;
+}
+
+export type ShapeFactoryPromptVariantsResponse = {
+  ok: boolean;
+  family_slug?: string;
+  default_variant_id?: string | null;
+  variants?: WorkProductFamilyPromptProfile[];
+  error?: string;
+  detail?: string;
+};
+
+export async function fetchShapeFactoryPromptVariants(
+  family: string,
+  opts?: { includeUnavailable?: boolean },
+): Promise<ShapeFactoryPromptVariantsResponse> {
+  const sp = new URLSearchParams();
+  sp.set("family", family);
+  if (opts?.includeUnavailable === false) sp.set("include_unavailable", "false");
+  const r = await fetch(`/api/shape-factory/prompt-variants?${sp.toString()}`);
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryPromptVariantsResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET /api/shape-factory/prompt-variants failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function mutateShapeFactoryPromptVariant(body: {
+  action: "rename" | "set_available" | "set_default";
+  family: string;
+  variant_id: string;
+  name?: string;
+  available?: boolean;
+}): Promise<{ ok: boolean; error?: string; detail?: string; [k: string]: unknown }> {
+  const r = await fetch("/api/shape-factory/prompt-variants", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string; detail?: string };
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST /api/shape-factory/prompt-variants failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j as { ok: boolean; error?: string; detail?: string };
 }
 
 export async function fetchShapeFactoryFamilies(): Promise<ShapeFactoryFamiliesResponse> {
@@ -2101,9 +2151,12 @@ export type ShapeFactoryPromoteTemplateRequest = {
   job_key?: string;
   job_path?: string;
   fields?: string[];
-  mode?: "fork" | "overwrite";
+  mode?: "fork" | "overwrite" | "update";
   label?: string;
+  name?: string;
   note?: string;
+  variant_id?: string;
+  set_as_default?: boolean;
   positive?: string;
   negative?: string;
   parameters?: {

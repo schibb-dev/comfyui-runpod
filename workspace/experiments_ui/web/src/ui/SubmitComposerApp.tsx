@@ -47,10 +47,15 @@ import {
   type FamiliesBootstrap,
 } from "./shapeFactorySessionCache";
 import {
+  PromptVariantDefaultButton,
+  withFamilyDefaultOverride,
+} from "./PromptVariantDefaultButton";
+import {
   familyDefaultFrames,
   familyPickerOptionLabel,
   familyPickerOptionTitle,
   familyPromptProfiles,
+  availablePromptProfiles,
   familyStackId,
   isExtendFamilyOption,
   isI2VFamilyOption,
@@ -342,6 +347,7 @@ function ProfileSelect({
   ariaPrefix,
   families,
   disabled,
+  onFamiliesRefresh,
 }: {
   familySlug: string;
   value: string;
@@ -349,16 +355,23 @@ function ProfileSelect({
   ariaPrefix: string;
   families: WorkProductFamilyOption[];
   disabled?: boolean;
+  onFamiliesRefresh?: (families: WorkProductFamilyOption[]) => void;
 }) {
-  const profiles = familyPromptProfiles(families, familySlug);
+  const [defaultOverride, setDefaultOverride] = useState<string | null>(null);
+  const profiles = withFamilyDefaultOverride(
+    availablePromptProfiles(familyPromptProfiles(families, familySlug)),
+    defaultOverride,
+  );
   if (!profiles.length && !value) return null;
   const known = profiles.some((p) => p.path === value);
+  const selectedPath = known ? value : value || profiles[0]?.path || "";
+  const selected = profiles.find((p) => p.path === selectedPath) || null;
   return (
     <label className="work-product-quick-queue__family-wrap">
       <span className="work-product-quick-queue__family-label">Variant</span>
       <select
         className="work-product-quick-queue__family"
-        value={known ? value : value || profiles[0]?.path || ""}
+        value={selectedPath}
         disabled={disabled}
         aria-label={`${ariaPrefix} prompt variant`}
         title="Prompt variant for this family"
@@ -371,6 +384,20 @@ function ProfileSelect({
           </option>
         ))}
       </select>
+      <PromptVariantDefaultButton
+        familySlug={familySlug}
+        selected={selected}
+        disabled={disabled}
+        onDone={async (variantId) => {
+          setDefaultOverride(variantId);
+          try {
+            const boot = await loadFamiliesBootstrap({ force: true });
+            onFamiliesRefresh?.(boot.families || []);
+          } catch {
+            /* optimistic label still applied */
+          }
+        }}
+      />
     </label>
   );
 }
@@ -1481,6 +1508,7 @@ function SubmitEditJobApp({
                   ariaPrefix={isStill ? "I2V" : editRouteKind(snap, isStill)}
                   families={editFamilies}
                   disabled={editLocked || finished || bindingSaving === "prompt_profile"}
+                  onFamiliesRefresh={setEditFamilies}
                 />
                 {bindingSaving === "prompt_profile" ? (
                   <span className="work-product-quick-queue__hint">Saving variant…</span>
@@ -2573,6 +2601,7 @@ function SubmitAdvanceComposerApp({
       ariaPrefix={ariaPrefix}
       families={families}
       disabled={busy}
+      onFamiliesRefresh={setFamilies}
     />
   );
 

@@ -203,13 +203,20 @@ function queueGlanceRows(
     }
   }
   {
+    const glancePrompt =
+      typeof g.prompt_profile === "string" &&
+      (/^_?index(\.json)?$/i.test(g.prompt_profile.trim()) ||
+        /_index\.json$/i.test(g.prompt_profile) ||
+        g.prompt_profile.trim() === "Index")
+        ? "Base"
+        : g.prompt_profile;
     const promptLabel =
       jobPromptVariantDisplayName({
         job_key: item.job_key,
-        prompt_profile: item.prompt_profile || g.prompt_profile,
+        prompt_profile: item.prompt_profile || glancePrompt,
         glance: g,
       }) ||
-      String(g.prompt_profile || "").trim() ||
+      (typeof glancePrompt === "string" ? glancePrompt.trim() : "") ||
       null;
     const profile = item.prompt_profile;
     if (promptLabel && profile && !profile.missing) {

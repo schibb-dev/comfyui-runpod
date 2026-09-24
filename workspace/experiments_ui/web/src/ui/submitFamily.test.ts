@@ -1,17 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
+  availablePromptProfiles,
   familySlugIsQuarantined,
   familyPickerOptionLabel,
   familyPickerOptionTitle,
+  isDefaultPromptVariant,
   isExtendFamilyOption,
   jobPromptVariantDisplayName,
   jobPromptVariantName,
   pickDefaultI2VFamily,
+  pickDefaultPromptProfile,
   pickQuickExtendFamily,
   pickRerunPromptPreset,
   familyStackId,
   pickRerunStack,
   promptTextIsOverridden,
+  promptVariantName,
   distinctiveFamilyLabels,
   rerunPromptPresetDiffers,
   stackPickerOptionLabel,
@@ -89,9 +93,9 @@ describe("jobPromptVariantDisplayName", () => {
   it("keeps the catalog name when the job matches the seed", () => {
     expect(
       jobPromptVariantDisplayName({
-        prompt_profile: { name: "Default", slug: "default", snowflake: false },
+        prompt_profile: { name: "Base", slug: "default", snowflake: false },
       }),
-    ).toBe("Default");
+    ).toBe("Base");
     expect(
       jobPromptVariantDisplayName({
         prompt_profile: { name: "FaceBlast extend", slug: "faceblast-extend", snowflake: false },
@@ -99,12 +103,12 @@ describe("jobPromptVariantDisplayName", () => {
     ).toBe("FaceBlast extend");
   });
 
-  it("marks Default and FaceBlast extend as edited when snowflake", () => {
+  it("marks Base and FaceBlast extend as edited when snowflake", () => {
     expect(
       jobPromptVariantDisplayName({
         prompt_profile: { name: "Default", slug: "default", snowflake: true },
       }),
-    ).toBe("Default · edited");
+    ).toBe("Base · edited");
     expect(
       jobPromptVariantDisplayName({
         prompt_profile: { name: "FaceBlast extend", slug: "faceblast-extend", snowflake: true },
@@ -124,9 +128,9 @@ describe("jobPromptVariantDisplayName", () => {
         snowflake: false,
       },
     };
-    expect(jobPromptVariantName(item)).toBe("Default");
+    expect(jobPromptVariantName(item)).toBe("Base");
     expect(promptTextIsOverridden(item.prompt_profile)).toBe(true);
-    expect(jobPromptVariantDisplayName(item)).toBe("Default · edited");
+    expect(jobPromptVariantDisplayName(item)).toBe("Base · edited");
   });
 });
 
@@ -314,5 +318,52 @@ describe("familyPickerOptionLabel", () => {
   it("falls back to the name when tune is missing", () => {
     expect(familyPickerOptionLabel({ slug: "FB9_GEX" }, "GEX")).toBe("GEX");
     expect(familyPickerOptionTitle({ slug: "FB9_GEX", spec_title: "WAN/foo.gguf" })).toBe("FB9_GEX");
+  });
+});
+
+describe("prompt catalog identity helpers", () => {
+  it("uses name over defaultish slug and treats is_default as designation", () => {
+    expect(promptVariantName({ slug: "default", name: "Kneel base" })).toBe("Kneel base");
+    expect(promptVariantName({ slug: "default" })).toBe("Base");
+    expect(isDefaultPromptVariant({ slug: "default", is_default: false })).toBe(false);
+    expect(isDefaultPromptVariant({ slug: "faceblast-extend", is_default: true })).toBe(true);
+  });
+
+  it("pickDefaultPromptProfile prefers designation and skips unavailable", () => {
+    const profiles = [
+      { slug: "default", path: "/a/catalog-default.json", name: "Base", available: false, is_default: false },
+      {
+        slug: "faceblast-extend",
+        path: "/a/catalog-faceblast-extend.json",
+        name: "FaceBlast extend",
+        available: true,
+        is_default: true,
+      },
+      { slug: "other", path: "/a/other.json", name: "Other", available: true, is_default: false },
+    ];
+    expect(pickDefaultPromptProfile(profiles)).toBe("/a/catalog-faceblast-extend.json");
+    expect(availablePromptProfiles(profiles).map((p) => p.path)).toEqual([
+      "/a/catalog-faceblast-extend.json",
+      "/a/other.json",
+    ]);
+  });
+
+  it("job display name prefers variant_name snapshot", () => {
+    expect(
+      jobPromptVariantName({
+        job_key: "x__pp-catalog-default",
+        prompt_profile: { variant_name: "Kneel base", slug: "default" },
+      }),
+    ).toBe("Kneel base");
+  });
+
+  it("maps legacy pp-_index job keys to Base, not Index", () => {
+    expect(
+      jobPromptVariantName({
+        job_key:
+          "FB9_GEX__pp-_index__src-X-KNEEL-FB9__pp-catalog-default__still-abc__ui1",
+      }),
+    ).toBe("Base");
+    expect(promptVariantName({ slug: "index", path: "/pools/FB9_GEX/prompts/_index.json" })).toBe("Base");
   });
 });

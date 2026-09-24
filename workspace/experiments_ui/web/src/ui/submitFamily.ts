@@ -389,12 +389,21 @@ export function isStillMediaPath(path?: string | null): boolean {
   return /\.(png|jpe?g|webp|gif)(\?|$)/i.test(p);
 }
 
+function isPromptCatalogMetaProfile(p: WorkProductFamilyPromptProfile): boolean {
+  const base = String(p.basename || p.path || "")
+    .replace(/\\/g, "/")
+    .split("/")
+    .pop();
+  return !base || base.startsWith("_") || base === "prompt_catalog.json" || base === "_index.json";
+}
+
 export function familyPromptProfiles(
   families: WorkProductFamilyOption[],
   slug: string,
 ): WorkProductFamilyPromptProfile[] {
   const hit = families.find((f) => f.slug === slug);
-  return Array.isArray(hit?.prompt_profiles) ? hit.prompt_profiles : [];
+  const rows = Array.isArray(hit?.prompt_profiles) ? hit.prompt_profiles : [];
+  return rows.filter((p) => !isPromptCatalogMetaProfile(p));
 }
 
 const VARIANT_WORD_FIX: Record<string, string> = {
@@ -467,26 +476,32 @@ export function formatPromptVariantStem(stem: string): string {
 
 export type PromptVariantNameSource = {
   name?: string | null;
+  variant_name?: string | null;
+  variant_id?: string | null;
   label?: string | null;
   slug?: string | null;
   file_stem?: string | null;
   basename?: string | null;
   path?: string | null;
+  is_default?: boolean | null;
+  available?: boolean | null;
   seed?: {
     slug?: string | null;
     name?: string | null;
     label?: string | null;
     basename?: string | null;
+    variant_id?: string | null;
   } | null;
 };
 
-/** Operator-facing variant name: JSON `name`, else formatted slug. */
+/** Operator-facing variant name: JSON `name` / snapshot, else formatted slug (never bare "Default" from slug alone when a real name exists). */
 export function promptVariantName(input?: string | null | PromptVariantNameSource): string {
   if (input && typeof input === "object") {
-    const named = String(input.name || input.seed?.name || "").trim();
-    if (named) return named;
+    const named = String(input.name || input.variant_name || input.seed?.name || "").trim();
+    if (named && !/^default$/i.test(named) && !/^catalog-default$/i.test(named)) return named;
   }
   const slug = promptVariantSlug(input);
+  if (slug === "default" || slug === "index" || slug === "_index") return "Base";
   return formatPromptVariantStem(slug) || slug;
 }
 
@@ -494,7 +509,12 @@ export function promptVariantName(input?: string | null | PromptVariantNameSourc
 export function jobPromptVariantSlug(jobKey?: string | null): string {
   for (const part of String(jobKey || "").split("__")) {
     const m = part.match(/^(?:pp|prompt_profile)-(.+)$/i);
-    if (m) return promptVariantSlug(m[1]);
+    if (m) {
+      const slug = promptVariantSlug(m[1]);
+      // Legacy: designation sidecar mistakenly used as a variant (`pp-_index`).
+      if (slug === "index" || slug === "_index") return "default";
+      return slug;
+    }
   }
   return "";
 }
@@ -509,8 +529,17 @@ export function jobPromptVariantName(item: {
   prompt_profile?: string | null | PromptVariantNameSource;
 }): string {
   const fromProfile = promptVariantName(item.prompt_profile);
+  if (fromProfile && fromProfile !== "Base") return fromProfile;
+  if (fromProfile === "Base" && item.prompt_profile && typeof item.prompt_profile === "object") {
+    // Prefer explicit snapshot / name when present.
+    const snap = String(
+      item.prompt_profile.variant_name || item.prompt_profile.name || "",
+    ).trim();
+    if (snap) return promptVariantName(item.prompt_profile);
+  }
   if (fromProfile) return fromProfile;
   const slug = jobPromptVariantSlug(item.job_key);
+  if (slug === "default" || slug === "index" || slug === "_index") return "Base";
   return formatPromptVariantStem(slug) || slug;
 }
 
@@ -550,6 +579,10 @@ export function jobPromptVariantDisplayName(item: {
 }
 
 export function isDefaultPromptVariant(input?: string | null | PromptVariantNameSource): boolean {
+  if (input && typeof input === "object" && typeof input.is_default === "boolean") {
+    return input.is_default;
+  }
+  // Legacy fallback until catalogs are backfilled with designation.
   return promptVariantSlug(input) === "default";
 }
 
@@ -558,33 +591,45 @@ export function isDefaultPromptVariantName(name?: string | null): boolean {
 }
 
 export function promptProfileOptionLabel(p: WorkProductFamilyPromptProfile): string {
-  return promptVariantName(p) || p.slug || p.basename || p.path;
+  const base = promptVariantName(p) || p.slug || p.basename || p.path;
+  return p.is_default ? `${base} · Default` : base;
 }
 
 function profileMatchesPrefer(p: WorkProductFamilyPromptProfile, prefer: string): boolean {
   if (p.path === prefer || p.basename === prefer || p.file_stem === prefer || p.label === prefer) return true;
+  if (p.variant_id && p.variant_id === prefer) return true;
   const want = promptVariantSlug(prefer);
   return Boolean(want) && promptVariantSlug(p) === want;
+}
+
+/** Profiles shown in pickers (hides ``available: false`` and catalog meta files). */
+export function availablePromptProfiles(
+  profiles: WorkProductFamilyPromptProfile[],
+): WorkProductFamilyPromptProfile[] {
+  return (profiles || []).filter((p) => p.available !== false && !isPromptCatalogMetaProfile(p));
 }
 
 export function pickDefaultPromptProfile(
   profiles: WorkProductFamilyPromptProfile[],
   opts?: { familySlug?: string | null; mediaRelpath?: string | null; prefer?: string | null },
 ): string {
-  if (!profiles.length) return "";
+  const pool = availablePromptProfiles(profiles);
+  if (!pool.length) return "";
   const prefer = String(opts?.prefer || "").trim();
   if (prefer) {
-    const hit = profiles.find((p) => profileMatchesPrefer(p, prefer));
+    const hit = pool.find((p) => profileMatchesPrefer(p, prefer));
     if (hit) return hit.path;
   }
   const family = String(opts?.familySlug || "").trim();
   const media = String(opts?.mediaRelpath || "").toLowerCase();
   if (family === "FB9_GEX" && /faceblast|face_blast/.test(media)) {
-    const ext = profiles.find((p) => promptVariantSlug(p) === "faceblast-extend");
+    const ext = pool.find((p) => promptVariantSlug(p) === "faceblast-extend");
     if (ext) return ext.path;
   }
-  const def = profiles.find((p) => promptVariantSlug(p) === "default" || p.basename === "catalog-default.json");
-  return (def || profiles[0]).path;
+  const designated = pool.find((p) => p.is_default);
+  if (designated) return designated.path;
+  const def = pool.find((p) => promptVariantSlug(p) === "default" || p.basename === "catalog-default.json");
+  return (def || pool[0]).path;
 }
 
 /**
@@ -595,18 +640,26 @@ export function pickRerunPromptPreset(
   profiles: WorkProductFamilyPromptProfile[],
   prefer?: string | null | PromptVariantNameSource,
 ): string {
-  if (!profiles.length) return "";
+  const pool = availablePromptProfiles(profiles);
+  if (!pool.length) return "";
+  if (prefer && typeof prefer === "object") {
+    const vid = String(prefer.variant_id || prefer.seed?.variant_id || "").trim();
+    if (vid) {
+      const byId = pool.find((p) => p.variant_id === vid);
+      if (byId?.path) return byId.path;
+    }
+  }
   const slug = promptVariantSlug(prefer);
   if (slug) {
-    const hit = profiles.find((p) => promptVariantSlug(p) === slug);
+    const hit = pool.find((p) => promptVariantSlug(p) === slug);
     if (hit?.path) return hit.path;
   }
   if (prefer && typeof prefer === "object") {
-    const path = String(prefer.path || prefer.seed?.path || "").trim();
-    const byPath = profiles.find((p) => p.path === path);
+    const path = String(prefer.path || "").trim();
+    const byPath = pool.find((p) => p.path === path);
     if (byPath?.path) return byPath.path;
   }
-  return pickDefaultPromptProfile(profiles);
+  return pickDefaultPromptProfile(pool);
 }
 
 /** Video product that `replay(extend=true)` can chain as the next source. */

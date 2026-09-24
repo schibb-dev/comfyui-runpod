@@ -111,11 +111,16 @@ import {
 import { prefetchAssetRatings } from "./assetRatingsCache";
 import {
   loadClipsForMedia,
+  loadFamiliesBootstrap,
   peekWorkProductsListEntry,
   putWorkProductsList,
   rememberFamiliesFromWorkProducts,
   workProductsListCacheKey,
 } from "./shapeFactorySessionCache";
+import {
+  PromptVariantDefaultButton,
+  withFamilyDefaultOverride,
+} from "./PromptVariantDefaultButton";
 import {
   activeWorkbenchPhases,
   formatCacheAgeMs,
@@ -3035,16 +3040,16 @@ function PromptVariantBadge({
   const slug = promptVariantSlug(item.prompt_profile) || jobPromptVariantSlug(item.job_key);
   if (!name && !slug) return null;
   const edited = promptTextIsOverridden(item.prompt_profile);
-  const isDefault = !edited && (isDefaultPromptVariant(item.prompt_profile) || slug === "default");
+  const isDefault = !edited && isDefaultPromptVariant(item.prompt_profile);
   const shown = name || slug;
   const tip =
     title ||
     (edited
       ? `${shown} · text differs from catalog`
-      : slug && slug !== shown
+      : slug && slug !== shown.toLowerCase().replace(/\s+/g, "-")
         ? `${shown} · ${slug}`
         : isDefault
-          ? `Default · ${slug || "default"}`
+          ? `${shown} · family default`
           : shown);
   return (
     <span
@@ -3082,9 +3087,10 @@ function WorkProductPromptEditor({
   const [dirty, setDirty] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [promoteOpen, setPromoteOpen] = useState(false);
-  const [promoteMode, setPromoteMode] = useState<"fork" | "overwrite">("fork");
+  const [promoteMode, setPromoteMode] = useState<"fork" | "update">("fork");
   const [promoteLabel, setPromoteLabel] = useState("");
   const [promoteNote, setPromoteNote] = useState("");
+  const [promoteAsDefault, setPromoteAsDefault] = useState(false);
 
   useEffect(() => {
     setPositive(String(prompt?.positive || ""));
@@ -3115,8 +3121,8 @@ function WorkProductPromptEditor({
     onSuccess: async (res) => {
       setPromoteOpen(false);
       setMsg(
-        res.mode === "overwrite"
-          ? `Overwrote catalog-default${res.bak_path ? " (bak kept)" : ""}`
+        res.mode === "update" || res.mode === "overwrite"
+          ? `Updated library variant${res.path ? ` · ${String(res.path).split("/").pop()}` : ""}`
           : `Forked library variant${res.path ? ` · ${String(res.path).split("/").pop()}` : ""}`,
       );
       await queryClient.invalidateQueries({ queryKey: queryKeys.shapeFactory.workProductsRoot });
@@ -3354,8 +3360,8 @@ function WorkProductPromptEditor({
       {promoteOpen && canPromote ? (
         <div className="work-product-prompt-editor__promote" role="dialog" aria-label="Promote prompt to library">
           <p className="factory-muted">
-            After judging this output, write its prompt into the family library. Default is a new variant file
-            (git-friendly); overwrite replaces catalog-default.json with a .bak.
+            Write this prompt into the family library. Fork creates a new named variant (new id). Update writes
+            into the existing variant id. “Family default” is a separate designation — optional checkbox below.
           </p>
           <div className="work-product-prompt-editor__promote-modes" role="radiogroup" aria-label="Promote mode">
             <label>
@@ -3371,41 +3377,61 @@ function WorkProductPromptEditor({
               <input
                 type="radio"
                 name={`promote-mode-${item.job_key}`}
-                checked={promoteMode === "overwrite"}
-                onChange={() => setPromoteMode("overwrite")}
+                checked={promoteMode === "update"}
+                onChange={() => setPromoteMode("update")}
               />{" "}
-              Overwrite family default
+              Update this variant
             </label>
           </div>
           {promoteMode === "fork" ? (
             <label className="work-product-prompt-editor__field">
-              <span>Variant label</span>
-              <input value={promoteLabel} onChange={(e) => setPromoteLabel(e.target.value)} disabled={busy} />
+              <span>Variant name</span>
+              <input
+                value={promoteLabel}
+                onChange={(e) => setPromoteLabel(e.target.value)}
+                disabled={busy}
+                placeholder="e.g. FaceBlast evening"
+              />
             </label>
           ) : null}
           <label className="work-product-prompt-editor__field">
             <span>Note (optional)</span>
             <input value={promoteNote} onChange={(e) => setPromoteNote(e.target.value)} disabled={busy} />
           </label>
+          <label className="work-product-prompt-editor__field">
+            <input
+              type="checkbox"
+              checked={promoteAsDefault}
+              onChange={(e) => setPromoteAsDefault(e.target.checked)}
+              disabled={busy}
+            />{" "}
+            Also set as family default
+          </label>
           <div className="work-product-prompt-editor__actions work-product-prompt-editor__actions--promote">
             <button
               type="button"
               className="drt-btn"
-              disabled={busy}
+              disabled={busy || (promoteMode === "fork" && !promoteLabel.trim())}
               onClick={() =>
                 void promoteMut.mutateAsync({
                   job_key: item.job_key,
                   job_path: item.job_path || undefined,
                   fields: ["prompt"],
-                  mode: promoteMode,
-                  label: promoteMode === "fork" ? promoteLabel || undefined : "catalog-default",
+                  mode: promoteMode === "update" ? "update" : "fork",
+                  name: promoteMode === "fork" ? promoteLabel.trim() || undefined : undefined,
+                  label: promoteMode === "fork" ? promoteLabel.trim() || undefined : undefined,
                   note: promoteNote || undefined,
+                  variant_id:
+                    promoteMode === "update"
+                      ? String(prompt?.variant_id || prompt?.seed?.variant_id || "").trim() || undefined
+                      : undefined,
+                  set_as_default: promoteAsDefault || undefined,
                   positive: String(prompt?.positive || positive || ""),
                   negative: String(prompt?.negative || negative || ""),
                 })
               }
             >
-              {promoteMode === "overwrite" ? "Overwrite default" : "Save variant"}
+              {promoteMode === "update" ? "Update variant" : "Save variant"}
             </button>
             <button type="button" className="drt-btn" disabled={busy} onClick={() => setPromoteOpen(false)}>
               Cancel
@@ -3916,6 +3942,7 @@ function RecipeSettingsCard({
   onPromptPath,
   selectedPrompt,
   promptFamilySlug,
+  onFamilyDefaultSet,
   showTrim,
   trimMode,
   trimEdited,
@@ -3943,6 +3970,7 @@ function RecipeSettingsCard({
   onPromptPath: (path: string) => void;
   selectedPrompt?: WorkProductFamilyPromptProfile;
   promptFamilySlug: string;
+  onFamilyDefaultSet?: (variantId: string) => void | Promise<void>;
   showTrim: boolean;
   trimMode: "job" | "edited";
   trimEdited: boolean;
@@ -3956,6 +3984,10 @@ function RecipeSettingsCard({
   onSeedDraft: (raw: string) => void;
 }) {
   const manualSeed = parseNoiseSeed(seedDraft);
+  const [defaultOverride, setDefaultOverride] = useState<string | null>(null);
+  const profiles = withFamilyDefaultOverride(promptProfiles, defaultOverride);
+  const selectedPath = profiles.some((p) => p.path === promptPath) ? promptPath : profiles[0]?.path || "";
+  const selected = profiles.find((p) => p.path === selectedPath) || selectedPrompt;
   return (
     <div className="work-product-quick-queue__dest work-product-rerun-card" role="group" aria-label={ariaLabel}>
       <span className="work-product-quick-queue__dest-label" title="Family, stack, prompt preset, trim, and seed">
@@ -4009,29 +4041,38 @@ function RecipeSettingsCard({
             </select>
           </>
         ) : null}
-        {promptProfiles.length ? (
+        {profiles.length ? (
           <>
             <span className="work-product-rerun-table__label" id={`${fieldId}-prompt`}>
               Prompt
             </span>
             <select
               className="work-product-family-select work-product-prompt-select"
-              value={promptProfiles.some((p) => p.path === promptPath) ? promptPath : promptProfiles[0]?.path || ""}
+              value={selectedPath}
               disabled={isBusy}
               aria-labelledby={`${fieldId}-prompt`}
               title={
-                selectedPrompt
-                  ? `${promptProfileOptionLabel(selectedPrompt)} — catalog preset for ${promptFamilySlug}`
+                selected
+                  ? `${promptProfileOptionLabel(selected)} — catalog preset for ${promptFamilySlug}`
                   : "Catalog prompt preset for the selected family"
               }
               onChange={(e) => onPromptPath(e.target.value)}
             >
-              {promptProfiles.map((p) => (
+              {profiles.map((p) => (
                 <option key={p.path} value={p.path} title={p.path}>
                   {promptProfileOptionLabel(p)}
                 </option>
               ))}
             </select>
+            <PromptVariantDefaultButton
+              familySlug={promptFamilySlug}
+              selected={selected}
+              disabled={isBusy}
+              onDone={async (variantId) => {
+                setDefaultOverride(variantId);
+                await onFamilyDefaultSet?.(variantId);
+              }}
+            />
           </>
         ) : null}
         {showTrim ? (
@@ -4257,6 +4298,15 @@ function WorkProductQuickQueue({
     queryClient.invalidateQueries({
       queryKey: queryKeys.shapeFactory.workProductsRoot,
     });
+  const refreshFamilyDefaults = async () => {
+    try {
+      const boot = await loadFamiliesBootstrap({ force: true });
+      rememberFamiliesFromWorkProducts({ families: boot.families || [] });
+    } catch {
+      /* ignore */
+    }
+    await invalidateWorkbench();
+  };
   const invalidateQueue = () =>
     Promise.all([
       queryClient.invalidateQueries({ queryKey: queryKeys.queue.snapshot }),
@@ -5198,6 +5248,7 @@ function WorkProductQuickQueue({
                   onPromptPath={setRerunPromptPath}
                   selectedPrompt={selectedPrompt}
                   promptFamilySlug={rerunFamily || currentFamily}
+                  onFamilyDefaultSet={() => refreshFamilyDefaults()}
                   showTrim={trimApplies}
                   trimMode={effectiveTrimMode}
                   trimEdited={trimEdited}
@@ -5256,6 +5307,7 @@ function WorkProductQuickQueue({
                     onPromptPath={setExtendPromptPath}
                     selectedPrompt={selectedExtendPrompt}
                     promptFamilySlug={extendFamily}
+                    onFamilyDefaultSet={() => refreshFamilyDefaults()}
                     showTrim={outputTrimApplies}
                     trimMode={effectiveExtendTrimMode}
                     trimEdited={outputTrimEdited}

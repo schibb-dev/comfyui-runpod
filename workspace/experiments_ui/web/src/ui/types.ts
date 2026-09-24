@@ -2653,7 +2653,11 @@ export type WorkProductPromptRow = {
 export type WorkProductPromptProfile = {
   path?: string;
   basename?: string;
-  /** Canonical variant slug (`default`, `faceblast-extend`, …). */
+  /** Opaque catalog identity when stamped from library. */
+  variant_id?: string | null;
+  /** Name snapshot at fork / promote time. */
+  variant_name?: string | null;
+  /** Canonical variant slug (`base`, `faceblast-extend`, …). */
   slug?: string | null;
   /** Operator-facing variant name from catalog JSON (`name`). */
   name?: string | null;
@@ -2674,6 +2678,8 @@ export type WorkProductPromptProfile = {
   content_hash?: string | null;
   /** True when owned content_hash differs from seed at source_profile. */
   snowflake?: boolean;
+  /** Family default designation when known from catalog listing. */
+  is_default?: boolean;
   /** Seed template baseline for snowflake diff / lineage. */
   seed?: {
     path?: string;
@@ -2681,6 +2687,7 @@ export type WorkProductPromptProfile = {
     name?: string | null;
     label?: string | null;
     basename?: string;
+    variant_id?: string | null;
     positive?: string;
     negative?: string;
     positive_rows?: WorkProductPromptRow[];
@@ -2968,7 +2975,9 @@ export type GenerationStackOption = {
 };
 
 export type WorkProductFamilyPromptProfile = {
-  /** Canonical variant slug (`default`, `faceblast-extend`, …). */
+  /** Opaque catalog identity (stable across renames). */
+  variant_id?: string | null;
+  /** Canonical variant slug (`base`, `faceblast-extend`, …). */
   slug: string;
   /** On-disk stem (`catalog-default`); wrappers are not the slug. */
   file_stem?: string;
@@ -2977,6 +2986,10 @@ export type WorkProductFamilyPromptProfile = {
   label?: string | null;
   basename?: string;
   path: string;
+  /** When false, hide from pickers. */
+  available?: boolean;
+  /** Family default designation (not the name). */
+  is_default?: boolean;
 };
 
 /** GET /api/shape-factory/families — config-only picker bootstrap (no jobs/Comfy). */

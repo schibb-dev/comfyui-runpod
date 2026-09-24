@@ -19725,6 +19725,55 @@ button.home-backlog-linkish {
   gap: 6px;
   font-size: 11px;
   color: var(--muted);
+  flex-wrap: wrap;
+}
+
+.prompt-variant-default-btn-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.prompt-variant-default-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--accent, #3b82f6);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.prompt-variant-default-btn:hover:not(:disabled) {
+  color: var(--text, inherit);
+}
+
+.prompt-variant-default-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.prompt-variant-default-btn--current,
+.prompt-variant-default-btn--disabled {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted);
+  text-decoration: none;
+  cursor: default;
+}
+
+.prompt-variant-default-btn__err {
+  font-size: 10px;
+  color: var(--danger, #b91c1c);
+}
+
+.work-product-rerun-table .prompt-variant-default-btn-wrap {
+  grid-column: 2;
+  justify-self: start;
 }
 
 .work-product-quick-queue__family-label {
