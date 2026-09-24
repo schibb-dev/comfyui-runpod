@@ -61,7 +61,7 @@ a `delivery:` block — see [`.data/shapes/delivery/README.md`](../.data/shapes/
 
 | Layer | Controls | Shape touchpoint | Examples |
 |-------|----------|------------------|----------|
-| **Generation** | Model stack, latent size, LoRAs, editorial nodes, core topology | `template:` path (+ future `stack_profile`) | UNet, LoRAs, ColorMatch on extend, VHS_MergeImages |
+| **Generation** | Model stack, latent size, LoRAs, editorial nodes, core topology | `template:` path + shape `stack:` / `stack_id` | UNet, LoRAs, ColorMatch on extend, VHS_MergeImages |
 | **Delivery postprocess** | Optional video-in → video-out transforms | `wan-delivery-postprocess` + `delivery:` toggles | ColorMatch, RealESRGAN, RIFE |
 | **Runtime** | Per-run tuning on a stable graph | `ui_defaults`, `dev-fast.yaml`, adhoc params, promote | frames, steps, overlap, seed, VHS clip window |
 
@@ -175,7 +175,7 @@ a different station or pipeline step.
 
 - Runtime knobs (frames, steps, overlap, seed, trim)
 - Generation editorial on/off (`color_match`, `merge_frames`) where the nodes exist
-- Future: `stack_profile` only with validation
+- Named stacks (`stack_id` under `.data/stacks/`) with validation against `graph_hash`
 
 ---
 

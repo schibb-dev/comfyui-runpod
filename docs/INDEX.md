@@ -45,6 +45,8 @@ This page mirrors the planning-relevant sections of the repo-root [DOCUMENTATION
 | [RATINGS_V1_PLAN.md](RATINGS_V1_PLAN.md) | Ratings, disposition, triage. |
 | [DISPOSITION_BUCKET_MODEL.md](DISPOSITION_BUCKET_MODEL.md) | Bucket model reference (diagram-first). |
 | [CLIP_SELECTION_MODEL.md](CLIP_SELECTION_MODEL.md) | Asset / Clip / Use, starring, soft-delete. |
+| [CATALOG_IDENTITY.md](CATALOG_IDENTITY.md) | App-wide: opaque id, mutable name, available, default designation. |
+| [VARIANT_MANAGEMENT.md](VARIANT_MANAGEMENT.md) | Prompt variants: seed → owned → promote; catalog schema. |
 | [HOURLY_UTILITY_PLAN.md](HOURLY_UTILITY_PLAN.md) | Hourlies as ruleset utility: policy file, clip ★+newer bind, decision ledger, Home UI. |
 | [FACTORY_MCP.md](FACTORY_MCP.md) | Factory MCP: hourly explore / status / simulate; same record as Home. |
 | [STILL_GALLERY_HUB_PLAN.md](STILL_GALLERY_HUB_PLAN.md) | Still gallery as launch hub: Submit / collections / map / ratings from one image. |
