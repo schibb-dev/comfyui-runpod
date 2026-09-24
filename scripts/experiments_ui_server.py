@@ -2586,6 +2586,24 @@ def _hourly_schedule_payload(cfg: ServerConfig) -> Dict[str, Any]:
         out["comfy_health"] = snapshot_comfy_health(data_root)
     except Exception:
         pass
+    try:
+        from suspend_comfy_queue import hourly_gpu_pause_status  # type: ignore
+
+        gpu_pause = hourly_gpu_pause_status(data_root=data_root)
+        out["gpu_pause"] = gpu_pause
+        sch_enabled = bool((out.get("schedule") or {}).get("enabled"))
+        out["suspend"] = {
+            "active": bool(gpu_pause.get("active")) or not sch_enabled,
+            "hourly_enabled": sch_enabled,
+            "gpu_pause": gpu_pause,
+            "reasons": (
+                [str(gpu_pause.get("paused_by") or "still_tag")]
+                if gpu_pause.get("active")
+                else ([] if sch_enabled else ["hourlies_disabled"])
+            ),
+        }
+    except Exception:
+        pass
     return out
 
 
@@ -2622,6 +2640,15 @@ def _hourly_schedule_set_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dic
         sch["interval_minutes"] = body.get("interval_minutes")
     if "enabled" in body:
         sch["enabled"] = bool(body.get("enabled"))
+        # Operator toggle wins over any leftover Florence GPU pause lock.
+        try:
+            from suspend_comfy_queue import default_hourly_gpu_pause_path  # type: ignore
+
+            pause_path = default_hourly_gpu_pause_path(data_root=data_root)
+            if pause_path.is_file():
+                pause_path.unlink()
+        except Exception:
+            pass
     if "submit_mode" in body and body.get("submit_mode") is not None:
         sch["submit_mode"] = str(body.get("submit_mode"))
     if "comfy_queue_min" in body:
@@ -3412,7 +3439,10 @@ def _shape_factory_discard_payload(cfg: ServerConfig, body: Dict[str, Any]) -> D
         )
 
     # History-only stubs never had a .job.json — dismiss so they stop reappearing.
-    if history_stub and not job_path_raw:
+    # Quality-experiment rows are the same: no factory job file, only runs/ on disk.
+    from shape_factory_work_products import parse_experiment_job_key  # type: ignore
+
+    if (history_stub or parse_experiment_job_key(job_key or "")) and not job_path_raw:
         return _dismiss()
 
     result = mutate_job(
@@ -3553,6 +3583,31 @@ def _shape_factory_update_owned_params_payload(cfg: ServerConfig, body: Dict[str
         job_key=job_key,
         job_path=Path(job_path_raw) if job_path_raw else None,
         parameters=parameters,
+        server=str(cfg.comfy_server),
+    )
+
+
+def _shape_factory_update_owned_stack_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /api/shape-factory/update-owned-stack — swap UNet/quant/virt stack on a pre-Comfy job."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory import update_pending_job_stack  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    job_key = str(body.get("job_key") or "").strip() or None
+    job_path_raw = str(body.get("job_path") or "").strip() or None
+    stack_id = str(body.get("stack_id") or "").strip()
+    if not job_key and not job_path_raw:
+        raise ValueError("missing_job_key")
+    if not stack_id:
+        raise ValueError("missing_stack")
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    return update_pending_job_stack(
+        data_root=data_root,
+        job_key=job_key,
+        job_path=Path(job_path_raw) if job_path_raw else None,
+        stack_id=stack_id,
         server=str(cfg.comfy_server),
     )
 
@@ -5285,6 +5340,7 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
                     output_root=cfg.output_root,
                     queue_running=queue_obj.get("queue_running"),
                     queue_pending=queue_obj.get("queue_pending"),
+                    data_root=data_root,
                 )
             except Exception as e:
                 payload["experiment_attach_error"] = str(e)
@@ -5295,7 +5351,9 @@ def _shape_factory_work_products_payload(cfg: ServerConfig, q: Dict[str, List[st
         )
     elif not lite:
         try:
-            payload = attach_experiment_runs(payload, output_root=cfg.output_root)
+            payload = attach_experiment_runs(
+                payload, output_root=cfg.output_root, data_root=data_root
+            )
         except Exception as e:
             payload["experiment_attach_error"] = str(e)
     _mark("queue_attach", "Live queue")
@@ -12848,6 +12906,10 @@ _LEDGER_ACTIVITY_NOISE_TYPES = frozenset(
         # Historical per-poll spam (now edge-triggered in ledger, still noisy in old logs).
         "actions_paused",
         "actions_suppressed_breaker",
+        # Per-poll refusal of a prompt that will never be restored. The ledger
+        # now drops these; old logs still contain the spam.
+        "refill_suppressed_attempt_cap",
+        "refill_suppressed_cooldown",
     }
 )
 
@@ -13940,6 +14002,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_shape_factory_update_owned_prompt_post()
         if path == "/api/shape-factory/update-owned-params":
             return self._handle_shape_factory_update_owned_params_post()
+        if path == "/api/shape-factory/update-owned-stack":
+            return self._handle_shape_factory_update_owned_stack_post()
         if path == "/api/shape-factory/update-owned-loras":
             return self._handle_shape_factory_update_owned_loras_post()
         if path == "/api/shape-factory/promote-template":
@@ -14503,6 +14567,27 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return _json_response(
                 self, 500, {"ok": False, "error": "shape_factory_update_owned_params_failed", "detail": str(e)}
+            )
+        if payload.get("error") in {"not_pending", "still_on_comfy"}:
+            return _json_response(self, 409, payload)
+        if payload.get("error") == "job_not_found":
+            return _json_response(self, 404, payload)
+        code = 200 if payload.get("ok", True) else 400
+        return _json_response(self, code, payload)
+
+    def _handle_shape_factory_update_owned_stack_post(self) -> None:
+        """POST /api/shape-factory/update-owned-stack — swap generation stack on a pre-Comfy job."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _shape_factory_update_owned_stack_payload(cfg, body if isinstance(body, dict) else {})
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except Exception as e:
+            return _json_response(
+                self, 500, {"ok": False, "error": "shape_factory_update_owned_stack_failed", "detail": str(e)}
             )
         if payload.get("error") in {"not_pending", "still_on_comfy"}:
             return _json_response(self, 409, payload)

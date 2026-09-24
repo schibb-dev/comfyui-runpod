@@ -5453,6 +5453,15 @@ def main() -> int:
             sch["interval_minutes"] = int(args.minutes)
         if args.enabled is not None:
             sch["enabled"] = str(args.enabled).strip().lower() in {"1", "true", "yes", "on"}
+            # Operator toggle wins over any leftover Florence GPU pause lock.
+            try:
+                from suspend_comfy_queue import default_hourly_gpu_pause_path  # type: ignore
+
+                pause_path = default_hourly_gpu_pause_path(data_root=data_root)
+                if pause_path.is_file():
+                    pause_path.unlink()
+            except Exception:
+                pass
         if args.submit_mode is not None:
             sch["submit_mode"] = str(args.submit_mode)
         if args.comfy_queue_min is not None:

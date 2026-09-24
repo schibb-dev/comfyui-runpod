@@ -65,6 +65,47 @@ python3 workspace/scripts/shape_factory_hourly.py simulate-picks --count 32
 python3 workspace/scripts/shape_factory_hourly.py schedule-status
 ```
 
+### Ops CLI — check / adjust hourlies + suspend
+
+Schedule file: `.data/shape_factory/hourly-schedule.json`  
+GPU pause lock (Florence occupy): `.data/shape_factory/hourly-gpu-pause.json`
+
+```bash
+# Live due / enabled / next tick
+cd workspace/scripts
+python3 shape_factory_hourly.py schedule-status
+
+# Enable / disable (also clears any leftover GPU pause lock)
+python3 shape_factory_hourly.py schedule-set --enabled 1
+python3 shape_factory_hourly.py schedule-set --enabled 0
+
+# Cadence + queue caps
+python3 shape_factory_hourly.py schedule-set --minutes 15 --comfy-queue-max 4 --pending-hourly-min 5
+
+# Feeder / ledger / hourly snapshot (includes gpu_pause + suspend.reasons)
+python3 suspend_comfy_queue.py status
+
+# Manual park / unpark Comfy (does not by itself toggle hourlies)
+python3 suspend_comfy_queue.py suspend --data-root ../../.data
+python3 suspend_comfy_queue.py resume
+```
+
+Still-tag schedule (whether Florence may occupy GPU and pause hourlies):
+
+```bash
+# Read/update via Experiments UI Still Gallery → Tagging backlog, or:
+python3 - <<'PY'
+from pathlib import Path
+import json
+p = Path("../../.data/shape_factory/still_tag_schedule.json")
+print(json.dumps(json.loads(p.read_text()), indent=2))
+PY
+```
+
+Home Hourly **Enabled** writes immediately. Queue ledger shows **Suspended · …** when
+ledger is parked, still-tag holds a GPU pause, or feeders are stopped — distinct from
+plain “Hourlies off”.
+
 ---
 
 ## 3. How the pieces fit

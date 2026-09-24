@@ -210,6 +210,22 @@ def freeze_owned_loras(job: Dict[str, Any], *, at: Optional[str] = None) -> bool
     return True
 
 
+def thaw_owned_loras(job: Dict[str, Any], *, at: Optional[str] = None) -> bool:
+    """Reopen a frozen LoRA stack after a failed run."""
+    owned = get_owned_loras(job)
+    if owned is None or not owned.get("frozen"):
+        return False
+    owned["frozen"] = False
+    stamp = at
+    if not stamp:
+        from datetime import datetime, timezone
+
+        stamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    owned["thawed_at"] = stamp
+    job["loras"] = owned
+    return True
+
+
 def ensure_owned_loras_from_workflow(
     job: Dict[str, Any],
     *,

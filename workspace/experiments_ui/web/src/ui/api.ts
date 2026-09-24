@@ -2023,6 +2023,39 @@ export async function updateShapeFactoryOwnedParams(
   return j;
 }
 
+export type ShapeFactoryUpdateOwnedStackRequest = {
+  job_key?: string;
+  job_path?: string;
+  stack_id: string;
+};
+
+export type ShapeFactoryUpdateOwnedStackResponse = {
+  ok: boolean;
+  job_key?: string;
+  status?: string;
+  stack_id?: string;
+  error?: string;
+  detail?: string;
+};
+
+export async function updateShapeFactoryOwnedStack(
+  req: ShapeFactoryUpdateOwnedStackRequest,
+): Promise<ShapeFactoryUpdateOwnedStackResponse> {
+  const r = await fetch("/api/shape-factory/update-owned-stack", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  const j = (await r.json().catch(() => ({}))) as ShapeFactoryUpdateOwnedStackResponse;
+  if (!r.ok || !j.ok) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST /api/shape-factory/update-owned-stack failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
 export type ShapeFactoryLoraEntry = {
   lora: string;
   on?: boolean;

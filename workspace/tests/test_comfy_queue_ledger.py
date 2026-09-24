@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any, Dict, List
@@ -20,9 +21,11 @@ from comfy_queue_ledger import (
     _default_state,
     _history_terminal_reason,
     _restore_missing_prompts,
+    _prune_state,
     _submit_prompt,
     backlog_item_should_skip_finished,
     park_items_to_backlog,
+    trim_jsonl_tail,
 )
 
 
@@ -189,6 +192,62 @@ class RestoreMissingPromptsTests(unittest.TestCase):
         self.assertEqual(state["backlog"], [])
         self.assertEqual(state["stats"]["skipped_already_done"], 1)
         self.assertTrue(any(e["type"] == "outage_restore_skipped_already_done" for e in events))
+
+    def test_attempt_cap_drops_backlog_instead_of_resubmitting(self) -> None:
+        state = _default_state()
+        prompt = {"1": {"class_type": "LoadImage", "inputs": {}}}
+        state["known"] = {"old-1": {"prompt": prompt}}
+        state["backlog"] = [{"prompt_id": "old-1", "prompt": prompt, "source": "spillover"}]
+        state["restore_attempts"] = {"old-1": 2}
+        state["last_snapshot"] = {"running": [], "pending": ["old-1"]}
+        events: List[Dict[str, Any]] = []
+
+        def log_event(typ: str, **kwargs: Any) -> None:
+            events.append({"type": typ, **kwargs})
+
+        with mock.patch("comfy_queue_ledger._submit_prompt") as submit:
+            with mock.patch("comfy_queue_ledger._prompt_already_finished", return_value=(None, "empty")):
+                restored, parked, unrec, _live = _restore_missing_prompts(
+                    state,
+                    server="http://x",
+                    client_id="ledger",
+                    candidates=["old-1"],
+                    current_ids=set(),
+                    spillover=True,
+                    pending_target=2,
+                    live_pending=0,
+                    max_restore_attempts=2,
+                    expected_add_ttl_s=20.0,
+                    source="startup",
+                    log_event=log_event,
+                    now=1000.0,
+                )
+        submit.assert_not_called()
+        self.assertEqual(restored, 0)
+        self.assertEqual(parked, 0)
+        self.assertEqual(unrec, 0)
+        self.assertEqual(state["backlog"], [])
+        self.assertNotIn("old-1", state["known"])
+        self.assertNotIn("old-1", state["restore_attempts"])
+        self.assertEqual(state["last_snapshot"]["pending"], [])
+        self.assertTrue(any(e["type"] == "startup_restore_dropped_attempt_cap" for e in events))
+
+
+class TrimTests(unittest.TestCase):
+    def test_trim_keeps_tail_and_prune_drops_stale_attempts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "events.jsonl"
+            path.write_bytes(b"".join(f'{{"n":{i}}}\n'.encode() for i in range(50)))
+            self.assertTrue(trim_jsonl_tail(path, max_bytes=80, keep_bytes=40))
+            text = path.read_text()
+            self.assertLessEqual(path.stat().st_size, 80)
+            self.assertTrue(text.strip().endswith("}"))
+            self.assertIn("\n", text)
+        state = _default_state()
+        state["known"] = {"keep": {"prompt": {}}}
+        state["restore_attempts"] = {"keep": 1, "gone": 2}
+        _prune_state(state)
+        self.assertEqual(state["restore_attempts"], {"keep": 1})
 
 
 class ParkBacklogTests(unittest.TestCase):

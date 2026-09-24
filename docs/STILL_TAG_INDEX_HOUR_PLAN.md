@@ -83,6 +83,11 @@ Index-hour drainer →  Comfy /prompt Florence (prefer front) [reserved window]
 | `resume_gap_min` | Minimum idle after a session before the next (default **20**) |
 | `sec_per_still` | Fallback seconds/still for batch scale (live median from recent done runs) |
 | `occupy_gpu` | Pause hourlies + park Comfy/ledger for the session (default **true**; skipped on dry-run) |
+
+Occupy writes a durable `.data/shape_factory/hourly-gpu-pause.json` lock with the
+pre-pause `restore_enabled` intent. Release (or orphan/stale recovery) restores that
+intent and clears the lock — so nested/failed sessions cannot leave hourlies stuck
+off. Operator Enable/Disable clears the lock and wins.
 | `window_start` + `window_duration_min` | Clock mode only; SLA uses `session_minutes` as the target |
 | `timezone` | Interpret start (default host / explicit IANA) |
 | `front` | Submit tag prompts to front of Comfy queue (default **true** in window) |

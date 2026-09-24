@@ -49,6 +49,28 @@ function formatDue(iso?: string | null): string {
 
 const INTERVAL_PRESETS = [15, 20, 30, 45, 60, 90, 120];
 
+function hourlySuspendBanner(initial?: HourlyScheduleStatus | null): {
+  active: boolean;
+  text: string;
+} {
+  const pause = initial?.gpu_pause || initial?.suspend?.gpu_pause;
+  if (pause?.active) {
+    const by = pause.paused_by || "still_tag";
+    const restore = pause.restore_enabled ? "on" : "off";
+    return {
+      active: true,
+      text: `Suspended: ${by} holds the GPU — hourlies forced off (restores to ${restore}).`,
+    };
+  }
+  if (initial?.schedule?.enabled === false) {
+    return { active: true, text: "Hourlies disabled in schedule (ticks skip until Enabled)." };
+  }
+  if (initial?.due === false && initial?.schedule?.enabled !== false) {
+    return { active: false, text: "" };
+  }
+  return { active: false, text: "" };
+}
+
 function HourlyScheduleControls({
   initial,
   onSaved,
@@ -162,14 +184,47 @@ function HourlyScheduleControls({
             onChange={(e) => setHourlyMin(Number(e.target.value))}
           />
         </label>
-        <label className="home-hourly-controls__toggle">
-          <input type="checkbox" checked={enabled} disabled={busy} onChange={(e) => setEnabled(e.target.checked)} />
-          <span>Enabled</span>
+        <label
+          className="home-hourly-controls__toggle"
+          title={
+            initial?.gpu_pause?.active
+              ? "Forced off while still-tag/Florence holds the GPU. Enabling clears that pause."
+              : "Writes hourly-schedule.json immediately"
+          }
+        >
+          <input
+            type="checkbox"
+            checked={enabled && !initial?.gpu_pause?.active}
+            disabled={busy}
+            onChange={(e) => {
+              const next = e.target.checked;
+              setEnabled(next);
+              setBusy(true);
+              setErr("");
+              void setHourlySchedule({ enabled: next })
+                .then((res) => onSaved(res))
+                .catch((ex) => {
+                  setErr(ex instanceof Error ? ex.message : String(ex));
+                  setEnabled(!next);
+                })
+                .finally(() => setBusy(false));
+            }}
+          />
+          <span>
+            {initial?.gpu_pause?.active
+              ? "Enabled (paused)"
+              : "Enabled"}
+          </span>
         </label>
         <button type="button" className="drt-btn" disabled={busy} onClick={() => void apply()}>
           {busy ? "Saving…" : "Apply"}
         </button>
       </div>
+      {hourlySuspendBanner(initial).active ? (
+        <p className="home-hourly-controls__suspend" role="status">
+          {hourlySuspendBanner(initial).text}
+        </p>
+      ) : null}
       <p className="home-hourly-controls__meta factory-muted">
         Next due {formatDue(initial?.next_due_at)}
         {initial?.due ? " · due now" : ""}
@@ -954,7 +1009,16 @@ export function HourlyHomeTeaser({
   const sch = schedule?.schedule;
   return (
     <>
+      {hourlySuspendBanner(schedule).active ? (
+        <p className="home-hourly-controls__suspend" role="status">
+          {hourlySuspendBanner(schedule).text}
+        </p>
+      ) : null}
       <p className="home-hourly-controls__meta factory-muted">
+        {sch?.enabled === false || schedule?.gpu_pause?.active
+          ? "Hourlies off"
+          : "Hourlies on"}
+        {" · "}
         Next due {formatDue(schedule?.next_due_at)}
         {schedule?.due ? " · due now" : ""}
         {" · "}

@@ -6684,7 +6684,10 @@ def begin_job_edit(
     Take exclusive edit lock on a pre-run factory job (``submit.status=editing``).
 
     Waiting-queue jobs are removed from Comfy first (same path as unqueue).
-    Running jobs are refused. Pending drain skips ``editing``.
+    Running and completed jobs are refused. A failed run (error, interrupted,
+    abandoned) may be reopened: the owned prompt/LoRAs frozen at execution
+    start are thawed so the model and prompt can change before a retry.
+    Pending drain skips ``editing``.
     """
     data_root = Path(data_root).expanduser().resolve()
     job_file, job = _resolve_job_file_and_doc(data_root=data_root, job_key=job_key, job_path=job_path)
@@ -6711,10 +6714,13 @@ def begin_job_edit(
             "prompt_id": pid or None,
             "detail": "Only pending/queued (pre-run) jobs can enter edit mode.",
         }
+    # Freeze means this attempt already started. A failed attempt can be edited
+    # again (change stack/model, then resubmit). A job that has not failed stays locked.
+    retry_after_failure = status in {"error", "failed", "interrupted", "abandoned"}
     try:
-        from shape_factory_owned_prompt import is_owned_prompt_frozen
+        from shape_factory_owned_prompt import is_owned_prompt_frozen, thaw_owned_prompt
 
-        if is_owned_prompt_frozen(job):
+        if is_owned_prompt_frozen(job) and not retry_after_failure:
             return {
                 "ok": False,
                 "error": "prompt_frozen",
@@ -6722,6 +6728,14 @@ def begin_job_edit(
                 "status": status,
                 "detail": "Owned prompt is frozen (execution started); cannot edit.",
             }
+        if retry_after_failure:
+            thaw_owned_prompt(job)
+            try:
+                from shape_factory_owned_loras import thaw_owned_loras
+
+                thaw_owned_loras(job)
+            except Exception:
+                pass
     except Exception:
         pass
     if not status_allows_begin_edit(status):
@@ -7049,7 +7063,23 @@ def job_edit_snapshot(
         # Same profiles Workbench uses — Submit tunables (params + LoRAs) seed from these.
         "params_profile": params_profile,
         "loras_profile": loras_profile,
+        "stack_id": _job_edit_stack_id(job),
     }
+
+
+def _job_edit_stack_id(job: dict[str, Any]) -> Optional[str]:
+    adhoc = job.get("adhoc_overrides") if isinstance(job.get("adhoc_overrides"), dict) else {}
+    raw = adhoc.get("stack") or adhoc.get("stack_id") or job.get("stack_id")
+    if isinstance(raw, dict):
+        raw = raw.get("stack_id") or raw.get("id")
+    sid = str(raw or "").strip()
+    if sid:
+        return sid
+    stack = job.get("stack")
+    if isinstance(stack, dict):
+        sid = str(stack.get("stack_id") or stack.get("id") or "").strip()
+        return sid or None
+    return None
 
 
 def update_pending_job_vhs_window(
@@ -7640,6 +7670,135 @@ def update_pending_job_params(
         "parameters": clean,
         "changes": changes,
         "params_profile": profile,
+    }
+
+
+def update_pending_job_stack(
+    *,
+    data_root: Path,
+    stack_id: str,
+    job_key: Optional[str] = None,
+    job_path: Optional[Path] = None,
+    server: str = "",
+) -> dict[str, Any]:
+    """Swap the generation stack (UNet / quant / virt) on a pre-Comfy job."""
+    from shape_factory_stack import apply_shape_stack_ui, load_stack, stamp_job_stack
+
+    data_root = Path(data_root).expanduser().resolve()
+    sid = str(stack_id or "").strip()
+    if not sid:
+        return {"ok": False, "error": "missing_stack", "job_key": job_key}
+
+    job_file: Optional[Path] = None
+    job: Optional[dict[str, Any]] = None
+    if job_path is not None:
+        jp = Path(job_path).expanduser()
+        if jp.is_file():
+            try:
+                loaded = json.loads(jp.read_text(encoding="utf-8"))
+            except Exception:
+                loaded = None
+            if isinstance(loaded, dict):
+                job_file, job = jp, loaded
+    if job is None and job_key:
+        job_file, job = find_job_by_key(data_root, str(job_key))
+    if job is None or job_file is None:
+        return {"ok": False, "error": "job_not_found", "job_key": job_key}
+
+    if hostify_job_paths(job):
+        atomic_write_json(job_file, job)
+
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+    status = str(submit.get("status") or "").strip().lower()
+    pid = str(submit.get("prompt_id") or "").strip()
+    key = str(job.get("job_key") or job_file.stem.replace(".job", ""))
+
+    if status_is_on_comfy(status, pid) or not status_is_pending_editable(status):
+        return {
+            "ok": False,
+            "error": "not_pending",
+            "job_key": key,
+            "status": status or "unknown",
+            "prompt_id": pid or None,
+            "detail": "Unqueue first — only pending/editing (pre-Comfy) jobs can change stack.",
+        }
+
+    if pid and server:
+        try:
+            running_ids, pending_ids = queue_prompt_id_buckets(str(server).rstrip("/"), timeout_s=10)
+        except Exception:
+            running_ids, pending_ids = set(), set()
+        if pid in running_ids or pid in pending_ids:
+            return {
+                "ok": False,
+                "error": "still_on_comfy",
+                "job_key": key,
+                "prompt_id": pid,
+                "detail": "Prompt is still on Comfy; Unqueue first.",
+            }
+
+    stacks_dir = data_root / "stacks"
+    try:
+        stack = load_stack(sid, stacks_dir=stacks_dir if stacks_dir.is_dir() else None)
+    except Exception as e:
+        return {"ok": False, "error": "unknown_stack", "job_key": key, "detail": str(e), "stack_id": sid}
+
+    workflow_path = ensure_job_workflow_path(job, data_root=data_root)
+    if not workflow_path.is_file():
+        return {
+            "ok": False,
+            "error": "workflow_missing",
+            "job_key": key,
+            "workflow_path": str(workflow_path),
+        }
+    workflow = read_json(workflow_path)
+    if not is_litegraph_workflow(workflow):
+        return {"ok": False, "error": "not_litegraph", "job_key": key}
+
+    adhoc = job.get("adhoc_overrides") if isinstance(job.get("adhoc_overrides"), dict) else {}
+    adhoc = dict(adhoc)
+    adhoc["stack"] = sid
+    job["adhoc_overrides"] = adhoc
+    stamp_job_stack(job, stack)
+
+    shape: dict[str, Any] = {}
+    shape_path = str(job.get("shape_path") or "").strip()
+    if shape_path:
+        try:
+            loaded_shape = read_json(Path(shape_path).expanduser())
+        except Exception:
+            loaded_shape = None
+        if isinstance(loaded_shape, dict):
+            shape = loaded_shape
+    changes = apply_shape_stack_ui(workflow, shape, job, stacks_dir=stacks_dir if stacks_dir.is_dir() else None)
+    atomic_write_json(workflow_path, workflow)
+    capture_job_workload(job, workflow)
+    job["generated_workflow_path"] = str(workflow_path)
+
+    prompt_candidates = [
+        job_file.with_name(job_file.stem.replace(".job", "") + ".prompt.json"),
+    ]
+    submit_prompt = str(submit.get("prompt_path") or "").strip()
+    if submit_prompt:
+        prompt_candidates.append(Path(submit_prompt).expanduser())
+    prompt_cleared = False
+    for p in prompt_candidates:
+        try:
+            if p.is_file():
+                p.unlink()
+                prompt_cleared = True
+        except Exception:
+            continue
+
+    atomic_write_json(job_file, job)
+    return {
+        "ok": True,
+        "job_key": key,
+        "job_path": str(job_file),
+        "status": status or "pending",
+        "stack_id": sid,
+        "prompt_cleared": prompt_cleared,
+        "changes": changes,
     }
 
 

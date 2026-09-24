@@ -1950,6 +1950,8 @@ export type ShapeFactoryJobEditSnapshot = {
   job_path?: string;
   family_slug?: string;
   shape_path?: string;
+  /** Generation stack (UNet / quant / virt). Editable on a pre-Comfy job. */
+  stack_id?: string | null;
   status?: string;
   prompt_id?: string | null;
   editing_from_status?: string;
@@ -2280,6 +2282,24 @@ export type HourlySchedule = {
   updated_at?: string | null;
 };
 
+export type HourlyGpuPauseStatus = {
+  active?: boolean;
+  paused_by?: string;
+  restore_enabled?: boolean;
+  depth?: number;
+  paused_at?: string | null;
+  updated_at?: string | null;
+  path?: string;
+};
+
+export type HourlySuspendStatus = {
+  active?: boolean;
+  reasons?: string[];
+  hourly_enabled?: boolean | null;
+  ledger_paused?: boolean | null;
+  gpu_pause?: HourlyGpuPauseStatus;
+};
+
 export type HourlyScheduleStatus = {
   ok?: boolean;
   path?: string;
@@ -2305,6 +2325,8 @@ export type HourlyScheduleStatus = {
     boost?: number;
   } | null;
   explore?: HourlyExplore | null;
+  gpu_pause?: HourlyGpuPauseStatus;
+  suspend?: HourlySuspendStatus;
   saved?: HourlySchedule;
   error?: string;
   detail?: string;
@@ -2360,7 +2382,9 @@ export type QueueLedgerEntry = {
 export type QueueLedgerOpsStatus = {
   ok?: boolean;
   comfy?: { ok?: boolean; running?: number | null; pending?: number | null; error?: string };
-  hourly?: { enabled?: boolean | null };
+  hourly?: { enabled?: boolean | null; gpu_pause?: HourlyGpuPauseStatus };
+  gpu_pause?: HourlyGpuPauseStatus;
+  suspend?: HourlySuspendStatus;
   drain?: { active?: boolean | null; enabled?: boolean; label?: string };
   watch_queue?: { running?: boolean; status?: string };
   comfy_health?: ComfyHealthStatus | null;

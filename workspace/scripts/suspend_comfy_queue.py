@@ -86,18 +86,189 @@ def set_watch_queue(*, active: bool) -> Dict[str, str]:
     return {"watch_queue": (proc.stderr or proc.stdout or "failed").strip() or "failed"}
 
 
-def set_hourlies_enabled(*, enabled: bool, data_root: Optional[Path] = None) -> Dict[str, Any]:
+HOURLY_GPU_PAUSE_BASENAME = "hourly-gpu-pause.json"
+
+
+def default_hourly_gpu_pause_path(*, data_root: Optional[Path] = None) -> Path:
+    """Durable lock so Florence occupy can restore hourlies even after nested/failed sessions."""
+    root = data_root
+    if root is None:
+        env = os.environ.get("SHAPE_FACTORY_DATA_ROOT", "").strip()
+        if env:
+            root = Path(env).expanduser()
+        else:
+            # Match shape_factory_hourly.default_hourly_schedule_path (repo .data).
+            root = Path(__file__).resolve().parents[2] / ".data"
+    return Path(root).expanduser().resolve() / "shape_factory" / HOURLY_GPU_PAUSE_BASENAME
+
+
+def load_hourly_gpu_pause(*, data_root: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    path = default_hourly_gpu_pause_path(data_root=data_root)
+    if not path.is_file():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def hourly_gpu_pause_status(*, data_root: Optional[Path] = None) -> Dict[str, Any]:
+    """Compact GPU-pause snapshot for ops/UI (always present, active may be false)."""
+    lock = load_hourly_gpu_pause(data_root=data_root)
+    if not lock:
+        return {"active": False}
+    try:
+        depth = max(1, int(lock.get("depth") or 1))
+    except (TypeError, ValueError):
+        depth = 1
+    return {
+        "active": True,
+        "paused_by": str(lock.get("paused_by") or "still_tag"),
+        "restore_enabled": bool(lock.get("restore_enabled")),
+        "depth": depth,
+        "paused_at": lock.get("paused_at"),
+        "updated_at": lock.get("updated_at"),
+        "path": str(default_hourly_gpu_pause_path(data_root=data_root)),
+    }
+
+
+def set_hourlies_enabled(
+    *,
+    enabled: bool,
+    data_root: Optional[Path] = None,
+    clear_gpu_pause: bool = True,
+) -> Dict[str, Any]:
+    """Set hourly schedule enabled. Operator toggles clear any still-tag GPU pause lock."""
     from shape_factory_hourly import (  # type: ignore
         hourly_schedule_status,
         load_hourly_schedule,
         save_hourly_schedule,
     )
 
+    cleared_pause = False
+    if clear_gpu_pause:
+        pause_path = default_hourly_gpu_pause_path(data_root=data_root)
+        if pause_path.is_file():
+            try:
+                pause_path.unlink()
+                cleared_pause = True
+            except OSError:
+                pass
+
     sch = load_hourly_schedule(data_root=data_root)
     sch["enabled"] = bool(enabled)
     save_hourly_schedule(sch, data_root=data_root)
     status = hourly_schedule_status(data_root=data_root)
-    return {"ok": True, "hourly": {"enabled": bool(status.get("schedule", {}).get("enabled"))}}
+    out: Dict[str, Any] = {
+        "ok": True,
+        "hourly": {"enabled": bool(status.get("schedule", {}).get("enabled"))},
+    }
+    if cleared_pause:
+        out["cleared_gpu_pause"] = True
+    return out
+
+
+def acquire_hourly_gpu_pause(
+    *,
+    data_root: Optional[Path] = None,
+    paused_by: str = "still_tag",
+) -> Dict[str, Any]:
+    """Pause hourlies for a GPU occupy session.
+
+    First acquirer records ``restore_enabled`` from the live schedule. Nested
+    acquires keep that original restore intent and only bump ``depth``. Always
+    forces ``enabled=false`` while the lock is held.
+    """
+    from shape_factory_hourly import load_hourly_schedule  # type: ignore
+
+    path = default_hourly_gpu_pause_path(data_root=data_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = load_hourly_gpu_pause(data_root=data_root)
+    sch = load_hourly_schedule(data_root=data_root)
+    currently_enabled = bool(sch.get("enabled"))
+    if existing is None:
+        restore_enabled = currently_enabled
+        depth = 1
+        lock = {
+            "paused_by": str(paused_by or "still_tag"),
+            "restore_enabled": bool(restore_enabled),
+            "depth": depth,
+            "paused_at": _utc_iso(),
+        }
+    else:
+        restore_enabled = bool(existing.get("restore_enabled"))
+        try:
+            depth = max(1, int(existing.get("depth") or 1) + 1)
+        except (TypeError, ValueError):
+            depth = 2
+        lock = dict(existing)
+        lock["depth"] = depth
+        lock["paused_by"] = str(paused_by or lock.get("paused_by") or "still_tag")
+        lock["updated_at"] = _utc_iso()
+    path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
+    hourly_out: Dict[str, Any] = {}
+    if currently_enabled:
+        # Keep the pause lock we just wrote — do not clear_gpu_pause.
+        hourly_out = set_hourlies_enabled(enabled=False, data_root=data_root, clear_gpu_pause=False)
+    else:
+        hourly_out = {"ok": True, "hourly": {"enabled": False}, "already_disabled": True}
+    return {
+        "ok": True,
+        "acquired": existing is None,
+        "nested": existing is not None,
+        "restore_enabled": bool(restore_enabled),
+        "depth": depth,
+        "path": str(path),
+        "hourly": hourly_out,
+        # Back-compat alias used by still-tag session bookkeeping.
+        "hourly_was_enabled": bool(restore_enabled),
+    }
+
+
+def release_hourly_gpu_pause(
+    *,
+    data_root: Optional[Path] = None,
+    force: bool = False,
+) -> Dict[str, Any]:
+    """Drop one occupy depth (or force-clear) and restore hourlies when depth hits 0."""
+    path = default_hourly_gpu_pause_path(data_root=data_root)
+    existing = load_hourly_gpu_pause(data_root=data_root)
+    if existing is None:
+        return {"ok": True, "released": False, "reason": "no_pause_lock"}
+    try:
+        depth = max(1, int(existing.get("depth") or 1))
+    except (TypeError, ValueError):
+        depth = 1
+    restore_enabled = bool(existing.get("restore_enabled"))
+    if force or depth <= 1:
+        try:
+            path.unlink(missing_ok=True)  # type: ignore[call-arg]
+        except TypeError:
+            # Python <3.8 compat
+            if path.is_file():
+                path.unlink()
+        hourly_out = set_hourlies_enabled(
+            enabled=restore_enabled, data_root=data_root, clear_gpu_pause=False
+        )
+        return {
+            "ok": True,
+            "released": True,
+            "forced": bool(force),
+            "restore_enabled": restore_enabled,
+            "hourly": hourly_out,
+        }
+    lock = dict(existing)
+    lock["depth"] = depth - 1
+    lock["updated_at"] = _utc_iso()
+    path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
+    return {
+        "ok": True,
+        "released": False,
+        "reason": "nested_hold",
+        "depth": lock["depth"],
+        "restore_enabled": restore_enabled,
+    }
 
 
 def _stop_feeders() -> Dict[str, str]:
@@ -190,13 +361,27 @@ def collect_ops_status(
         except Exception:
             control = {}
 
-    drain_active = _unit_is_active(DRAIN_TIMER)
-    drain_en = _run(["systemctl", "--user", "is-enabled", DRAIN_TIMER], check=False)
-    drain_enabled = (drain_en.stdout or "").strip() == "enabled"
-    watch = _run(["docker", "inspect", "-f", "{{.State.Status}}", WATCH_CONTAINER], check=False)
-    watch_status = (watch.stdout or "").strip() or "unknown"
-    docker_ok = watch.returncode == 0
-    systemd_ok = drain_active is not None
+    drain_active: Optional[bool] = None
+    drain_enabled = False
+    watch_status = "unknown"
+    docker_ok = False
+    systemd_ok = False
+    try:
+        drain_active = _unit_is_active(DRAIN_TIMER)
+        drain_en = _run(["systemctl", "--user", "is-enabled", DRAIN_TIMER], check=False)
+        drain_enabled = (drain_en.stdout or "").strip() == "enabled"
+        systemd_ok = drain_active is not None
+    except FileNotFoundError:
+        # Container API often has no systemctl — still report hourly/GPU pause.
+        drain_active = None
+        systemd_ok = False
+    try:
+        watch = _run(["docker", "inspect", "-f", "{{.State.Status}}", WATCH_CONTAINER], check=False)
+        watch_status = (watch.stdout or "").strip() or "unknown"
+        docker_ok = watch.returncode == 0
+    except FileNotFoundError:
+        watch_status = "unknown"
+        docker_ok = False
 
     hourly_enabled: Optional[bool] = None
     try:
@@ -207,7 +392,9 @@ def collect_ops_status(
     except Exception:
         hourly_enabled = None
 
+    gpu_pause = hourly_gpu_pause_status(data_root=data_root)
     last_park = control.get("last_park") if isinstance(control.get("last_park"), dict) else None
+    ledger_paused = bool(control.get("paused")) if "paused" in control else None
     comfy_health = None
     if data_root is not None:
         try:
@@ -216,11 +403,33 @@ def collect_ops_status(
             comfy_health = snapshot_comfy_health(data_root)
         except Exception:
             comfy_health = None
+
+    # Single operator-facing suspend summary (ledger park vs Florence GPU pause).
+    suspend_reasons: List[str] = []
+    if ledger_paused:
+        suspend_reasons.append("ledger")
+    if gpu_pause.get("active"):
+        suspend_reasons.append(str(gpu_pause.get("paused_by") or "still_tag"))
+    if drain_active is False:
+        suspend_reasons.append("drain_stopped")
+    if docker_ok and watch_status != "running":
+        suspend_reasons.append("watch_stopped")
     return {
         "ok": True,
         "comfy": comfy,
         "comfy_health": comfy_health,
-        "hourly": {"enabled": hourly_enabled},
+        "hourly": {
+            "enabled": hourly_enabled,
+            "gpu_pause": gpu_pause,
+        },
+        "gpu_pause": gpu_pause,
+        "suspend": {
+            "active": bool(suspend_reasons),
+            "reasons": suspend_reasons,
+            "ledger_paused": ledger_paused,
+            "hourly_enabled": hourly_enabled,
+            "gpu_pause": gpu_pause,
+        },
         "drain": {
             "active": drain_active,
             "enabled": drain_enabled,
@@ -231,7 +440,7 @@ def collect_ops_status(
             "status": watch_status,
         },
         "ledger": {
-            "paused": bool(control.get("paused")) if "paused" in control else None,
+            "paused": ledger_paused,
             "last_park_at": control.get("last_park_at"),
             "last_park": last_park,
         },

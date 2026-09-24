@@ -179,6 +179,51 @@ class JobEditTests(unittest.TestCase):
             self.assertEqual((profile.get("current") or {}).get("frames"), 81)
             self.assertIn("loras_profile", snap)
 
+    def test_begin_edit_thaws_failed_run(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            path = self._write_job(
+                root,
+                "job-oom",
+                {"status": "error", "prompt_id": "pid-oom", "error": "Allocation on device"},
+            )
+            job = json.loads(path.read_text(encoding="utf-8"))
+            job["prompt"] = {
+                "positive": "keep me",
+                "negative": "",
+                "frozen": True,
+                "frozen_at": "2026-09-22T20:00:00Z",
+            }
+            job["loras"] = {"frozen": True, "entries": [{"lora": "x", "on": True}]}
+            path.write_text(json.dumps(job), encoding="utf-8")
+            with mock.patch.object(sf, "queue_prompt_id_buckets", return_value=(set(), set())):
+                res = sf.begin_job_edit(
+                    data_root=root,
+                    server="http://comfy.test",
+                    job_key="job-oom",
+                )
+            self.assertTrue(res.get("ok"), res)
+            self.assertEqual(res.get("status"), "editing")
+            _path, saved = sf.find_job_by_key(root, "job-oom")
+            assert saved is not None
+            self.assertFalse(saved["prompt"]["frozen"])
+            self.assertEqual(saved["prompt"]["positive"], "keep me")
+            self.assertEqual(saved["prompt"]["frozen_at"], "2026-09-22T20:00:00Z")
+            self.assertTrue(saved["prompt"].get("thawed_at"))
+            self.assertFalse(saved["loras"]["frozen"])
+            self.assertEqual(saved["submit"].get("editing_from_status"), "error")
+
+    def test_begin_edit_keeps_freeze_before_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            path = self._write_job(root, "job-live", {"status": "pending"})
+            job = json.loads(path.read_text(encoding="utf-8"))
+            job["prompt"] = {"positive": "ran", "negative": "", "frozen": True}
+            path.write_text(json.dumps(job), encoding="utf-8")
+            res = sf.begin_job_edit(data_root=root, server="", job_key="job-live")
+            self.assertFalse(res.get("ok"))
+            self.assertEqual(res.get("error"), "prompt_frozen")
+
     def test_submit_job_file_pending_only_skips_editing(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

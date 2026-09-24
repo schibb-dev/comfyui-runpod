@@ -218,6 +218,17 @@ def freeze_owned_prompt(job: Dict[str, Any], *, at: Optional[str] = None) -> boo
     return True
 
 
+def thaw_owned_prompt(job: Dict[str, Any], *, at: Optional[str] = None) -> bool:
+    """Reopen a frozen prompt after a failed run so the job can be edited and retried."""
+    owned = get_owned_prompt(job)
+    if owned is None or not owned.get("frozen"):
+        return False
+    owned["frozen"] = False
+    owned["thawed_at"] = at or utc_now_iso()
+    job["prompt"] = owned
+    return True
+
+
 def ensure_owned_prompt_mutable(job: Dict[str, Any]) -> None:
     if is_owned_prompt_frozen(job):
         raise OwnedPromptFrozenError("owned prompt is frozen (execution started)")

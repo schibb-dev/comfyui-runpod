@@ -14,6 +14,7 @@ import {
   updatePendingShapeFactoryTrim,
   updateShapeFactoryOwnedLoras,
   updateShapeFactoryOwnedParams,
+  updateShapeFactoryOwnedStack,
   type IdentityStillCandidate,
   type IdentityStillMintTarget,
   type ShapeFactoryClip,
@@ -495,7 +496,7 @@ function EditFinishRow({
       aria-label="Finish editing"
     >
       <p className="work-product-quick-queue__hint">
-        Variant, trim, params, and LoRAs save as you edit.
+        Variant, stack, trim, params, and LoRAs save as you edit.
         {promptDirty ? " Prompt has unsaved changes — finish below saves them, or use Save to job." : " Prompt: Save to job, or finish below saves it."}
       </p>
       {locked && blockedReason ? (
@@ -683,6 +684,10 @@ function SubmitEditJobApp({
   const [editFamilies, setEditFamilies] = useState<WorkProductFamilyOption[]>(
     () => peekFamiliesBootstrap()?.families || [],
   );
+  const [editStacks, setEditStacks] = useState<GenerationStackOption[]>(
+    () => peekFamiliesBootstrap()?.stacks || [],
+  );
+  const [stackId, setStackId] = useState("");
   const [identityNeeded, setIdentityNeeded] = useState(false);
   const [identityLoading, setIdentityLoading] = useState(false);
   const [identityCandidates, setIdentityCandidates] = useState<IdentityStillCandidate[]>([]);
@@ -863,7 +868,10 @@ function SubmitEditJobApp({
 
   useEffect(() => {
     void loadFamiliesBootstrap()
-      .then((boot) => setEditFamilies(boot.families || []))
+      .then((boot) => {
+        setEditFamilies(boot.families || []);
+        setEditStacks(boot.stacks || []);
+      })
       .catch(() => {
         /* keep cached / empty */
       });
@@ -887,6 +895,8 @@ function SubmitEditJobApp({
     setPromptProfileDraft(promptSeed);
     const framesSeed = snap?.params_profile?.current?.frames;
     if (framesSeed != null && Number.isFinite(framesSeed)) setGenFrames(framesSeed);
+    const stackSeed = String(snap?.stack_id || "").trim();
+    if (stackSeed) setStackId((prev) => prev || stackSeed);
     setParamDraft({ ...(snap?.params_profile?.current || {}) });
     setLoraDraft([...(snap?.loras_profile?.current || snap?.loras_profile?.seed || [])]);
     const ident =
@@ -1002,6 +1012,17 @@ function SubmitEditJobApp({
     setGenFrames(resolved);
     if (resolved == null || finished) return;
     persistRuntimeParams({ ...paramDraft, frames: resolved });
+  };
+
+  const persistStack = (next: string) => {
+    const sid = next.trim();
+    setStackId(sid);
+    if (!sid || finished || sid === String(snap?.stack_id || "").trim()) return;
+    void updateShapeFactoryOwnedStack({ job_key: editJob, stack_id: sid })
+      .then(() => refreshSnapshot())
+      .catch((err) => {
+        setSubmitError(err instanceof Error ? err : new Error(String(err)));
+      });
   };
 
   const persistRuntimeParams = (next: WorkProductParamsValues) => {
@@ -1442,6 +1463,13 @@ function SubmitEditJobApp({
                   title="Family is locked to this job — compose a new route to change family"
                   opts={familyOpts}
                   disabled
+                />
+                <StackSelect
+                  value={stackId}
+                  onChange={persistStack}
+                  stacks={editStacks}
+                  disabled={editLocked}
+                  title="Generation stack (UNet / quant / virt). Saves onto this job."
                 />
                 <ProfileSelect
                   familySlug={familySlug}

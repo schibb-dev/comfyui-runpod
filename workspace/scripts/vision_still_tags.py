@@ -501,28 +501,39 @@ def occupy_gpu_for_tagging(
     output_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Pause hourlies and park Comfy/ledger so Florence can own the GPU."""
-    from suspend_comfy_queue import do_suspend, set_hourlies_enabled  # type: ignore
-
-    hourly_was_enabled = False
-    try:
-        from shape_factory_hourly import load_hourly_schedule  # type: ignore
-
-        hourly_was_enabled = bool(load_hourly_schedule(data_root=data_root).get("enabled"))
-    except Exception:
-        hourly_was_enabled = False
-    hourly_out: Dict[str, Any] = {}
-    if hourly_was_enabled:
-        hourly_out = set_hourlies_enabled(enabled=False, data_root=data_root)
-    out_root = Path(output_root) if output_root is not None else _default_output_root()
-    suspend = do_suspend(
-        server=str(comfy_server).rstrip("/"),
-        data_root=Path(data_root),
-        output_root=out_root,
+    from suspend_comfy_queue import (  # type: ignore
+        acquire_hourly_gpu_pause,
+        do_suspend,
+        release_hourly_gpu_pause,
     )
+
+    pause_out = acquire_hourly_gpu_pause(data_root=data_root, paused_by="still_tag")
+    hourly_was_enabled = bool(pause_out.get("restore_enabled") or pause_out.get("hourly_was_enabled"))
+    out_root = Path(output_root) if output_root is not None else _default_output_root()
+    try:
+        suspend = do_suspend(
+            server=str(comfy_server).rstrip("/"),
+            data_root=Path(data_root),
+            output_root=out_root,
+        )
+    except Exception as exc:
+        # Roll back the pause lock if park fails so hourlies are not left stuck off.
+        try:
+            release_hourly_gpu_pause(data_root=data_root, force=True)
+        except Exception:
+            pass
+        return {
+            "ok": False,
+            "error": str(exc),
+            "hourly_was_enabled": hourly_was_enabled,
+            "hourly": pause_out.get("hourly") or {},
+            "pause": pause_out,
+        }
     return {
         "ok": bool(suspend.get("ok")),
         "hourly_was_enabled": hourly_was_enabled,
-        "hourly": hourly_out,
+        "hourly": pause_out.get("hourly") or {},
+        "pause": pause_out,
         "suspend": suspend,
     }
 
@@ -532,15 +543,32 @@ def release_gpu_after_tagging(
     data_root: Path,
     hourly_was_enabled: bool = True,
     output_root: Optional[Path] = None,
+    force_pause_release: bool = False,
 ) -> Dict[str, Any]:
-    from suspend_comfy_queue import do_resume, set_hourlies_enabled  # type: ignore
+    from suspend_comfy_queue import (  # type: ignore
+        do_resume,
+        load_hourly_gpu_pause,
+        release_hourly_gpu_pause,
+        set_hourlies_enabled,
+    )
 
     out_root = Path(output_root) if output_root is not None else _default_output_root()
     resume = do_resume(output_root=out_root, feeders=True)
+    pause_lock = load_hourly_gpu_pause(data_root=data_root)
     hourly_out: Dict[str, Any] = {}
-    if hourly_was_enabled:
+    pause_out: Dict[str, Any] = {}
+    if pause_lock is not None:
+        pause_out = release_hourly_gpu_pause(data_root=data_root, force=bool(force_pause_release))
+        hourly_out = pause_out.get("hourly") or {}
+    elif hourly_was_enabled:
+        # Legacy path: session recorded intent but no durable lock (pre-lock runs).
         hourly_out = set_hourlies_enabled(enabled=True, data_root=data_root)
-    return {"ok": bool(resume.get("ok")), "resume": resume, "hourly": hourly_out}
+    return {
+        "ok": bool(resume.get("ok")),
+        "resume": resume,
+        "hourly": hourly_out,
+        "pause": pause_out,
+    }
 
 
 def still_tag_image_mode() -> str:
@@ -2767,19 +2795,40 @@ def drain_backlog(
     sess = load_tag_session(data_root=data_root)
     kill_after_min = max(1.0, _schedule_float(sch, "kill_after_min", 60))
     stale_after_min = max(90.0, kill_after_min + 30.0)
-    if session_is_stale(sess, stale_after_min=stale_after_min):
+    sess_status = str(sess.get("status") or "idle").strip().lower()
+    orphan_occupied = bool(sess.get("occupied")) and sess_status in {"idle", ""}
+    if session_is_stale(sess, stale_after_min=stale_after_min) or orphan_occupied:
         try:
-            if sess.get("occupied"):
+            if sess.get("occupied") or orphan_occupied:
                 release_gpu_after_tagging(
                     data_root=data_root,
                     hourly_was_enabled=bool(sess.get("hourly_was_enabled")),
+                    force_pause_release=True,
                 )
         except Exception:
             pass
         sess = save_tag_session(
-            {"status": "idle", "note": "stale_recovered", "ended_at": _utc_now_iso()},
+            {
+                "status": "idle",
+                "occupied": False,
+                "note": "stale_recovered" if not orphan_occupied else "orphan_occupied_recovered",
+                "ended_at": _utc_now_iso(),
+            },
             data_root=data_root,
         )
+    else:
+        # Leftover pause lock with an idle session — restore hourlies.
+        try:
+            from suspend_comfy_queue import load_hourly_gpu_pause  # type: ignore
+
+            if sess_status == "idle" and load_hourly_gpu_pause(data_root=data_root) is not None:
+                release_gpu_after_tagging(
+                    data_root=data_root,
+                    hourly_was_enabled=True,
+                    force_pause_release=True,
+                )
+        except Exception:
+            pass
     win = index_window_status(sch, data_root=data_root, backlog=stats, session=sess)
     if respect_schedule and not force:
         if not win["enabled"]:
@@ -3048,7 +3097,7 @@ def drain_backlog(
                 "sec_per_still": sec_est,
                 "session_minutes": session_minutes,
                 "kill_after_min": kill_after_min,
-                "occupied": occupy,
+                "occupied": False,
                 "hourly_was_enabled": hourly_was,
                 "done_items": done_items,
                 "runs_processed": runs_processed,

@@ -10,7 +10,10 @@ Design goals:
   ``/history`` already shows the prompt finished (success/error/interrupted),
   in which case restore is skipped to avoid duplicate identical runs.
 - Safe-ish: avoid loops with attempt caps / breaker / history skip.
+  A prompt that has used its restore attempts is dropped, not kept and re-logged.
 - Gentle: spillover mode keeps live pending near target; otherwise full restore.
+- The activity JSONL is a tail log. It is trimmed to a few megabytes; the
+  state JSON and the payload sqlite are the queue memory.
 """
 
 from __future__ import annotations
@@ -49,8 +52,36 @@ def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+# Activity diary only. Restore state lives in the JSON meta + payload sqlite.
+_EVENTS_MAX_BYTES = 8 * 1024 * 1024
+_EVENTS_KEEP_BYTES = 2 * 1024 * 1024
+
+
+def trim_jsonl_tail(path: Path, *, max_bytes: int = _EVENTS_MAX_BYTES, keep_bytes: int = _EVENTS_KEEP_BYTES) -> bool:
+    """Keep the newest slice of an append-only JSONL once it grows past max_bytes."""
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return False
+    if size <= max_bytes or keep_bytes <= 0:
+        return False
+    with path.open("rb") as f:
+        f.seek(max(0, size - keep_bytes))
+        tail = f.read()
+    nl = tail.find(b"\n")
+    if nl >= 0:
+        tail = tail[nl + 1 :]
+    if tail and not tail.endswith(b"\n"):
+        tail += b"\n"
+    tmp = path.with_name(path.name + ".trim")
+    tmp.write_bytes(tail)
+    tmp.replace(path)
+    return True
+
+
 def _append_jsonl(path: Path, obj: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    trim_jsonl_tail(path)
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
@@ -306,17 +337,20 @@ def _restore_missing_prompts(
 
     def _try_submit(pid: str, prompt_obj: Dict[str, Any], *, extra_data: Any, outputs: Any, via: str) -> bool:
         nonlocal restored
-        if _skip_if_finished(pid, via=via):
-            return True  # accounted for; caller should not park
         attempts = int(state.get("restore_attempts", {}).get(pid, 0))
         if attempts >= int(max_restore_attempts):
+            _forget_mirrored_prompt(state, pid)
+            stats = state.setdefault("stats", {})
+            stats["dropped_attempt_cap"] = int(stats.get("dropped_attempt_cap", 0)) + 1
             log_event(
-                f"{source}_restore_suppressed_attempt_cap",
+                f"{source}_restore_dropped_attempt_cap",
                 prompt_id=pid,
                 attempts=attempts,
                 source=via,
             )
-            return False
+            return True
+        if _skip_if_finished(pid, via=via):
+            return True  # accounted for; caller should not park
         ok, res = _submit_prompt(
             server,
             prompt=prompt_obj,
@@ -727,6 +761,25 @@ def _prune_state(state: Dict[str, Any], *, keep_known: int = 2000, keep_events_w
     rf = state.get("restore_failures_ts")
     if isinstance(rf, list):
         state["restore_failures_ts"] = [float(x) for x in rf if isinstance(x, (int, float)) and float(x) >= now - 3600]
+    keep_ids: Set[str] = set()
+    known_ids = state.get("known")
+    if isinstance(known_ids, dict):
+        keep_ids.update(str(pid) for pid in known_ids.keys())
+    backlog_ids = state.get("backlog")
+    if isinstance(backlog_ids, list):
+        for item in backlog_ids:
+            if isinstance(item, dict) and item.get("prompt_id"):
+                keep_ids.add(str(item["prompt_id"]))
+    snap = state.get("last_snapshot")
+    if isinstance(snap, dict):
+        for key in ("running", "pending"):
+            ids = snap.get(key)
+            if isinstance(ids, list):
+                keep_ids.update(str(pid) for pid in ids)
+    for bucket_name in ("restore_attempts", "restore_last_ts", "expected_add_until_ts"):
+        bucket = state.get(bucket_name)
+        if isinstance(bucket, dict):
+            state[bucket_name] = {pid: val for pid, val in bucket.items() if str(pid) in keep_ids}
     known = state.get("known")
     if isinstance(known, dict) and len(known) > keep_known:
         scored: List[Tuple[float, str]] = []
@@ -1222,9 +1275,11 @@ def main() -> int:
                             attempts = int(state.get("restore_attempts", {}).get(pid, 0))
                             last_ts = float(state.get("restore_last_ts", {}).get(pid, 0.0))
                             if attempts >= int(args.max_restore_attempts):
-                                state.setdefault("stats", {})["suppressed_cap"] = int(state.setdefault("stats", {}).get("suppressed_cap", 0)) + 1
-                                log_event("refill_suppressed_attempt_cap", prompt_id=pid, attempts=attempts)
-                                i += 1
+                                _forget_mirrored_prompt(state, pid)
+                                state.setdefault("stats", {})["dropped_attempt_cap"] = int(
+                                    state.setdefault("stats", {}).get("dropped_attempt_cap", 0)
+                                ) + 1
+                                log_event("refill_dropped_attempt_cap", prompt_id=pid, attempts=attempts)
                                 continue
                             if now - last_ts < float(args.restore_cooldown_s):
                                 state.setdefault("stats", {})["suppressed_cooldown"] = int(state.setdefault("stats", {}).get("suppressed_cooldown", 0)) + 1
