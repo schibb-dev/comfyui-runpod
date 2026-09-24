@@ -3114,6 +3114,68 @@ def _experiment_is_current(exp_dir: Path, manifest: Dict[str, Any]) -> bool:
     return name.startswith("x-")
 
 
+def _output_rel_from_experiment_history(
+    run_dir: Path,
+    *,
+    output_root: Path,
+) -> Tuple[Optional[str], bool]:
+    """
+    Return ``(relpath, recorded)`` from ``runs/<id>/history.json`` when Comfy
+    listed an mp4. ``recorded`` is True when history named a file (even if the
+    bytes are gone) so callers do not steal another run's shared-stem output.
+    """
+    hist = _read_json_obj(Path(run_dir) / "history.json")
+    if not hist:
+        return None, False
+    records: List[Dict[str, Any]] = []
+    if "outputs" in hist and isinstance(hist.get("outputs"), dict):
+        records.append(hist)
+    else:
+        for ent in hist.values():
+            if isinstance(ent, dict) and isinstance(ent.get("outputs"), dict):
+                records.append(ent)
+    if not records:
+        return None, False
+
+    root = Path(output_root).resolve()
+    candidates: List[str] = []
+    for ent in records:
+        outputs = ent.get("outputs") if isinstance(ent.get("outputs"), dict) else {}
+        for _nid, odata in outputs.items():
+            if not isinstance(odata, dict):
+                continue
+            for kind in ("gifs", "videos", "images"):
+                arr = odata.get(kind)
+                if not isinstance(arr, list):
+                    continue
+                for row in arr:
+                    if not isinstance(row, dict):
+                        continue
+                    name = str(row.get("filename") or "").strip()
+                    if not name.lower().endswith(".mp4"):
+                        continue
+                    sub = str(row.get("subfolder") or "").replace("\\", "/").strip("/")
+                    rel = f"{sub}/{name}" if sub else name
+                    candidates.append(rel.lstrip("/"))
+
+    if not candidates:
+        return None, False
+
+    for rel in candidates:
+        abs_path = root / rel
+        if abs_path.is_file():
+            return rel, True
+        # Comfy sometimes stores absolute paths under /ComfyUI/output/…
+        for marker in ("/output/", "\\output\\"):
+            idx = rel.lower().find(marker.replace("\\", "/"))
+            if idx >= 0:
+                tail = rel[idx + len(marker) :].lstrip("/\\")
+                if tail and (root / tail).is_file():
+                    return tail.replace("\\", "/"), True
+    # History named a file but it is gone — do not invent another stem match.
+    return candidates[0], True
+
+
 def _experiment_output_rel(
     *,
     output_root: Path,
@@ -3130,16 +3192,20 @@ def _experiment_output_rel(
                 files.append(str(p))
         parent = output_root / Path(pref).parent
         if parent.is_dir() and stem:
-            files.extend(str(p) for p in parent.glob(f"{stem}*.mp4") if p.is_file())
+            for suffix in (f"{stem}_FINAL_00001.mp4", f"{stem}_00001.mp4", f"{stem}.mp4"):
+                p = parent / suffix
+                if p.is_file():
+                    files.append(str(p))
     og = output_root / "og"
-    if og.is_dir() and exp_id:
+    if og.is_dir() and exp_id and stem:
         for folder in og.glob(f"*/experiments/{exp_id}"):
             if not folder.is_dir():
                 continue
-            if stem:
-                files.extend(str(p) for p in folder.glob(f"{stem}*.mp4") if p.is_file())
-            else:
-                files.extend(str(p) for p in folder.glob("*.mp4") if p.is_file())
+            # Exact Comfy slot names only — never ``stem*.mp4`` (that steals sibling runs).
+            for suffix in (f"{stem}_FINAL_00001.mp4", f"{stem}_00001.mp4", f"{stem}.mp4"):
+                p = folder / suffix
+                if p.is_file():
+                    files.append(str(p))
     seen: set[str] = set()
     uniq: List[str] = []
     for f in files:
@@ -3171,7 +3237,16 @@ def _work_product_from_experiment_run(
     pid = str(submit.get("prompt_id") or "").strip()
     running = running_ids or set()
     pending = pending_ids or set()
-    output_rel = _experiment_output_rel(output_root=output_root, exp_id=exp_id, prefix=prefix)
+    hist_rel, hist_recorded = _output_rel_from_experiment_history(
+        run_dir, output_root=Path(output_root)
+    )
+    output_rel: Optional[str] = None
+    if hist_rel and _output_rel_exists(output_root, hist_rel):
+        output_rel = hist_rel
+    elif not hist_recorded:
+        # No Comfy history yet — fall back to prefix/stem search.
+        output_rel = _experiment_output_rel(output_root=output_root, exp_id=exp_id, prefix=prefix)
+    # else: history named an mp4 that is gone — do not steal a sibling run's file.
     if pid and pid in running:
         status = "running"
         live = True
@@ -3180,6 +3255,9 @@ def _work_product_from_experiment_run(
         live = True
     elif output_rel:
         status = "complete"
+        live = False
+    elif hist_recorded:
+        status = "interrupted"
         live = False
     elif pid:
         status = "submitted"
@@ -3336,6 +3414,7 @@ def attach_experiment_runs(
     output_root: Path,
     queue_running: Any = None,
     queue_pending: Any = None,
+    data_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Fold current quality-experiment runs into Workbench (including finished clips)."""
     if not isinstance(payload, dict) or not payload.get("ok"):
@@ -3343,14 +3422,28 @@ def attach_experiment_runs(
     running_ids, pending_ids = _queue_prompt_id_sets(queue_running, queue_pending)
     family_slugs = [str(f.get("slug") or "") for f in (payload.get("families") or []) if isinstance(f, dict)]
     family = str(payload.get("family") or "").strip() or None
+    limit = max(20, min(80, int(payload.get("limit") or 40)))
     exp_items = iter_current_experiment_work_products(
         output_root=Path(output_root),
         family_slugs=family_slugs,
         family=family,
         running_ids=running_ids,
         pending_ids=pending_ids,
-        limit=max(20, min(80, int(payload.get("limit") or 40))),
+        limit=limit,
     )
+    dismissals = {"prompt_ids": [], "job_keys": []}
+    if data_root is not None:
+        dismissals = load_work_products_dismissals(Path(data_root), output_root=Path(output_root))
+    if dismissals.get("prompt_ids") or dismissals.get("job_keys"):
+        exp_items = [
+            it
+            for it in exp_items
+            if not is_work_product_dismissed(
+                dismissals,
+                prompt_id=str(it.get("prompt_id") or "") or None,
+                job_key=str(it.get("job_key") or "") or None,
+            )
+        ]
     items = list(payload.get("items") or [])
     by_pid: Dict[str, int] = {}
     by_prefix: Dict[str, int] = {}
@@ -3376,10 +3469,17 @@ def attach_experiment_runs(
         idx = None
         if pid and pid in by_pid:
             idx = by_pid[pid]
-        elif pref and pref in by_prefix:
-            idx = by_prefix[pref]
         elif jk and jk in by_jk:
             idx = by_jk[jk]
+        elif pref and pref in by_prefix:
+            # Only fold into a non-experiment factory row — never collapse two
+            # experiment runs that share a VHS filename_prefix.
+            existing = items[by_prefix[pref]] if pref in by_prefix else None
+            if isinstance(existing, dict) and not (
+                existing.get("from_experiment")
+                or str(existing.get("job_key") or "").startswith("exp__")
+            ):
+                idx = by_prefix[pref]
         if idx is not None:
             items[idx] = _merge_experiment_into_row(items[idx], exp)
             continue
@@ -3389,6 +3489,12 @@ def attach_experiment_runs(
         payload["items"] = extra + items
     else:
         payload["items"] = items
+    # Experiments are attached after the factory trim — re-cap so Completed
+    # does not grow without bound across every quality-experiment run.
+    payload["items"] = trim_work_products_completed_history(
+        list(payload.get("items") or []),
+        limit=limit,
+    )
     payload["count"] = len(payload["items"])
     payload["experiment_count"] = len(exp_items)
     return payload

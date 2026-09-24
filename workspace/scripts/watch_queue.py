@@ -483,55 +483,241 @@ def _queue_is_empty(server: str, *, timeout_s: int = 5) -> Optional[bool]:
     return len(running) == 0 and len(pending) == 0
 
 
-def _has_outputs_for_run(exp_dir: Path, run_id: str) -> bool:
+def _has_outputs_for_run(
+    exp_dir: Path,
+    run_id: str,
+    *,
+    run_dir: Optional[Path] = None,
+    output_root: Optional[Path] = None,
+) -> bool:
     """
     Heuristic: treat a run as complete if output files exist for it.
 
-    In our experiments, outputs are written under the experiment dir itself,
-    and filenames begin with `run_###_...`.
+    Accepts legacy ``run_###_*.mp4`` names under the experiment dir, plus VHS
+    outputs recorded in history.json / prompt filename_prefix.
     """
+    if _video_paths_for_run(exp_dir, run_id, run_dir=run_dir, output_root=output_root):
+        return True
     if not exp_dir.exists():
         return False
-    # Look for at least one mp4, or failing that any image.
-    pat_mp4 = re.compile(rf"^{re.escape(run_id)}_.*\.mp4$", re.IGNORECASE)
     pat_img = re.compile(rf"^{re.escape(run_id)}_.*\.(png|jpg|jpeg|webp)$", re.IGNORECASE)
     try:
         for p in exp_dir.rglob("*"):
             if not p.is_file():
                 continue
-            name = p.name
-            if pat_mp4.match(name) or pat_img.match(name):
+            if pat_img.match(p.name):
                 return True
     except Exception:
         return False
     return False
 
 
-def _has_video_for_run(exp_dir: Path, run_id: str) -> bool:
-    """
-    Return True if at least one mp4 output exists for run_id.
+def _filename_prefix_from_prompt_obj(prompt: Any) -> Optional[str]:
+    if not isinstance(prompt, dict):
+        return None
+    for node in prompt.values():
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("class_type") or "") != "VHS_VideoCombine":
+            continue
+        inputs = node.get("inputs") if isinstance(node.get("inputs"), dict) else {}
+        raw = str(inputs.get("filename_prefix") or "").strip()
+        if raw:
+            return raw.replace("\\", "/")
+    return None
 
-    Prefer fast glob in the experiment dir root; fall back to rglob.
-    """
-    if not exp_dir.exists():
-        return False
-    try:
-        for p in exp_dir.glob(f"{run_id}_*.mp4"):
-            if p.is_file():
-                return True
-    except Exception:
-        pass
 
-    pat_mp4 = re.compile(rf"^{re.escape(run_id)}_.*\.mp4$", re.IGNORECASE)
-    try:
-        for p in exp_dir.rglob("*"):
-            if not p.is_file():
+def _mp4_rels_from_history_doc(hist: Any) -> List[str]:
+    if not isinstance(hist, dict):
+        return []
+    records: List[Dict[str, Any]] = []
+    if isinstance(hist.get("outputs"), dict):
+        records.append(hist)
+    else:
+        for ent in hist.values():
+            if isinstance(ent, dict) and isinstance(ent.get("outputs"), dict):
+                records.append(ent)
+    out: List[str] = []
+    for ent in records:
+        outputs = ent.get("outputs") if isinstance(ent.get("outputs"), dict) else {}
+        for _nid, odata in outputs.items():
+            if not isinstance(odata, dict):
                 continue
-            if pat_mp4.match(p.name):
-                return True
+            for kind in ("gifs", "videos", "images"):
+                arr = odata.get(kind)
+                if not isinstance(arr, list):
+                    continue
+                for row in arr:
+                    if not isinstance(row, dict):
+                        continue
+                    name = str(row.get("filename") or "").strip()
+                    if not name.lower().endswith(".mp4"):
+                        continue
+                    sub = str(row.get("subfolder") or "").replace("\\", "/").strip("/")
+                    rel = f"{sub}/{name}" if sub else name
+                    out.append(rel.lstrip("/"))
+    return out
+
+
+def _resolve_output_mp4(rel_or_abs: str, *, output_root: Path) -> Optional[Path]:
+    text = str(rel_or_abs or "").replace("\\", "/").strip()
+    if not text:
+        return None
+    root = Path(output_root).resolve()
+    candidates: List[Path] = []
+    if text.startswith("/"):
+        candidates.append(Path(text))
+        for marker in ("/output/", "/ComfyUI/output/"):
+            idx = text.find(marker)
+            if idx >= 0:
+                tail = text[idx + len(marker) :].lstrip("/")
+                if tail:
+                    candidates.append(root / tail)
+    else:
+        candidates.append(root / text.lstrip("/"))
+    for p in candidates:
+        try:
+            if p.is_file() and p.suffix.lower() == ".mp4":
+                return p.resolve()
+        except OSError:
+            continue
+    return None
+
+
+def _mp4s_from_prompt_prefix(
+    *,
+    prompt_path: Path,
+    exp_id: str,
+    output_root: Path,
+) -> List[Path]:
+    """Exact VHS prefix files only — never ``stem*`` globs across sibling runs."""
+    try:
+        prompt = _read_json(prompt_path)
     except Exception:
-        return False
-    return False
+        return []
+    prefix = _filename_prefix_from_prompt_obj(prompt)
+    if not prefix:
+        return []
+    root = Path(output_root).resolve()
+    pref = prefix.lstrip("/")
+    stem = Path(pref).name
+    found: List[Path] = []
+    seen: set[str] = set()
+
+    def _add(p: Path) -> None:
+        try:
+            if not p.is_file():
+                return
+            key = str(p.resolve())
+        except OSError:
+            return
+        if key in seen:
+            return
+        seen.add(key)
+        found.append(p)
+
+    for suffix in ("_FINAL_00001.mp4", "_00001.mp4", ".mp4"):
+        _add(root / f"{pref}{suffix}")
+    parent = root / Path(pref).parent
+    if parent.is_dir() and stem:
+        for suffix in (f"{stem}_FINAL_00001.mp4", f"{stem}_00001.mp4", f"{stem}.mp4"):
+            _add(parent / suffix)
+    og = root / "og"
+    if og.is_dir() and exp_id and stem:
+        for folder in og.glob(f"*/experiments/{exp_id}"):
+            if not folder.is_dir():
+                continue
+            for suffix in (f"{stem}_FINAL_00001.mp4", f"{stem}_00001.mp4", f"{stem}.mp4"):
+                _add(folder / suffix)
+    return found
+
+
+def _video_paths_for_run(
+    exp_dir: Path,
+    run_id: str,
+    *,
+    run_dir: Optional[Path] = None,
+    output_root: Optional[Path] = None,
+) -> List[Path]:
+    """
+    Locate mp4 outputs for a run.
+
+    Order: history.json paths → legacy ``run_id_*.mp4`` → exact VHS prefix files.
+    When history names outputs, only those paths count (never fall through to a
+    sibling run's shared-stem file).
+    """
+    found: List[Path] = []
+    seen: set[str] = set()
+
+    def _add(p: Path) -> None:
+        try:
+            if not p.is_file():
+                return
+            key = str(p.resolve())
+        except OSError:
+            return
+        if key in seen:
+            return
+        seen.add(key)
+        found.append(p)
+
+    rd = Path(run_dir) if run_dir is not None else (Path(exp_dir) / "runs" / run_id)
+    out_root = Path(output_root).resolve() if output_root is not None else _infer_output_root(exp_dir, exp_dir=Path(exp_dir))
+
+    hist_named = False
+    if out_root is not None and (rd / "history.json").is_file():
+        try:
+            hist = _read_json(rd / "history.json")
+        except Exception:
+            hist = None
+        rels = _mp4_rels_from_history_doc(hist)
+        if rels:
+            hist_named = True
+            for rel in rels:
+                hit = _resolve_output_mp4(rel, output_root=out_root)
+                if hit is not None:
+                    _add(hit)
+            # History is authoritative for this run — do not borrow prefix matches.
+            return found
+
+    if exp_dir.exists():
+        try:
+            for p in exp_dir.glob(f"{run_id}_*.mp4"):
+                _add(p)
+        except Exception:
+            pass
+        pat_mp4 = re.compile(rf"^{re.escape(run_id)}_.*\.mp4$", re.IGNORECASE)
+        try:
+            for p in exp_dir.rglob("*"):
+                if p.is_file() and pat_mp4.match(p.name):
+                    _add(p)
+        except Exception:
+            pass
+
+    if not hist_named and out_root is not None and (rd / "prompt.json").is_file():
+        exp_id = _exp_id_for_dir(Path(exp_dir))
+        for p in _mp4s_from_prompt_prefix(prompt_path=rd / "prompt.json", exp_id=exp_id, output_root=out_root):
+            _add(p)
+
+    return found
+
+
+def _has_video_for_run(
+    exp_dir: Path,
+    run_id: str,
+    *,
+    run_dir: Optional[Path] = None,
+    output_root: Optional[Path] = None,
+) -> bool:
+    """True when at least one mp4 output exists for this run."""
+    return bool(
+        _video_paths_for_run(
+            exp_dir,
+            run_id,
+            run_dir=run_dir,
+            output_root=output_root,
+        )
+    )
 
 
 _MEDIA_EXTS = {".mp4", ".png", ".webp", ".jpg", ".jpeg"}
@@ -562,18 +748,30 @@ def _infer_output_root(root_or_exp: Path, *, exp_dir: Path) -> Optional[Path]:
             return None
 
 
-def _find_media_files_for_run(exp_dir: Path, run_id: str, *, max_files: int = 50) -> List[Path]:
+def _find_media_files_for_run(
+    exp_dir: Path,
+    run_id: str,
+    *,
+    max_files: int = 50,
+    run_dir: Optional[Path] = None,
+    output_root: Optional[Path] = None,
+) -> List[Path]:
     """
-    Find output media files for a run (e.g. run_001_*.mp4/png/...).
+    Find output media files for a run (mp4/png/…).
 
-    Prefer fast globs at exp root; fall back to rglob if needed.
+    Prefers history / VHS prefix videos, then legacy ``run_id_*`` names.
     """
     out: List[Path] = []
+    for p in _video_paths_for_run(exp_dir, run_id, run_dir=run_dir, output_root=output_root):
+        out.append(p)
+        if len(out) >= max_files:
+            return out
+
     if not exp_dir.exists():
         return out
 
     # Fast path: most workflows write outputs directly under the experiment dir.
-    for ext in sorted(_MEDIA_EXTS):
+    for ext in sorted(_MEDIA_EXTS - {".mp4"}):
         try:
             for p in exp_dir.glob(f"{run_id}_*{ext}"):
                 if p.is_file():
@@ -583,8 +781,8 @@ def _find_media_files_for_run(exp_dir: Path, run_id: str, *, max_files: int = 50
         except Exception:
             continue
 
-    # Slow fallback: nested outputs.
-    pat = re.compile(rf"^{re.escape(run_id)}_.*\.(mp4|png|jpg|jpeg|webp)$", re.IGNORECASE)
+    # Slow fallback: nested image outputs.
+    pat = re.compile(rf"^{re.escape(run_id)}_.*\.(png|jpg|jpeg|webp)$", re.IGNORECASE)
     try:
         for p in exp_dir.rglob("*"):
             try:
@@ -600,6 +798,38 @@ def _find_media_files_for_run(exp_dir: Path, run_id: str, *, max_files: int = 50
         return out
 
     return out
+
+
+def _ensure_run_id_in_vhs_prefixes(prompt_obj: Dict[str, Any], *, run_id: str) -> List[str]:
+    """
+    Make VHS ``filename_prefix`` basenames unique per run so sibling runs do not
+    overwrite / claim the same ``*_00001.mp4``.
+    """
+    rid = str(run_id or "").strip()
+    if not rid:
+        return []
+    changes: List[str] = []
+    for nid, node in prompt_obj.items():
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("class_type") or "") != "VHS_VideoCombine":
+            continue
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict):
+            continue
+        raw = str(inputs.get("filename_prefix") or "").strip()
+        if not raw:
+            continue
+        pref = raw.replace("\\", "/")
+        stem = Path(pref).name
+        if stem.startswith(f"{rid}_") or f"/{rid}_" in f"/{stem}":
+            continue
+        parent = str(Path(pref).parent).replace("\\", "/")
+        new_stem = f"{rid}_{stem}"
+        new = f"{parent}/{new_stem}" if parent and parent != "." else new_stem
+        inputs["filename_prefix"] = new
+        changes.append(f"{nid}.filename_prefix: {raw!r} -> {new!r}")
+    return changes
 
 
 def _rel_subfolder_and_filename(*, output_root: Path, path: Path) -> Optional[Tuple[str, str]]:
@@ -841,7 +1071,13 @@ def _classify_runs(
     done_by_outputs_runs: List[RunRef] = []
 
     for r in runs:
-        has_video = _has_video_for_run(r.exp_dir, r.run_id)
+        out_root = _infer_output_root(r.exp_dir, exp_dir=r.exp_dir)
+        has_video = _has_video_for_run(
+            r.exp_dir,
+            r.run_id,
+            run_dir=r.run_dir,
+            output_root=out_root,
+        )
         if r.history_path.exists():
             if requeue_missing_video and not has_video:
                 missing_video += 1
@@ -854,7 +1090,12 @@ def _classify_runs(
                     continue
             done.append(r)
             continue
-        if complete_if_output and _has_outputs_for_run(r.exp_dir, r.run_id):
+        if complete_if_output and _has_outputs_for_run(
+            r.exp_dir,
+            r.run_id,
+            run_dir=r.run_dir,
+            output_root=out_root,
+        ):
             # If we only have images (or partial outputs) but no mp4, treat as failed and requeue.
             if requeue_missing_video and not has_video:
                 missing_video += 1
@@ -1001,7 +1242,12 @@ def watch(
                     break
                 if r.history_path.exists():
                     continue
-                media_paths = _find_media_files_for_run(r.exp_dir, r.run_id)
+                media_paths = _find_media_files_for_run(
+                    r.exp_dir,
+                    r.run_id,
+                    run_dir=r.run_dir,
+                    output_root=_infer_output_root(r.exp_dir, exp_dir=r.exp_dir),
+                )
                 if not media_paths:
                     continue
                 pid = _read_prompt_id_from_submit(r.submit_path) if r.submit_path.exists() else None
@@ -1147,6 +1393,12 @@ def watch(
                 _normalize_prompt_paths_for_linux(prompt_obj)
                 normalize_prompt_output_prefixes(prompt_obj)
                 apply_queue_date_to_prompt(prompt_obj)
+                _ensure_run_id_in_vhs_prefixes(prompt_obj, run_id=r.run_id)
+                # Persist uniquified prefixes so later detect/history match the submit.
+                try:
+                    _write_json(r.prompt_path, prompt_obj, indent=indent)
+                except Exception:
+                    pass
                 # Build payload: include extra_pnginfo.workflow so ComfyUI SaveImage nodes embed UI workflow in outputs.
                 payload: Dict[str, Any] = {"prompt": prompt_obj, "client_id": _client_id(r.exp_id)}
                 workflow_ui = _workflow_ui_for_run(r)
@@ -1389,7 +1641,12 @@ def watch(
                         backfill_history
                         and complete_if_output
                         and (queue_ids is None or pid not in queue_ids)
-                        and _has_outputs_for_run(r.exp_dir, r.run_id)
+                        and _has_outputs_for_run(
+                            r.exp_dir,
+                            r.run_id,
+                            run_dir=r.run_dir,
+                            output_root=_infer_output_root(r.exp_dir, exp_dir=r.exp_dir),
+                        )
                     ):
                         # Age gate: avoid masking short-lived /history delays.
                         if r.submit_path.exists():
@@ -1399,7 +1656,12 @@ def watch(
                                 age = float("inf")
                             if age < float(backfill_min_age_s):
                                 continue
-                        media_paths = _find_media_files_for_run(r.exp_dir, r.run_id)
+                        media_paths = _find_media_files_for_run(
+                            r.exp_dir,
+                            r.run_id,
+                            run_dir=r.run_dir,
+                            output_root=_infer_output_root(r.exp_dir, exp_dir=r.exp_dir),
+                        )
                         if not media_paths:
                             continue
                         dummy = _dummy_history_from_fs(

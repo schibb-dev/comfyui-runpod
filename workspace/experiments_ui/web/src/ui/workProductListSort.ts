@@ -90,7 +90,10 @@ export function workProductsInOpenNavSections<T extends Pick<WorkProductItem, "s
 export type WorkProductNavBadge = {
   key: string;
   count: number;
+  /** Short chip text. */
   label: string;
+  /** Spoken / tooltip name when `label` is abbreviated. */
+  title?: string;
   tone: "running" | "queued" | "pending" | "hourly" | "custom" | "editing" | "ok" | "error";
 };
 
@@ -134,8 +137,8 @@ export function workProductNavSectionBadges(
       else custom += 1;
     }
     const badges: WorkProductNavBadge[] = [];
-    if (hourly) badges.push({ key: "hourly", count: hourly, label: "hourly", tone: "hourly" });
-    if (custom) badges.push({ key: "custom", count: custom, label: "custom", tone: "custom" });
+    if (hourly) badges.push({ key: "hourly", count: hourly, label: "hrly", title: "hourly", tone: "hourly" });
+    if (custom) badges.push({ key: "custom", count: custom, label: "cust", title: "custom", tone: "custom" });
     return badges;
   }
   if (id === "error") {

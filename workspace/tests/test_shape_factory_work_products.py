@@ -1709,6 +1709,99 @@ class TestWorkProducts(unittest.TestCase):
             self.assertEqual(filtered.get("experiment_count"), 0)
             self.assertEqual(filtered.get("items"), [])
 
+    def test_experiment_history_output_preferred_over_shared_stem(self):
+        """Two runs sharing a VHS prefix must not both claim the same mp4."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            output = root / "output"
+            exp_id = "x-shared-prefix"
+            prefix = f"og/2026-05-09/experiments/{exp_id}/Clip_shared_OG"
+            stem = self._write_quality_experiment(
+                output,
+                exp_id=exp_id,
+                run_id="run_001",
+                prefix=prefix,
+                prompt_id="pid-a",
+            )
+            self._write_quality_experiment(
+                output,
+                exp_id=exp_id,
+                run_id="run_002",
+                prefix=prefix,
+                prompt_id="pid-b",
+            )
+            dated = output / "og" / "2026-05-09" / "experiments" / exp_id
+            dated.mkdir(parents=True)
+            (dated / f"{stem}_00001.mp4").write_bytes(b"mp4-from-run-001")
+
+            # run_002 finished according to Comfy, but its dated file was deleted.
+            run2 = output / "experiments" / exp_id / "runs" / "run_002"
+            (run2 / "history.json").write_text(
+                json.dumps(
+                    {
+                        "pid-b": {
+                            "outputs": {
+                                "398": {
+                                    "gifs": [
+                                        {
+                                            "filename": f"{stem}_00001.mp4",
+                                            "subfolder": f"og/2026-09-19/experiments/{exp_id}",
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            payload = attach_experiment_runs(
+                {"ok": True, "limit": 40, "family": None, "families": [{"slug": "X-KNEEL-FB9"}], "items": []},
+                output_root=output,
+            )
+            by_run = {it.get("run_id"): it for it in payload["items"] if it.get("exp_id") == exp_id}
+            self.assertEqual(by_run["run_001"].get("status"), "complete")
+            self.assertEqual(
+                by_run["run_001"].get("output_relpath"),
+                f"og/2026-05-09/experiments/{exp_id}/{stem}_00001.mp4",
+            )
+            self.assertEqual(by_run["run_002"].get("status"), "interrupted")
+            self.assertIsNone(by_run["run_002"].get("output_relpath"))
+
+    def test_attach_experiment_runs_skips_dismissed_job_keys(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            data = root / "data"
+            output = root / "output"
+            (data / "shape_factory").mkdir(parents=True)
+            exp_id = "x-dismiss-me"
+            prefix = f"og/2026-05-09/experiments/{exp_id}/Clip_OG"
+            stem = self._write_quality_experiment(
+                output,
+                exp_id=exp_id,
+                run_id="run_001",
+                prefix=prefix,
+                prompt_id="pid-dismiss",
+            )
+            dated = output / "og" / "2026-05-09" / "experiments" / exp_id
+            dated.mkdir(parents=True)
+            (dated / f"{stem}_00001.mp4").write_bytes(b"mp4")
+            from shape_factory_work_products import dismiss_history_work_product
+
+            dismiss_history_work_product(
+                data_root=data,
+                job_key=f"exp__{exp_id}__run_001",
+                output_root=output,
+            )
+            out = attach_experiment_runs(
+                {"ok": True, "limit": 40, "family": None, "families": [{"slug": "X-KNEEL-FB9"}], "items": []},
+                output_root=output,
+                data_root=data,
+            )
+            keys = [it.get("job_key") for it in out["items"]]
+            self.assertNotIn(f"exp__{exp_id}__run_001", keys)
+
     def test_experiment_output_skips_truncated_mp4_for_dated_copy(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

@@ -85,8 +85,8 @@ body {
 }
 
 .app-sidebar {
-  flex: 0 0 188px;
-  width: 188px;
+  flex: 0 0 156px;
+  width: 156px;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -157,10 +157,30 @@ body {
   margin-top: 0;
 }
 
+.app-nav-section__toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  width: 100%;
+  margin: 0 0 4px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.app-nav-section__toggle:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
 .app-nav-section__label,
 .app-drawer__panel .app-nav-section__label {
-  margin: 2px 0 6px;
-  padding: 0 4px;
+  margin: 0;
+  padding: 0;
   font-size: 10px;
   font-weight: 500;
   letter-spacing: 0.14em;
@@ -169,11 +189,22 @@ body {
   color: color-mix(in srgb, var(--muted) 62%, transparent);
 }
 
+.app-nav-section__chevron {
+  flex: 0 0 auto;
+  font-size: 16px;
+  line-height: 1;
+  color: color-mix(in srgb, var(--muted) 70%, transparent);
+}
+
+.app-nav-section--collapsed.app-nav-section--has-active .app-nav-section__label {
+  color: color-mix(in srgb, var(--text) 70%, var(--muted));
+}
+
 .app-nav-section__links {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding-left: 10px;
+  padding-left: 4px;
 }
 
 .app-sidebar--collapsed .app-nav-section__links {
@@ -183,12 +214,14 @@ body {
 .app-sidebar__link {
   display: flex;
   align-items: center;
-  min-height: 30px;
-  padding: 4px 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 28px;
+  padding: 3px 6px;
   border-radius: 6px;
   color: var(--text);
   text-decoration: none;
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
 }
 
@@ -200,6 +233,95 @@ body {
 .app-sidebar__link--active {
   color: var(--text);
   background: rgba(90, 162, 255, 0.16);
+}
+
+.app-nav-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.app-nav-item__row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.app-nav-item__toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 26px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: color-mix(in srgb, var(--muted) 75%, transparent);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.app-nav-item__toggle:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.app-nav-item__children {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0 0 2px;
+  padding: 0 0 0 16px;
+}
+
+.app-sidebar__child-link,
+.app-drawer__child-link {
+  display: flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  color: color-mix(in srgb, var(--text) 78%, var(--muted));
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.app-sidebar__child-link:hover,
+.app-drawer__child-link:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.app-sidebar__child-link--active,
+.app-drawer__child-link--active {
+  color: var(--text);
+  background: rgba(90, 162, 255, 0.16);
+  font-weight: 600;
+}
+
+.app-sidebar--collapsed .app-nav-item__children,
+.app-sidebar--collapsed .app-nav-item__toggle {
+  display: none;
+}
+
+.app-drawer__panel .app-nav-section__toggle {
+  padding: 4px 8px;
+}
+
+.app-drawer__panel .app-nav-item__toggle {
+  width: 24px;
+  height: 30px;
+}
+
+.app-nav-item__row .app-drawer__link {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .app-sidebar__mark {
@@ -332,7 +454,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding-left: 10px;
+  padding-left: 4px;
 }
 
 .app-drawer__link {
@@ -665,15 +787,33 @@ body {
   color: color-mix(in srgb, var(--text, #e8eaed) 88%, #9ad);
 }
 
-@media (max-width: 1100px) {
-  .queue-monitor-split {
-    grid-template-columns: 1fr;
-    grid-template-rows: minmax(220px, 1fr) minmax(220px, 0.85fr);
-  }
+/* Stacked is opt-in. The old max-width rule forced the log under the list and
+   clipped it, because the screen itself does not scroll. */
+.queue-monitor--layout-stack.pipeline-screen.layout {
+  overflow: auto;
+}
 
-  .queue-monitor.layout {
-    overflow: hidden;
-  }
+.queue-monitor--layout-stack .queue-page-tabpanel {
+  overflow: visible;
+  flex: 1 0 auto;
+}
+
+.queue-monitor--layout-stack .queue-monitor-split {
+  grid-template-columns: 1fr;
+  grid-template-rows: auto;
+  flex: 1 0 auto;
+  overflow: visible;
+}
+
+.queue-monitor--layout-stack .queue-monitor-split > .pipeline-scroll {
+  overflow: visible;
+  flex: 0 0 auto;
+  min-height: 0;
+}
+
+.queue-monitor--layout-stack .queue-monitor-log {
+  height: min(420px, 50vh);
+  min-height: 220px;
 }
 
 .queue-monitor-error {
@@ -882,6 +1022,16 @@ body {
 .queue-ledger__pill--warn {
   border-color: rgba(255, 138, 128, 0.5);
   color: #ff8a80;
+}
+.queue-ledger__suspend-banner {
+  margin: 0.35rem 0 0.6rem;
+  padding: 0.45rem 0.65rem;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 138, 128, 0.45);
+  background: rgba(255, 138, 128, 0.1);
+  color: #ffc2bc;
+  font-size: 0.92rem;
+  line-height: 1.35;
 }
 .queue-ledger__ops {
   display: flex;
@@ -1175,6 +1325,7 @@ body {
 
 .queue-monitor__compact-thumb--empty {
   border: 1px solid var(--border);
+  background: linear-gradient(160deg, #12161f 0%, #0a0c10 55%, #10141c 100%);
 }
 
 .queue-monitor__compact-body {
@@ -13826,6 +13977,16 @@ tr.disabled:hover td {
   font-size: 0.8rem;
   color: #ff8a80;
 }
+.home-hourly-controls__suspend {
+  margin: 6px 0 0;
+  padding: 0.4rem 0.55rem;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 138, 128, 0.45);
+  background: rgba(255, 138, 128, 0.1);
+  color: #ffc2bc;
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
 
 .home-backlog-foot {
   display: flex;
@@ -15029,14 +15190,25 @@ button.home-backlog-linkish {
   color: var(--muted);
 }
 
-.work-products-load-status--compact {
-  flex: 1 1 10rem;
-  min-width: 0;
-  font-size: 11px;
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.work-products-index__refresh {
+  width: 0.85rem;
+  height: 0.85rem;
+  flex: 0 0 0.85rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.work-products-index__refresh-spin {
+  width: 0.85rem;
+  height: 0.85rem;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+.work-products-index__refresh--active .work-products-index__refresh-spin {
+  border-color: rgba(255, 255, 255, 0.22);
+  border-top-color: var(--muted, #9aa3ad);
+  animation: page-header-spin 0.7s linear infinite;
 }
 
 .work-products-empty--loading {
@@ -15297,6 +15469,40 @@ button.home-backlog-linkish {
 .work-products-index__section-label {
   flex: 0 1 auto;
   min-width: 0;
+}
+
+.work-products-index__section-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0 6px 6px;
+}
+
+.work-products-index__section-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--muted);
+  cursor: default;
+}
+
+.work-products-index__section-sort select {
+  background: var(--panel2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  max-width: 11rem;
 }
 
 .work-products-index__section-badges {
@@ -16931,11 +17137,35 @@ button.home-backlog-linkish {
   min-height: 160px;
 }
 
+.work-product-live__placeholder {
+  display: grid;
+  place-items: center;
+  min-height: 160px;
+  padding: 12px;
+  box-sizing: border-box;
+  background: linear-gradient(160deg, #12161f 0%, #0a0c10 55%, #10141c 100%);
+  color: color-mix(in srgb, var(--muted) 85%, transparent);
+}
+
+.work-product-live__placeholder--inline {
+  min-height: 72px;
+  width: 100%;
+  height: 100%;
+}
+
 .work-product-live__img {
   display: block;
   width: 100%;
   max-height: 420px;
   object-fit: contain;
+}
+
+.work-product-live__canvas.is-pending {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .work-product-live__waiting {

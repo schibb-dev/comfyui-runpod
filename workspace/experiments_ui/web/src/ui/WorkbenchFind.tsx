@@ -44,6 +44,9 @@ export function WorkbenchFindPanel({
   followUpSet,
   hourlyOnly,
   onHourlyOnly,
+  showStillTags,
+  stillTagCount,
+  onToggleStillTags,
   markers,
   onToggleMarker,
   onFocusMarker,
@@ -72,6 +75,9 @@ export function WorkbenchFindPanel({
   followUpSet: boolean;
   hourlyOnly: boolean;
   onHourlyOnly: () => void;
+  showStillTags: boolean;
+  stillTagCount: number;
+  onToggleStillTags: () => void;
   markers: WorkbenchFindChip[];
   onToggleMarker: (id: string) => void;
   onFocusMarker: (id: string) => void;
@@ -125,6 +131,23 @@ export function WorkbenchFindPanel({
         onClick={onHourlyOnly}
       >
         <span className="work-products-status-toggle__label">hourly only</span>
+      </button>
+      <button
+        type="button"
+        className={chipClass("muted", showStillTags)}
+        aria-pressed={showStillTags}
+        disabled={followUpSet}
+        title={
+          followUpSet
+            ? "Still-tag filter does not apply to follow-up piles"
+            : showStillTags
+              ? `Showing still tags (${stillTagCount}) — click to hide`
+              : `Still tags hidden (${stillTagCount}) — click to show`
+        }
+        onClick={onToggleStillTags}
+      >
+        <span className="work-products-status-toggle__label">still tags</span>
+        <span className="work-products-status-toggle__count">{stillTagCount}</span>
       </button>
       {markers.length ? (
         <>
@@ -217,6 +240,7 @@ export function WorkbenchFindPanel({
 
   const chipFilterOn =
     (hourlyOnly && !followUpSet) ||
+    (showStillTags && !followUpSet) ||
     markers.some((m) => !m.on) ||
     APPETITE_FILTER_KEYS.some((key) => !(appetites.find((a) => a.id === key)?.on ?? true)) ||
     statuses.some((s) => !s.on);

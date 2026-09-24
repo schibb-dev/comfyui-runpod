@@ -16,7 +16,7 @@ import {
 import { destinationForWhen, isPendingQueueItem, pendingQueueIndex, type SubmitWhen } from "./workProductPendingQueue";
 import type { ShapeFactoryClip } from "./api";
 import { ClipBookmarksRail, pickDefaultClip } from "./ClipBookmarksRail";
-import { ComfyLiveMetricsBar, ComfyLivePreview } from "./ComfyLivePreview";
+import { ComfyLiveMetricsBar, ComfyLivePreview, PreviewSafeImg } from "./ComfyLivePreview";
 import { PageHeader } from "./PageHeader";
 import { PipelineScreen } from "./PipelineScreen";
 import { useRegisterPhoneOverflow } from "./phoneChrome";
@@ -126,6 +126,8 @@ import { WorkbenchLoadStatus } from "./WorkbenchLoadStatus";
 import { distinctiveFamilyLabels, familyPickerOptionLabel, familyPickerOptionTitle, familyPromptProfiles, familySlugIsQuarantined, familySwapTargets, isDefaultPromptVariant, isExtendFamilyOption, isStillMediaPath, jobPromptVariantDisplayName, jobPromptVariantName, jobPromptVariantSlug, pickQuickExtendFamily, pickRerunPromptPreset, pickRerunStack, promptProfileOptionLabel, promptTextIsOverridden, promptVariantName, promptVariantSlug, rerunPromptPresetDiffers, specDisplayJoined, stackPickerOptionLabel, workProductCanQuickExtend, workProductHasExtendableOutput } from "./submitFamily";
 import { recencyStamp } from "./workProductRecency";
 import {
+  includeStillTagWorkProducts,
+  isStillTagWorkProduct,
   mergeStillTagWorkProducts,
   stillTagCurrentContentId,
   stillTagProgressLabel,
@@ -171,6 +173,7 @@ const APPETITE_FILTER_OFF_KEY_V1 = "work-products-appetite-filter-off";
 const SECTION_OPEN_KEY = "work-products-section-open-v3";
 const NAV_SECTION_OPEN_KEY = "work-products-nav-section-open-v1";
 const HOURLY_ONLY_KEY = "work-products-hourly-only";
+const SHOW_STILL_TAGS_KEY = "work-products-show-still-tags";
 const STATUS_FILTER_OFF_KEY = "work-products-status-filter-off";
 const MARKER_FILTER_OFF_KEY = "work-products-marker-filter-off";
 const CHROME_KEY = "work-products-chrome-v3";
@@ -293,6 +296,23 @@ function loadHourlyOnly(): boolean {
 function persistHourlyOnly(hourlyOnly: boolean) {
   try {
     localStorage.setItem(HOURLY_ONLY_KEY, hourlyOnly ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadShowStillTags(): boolean {
+  try {
+    const v = localStorage.getItem(SHOW_STILL_TAGS_KEY);
+    return v === "1" || v === "true";
+  } catch {
+    return false;
+  }
+}
+
+function persistShowStillTags(show: boolean) {
+  try {
+    localStorage.setItem(SHOW_STILL_TAGS_KEY, show ? "1" : "0");
   } catch {
     /* ignore */
   }
@@ -632,6 +652,13 @@ function isExperimentWorkProduct(item: WorkProductItem): boolean {
   return String(construction.source || "") === "experiment";
 }
 
+/** Hide an experiment row from Workbench (persisted dismissal; media stays). */
+function canDismissExperimentWorkProduct(item: WorkProductItem): boolean {
+  if (!isExperimentWorkProduct(item)) return false;
+  if (isRunningLiveItem(item) || isWaitingPreviewItem(item)) return false;
+  return Boolean(String(item.job_key || "").trim() || String(item.prompt_id || "").trim());
+}
+
 /** Synthetic Comfy live stub — no factory .job.json to demote to pending. */
 function isNonFactoryWorkProduct(item: WorkProductItem): boolean {
   if (workProductKindIs(item, "still_tag")) return false;
@@ -694,7 +721,11 @@ function canArchiveTerminalWorkProduct(item: WorkProductItem): boolean {
 
 /** Pending drafts or terminal failures — hard-delete job JSON (+ sidecars). */
 function canDeleteWorkProduct(item: WorkProductItem): boolean {
-  return canDiscardPendingWorkProduct(item) || canArchiveTerminalWorkProduct(item);
+  return (
+    canDiscardPendingWorkProduct(item) ||
+    canArchiveTerminalWorkProduct(item) ||
+    canDismissExperimentWorkProduct(item)
+  );
 }
 
 function isRunningLiveItem(item: WorkProductItem): boolean {
@@ -1095,10 +1126,21 @@ function WorkProductSourceThumbPreview({ item }: { item: WorkProductItem }) {
     <div className="work-product-live">
       <div className={`work-product-live__frame work-product-live__frame--queued${frameMod}`}>
         {thumb ? (
-          <img
+          <PreviewSafeImg
             className={`work-product-live__img work-product-live__img--queued${imgMod}`}
             src={thumb}
             alt={label}
+            fallback={
+              <div
+                className={`work-product-viewer__empty work-product-live__waiting work-product-live__waiting--queued${emptyMod}`}
+                title={item.error || item.prompt_id || item.job_key}
+              >
+                <span className="work-product-live__queue-icon" aria-hidden>
+                  ▦
+                </span>
+                <span>{emptyTitle}</span>
+              </div>
+            }
           />
         ) : video ? (
           <video
@@ -1725,10 +1767,11 @@ function WorkProductViewer({
             />
             {previewUrls.thumb ? (
               <div className="work-product-viewer__live-source" title={previewUrls.label}>
-                <img
+                <PreviewSafeImg
                   className="work-product-viewer__live-source-img"
                   src={previewUrls.thumb}
                   alt={previewUrls.label || "source"}
+                  fallback={<div className="work-product-live__placeholder work-product-live__placeholder--inline" />}
                 />
                 <span className="work-product-live__badge work-product-live__badge--queued">source</span>
                 <AppetitePreviewBadge relpath={workbenchSourceMediaRelpath(item)} />
@@ -4539,11 +4582,20 @@ function WorkProductQuickQueue({
   const discard = async () => {
     if (!canDelete || isBusy) return;
     const historyStub = isHistoryFailureStub(item);
-    const kind = historyStub ? "history failure" : deleteIsPendingOnly ? "pending job" : "failed job";
+    const experimentRow = isExperimentWorkProduct(item);
+    const kind = historyStub
+      ? "history failure"
+      : experimentRow
+        ? "experiment run"
+        : deleteIsPendingOnly
+          ? "pending job"
+          : "failed job";
     const ok = window.confirm(
-      historyStub
+      historyStub || experimentRow
         ? `Dismiss this ${kind} from Workbench?\n\n` +
-            "There is no factory .job.json on disk — this only hides the Comfy history stub. " +
+            (experimentRow
+              ? "There is no factory .job.json — this hides the experiment run from Workbench. "
+              : "There is no factory .job.json on disk — this only hides the Comfy history stub. ") +
             "It will not reappear after refresh. Media under output/ is not deleted."
         : `Permanently delete this ${kind}?\n\n` +
             "This expunges the .job.json and related sidecars (prompt/submit/timings/workflow) from disk. " +
@@ -4557,15 +4609,20 @@ function WorkProductQuickQueue({
         job_key: jobKey || undefined,
         job_path: String(item.job_path || "").trim() || undefined,
         prompt_id: String(item.prompt_id || "").trim() || undefined,
-        history_from_comfy: isHistoryFailureStub(item) || Boolean(item.history_from_comfy),
-        reason: deleteIsPendingOnly ? "user_expunged" : "user_expunged_failure",
+        history_from_comfy:
+          historyStub || experimentRow || Boolean(item.history_from_comfy),
+        reason: deleteIsPendingOnly
+          ? "user_expunged"
+          : experimentRow
+            ? "user_dismissed_experiment"
+            : "user_expunged_failure",
         expunge: true,
         actor: "operator",
         source_surface: "workbench",
       });
       setMsg(
         res.history_stub || res.dismissed
-          ? `Dismissed history failure${res.job_key ? ` · ${res.job_key}` : ""}`
+          ? `Dismissed${res.job_key ? ` · ${res.job_key}` : ""}`
           : `Deleted${res.job_key ? ` · ${res.job_key}` : ""}`,
       );
       await invalidateWorkbench();
@@ -5336,11 +5393,13 @@ function WorkProductQuickQueue({
                 title={
                   deleteIsPendingOnly
                     ? "Permanently delete this pending job and its sidecars from disk"
-                    : "Permanently delete this failed job and its sidecars from disk"
+                    : isExperimentWorkProduct(item)
+                      ? "Dismiss this experiment run from Workbench (media stays on disk)"
+                      : "Permanently delete this failed job and its sidecars from disk"
                 }
                 onClick={() => void discard()}
               >
-                Delete
+                {isExperimentWorkProduct(item) ? "Dismiss" : "Delete"}
               </button>
             ) : null}
           </div>
@@ -5816,8 +5875,43 @@ function workProductMatchesFocus(
 }
 
 function navSectionBadgeAria(label: string, count: number, badges: WorkProductNavBadge[]): string {
-  const parts = badges.map((b) => (b.label ? `${b.count} ${b.label}` : String(b.count)));
+  const parts = badges.map((b) => {
+    const name = b.title || b.label;
+    return name ? `${b.count} ${name}` : String(b.count);
+  });
   return parts.length ? `${label}, ${parts.join(", ")}` : `${label}, ${count}`;
+}
+
+function CompletedSortControl({
+  sort,
+  onChange,
+}: {
+  sort: WorkProductSort;
+  onChange: (next: WorkProductSort) => void;
+}) {
+  return (
+    <label
+      className="work-products-index__section-sort"
+      title="Sorts completed jobs only. Comfy queue and pending stay in run order."
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <span>Sort</span>
+      <select
+        value={sort}
+        aria-label="Sort completed work products"
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
+        onChange={(e) => onChange(e.target.value as WorkProductSort)}
+      >
+        {SORT_OPTIONS.map((o) => (
+          <option key={o.id} value={o.id}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
 }
 
 function WorkProductIndexSection({
@@ -5827,6 +5921,7 @@ function WorkProductIndexSection({
   count,
   badges,
   hint,
+  extra,
   open,
   onOpenChange,
   children,
@@ -5837,6 +5932,7 @@ function WorkProductIndexSection({
   count: number;
   badges: WorkProductNavBadge[];
   hint?: React.ReactNode;
+  extra?: React.ReactNode;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   children: React.ReactNode;
@@ -5862,6 +5958,7 @@ function WorkProductIndexSection({
             <span
               key={badge.key}
               className={`work-products-index__section-badge work-products-index__section-badge--${badge.tone}`}
+              title={badge.title}
             >
               <span className="work-products-index__section-badge-count">{badge.count}</span>
               {badge.label ? (
@@ -5871,6 +5968,7 @@ function WorkProductIndexSection({
           ))}
         </span>
       </summary>
+      {extra ? <div className="work-products-index__section-toolbar">{extra}</div> : null}
       <div className="work-products-index__section-rows" role="group" aria-label={label}>
         {children}
       </div>
@@ -5920,7 +6018,15 @@ function WorkProductIndexRow({
     >
       <span className="work-product-index-row__thumb">
         {thumb ? (
-          <img src={thumb} alt="" />
+          <PreviewSafeImg
+            src={thumb}
+            alt=""
+            fallback={
+              <span className="work-product-index-row__thumb-empty" aria-hidden>
+                {isRunningLiveItem(item) ? "live" : "—"}
+              </span>
+            }
+          />
         ) : (
           <span className="work-product-index-row__thumb-empty" aria-hidden>
             {isRunningLiveItem(item) ? "live" : "—"}
@@ -6297,6 +6403,7 @@ export function WorkProductsApp() {
   const initialHourlyOnly = hasResourceDeepLink || deepLink.q ? false : loadHourlyOnly();
   const [limit, setLimit] = useState(() => initialLimit);
   const [hourlyOnly, setHourlyOnly] = useState(() => initialHourlyOnly);
+  const [showStillTags, setShowStillTags] = useState(() => loadShowStillTags());
   const [statusOff, setStatusOff] = useState<Set<string>>(() => loadStatusFilterOff());
   const [markerOff, setMarkerOff] = useState<Set<string>>(() => loadMarkerFilterOff());
   const [appetiteOff, setAppetiteOff] = useState<Set<string>>(() => loadAppetiteFilterOff());
@@ -6603,6 +6710,7 @@ export function WorkProductsApp() {
     phaseLabel: lastLoadPhaseLabel(loadPhases),
     elapsedMs: loadElapsedMs,
   });
+  const jobsRefreshing = Boolean(loadHint && (items.length || focusPinned));
   const focusedGoneReason: FocusedGoneReason | null = (() => {
     if (!focusPinned || focusedLoading) return null;
     if (historyError === "deleted") return "deleted";
@@ -6674,8 +6782,10 @@ export function WorkProductsApp() {
     prefetchAssetRatings(items.map((it) => workProductAppetiteRelpath(it)).filter(Boolean));
   }, [items]);
 
+  const stillTagCount = useMemo(() => items.filter((it) => isStillTagWorkProduct(it)).length, [items]);
+
   const visibleItems = useMemo(() => {
-    const named = filterWorkProductsByName(items, nameQuery);
+    const named = filterWorkProductsByName(includeStillTagWorkProducts(items, showStillTags), nameQuery);
     const mediaRows = mediaMissing
       ? []
       : filterWorkProductsByMedia(named, focusMedia, { producersOnly: Boolean(focusMedia) });
@@ -6702,6 +6812,7 @@ export function WorkProductsApp() {
     return [focusedItem, ...rows];
   }, [
     items,
+    showStillTags,
     nameQuery,
     focusMedia,
     mediaMissing,
@@ -6921,6 +7032,10 @@ export function WorkProductsApp() {
         persistFamilyFilter("");
         setFamilyFilter("");
       }
+      if (!showStillTags && isStillTagWorkProduct(match)) {
+        persistShowStillTags(true);
+        setShowStillTags(true);
+      }
       return;
     }
     if (!inVisible) return;
@@ -6953,6 +7068,7 @@ export function WorkProductsApp() {
     appetiteOff.size,
     overrideNeed.size,
     familyFilter,
+    showStillTags,
     visibleItems,
     navSectionOpen,
     setNavSectionOpenId,
@@ -7037,6 +7153,7 @@ export function WorkProductsApp() {
   const findActive = Boolean(
     nameQuery.trim() ||
       hourlyOnly ||
+      showStillTags ||
       statusOff.size ||
       markerOff.size ||
       appetiteOff.size ||
@@ -7047,6 +7164,7 @@ export function WorkProductsApp() {
   const findActiveSummary = [
     nameQuery.trim() ? `“${nameQuery.trim()}”` : null,
     hourlyOnly && !followUpSet ? "hourly" : null,
+    showStillTags && !followUpSet ? "still tags" : null,
     statusOff.size ? `${statusOff.size} status hidden` : null,
     markerOff.size ? `${markerOff.size} mode hidden` : null,
     appetiteOff.size ? `${appetiteOff.size} appetite hidden` : null,
@@ -7065,6 +7183,10 @@ export function WorkProductsApp() {
     if (hourlyOnly && !followUpSet) {
       setHourlyOnly(false);
       persistHourlyOnly(false);
+    }
+    if (showStillTags) {
+      setShowStillTags(false);
+      persistShowStillTags(false);
     }
     if (statusOff.size) {
       persistStatusFilterOff(new Set());
@@ -7093,6 +7215,14 @@ export function WorkProductsApp() {
         const next = !hourlyOnly;
         setHourlyOnly(next);
         persistHourlyOnly(next);
+      }}
+      showStillTags={showStillTags}
+      stillTagCount={stillTagCount}
+      onToggleStillTags={() => {
+        if (followUpSet) return;
+        const next = !showStillTags;
+        setShowStillTags(next);
+        persistShowStillTags(next);
       }}
       markers={availableMarkers.map((marker) => ({
         id: marker,
@@ -7158,24 +7288,6 @@ export function WorkProductsApp() {
                     </option>
                   );
                 })}
-              </select>
-            </label>
-            <label className="work-products-limit">
-              Completed sort
-              <select
-                value={sort}
-                onChange={(e) => {
-                  const next = e.target.value as WorkProductSort;
-                  setSort(next);
-                  persistSort(next);
-                }}
-                aria-label="Sort completed work products"
-              >
-                {SORT_OPTIONS.map((o) => (
-                  <option key={o.id} value={o.id}>
-                    {o.label}
-                  </option>
-                ))}
               </select>
             </label>
           </div>
@@ -7511,27 +7623,8 @@ export function WorkProductsApp() {
                 );
               })}
             </select>
-          </label>
-          <label className="work-products-limit">
-            Completed sort
-            <select
-              value={sort}
-              onChange={(e) => {
-                const next = e.target.value as WorkProductSort;
-                setSort(next);
-                persistSort(next);
-              }}
-              aria-label="Sort completed work products"
-              title="Comfy queue and pending backlog use run order / FIFO. This control sorts completed jobs only."
-            >
-              {SORT_OPTIONS.map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="discovery-preview-layout-switch" role="group" aria-label="Detail layout">
+            </label>
+            <div className="discovery-preview-layout-switch" role="group" aria-label="Detail layout">
             <span className="discovery-preview-layout-switch__label">Layout</span>
             <div className="segmented">
               <button
@@ -7722,9 +7815,16 @@ export function WorkProductsApp() {
               ) : (
                 <span className="work-products-index__toolbar-label">{followUpSet ? "Follow-up" : "Jobs"}</span>
               )}
-              {loadHint && (items.length || focusPinned) ? (
-                <WorkbenchLoadStatus hint={loadHint} phases={loadPhases} fetching={listFetching} compact />
-              ) : null}
+              <span
+                className={
+                  "work-products-index__refresh" + (jobsRefreshing ? " work-products-index__refresh--active" : "")
+                }
+                aria-hidden={jobsRefreshing ? undefined : true}
+                title={jobsRefreshing ? "Refreshing jobs" : undefined}
+              >
+                <span className="work-products-index__refresh-spin" />
+                {jobsRefreshing ? <span className="page-header__sr-only">Refreshing jobs</span> : null}
+              </span>
               {followUpSet ? null : (
               <label
                 className="work-products-limit work-products-limit--index"
@@ -7739,27 +7839,6 @@ export function WorkProductsApp() {
                   {[20, 30, 50, 80, 120].map((n) => (
                     <option key={n} value={n}>
                       {n}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              )}
-              {phone ? null : (
-              <label className="work-products-limit work-products-limit--index">
-                Completed sort
-                <select
-                  value={sort}
-                  onChange={(e) => {
-                    const next = e.target.value as WorkProductSort;
-                    setSort(next);
-                    persistSort(next);
-                  }}
-                  aria-label="Sort completed work products"
-                  title="Comfy queue and pending backlog use run order / FIFO. This control sorts completed jobs only."
-                >
-                  {SORT_OPTIONS.map((o) => (
-                    <option key={o.id} value={o.id}>
-                      {o.label}
                     </option>
                   ))}
                 </select>
@@ -7800,18 +7879,33 @@ export function WorkProductsApp() {
                         </span>
                       ) : null
                     }
+                    extra={
+                      sec.id === "done" ? (
+                        <CompletedSortControl
+                          sort={sort}
+                          onChange={(next) => {
+                            setSort(next);
+                            persistSort(next);
+                          }}
+                        />
+                      ) : null
+                    }
                     open={navSectionOpen[sec.id]}
                     onOpenChange={(open) => setNavSectionOpenId(sec.id, open)}
                   >
                     {sec.items.map((item) => (
                       <WorkProductIndexRow
-                        key={item.output_relpath || item.job_key}
+                        key={item.job_key || item.output_relpath || item.prompt_id}
                         item={item}
                         selected={Boolean(
                           selectedItem &&
-                            (item.output_relpath && selectedItem.output_relpath
-                              ? item.output_relpath === selectedItem.output_relpath
-                              : item.job_key === selectedItem.job_key),
+                            (item.job_key && selectedItem.job_key
+                              ? item.job_key === selectedItem.job_key
+                              : item.output_relpath && selectedItem.output_relpath
+                                ? item.output_relpath === selectedItem.output_relpath
+                                : item.prompt_id && selectedItem.prompt_id
+                                  ? item.prompt_id === selectedItem.prompt_id
+                                  : false),
                         )}
                         onSelect={selectItem}
                         movingPending={pendingMoveMutation.isPending}

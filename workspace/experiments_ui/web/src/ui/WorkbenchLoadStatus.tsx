@@ -5,21 +5,12 @@ export function WorkbenchLoadStatus({
   hint,
   phases,
   fetching,
-  compact,
 }: {
   hint: string | null;
   phases?: WorkbenchLoadPhase[] | null;
   fetching?: boolean;
-  compact?: boolean;
 }) {
   if (!hint) return null;
-  if (compact) {
-    return (
-      <span className="work-products-load-status work-products-load-status--compact" aria-live="polite">
-        {hint}
-      </span>
-    );
-  }
   return (
     <div
       className="work-products-empty work-products-empty--loading"

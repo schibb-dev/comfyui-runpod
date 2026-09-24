@@ -1,10 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { mergeStillTagWorkProducts } from "./stillTagWorkProduct";
+import { includeStillTagWorkProducts, mergeStillTagWorkProducts } from "./stillTagWorkProduct";
 import type { WorkProductItem } from "./types";
 
 function job(partial: Partial<WorkProductItem> & { job_key: string }): WorkProductItem {
   return partial as WorkProductItem;
 }
+
+describe("includeStillTagWorkProducts", () => {
+  it("hides still-tag jobs unless the quick filter is on", () => {
+    const items = [
+      job({ job_key: "still_tag_1", work_kind: "still_tag" }),
+      job({ job_key: "hourly__a" }),
+    ];
+    expect(includeStillTagWorkProducts(items, false).map((it) => it.job_key)).toEqual(["hourly__a"]);
+    expect(includeStillTagWorkProducts(items, true).map((it) => it.job_key)).toEqual([
+      "still_tag_1",
+      "hourly__a",
+    ]);
+  });
+});
 
 describe("mergeStillTagWorkProducts", () => {
   it("strips still-tag rows from the factory list until stubs arrive", () => {

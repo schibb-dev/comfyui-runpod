@@ -243,9 +243,41 @@ export function ComfyLiveMetricsBar({
   );
 }
 
+/** Image that swaps to ``fallback`` on error instead of showing a broken icon. */
+export function PreviewSafeImg({
+  src,
+  alt = "",
+  className,
+  fallback,
+}: {
+  src: string;
+  alt?: string;
+  className?: string;
+  fallback: React.ReactNode;
+}) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    setFailed(false);
+  }, [src]);
+  if (!src || failed) return <>{fallback}</>;
+  return (
+    <img
+      className={className}
+      src={src}
+      alt={alt}
+      loading="lazy"
+      decoding="async"
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
 /**
  * Live Comfy latent/VHS preview for a running prompt_id — shared by Workbench and Queue.
  * Pass showMetrics={false} when ComfyLiveMetricsBar is rendered in the row header.
+ *
+ * Never mounts a broken ``<img>``: still frames are preloaded off-DOM and only
+ * revealed after ``onload``. Until then a fixed-size placeholder holds layout.
  */
 export function ComfyLivePreview({
   promptId,
@@ -259,8 +291,9 @@ export function ComfyLivePreview({
   showMetrics?: boolean;
 }) {
   const [bust, setBust] = useState(() => Date.now());
-  const [hasFrame, setHasFrame] = useState(false);
-  const [imgFailed, setImgFailed] = useState(false);
+  /** URL of the last successfully loaded still (null = show placeholder). */
+  const [stillSrc, setStillSrc] = useState<string | null>(null);
+  const [canvasReady, setCanvasReady] = useState(false);
   const { status, nowTick } = useComfyLiveStatus(promptId);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const frameUrlsRef = useRef<Map<number, string>>(new Map());
@@ -269,23 +302,51 @@ export function ComfyLivePreview({
   const lastFetchRef = useRef(0);
 
   useEffect(() => {
+    setStillSrc(null);
+    setCanvasReady(false);
+  }, [promptId]);
+
+  useEffect(() => {
     if (status?.has_preview) {
-      setHasFrame(true);
-      setImgFailed(false);
       setBust(Date.now());
     }
   }, [status?.has_preview, status?.updated_at]);
 
-  // While running, periodically re-bust the still preview so a 204/race doesn't stick forever.
+  // While running, periodically re-bust so a 204/race doesn't stick forever.
   useEffect(() => {
     const running = status?.status === "running" || (status?.value != null && status?.finished_at == null);
     if (!running) return;
     const id = window.setInterval(() => {
       if (document.hidden) return;
       setBust(Date.now());
-    }, hasFrame && !imgFailed ? 2500 : 900);
+    }, stillSrc ? 2500 : 900);
     return () => window.clearInterval(id);
-  }, [status?.status, status?.value, status?.finished_at, hasFrame, imgFailed, promptId]);
+  }, [status?.status, status?.value, status?.finished_at, stillSrc, promptId]);
+
+  const animate = (status?.frames_count || 0) >= 2;
+
+  // Preload still frames off-DOM; only commit src after a successful load.
+  useEffect(() => {
+    if (animate) return;
+    let cancelled = false;
+    const url = comfyLivePreviewUrl(promptId, bust);
+    const img = new Image();
+    img.decoding = "async";
+    img.onload = () => {
+      if (cancelled) return;
+      if (img.naturalWidth < 1 || img.naturalHeight < 1) return;
+      setStillSrc(url);
+    };
+    img.onerror = () => {
+      /* keep prior stillSrc if any; placeholder stays until a good frame lands */
+    };
+    img.src = url;
+    return () => {
+      cancelled = true;
+      img.onload = null;
+      img.onerror = null;
+    };
+  }, [promptId, bust, animate]);
 
   useEffect(() => {
     let cancelled = false;
@@ -306,8 +367,6 @@ export function ComfyLivePreview({
         const img = new Image();
         img.src = url;
         frameImgsRef.current.set(idx, img);
-        setHasFrame(true);
-        setImgFailed(false);
       } catch {
         /* ignore */
       }
@@ -338,16 +397,12 @@ export function ComfyLivePreview({
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
-    const rate = status?.vhs_rate && status.vhs_rate > 0 ? status.vhs_rate : 8;
-    const length = Math.max(status?.vhs_length || 0, status?.frames_count || 0);
-    if (length < 2 && (status?.frames_count || 0) < 2) {
-      if (animRef.current != null) {
-        cancelAnimationFrame(animRef.current);
-        animRef.current = null;
-      }
+    if (!canvas || !animate) {
+      setCanvasReady(false);
       return;
     }
+    const rate = status?.vhs_rate && status.vhs_rate > 0 ? status.vhs_rate : 8;
+    const length = Math.max(status?.vhs_length || 0, status?.frames_count || 0);
 
     let cancelled = false;
     const start = performance.now();
@@ -376,6 +431,7 @@ export function ComfyLivePreview({
           const ctx = canvas.getContext("2d");
           if (ctx) {
             ctx.drawImage(img, 0, 0);
+            setCanvasReady(true);
           }
         }
       }
@@ -402,10 +458,11 @@ export function ComfyLivePreview({
       if (animRef.current != null) cancelAnimationFrame(animRef.current);
       animRef.current = null;
     };
-  }, [status?.vhs_rate, status?.vhs_length, status?.frames_count]);
+  }, [animate, status?.vhs_rate, status?.vhs_length, status?.frames_count]);
 
-  const animate = (status?.frames_count || 0) >= 2;
-  const showStill = !animate && (hasFrame || Boolean(status?.has_preview));
+  const showStill = !animate && Boolean(stillSrc);
+  const showCanvas = animate;
+  const showPlaceholder = !showStill && !canvasReady;
 
   return (
     <div className={["work-product-live", className].filter(Boolean).join(" ")}>
@@ -415,25 +472,20 @@ export function ComfyLivePreview({
         </div>
       ) : null}
       <div className="work-product-live__frame">
-        {animate ? (
-          <canvas className="work-product-live__img work-product-live__canvas" ref={canvasRef} />
-        ) : showStill ? (
-          <img
-            className="work-product-live__img"
-            src={comfyLivePreviewUrl(promptId, bust)}
-            alt={`Live preview ${promptId}`}
-            onLoad={() => {
-              setHasFrame(true);
-              setImgFailed(false);
-            }}
-            onError={() => {
-              setImgFailed(true);
-              setHasFrame(false);
-            }}
+        {showPlaceholder ? (
+          <div className="work-product-live__placeholder" aria-hidden={showStill || canvasReady}>
+            <span className="work-product-live__placeholder-label">Waiting for latent preview…</span>
+          </div>
+        ) : null}
+        {showCanvas ? (
+          <canvas
+            className={`work-product-live__img work-product-live__canvas${canvasReady ? "" : " is-pending"}`}
+            ref={canvasRef}
           />
-        ) : (
-          <div className="work-product-viewer__empty work-product-live__waiting">Waiting for latent preview…</div>
-        )}
+        ) : null}
+        {showStill ? (
+          <img className="work-product-live__img" src={stillSrc!} alt={`Live preview ${promptId}`} />
+        ) : null}
         <span className="work-product-live__badge" title={promptId}>
           live
         </span>

@@ -61,6 +61,7 @@ import type {
   QueueLedgerControlAction,
   QueueLedgerEvent,
   QueueLedgerEntry,
+  QueueLedgerOpsStatus,
   QueueLedgerStatus,
   WorkProductPromptProfile,
 } from "./types";
@@ -473,16 +474,28 @@ function QueueCompactCard({
   active?: boolean;
   onOpen: () => void;
 }) {
+  const [thumbFailed, setThumbFailed] = React.useState(false);
+  React.useEffect(() => {
+    setThumbFailed(false);
+  }, [thumb]);
+  const showThumb = Boolean(thumb) && !thumbFailed;
   return (
     <button
       type="button"
       className={`queue-monitor__compact queue-monitor__compact--${statusVisual}${active ? " is-active" : ""}`}
       onClick={onOpen}
     >
-      {thumb ? (
-        <img className="queue-monitor__compact-thumb" src={thumb} alt="" loading="lazy" decoding="async" />
+      {showThumb ? (
+        <img
+          className="queue-monitor__compact-thumb"
+          src={thumb!}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          onError={() => setThumbFailed(true)}
+        />
       ) : (
-        <div className="queue-monitor__compact-thumb queue-monitor__compact-thumb--empty" />
+        <div className="queue-monitor__compact-thumb queue-monitor__compact-thumb--empty" aria-hidden />
       )}
       <span className="queue-monitor__compact-body">
         <span className={`queue-monitor__compact-status queue-monitor__compact-status--${statusVisual}`}>
@@ -1508,15 +1521,58 @@ function FeederPill({
   onLabel,
   offLabel,
   unknownLabel,
+  warn,
+  title,
 }: {
   on: boolean | null | undefined;
   onLabel: string;
   offLabel: string;
   unknownLabel: string;
+  warn?: boolean;
+  title?: string;
 }) {
-  const cls = on === true ? " queue-ledger__pill--on" : on === false ? " queue-ledger__pill--off" : "";
-  const label = on === true ? onLabel : on === false ? offLabel : unknownLabel;
-  return <span className={`queue-ledger__pill${cls}`}>{label}</span>;
+  const cls = warn
+    ? "queue-ledger__pill--warn"
+    : on === true
+      ? "queue-ledger__pill--on"
+      : on === false
+        ? "queue-ledger__pill--off"
+        : "";
+  const label = warn ? offLabel : on === true ? onLabel : on === false ? offLabel : unknownLabel;
+  return (
+    <span className={`queue-ledger__pill${cls}`} title={title || undefined}>
+      {label}
+    </span>
+  );
+}
+
+function suspendStatusLabel(ops: QueueLedgerOpsStatus | null | undefined): {
+  active: boolean;
+  label: string;
+  title: string;
+} {
+  const suspend = ops?.suspend;
+  const gpuPause = ops?.gpu_pause || ops?.hourly?.gpu_pause || suspend?.gpu_pause;
+  const reasons = Array.isArray(suspend?.reasons) ? suspend.reasons : [];
+  const parts: string[] = [];
+  if (suspend?.ledger_paused || reasons.includes("ledger")) parts.push("ledger parked");
+  if (gpuPause?.active) {
+    const by = gpuPause.paused_by || "still_tag";
+    const restore = gpuPause.restore_enabled ? "will restore on" : "will restore off";
+    parts.push(`${by} GPU pause (${restore})`);
+  } else if (reasons.includes("hourlies_disabled") || ops?.hourly?.enabled === false) {
+    parts.push("hourlies disabled");
+  }
+  if (reasons.includes("drain_stopped")) parts.push("drain stopped");
+  if (reasons.includes("watch_stopped")) parts.push("watch-queue stopped");
+  if (!parts.length) {
+    return { active: false, label: "Not suspended", title: "Comfy feeders and hourlies are live" };
+  }
+  return {
+    active: true,
+    label: `Suspended · ${parts.join(" · ")}`,
+    title: parts.join("; "),
+  };
 }
 
 function QueueLedgerPanel({
@@ -1541,6 +1597,8 @@ function QueueLedgerPanel({
   const entries = Array.isArray(status?.entries) ? status.entries : [];
   const ops = status?.ops;
   const hourlyOn = ops?.hourly?.enabled;
+  const gpuPause = ops?.gpu_pause || ops?.hourly?.gpu_pause;
+  const hourlyPausedByGpu = Boolean(gpuPause?.active);
   const drainOn = ops?.drain?.active;
   const watchOn = ops?.watch_queue?.running;
   const comfyRun = ops?.comfy?.running;
@@ -1549,6 +1607,7 @@ function QueueLedgerPanel({
   const comfyBackoff = comfyHealthIsBackoff(comfyHealth);
   const lastParkAt = ops?.ledger?.last_park_at;
   const lastParkAdded = ops?.ledger?.last_park?.added;
+  const suspendInfo = suspendStatusLabel(ops);
   const stats = status?.stats;
   const statsParts: string[] = [];
   if (stats) {
@@ -1570,7 +1629,13 @@ function QueueLedgerPanel({
           <h2 className="queue-monitor-log__title">Queue ledger</h2>
           <div className="queue-monitor-log__meta">
             <span className={`queue-ledger__pill${paused ? " queue-ledger__pill--paused" : ""}`}>
-              {paused ? "Paused" : "Live"}
+              {paused ? "Ledger paused" : "Ledger live"}
+            </span>
+            <span
+              className={`queue-ledger__pill${suspendInfo.active ? " queue-ledger__pill--warn" : "queue-ledger__pill--on"}`}
+              title={suspendInfo.title}
+            >
+              {suspendInfo.label}
             </span>
             <span className="mono">
               {entries.length} entries · known {knownCount}
@@ -1583,6 +1648,11 @@ function QueueLedgerPanel({
             empties Comfy, and stops drain + watch-queue. Clear ledger forgets that snapshot — it does not empty Comfy
             waiting.
           </p>
+          {suspendInfo.active ? (
+            <p className="queue-ledger__suspend-banner" role="status">
+              {suspendInfo.label}
+            </p>
+          ) : null}
           <div className="queue-ledger__ops" aria-label="Comfy feeders">
             <div className="queue-ledger__status" aria-live="polite">
               <FeederPill
@@ -1591,7 +1661,26 @@ function QueueLedgerPanel({
                 offLabel={`Comfy ${typeof comfyRun === "number" ? comfyRun : "—"} run · ${typeof comfyPend === "number" ? comfyPend : "—"} wait`}
                 unknownLabel="Comfy —"
               />
-              <FeederPill on={hourlyOn} onLabel="Hourlies on" offLabel="Hourlies off" unknownLabel="Hourlies —" />
+              <FeederPill
+                on={hourlyPausedByGpu ? false : hourlyOn}
+                warn={hourlyPausedByGpu}
+                onLabel="Hourlies on"
+                offLabel={
+                  hourlyPausedByGpu
+                    ? `Hourlies paused (${gpuPause?.paused_by || "still_tag"})`
+                    : "Hourlies off"
+                }
+                unknownLabel="Hourlies —"
+                title={
+                  hourlyPausedByGpu
+                    ? `GPU pause by ${gpuPause?.paused_by || "still_tag"}; restores to ${
+                        gpuPause?.restore_enabled ? "on" : "off"
+                      }`
+                    : hourlyOn
+                      ? "hourly-schedule.json enabled"
+                      : "hourly-schedule.json disabled"
+                }
+              />
               <FeederPill on={drainOn} onLabel="Drain on" offLabel="Drain off" unknownLabel="Drain —" />
               {comfyBackoff ? (
                 <span
@@ -1788,6 +1877,28 @@ function QueueLedgerPanel({
 const QUEUE_HISTORY_FIRST = 16;
 const QUEUE_HISTORY_FULL = 80;
 const QUEUE_AUTOPLAY_KEY = "queue_monitor_video_autoplay";
+const QUEUE_LAYOUT_KEY = "queue-monitor-layout";
+
+type QueueLayout = "split" | "stack";
+
+function loadQueueLayout(): QueueLayout {
+  try {
+    const raw = localStorage.getItem(QUEUE_LAYOUT_KEY);
+    if (raw === "split" || raw === "stack") return raw;
+  } catch {
+    /* ignore */
+  }
+  if (typeof window !== "undefined" && window.matchMedia("(max-width: 1100px)").matches) return "stack";
+  return "split";
+}
+
+function persistQueueLayout(layout: QueueLayout) {
+  try {
+    localStorage.setItem(QUEUE_LAYOUT_KEY, layout);
+  } catch {
+    /* ignore */
+  }
+}
 const QUEUE_LOOP_KEY = "queue_monitor_loop_playback";
 
 function loadQueueAutoplay(): boolean {
@@ -1852,6 +1963,7 @@ export function ComfyQueueMonitorApp() {
   const [queueActionMsg, setQueueActionMsg] = useState("");
   const [movingPromptId, setMovingPromptId] = useState<string | null>(null);
   const [pageTab, setPageTab] = useState<"queue" | "ledger">("queue");
+  const [queueLayout, setQueueLayout] = useState<QueueLayout>(loadQueueLayout);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [liveSortMode, setLiveSortMode] = useState<QueueLiveSortMode>("queue_index");
   const [historySortMode, setHistorySortMode] = useState<QueueHistorySortMode>("newest");
@@ -2378,7 +2490,7 @@ export function ComfyQueueMonitorApp() {
     <PipelineScreen
       className={
         "queue-monitor" +
-        (phone ? " queue-monitor--phone" : "") +
+        (phone ? " queue-monitor--phone" : ` queue-monitor--layout-${queueLayout}`) +
         (phone && phoneSwipe ? " queue-monitor--phone-swipe" : "")
       }
     >
@@ -2497,6 +2609,33 @@ export function ComfyQueueMonitorApp() {
                 onAutoplay={setVideoAutoplayFromUser}
                 onLoop={setLoopPlaybackFromUser}
               />
+              <div className="discovery-preview-layout-switch" role="group" aria-label="Queue layout">
+                <span className="discovery-preview-layout-switch__label">Layout</span>
+                <div className="segmented">
+                  <button
+                    type="button"
+                    className={queueLayout === "split" ? "is-active" : undefined}
+                    aria-pressed={queueLayout === "split"}
+                    onClick={() => {
+                      setQueueLayout("split");
+                      persistQueueLayout("split");
+                    }}
+                  >
+                    Side by side
+                  </button>
+                  <button
+                    type="button"
+                    className={queueLayout === "stack" ? "is-active" : undefined}
+                    aria-pressed={queueLayout === "stack"}
+                    onClick={() => {
+                      setQueueLayout("stack");
+                      persistQueueLayout("stack");
+                    }}
+                  >
+                    Stacked
+                  </button>
+                </div>
+              </div>
             </div>
           )}
           {error ? <div className="queue-monitor-error">{error}</div> : null}

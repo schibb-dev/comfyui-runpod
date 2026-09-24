@@ -80,8 +80,8 @@ describe("workProductListSort", () => {
         { status: "editing", job_key: "hourly__held" },
       ]),
     ).toEqual([
-      { key: "hourly", count: 2, label: "hourly", tone: "hourly" },
-      { key: "custom", count: 1, label: "custom", tone: "custom" },
+      { key: "hourly", count: 2, label: "hrly", title: "hourly", tone: "hourly" },
+      { key: "custom", count: 1, label: "cust", title: "custom", tone: "custom" },
     ]);
     expect(isHourlyWorkProduct({ is_hourly: false, job_key: "hourly__nope" })).toBe(false);
     expect(isHourlyWorkProduct({ job_key: "hourly__yes" })).toBe(true);

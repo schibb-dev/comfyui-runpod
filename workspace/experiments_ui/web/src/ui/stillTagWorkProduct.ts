@@ -27,6 +27,15 @@ export function stillTagBelongsOnWorkbench(item: Pick<WorkProductItem, "status" 
   return s === "running" || s === "complete" || s === "done" || s === "error" || s === "failed";
 }
 
+/** Still-tag batches stay out of the job list until the quick filter turns them on. */
+export function includeStillTagWorkProducts(
+  items: WorkProductItem[],
+  showStillTags: boolean,
+): WorkProductItem[] {
+  if (showStillTags) return items;
+  return items.filter((it) => !isStillTagWorkProduct(it));
+}
+
 /** Factory jobs first; still-tag stubs prepend when the lazy query arrives. */
 export function mergeStillTagWorkProducts(
   jobs: WorkProductItem[],
