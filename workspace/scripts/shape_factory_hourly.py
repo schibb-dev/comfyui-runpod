@@ -718,6 +718,12 @@ def _source_promotion_mult(
     # Popularity is for other families' older keepers; BounceDance should stay new-image first.
     if not _prefers_fresh_stills(family):
         mult *= _still_popularity_mult(path)
+    try:
+        from shape_factory_hourly_bins import still_bin_bias_mult
+
+        mult *= float(still_bin_bias_mult(path, family=family) or 1.0)
+    except Exception:
+        pass
     return mult
 
 

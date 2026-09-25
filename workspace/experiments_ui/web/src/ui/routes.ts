@@ -98,6 +98,12 @@ export const APP_ROUTES: AppRoute[] = [
           if (path === "/discovery/factory-map/hourlies" || path === "/discovery/factory-map/hourly") {
             return false;
           }
+          if (
+            path === "/discovery/factory-map/hourlies/curate" ||
+            path === "/discovery/factory-map/hourly/curate"
+          ) {
+            return false;
+          }
           return true;
         },
       },
@@ -109,6 +115,19 @@ export const APP_ROUTES: AppRoute[] = [
         match: (p) => {
           const path = (p || "/").replace(/\/+$/, "") || "/";
           return path === "/discovery/factory-map/hourlies" || path === "/discovery/factory-map/hourly";
+        },
+      },
+      {
+        id: "factory-steering",
+        label: "Steering",
+        path: "/discovery/factory-map/hourlies/curate",
+        hint: "Sort seed stills into the hourly feed bin",
+        match: (p) => {
+          const path = (p || "/").replace(/\/+$/, "") || "/";
+          return (
+            path === "/discovery/factory-map/hourlies/curate" ||
+            path === "/discovery/factory-map/hourly/curate"
+          );
         },
       },
     ],
@@ -239,6 +258,7 @@ export const NAV_CHILD_CANDIDATES: Array<{
     children: [
       { id: "factory-families", label: "Families", note: "wired — factory-map index + family/pipeline detail" },
       { id: "factory-hourlies", label: "Hourlies", note: "wired — /discovery/factory-map/hourlies" },
+      { id: "factory-steering", label: "Steering", note: "wired — /discovery/factory-map/hourlies/curate" },
       { id: "factory-pipelines", label: "Pipelines", note: "candidate — pipeline detail already exists under factory-map" },
     ],
   },

@@ -1,6 +1,7 @@
 export type FactoryMapRoute =
   | { view: "index" }
   | { view: "hourlies" }
+  | { view: "hourlies_curate" }
   | { view: "family"; familySlug: string }
   | { view: "pipeline"; pipelineId: string };
 
@@ -23,14 +24,22 @@ const HOURLIES_SLUGS = new Set(["hourlies", "hourly"]);
 export function parseFactoryMapRoute(pathname: string = window.location.pathname): FactoryMapRoute {
   const path = (pathname || "/").replace(/\/+$/, "") || "/";
   if (path === PREFIX) return { view: "index" };
+  if (path === `${PREFIX}/hourlies/curate` || path === `${PREFIX}/hourly/curate`) {
+    return { view: "hourlies_curate" };
+  }
   if (path === `${PREFIX}/hourlies` || path === `${PREFIX}/hourly`) return { view: "hourlies" };
   if (path.startsWith(PIPELINE_PREFIX)) {
     const pipelineId = decodeURIComponent(path.slice(PIPELINE_PREFIX.length)).split("/")[0]?.trim();
     if (pipelineId) return { view: "pipeline", pipelineId };
   }
   if (path.startsWith(`${PREFIX}/`)) {
-    const slug = decodeURIComponent(path.slice(PREFIX.length + 1)).split("/")[0]?.trim();
-    if (slug && HOURLIES_SLUGS.has(slug)) return { view: "hourlies" };
+    const rest = path.slice(PREFIX.length + 1);
+    const parts = rest.split("/").filter(Boolean);
+    const slug = parts[0] ? decodeURIComponent(parts[0]).trim() : "";
+    if (slug && HOURLIES_SLUGS.has(slug)) {
+      if (parts[1] && decodeURIComponent(parts[1]).trim() === "curate") return { view: "hourlies_curate" };
+      return { view: "hourlies" };
+    }
     if (slug && slug !== "pipeline") return { view: "family", familySlug: slug };
   }
   return { view: "index" };
@@ -56,6 +65,20 @@ export function parseFactoryMapFocus(hash: string = typeof window !== "undefined
 
 export function factoryMapHourliesHref(): string {
   return `${PREFIX}/hourlies`;
+}
+
+export function factoryMapHourliesCurateHref(opts?: { binId?: string }): string {
+  const base = `${PREFIX}/hourlies/curate`;
+  const binId = String(opts?.binId || "").trim();
+  if (!binId || binId === "hourly-seed-stills") return base;
+  return `${base}?bin=${encodeURIComponent(binId)}`;
+}
+
+/** Steer-bin id for a family (`hourly-seed-stills` for the default Kneel bare pool). */
+export function hourlySteerBinIdForFamily(familySlug: string): string {
+  const fam = String(familySlug || "").trim();
+  if (!fam || fam === "X-KNEEL-FB9-bare") return "hourly-seed-stills";
+  return `steer-still-${fam}`;
 }
 
 export function factoryMapIndexHref(opts?: { focus?: "curation"; familySlug?: string }): string {

@@ -2392,8 +2392,14 @@ def _discovery_asset_remove_purge_payload(cfg: ServerConfig, body: Dict[str, Any
     return payload
 
 
-def _home_fresh_outputs(cfg: ServerConfig, limit: int = 12) -> List[Dict[str, Any]]:
-    """Newest indexed outputs (og+wip), enriched with live URLs + rating rollup."""
+# Home Fresh strips: ~12 thumbs per page × 3 pages client-side.
+_HOME_FRESH_PAGE_SIZE = 12
+_HOME_FRESH_PAGE_COUNT = 3
+_HOME_FRESH_LIMIT = _HOME_FRESH_PAGE_SIZE * _HOME_FRESH_PAGE_COUNT
+
+
+def _home_fresh_outputs(cfg: ServerConfig, limit: int = _HOME_FRESH_LIMIT) -> List[Dict[str, Any]]:
+    """Newest indexed outputs (og+wip), enriched with live URLs + rating rollup + job refs."""
     idx_path = cfg.discovery_index_path
     idx = _load_discovery_index_disk(idx_path) if idx_path.exists() else None
     items = idx.get("items") if isinstance(idx, dict) else None
@@ -2416,72 +2422,327 @@ def _home_fresh_outputs(cfg: ServerConfig, limit: int = 12) -> List[Dict[str, An
 
     ratings_doc = _discovery_load_ratings_index(cfg)
     appetite_doc = _discovery_load_appetite_index(cfg)
-    out: List[Dict[str, Any]] = []
-    for it in rows:
-        row: Dict[str, Any] = {
-            "group_id": it.get("group_id"),
-            "relpath": it.get("relpath"),
-            "name": it.get("name"),
-            "library": it.get("library"),
-            "mtime": it.get("mtime"),
-            "url": _live(it.get("relpath")) or "",
-            "video_url": _live(it.get("video_relpath")),
-            "thumb_url": _live(it.get("thumb_relpath")),
-        }
-        if ratings_doc or appetite_doc:
+
+    # Optional job_key join for Workbench / Queue deep-links (cheap SQLite lookups).
+    job_con = None
+    data_root = None
+    find_job_by_key = None
+    strip_run_spec_suffix = None
+    try:
+        d = _workspace_scripts_dir()
+        if d.is_dir() and str(d) not in sys.path:
+            sys.path.insert(0, str(d))
+        from shape_factory_job_output_index import (  # type: ignore
+            default_job_output_index_path,
+            job_key_guess_from_output_basename,
+            lookup_by_relpath,
+            open_job_output_index,
+        )
+        from shape_factory import find_job_by_key as _find_job_by_key  # type: ignore
+        from shape_factory_queue import resolve_shape_factory_data_root  # type: ignore
+        from graph_run_specs import strip_run_spec_suffix as _strip_run_spec_suffix  # type: ignore
+
+        find_job_by_key = _find_job_by_key
+        strip_run_spec_suffix = _strip_run_spec_suffix
+        data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+        og_root = _prefer_flat_library_dir(cfg.output_root, "og")
+        index_path = default_job_output_index_path(og_root)
+        if index_path.is_file():
+            job_con = open_job_output_index(index_path)
+    except Exception:
+        job_con = None
+
+    def _attach_job_refs(row: Dict[str, Any], rel: str) -> None:
+        jk = ""
+        fam = ""
+        prompt_id = ""
+        if job_con is not None:
             try:
-                r = _discovery_ratings_for_item(ratings_doc, it, appetite_doc)
-                if r:
-                    row["ratings"] = r
+                meta = lookup_by_relpath(job_con, rel, output_root=cfg.output_root)
+            except Exception:
+                meta = None
+            if isinstance(meta, dict):
+                jk = str(meta.get("job_key") or "").strip()
+                fam = str(meta.get("family_slug") or "").strip()
+        if not jk and find_job_by_key is not None and data_root is not None:
+            stem = Path(str(rel).replace("\\", "/")).stem
+            guesses: List[str] = []
+            if strip_run_spec_suffix is not None:
+                stripped = str(strip_run_spec_suffix(stem) or "").strip()
+                if stripped:
+                    guesses.append(stripped)
+            base_guess = job_key_guess_from_output_basename(stem)
+            if base_guess:
+                guesses.append(base_guess)
+            guesses.append(stem)
+            seen: set = set()
+            for guess in guesses:
+                g = str(guess or "").strip()
+                if not g or g in seen:
+                    continue
+                seen.add(g)
+                try:
+                    _path, job = find_job_by_key(data_root, g)
+                except Exception:
+                    continue
+                if isinstance(job, dict):
+                    jk = str(job.get("job_key") or g).strip()
+                    fam = fam or str(job.get("family_slug") or job.get("family") or "").strip()
+                    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+                    prompt_id = str(submit.get("prompt_id") or "").strip()
+                    break
+        if jk:
+            row["job_key"] = jk
+        if fam:
+            row["family_slug"] = fam
+        if prompt_id:
+            row["prompt_id"] = prompt_id
+
+    out: List[Dict[str, Any]] = []
+    try:
+        for it in rows:
+            rel = it.get("relpath")
+            row: Dict[str, Any] = {
+                "group_id": it.get("group_id"),
+                "relpath": rel,
+                "name": it.get("name"),
+                "library": it.get("library"),
+                "mtime": it.get("mtime"),
+                "url": _live(rel) or "",
+                "video_url": _live(it.get("video_relpath")),
+                "thumb_url": _live(it.get("thumb_relpath")),
+            }
+            if ratings_doc or appetite_doc:
+                try:
+                    r = _discovery_ratings_for_item(ratings_doc, it, appetite_doc)
+                    if r:
+                        row["ratings"] = r
+                except Exception:
+                    pass
+            if isinstance(rel, str) and rel.strip():
+                try:
+                    _attach_job_refs(row, rel)
+                except Exception:
+                    pass
+            out.append(row)
+    finally:
+        if job_con is not None:
+            try:
+                job_con.close()
             except Exception:
                 pass
-        out.append(row)
     return out
 
 
-def _home_summary_payload(cfg: ServerConfig) -> Dict[str, Any]:
-    """
-    GET /api/home/summary — resume-the-loop aggregation for the Home dashboard.
+# Home dashboard sections that the UI can lazy-load independently.
+_HOME_SUMMARY_SECTIONS = frozenset(
+    {"rating", "fresh_outputs", "fresh_inputs", "new_clips", "attention", "hourly"}
+)
 
-    Best-effort: each section is independently guarded so one slow/failing source
-    never blanks the whole page. Reuses the same helpers the dedicated screens use
-    (rating sampler, discovery index, shape-factory map) so numbers stay consistent.
-    """
-    payload: Dict[str, Any] = {"ok": True}
 
-    # Rating loop — latest cached sampler session (no refresh: fast, reads last session).
+def _home_fresh_inputs(cfg: ServerConfig, limit: int = _HOME_FRESH_LIMIT) -> List[Dict[str, Any]]:
+    """Newest Comfy input stills from the input-curation catalog."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_input_curation import list_catalog_stills  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    lim = max(1, min(48, int(limit)))
+    payload = list_catalog_stills(
+        data_root=data_root,
+        q="",
+        limit=lim,
+        offset=0,
+        scan=False,
+        tag="",
+        appetite="",
+        sort="newest",
+        appetite_doc=None,
+    )
+    out: List[Dict[str, Any]] = []
+    for it in payload.get("items") or []:
+        if not isinstance(it, dict):
+            continue
+        rel = str(it.get("relpath") or "").strip().replace("\\", "/")
+        if not rel:
+            continue
+        quoted = "/files/" + urllib.parse.quote(rel, safe="/")
+        out.append(
+            {
+                "content_id": it.get("content_id"),
+                "relpath": rel,
+                "basename": it.get("basename") or Path(rel).name,
+                "url": quoted,
+                "thumb_url": quoted,
+                "mtime": it.get("mtime"),
+                "tags": it.get("effective_tags") or it.get("tags") or [],
+            }
+        )
+    return out
+
+
+def _home_new_clips(cfg: ServerConfig, limit: int = _HOME_FRESH_LIMIT) -> List[Dict[str, Any]]:
+    """Newest clip bookmarks across parents (Clips library recent sort)."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_clips import connect_clips, list_clips_library  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    lim = max(1, min(48, int(limit)))
+    reg = _clips_registry_path(cfg)
+    con = connect_clips(reg)
     try:
-        sampler = _discovery_rating_sampler_payload(cfg, {})
-        stats = sampler.get("stats") if isinstance(sampler, dict) else None
-        stats = stats if isinstance(stats, dict) else {}
-        payload["rating"] = {
-            "ok": bool(sampler.get("ok")) if isinstance(sampler, dict) else False,
-            "session_path": sampler.get("session_path") if isinstance(sampler, dict) else None,
-            "unrated_videos": stats.get("unrated_videos"),
-            "scored_pool": stats.get("scored_pool"),
-            "selected": stats.get("selected"),
-            "buckets": {
-                "easy_down": stats.get("bucket_easy_down"),
-                "easy_up": stats.get("bucket_easy_up"),
-                "middle": stats.get("bucket_middle"),
-            },
-            "vision_recommended": stats.get("vision_recommended"),
+        payload = list_clips_library(
+            con,
+            limit=lim,
+            offset=0,
+            sort="recent",
+            jobs_root=None,
+            ratings_doc=None,
+        )
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
+    out: List[Dict[str, Any]] = []
+    for it in payload.get("clips") or []:
+        if not isinstance(it, dict):
+            continue
+        cid = str(it.get("clip_id") or "").strip()
+        if not cid:
+            continue
+        rel = str(it.get("media_relpath") or "").strip().replace("\\", "/")
+        media_url = ""
+        thumb_url = ""
+        if rel:
+            media_url = "/files/" + urllib.parse.quote(rel, safe="/")
+            if re.search(r"\.(mp4|webm|mov|mkv)$", rel, re.I):
+                thumb_url = "/files/" + urllib.parse.quote(
+                    re.sub(r"\.(mp4|webm|mov|mkv)$", ".png", rel, flags=re.I),
+                    safe="/",
+                )
+            else:
+                thumb_url = media_url
+        out.append(
+            {
+                "clip_id": cid,
+                "parent_content_id": it.get("parent_content_id"),
+                "label": it.get("label"),
+                "origin": it.get("origin"),
+                "mark_in_s": it.get("mark_in_s"),
+                "mark_out_s": it.get("mark_out_s"),
+                "duration_s": it.get("duration_s"),
+                "media_relpath": rel or None,
+                "media_basename": it.get("media_basename") or (Path(rel).name if rel else None),
+                "media_url": media_url or None,
+                "thumb_url": thumb_url or None,
+                "is_default": bool(it.get("is_default")),
+                "created_at": it.get("created_at"),
+                "updated_at": it.get("updated_at"),
+            }
+        )
+    return out
+
+
+def _home_parse_sections(raw: Optional[str]) -> Optional[frozenset]:
+    """Parse ?sections=rating,hourly — None means all sections."""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text or text.lower() in ("*", "all"):
+        return None
+    wanted = {p.strip() for p in text.split(",") if p.strip()}
+    unknown = wanted - _HOME_SUMMARY_SECTIONS
+    if unknown:
+        raise ValueError(f"unknown home sections: {', '.join(sorted(unknown))}")
+    return frozenset(wanted) if wanted else None
+
+
+def _home_section_rating(cfg: ServerConfig) -> Dict[str, Any]:
+    """Latest cached rating-sampler session (fast; no refresh)."""
+    sampler = _discovery_rating_sampler_payload(cfg, {})
+    stats = sampler.get("stats") if isinstance(sampler, dict) else None
+    stats = stats if isinstance(stats, dict) else {}
+    return {
+        "ok": bool(sampler.get("ok")) if isinstance(sampler, dict) else False,
+        "session_path": sampler.get("session_path") if isinstance(sampler, dict) else None,
+        "unrated_videos": stats.get("unrated_videos"),
+        "scored_pool": stats.get("scored_pool"),
+        "selected": stats.get("selected"),
+        "buckets": {
+            "easy_down": stats.get("bucket_easy_down"),
+            "easy_up": stats.get("bucket_easy_up"),
+            "middle": stats.get("bucket_middle"),
+        },
+        "vision_recommended": stats.get("vision_recommended"),
+    }
+
+
+def _home_section_attention(cfg: ServerConfig) -> Dict[str, Any]:
+    """
+    Needs-attention chips for Home.
+
+    Missing-source family chips stay on the Factory map (full map build pegs the GIL).
+    Library health is cheap: already computed alongside the discovery index.
+    Quarantine registry is a small JSON read — surface blocked templates here.
+    """
+    attention: Dict[str, Any] = {"missing_sources_total": 0, "families": []}
+    try:
+        health = _load_discovery_health_disk(_discovery_index_health_path(cfg.discovery_index_path))
+        if isinstance(health, dict):
+            attention["library_health"] = health.get("summary")
+    except Exception:
+        pass
+    try:
+        d = _workspace_scripts_dir()
+        if d.is_dir() and str(d) not in sys.path:
+            sys.path.insert(0, str(d))
+        from shape_factory import (  # type: ignore
+            list_quarantine_entries,
+            load_effective_quarantine_registry,
+        )
+        from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+        data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+        registry, path = load_effective_quarantine_registry(data_root=data_root)
+        entries = list_quarantine_entries(registry, status="quarantined")
+        slim: List[Dict[str, Any]] = []
+        for e in entries[:24]:
+            if not isinstance(e, dict):
+                continue
+            reasons = e.get("reasons") if isinstance(e.get("reasons"), list) else []
+            slim.append(
+                {
+                    "workflow_name": e.get("workflow_name"),
+                    "workflow_path": e.get("workflow_path"),
+                    "category": e.get("category"),
+                    "reasons": [str(r) for r in reasons[:4] if r],
+                    "validated_at": e.get("validated_at"),
+                }
+            )
+        attention["quarantine"] = {
+            "count": len(entries),
+            "quarantine_path": str(path),
+            "entries": slim,
         }
     except Exception as e:
-        payload["rating"] = {"ok": False, "error": str(e)}
+        attention["quarantine"] = {"count": 0, "entries": [], "error": str(e)}
+    return attention
 
-    # Fresh outputs to triage.
-    try:
-        payload["fresh_outputs"] = _home_fresh_outputs(cfg, limit=12)
-    except Exception as e:
-        payload["fresh_outputs"] = []
-        payload.setdefault("errors", {})["fresh_outputs"] = str(e)
 
-    # Needs attention + job counts — never build the full factory map here (that used to
-    # peg the GIL for ~60s and make every other API look hung). Status counts are a cheap
-    # job.json scan; missing-source chips stay on the Factory screen.
-    attention: Dict[str, Any] = {"missing_sources_total": 0, "families": []}
-    hourly: Optional[Dict[str, Any]] = None
+def _home_section_hourly(cfg: ServerConfig) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    """
+    Hourlies teaser + optional job status counts.
+
+    Returns (hourly_out, jobs_or_none). Phase label only — deep planner holds the GIL ~50s.
+    """
+    hourly_out: Dict[str, Any] = {}
+    jobs: Optional[Dict[str, Any]] = None
     try:
         d = _workspace_scripts_dir()
         if d.is_dir() and str(d) not in sys.path:
@@ -2501,44 +2762,199 @@ def _home_summary_payload(cfg: ServerConfig) -> Dict[str, Any]:
         for j in all_jobs:
             st = _job_status(j)
             counts[st] = counts.get(st, 0) + 1
-        payload["jobs"] = {"total": len(all_jobs), "summary": counts}
+        jobs = {"total": len(all_jobs), "summary": counts}
         hourly_state = _load_hourly_state(data_root)
-        # Phase label only. The full planner (predict_hourly_gex2) holds the GIL
-        # for ~50s and makes every other API look hung.
         next_sample = _predict_next_hourly_sample(
             hourly_state, None, data_root=data_root, deep=False
         )
-        hourly = {
-            "state_path": str(data_root / "shape_factory" / "hourly-state.json"),
-            "state": hourly_state,
-            "next_sample": next_sample,
-        }
+        hourly_out["next_sample"] = next_sample
+        hourly_out["state_path"] = str(data_root / "shape_factory" / "hourly-state.json")
     except Exception as e:
-        payload.setdefault("errors", {})["shape_factory_jobs"] = str(e)
-
-    # Library health issues (cheap: already computed alongside the index).
-    try:
-        health = _load_discovery_health_disk(_discovery_index_health_path(cfg.discovery_index_path))
-        if isinstance(health, dict):
-            attention["library_health"] = health.get("summary")
-    except Exception:
-        pass
-
-    payload["attention"] = attention
-    hourly_out: Dict[str, Any] = {}
-    if hourly is not None:
-        hourly_out = {
-            "next_sample": hourly.get("next_sample"),
-            "state_path": hourly.get("state_path"),
-        }
+        hourly_out.setdefault("error", str(e))
     try:
         sch = _hourly_schedule_payload(cfg)
         if sch.get("ok"):
             hourly_out["schedule"] = sch
     except Exception as e:
-        payload.setdefault("errors", {})["hourly_schedule"] = str(e)
-    if hourly_out:
-        payload["hourly"] = hourly_out
+        hourly_out.setdefault("schedule_error", str(e))
+    try:
+        d = _workspace_scripts_dir()
+        if d.is_dir() and str(d) not in sys.path:
+            sys.path.insert(0, str(d))
+        from shape_factory_hourly_bins import home_steer_teaser  # type: ignore
+        from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+        data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+        hourly_out["steer"] = home_steer_teaser(data_root=data_root)
+    except Exception as e:
+        hourly_out.setdefault("steer_error", str(e))
+    return hourly_out, jobs
+
+
+def _hourly_bin_candidates_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -> Dict[str, Any]:
+    """GET /api/shape-factory/hourly-bins/candidates — phone curation deck."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_hourly_bins import (  # type: ignore
+        DEFAULT_BIN_ID,
+        ensure_steer_bins_for_source_stills,
+        list_bin_candidates,
+        list_steer_targets,
+    )
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    ensure_steer_bins_for_source_stills(data_root=data_root)
+    bin_id = str((q.get("bin_id") or [DEFAULT_BIN_ID])[0] or DEFAULT_BIN_ID).strip() or DEFAULT_BIN_ID
+    try:
+        limit = int((q.get("limit") or ["48"])[0] or 48)
+    except Exception:
+        limit = 48
+    appetite_doc = None
+    try:
+        appetite_doc = _discovery_load_appetite_index(cfg)
+    except Exception:
+        appetite_doc = None
+    payload = list_bin_candidates(
+        bin_id=bin_id,
+        data_root=data_root,
+        limit=limit,
+        appetite_doc=appetite_doc if isinstance(appetite_doc, dict) else None,
+    )
+    if isinstance(payload, dict):
+        payload["targets"] = list_steer_targets(data_root=data_root)
+    return payload
+
+
+def _hourly_bin_summary_payload(q: Dict[str, List[str]]) -> Dict[str, Any]:
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_hourly_bins import (  # type: ignore
+        DEFAULT_BIN_ID,
+        bin_summary,
+        home_steer_teaser,
+        list_steer_targets,
+    )
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    targets = list_steer_targets(data_root=data_root)
+    bin_id = str((q.get("bin_id") or [DEFAULT_BIN_ID])[0] or DEFAULT_BIN_ID).strip() or DEFAULT_BIN_ID
+    known = {str(t.get("id") or "").strip() for t in targets}
+    if bin_id not in known and targets:
+        bin_id = str(targets[0].get("id") or DEFAULT_BIN_ID)
+    return {
+        "ok": True,
+        "bin_id": bin_id,
+        "bin": bin_summary(bin_id, data_root=data_root),
+        "targets": targets,
+        "steer": home_steer_teaser(data_root=data_root),
+    }
+
+
+def _hourly_bin_set_item_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /api/shape-factory/hourly-bins/item — keep|later|out|pin a still."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_hourly_bins import DEFAULT_BIN_ID, set_bin_item  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    bin_id = str(body.get("bin_id") or DEFAULT_BIN_ID).strip() or DEFAULT_BIN_ID
+    content_id = str(body.get("content_id") or "").strip()
+    relpath = str(body.get("relpath") or "").strip()
+    status = str(body.get("status") or body.get("action") or "").strip()
+    surface = str(body.get("surface") or "api").strip() or "api"
+    return set_bin_item(
+        bin_id=bin_id,
+        content_id=content_id,
+        status=status,
+        relpath=relpath,
+        surface=surface,
+        data_root=data_root,
+    )
+
+
+def _hourly_bin_clear_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /api/shape-factory/hourly-bins/clear — wipe Keep/Pin/Later/Out for a bin."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_hourly_bins import DEFAULT_BIN_ID, clear_bin_steering  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    bin_id = str(body.get("bin_id") or DEFAULT_BIN_ID).strip() or DEFAULT_BIN_ID
+    surface = str(body.get("surface") or "api").strip() or "api"
+    return clear_bin_steering(bin_id=bin_id, surface=surface, data_root=data_root)
+
+
+def _home_summary_payload(
+    cfg: ServerConfig,
+    *,
+    sections: Optional[frozenset] = None,
+) -> Dict[str, Any]:
+    """
+    GET /api/home/summary — resume-the-loop aggregation for the Home dashboard.
+
+    Best-effort: each section is independently guarded so one slow/failing source
+    never blanks the whole page. Pass ``sections`` to return only those keys so
+    the UI can lazy-load cards in parallel.
+    """
+    wanted = set(sections) if sections is not None else set(_HOME_SUMMARY_SECTIONS)
+    payload: Dict[str, Any] = {"ok": True, "sections": sorted(wanted)}
+
+    if "rating" in wanted:
+        try:
+            payload["rating"] = _home_section_rating(cfg)
+        except Exception as e:
+            payload["rating"] = {"ok": False, "error": str(e)}
+
+    if "fresh_outputs" in wanted:
+        try:
+            payload["fresh_outputs"] = _home_fresh_outputs(cfg, limit=_HOME_FRESH_LIMIT)
+        except Exception as e:
+            payload["fresh_outputs"] = []
+            payload.setdefault("errors", {})["fresh_outputs"] = str(e)
+
+    if "fresh_inputs" in wanted:
+        try:
+            payload["fresh_inputs"] = _home_fresh_inputs(cfg, limit=_HOME_FRESH_LIMIT)
+        except Exception as e:
+            payload["fresh_inputs"] = []
+            payload.setdefault("errors", {})["fresh_inputs"] = str(e)
+
+    if "new_clips" in wanted:
+        try:
+            payload["new_clips"] = _home_new_clips(cfg, limit=_HOME_FRESH_LIMIT)
+        except Exception as e:
+            payload["new_clips"] = []
+            payload.setdefault("errors", {})["new_clips"] = str(e)
+
+    if "attention" in wanted:
+        try:
+            payload["attention"] = _home_section_attention(cfg)
+        except Exception as e:
+            payload["attention"] = {"missing_sources_total": 0, "families": [], "error": str(e)}
+            payload.setdefault("errors", {})["attention"] = str(e)
+
+    if "hourly" in wanted:
+        try:
+            hourly_out, jobs = _home_section_hourly(cfg)
+            if hourly_out:
+                payload["hourly"] = hourly_out
+            if jobs is not None:
+                payload["jobs"] = jobs
+            if hourly_out.get("error"):
+                payload.setdefault("errors", {})["shape_factory_jobs"] = str(hourly_out["error"])
+            if hourly_out.get("schedule_error"):
+                payload.setdefault("errors", {})["hourly_schedule"] = str(hourly_out["schedule_error"])
+        except Exception as e:
+            payload.setdefault("errors", {})["hourly"] = str(e)
+
     return payload
 
 
@@ -13649,6 +14065,21 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return _json_response(self, 500, {"ok": False, "error": "hourly_backlogs_failed", "detail": str(e)})
 
+        if path == "/api/shape-factory/hourly-bins":
+            try:
+                payload = _hourly_bin_summary_payload(q)
+                return _json_response(self, 200, payload)
+            except Exception as e:
+                return _json_response(self, 500, {"ok": False, "error": "hourly_bins_failed", "detail": str(e)})
+
+        if path == "/api/shape-factory/hourly-bins/candidates":
+            try:
+                payload = _hourly_bin_candidates_payload(cfg, q)
+                code = 200 if payload.get("ok") else 500
+                return _json_response(self, code, payload)
+            except Exception as e:
+                return _json_response(self, 500, {"ok": False, "error": "hourly_bin_candidates_failed", "detail": str(e)})
+
         if path == "/api/shape-factory/quarantine":
             try:
                 payload = _shape_factory_quarantine_list_payload(q)
@@ -14128,6 +14559,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_shape_factory_input_curation_stills_tag_drain_post()
         if path == "/api/shape-factory/hourly-schedule":
             return self._handle_shape_factory_hourly_schedule_post()
+        if path == "/api/shape-factory/hourly-bins/item":
+            return self._handle_shape_factory_hourly_bin_item_post()
+        if path == "/api/shape-factory/hourly-bins/clear":
+            return self._handle_shape_factory_hourly_bin_clear_post()
         if path == "/api/shape-factory/pool-member-standing":
             return self._handle_shape_factory_pool_member_standing_post()
         if path == "/api/vision/tag-judgment":
@@ -14164,6 +14599,36 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, code, payload)
         except Exception as e:
             return _json_response(self, 500, {"ok": False, "error": "hourly_schedule_set_failed", "detail": str(e)})
+
+    def _handle_shape_factory_hourly_bin_item_post(self) -> None:
+        """POST /api/shape-factory/hourly-bins/item — curate a still into the hourly seed bin."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _hourly_bin_set_item_payload(cfg, body if isinstance(body, dict) else {})
+            return _json_response(self, 200, payload)
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except KeyError as e:
+            return _json_response(self, 404, {"ok": False, "error": "not_found", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "hourly_bin_item_failed", "detail": str(e)})
+
+    def _handle_shape_factory_hourly_bin_clear_post(self) -> None:
+        """POST /api/shape-factory/hourly-bins/clear — wipe steering for one bin."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _hourly_bin_clear_payload(cfg, body if isinstance(body, dict) else {})
+            return _json_response(self, 200, payload)
+        except KeyError as e:
+            return _json_response(self, 404, {"ok": False, "error": "not_found", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "hourly_bin_clear_failed", "detail": str(e)})
 
     def _handle_shape_factory_quarantine_release_post(self) -> None:
         """POST /api/shape-factory/quarantine/release — human review release."""
@@ -15844,10 +16309,15 @@ class Handler(BaseHTTPRequestHandler):
         return _json_response(self, status, payload)
 
     def _handle_home_summary_get(self, q: Dict[str, List[str]]) -> None:
-        """GET /api/home/summary — resume-the-loop dashboard aggregation."""
+        """GET /api/home/summary[?sections=rating,fresh_outputs,attention,hourly]."""
         cfg = self.server.cfg
+        raw_sections = str((q.get("sections") or [""])[0] or "").strip() or None
         try:
-            payload = _home_summary_payload(cfg)
+            sections = _home_parse_sections(raw_sections)
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_sections", "detail": str(e)})
+        try:
+            payload = _home_summary_payload(cfg, sections=sections)
         except Exception as e:
             return _json_response(self, 500, {"ok": False, "error": "home_summary_failed", "detail": str(e)})
         return _json_response(self, 200, payload)

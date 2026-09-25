@@ -7,7 +7,8 @@ redirect here.
 **Product models (not duplicated):**
 [`CLIP_SELECTION_MODEL.md`](./CLIP_SELECTION_MODEL.md) (★ / Use / retire),
 [`DISPOSITION_BUCKET_MODEL.md`](./DISPOSITION_BUCKET_MODEL.md) (rate → dispose → Advance),
-[`WORKFLOW_INTENT.md`](./WORKFLOW_INTENT.md) (station vocab / pipelines).
+[`WORKFLOW_INTENT.md`](./WORKFLOW_INTENT.md) (station vocab / pipelines),
+[`HOURLY_GUIDE_PIPELINE_PLAN.md`](./HOURLY_GUIDE_PIPELINE_PLAN.md) (asset→pool→bin→workflow pipes; Phase 0/1 seed-stills bin).
 
 Ops crumbs also live in [`.data/WORKFLOW_FACTORY_NEXT.md`](../.data/WORKFLOW_FACTORY_NEXT.md).
 

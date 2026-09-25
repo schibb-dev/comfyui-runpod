@@ -108,8 +108,11 @@ import type {
   RecordBatchTriageCompleteResponse,
   DispositionCatalogMarker,
   HomeSummaryResponse,
+  HomeSummarySection,
   HourlyChainBacklogsResponse,
   HourlyExplore,
+  HourlyBinCandidatesResponse,
+  HourlyBinItemResponse,
   HourlyScheduleStatus,
   HourlySubmitMode,
   QueueLedgerControlAction,
@@ -147,8 +150,12 @@ function experimentsUiStaleApiHint(httpStatus?: number): string {
   );
 }
 
-export async function fetchHomeSummary(): Promise<HomeSummaryResponse> {
-  const r = await fetch("/api/home/summary");
+export async function fetchHomeSummary(opts?: {
+  sections?: HomeSummarySection[];
+}): Promise<HomeSummaryResponse> {
+  const sections = (opts?.sections || []).map((s) => String(s || "").trim()).filter(Boolean);
+  const qs = sections.length ? `?sections=${encodeURIComponent(sections.join(","))}` : "";
+  const r = await fetch(`/api/home/summary${qs}`);
   const j = (await r.json().catch(() => ({}))) as HomeSummaryResponse & { error?: string; detail?: string };
   if (!r.ok) {
     const detail = [j.error, j.detail].filter(Boolean).join(": ");
@@ -164,6 +171,66 @@ export async function fetchHourlyChainBacklogs(): Promise<HourlyChainBacklogsRes
     const detail = [j.error, j.detail].filter(Boolean).join(": ");
     throw new Error(
       `GET /api/shape-factory/hourly-backlogs failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function fetchHourlyBinCandidates(opts?: {
+  binId?: string | null;
+  limit?: number;
+}): Promise<HourlyBinCandidatesResponse> {
+  const sp = new URLSearchParams();
+  if (opts?.binId?.trim()) sp.set("bin_id", opts.binId.trim());
+  if (opts?.limit != null) sp.set("limit", String(opts.limit));
+  const qs = sp.toString();
+  const r = await fetch(`/api/shape-factory/hourly-bins/candidates${qs ? `?${qs}` : ""}`);
+  const j = (await r.json().catch(() => ({}))) as HourlyBinCandidatesResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error].filter(Boolean).join(": ");
+    throw new Error(
+      `GET /api/shape-factory/hourly-bins/candidates failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function setHourlyBinItem(body: {
+  bin_id?: string;
+  content_id: string;
+  relpath: string;
+  status: "keep" | "later" | "out" | "pin" | "clear" | "new" | string;
+  surface?: string;
+}): Promise<HourlyBinItemResponse> {
+  const r = await fetch("/api/shape-factory/hourly-bins/item", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as HourlyBinItemResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST /api/shape-factory/hourly-bins/item failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function clearHourlyBinSteering(body: {
+  bin_id?: string;
+  surface?: string;
+}): Promise<HourlyBinClearResponse> {
+  const r = await fetch("/api/shape-factory/hourly-bins/clear", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as HourlyBinClearResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST /api/shape-factory/hourly-bins/clear failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
     );
   }
   return j;

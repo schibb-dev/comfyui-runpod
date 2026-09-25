@@ -39,10 +39,12 @@ import {
 } from "./factoryMapPairs";
 import {
   factoryMapFamilyHref,
+  factoryMapHourliesCurateHref,
   factoryMapHourliesHref,
   factoryMapIndexHref,
   factoryMapPipelineHref,
   familySlugFromShapePath,
+  hourlySteerBinIdForFamily,
   parseFactoryMapFocus,
   parseFactoryMapRoute,
   pipelineFamilySlugs,
@@ -60,7 +62,10 @@ import {
 } from "./factoryMapSummaries";
 import { queryKeys } from "./queryKeys";
 import { HourlyFactoryPanel } from "./HourlyFactoryPanel";
+import { HourlySeedBinCurateApp } from "./HourlySeedBinCurateApp";
+import { useRegisterPhoneOverflow, type PhoneOverflowItem } from "./phoneChrome";
 import { peekFamiliesBootstrap } from "./shapeFactorySessionCache";
+import { useIsPhone } from "./viewport";
 import type {
   ShapeFactoryMapDepositPool,
   ShapeFactoryMapFamily,
@@ -76,6 +81,8 @@ import type {
 } from "./types";
 
 const POLL_MS = 30_000;
+
+const EMPTY_PHONE_OVERFLOW: PhoneOverflowItem[] = [];
 
 /** Only poll the heavy full map while queue/submit work is in flight. */
 function shapeFactoryMapHasActiveWork(data: ShapeFactoryMapResponse | undefined): boolean {
@@ -214,12 +221,38 @@ function FactoryMapShell({
   onRefresh: () => void;
   children: React.ReactNode;
 }) {
+  const isPhone = useIsPhone();
   const isFamily = route.view === "family";
   const isPipeline = route.view === "pipeline";
-  const isHourlies = route.view === "hourlies";
+  const isHourlies = route.view === "hourlies" || route.view === "hourlies_curate";
+  // Curate screen registers its own overflow; avoid overwriting / clearing it.
+  const phoneOverflow = useMemo(
+    () =>
+      isPhone && route.view !== "hourlies_curate"
+        ? [
+            {
+              id: "factory-refresh",
+              label: loading || refreshing ? "Refreshing…" : "Refresh",
+              hint: statusLine || "Reload factory map cache",
+              onSelect: () => {
+                if (!loading && !refreshing) onRefresh();
+              },
+            },
+          ]
+        : EMPTY_PHONE_OVERFLOW,
+    [isPhone, route.view, loading, refreshing, onRefresh, statusLine],
+  );
+  useRegisterPhoneOverflow(phoneOverflow);
+
   return (
     <div className="discovery-screen">
-      <div className="panel discovery-panel discovery-factory-map-root">
+      <div
+        className={
+          "panel discovery-panel discovery-factory-map-root" +
+          (route.view === "hourlies_curate" ? " discovery-factory-map-root--curate" : "")
+        }
+      >
+        {route.view === "hourlies_curate" ? null : (
         <header className="discovery-factory-map-header">
           <div>
             <h1 className="title" style={{ margin: 0, fontSize: "1.15rem" }}>
@@ -250,28 +283,33 @@ function FactoryMapShell({
               </nav>
             ) : null}
           </div>
-          <button
-            type="button"
-            className="page-header__refresh"
-            disabled={loading || refreshing}
-            onClick={onRefresh}
-            aria-busy={loading || refreshing}
-          >
-            <span
-              className={`page-header__spinner${
-                loading || refreshing ? " page-header__spinner--active" : ""
-              }`}
-              aria-hidden="true"
-            />
-            Refresh
-            {loading || refreshing ? (
-              <span className="page-header__sr-only">{loading ? "Loading" : "Updating"}</span>
-            ) : null}
-          </button>
+          {!isPhone ? (
+            <button
+              type="button"
+              className="page-header__refresh"
+              disabled={loading || refreshing}
+              onClick={onRefresh}
+              aria-busy={loading || refreshing}
+            >
+              <span
+                className={`page-header__spinner${
+                  loading || refreshing ? " page-header__spinner--active" : ""
+                }`}
+                aria-hidden="true"
+              />
+              Refresh
+              {loading || refreshing ? (
+                <span className="page-header__sr-only">{loading ? "Loading" : "Updating"}</span>
+              ) : null}
+            </button>
+          ) : null}
         </header>
-        <div className="sfmap-cache-status" role="status" aria-live="polite">
-          {statusLine}
-        </div>
+        )}
+        {!isPhone && route.view !== "hourlies_curate" ? (
+          <div className="sfmap-cache-status" role="status" aria-live="polite">
+            {statusLine}
+          </div>
+        ) : null}
         {children}
       </div>
     </div>
@@ -1459,10 +1497,17 @@ function FamilyCurateSourcesStrip({ familySlug }: { familySlug: string }) {
         <div className="sfmap-family-curate__links">
           <a href="/discovery/stills">Browse stills</a>
           <a href={factoryMapIndexHref({ focus: "curation", familySlug })}>Open full Input curation</a>
+          <a
+            href={factoryMapHourliesCurateHref({ binId: hourlySteerBinIdForFamily(familySlug) })}
+            title="Per-family Keep/Pin/Later/Out soft-bias for hourly seed picks"
+          >
+            Steer seed stills →
+          </a>
         </div>
       </div>
       <p className="factory-muted sfmap-family-curate__hint">
         Attach collections so hourly / map merges them with this family&apos;s pool stills.
+        Steer is 1:1 per family — a still that fits one prompt can fight another.
       </p>
       {stateQuery.isLoading ? <p className="factory-muted">Loading collections…</p> : null}
       {stateQuery.error instanceof Error ? <p className="factory-error">{stateQuery.error.message}</p> : null}
@@ -3349,7 +3394,9 @@ export function DiscoveryFactoryMapApp() {
       ) : null}
 
       <div className="discovery-factory-map-scroll">
-        {route.view === "hourlies" ? (
+        {route.view === "hourlies_curate" ? (
+          <HourlySeedBinCurateApp />
+        ) : route.view === "hourlies" ? (
           <>
             <FactoryMapSectionNav active="hourlies" />
             <HourlyFactoryPanel refreshToken={hourlyTick} />

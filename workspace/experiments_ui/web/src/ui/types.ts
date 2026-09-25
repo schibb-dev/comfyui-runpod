@@ -2132,6 +2132,14 @@ export type ShapeFactoryQuarantineReleaseResponse = {
 };
 
 /** GET /api/home/summary — resume-the-loop dashboard aggregation. */
+export type HomeSummarySection =
+  | "rating"
+  | "fresh_outputs"
+  | "fresh_inputs"
+  | "new_clips"
+  | "attention"
+  | "hourly";
+
 export type HomeSummaryFreshOutput = {
   group_id?: string | null;
   relpath?: string;
@@ -2141,13 +2149,44 @@ export type HomeSummaryFreshOutput = {
   url?: string;
   video_url?: string | null;
   thumb_url?: string | null;
+  job_key?: string | null;
+  family_slug?: string | null;
+  prompt_id?: string | null;
   ratings?: DiscoveryLibraryItem["ratings"];
+};
+
+export type HomeSummaryFreshInput = {
+  content_id?: string | null;
+  relpath?: string;
+  basename?: string;
+  url?: string;
+  thumb_url?: string;
+  mtime?: number;
+  tags?: string[];
+};
+
+export type HomeSummaryNewClip = {
+  clip_id: string;
+  parent_content_id?: string | null;
+  label?: string | null;
+  origin?: string | null;
+  mark_in_s?: number | null;
+  mark_out_s?: number | null;
+  duration_s?: number | null;
+  media_relpath?: string | null;
+  media_basename?: string | null;
+  media_url?: string | null;
+  thumb_url?: string | null;
+  is_default?: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
 };
 
 export type HomeSummaryResponse = {
   ok: boolean;
   error?: string;
   detail?: string;
+  sections?: HomeSummarySection[] | string[];
   errors?: Record<string, string>;
   rating?: {
     ok?: boolean;
@@ -2160,9 +2199,12 @@ export type HomeSummaryResponse = {
     vision_recommended?: number | null;
   };
   fresh_outputs?: HomeSummaryFreshOutput[];
+  fresh_inputs?: HomeSummaryFreshInput[];
+  new_clips?: HomeSummaryNewClip[];
   attention?: {
     missing_sources_total?: number;
     families?: Array<{ family_slug?: string; missing?: number }>;
+    error?: string;
     library_health?: {
       missing_primary?: number;
       missing_video?: number;
@@ -2171,6 +2213,18 @@ export type HomeSummaryResponse = {
       orphan_thumb?: number;
       removed_since_previous_index?: number;
     } | null;
+    quarantine?: {
+      count?: number;
+      quarantine_path?: string;
+      error?: string;
+      entries?: Array<{
+        workflow_name?: string | null;
+        workflow_path?: string | null;
+        category?: string | null;
+        reasons?: string[];
+        validated_at?: string | null;
+      }>;
+    };
   };
   jobs?: {
     total?: number | null;
@@ -2188,7 +2242,101 @@ export type HomeSummaryResponse = {
     } | null;
     state_path?: string;
     schedule?: HourlyScheduleStatus;
+    error?: string;
+    schedule_error?: string;
+    steer?: HourlySteerTeaser | null;
+    steer_error?: string;
   };
+};
+
+/** Home / Factory steer strip for the hourly seed-stills bin (Phase 1). */
+export type HourlyBinCounts = {
+  keep?: number;
+  later?: number;
+  out?: number;
+  pin?: number;
+};
+
+export type HourlyBinSummary = {
+  id?: string;
+  label?: string;
+  curation_mode?: string;
+  pool_family?: string;
+  pool_slot?: string;
+  workflow_families?: string[];
+  counts?: HourlyBinCounts;
+  item_count?: number;
+  feed_count?: number;
+  updated_at?: string;
+};
+
+export type HourlySteerTeaser = {
+  ok?: boolean;
+  bin?: HourlyBinSummary;
+  targets?: HourlyBinSummary[];
+  target_count?: number;
+  pipe?: {
+    id?: string;
+    label?: string;
+    curation_mode?: string;
+    bin_id?: string;
+  } | null;
+  curate_href?: string;
+  hint?: string;
+};
+
+export type HourlyBinCandidate = {
+  content_id: string;
+  relpath: string;
+  basename?: string;
+  url?: string;
+  thumb_url?: string;
+  appetite?: string | null;
+  appetite_facet?: string | null;
+  mtime?: number | null;
+  prior_status?: string | null;
+};
+
+export type HourlyBinCandidatesResponse = {
+  ok?: boolean;
+  error?: string;
+  bin_id?: string;
+  bin?: HourlyBinSummary;
+  pipe?: HourlySteerTeaser["pipe"];
+  items?: HourlyBinCandidate[];
+  count?: number;
+  targets?: HourlyBinSummary[];
+};
+
+export type HourlyBinsListResponse = {
+  ok?: boolean;
+  error?: string;
+  bin_id?: string;
+  bin?: HourlyBinSummary;
+  targets?: HourlyBinSummary[];
+  steer?: HourlySteerTeaser;
+};
+
+export type HourlyBinItemResponse = {
+  ok?: boolean;
+  error?: string;
+  detail?: string;
+  item?: {
+    content_id?: string;
+    relpath?: string;
+    status?: string;
+    updated_at?: string;
+  };
+  bin?: HourlyBinSummary;
+};
+
+export type HourlyBinClearResponse = {
+  ok?: boolean;
+  error?: string;
+  detail?: string;
+  bin_id?: string;
+  cleared?: number;
+  bin?: HourlyBinSummary;
 };
 
 export type HourlyChainPendingPreview = {

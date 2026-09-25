@@ -19,8 +19,10 @@ import type {
   HourlyExploreKind,
   HourlyExploreStrength,
   HourlyScheduleStatus,
+  HourlySteerTeaser,
   HourlySubmitMode,
 } from "./types";
+import { factoryMapHourliesCurateHref } from "./factoryMapRoute";
 
 function fileUrlFromRel(relpath?: string | null): string {
   if (!relpath) return "";
@@ -970,6 +972,15 @@ export function HourlyFactoryPanel({ refreshToken = 0 }: { refreshToken?: number
   return (
     <div className="sfmap-hourlies">
       {error ? <p className="home-hourly-controls__err">{error}</p> : null}
+      <p className="home-hourly-controls__steer" style={{ marginBottom: 10 }}>
+        <a className="home-cta" href={factoryMapHourliesCurateHref()}>
+          Steer seed stills →
+        </a>
+        <span className="factory-muted">
+          {" "}
+          · per-family bins that soft-bias hourly still picks
+        </span>
+      </p>
       <Panel
         title="Schedule"
         hint="Cadence, Comfy caps, and the hourly pending floor"
@@ -1002,11 +1013,16 @@ export function HourlyFactoryPanel({ refreshToken = 0 }: { refreshToken?: number
 export function HourlyHomeTeaser({
   schedule,
   nextSample,
+  steer,
 }: {
   schedule?: HourlyScheduleStatus | null;
   nextSample?: HourlyNextSampleInfo;
+  steer?: HourlySteerTeaser | null;
 }) {
   const sch = schedule?.schedule;
+  const bin = steer?.bin;
+  const feed = Number(bin?.feed_count || 0);
+  const left = Number(bin?.counts?.later || 0);
   return (
     <>
       {hourlySuspendBanner(schedule).active ? (
@@ -1030,6 +1046,19 @@ export function HourlyHomeTeaser({
           : ""}
       </p>
       <HourlyNextSample sample={nextSample} />
+      <p className="home-hourly-controls__steer">
+        <a className="home-cta" href={steer?.curate_href || factoryMapHourliesCurateHref()}>
+          Steer seed stills →
+        </a>
+        <span className="factory-muted">
+          {" "}
+          {steer?.hint
+            ? `· ${steer.hint}`
+            : bin
+              ? `· bin feed ${feed}${left ? ` · later ${left}` : ""}`
+              : "· sort stills that hourlies should prefer"}
+        </span>
+      </p>
     </>
   );
 }
