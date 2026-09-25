@@ -66,6 +66,17 @@ export default defineConfig(({ mode }) => {
   }
   /** When the dev server is opened via Tailscale/LAN IP, HMR must use that host (not localhost). */
   const hmrPublicHost = (process.env.EXPERIMENTS_UI_HMR_HOST || env.EXPERIMENTS_UI_HMR_HOST || "").trim();
+  /** Behind Tailscale Serve HTTPS → Vite: set EXPERIMENTS_UI_HMR_PROTOCOL=wss and CLIENT_PORT=443. */
+  const hmrProtocolRaw = (process.env.EXPERIMENTS_UI_HMR_PROTOCOL || env.EXPERIMENTS_UI_HMR_PROTOCOL || "")
+    .trim()
+    .toLowerCase();
+  const hmrProtocol = hmrProtocolRaw === "wss" || hmrProtocolRaw === "ws" ? hmrProtocolRaw : "";
+  const hmrClientPortRaw = (
+    process.env.EXPERIMENTS_UI_HMR_CLIENT_PORT ||
+    env.EXPERIMENTS_UI_HMR_CLIENT_PORT ||
+    ""
+  ).trim();
+  const hmrClientPort = Number.parseInt(hmrClientPortRaw, 10);
   const devPort =
     Number.parseInt((env.EXPERIMENTS_UI_DEV_PORT || process.env.EXPERIMENTS_UI_DEV_PORT || "").trim(), 10) || 5178;
   const localOnlyRaw = (process.env.EXPERIMENTS_UI_DEV_LOCALONLY || "").trim().toLowerCase();
@@ -107,8 +118,8 @@ export default defineConfig(({ mode }) => {
             hmr: {
               host: hmrPublicHost,
               port: devPort,
-              clientPort: devPort,
-              protocol: "ws",
+              clientPort: Number.isFinite(hmrClientPort) && hmrClientPort > 0 ? hmrClientPort : devPort,
+              protocol: (hmrProtocol || "ws") as "ws" | "wss",
             },
           }
         : {}),

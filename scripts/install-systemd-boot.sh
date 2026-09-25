@@ -149,7 +149,8 @@ WorkingDirectory=$REPO_ROOT
 Environment="PATH=$VITE_SERVICE_PATH"
 # Non-interactive: skip .bashrc (fnm is often behind an interactive-only guard). Use absolute npm: $NPM_BIN
 # Port 5179 avoids clashing with manual \`npm run ui:dev:vite\` (default 5178).
-ExecStart=/bin/bash --noprofile --norc -lc "cd $QREPO && exec $QNPM run ui:dev:vite -- --no-open --port 5179"
+# --tailscale sets HMR host to Tailscale IP; when Serve points at Vite use MagicDNS + wss (drop-in override below).
+ExecStart=/bin/bash --noprofile --norc -lc "cd $QREPO && exec $QNPM run ui:dev:vite:tailscale -- --no-open --port 5179"
 # Wait (best-effort) for Experiments UI inside the container; do not block forever.
 ExecStartPre=/bin/bash -lc 'for i in \$(seq 1 90); do curl -fsS -m 2 http://127.0.0.1:8790/ >/dev/null 2>&1 && exit 0; sleep 2; done; exit 0'
 Restart=on-failure
