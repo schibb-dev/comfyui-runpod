@@ -850,10 +850,25 @@ def _apply_source_promotion(
                         clip_detail = cached
             star_mult = float(clip_detail.get("mult") or 1.0)
             clip_reason = str(clip_detail.get("reason") or "none")
-            combined = float(weight) * mult * star_mult
+            steer_mult = 1.0
+            try:
+                from shape_factory_hourly_video_steer import video_steer_bias_mult
+
+                steer_mult = float(
+                    video_steer_bias_mult(
+                        family=str(family or recipe.get("family") or "").strip(),
+                        clip_id=str(clip_detail.get("clip_id") or "").strip() or None,
+                        path=_recipe_source_path(recipe),
+                        data_root=Path(data_root) if data_root is not None else None,
+                    )
+                    or 1.0
+                )
+            except Exception:
+                steer_mult = 1.0
+            combined = float(weight) * mult * star_mult * steer_mult
             out.append(combined)
             if weight_meta is not None and i < len(weight_meta) and isinstance(weight_meta[i], dict):
-                if mult != 1.0 or star_mult != 1.0:
+                if mult != 1.0 or star_mult != 1.0 or steer_mult != 1.0:
                     weight_meta[i] = dict(weight_meta[i])
                     if mult != 1.0:
                         weight_meta[i]["source_promotion_mult"] = round(mult, 3)
@@ -865,6 +880,8 @@ def _apply_source_promotion(
                         cid = str(clip_detail.get("clip_id") or "").strip()
                         if cid:
                             weight_meta[i]["clip_seed_id"] = cid
+                    if steer_mult != 1.0:
+                        weight_meta[i]["video_steer_mult"] = round(steer_mult, 3)
     finally:
         if clips_con is not None:
             try:

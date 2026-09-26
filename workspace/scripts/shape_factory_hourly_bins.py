@@ -428,33 +428,47 @@ def clear_inherited_steer_clones(*, data_root: Optional[Path] = None, min_overla
 
 
 def list_steer_targets(*, data_root: Optional[Path] = None) -> List[Dict[str, Any]]:
-    """Steer-able bins (source_still), after ensuring one per still-pool family."""
+    """Steer-able bins (source_still + source_video), after ensuring 1:1 per pool family."""
     data_root = (data_root or default_data_root()).resolve()
     ensure_steer_bins_for_source_stills(data_root=data_root)
+    try:
+        from shape_factory_hourly_video_steer import ensure_steer_bins_for_source_videos
+
+        ensure_steer_bins_for_source_videos(data_root=data_root)
+    except Exception:
+        pass
     doc = load_bins_doc(data_root)
     bins = doc.get("bins") if isinstance(doc.get("bins"), dict) else {}
     out: List[Dict[str, Any]] = []
-    seen_families: set[str] = set()
+    # Key is (slot, pool_family) so still + video families can coexist.
+    seen: set[Tuple[str, str]] = set()
     for bid, row in bins.items():
         if not isinstance(row, dict):
             continue
         slot = str(row.get("pool_slot") or "").strip() or "source_still"
         kind = str(row.get("asset_kind") or "").strip() or "still"
-        if slot != "source_still" and kind != "still":
+        if slot not in {"source_still", "source_video"} and kind not in {
+            "still",
+            "clip",
+            "video",
+            "video_seed",
+        }:
             continue
+        if slot not in {"source_still", "source_video"}:
+            slot = "source_video" if kind in {"clip", "video", "video_seed"} else "source_still"
         pool_fam = str(row.get("pool_family") or "").strip()
-        # One target row per pool_family (skip duplicates).
-        if pool_fam and pool_fam in seen_families:
+        key = (slot, pool_fam or str(row.get("id") or bid))
+        if key in seen:
             continue
         try:
             summary = bin_summary(str(row.get("id") or bid), data_root=data_root)
         except Exception:
             continue
-        if pool_fam:
-            seen_families.add(pool_fam)
+        seen.add(key)
         out.append(summary)
     out.sort(
         key=lambda s: (
+            0 if str(s.get("pool_slot") or "") == "source_still" else 1,
             0 if str(s.get("id") or "") == DEFAULT_BIN_ID else 1,
             str(s.get("pool_family") or s.get("label") or s.get("id") or "").lower(),
         )
@@ -463,7 +477,7 @@ def list_steer_targets(*, data_root: Optional[Path] = None) -> List[Dict[str, An
 
 
 def resolve_bin_id_for_family(family: str, *, data_root: Optional[Path] = None) -> Optional[str]:
-    """Bin that steers this family (1:1 via pool_family), or None."""
+    """Still-steer bin for this family (1:1 via pool_family), or None."""
     fam = str(family or "").strip()
     if not fam:
         return None
@@ -475,8 +489,15 @@ def resolve_bin_id_for_family(family: str, *, data_root: Optional[Path] = None) 
     doc = load_bins_doc(data_root)
     bins = doc.get("bins") if isinstance(doc.get("bins"), dict) else {}
     for bid, row in bins.items():
-        if isinstance(row, dict) and str(row.get("pool_family") or "").strip() == fam:
-            return str(row.get("id") or bid)
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("pool_family") or "").strip() != fam:
+            continue
+        slot = str(row.get("pool_slot") or "").strip() or "source_still"
+        kind = str(row.get("asset_kind") or "").strip() or "still"
+        if slot == "source_video" or kind in {"clip", "video", "video_seed"}:
+            continue
+        return str(row.get("id") or bid)
     return _families_covered_by_bins(doc).get(fam)
 
 
@@ -490,12 +511,21 @@ def bin_summary(bin_id: str = DEFAULT_BIN_ID, *, data_root: Optional[Path] = Non
         st = str(it.get("status") or "").strip()
         if st in counts:
             counts[st] += 1
+    slot = str(row.get("pool_slot") or "").strip() or "source_still"
+    kind = str(row.get("asset_kind") or "").strip() or (
+        "clip" if slot == "source_video" else "still"
+    )
+    unit = str(row.get("curation_unit") or "").strip() or (
+        "auto" if slot == "source_video" else "still"
+    )
     return {
         "id": row.get("id"),
         "label": row.get("label"),
         "curation_mode": row.get("curation_mode"),
+        "curation_unit": unit,
+        "asset_kind": kind,
         "pool_family": row.get("pool_family"),
-        "pool_slot": row.get("pool_slot"),
+        "pool_slot": slot,
         "workflow_families": list(row.get("workflow_families") or []),
         "counts": counts,
         "item_count": sum(counts.values()),
@@ -520,13 +550,26 @@ def set_bin_item(
     relpath: str = "",
     surface: str = "api",
     data_root: Optional[Path] = None,
+    unit: str = "",
+    parent_content_id: str = "",
+    mark_in_s: Any = None,
+    mark_out_s: Any = None,
 ) -> Dict[str, Any]:
-    """Upsert a still into the bin (or clear it back to New) and append a ledger row.
+    """Upsert a still/clip unit into the bin (or clear it back to New) and append a ledger row.
 
-    ``status`` of ``clear`` / ``new`` removes the still from the bin so it is New again.
+    ``content_id`` may be 64-hex (still), ``clip_<32hex>`` (span), or ``whole:<id>``
+    (virtual whole-file). ``status`` of ``clear`` / ``new`` removes the item.
     """
-    cid = str(content_id or "").strip().lower()
-    if not cid or len(cid) != 64:
+    raw_cid = str(content_id or "").strip()
+    cid = raw_cid.lower()
+    try:
+        from shape_factory_hourly_video_steer import is_steer_item_id
+    except Exception:
+        is_steer_item_id = None  # type: ignore
+    if is_steer_item_id is not None:
+        if not is_steer_item_id(cid):
+            raise ValueError("content_id must be 64-hex, clip_* , or whole:*")
+    elif not cid or len(cid) != 64:
         raise ValueError("content_id must be 64-hex")
     st = str(status or "").strip().lower()
     clear = st in {"clear", "new", "unset", ""}
@@ -535,6 +578,15 @@ def set_bin_item(
     rel = str(relpath or "").strip().replace("\\", "/")
     if not clear and not rel:
         raise ValueError("relpath required")
+    unit_s = str(unit or "").strip().lower()
+    if not unit_s:
+        if cid.startswith("whole:"):
+            unit_s = "whole"
+        elif cid.startswith("clip_"):
+            unit_s = "span"
+        else:
+            unit_s = "still"
+    parent = str(parent_content_id or "").strip().lower()
     now = _utc_now()
     path = bins_path(data_root)
     found: Optional[Dict[str, Any]] = None
@@ -555,10 +607,14 @@ def set_bin_item(
         if not isinstance(items, list):
             items = []
             row["items"] = items
+
+        def _matches(it: Dict[str, Any]) -> bool:
+            return str(it.get("content_id") or "").lower() == cid
+
         if clear:
             kept: List[Dict[str, Any]] = []
             for it in items:
-                if isinstance(it, dict) and str(it.get("content_id") or "").lower() == cid:
+                if isinstance(it, dict) and _matches(it):
                     found = dict(it)
                     found["status"] = None
                     found["updated_at"] = now
@@ -570,7 +626,7 @@ def set_bin_item(
                 found = {"content_id": cid, "relpath": rel, "status": None, "updated_at": now}
         else:
             for it in items:
-                if isinstance(it, dict) and str(it.get("content_id") or "").lower() == cid:
+                if isinstance(it, dict) and _matches(it):
                     found = it
                     break
             if found is None:
@@ -580,6 +636,15 @@ def set_bin_item(
                 found["status"] = st
                 found["relpath"] = rel or found.get("relpath")
                 found["updated_at"] = now
+            if unit_s and unit_s != "still":
+                found["unit"] = unit_s
+                found["clip_id"] = cid
+            if parent:
+                found["parent_content_id"] = parent
+            if mark_in_s is not None:
+                found["mark_in_s"] = mark_in_s
+            if mark_out_s is not None:
+                found["mark_out_s"] = mark_out_s
         row["updated_at"] = now
         doc["updated_at"] = now
         _atomic_write_json(path, doc)
@@ -591,6 +656,7 @@ def set_bin_item(
         "relpath": rel or (found.get("relpath") if isinstance(found, dict) else "") or "",
         "action": action,
         "surface": str(surface or "api").strip() or "api",
+        "unit": unit_s,
     }
     _append_decision(decision, data_root=data_root)
     return {"ok": True, "item": found, "bin": bin_summary(bin_id, data_root=data_root), "decision": decision}
@@ -726,13 +792,26 @@ def list_bin_candidates(
     include_decided: bool = True,
 ) -> Dict[str, Any]:
     """
-    Candidate stills for phone curation.
+    Candidate stills (or video/clip units) for phone curation.
 
     Order is a **stable catalog newest** deck: Keep/Pin/Later/Out never move a
     still's position — ``prior_status`` is attached in place. (No status / appetite
     re-ranking until explicit sort controls exist.)
+    Video bins dispatch to ``list_video_bin_candidates`` (hybrid clip/whole deck).
     """
     data_root = (data_root or default_data_root()).resolve()
+    try:
+        row = get_bin(bin_id, data_root=data_root)
+        slot = str(row.get("pool_slot") or "").strip()
+        kind = str(row.get("asset_kind") or "").strip()
+        if slot == "source_video" or kind in {"clip", "video", "video_seed"}:
+            from shape_factory_hourly_video_steer import list_video_bin_candidates
+
+            return list_video_bin_candidates(
+                bin_id=bin_id, data_root=data_root, limit=limit
+            )
+    except Exception:
+        pass
     try:
         from shape_factory_input_curation import list_catalog_stills
     except Exception as e:
@@ -823,23 +902,35 @@ def list_bin_candidates(
 
 
 def home_steer_teaser(*, data_root: Optional[Path] = None) -> Dict[str, Any]:
-    """Compact Home / Hourlies strip payload for seed-still steering."""
+    """Compact Home / Hourlies strip payload for seed-still / seed-clip steering."""
     data_root = data_root or default_data_root()
     targets = list_steer_targets(data_root=data_root)
     summary = bin_summary(DEFAULT_BIN_ID, data_root=data_root)
     pipes = load_pipes_doc(data_root).get("pipes") or []
     pipe = next((p for p in pipes if isinstance(p, dict) and p.get("bin_id") == DEFAULT_BIN_ID), None)
     n = len(targets)
+    n_still = sum(1 for t in targets if str(t.get("pool_slot") or "") != "source_video")
+    n_video = n - n_still
+    if n_video and n_still:
+        hint = (
+            f"Steer {n_still} still + {n_video} video pools — Keep/Pin/Later/Out soft-bias hourly picks"
+        )
+    elif n_video:
+        hint = f"Steer {n_video} source_video pools — clip / whole-file Keep/Pin/Later/Out"
+    elif n:
+        hint = (
+            f"Steer {n} source_still pools — Keep/Pin/Later/Out soft-bias hourly picks per family"
+        )
+    else:
+        hint = "Sort stills into per-family hourly seed bins — keep / pin / later / out"
     return {
         "ok": True,
         "bin": summary,
         "targets": targets,
         "target_count": n,
+        "still_target_count": n_still,
+        "video_target_count": n_video,
         "pipe": pipe,
         "curate_href": "/discovery/factory-map/hourlies/curate",
-        "hint": (
-            f"Steer {n} source_still pools — Keep/Pin/Later/Out soft-bias hourly picks per family"
-            if n
-            else "Sort stills into per-family hourly seed bins — keep / pin / later / out"
-        ),
+        "hint": hint,
     }

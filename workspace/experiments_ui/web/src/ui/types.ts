@@ -2261,6 +2261,8 @@ export type HourlyBinSummary = {
   id?: string;
   label?: string;
   curation_mode?: string;
+  curation_unit?: "auto" | "clips" | "videos" | "still" | string;
+  asset_kind?: string;
   pool_family?: string;
   pool_slot?: string;
   workflow_families?: string[];
@@ -2275,6 +2277,8 @@ export type HourlySteerTeaser = {
   bin?: HourlyBinSummary;
   targets?: HourlyBinSummary[];
   target_count?: number;
+  still_target_count?: number;
+  video_target_count?: number;
   pipe?: {
     id?: string;
     label?: string;
@@ -2287,6 +2291,8 @@ export type HourlySteerTeaser = {
 
 export type HourlyBinCandidate = {
   content_id: string;
+  clip_id?: string;
+  unit?: "still" | "span" | "whole" | string;
   relpath: string;
   basename?: string;
   url?: string;
@@ -2295,6 +2301,13 @@ export type HourlyBinCandidate = {
   appetite_facet?: string | null;
   mtime?: number | null;
   prior_status?: string | null;
+  media_kind?: "image" | "video" | string;
+  mark_in_s?: number | null;
+  mark_out_s?: number | null;
+  label?: string | null;
+  starred?: boolean;
+  parent_content_id?: string;
+  has_span_clips?: boolean;
 };
 
 export type HourlyBinCandidatesResponse = {
@@ -2302,6 +2315,7 @@ export type HourlyBinCandidatesResponse = {
   error?: string;
   bin_id?: string;
   bin?: HourlyBinSummary;
+  curation_unit?: string;
   pipe?: HourlySteerTeaser["pipe"];
   items?: HourlyBinCandidate[];
   count?: number;

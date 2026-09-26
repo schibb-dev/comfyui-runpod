@@ -14142,6 +14142,34 @@ tr.disabled:hover td {
   flex: 0 0 auto;
   color: var(--muted);
 }
+.hourly-bin-curate__unit {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 2px;
+  margin-left: 4px;
+}
+.hourly-bin-curate__unit-btn {
+  margin: 0;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 650;
+  line-height: 1.2;
+  cursor: pointer;
+}
+.hourly-bin-curate__unit-btn--on,
+.hourly-bin-curate__unit-btn.is-on {
+  color: var(--text);
+  border-color: rgba(120, 160, 220, 0.7);
+  background: rgba(120, 160, 220, 0.12);
+}
+.hourly-bin-curate__unit-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
 .hourly-bin-curate__clear {
   flex: 0 0 auto;
   margin-left: auto;
@@ -14231,6 +14259,35 @@ tr.disabled:hover td {
   pointer-events: none;
   -webkit-user-drag: none;
   user-select: none;
+}
+.hourly-bin-curate__video {
+  pointer-events: auto;
+  /* Native controls + chrome need headroom so action buttons stay on-screen. */
+  max-height: min(52vh, 560px);
+}
+.hourly-bin-curate__stage--video {
+  min-height: 0;
+}
+.hourly-bin-curate__clip-meta {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100% - 64px);
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.25;
+  pointer-events: none;
+}
+.hourly-bin-curate__clip-star {
+  color: #f5c542;
 }
 .hourly-bin-curate__nav {
   position: absolute;
@@ -14432,11 +14489,46 @@ tr.disabled:hover td {
   box-shadow: 0 0 0 2px rgba(220, 110, 110, 0.35);
 }
 @media (max-width: 767px) {
+  .hourly-bin-curate--phone .hourly-bin-curate__scope-label {
+    /* "Pool" is obvious from the select; drop it so the menu can breathe. */
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  .hourly-bin-curate--phone .hourly-bin-curate__scope-select {
+    /* Slot label / map link removed on phone — give the menu the freed width. */
+    max-width: min(56vw, 240px);
+  }
+  .hourly-bin-curate--phone .hourly-bin-curate__scope-link {
+    display: none;
+  }
+  .hourly-bin-curate--phone {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    /* Leave room for phone chrome / home indicator under the action row. */
+    padding-bottom: max(8px, env(safe-area-inset-bottom, 0px));
+  }
   .hourly-bin-curate--phone .hourly-bin-curate__stage {
-    min-height: 58dvh;
+    flex: 0 1 auto;
+    min-height: 36dvh;
+    max-height: min(58dvh, 560px);
+  }
+  .hourly-bin-curate--phone .hourly-bin-curate__stage--video {
+    min-height: 28dvh;
+    max-height: min(46dvh, 420px);
   }
   .hourly-bin-curate--phone .hourly-bin-curate__img {
-    max-height: min(68dvh, 720px);
+    max-height: min(54dvh, 560px);
+  }
+  .hourly-bin-curate--phone .hourly-bin-curate__video {
+    max-height: min(42dvh, 400px);
   }
   .hourly-bin-curate--phone .hourly-bin-curate__nav-btn {
     width: 40px;
@@ -14445,8 +14537,9 @@ tr.disabled:hover td {
   }
   .hourly-bin-curate--phone .hourly-bin-curate__actions {
     position: static;
+    flex: 0 0 auto;
     margin-top: 8px;
-    padding-bottom: max(2px, env(safe-area-inset-bottom, 0px));
+    padding-bottom: 0;
   }
 }
 

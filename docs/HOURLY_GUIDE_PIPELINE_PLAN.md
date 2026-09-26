@@ -66,8 +66,23 @@ ledger as source of truth.
 - Schedule rewrite / ruleset editor (U1)
 - Multi-pipe UI / chain pin-skip bins (Phase 3)
 - Auto / hybrid curation (Phase 4) — sketched above
-- Clip bins
 - `decisions.jsonl` retention / compaction (planned; audit-only today)
+
+## Phase 1b — video / clip steer (landed)
+
+Clip-shaped units for `source_video` families (same Keep/Pin/Later/Out soft-bias):
+
+| Piece | Location |
+|-------|----------|
+| Runtime | `workspace/scripts/shape_factory_hourly_video_steer.py` |
+| Ensure / resolve / candidates | `ensure_steer_bins_for_source_videos`, `list_video_bin_candidates` |
+| Soft bias | `video_steer_bias_mult` × `_apply_source_promotion` |
+| Modes | bin `curation_unit`: `auto` \| `clips` \| `videos` (`POST …/hourly-bins/unit`) |
+| Whole-file units | virtual `whole:{parent_content_id}` — **not** inserted into clips DB |
+
+Hybrid deck ranking (auto): ★ span clips → other span clips → whole-file virtual
+units. Existence of a span clip is already the strong signal; whole-file remains
+available and switchable.
 
 ## Try it
 

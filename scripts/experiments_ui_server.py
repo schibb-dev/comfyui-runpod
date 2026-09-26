@@ -2799,6 +2799,7 @@ def _hourly_bin_candidates_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -
     from shape_factory_hourly_bins import (  # type: ignore
         DEFAULT_BIN_ID,
         ensure_steer_bins_for_source_stills,
+        get_bin,
         list_bin_candidates,
         list_steer_targets,
     )
@@ -2806,16 +2807,33 @@ def _hourly_bin_candidates_payload(cfg: ServerConfig, q: Dict[str, List[str]]) -
 
     data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
     ensure_steer_bins_for_source_stills(data_root=data_root)
+    try:
+        from shape_factory_hourly_video_steer import ensure_steer_bins_for_source_videos  # type: ignore
+
+        ensure_steer_bins_for_source_videos(data_root=data_root)
+    except Exception:
+        pass
     bin_id = str((q.get("bin_id") or [DEFAULT_BIN_ID])[0] or DEFAULT_BIN_ID).strip() or DEFAULT_BIN_ID
     try:
         limit = int((q.get("limit") or ["48"])[0] or 48)
     except Exception:
         limit = 48
-    appetite_doc = None
+    # Appetite index is only used for still decks — skip the heavy load for video bins.
+    want_appetite = True
     try:
-        appetite_doc = _discovery_load_appetite_index(cfg)
+        brow = get_bin(bin_id, data_root=data_root)
+        slot = str(brow.get("pool_slot") or "").strip()
+        kind = str(brow.get("asset_kind") or "").strip()
+        if slot == "source_video" or kind in {"clip", "video", "video_seed"}:
+            want_appetite = False
     except Exception:
-        appetite_doc = None
+        want_appetite = True
+    appetite_doc = None
+    if want_appetite:
+        try:
+            appetite_doc = _discovery_load_appetite_index(cfg)
+        except Exception:
+            appetite_doc = None
     payload = list_bin_candidates(
         bin_id=bin_id,
         data_root=data_root,
@@ -2834,12 +2852,20 @@ def _hourly_bin_summary_payload(q: Dict[str, List[str]]) -> Dict[str, Any]:
     from shape_factory_hourly_bins import (  # type: ignore
         DEFAULT_BIN_ID,
         bin_summary,
+        ensure_steer_bins_for_source_stills,
         home_steer_teaser,
         list_steer_targets,
     )
     from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
 
     data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    ensure_steer_bins_for_source_stills(data_root=data_root)
+    try:
+        from shape_factory_hourly_video_steer import ensure_steer_bins_for_source_videos  # type: ignore
+
+        ensure_steer_bins_for_source_videos(data_root=data_root)
+    except Exception:
+        pass
     targets = list_steer_targets(data_root=data_root)
     bin_id = str((q.get("bin_id") or [DEFAULT_BIN_ID])[0] or DEFAULT_BIN_ID).strip() or DEFAULT_BIN_ID
     known = {str(t.get("id") or "").strip() for t in targets}
@@ -2855,7 +2881,7 @@ def _hourly_bin_summary_payload(q: Dict[str, List[str]]) -> Dict[str, Any]:
 
 
 def _hourly_bin_set_item_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
-    """POST /api/shape-factory/hourly-bins/item — keep|later|out|pin a still."""
+    """POST /api/shape-factory/hourly-bins/item — keep|later|out|pin a still/clip unit."""
     d = _workspace_scripts_dir()
     if d.is_dir() and str(d) not in sys.path:
         sys.path.insert(0, str(d))
@@ -2864,10 +2890,12 @@ def _hourly_bin_set_item_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dic
 
     data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
     bin_id = str(body.get("bin_id") or DEFAULT_BIN_ID).strip() or DEFAULT_BIN_ID
-    content_id = str(body.get("content_id") or "").strip()
+    content_id = str(body.get("content_id") or body.get("clip_id") or "").strip()
     relpath = str(body.get("relpath") or "").strip()
     status = str(body.get("status") or body.get("action") or "").strip()
     surface = str(body.get("surface") or "api").strip() or "api"
+    unit = str(body.get("unit") or "").strip()
+    parent_content_id = str(body.get("parent_content_id") or "").strip()
     return set_bin_item(
         bin_id=bin_id,
         content_id=content_id,
@@ -2875,6 +2903,10 @@ def _hourly_bin_set_item_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dic
         relpath=relpath,
         surface=surface,
         data_root=data_root,
+        unit=unit,
+        parent_content_id=parent_content_id,
+        mark_in_s=body.get("mark_in_s"),
+        mark_out_s=body.get("mark_out_s"),
     )
 
 
@@ -2890,6 +2922,21 @@ def _hourly_bin_clear_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[s
     bin_id = str(body.get("bin_id") or DEFAULT_BIN_ID).strip() or DEFAULT_BIN_ID
     surface = str(body.get("surface") or "api").strip() or "api"
     return clear_bin_steering(bin_id=bin_id, surface=surface, data_root=data_root)
+
+
+def _hourly_bin_set_unit_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /api/shape-factory/hourly-bins/unit — set curation_unit auto|clips|videos."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_hourly_bins import DEFAULT_BIN_ID  # type: ignore
+    from shape_factory_hourly_video_steer import set_bin_curation_unit  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    bin_id = str(body.get("bin_id") or DEFAULT_BIN_ID).strip() or DEFAULT_BIN_ID
+    unit = str(body.get("curation_unit") or body.get("unit") or "").strip()
+    return set_bin_curation_unit(bin_id, unit, data_root=data_root)
 
 
 def _home_summary_payload(
@@ -14563,6 +14610,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_shape_factory_hourly_bin_item_post()
         if path == "/api/shape-factory/hourly-bins/clear":
             return self._handle_shape_factory_hourly_bin_clear_post()
+        if path == "/api/shape-factory/hourly-bins/unit":
+            return self._handle_shape_factory_hourly_bin_unit_post()
         if path == "/api/shape-factory/pool-member-standing":
             return self._handle_shape_factory_pool_member_standing_post()
         if path == "/api/vision/tag-judgment":
@@ -14629,6 +14678,22 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, 404, {"ok": False, "error": "not_found", "detail": str(e)})
         except Exception as e:
             return _json_response(self, 500, {"ok": False, "error": "hourly_bin_clear_failed", "detail": str(e)})
+
+    def _handle_shape_factory_hourly_bin_unit_post(self) -> None:
+        """POST /api/shape-factory/hourly-bins/unit — set auto|clips|videos curation mode."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _hourly_bin_set_unit_payload(cfg, body if isinstance(body, dict) else {})
+            return _json_response(self, 200, payload)
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except KeyError as e:
+            return _json_response(self, 404, {"ok": False, "error": "not_found", "detail": str(e)})
+        except Exception as e:
+            return _json_response(self, 500, {"ok": False, "error": "hourly_bin_unit_failed", "detail": str(e)})
 
     def _handle_shape_factory_quarantine_release_post(self) -> None:
         """POST /api/shape-factory/quarantine/release — human review release."""

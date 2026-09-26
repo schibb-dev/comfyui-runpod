@@ -1,6 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppetitePreviewBadge } from "./AppetitePreviewBadge";
-import { clearHourlyBinSteering, fetchHourlyBinCandidates, setHourlyBinItem } from "./api";
+import {
+  clearHourlyBinSteering,
+  fetchHourlyBinCandidates,
+  setHourlyBinCurationUnit,
+  setHourlyBinItem,
+} from "./api";
 import {
   peekAssetRatings,
   prefetchAssetRatings,
@@ -18,6 +23,8 @@ const DEFAULT_BIN_ID = "hourly-seed-stills";
 const BIN_QUERY = "bin";
 /** Prefetch appetite for current card ± this many neighbors while browsing. */
 const APPETITE_WARM_RADIUS = 4;
+const CURATION_UNITS = ["auto", "clips", "videos"] as const;
+type CurationUnit = (typeof CURATION_UNITS)[number];
 
 const APPETITES: ReadonlySet<string> = new Set(["less", "neutral", "more", "fast_track", "remove"]);
 const APPETITE_FACETS: ReadonlySet<string> = new Set(["both", "source", "processing"]);
@@ -32,13 +39,28 @@ function asAppetiteFacet(value: string | null | undefined): AppetiteFacet | null
   return APPETITE_FACETS.has(v) ? (v as AppetiteFacet) : null;
 }
 
+function asCurationUnit(value: string | null | undefined): CurationUnit {
+  const v = String(value || "").trim().toLowerCase();
+  return v === "clips" || v === "videos" ? v : "auto";
+}
+
+function isVideoCandidate(item: HourlyBinCandidate | null | undefined): boolean {
+  if (!item) return false;
+  if (String(item.media_kind || "").toLowerCase() === "video") return true;
+  const unit = String(item.unit || "").toLowerCase();
+  return unit === "span" || unit === "whole";
+}
+
 /**
  * Seed session cache from candidate payload (instant badge), then prefetch
- * full ratings for everything not already cached.
+ * ratings for a small nearby window — not the whole deck (that stalls reloads).
  */
 function warmAppetiteForCandidates(items: HourlyBinCandidate[], preferFirst = 0) {
   const rels: string[] = [];
-  for (const it of items) {
+  const maxWarm = Math.min(items.length, Math.max(preferFirst, 8));
+  for (let i = 0; i < maxWarm; i++) {
+    const it = items[i];
+    if (!it || isVideoCandidate(it)) continue;
     const key = normalizeAppetiteRelpath(it.relpath);
     if (!key) continue;
     rels.push(key);
@@ -54,10 +76,7 @@ function warmAppetiteForCandidates(items: HourlyBinCandidate[], preferFirst = 0)
       });
     }
   }
-  // Kick nearby first so the current card + swipe ahead resolve before the tail.
-  const head = Math.max(0, Math.min(preferFirst, rels.length));
-  if (head > 0) prefetchAssetRatings(rels.slice(0, head));
-  prefetchAssetRatings(rels);
+  if (rels.length) prefetchAssetRatings(rels);
 }
 
 type BinAction = "keep" | "pin" | "later" | "out";
@@ -156,8 +175,12 @@ function targetLabel(t: HourlyBinSummary): string {
   const fam = String(t.pool_family || "").trim();
   const n = Number(t.item_count || 0);
   const feed = Number(t.feed_count || 0);
+  const slot = String(t.pool_slot || "").trim();
+  const kind = slot === "source_video" ? "v" : "s";
   const base = fam || String(t.label || t.id || "bin");
-  return n ? `${base} · ${feed} feed / ${n}` : base;
+  // Keep closed <select> text short — long "feed / n" + "source_video" truncates the menu.
+  if (n > 0) return `${base} · ${kind} · ${feed}/${n}`;
+  return `${base} · ${kind}`;
 }
 
 function readBinIdFromUrl(): string {
@@ -181,7 +204,7 @@ function writeBinIdToUrl(binId: string) {
 }
 
 /**
- * Phone-first hourly seed-stills curation.
+ * Phone-first hourly seed stills / clips curation.
  * Vertical swipe through candidates; fat Keep / Pin / Later / Out actions.
  */
 export function HourlySeedBinCurateApp() {
@@ -208,7 +231,7 @@ export function HourlySeedBinCurateApp() {
     setLoading(true);
     setError("");
     try {
-      const res = await fetchHourlyBinCandidates({ binId: want, limit: 120 });
+      const res = await fetchHourlyBinCandidates({ binId: want, limit: 48 });
       const nextItems = res.items || [];
       const nextBin = res.bin || null;
       const nextTargets = Array.isArray(res.targets) ? res.targets : [];
@@ -218,8 +241,8 @@ export function HourlySeedBinCurateApp() {
       setBin(nextBin);
       setBinId(resolvedId);
       writeBinIdToUrl(resolvedId);
-      // Seed + prefetch appetite before paint settles so badges don't lag on swipe.
-      warmAppetiteForCandidates(nextItems, 12);
+      // Nearby still appetite only — full-deck prefetch made reloads feel stuck.
+      warmAppetiteForCandidates(nextItems, 8);
       const counts: Record<FilterKey, number> = { new: 0, out: 0, later: 0, keep: 0, pin: 0 };
       for (const it of nextItems) counts[itemFilterKey(it)] += 1;
       setFilters(defaultFiltersForCounts(counts));
@@ -255,6 +278,8 @@ export function HourlySeedBinCurateApp() {
 
   const poolFamily = String(bin?.pool_family || "").trim();
   const poolSlot = String(bin?.pool_slot || "source_still").trim() || "source_still";
+  const isVideoPool = poolSlot === "source_video";
+  const curationUnit = asCurationUnit(bin?.curation_unit);
   const workflows = useMemo(() => workflowFamilies(bin), [bin]);
   const scopeTitle = useMemo(() => {
     const bits = [
@@ -269,6 +294,29 @@ export function HourlySeedBinCurateApp() {
     if (targets.length) return targets;
     return bin ? [bin] : [];
   }, [targets, bin]);
+
+  const setUnit = useCallback(
+    async (unit: CurationUnit) => {
+      if (!isVideoPool || busy || loading || unit === curationUnit) return;
+      setBusy(true);
+      setError("");
+      try {
+        const res = await setHourlyBinCurationUnit({ bin_id: binId, curation_unit: unit });
+        if (res.bin) {
+          setBin(res.bin);
+          setTargets((prev) =>
+            prev.map((t) => (String(t.id || "") === String(res.bin?.id || binId) ? res.bin! : t)),
+          );
+        }
+        await load({ binId });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [binId, busy, curationUnit, isVideoPool, load, loading],
+  );
 
   const visible = useMemo(() => filterItems(items, filters), [items, filters]);
 
@@ -397,6 +445,10 @@ export function HourlySeedBinCurateApp() {
           relpath: item.relpath,
           status: status === "clear" ? "clear" : status,
           surface: isPhone ? "phone" : "desktop",
+          unit: item.unit || undefined,
+          parent_content_id: item.parent_content_id || undefined,
+          mark_in_s: item.mark_in_s ?? undefined,
+          mark_out_s: item.mark_out_s ?? undefined,
         });
         if (res.bin) {
           setBin(res.bin);
@@ -540,7 +592,7 @@ export function HourlySeedBinCurateApp() {
             className="hourly-bin-curate__scope-select"
             value={binId}
             disabled={loading || busy || selectTargets.length <= 0}
-            aria-label="Steer which source_still pool"
+            aria-label={isVideoPool ? "Steer which source_video pool" : "Steer which source_still pool"}
             title={scopeTitle || undefined}
             onChange={(e) => onSelectBin(e.target.value)}
           >
@@ -555,7 +607,32 @@ export function HourlySeedBinCurateApp() {
             })}
           </select>
         </label>
-        <span className="hourly-bin-curate__scope-muted mono">· {poolSlot}</span>
+        {isVideoPool ? (
+          <span className="hourly-bin-curate__unit" role="group" aria-label="Curation unit">
+            {CURATION_UNITS.map((u) => (
+              <button
+                key={u}
+                type="button"
+                className={
+                  "hourly-bin-curate__unit-btn" +
+                  (curationUnit === u ? " hourly-bin-curate__unit-btn--on is-on" : "")
+                }
+                disabled={busy || loading}
+                aria-pressed={curationUnit === u}
+                title={
+                  u === "auto"
+                    ? "★ clips, then clips, then whole files"
+                    : u === "clips"
+                      ? "Span clips only"
+                      : "Whole-file units only"
+                }
+                onClick={() => void setUnit(u)}
+              >
+                {u === "auto" ? "Auto" : u === "clips" ? "Clips" : "Videos"}
+              </button>
+            ))}
+          </span>
+        ) : null}
         {poolFamily ? (
           <a
             className="hourly-bin-curate__scope-link"
@@ -663,7 +740,8 @@ export function HourlySeedBinCurateApp() {
           <div
             className={
               "hourly-bin-curate__stage" +
-              (selected ? ` hourly-bin-curate__stage--${selected}` : "")
+              (selected ? ` hourly-bin-curate__stage--${selected}` : "") +
+              (isVideoCandidate(item) ? " hourly-bin-curate__stage--video" : "")
             }
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
@@ -698,13 +776,46 @@ export function HourlySeedBinCurateApp() {
                 </button>
               </div>
             ) : null}
-            <img
-              className="hourly-bin-curate__img"
-              src={item.thumb_url || item.url}
-              alt={item.basename || item.relpath}
-              draggable={false}
-            />
-            {item.relpath ? (
+            {isVideoCandidate(item) ? (
+              <video
+                className="hourly-bin-curate__img hourly-bin-curate__video"
+                src={item.url || item.thumb_url}
+                poster={item.thumb_url && item.thumb_url !== item.url ? item.thumb_url : undefined}
+                controls
+                playsInline
+                muted
+                loop
+                preload="metadata"
+                draggable={false}
+              />
+            ) : (
+              <img
+                className="hourly-bin-curate__img"
+                src={item.thumb_url || item.url}
+                alt={item.basename || item.relpath}
+                draggable={false}
+              />
+            )}
+            {item.unit === "span" || item.unit === "whole" || item.starred ? (
+              <div className="hourly-bin-curate__clip-meta" aria-hidden={false}>
+                {item.starred ? <span className="hourly-bin-curate__clip-star">★</span> : null}
+                <span>
+                  {item.unit === "whole"
+                    ? "Whole file"
+                    : item.unit === "span"
+                      ? [
+                          item.label || "Clip",
+                          item.mark_in_s != null || item.mark_out_s != null
+                            ? `${item.mark_in_s ?? 0}s–${item.mark_out_s ?? "…"}s`
+                            : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")
+                      : null}
+                </span>
+              </div>
+            ) : null}
+            {item.relpath && !isVideoCandidate(item) ? (
               <AppetitePreviewBadge
                 relpath={item.relpath}
                 defaultFacet={

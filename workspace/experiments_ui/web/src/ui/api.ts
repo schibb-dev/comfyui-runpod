@@ -201,6 +201,10 @@ export async function setHourlyBinItem(body: {
   relpath: string;
   status: "keep" | "later" | "out" | "pin" | "clear" | "new" | string;
   surface?: string;
+  unit?: string;
+  parent_content_id?: string;
+  mark_in_s?: number | null;
+  mark_out_s?: number | null;
 }): Promise<HourlyBinItemResponse> {
   const r = await fetch("/api/shape-factory/hourly-bins/item", {
     method: "POST",
@@ -212,6 +216,25 @@ export async function setHourlyBinItem(body: {
     const detail = [j.error, j.detail].filter(Boolean).join(": ");
     throw new Error(
       `POST /api/shape-factory/hourly-bins/item failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function setHourlyBinCurationUnit(body: {
+  bin_id?: string;
+  curation_unit: "auto" | "clips" | "videos" | string;
+}): Promise<HourlyBinItemResponse> {
+  const r = await fetch("/api/shape-factory/hourly-bins/unit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as HourlyBinItemResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST /api/shape-factory/hourly-bins/unit failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
     );
   }
   return j;
