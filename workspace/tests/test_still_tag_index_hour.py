@@ -558,6 +558,47 @@ class StillTagIndexHourTests(unittest.TestCase):
             self.assertEqual(out.get("reason"), "no_backlog")
             occupy.assert_not_called()
 
+    def test_soft_occupy_does_not_interrupt_running(self) -> None:
+        """Hourly tagging pauses feeders only — never parks/interrupts Comfy by default."""
+        from vision_still_tags import occupy_gpu_for_tagging
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "shape_factory").mkdir(parents=True)
+            pause = mock.Mock(
+                return_value={
+                    "ok": True,
+                    "restore_enabled": True,
+                    "hourly_was_enabled": True,
+                    "hourly": {"enabled": False},
+                }
+            )
+            feeders = mock.Mock(return_value={"drain_timer": "stopped", "watch_queue": "stopped"})
+            suspend = mock.Mock(return_value={"ok": True})
+            with mock.patch("suspend_comfy_queue.acquire_hourly_gpu_pause", pause), mock.patch(
+                "suspend_comfy_queue.pause_feeders_for_tagging", feeders
+            ), mock.patch("suspend_comfy_queue.do_suspend", suspend), mock.patch(
+                "suspend_comfy_queue.release_hourly_gpu_pause", mock.Mock()
+            ):
+                soft = occupy_gpu_for_tagging(
+                    data_root=root,
+                    comfy_server="http://127.0.0.1:8188",
+                    interrupt_running=False,
+                )
+                hard = occupy_gpu_for_tagging(
+                    data_root=root,
+                    comfy_server="http://127.0.0.1:8188",
+                    interrupt_running=True,
+                )
+            self.assertTrue(soft.get("ok"))
+            self.assertTrue(soft.get("soft"))
+            self.assertFalse(soft.get("interrupt_running"))
+            feeders.assert_called_once()
+            suspend.assert_called_once()  # only hard path
+            self.assertTrue(hard.get("ok"))
+            self.assertTrue(hard.get("interrupt_running"))
+            self.assertFalse(hard.get("soft"))
+
     def test_wait_history_raises_on_execution_error(self) -> None:
         from vision_slice_runner import ComfyCaptionRunner, ComfyRunnerConfig, history_execution_error
 

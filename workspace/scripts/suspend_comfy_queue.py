@@ -278,6 +278,15 @@ def _stop_feeders() -> Dict[str, str]:
     return out
 
 
+def pause_feeders_for_tagging() -> Dict[str, str]:
+    """Stop drain/watch so they cannot inject ahead of front-of-queue tag jobs.
+
+    Does not interrupt Comfy or clear the live queue — the running prompt finishes,
+    then ``front=true`` Florence prompts run next.
+    """
+    return _stop_feeders()
+
+
 def _start_feeders() -> Dict[str, str]:
     out: Dict[str, str] = {}
     out.update(set_drain_timer(active=True))

@@ -51,6 +51,9 @@ DEFAULT_SCHEDULE: Dict[str, Any] = {
     "resume_gap_min": 20,
     "sec_per_still": 12,
     "occupy_gpu": True,
+    # Soft occupy by default: pause hourlies/feeders and queue tags next (front=true).
+    # True = legacy hard park (interrupt running Comfy job + empty queue into ledger).
+    "occupy_interrupt_running": False,
     "window_start": "03:00",
     "window_duration_min": 15,
     "front": True,
@@ -499,20 +502,62 @@ def occupy_gpu_for_tagging(
     data_root: Path,
     comfy_server: str,
     output_root: Optional[Path] = None,
+    interrupt_running: bool = False,
 ) -> Dict[str, Any]:
-    """Pause hourlies and park Comfy/ledger so Florence can own the GPU."""
+    """Claim the GPU for Florence without yanking a live Comfy job by default.
+
+    Soft occupy (default):
+      - pause hourly submissions (durable GPU-pause lock)
+      - stop drain/watch feeders so they cannot cut in ahead of ``front=true`` tags
+      - leave the currently running prompt and pending queue intact
+
+    Hard occupy (``interrupt_running=True``): legacy park — interrupt + empty Comfy
+    into the ledger backlog (ops escape hatch only).
+    """
     from suspend_comfy_queue import (  # type: ignore
         acquire_hourly_gpu_pause,
         do_suspend,
+        pause_feeders_for_tagging,
         release_hourly_gpu_pause,
     )
 
     pause_out = acquire_hourly_gpu_pause(data_root=data_root, paused_by="still_tag")
     hourly_was_enabled = bool(pause_out.get("restore_enabled") or pause_out.get("hourly_was_enabled"))
     out_root = Path(output_root) if output_root is not None else _default_output_root()
+    server = str(comfy_server).rstrip("/")
+
+    if not interrupt_running:
+        try:
+            feeders = pause_feeders_for_tagging()
+        except Exception as exc:
+            try:
+                release_hourly_gpu_pause(data_root=data_root, force=True)
+            except Exception:
+                pass
+            return {
+                "ok": False,
+                "error": str(exc),
+                "soft": True,
+                "interrupt_running": False,
+                "hourly_was_enabled": hourly_was_enabled,
+                "hourly": pause_out.get("hourly") or {},
+                "pause": pause_out,
+            }
+        return {
+            "ok": True,
+            "soft": True,
+            "interrupt_running": False,
+            "hourly_was_enabled": hourly_was_enabled,
+            "hourly": pause_out.get("hourly") or {},
+            "pause": pause_out,
+            "feeders": feeders,
+            "server": server,
+            "note": "Hourlies/feeders paused; running Comfy job left alone — tag prompts use front-of-queue.",
+        }
+
     try:
         suspend = do_suspend(
-            server=str(comfy_server).rstrip("/"),
+            server=server,
             data_root=Path(data_root),
             output_root=out_root,
         )
@@ -525,12 +570,16 @@ def occupy_gpu_for_tagging(
         return {
             "ok": False,
             "error": str(exc),
+            "soft": False,
+            "interrupt_running": True,
             "hourly_was_enabled": hourly_was_enabled,
             "hourly": pause_out.get("hourly") or {},
             "pause": pause_out,
         }
     return {
         "ok": bool(suspend.get("ok")),
+        "soft": False,
+        "interrupt_running": True,
         "hourly_was_enabled": hourly_was_enabled,
         "hourly": pause_out.get("hourly") or {},
         "pause": pause_out,
@@ -2493,6 +2542,7 @@ def index_window_status(
         "resume_gap_min": max(0.0, _schedule_float(sch, "resume_gap_min", 20)),
         "sec_per_still": sec_per_still,
         "occupy_gpu": bool(sch.get("occupy_gpu", True)),
+        "occupy_interrupt_running": bool(sch.get("occupy_interrupt_running", False)),
         "scaled_batch": batch_n,
         "front": bool(sch.get("front", True)),
         "max_inflight": max(1, int(sch.get("max_inflight") or 1)),
@@ -2925,7 +2975,11 @@ def drain_backlog(
             or DEFAULT_COMFY_SERVER
         ).rstrip("/")
         try:
-            occupy_out = occupy_gpu_for_tagging(data_root=data_root, comfy_server=server)
+            occupy_out = occupy_gpu_for_tagging(
+                data_root=data_root,
+                comfy_server=server,
+                interrupt_running=bool(win.get("occupy_interrupt_running", False)),
+            )
             hourly_was = bool(occupy_out.get("hourly_was_enabled"))
             if not occupy_out.get("ok"):
                 save_tag_session(

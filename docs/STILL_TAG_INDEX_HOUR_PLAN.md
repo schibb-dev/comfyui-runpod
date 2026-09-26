@@ -82,7 +82,8 @@ Index-hour drainer →  Comfy /prompt Florence (prefer front) [reserved window]
 | `kill_after_min` | Hard cap: interrupt Comfy and requeue remainder (default **60**) |
 | `resume_gap_min` | Minimum idle after a session before the next (default **20**) |
 | `sec_per_still` | Fallback seconds/still for batch scale (live median from recent done runs) |
-| `occupy_gpu` | Pause hourlies + park Comfy/ledger for the session (default **true**; skipped on dry-run) |
+| `occupy_gpu` | Pause hourlies + stop drain/watch feeders for the session (default **true**; skipped on dry-run). Tag prompts still use `front=true` so they run **next** after whatever is already executing. |
+| `occupy_interrupt_running` | Hard park: interrupt the live Comfy job and empty the queue into the ledger (default **false**). Leave off for hourly tagging. |
 
 Occupy writes a durable `.data/shape_factory/hourly-gpu-pause.json` lock with the
 pre-pause `restore_enabled` intent. Release (or orphan/stale recovery) restores that
@@ -98,8 +99,9 @@ off. Operator Enable/Disable clears the lock and wins.
 
 Future polish: occupancy-state JSON + UI (“GPU: tagging / generation / embed / idle”);
 urgency `drain_now` for a single still; RunPod spin/tear recipes; V2 shared worker
-claiming the same queued runs. **Hard pause of I2V is no longer future** — it is the
-locked occupancy rule (park + `/free` before Florence).
+claiming the same queued runs. **Hourly tagging soft-occupies** (pause feeders +
+`front=true`); set `occupy_interrupt_running` only when you intentionally want a
+hard park.
 
 ---
 
@@ -124,6 +126,7 @@ locked occupancy rule (park + `/free` before Florence).
   "resume_gap_min": 20,
   "sec_per_still": 12,
   "occupy_gpu": true,
+  "occupy_interrupt_running": false,
   "window_start": "03:00",
   "window_duration_min": 15,
   "front": true,
