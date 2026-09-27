@@ -2947,6 +2947,61 @@ def _hourly_bin_set_unit_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dic
     return set_bin_curation_unit(bin_id, unit, data_root=data_root)
 
 
+def _hourly_bin_lookup_payload(q: Dict[str, List[str]]) -> Dict[str, Any]:
+    """GET /api/shape-factory/hourly-bins/lookup — seed statuses across family bins."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_hourly_bins import lookup_seed_steer  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    content_id = str((q.get("content_id") or [""])[0] or "").strip()
+    relpath = str((q.get("relpath") or [""])[0] or "").strip()
+    kind = str((q.get("kind") or [""])[0] or "").strip()
+    return lookup_seed_steer(
+        content_id=content_id,
+        relpath=relpath,
+        kind=kind,
+        data_root=data_root,
+    )
+
+
+def _hourly_bin_steer_work_product_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /api/shape-factory/hourly-bins/steer-work-product — multi-family try-bias."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from shape_factory_hourly_bins import steer_work_product  # type: ignore
+    from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+    fams = body.get("families")
+    if isinstance(fams, str):
+        families = [p.strip() for p in fams.split(",") if p.strip()]
+    elif isinstance(fams, list):
+        families = [str(x).strip() for x in fams if str(x).strip()]
+    else:
+        families = []
+    return steer_work_product(
+        content_id=str(body.get("content_id") or body.get("clip_id") or "").strip(),
+        relpath=str(body.get("relpath") or "").strip(),
+        status=str(body.get("status") or body.get("action") or "").strip(),
+        families=families,
+        variant_slug=str(body.get("variant_slug") or body.get("slug") or "").strip(),
+        variant_id=str(body.get("variant_id") or "").strip(),
+        variant_name=str(body.get("variant_name") or body.get("name") or "").strip(),
+        job_key=str(body.get("job_key") or "").strip(),
+        kind=str(body.get("kind") or "").strip(),
+        unit=str(body.get("unit") or "").strip(),
+        parent_content_id=str(body.get("parent_content_id") or "").strip(),
+        mark_in_s=body.get("mark_in_s"),
+        mark_out_s=body.get("mark_out_s"),
+        surface=str(body.get("surface") or "preview_steer").strip() or "preview_steer",
+        data_root=data_root,
+    )
+
+
 def _home_summary_payload(
     cfg: ServerConfig,
     *,
@@ -14281,6 +14336,15 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return _json_response(self, 500, {"ok": False, "error": "hourly_bin_candidates_failed", "detail": str(e)})
 
+        if path == "/api/shape-factory/hourly-bins/lookup":
+            try:
+                payload = _hourly_bin_lookup_payload(q)
+                return _json_response(self, 200, payload)
+            except ValueError as e:
+                return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+            except Exception as e:
+                return _json_response(self, 500, {"ok": False, "error": "hourly_bin_lookup_failed", "detail": str(e)})
+
         if path == "/api/shape-factory/quarantine":
             try:
                 payload = _shape_factory_quarantine_list_payload(q)
@@ -14766,6 +14830,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_shape_factory_hourly_bin_clear_post()
         if path == "/api/shape-factory/hourly-bins/unit":
             return self._handle_shape_factory_hourly_bin_unit_post()
+        if path == "/api/shape-factory/hourly-bins/steer-work-product":
+            return self._handle_shape_factory_hourly_bin_steer_work_product_post()
         if path == "/api/shape-factory/pool-member-standing":
             return self._handle_shape_factory_pool_member_standing_post()
         if path == "/api/vision/tag-judgment":
@@ -14832,6 +14898,22 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, 404, {"ok": False, "error": "not_found", "detail": str(e)})
         except Exception as e:
             return _json_response(self, 500, {"ok": False, "error": "hourly_bin_clear_failed", "detail": str(e)})
+
+    def _handle_shape_factory_hourly_bin_steer_work_product_post(self) -> None:
+        """POST /api/shape-factory/hourly-bins/steer-work-product — multi-family try-bias."""
+        cfg = self.server.cfg
+        body = self._read_request_json()
+        if body is None:
+            return _json_response(self, 400, {"ok": False, "error": "bad_json"})
+        try:
+            payload = _hourly_bin_steer_work_product_payload(cfg, body if isinstance(body, dict) else {})
+            return _json_response(self, 200, payload)
+        except ValueError as e:
+            return _json_response(self, 400, {"ok": False, "error": "bad_request", "detail": str(e)})
+        except Exception as e:
+            return _json_response(
+                self, 500, {"ok": False, "error": "hourly_bin_steer_work_product_failed", "detail": str(e)}
+            )
 
     def _handle_shape_factory_hourly_bin_unit_post(self) -> None:
         """POST /api/shape-factory/hourly-bins/unit — set auto|clips|videos curation mode."""

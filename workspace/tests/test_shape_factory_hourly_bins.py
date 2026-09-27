@@ -15,8 +15,10 @@ from shape_factory_hourly_bins import (
     ensure_steer_bins_for_source_stills,
     load_bins_doc,
     load_pipes_doc,
+    lookup_seed_steer,
     resolve_bin_id_for_family,
     set_bin_item,
+    steer_work_product,
     still_bin_bias_mult,
 )
 
@@ -240,6 +242,43 @@ class HourlyBinsTest(unittest.TestCase):
         self.assertEqual((out.get("decision") or {}).get("action"), "clear")
         self.assertEqual(bin_summary(data_root=self.root)["item_count"], 0)
         self.assertEqual(still_bin_bias_mult(rel, family=DEFAULT_POOL_FAMILY, data_root=self.root), 1.0)
+
+    def test_steer_work_product_multi_family_and_lookup(self) -> None:
+        pools = self.root / "pools"
+        for fam in ("AlphaStill", "BetaStill"):
+            d = pools / fam
+            d.mkdir(parents=True)
+            (d / "pools.yaml").write_text(
+                "pools:\n  source_still:\n    slot: source_still\n    members: []\n",
+                encoding="utf-8",
+            )
+        ensure_steer_bins_for_source_stills(data_root=self.root)
+        cid = "9" * 64
+        rel = f"input/{cid}.jpeg"
+        out = steer_work_product(
+            content_id=cid,
+            relpath=rel,
+            status="pin",
+            families=["AlphaStill", "BetaStill"],
+            variant_slug="faceblast-extend",
+            variant_id="vid-1",
+            job_key="job__demo",
+            surface="preview_steer",
+            data_root=self.root,
+        )
+        self.assertTrue(out.get("ok"))
+        self.assertEqual(len(out.get("applied") or []), 2)
+        self.assertGreaterEqual(still_bin_bias_mult(rel, family="AlphaStill", data_root=self.root), 16.0)
+        self.assertGreaterEqual(still_bin_bias_mult(rel, family="BetaStill", data_root=self.root), 16.0)
+        look = lookup_seed_steer(content_id=cid, relpath=rel, kind="still", data_root=self.root)
+        self.assertEqual((look.get("by_family") or {}).get("AlphaStill", {}).get("status"), "pin")
+        self.assertEqual(
+            (look.get("preferred_variant_by_family") or {}).get("AlphaStill", {}).get("variant_slug"),
+            "faceblast-extend",
+        )
+        ledger = (self.root / "shape_factory" / "hourly_guide" / "decisions.jsonl").read_text()
+        self.assertIn("preview_steer", ledger)
+        self.assertIn("faceblast-extend", ledger)
 
 
 if __name__ == "__main__":

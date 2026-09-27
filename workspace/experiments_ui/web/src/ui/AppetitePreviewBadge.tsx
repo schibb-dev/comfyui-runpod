@@ -5,6 +5,7 @@ import { setAssetAppetite } from "./api";
 import { AppetiteBar, AppetiteGlyph } from "./AppetiteBar";
 import { patchCachedAppetite, revalidateAssetRatings } from "./assetRatingsCache";
 import { appetiteRowTitle } from "./discoveryRatingsRollup";
+import { SteerPreviewBadge } from "./SteerPreviewBadge";
 import type { Appetite, AppetiteFacet } from "./types";
 import { useAssetAppetite } from "./WorkProductAppetiteStrip";
 import { afterAppetiteCommitted } from "./workProductAppetite";
@@ -208,7 +209,7 @@ export function AppetitePreviewBadge({
   );
 }
 
-/** Positions an appetite badge over a preview frame (Workbench, Queue, etc.). */
+/** Positions appetite (+ optional try-bias steer) badges over a preview frame. */
 export function AppetitePreviewFrame({
   relpath,
   size = "default",
@@ -217,6 +218,14 @@ export function AppetitePreviewFrame({
   familySlug,
   defaultFacet,
   workbench,
+  /** Seed path for steer (defaults to relpath). Use source binding on work products. */
+  steerRelpath,
+  steerContentId,
+  variantSlug,
+  variantId,
+  variantName,
+  steerKind,
+  showSteer,
   children,
 }: {
   relpath?: string | null;
@@ -227,6 +236,14 @@ export function AppetitePreviewFrame({
   defaultFacet?: AppetiteFacet;
   /** When set, show a Workbench shortcut on the preview (job/prompt overrides media). */
   workbench?: boolean | WorkbenchSurfaceTarget;
+  steerRelpath?: string | null;
+  steerContentId?: string | null;
+  variantSlug?: string | null;
+  variantId?: string | null;
+  variantName?: string | null;
+  steerKind?: "still" | "video" | string;
+  /** When true, show SteerPreviewBadge (human try-bias). Default: when steer props present. */
+  showSteer?: boolean;
   children: React.ReactNode;
 }) {
   const workbenchTarget =
@@ -235,6 +252,12 @@ export function AppetitePreviewFrame({
       : workbench && typeof workbench === "object"
         ? { relpath, jobKey, ...workbench }
         : null;
+  const seedRel = steerRelpath ?? null;
+  const steerable =
+    showSteer === true ||
+    (showSteer !== false &&
+      Boolean(seedRel || steerContentId) &&
+      (Boolean(familySlug) || Boolean(steerContentId) || Boolean(seedRel)));
   return (
     <div className={["appetite-preview-host", className].filter(Boolean).join(" ")}>
       {children}
@@ -244,6 +267,19 @@ export function AppetitePreviewFrame({
           jobKey={workbenchTarget.jobKey}
           promptId={workbenchTarget.promptId}
           name={workbenchTarget.name}
+          size={size}
+        />
+      ) : null}
+      {steerable ? (
+        <SteerPreviewBadge
+          relpath={seedRel || relpath}
+          contentId={steerContentId}
+          familySlug={familySlug}
+          variantSlug={variantSlug}
+          variantId={variantId}
+          variantName={variantName}
+          jobKey={jobKey}
+          assetKind={steerKind || "still"}
           size={size}
         />
       ) : null}

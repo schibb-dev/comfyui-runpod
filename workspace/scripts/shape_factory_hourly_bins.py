@@ -77,6 +77,11 @@ def decisions_path(data_root: Optional[Path] = None) -> Path:
     return guide_dir(data_root) / "decisions.jsonl"
 
 
+def combo_try_prefs_path(data_root: Optional[Path] = None) -> Path:
+    """Per-seed preferred variant (and later arbiter inputs). Human try-bias meta."""
+    return guide_dir(data_root) / "combo_try_prefs.json"
+
+
 def extract_content_id(name: Optional[str]) -> Optional[str]:
     m = _CONTENT_ID_RE.search(str(name or ""))
     return m.group(0).lower() if m else None
@@ -554,11 +559,13 @@ def set_bin_item(
     parent_content_id: str = "",
     mark_in_s: Any = None,
     mark_out_s: Any = None,
+    decision_extra: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Upsert a still/clip unit into the bin (or clear it back to New) and append a ledger row.
 
     ``content_id`` may be 64-hex (still), ``clip_<32hex>`` (span), or ``whole:<id>``
     (virtual whole-file). ``status`` of ``clear`` / ``new`` removes the item.
+    ``decision_extra`` merges into the append-only ledger row (variant, job_key, …).
     """
     raw_cid = str(content_id or "").strip()
     cid = raw_cid.lower()
@@ -658,6 +665,11 @@ def set_bin_item(
         "surface": str(surface or "api").strip() or "api",
         "unit": unit_s,
     }
+    if isinstance(decision_extra, dict):
+        for k, v in decision_extra.items():
+            if k in decision or v is None or v == "":
+                continue
+            decision[k] = v
     _append_decision(decision, data_root=data_root)
     return {"ok": True, "item": found, "bin": bin_summary(bin_id, data_root=data_root), "decision": decision}
 
@@ -898,6 +910,239 @@ def list_bin_candidates(
         ),
         "items": items,
         "count": len(items),
+    }
+
+
+def load_combo_try_prefs(*, data_root: Optional[Path] = None) -> Dict[str, Any]:
+    path = combo_try_prefs_path(data_root)
+    if not path.is_file():
+        return {"version": 1, "by_content_id": {}, "updated_at": None}
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"version": 1, "by_content_id": {}, "updated_at": None}
+    if not isinstance(doc, dict):
+        return {"version": 1, "by_content_id": {}, "updated_at": None}
+    by = doc.get("by_content_id")
+    if not isinstance(by, dict):
+        doc["by_content_id"] = {}
+    return doc
+
+
+def _save_combo_try_prefs(doc: Dict[str, Any], *, data_root: Optional[Path] = None) -> None:
+    path = combo_try_prefs_path(data_root)
+    doc = dict(doc)
+    doc["version"] = int(doc.get("version") or 1)
+    doc["updated_at"] = _utc_now()
+    _atomic_write_json(path, doc)
+
+
+def lookup_seed_steer(
+    *,
+    content_id: str,
+    relpath: str = "",
+    kind: str = "",
+    data_root: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Statuses for one seed across steer bins + recorded preferred variants (human arbiter)."""
+    data_root = (data_root or default_data_root()).resolve()
+    cid = str(content_id or "").strip().lower()
+    if not cid:
+        hit = extract_content_id(relpath)
+        cid = hit or ""
+    if not cid:
+        raise ValueError("content_id required")
+    rel = str(relpath or "").strip().replace("\\", "/")
+    kind_s = str(kind or "").strip().lower()
+    if not kind_s:
+        if cid.startswith("clip_") or cid.startswith("whole:"):
+            kind_s = "video"
+        else:
+            kind_s = "still"
+    ensure_steer_bins_for_source_stills(data_root=data_root)
+    try:
+        from shape_factory_hourly_video_steer import ensure_steer_bins_for_source_videos
+
+        ensure_steer_bins_for_source_videos(data_root=data_root)
+    except Exception:
+        pass
+    targets = list_steer_targets(data_root=data_root)
+    want_slot = "source_video" if kind_s in {"video", "clip", "video_seed"} else "source_still"
+    by_family: Dict[str, Any] = {}
+    slim_targets: List[Dict[str, Any]] = []
+    for t in targets:
+        if not isinstance(t, dict):
+            continue
+        slot = str(t.get("pool_slot") or "").strip() or "source_still"
+        if slot != want_slot:
+            continue
+        bid = str(t.get("id") or "").strip()
+        fam = str(t.get("pool_family") or "").strip()
+        if not bid or not fam:
+            continue
+        slim_targets.append(
+            {
+                "id": bid,
+                "pool_family": fam,
+                "label": t.get("label") or fam,
+                "pool_slot": slot,
+                "asset_kind": t.get("asset_kind"),
+            }
+        )
+        by_cid, by_rel = bin_status_maps(bid, data_root=data_root)
+        st = by_cid.get(cid) or ""
+        if not st and rel:
+            st = by_rel.get(rel.lower()) or by_rel.get(Path(rel).name.lower()) or ""
+        if st:
+            by_family[fam] = {"bin_id": bid, "status": st, "pool_slot": slot}
+    prefs = load_combo_try_prefs(data_root=data_root)
+    seed_prefs = (prefs.get("by_content_id") or {}).get(cid) if isinstance(prefs.get("by_content_id"), dict) else None
+    preferred = {}
+    if isinstance(seed_prefs, dict):
+        raw_pref = seed_prefs.get("preferred_variant_by_family")
+        if isinstance(raw_pref, dict):
+            preferred = raw_pref
+    return {
+        "ok": True,
+        "content_id": cid,
+        "relpath": rel,
+        "kind": kind_s,
+        "by_family": by_family,
+        "preferred_variant_by_family": preferred,
+        "targets": slim_targets,
+    }
+
+
+def steer_work_product(
+    *,
+    content_id: str,
+    relpath: str,
+    status: str,
+    families: Sequence[str],
+    variant_slug: str = "",
+    variant_id: str = "",
+    variant_name: str = "",
+    job_key: str = "",
+    kind: str = "",
+    unit: str = "",
+    parent_content_id: str = "",
+    mark_in_s: Any = None,
+    mark_out_s: Any = None,
+    surface: str = "preview_steer",
+    data_root: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Human-arbiter: apply Keep/Pin/Later/Out/Clear for a seed across many family bins.
+
+    Records variant meta on each decision + ``combo_try_prefs.json`` for later arbiters.
+    """
+    data_root = (data_root or default_data_root()).resolve()
+    cid = str(content_id or "").strip().lower() or (extract_content_id(relpath) or "")
+    if not cid:
+        raise ValueError("content_id required")
+    rel = str(relpath or "").strip().replace("\\", "/")
+    st = str(status or "").strip().lower()
+    fams = [str(f).strip() for f in (families or []) if str(f).strip()]
+    if not fams:
+        raise ValueError("families required")
+    kind_s = str(kind or "").strip().lower()
+    if not kind_s:
+        kind_s = "video" if (cid.startswith("clip_") or cid.startswith("whole:")) else "still"
+    ensure_steer_bins_for_source_stills(data_root=data_root)
+    try:
+        from shape_factory_hourly_video_steer import (
+            ensure_steer_bins_for_source_videos,
+            resolve_video_bin_id_for_family,
+        )
+
+        ensure_steer_bins_for_source_videos(data_root=data_root)
+    except Exception:
+        resolve_video_bin_id_for_family = None  # type: ignore
+
+    extra = {
+        "variant_slug": str(variant_slug or "").strip() or None,
+        "variant_id": str(variant_id or "").strip() or None,
+        "variant_name": str(variant_name or "").strip() or None,
+        "job_key": str(job_key or "").strip() or None,
+        "families": list(fams),
+        "kind": kind_s,
+    }
+    applied: List[Dict[str, Any]] = []
+    errors: List[Dict[str, str]] = []
+    for fam in fams:
+        if kind_s in {"video", "clip", "video_seed"} and resolve_video_bin_id_for_family is not None:
+            bid = resolve_video_bin_id_for_family(fam, data_root=data_root)
+        else:
+            bid = resolve_bin_id_for_family(fam, data_root=data_root)
+        if not bid:
+            errors.append({"family": fam, "error": "no_bin"})
+            continue
+        try:
+            out = set_bin_item(
+                bin_id=bid,
+                content_id=cid,
+                status=st,
+                relpath=rel,
+                surface=surface,
+                data_root=data_root,
+                unit=unit,
+                parent_content_id=parent_content_id,
+                mark_in_s=mark_in_s,
+                mark_out_s=mark_out_s,
+                decision_extra={k: v for k, v in extra.items() if v is not None},
+            )
+            applied.append(
+                {
+                    "family": fam,
+                    "bin_id": bid,
+                    "status": None if st in {"clear", "new", "unset", ""} else st,
+                    "item": out.get("item"),
+                }
+            )
+        except Exception as e:
+            errors.append({"family": fam, "error": str(e)})
+
+    # Persist preferred variant per family for this seed (clear removes prefs for those fams).
+    vslug = str(variant_slug or "").strip()
+    vid = str(variant_id or "").strip()
+    vname = str(variant_name or "").strip()
+    if vslug or vid or st in {"clear", "new", "unset", ""}:
+        with _lock:
+            prefs = load_combo_try_prefs(data_root=data_root)
+            by = prefs.setdefault("by_content_id", {})
+            if not isinstance(by, dict):
+                by = {}
+                prefs["by_content_id"] = by
+            row = by.get(cid) if isinstance(by.get(cid), dict) else {}
+            pref_map = row.get("preferred_variant_by_family") if isinstance(row.get("preferred_variant_by_family"), dict) else {}
+            pref_map = dict(pref_map)
+            for fam in fams:
+                if st in {"clear", "new", "unset", ""}:
+                    pref_map.pop(fam, None)
+                elif vslug or vid:
+                    pref_map[fam] = {
+                        "variant_slug": vslug or None,
+                        "variant_id": vid or None,
+                        "variant_name": vname or None,
+                        "updated_at": _utc_now(),
+                        "job_key": str(job_key or "").strip() or None,
+                    }
+            if pref_map:
+                row = dict(row)
+                row["preferred_variant_by_family"] = pref_map
+                row["updated_at"] = _utc_now()
+                by[cid] = row
+            elif cid in by:
+                by.pop(cid, None)
+            _save_combo_try_prefs(prefs, data_root=data_root)
+
+    lookup = lookup_seed_steer(content_id=cid, relpath=rel, kind=kind_s, data_root=data_root)
+    return {
+        "ok": True,
+        "content_id": cid,
+        "status": st,
+        "applied": applied,
+        "errors": errors,
+        "lookup": lookup,
     }
 
 

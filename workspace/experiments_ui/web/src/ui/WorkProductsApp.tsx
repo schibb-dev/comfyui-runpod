@@ -1033,6 +1033,31 @@ function workbenchSourceMediaRelpath(item: WorkProductItem): string | null {
   return rel;
 }
 
+/** Props for SteerPreviewBadge on work-product previews (seed + variant from this result). */
+function workbenchSteerFrameProps(item: WorkProductItem): {
+  steerRelpath: string | null;
+  familySlug: string | null;
+  jobKey: string;
+  variantSlug: string | null;
+  variantId: string | null;
+  variantName: string | null;
+  steerKind: "still" | "video";
+  showSteer: boolean;
+} {
+  const seed = workbenchSourceMediaRelpath(item);
+  const pp = item.prompt_profile;
+  return {
+    steerRelpath: seed,
+    familySlug: String(item.family_slug || "").trim() || null,
+    jobKey: item.job_key,
+    variantSlug: String(pp?.slug || "").trim() || null,
+    variantId: String(pp?.variant_id || "").trim() || null,
+    variantName: String(pp?.variant_name || pp?.name || pp?.label || "").trim() || null,
+    steerKind: workbenchSourceIsVideo(item) ? "video" : "still",
+    showSteer: Boolean(seed),
+  };
+}
+
 function sourcePreviewUrls(item: WorkProductItem): { thumb: string | null; video: string | null; label: string } {
   const source = workbenchSourceBinding(item);
   const rel = workbenchSourceMediaRelpath(item);
@@ -1616,7 +1641,7 @@ function WorkProductViewer({
       <div className="work-product-viewer__main">
         {videoUrl ? (
           <>
-            <AppetitePreviewFrame relpath={outputRel}>
+            <AppetitePreviewFrame relpath={outputRel} {...workbenchSteerFrameProps(item)}>
               <video
                 ref={outputVideoRef}
                 className="work-product-viewer__video"
@@ -1938,7 +1963,7 @@ function WorkProductViewer({
         ) : showSourceThumb ? (
           <WorkProductSourceThumbPreview item={item} />
         ) : thumbUrl ? (
-          <AppetitePreviewFrame relpath={outputRel}>
+          <AppetitePreviewFrame relpath={outputRel} {...workbenchSteerFrameProps(item)}>
             <img className="work-product-viewer__img" src={thumbUrl} alt={item.job_key} />
           </AppetitePreviewFrame>
         ) : (
@@ -1949,7 +1974,7 @@ function WorkProductViewer({
         <div className="work-product-viewer__source" title={source?.basename || "source"}>
           {sourceUrl ? (
             <>
-              <AppetitePreviewFrame relpath={sourceRel}>
+              <AppetitePreviewFrame relpath={sourceRel} {...workbenchSteerFrameProps(item)}>
                 <video
                   ref={sourceVideoRef}
                   className="work-product-viewer__source-video"
@@ -2091,7 +2116,7 @@ function WorkProductViewer({
               />
             </>
           ) : sourceThumb ? (
-            <AppetitePreviewFrame relpath={sourceRel}>
+            <AppetitePreviewFrame relpath={sourceRel} {...workbenchSteerFrameProps(item)}>
               <img className="work-product-viewer__source-img" src={sourceThumb} alt={source?.basename || "source"} />
             </AppetitePreviewFrame>
           ) : null}

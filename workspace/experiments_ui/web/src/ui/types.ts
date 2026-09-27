@@ -2353,6 +2353,41 @@ export type HourlyBinClearResponse = {
   bin?: HourlyBinSummary;
 };
 
+/** GET /api/shape-factory/hourly-bins/lookup — seed try-bias across family bins. */
+export type HourlyBinLookupTarget = {
+  id?: string;
+  pool_family?: string;
+  label?: string;
+  pool_slot?: string;
+  asset_kind?: string;
+};
+
+export type HourlyBinLookupResponse = {
+  ok?: boolean;
+  error?: string;
+  detail?: string;
+  content_id?: string;
+  relpath?: string;
+  kind?: string;
+  by_family?: Record<string, { bin_id?: string; status?: string; pool_slot?: string }>;
+  preferred_variant_by_family?: Record<
+    string,
+    { variant_slug?: string | null; variant_id?: string | null; variant_name?: string | null }
+  >;
+  targets?: HourlyBinLookupTarget[];
+};
+
+export type HourlyBinSteerWorkProductResponse = {
+  ok?: boolean;
+  error?: string;
+  detail?: string;
+  content_id?: string;
+  status?: string;
+  applied?: Array<{ family?: string; bin_id?: string; status?: string | null }>;
+  errors?: Array<{ family?: string; error?: string }>;
+  lookup?: HourlyBinLookupResponse;
+};
+
 export type HourlyChainPendingPreview = {
   family?: string;
   step?: string;

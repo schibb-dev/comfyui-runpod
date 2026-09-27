@@ -113,6 +113,9 @@ import type {
   HourlyExplore,
   HourlyBinCandidatesResponse,
   HourlyBinItemResponse,
+  HourlyBinClearResponse,
+  HourlyBinLookupResponse,
+  HourlyBinSteerWorkProductResponse,
   HourlyScheduleStatus,
   HourlySubmitMode,
   QueueLedgerControlAction,
@@ -254,6 +257,57 @@ export async function clearHourlyBinSteering(body: {
     const detail = [j.error, j.detail].filter(Boolean).join(": ");
     throw new Error(
       `POST /api/shape-factory/hourly-bins/clear failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function fetchHourlyBinLookup(opts: {
+  contentId: string;
+  relpath?: string | null;
+  kind?: "still" | "video" | string | null;
+}): Promise<HourlyBinLookupResponse> {
+  const sp = new URLSearchParams();
+  sp.set("content_id", opts.contentId.trim());
+  if (opts.relpath?.trim()) sp.set("relpath", opts.relpath.trim());
+  if (opts.kind?.trim()) sp.set("kind", opts.kind.trim());
+  const r = await fetch(`/api/shape-factory/hourly-bins/lookup?${sp.toString()}`);
+  const j = (await r.json().catch(() => ({}))) as HourlyBinLookupResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `GET /api/shape-factory/hourly-bins/lookup failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
+    );
+  }
+  return j;
+}
+
+export async function steerWorkProductCombos(body: {
+  content_id: string;
+  relpath: string;
+  status: "keep" | "later" | "out" | "pin" | "clear" | "new" | string;
+  families: string[];
+  variant_slug?: string;
+  variant_id?: string;
+  variant_name?: string;
+  job_key?: string;
+  kind?: "still" | "video" | string;
+  unit?: string;
+  parent_content_id?: string;
+  mark_in_s?: number | null;
+  mark_out_s?: number | null;
+  surface?: string;
+}): Promise<HourlyBinSteerWorkProductResponse> {
+  const r = await fetch("/api/shape-factory/hourly-bins/steer-work-product", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as HourlyBinSteerWorkProductResponse;
+  if (!r.ok || j.ok === false) {
+    const detail = [j.error, j.detail].filter(Boolean).join(": ");
+    throw new Error(
+      `POST /api/shape-factory/hourly-bins/steer-work-product failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
     );
   }
   return j;
