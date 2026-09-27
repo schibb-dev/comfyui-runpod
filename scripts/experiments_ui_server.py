@@ -2396,18 +2396,40 @@ def _discovery_asset_remove_purge_payload(cfg: ServerConfig, body: Dict[str, Any
 _HOME_FRESH_PAGE_SIZE = 12
 _HOME_FRESH_PAGE_COUNT = 3
 _HOME_FRESH_LIMIT = _HOME_FRESH_PAGE_SIZE * _HOME_FRESH_PAGE_COUNT
+# Last _home_fresh_outputs phase timings (ms) — attached to /api/home/summary when present.
+_HOME_FRESH_LAST_PHASES: Dict[str, float] = {}
 
 
 def _home_fresh_outputs(cfg: ServerConfig, limit: int = _HOME_FRESH_LIMIT) -> List[Dict[str, Any]]:
-    """Newest indexed outputs (og+wip), enriched with live URLs + rating rollup + job refs."""
+    """Newest indexed outputs (og+wip), enriched with live URLs + rating rollup + job refs.
+
+    Job refs come from ``job_output_index.sqlite`` only — never walk ``jobs/**/*.job.json``
+    here (that glob starves the GIL on WSL and made Home Fresh take tens of seconds).
+    """
+    import heapq
+
+    t_all = time.perf_counter()
+    phases: Dict[str, float] = {}
+    lim = max(1, int(limit))
+
+    t0 = time.perf_counter()
     idx_path = cfg.discovery_index_path
     idx = _load_discovery_index_disk(idx_path) if idx_path.exists() else None
     items = idx.get("items") if isinstance(idx, dict) else None
+    phases["index_ms"] = round((time.perf_counter() - t0) * 1000, 1)
     if not isinstance(items, list):
+        _HOME_FRESH_LAST_PHASES.clear()
+        _HOME_FRESH_LAST_PHASES.update(phases)
         return []
-    rows = [it for it in items if isinstance(it, dict)]
-    rows.sort(key=lambda it: float(it.get("mtime") or 0), reverse=True)
-    rows = rows[: max(1, int(limit))]
+
+    t0 = time.perf_counter()
+    # Top-N by mtime without sorting the full ~15k-item index.
+    rows = heapq.nlargest(
+        lim,
+        (it for it in items if isinstance(it, dict)),
+        key=lambda it: float(it.get("mtime") or 0),
+    )
+    phases["select_ms"] = round((time.perf_counter() - t0) * 1000, 1)
 
     def _live(relpath: Any) -> Optional[str]:
         if not isinstance(relpath, str) or not relpath.strip():
@@ -2420,43 +2442,44 @@ def _home_fresh_outputs(cfg: ServerConfig, limit: int = _HOME_FRESH_LIMIT) -> Li
             return None
         return "/files/" + urllib.parse.quote(norm, safe="")
 
+    t0 = time.perf_counter()
     ratings_doc = _discovery_load_ratings_index(cfg)
     appetite_doc = _discovery_load_appetite_index(cfg)
+    phases["ratings_ms"] = round((time.perf_counter() - t0) * 1000, 1)
 
-    # Optional job_key join for Workbench / Queue deep-links (cheap SQLite lookups).
+    # SQLite job_key join only (no filesystem job-tree fallback).
     job_con = None
-    data_root = None
-    find_job_by_key = None
+    job_key_guess_from_output_basename = None
+    lookup_by_relpath = None
     strip_run_spec_suffix = None
+    t0 = time.perf_counter()
     try:
         d = _workspace_scripts_dir()
         if d.is_dir() and str(d) not in sys.path:
             sys.path.insert(0, str(d))
         from shape_factory_job_output_index import (  # type: ignore
             default_job_output_index_path,
-            job_key_guess_from_output_basename,
-            lookup_by_relpath,
+            job_key_guess_from_output_basename as _job_key_guess,
+            lookup_by_relpath as _lookup_by_relpath,
             open_job_output_index,
         )
-        from shape_factory import find_job_by_key as _find_job_by_key  # type: ignore
-        from shape_factory_queue import resolve_shape_factory_data_root  # type: ignore
         from graph_run_specs import strip_run_spec_suffix as _strip_run_spec_suffix  # type: ignore
 
-        find_job_by_key = _find_job_by_key
+        job_key_guess_from_output_basename = _job_key_guess
+        lookup_by_relpath = _lookup_by_relpath
         strip_run_spec_suffix = _strip_run_spec_suffix
-        data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
         og_root = _prefer_flat_library_dir(cfg.output_root, "og")
         index_path = default_job_output_index_path(og_root)
         if index_path.is_file():
             job_con = open_job_output_index(index_path)
     except Exception:
         job_con = None
+    phases["job_index_open_ms"] = round((time.perf_counter() - t0) * 1000, 1)
 
     def _attach_job_refs(row: Dict[str, Any], rel: str) -> None:
         jk = ""
         fam = ""
-        prompt_id = ""
-        if job_con is not None:
+        if job_con is not None and lookup_by_relpath is not None:
             try:
                 meta = lookup_by_relpath(job_con, rel, output_root=cfg.output_root)
             except Exception:
@@ -2464,41 +2487,22 @@ def _home_fresh_outputs(cfg: ServerConfig, limit: int = _HOME_FRESH_LIMIT) -> Li
             if isinstance(meta, dict):
                 jk = str(meta.get("job_key") or "").strip()
                 fam = str(meta.get("family_slug") or "").strip()
-        if not jk and find_job_by_key is not None and data_root is not None:
+        if not jk and job_key_guess_from_output_basename is not None:
+            # Basename guess only — never glob jobs/. Workbench can still resolve by media.
             stem = Path(str(rel).replace("\\", "/")).stem
-            guesses: List[str] = []
             if strip_run_spec_suffix is not None:
                 stripped = str(strip_run_spec_suffix(stem) or "").strip()
                 if stripped:
-                    guesses.append(stripped)
-            base_guess = job_key_guess_from_output_basename(stem)
-            if base_guess:
-                guesses.append(base_guess)
-            guesses.append(stem)
-            seen: set = set()
-            for guess in guesses:
-                g = str(guess or "").strip()
-                if not g or g in seen:
-                    continue
-                seen.add(g)
-                try:
-                    _path, job = find_job_by_key(data_root, g)
-                except Exception:
-                    continue
-                if isinstance(job, dict):
-                    jk = str(job.get("job_key") or g).strip()
-                    fam = fam or str(job.get("family_slug") or job.get("family") or "").strip()
-                    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
-                    prompt_id = str(submit.get("prompt_id") or "").strip()
-                    break
+                    jk = stripped
+            if not jk:
+                jk = str(job_key_guess_from_output_basename(stem) or "").strip()
         if jk:
             row["job_key"] = jk
         if fam:
             row["family_slug"] = fam
-        if prompt_id:
-            row["prompt_id"] = prompt_id
 
     out: List[Dict[str, Any]] = []
+    t0 = time.perf_counter()
     try:
         for it in rows:
             rel = it.get("relpath")
@@ -2531,6 +2535,10 @@ def _home_fresh_outputs(cfg: ServerConfig, limit: int = _HOME_FRESH_LIMIT) -> Li
                 job_con.close()
             except Exception:
                 pass
+    phases["enrich_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+    phases["total_ms"] = round((time.perf_counter() - t_all) * 1000, 1)
+    _HOME_FRESH_LAST_PHASES.clear()
+    _HOME_FRESH_LAST_PHASES.update(phases)
     return out
 
 
@@ -2963,6 +2971,8 @@ def _home_summary_payload(
     if "fresh_outputs" in wanted:
         try:
             payload["fresh_outputs"] = _home_fresh_outputs(cfg, limit=_HOME_FRESH_LIMIT)
+            if _HOME_FRESH_LAST_PHASES:
+                payload.setdefault("timings", {})["fresh_outputs"] = dict(_HOME_FRESH_LAST_PHASES)
         except Exception as e:
             payload["fresh_outputs"] = []
             payload.setdefault("errors", {})["fresh_outputs"] = str(e)
@@ -4396,7 +4406,7 @@ def _shape_factory_clips_library_payload(cfg: "ServerConfig", q: Dict[str, List[
     reg = _clips_registry_path(cfg)
     con = connect_clips(reg)
     try:
-        return list_clips_library(
+        payload = list_clips_library(
             con,
             limit=_int("limit", 100),
             offset=_int("offset", 0),
@@ -4415,7 +4425,36 @@ def _shape_factory_clips_library_payload(cfg: "ServerConfig", q: Dict[str, List[
         )
     finally:
         con.close()
+    try:
+        parents = payload.get("parents") if isinstance(payload, dict) else None
+        if isinstance(parents, list) and parents:
+            _discovery_attach_descendant_counts(cfg, parents)
+        clips = payload.get("clips") if isinstance(payload, dict) else None
+        if isinstance(clips, list) and clips:
+            # Count lineage under the parent media (clip → parent video descendants).
+            media_refs = [
+                {
+                    "relpath": c.get("media_relpath") or c.get("parent_relpath"),
+                    "content_id": c.get("parent_content_id"),
+                }
+                for c in clips
+                if isinstance(c, dict)
+            ]
+            if media_refs:
+                d = _workspace_scripts_dir()
+                if d.is_dir() and str(d) not in sys.path:
+                    sys.path.insert(0, str(d))
+                from discovery_lineage_adjacency import counts_for_media_refs  # type: ignore
 
+                rows = counts_for_media_refs(_discovery_lineage_edges_path(cfg), media_refs)
+                for c, row in zip(clips, rows):
+                    if not isinstance(c, dict) or not isinstance(row, dict):
+                        continue
+                    c["direct_child_count"] = int(row.get("direct_child_count") or 0)
+                    c["descendant_count"] = int(row.get("descendant_count") or 0)
+    except Exception:
+        pass
+    return payload
 
 def _shape_factory_clips_derived_payload(cfg: "ServerConfig", q: Dict[str, List[str]]) -> Dict[str, Any]:
     """GET /api/shape-factory/clips/derived — outputs from jobs that used a clip bookmark."""
@@ -5320,8 +5359,92 @@ def _shape_factory_input_curation_stills_payload(cfg: ServerConfig, q: Dict[str,
             if ap.get("appetite"):
                 it["appetite"] = ap.get("appetite")
                 it["appetite_facet"] = ap.get("appetite_facet") or "source"
+    try:
+        _discovery_attach_descendant_counts(cfg, payload.get("items") or [])
+    except Exception:
+        pass
     payload["data_root"] = str(data_root)
     return payload
+
+
+def _discovery_attach_descendant_counts(cfg: ServerConfig, items: List[Any]) -> None:
+    """Mutate item dicts with direct_child_count / descendant_count from adjacency index."""
+    refs: List[Dict[str, Any]] = []
+    slots: List[Dict[str, Any]] = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        refs.append(
+            {
+                "relpath": it.get("relpath") or it.get("media_relpath") or it.get("path"),
+                "basename": it.get("basename") or it.get("media_basename"),
+                "content_id": it.get("content_id") or it.get("parent_content_id"),
+                "group_id": it.get("group_id"),
+            }
+        )
+        slots.append(it)
+    if not refs:
+        return
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from discovery_lineage_adjacency import counts_for_media_refs  # type: ignore
+
+    edges_path = _discovery_lineage_edges_path(cfg)
+    rows = counts_for_media_refs(edges_path, refs)
+    for it, row in zip(slots, rows):
+        if not isinstance(row, dict):
+            continue
+        it["direct_child_count"] = int(row.get("direct_child_count") or 0)
+        it["descendant_count"] = int(row.get("descendant_count") or 0)
+        if row.get("group_id") and not it.get("lineage_group_id"):
+            it["lineage_group_id"] = row.get("group_id")
+
+
+def _discovery_lineage_descendant_counts_payload(
+    cfg: ServerConfig, q: Dict[str, List[str]], body: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """GET/POST /api/discovery/lineage-descendant-counts — batch counts for gallery badges."""
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from discovery_lineage_adjacency import (  # type: ignore
+        counts_for_media_refs,
+        ensure_adjacency,
+    )
+
+    edges_path = _discovery_lineage_edges_path(cfg)
+    force = str((q.get("rebuild") or ["0"])[0]).strip().lower() in {"1", "true", "yes"}
+    ensure_out = ensure_adjacency(edges_path, force=force)
+    refs: List[Dict[str, Any]] = []
+    if isinstance(body, dict):
+        raw_items = body.get("items") or body.get("refs") or []
+        if isinstance(raw_items, list):
+            for it in raw_items:
+                if isinstance(it, dict):
+                    refs.append(it)
+                elif isinstance(it, str) and it.strip():
+                    refs.append({"relpath": it.strip()})
+        for key in ("relpaths", "paths"):
+            arr = body.get(key)
+            if isinstance(arr, list):
+                for p in arr:
+                    if isinstance(p, str) and p.strip():
+                        refs.append({"relpath": p.strip()})
+    for raw in q.get("relpath") or []:
+        if str(raw).strip():
+            refs.append({"relpath": str(raw).strip()})
+    for raw in q.get("content_id") or []:
+        if str(raw).strip():
+            refs.append({"content_id": str(raw).strip()})
+    rows = counts_for_media_refs(edges_path, refs[:500])
+    return {
+        "ok": True,
+        "items": rows,
+        "count": len(rows),
+        "adjacency": ensure_out,
+        "lineage_graph_path": str(edges_path),
+    }
 
 
 def _shape_factory_input_curation_collections_mutate_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -6807,12 +6930,16 @@ def _discovery_load_appetite_index(cfg: "ServerConfig") -> Optional[Dict[str, An
     db_path = ratings_db_path_for_index(path)
     if not path.is_file() and not db_path.is_file():
         return None
-    try:
-        mtime_src = db_path if db_path.is_file() else path
-        mtime = mtime_src.stat().st_mtime
-    except OSError:
-        return None
+
+    def _mtime() -> float:
+        try:
+            mtime_src = db_path if db_path.is_file() else path
+            return float(mtime_src.stat().st_mtime)
+        except OSError:
+            return 0.0
+
     key = str(db_path if db_path.is_file() else path)
+    mtime = _mtime()
     cached = _APPETITE_INDEX_CACHE.get(key)
     if cached and cached[0] == mtime:
         return cached[1]
@@ -6822,7 +6949,7 @@ def _discovery_load_appetite_index(cfg: "ServerConfig") -> Optional[Dict[str, An
         return None
     if not isinstance(doc, dict):
         return None
-    _APPETITE_INDEX_CACHE[key] = (mtime, doc)
+    _APPETITE_INDEX_CACHE[key] = (_mtime(), doc)
     return doc
 
 
@@ -7791,14 +7918,21 @@ def _discovery_load_ratings_index(cfg: "ServerConfig") -> Optional[Dict[str, Any
     db_path = ratings_db_path_for_index(path)
     if not path.is_file() and not db_path.is_file():
         return None
-    try:
-        db_mtime = db_path.stat().st_mtime if db_path.is_file() else 0.0
-        json_mtime = path.stat().st_mtime if path.is_file() else 0.0
-    except OSError:
-        return None
+
+    def _stamp() -> Tuple[float, float]:
+        try:
+            db_m = db_path.stat().st_mtime if db_path.is_file() else 0.0
+        except OSError:
+            db_m = 0.0
+        try:
+            json_m = path.stat().st_mtime if path.is_file() else 0.0
+        except OSError:
+            json_m = 0.0
+        return (db_m, json_m)
+
     key = str(db_path if db_path.is_file() else path)
     # Cache key includes JSON mtime so aggregate sections stay valid across sqlite writes.
-    stamp = (db_mtime, json_mtime)
+    stamp = _stamp()
     cached = _RATINGS_INDEX_CACHE.get(key)
     if cached and cached[0] == stamp:
         return cached[1]
@@ -7808,7 +7942,9 @@ def _discovery_load_ratings_index(cfg: "ServerConfig") -> Optional[Dict[str, Any
         return None
     if not isinstance(doc, dict):
         return None
-    _RATINGS_INDEX_CACHE[key] = (stamp, doc)
+    # Re-stat after load: open_ratings_db used to commit on every open (mtime bump);
+    # store the post-load stamp so the next request can hit.
+    _RATINGS_INDEX_CACHE[key] = (_stamp(), doc)
     return doc
 
 
@@ -8140,6 +8276,16 @@ def _discovery_persist_lineage_edge_rows(cfg: "ServerConfig", rows: List[Dict[st
         # Keep inverted citation index warm for forward-fill lookups.
         try:
             _discovery_citations_ingest_lineage_edge_rows(cfg, rows)
+        except Exception:
+            pass
+        # Keep parent→child adjacency + descendant counts in sync.
+        try:
+            d = _workspace_scripts_dir()
+            if d.is_dir() and str(d) not in sys.path:
+                sys.path.insert(0, str(d))
+            from discovery_lineage_adjacency import ingest_edge_rows  # type: ignore
+
+            ingest_edge_rows(path, rows)
         except Exception:
             pass
         return added
@@ -13663,6 +13809,14 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/discovery/asset-lineage":
             return self._handle_discovery_asset_lineage_get(q)
+        if path == "/api/discovery/lineage-descendant-counts":
+            try:
+                payload = _discovery_lineage_descendant_counts_payload(cfg, q)
+                return _json_response(self, 200, payload)
+            except Exception as e:
+                return _json_response(
+                    self, 500, {"ok": False, "error": "lineage_descendant_counts_failed", "detail": str(e)}
+                )
         if path == "/api/discovery/asset-ratings":
             return self._handle_discovery_asset_ratings_get(q)
         if path == "/api/discovery/rating-sampler":

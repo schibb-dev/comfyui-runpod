@@ -149,6 +149,14 @@ function StillGalleryCompactCard({
         <span className={`still-gallery__tag-state still-gallery__tag-state--${status === "done" ? "done" : status === "queued" ? "queued" : ""}`}>
           {tagStateLabel(status)}
         </span>
+        {Number(it.descendant_count || 0) > 0 ? (
+          <span
+            className="still-gallery__desc-badge"
+            title={`${it.descendant_count} lineage descendant${Number(it.descendant_count) === 1 ? "" : "s"} (${it.direct_child_count || 0} direct)`}
+          >
+            ↓{it.descendant_count}
+          </span>
+        ) : null}
       </div>
       {mediaOnly ? null : (
         <div className="still-gallery__compact-body">

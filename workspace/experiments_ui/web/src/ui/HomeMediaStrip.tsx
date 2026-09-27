@@ -107,6 +107,28 @@ export function HomeMediaLightbox({
   const stageRef = useRef<HTMLDivElement | null>(null);
   const swipeStartRef = useRef<{ x: number; y: number; id: number } | null>(null);
   const swipeAxisRef = useRef<null | "x" | "y">(null);
+  /** Set when a vertical swipe navigates — suppress the follow-up click from revealing chrome. */
+  const suppressRevealRef = useRef(false);
+  /** Native / trim chrome stays off until an explicit tap (autoplay without overlay). */
+  const [showPlayerControls, setShowPlayerControls] = useState(false);
+
+  useEffect(() => {
+    setShowPlayerControls(false);
+  }, [item?.id]);
+
+  const revealPlayerControls = useCallback(
+    (e: React.SyntheticEvent) => {
+      if (showPlayerControls) return;
+      if (suppressRevealRef.current) {
+        suppressRevealRef.current = false;
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      setShowPlayerControls(true);
+    },
+    [showPlayerControls],
+  );
 
   const markIn =
     item && typeof item.markInS === "number" && Number.isFinite(item.markInS)
@@ -205,8 +227,13 @@ export function HomeMediaLightbox({
       reset();
       if (!vertical) return;
       // Swipe up → next; swipe down → previous (same as Queue / Workbench).
-      if (dy <= -SWIPE_COMMIT_PX) go(1);
-      else if (dy >= SWIPE_COMMIT_PX) go(-1);
+      if (dy <= -SWIPE_COMMIT_PX) {
+        suppressRevealRef.current = true;
+        go(1);
+      } else if (dy >= SWIPE_COMMIT_PX) {
+        suppressRevealRef.current = true;
+        go(-1);
+      }
     };
 
     el.addEventListener("pointerdown", onDown);
@@ -304,18 +331,28 @@ export function HomeMediaLightbox({
           style={isPhone && n > 1 ? { touchAction: "pan-y" } : undefined}
         >
           {hasClipWindow && item.mediaUrl ? (
-            <PipelineMediaPlayer
-              className="home-fresh-lightbox__player"
-              videoUrl={item.mediaUrl}
-              thumbUrl={item.thumbUrl}
-              mediaKey={item.id}
-              alt={item.label}
-              markIn={markIn}
-              markOut={markOut}
-              appetiteRelpath={item.appetiteRelpath}
-              autoplay
-              loop
-            />
+            <div
+              className={
+                "home-fresh-lightbox__player-hit" +
+                (showPlayerControls ? "" : " home-fresh-lightbox__player-hit--tap-reveal")
+              }
+              onClick={showPlayerControls ? undefined : revealPlayerControls}
+            >
+              <PipelineMediaPlayer
+                className="home-fresh-lightbox__player"
+                videoUrl={item.mediaUrl}
+                thumbUrl={item.thumbUrl}
+                mediaKey={item.id}
+                alt={item.label}
+                markIn={markIn}
+                markOut={markOut}
+                appetiteRelpath={item.appetiteRelpath}
+                autoplay
+                loop
+                showControls={false}
+                showTrimControls={showPlayerControls}
+              />
+            </div>
           ) : item.mediaKind === "video" && item.mediaUrl ? (
             <div className="home-fresh-lightbox__appetite-host">
               <video
@@ -323,11 +360,13 @@ export function HomeMediaLightbox({
                 key={item.mediaUrl}
                 className="home-fresh-lightbox__media"
                 src={item.mediaUrl}
-                controls
+                controls={showPlayerControls}
                 playsInline
                 muted
                 loop
+                autoPlay
                 poster={item.thumbUrl || undefined}
+                onClick={showPlayerControls ? undefined : revealPlayerControls}
               />
               <HomeAppetiteBadge
                 relpath={item.appetiteRelpath}

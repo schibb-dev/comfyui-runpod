@@ -14880,6 +14880,15 @@ button.home-backlog-linkish {
   right: 8px;
   z-index: 3;
 }
+.home-fresh-lightbox__player-hit {
+  width: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.home-fresh-lightbox__player-hit--tap-reveal {
+  cursor: pointer;
+}
 .home-fresh-lightbox__player {
   width: 100%;
   min-height: 0;
@@ -23324,6 +23333,12 @@ button.home-backlog-linkish {
   color: color-mix(in srgb, #8cb 90%, currentColor);
 }
 
+.clips-lib-badge--lineage {
+  border-color: color-mix(in srgb, #6af 50%, transparent);
+  color: color-mix(in srgb, #9cf 90%, currentColor);
+  margin-left: 6px;
+}
+
 .clips-lib-badge--unused {
   border-color: color-mix(in srgb, #a86 45%, transparent);
   color: color-mix(in srgb, #c96 85%, currentColor);
@@ -24187,6 +24202,22 @@ button.home-backlog-linkish {
 .still-gallery__tag-state--done {
   border-color: rgba(120, 210, 160, 0.55);
   color: #d6f5e4;
+}
+
+.still-gallery__desc-badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 2;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  background: rgba(12, 14, 18, 0.82);
+  border: 1px solid rgba(120, 170, 255, 0.55);
+  color: #cfe0ff;
+  pointer-events: none;
 }
 .work-product-params-editor__grid {
   display: grid;

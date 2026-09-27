@@ -2314,6 +2314,9 @@ export type ShapeFactoryClip = {
   use_count?: number;
   /** Inferred/explicit rating of the parent media basename (when ratings index known). */
   parent_rating?: number | null;
+  /** Lineage descendants of the parent media (not clip-use count). */
+  direct_child_count?: number | null;
+  descendant_count?: number | null;
 };
 
 export type ShapeFactoryClipsListResponse = {
@@ -2331,6 +2334,8 @@ export type ShapeFactoryClipsLibraryParent = {
   clip_count: number;
   has_default?: boolean;
   asset_mtime?: number | null;
+  direct_child_count?: number | null;
+  descendant_count?: number | null;
 };
 
 export type ClipsLibrarySort =

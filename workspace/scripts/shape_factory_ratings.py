@@ -1229,11 +1229,16 @@ def open_ratings_db(
     con.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_rating_short ON rating_row(short_key)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_appetite_short ON appetite_row(short_key)")
-    con.execute(
-        "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
-        (str(RATINGS_DB_SCHEMA_VERSION),),
-    )
-    con.commit()
+    # Only commit when schema/meta actually changes. A write on every open bumps
+    # ratings.sqlite mtime and permanently defeats mtime-keyed UI caches
+    # (_discovery_load_ratings_index / appetite), making Home Fresh reload ~1s/request.
+    schema_ver = str(RATINGS_DB_SCHEMA_VERSION)
+    need_commit = created
+    if _meta_get(con, "schema_version") != schema_ver:
+        _meta_set(con, "schema_version", schema_ver)
+        need_commit = True
+    if need_commit:
+        con.commit()
 
     migrated = _meta_get(con, "migrated_from_json") == "1"
     if not migrated:

@@ -166,11 +166,16 @@ def open_job_output_index(path: Path) -> sqlite3.Connection:
     con.execute("CREATE INDEX IF NOT EXISTS idx_jo_content ON job_output(content_id)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_jo_job_key ON job_output(job_key)")
     con.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
-    con.execute(
-        "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
-        (str(JOB_OUTPUT_INDEX_SCHEMA_VERSION),),
-    )
-    con.commit()
+    # Avoid commit-on-every-open: it bumps mtime and fights WAL readers on WSL.
+    schema_ver = str(JOB_OUTPUT_INDEX_SCHEMA_VERSION)
+    row = con.execute("SELECT value FROM meta WHERE key = ?", ("schema_version",)).fetchone()
+    existing = None if row is None else str(row["value"] if isinstance(row, sqlite3.Row) else row[0])
+    if existing != schema_ver:
+        con.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
+            (schema_ver,),
+        )
+        con.commit()
     return con
 
 

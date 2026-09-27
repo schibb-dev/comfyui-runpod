@@ -3235,6 +3235,11 @@ export type InputCurationStillItem = {
   note?: string | null;
   appetite?: Appetite | null;
   appetite_facet?: AppetiteFacet | null;
+  /** Lineage: direct children in discovery graph. */
+  direct_child_count?: number | null;
+  /** Lineage: transitive descendants. */
+  descendant_count?: number | null;
+  lineage_group_id?: string | null;
 };
 
 export type InputCurationCollectionItem = {

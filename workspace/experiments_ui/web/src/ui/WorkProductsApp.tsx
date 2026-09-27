@@ -5548,12 +5548,42 @@ function WorkProductLineageSection({
 }) {
   const seeded = useMemo(() => workProductLineageSeed(item), [item]);
   const seed = seeded?.seed ?? null;
-  const summary = seed
-    ? seeded?.via === "source"
-      ? `via source · ${String(seed.name || seed.relpath || "source")}`
-      : String(seed.name || seed.relpath || "output")
-    : "no source or output yet";
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const [descCount, setDescCount] = useState<number | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const rel = String(seed?.relpath || (seed as { video_relpath?: string } | null)?.video_relpath || "").trim();
+    if (!rel || !open) {
+      setDescCount(null);
+      return;
+    }
+    const sp = new URLSearchParams();
+    sp.set("relpath", rel);
+    void fetch(`/api/discovery/lineage-descendant-counts?${sp.toString()}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled) return;
+        const row = Array.isArray(j?.items) ? j.items[0] : null;
+        const n = Number(row?.descendant_count || 0);
+        setDescCount(Number.isFinite(n) ? n : 0);
+      })
+      .catch(() => {
+        if (!cancelled) setDescCount(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, seed]);
+  const summary = seed
+    ? [
+        seeded?.via === "source"
+          ? `via source · ${String(seed.name || seed.relpath || "source")}`
+          : String(seed.name || seed.relpath || "output"),
+        descCount != null && descCount > 0 ? `↓${descCount}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : "no source or output yet";
 
   return (
     <details

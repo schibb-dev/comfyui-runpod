@@ -24,6 +24,7 @@ export function PipelineMediaPlayer({
   autoplay = false,
   loop,
   showControls,
+  showTrimControls,
 }: {
   videoUrl?: string | null;
   thumbUrl?: string | null;
@@ -45,6 +46,8 @@ export function PipelineMediaPlayer({
   loop?: boolean;
   /** Default: native controls when there is no trim window. */
   showControls?: boolean;
+  /** Default: show trim bar when a trim window exists. Set false to hide until reveal. */
+  showTrimControls?: boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [duration, setDuration] = useState(0);
@@ -132,7 +135,7 @@ export function PipelineMediaPlayer({
             />
           </AppetitePreviewFrame>
         </div>
-        {hasTrimIntent ? (
+        {hasTrimIntent && showTrimControls !== false ? (
           <>
             <VideoTrimControls
               className="work-product-viewer__trim"

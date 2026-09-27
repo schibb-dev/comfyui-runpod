@@ -1107,6 +1107,14 @@ export function ClipsLibraryApp() {
                         </div>
                         <div className="clips-lib-card__meta">
                           {p.clip_count} clip{p.clip_count === 1 ? "" : "s"}
+                          {Number(p.descendant_count || 0) > 0 ? (
+                            <span
+                              className="clips-lib-badge clips-lib-badge--lineage"
+                              title={`${p.descendant_count} lineage descendants (${p.direct_child_count || 0} direct)`}
+                            >
+                              ↓{p.descendant_count}
+                            </span>
+                          ) : null}
                         </div>
                         <div className="clips-lib-card__path" title={p.media_relpath}>
                           {p.media_relpath}
@@ -1222,6 +1230,15 @@ export function ClipsLibraryApp() {
                           <span className="factory-muted"> · {span.toFixed(1)}s</span>
                           {typeof c.use_count === "number" && c.use_count > 0 ? (
                             <span className="factory-muted"> · used {c.use_count}×</span>
+                          ) : null}
+                          {Number(c.descendant_count || 0) > 0 ? (
+                            <span
+                              className="factory-muted"
+                              title={`${c.descendant_count} lineage descendants of parent media`}
+                            >
+                              {" "}
+                              · ↓{c.descendant_count}
+                            </span>
                           ) : null}
                           {typeof c.parent_rating === "number" ? (
                             <span className="factory-muted"> · ★{c.parent_rating.toFixed(1)}</span>
