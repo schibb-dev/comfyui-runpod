@@ -2398,6 +2398,128 @@ _HOME_FRESH_PAGE_COUNT = 3
 _HOME_FRESH_LIMIT = _HOME_FRESH_PAGE_SIZE * _HOME_FRESH_PAGE_COUNT
 # Last _home_fresh_outputs phase timings (ms) — attached to /api/home/summary when present.
 _HOME_FRESH_LAST_PHASES: Dict[str, float] = {}
+_HOME_FRESH_LAST_TIP_MONO = 0.0
+_HOME_FRESH_TIP_INTERVAL_S = 8.0
+
+
+def _home_fresh_recent_media_rels(output_root: Path, *, limit: int = 64) -> List[str]:
+    """Newest og/wip media relpaths from today's + yesterday's date folders (bounded walk)."""
+    root = Path(output_root)
+    today = _dt.datetime.now().date()
+    days = [today.isoformat(), (today - _dt.timedelta(days=1)).isoformat()]
+    cands: List[Tuple[float, str]] = []
+    for lib in ("og", "wip"):
+        lib_root = _prefer_flat_library_dir(root, lib)
+        if not lib_root.is_dir():
+            continue
+        for day in days:
+            day_dir = lib_root / day
+            if not day_dir.is_dir():
+                continue
+            try:
+                for p in day_dir.rglob("*"):
+                    try:
+                        if not p.is_file():
+                            continue
+                    except OSError:
+                        continue
+                    ext = p.suffix.lower()
+                    if ext not in _DISCOVERY_MEDIA_EXTS:
+                        continue
+                    name_u = p.name.upper()
+                    if "_RAW_" in name_u or "_PREVIEW_" in name_u:
+                        if "_FINAL_" not in name_u:
+                            continue
+                    try:
+                        mt = float(p.stat().st_mtime)
+                    except OSError:
+                        continue
+                    try:
+                        rel = str(p.resolve().relative_to(root.resolve())).replace("\\", "/")
+                    except Exception:
+                        continue
+                    cands.append((mt, rel))
+            except OSError:
+                continue
+    cands.sort(key=lambda x: x[0], reverse=True)
+    out: List[str] = []
+    seen: set = set()
+    for _mt, rel in cands:
+        if rel in seen:
+            continue
+        seen.add(rel)
+        out.append(rel)
+        if len(out) >= max(1, int(limit)):
+            break
+    return out
+
+
+def _home_fresh_tip_recent_disk(cfg: "ServerConfig") -> Dict[str, Any]:
+    """
+    Tip newest disk media into discovery_og_wip_index so Home Fresh tracks deposits.
+
+    Full index rebuild is rare; factory tip-in can miss (path/root quirks). A bounded
+    date-folder tip every ~8s (≤4 newest missing stems) keeps Fresh honest
+    without rglob of the whole tree or multi-second content-hash batches.
+    """
+    global _HOME_FRESH_LAST_TIP_MONO
+    now = time.perf_counter()
+    if now - _HOME_FRESH_LAST_TIP_MONO < _HOME_FRESH_TIP_INTERVAL_S:
+        return {"ok": True, "skipped": "throttle"}
+    _HOME_FRESH_LAST_TIP_MONO = now
+    rels = _home_fresh_recent_media_rels(cfg.output_root, limit=48)
+    if not rels:
+        return {"ok": True, "tipped": 0, "created": 0}
+    idx = _load_discovery_index_disk(cfg.discovery_index_path) if cfg.discovery_index_path.exists() else None
+    items = idx.get("items") if isinstance(idx, dict) else None
+    covered: set = set()
+    if isinstance(items, list):
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            for k in ("relpath", "video_relpath", "thumb_relpath"):
+                r = it.get(k)
+                if isinstance(r, str) and r.strip():
+                    covered.add(_normalize_rel_posix(r.strip()))
+            for m in it.get("members") or []:
+                if isinstance(m, dict) and isinstance(m.get("relpath"), str):
+                    covered.add(_normalize_rel_posix(m["relpath"]))
+    # Prefer one path per stem (video over image) — upsert pulls siblings anyway.
+    by_stem: Dict[str, str] = {}
+    for rel in rels:
+        norm = _normalize_rel_posix(rel)
+        if not norm or norm in covered:
+            continue
+        stem_key = norm.rsplit(".", 1)[0].lower()
+        ext = Path(norm).suffix.lower()
+        prev = by_stem.get(stem_key)
+        if prev is None:
+            by_stem[stem_key] = norm
+        elif ext in _DISCOVERY_VIDEO_EXTS and Path(prev).suffix.lower() not in _DISCOVERY_VIDEO_EXTS:
+            by_stem[stem_key] = norm
+    need = list(by_stem.values())[:4]
+    if not need:
+        return {"ok": True, "tipped": 0, "created": 0, "checked": len(rels)}
+    d = _workspace_scripts_dir()
+    if d.is_dir() and str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from discovery_index_upsert import tip_in_discovery_relpaths  # type: ignore
+
+    # Tip newest missing stems first (content-hash upsert is costly; keep batches tiny).
+    payload = tip_in_discovery_relpaths(
+        index_path=cfg.discovery_index_path,
+        output_root=cfg.output_root,
+        relpaths=need,
+    )
+    if payload.get("created_count") or payload.get("ok_count"):
+        _discovery_invalidate_index_cache(cfg.discovery_index_path)
+    return {
+        "ok": True,
+        "tipped": int(payload.get("ok_count") or 0),
+        "created": int(payload.get("created_count") or 0),
+        "checked": len(rels),
+        "need": len(need),
+    }
 
 
 def _home_fresh_outputs(cfg: ServerConfig, limit: int = _HOME_FRESH_LIMIT) -> List[Dict[str, Any]]:
@@ -2411,6 +2533,16 @@ def _home_fresh_outputs(cfg: ServerConfig, limit: int = _HOME_FRESH_LIMIT) -> Li
     t_all = time.perf_counter()
     phases: Dict[str, float] = {}
     lim = max(1, int(limit))
+
+    t0 = time.perf_counter()
+    tip_info: Dict[str, Any] = {}
+    try:
+        tip_info = _home_fresh_tip_recent_disk(cfg)
+    except Exception as e:
+        tip_info = {"ok": False, "error": str(e)}
+    phases["tip_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+    if tip_info.get("created"):
+        phases["tip_created"] = float(tip_info.get("created") or 0)
 
     t0 = time.perf_counter()
     idx_path = cfg.discovery_index_path
