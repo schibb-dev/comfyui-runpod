@@ -4,6 +4,7 @@ import { PageHeader } from "./PageHeader";
 import {
   queueHref,
   stillsHref,
+  submitHref,
   workbenchHref,
   workbenchHrefForMedia,
 } from "./discoveryDeepLink";
@@ -112,11 +113,21 @@ function previewFromOutput(item: HomeSummaryFreshOutput): HomePreviewItem {
     "";
   const jobKey = String(item.job_key || "").trim();
   const promptId = String(item.prompt_id || "").trim();
+  const family = String(item.family_slug || "").trim();
   const workbenchUrl = jobKey
     ? workbenchHref({ jobKey, promptId: promptId || null })
     : workbenchHrefForMedia({ relpath: item.relpath, name: item.name, groupId: item.group_id });
   const queueUrl =
     jobKey || promptId ? queueHref({ jobKey: jobKey || null, promptId: promptId || null }) : "";
+  const submitUrl = rel
+    ? submitHref({
+        mediaRelpath: rel,
+        fromJob: jobKey || null,
+        family: family || null,
+        step: video ? "advance.extend" : null,
+        origin: "home-fresh",
+      })
+    : "";
   const rating = item.ratings?.rating_effective;
   return {
     id: String(item.group_id || item.relpath || label),
@@ -128,6 +139,14 @@ function previewFromOutput(item: HomeSummaryFreshOutput): HomePreviewItem {
     appetiteRelpath: rel || null,
     badge: typeof rating === "number" && rating > 0 ? `★ ${rating.toFixed(rating >= 1 ? 1 : 2)}` : null,
     links: [
+      submitUrl
+        ? { href: submitUrl, label: "Submit →", title: "Open Submit with this output" }
+        : {
+            href: "",
+            label: "Submit unavailable",
+            disabled: true,
+            title: "No media path for Submit",
+          },
       { href: workbenchUrl, label: "Open in Workbench →" },
       queueUrl
         ? { href: queueUrl, label: "Open in Queue →" }
@@ -146,6 +165,9 @@ function previewFromInput(item: HomeSummaryFreshInput): HomePreviewItem {
   const cid = String(item.content_id || "").trim();
   const label = item.basename || basename(rel) || "Still";
   const url = item.thumb_url || item.url || (rel ? fileUrlFromRel(rel) : "");
+  const submitUrl = rel
+    ? submitHref({ mediaRelpath: rel, origin: "home-fresh-input" })
+    : "";
   return {
     id: cid || rel || label,
     label,
@@ -156,6 +178,14 @@ function previewFromInput(item: HomeSummaryFreshInput): HomePreviewItem {
     appetiteRelpath: rel || null,
     defaultFacet: "source",
     links: [
+      submitUrl
+        ? { href: submitUrl, label: "Submit →", title: "Open Submit with this still (I2V)" }
+        : {
+            href: "",
+            label: "Submit unavailable",
+            disabled: true,
+            title: "No media path for Submit",
+          },
       {
         href: stillsHref({ contentId: cid || null, relpath: rel || null }),
         label: "Open in Stills →",
@@ -192,6 +222,24 @@ function previewFromClip(item: HomeSummaryNewClip): HomePreviewItem {
     appetiteRelpath: null,
     badge: item.is_default ? "default" : dur,
     links: [
+      rel || clipId
+        ? {
+            href: submitHref({
+              mediaRelpath: rel || null,
+              clipId: clipId || null,
+              markIn,
+              markOut,
+              origin: "home-fresh-clips",
+            }),
+            label: "Submit →",
+            title: "Open Submit with this clip window",
+          }
+        : {
+            href: "",
+            label: "Submit unavailable",
+            disabled: true,
+            title: "No media path for Submit",
+          },
       {
         href: workbenchHrefForMedia({ relpath: rel || null, name: item.media_basename || label }),
         label: "Open in Workbench →",
