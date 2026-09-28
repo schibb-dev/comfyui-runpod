@@ -370,6 +370,14 @@ function historyThumb(item: ComfyHistoryItem): string | null {
   if (item.primary_video_relpath && /\.mp4$/i.test(item.primary_video_relpath)) {
     return "/files/" + encodeURIComponent(item.primary_video_relpath.replace(/\.mp4$/i, ".png"));
   }
+  // Hollow / failed runs often have no output — fall back like pending queue thumbs.
+  if (item.input_media_kind === "image" && item.input_media_url) return item.input_media_url;
+  if (item.input_media_relpath && /\.(mp4|webm|mov|mkv)$/i.test(item.input_media_relpath)) {
+    return (
+      "/files/" +
+      encodeURIComponent(item.input_media_relpath.replace(/\.(mp4|webm|mov|mkv)$/i, ".png"))
+    );
+  }
   return null;
 }
 

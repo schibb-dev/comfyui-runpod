@@ -12746,24 +12746,6 @@ def _history_status_and_times(record: Any) -> Dict[str, Any]:
     return out
 
 
-def _history_has_text_output(record: Any) -> bool:
-    """Florence still-tag graphs succeed with ShowText / Florence2Run text, not image files."""
-    if not isinstance(record, dict):
-        return False
-    outs = record.get("outputs")
-    if not isinstance(outs, dict):
-        return False
-    for node_out in outs.values():
-        if not isinstance(node_out, dict):
-            continue
-        text = node_out.get("text")
-        if isinstance(text, list) and any(str(t).strip() for t in text):
-            return True
-        if isinstance(text, str) and text.strip():
-            return True
-    return False
-
-
 def _demote_hollow_history_success(
     status_info: Dict[str, Any],
     *,
@@ -12774,15 +12756,18 @@ def _demote_hollow_history_success(
 ) -> Dict[str, Any]:
     """
     Comfy often marks graphs ``success`` even when no media was produced
-    (early abort / bad LoadImage still leaves scalar ``value`` outputs).
+    (early abort / bad LoadImage still leaves scalar ``value`` outputs;
+    fully-cached runs may only emit MathExpression + easy showAnything text).
     Treat those as errors in Queue history so they don't look like keepers.
+
+    Florence still-tag graphs are the exception — they legitimately succeed
+    with ShowText / Florence2Run text and no image file.
     """
+    del record  # retained for call-site compat; text outputs alone are not enough
     st = str(status_info.get("status") or "").strip().lower()
     if st not in {"success", "complete", "completed"}:
         return status_info
     if primary_video or primary_image:
-        return status_info
-    if _history_has_text_output(record):
         return status_info
     try:
         d = _workspace_scripts_dir()
@@ -12800,6 +12785,89 @@ def _demote_hollow_history_success(
     if not status_info.get("error_message"):
         status_info["error_message"] = "no output media (Comfy reported success)"
     return status_info
+
+
+def _output_relpath_guess_from_raw(raw: str) -> Optional[str]:
+    """Turn an absolute host/container path into an output-root-relative relpath when possible."""
+    s = str(raw or "").strip().replace("\\", "/")
+    if not s:
+        return None
+    low = s.lower()
+    marker = "/output/"
+    idx = low.rfind(marker)
+    if idx >= 0:
+        rel = s[idx + len(marker) :].lstrip("/")
+        return _normalize_rel_posix(rel) or None
+    if low.startswith("output/"):
+        return _normalize_rel_posix(s[7:]) or None
+    if low.startswith("og/") or low.startswith("wip/") or low.startswith("input/"):
+        return _normalize_rel_posix(s) or None
+    return None
+
+
+def _queue_fill_input_media_from_job(
+    cfg: "ServerConfig",
+    media: Dict[str, Any],
+    job_key: Optional[str],
+) -> Dict[str, Any]:
+    """
+    When the Comfy prompt only has a basename (path stripped outside data root),
+    recover input preview URLs from the factory job bindings.
+    """
+    if not isinstance(media, dict):
+        media = {}
+    if media.get("input_media_url") or media.get("input_thumb_url"):
+        return media
+    key = str(job_key or "").strip()
+    if not key:
+        return media
+    try:
+        from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
+        from shape_factory import find_job_by_key  # type: ignore
+
+        data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+        _path, job = find_job_by_key(data_root, key)
+    except Exception:
+        return media
+    if not isinstance(job, dict):
+        return media
+    binds = job.get("bindings") if isinstance(job.get("bindings"), dict) else {}
+    candidates: List[str] = []
+    for slot in ("source_video", "source_still", "identity_anchor"):
+        meta = binds.get(slot) if isinstance(binds, dict) else None
+        if not isinstance(meta, dict):
+            continue
+        for k in ("relpath", "path"):
+            raw = str(meta.get(k) or "").strip()
+            if not raw:
+                continue
+            guessed = _output_relpath_guess_from_raw(raw)
+            for c in (guessed, raw, Path(raw.replace("\\", "/")).name):
+                if isinstance(c, str) and c.strip() and c not in candidates:
+                    candidates.append(c.strip())
+    if not candidates:
+        return media
+    best = dict(media)
+    for cand in candidates:
+        kind = (
+            "video"
+            if Path(cand).suffix.lower() in {".mp4", ".webm", ".mov", ".mkv"}
+            else "image"
+        )
+        probe_prompt = {
+            "_job_src": {
+                "class_type": "VHS_LoadVideoPath" if kind == "video" else "LoadImage",
+                "inputs": {"video": cand} if kind == "video" else {"image": cand},
+            }
+        }
+        got = _queue_resolve_input_media(cfg, probe_prompt)
+        if got.get("input_media_url") or got.get("input_thumb_url"):
+            if not got.get("input_media_relpath"):
+                got["input_media_relpath"] = media.get("input_media_relpath")
+            return got
+        if got.get("input_media_relpath") and not best.get("input_media_relpath"):
+            best = got
+    return best
 
 
 def _extract_input_media_from_prompt(prompt_obj: Any) -> Tuple[Optional[str], Optional[str]]:
@@ -14231,6 +14299,11 @@ class Handler(BaseHTTPRequestHandler):
                         output_root=cfg.output_root,
                         workspace_root=cfg.workspace_root,
                     )
+                    # Basename-only LoadVideo paths (outside data-root rewrite) leave
+                    # input_thumb empty — heal from factory job bindings when possible.
+                    media = _queue_fill_input_media_from_job(cfg, media, job_key)
+                    if output_thumb is None:
+                        output_thumb = primary_image_url or media.get("input_thumb_url")
                     title = workflow_name
                     if not title or str(title).startswith("graph (") or str(title).startswith("client:"):
                         for cand in (pv, pi, media.get("input_media_relpath")):

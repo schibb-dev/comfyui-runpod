@@ -91,6 +91,28 @@ class TestQueueHistoryPrimaryMedia(unittest.TestCase):
             )
             self.assertEqual(got, "og/2026-08-16/hourly/hourly__job_FINAL_00024.mp4")
 
+    def test_demote_hollow_ignores_showanything_text(self):
+        """Prompt-preview text nodes must not keep a media-less run as success."""
+        record = {"outputs": {"216": {"text": ["prompt preview…"]}, "128": {"value": [10]}}}
+        status = {"status": "success", "error_message": None}
+        got = self.m._demote_hollow_history_success(
+            status,
+            primary_video=None,
+            primary_image=None,
+            prompt_obj={"80": {"class_type": "VHS_VideoCombine", "inputs": {}}},
+            record=record,
+        )
+        self.assertEqual(got.get("status"), "error")
+        self.assertTrue(got.get("hollow_success"))
+
+    def test_output_relpath_guess_from_host_path(self):
+        self.assertEqual(
+            self.m._output_relpath_guess_from_raw(
+                "/home/yuji/comfyui-runpod-data/output/og/2026-09-11/hourly/clip.mp4"
+            ),
+            "og/2026-09-11/hourly/clip.mp4",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
