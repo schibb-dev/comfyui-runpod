@@ -255,6 +255,52 @@ def resolve_dev_tuning(
     return tuning
 
 
+def resolve_generate_noise_seed(
+    *,
+    construction: Optional[dict[str, Any]] = None,
+    dev_tuning: Optional[dict[str, Any]] = None,
+) -> tuple[Optional[int], Optional[str]]:
+    """
+    Noise-seed policy for ``generate_job_for_picks`` (hourly + CLI).
+
+    Catalog templates ship ``RandomNoise`` as ``[sticky_seed, "randomize"]``, but the
+    API prompt path freezes the numeric seed. Without an explicit draw, every hourly
+    FB9_GEX (etc.) run reuses the same noise and looks nearly identical.
+
+    Precedence (aligned with ``resolve_queue_seed_parameter``):
+    1. Explicit seed on construction / dev_tuning
+    2. ``seed_mode=same`` → keep template seed (return None)
+    3. Default → fresh random draw
+    """
+    import random
+
+    cons = construction if isinstance(construction, dict) else {}
+    tuning = dev_tuning if isinstance(dev_tuning, dict) else {}
+
+    for raw in (
+        cons.get("noise_seed"),
+        cons.get("seed"),
+        cons.get("used_seed"),
+        tuning.get("noise_seed"),
+        tuning.get("seed"),
+    ):
+        if raw is None or raw == "":
+            continue
+        try:
+            return int(raw), "explicit"
+        except (TypeError, ValueError):
+            continue
+
+    mode = str(cons.get("seed_mode") or "").strip().lower() or "new"
+    if mode in ("hold", "keep"):
+        mode = "same"
+    if mode in ("random", "fresh", "default"):
+        mode = "new"
+    if mode == "same":
+        return None, "same"
+    return int(random.randint(0, 2**31 - 1)), "new"
+
+
 def apply_dev_tuning_ui(workflow: dict[str, Any], tuning: dict[str, Any]) -> dict[str, Any]:
     changes: dict[str, Any] = {"ui_nodes": [], "vhs": [], "seed": []}
     ui_nodes = tuning.get("ui_nodes") if isinstance(tuning.get("ui_nodes"), dict) else {}
@@ -2065,6 +2111,9 @@ def generate_job_for_picks(
     stack_changes = apply_shape_stack_ui(workflow, shape, stack_job)
     apply_shape_postprocess_ui(workflow, shape)
 
+    # Normalize construction early so seed policy can stamp it.
+    construction = dict(construction) if isinstance(construction, dict) else {}
+
     warnings: list[str] = []
     bindings_meta: dict[str, Any] = {}
     for slot, path in sorted(picks.items()):
@@ -2099,6 +2148,25 @@ def generate_job_for_picks(
             dev_steps=dev_steps,
             shape=shape,
         )
+    # Templates mark RandomNoise as "randomize" but bake a sticky numeric seed.
+    # Draw a fresh seed unless caller held one (queue seed_mode=same / explicit).
+    seed_value, seed_mode_applied = resolve_generate_noise_seed(
+        construction=construction,
+        dev_tuning=dev_tuning if isinstance(dev_tuning, dict) else None,
+    )
+    if seed_value is not None:
+        if not isinstance(dev_tuning, dict):
+            dev_tuning = {}
+        else:
+            dev_tuning = dict(dev_tuning)
+        if dev_tuning.get("noise_seed") in (None, ""):
+            dev_tuning["noise_seed"] = int(seed_value)
+        construction["noise_seed"] = int(seed_value)
+        if seed_mode_applied:
+            construction["seed_mode"] = seed_mode_applied
+    elif seed_mode_applied:
+        construction["seed_mode"] = seed_mode_applied
+
     dev_changes: dict[str, Any] = {}
     if dev_tuning:
         dev_changes = apply_dev_tuning_ui(workflow, dev_tuning)
