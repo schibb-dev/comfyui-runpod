@@ -56,6 +56,9 @@ This page mirrors the planning-relevant sections of the repo-root [DOCUMENTATION
 | [HOURLY_RULESET_UTILITY.md](HOURLY_RULESET_UTILITY.md) | Stub → `HOURLY_UTILITY_PLAN.md` (policy/ledger/UI = U1/U3/U4). |
 | [BUCKET_MODEL_PHASE2_PLAN.md](BUCKET_MODEL_PHASE2_PLAN.md) | Work items, pool pages, multi-route Advance. |
 | [ASSET_LIFECYCLE_PLAN.md](ASSET_LIFECYCLE_PLAN.md) | Asset lifecycle phase 2. |
+| [LINEAGE_REMEDIATION_PLAN.md](LINEAGE_REMEDIATION_PLAN.md) | Broken lineage / relocate / rot remediation menu + slices. |
+| [CHAIN_STEER_AND_APPETITE_CONTROL_PLAN.md](CHAIN_STEER_AND_APPETITE_CONTROL_PLAN.md) | Chain steer: Less/habit/age×appetite/Out→trash/similarity. |
+| [HOURLY_GUIDE_PIPELINE_PLAN.md](HOURLY_GUIDE_PIPELINE_PLAN.md) | Hourly steer bins + Phase 3 chain hard-drop. |
 | [WORKFLOW_REPAIR_PLAN.md](WORKFLOW_REPAIR_PLAN.md) | Workflow repair tiers. |
 | [RUN_SPEC_DISPLAY_PLAN.md](RUN_SPEC_DISPLAY_PLAN.md) | Queue / Workbench / picker spec line; `__rs-` output suffix. |
 

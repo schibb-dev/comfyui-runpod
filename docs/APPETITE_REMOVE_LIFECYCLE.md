@@ -8,6 +8,8 @@
 
 **Trash vs Delete:** Retire step **Trash** moves files to `og/_trash/` (recoverable). Workbench **Delete** unlinks the file when nothing depends on it. Clip-library “retire” (`deleted_at` on a bookmark) is a third, unrelated layer.
 
+**Steer Out (planned):** workproduct video **Out** should use the same physical relocate (`trash_output_media` → `og/_trash/`), distinct in meaning from appetite Remove but sharing custody. See [`CHAIN_STEER_AND_APPETITE_CONTROL_PLAN.md`](./CHAIN_STEER_AND_APPETITE_CONTROL_PLAN.md) and [`LINEAGE_REMEDIATION_PLAN.md`](./LINEAGE_REMEDIATION_PLAN.md). Parent terminal → descendants-in-question; kept child + missing parent → orphan remediation — not auto-cascade.
+
 ## Operator path
 
 1. Mark **Remove** (`b` / forbidden) on Workbench, Rate queue, Library, or still gallery.

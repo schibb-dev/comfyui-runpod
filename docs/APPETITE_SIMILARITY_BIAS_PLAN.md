@@ -13,6 +13,9 @@ not only that `relpath`.
 **Related:** [`SOURCE_FACET_SIMILARITY_PLAN.md`](./SOURCE_FACET_SIMILARITY_PLAN.md),
 [`DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md`](./DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md),
 Factory Map appetite seeds (source-facet curation).
+Chain/backlog consumer of similarity as a **fourth factor** (after moment, habit,
+routing): [`CHAIN_STEER_AND_APPETITE_CONTROL_PLAN.md`](./CHAIN_STEER_AND_APPETITE_CONTROL_PLAN.md)
+— tags first, vision/embeds later; do not block age×appetite on missing similarity.
 
 ---
 

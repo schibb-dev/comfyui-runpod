@@ -11,6 +11,8 @@ Status: **Phases 0–1 shipped** (content registry + job backfill). Phases 2–4
   (content-verified) and re-registered.
 - Next up: Phase 2 (locate/audit) — the remote-recovery leg is already captured
   in `.cursor/rules/asset-recovery.mdc`.
+- Remediation menu (missing/corrupt/relocate aliases, Out→trash, orphans):
+  [`LINEAGE_REMEDIATION_PLAN.md`](./LINEAGE_REMEDIATION_PLAN.md).
 
 ## Motivation
 

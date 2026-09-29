@@ -51,6 +51,9 @@ nav:
     - Bucket model Phase 2: BUCKET_MODEL_PHASE2_PLAN.md
     - Corpus lifecycle: CORPUS_LIFECYCLE.md
     - Asset lifecycle: ASSET_LIFECYCLE_PLAN.md
+    - Lineage remediation: LINEAGE_REMEDIATION_PLAN.md
+    - Chain steer & appetite control: CHAIN_STEER_AND_APPETITE_CONTROL_PLAN.md
+    - Hourly guide pipeline: HOURLY_GUIDE_PIPELINE_PLAN.md
     - Workflow repair: WORKFLOW_REPAIR_PLAN.md
     - Run spec display: RUN_SPEC_DISPLAY_PLAN.md
     - Factory MCP: FACTORY_MCP.md
