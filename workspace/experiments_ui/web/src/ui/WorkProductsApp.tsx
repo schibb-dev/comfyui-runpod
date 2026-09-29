@@ -5,6 +5,7 @@ import { discardShapeFactoryJob, fetchDispositionBuckets, fetchShapeFactoryQuara
 import {
   groupWorkProductsByNavSection,
   sortWorkProductList,
+  WORK_PRODUCT_NAV_SECTIONS,
   workProductListBucket,
   workProductNavSection,
   workProductNavSectionBadges,
@@ -56,6 +57,11 @@ import { ComfyUiLink, comfyUiHostLabel } from "./comfyUiWindow";
 import { discoveryLibraryHref, extractContentIdFromName, parseWorkbenchDeepLink, stillsHref, buildSubmitDeepLink, lineageSummaryHref, workbenchHref, workbenchHrefForMedia, isLineageInputStill, type SubmitDeepLink } from "./discoveryDeepLink";
 import { factoryMapFamilyHref } from "./factoryMapRoute";
 import {
+  parseWorkbenchSection,
+  replaceWorkbenchSection,
+  sectionAfterToggle,
+} from "./workbenchSectionPath";
+import {
   isFollowUpWorkingSet,
   isFollowUpWorkingSetJob,
   workProductIdentityLabel,
@@ -69,6 +75,7 @@ import {
   type WorkbenchWorkingSetId,
 } from "./workProductWorkingSet";
 import { AppetitePreviewBadge, AppetitePreviewFrame } from "./AppetitePreviewBadge";
+import { SteerPreviewBadge } from "./SteerPreviewBadge";
 import { DiscoveryAssetLineagePanel } from "./DiscoveryAssetLineagePanel";
 import { ComfyHealthBanner, useComfyHealthRetrySec } from "./ComfyHealthBanner";
 import { comfyHealthIsBackoff, formatComfyRetry } from "./comfyHealth";
@@ -128,7 +135,7 @@ import {
   workbenchLoadingHint,
 } from "./workbenchLoadingHint";
 import { WorkbenchLoadStatus } from "./WorkbenchLoadStatus";
-import { distinctiveFamilyLabels, familyPickerOptionLabel, familyPickerOptionTitle, familyPromptProfiles, familySlugIsQuarantined, familySwapTargets, isDefaultPromptVariant, isExtendFamilyOption, isStillMediaPath, jobPromptVariantDisplayName, jobPromptVariantName, jobPromptVariantSlug, pickQuickExtendFamily, pickRerunPromptPreset, pickRerunStack, promptProfileOptionLabel, promptTextIsOverridden, promptVariantName, promptVariantSlug, rerunPromptPresetDiffers, specDisplayJoined, stackPickerOptionLabel, workProductCanQuickExtend, workProductHasExtendableOutput } from "./submitFamily";
+import { distinctiveFamilyLabels, familyPickerOptionLabel, familyPickerOptionTitle, familyPromptProfiles, familySlugIsQuarantined, familySwapTargets, isDefaultPromptVariant, isExtendFamilyOption, isStillMediaPath, jobPromptVariantDisplayName, jobPromptVariantName, jobPromptVariantSlug, pickDefaultPromptProfile, pickQuickExtendFamily, pickRerunPromptPreset, pickRerunStack, promptProfileOptionLabel, promptTextIsOverridden, promptVariantName, promptVariantSlug, rerunPromptPresetDiffers, specDisplayJoined, stackPickerOptionLabel, workProductCanQuickExtend, workProductHasExtendableOutput } from "./submitFamily";
 import { recencyStamp } from "./workProductRecency";
 import {
   includeStillTagWorkProducts,
@@ -1044,8 +1051,14 @@ function workbenchSteerFrameProps(item: WorkProductItem): {
   steerKind: "still" | "video";
   showSteer: boolean;
 } {
-  const seed = workbenchSourceMediaRelpath(item);
+  // Prefer the job's input seed; fall back to output so extendable results stay steerable.
+  const source = workbenchSourceMediaRelpath(item);
+  const output = String(item.output_relpath || "").trim() || null;
+  const seed = source || output;
   const pp = item.prompt_profile;
+  const asVideo = source
+    ? workbenchSourceIsVideo(item)
+    : Boolean(output && /\.(mp4|webm|mov|mkv)$/i.test(output));
   return {
     steerRelpath: seed,
     familySlug: String(item.family_slug || "").trim() || null,
@@ -1053,9 +1066,26 @@ function workbenchSteerFrameProps(item: WorkProductItem): {
     variantSlug: String(pp?.slug || "").trim() || null,
     variantId: String(pp?.variant_id || "").trim() || null,
     variantName: String(pp?.variant_name || pp?.name || pp?.label || "").trim() || null,
-    steerKind: workbenchSourceIsVideo(item) ? "video" : "still",
+    steerKind: asVideo ? "video" : "still",
     showSteer: Boolean(seed),
   };
+}
+
+function WorkbenchSteerOverlay({ item, size = "default" }: { item: WorkProductItem; size?: "default" | "sm" }) {
+  const p = workbenchSteerFrameProps(item);
+  if (!p.showSteer || !p.steerRelpath) return null;
+  return (
+    <SteerPreviewBadge
+      relpath={p.steerRelpath}
+      familySlug={p.familySlug}
+      variantSlug={p.variantSlug}
+      variantId={p.variantId}
+      variantName={p.variantName}
+      jobKey={p.jobKey}
+      assetKind={p.steerKind}
+      size={size}
+    />
+  );
 }
 
 function sourcePreviewUrls(item: WorkProductItem): { thumb: string | null; video: string | null; label: string } {
@@ -1092,7 +1122,7 @@ function WorkProductStillTagPreview({ item }: { item: WorkProductItem }) {
         }`}
       >
         {img ? (
-          <AppetitePreviewFrame relpath={relpath}>
+          <AppetitePreviewFrame relpath={relpath} {...workbenchSteerFrameProps(item)}>
             <img className="work-product-live__img work-product-live__img--still-tag" src={img} alt="Still being tagged" />
           </AppetitePreviewFrame>
         ) : (
@@ -1202,6 +1232,7 @@ function WorkProductSourceThumbPreview({ item }: { item: WorkProductItem }) {
           {kind}
         </span>
         <AppetitePreviewBadge relpath={workbenchSourceMediaRelpath(item) || item.output_relpath} />
+        <WorkbenchSteerOverlay item={item} />
       </div>
     </div>
   );
@@ -1805,6 +1836,7 @@ function WorkProductViewer({
                 />
                 <span className="work-product-live__badge work-product-live__badge--queued">source</span>
                 <AppetitePreviewBadge relpath={workbenchSourceMediaRelpath(item)} />
+                <WorkbenchSteerOverlay item={item} />
               </div>
             ) : null}
           </div>
@@ -1853,6 +1885,7 @@ function WorkProductViewer({
                 </span>
               ) : null}
               <AppetitePreviewBadge relpath={queuedSourceRel} />
+              <WorkbenchSteerOverlay item={item} />
             </div>
             <VideoTrimControls
               className="work-product-viewer__trim"
@@ -4450,6 +4483,16 @@ function WorkProductQuickQueue({
     () => (families || []).filter(isExtendFamilyOption),
     [families],
   );
+  /** Prefer Extend when it exists; null = follow that default until the operator toggles. */
+  const [rerunFoldOpen, setRerunFoldOpen] = useState<boolean | null>(null);
+  const [extendFoldOpen, setExtendFoldOpen] = useState<boolean | null>(null);
+  useEffect(() => {
+    setRerunFoldOpen(null);
+    setExtendFoldOpen(null);
+  }, [item.job_key]);
+  const preferExtendFold = canExtend;
+  const rerunDetailsOpen = rerunFoldOpen ?? !preferExtendFold;
+  const extendDetailsOpen = extendFoldOpen ?? preferExtendFold;
   const defaultExtendFamily = useMemo(
     () =>
       pickQuickExtendFamily(
@@ -4467,10 +4510,7 @@ function WorkProductQuickQueue({
     [families, extendFamily],
   );
   const [extendPromptPath, setExtendPromptPath] = useState(() =>
-    pickRerunPromptPreset(
-      familyPromptProfiles(families || [], defaultExtendFamily),
-      jobPromptPrefer,
-    ),
+    pickDefaultPromptProfile(familyPromptProfiles(families || [], defaultExtendFamily)),
   );
   const [extendStack, setExtendStack] = useState(() =>
     pickRerunStack(stacks, {
@@ -4496,8 +4536,8 @@ function WorkProductQuickQueue({
 
   const extendPromptCatalogKey = extendPromptProfiles.map((p) => p.path).join("|");
   useEffect(() => {
-    setExtendPromptPath(pickRerunPromptPreset(extendPromptProfiles, jobPromptPrefer));
-  }, [item.job_key, extendFamily, extendPromptCatalogKey, jobPromptPrefer]);
+    setExtendPromptPath(pickDefaultPromptProfile(extendPromptProfiles));
+  }, [item.job_key, extendFamily, extendPromptCatalogKey]);
 
   const extendFamilyStackId = String(
     (families || []).find((f) => f.slug === extendFamily)?.stack_id || "",
@@ -4532,7 +4572,7 @@ function WorkProductQuickQueue({
   const selectedPromptLabel = selectedPrompt ? promptProfileOptionLabel(selectedPrompt) : "";
   const extendPromptChanged =
     Boolean(extendPromptPath) &&
-    rerunPromptPresetDiffers(extendPromptPath, extendPromptProfiles, jobPromptPrefer);
+    rerunPromptPresetDiffers(extendPromptPath, extendPromptProfiles);
   const selectedExtendPrompt = extendPromptProfiles.find((p) => p.path === extendPromptPath);
   const selectedExtendPromptLabel = selectedExtendPrompt ? promptProfileOptionLabel(selectedExtendPrompt) : "";
 
@@ -5237,7 +5277,14 @@ function WorkProductQuickQueue({
 
       {!failure ? (
         <div className="work-product-quick-queue__actions-stack" role="group" aria-label="Recipe actions">
-          <details className="work-product-quick-queue__fold" open>
+          <details
+            className="work-product-quick-queue__fold"
+            open={rerunDetailsOpen}
+            onToggle={(e) => {
+              const next = e.currentTarget.open;
+              if (next !== rerunDetailsOpen) setRerunFoldOpen(next);
+            }}
+          >
             <summary
               className="work-product-quick-queue__fold-summary"
               title="New job from this recipe — family, stack, prompt preset, trim, and seed are independent"
@@ -5297,7 +5344,14 @@ function WorkProductQuickQueue({
             </div>
           </details>
           {canExtend ? (
-            <details className="work-product-quick-queue__fold">
+            <details
+              className="work-product-quick-queue__fold"
+              open={extendDetailsOpen}
+              onToggle={(e) => {
+                const next = e.currentTarget.open;
+                if (next !== extendDetailsOpen) setExtendFoldOpen(next);
+              }}
+            >
               <summary
                 className="work-product-quick-queue__fold-summary"
                 title={`Chain this job’s video output into ${extendFamily || "an extend family"}`}
@@ -6046,6 +6100,7 @@ function WorkProductIndexSection({
 }) {
   return (
     <details
+      id={`wb-section-${id}`}
       className={`work-products-index__section work-products-index__section--${id}`}
       open={open}
       onToggle={(e) => {
@@ -6194,12 +6249,15 @@ function WorkProductIndexRow({
         </code>
       </span>
       {isRunningLiveItem(item) || workProductKindIs(item, "still_tag") ? null : (
-        <AppetitePreviewBadge
-          relpath={workbenchJobAppetiteRelpath(item)}
-          size="sm"
-          jobKey={item.job_key}
-          familySlug={item.family_slug}
-        />
+        <>
+          <AppetitePreviewBadge
+            relpath={workbenchJobAppetiteRelpath(item)}
+            size="sm"
+            jobKey={item.job_key}
+            familySlug={item.family_slug}
+          />
+          <WorkbenchSteerOverlay item={item} size="sm" />
+        </>
       )}
     </button>
   );
@@ -6532,9 +6590,15 @@ export function WorkProductsApp() {
   const [toolsOpen, setToolsOpen] = useState(() => followUpSet || loadChrome().tools);
   const [advancedOpen, setAdvancedOpen] = useState(() => loadChrome().advanced);
   const [navSectionOpen, setNavSectionOpen] = useState<Record<WorkProductNavSectionId, boolean>>(
-    () => loadNavSectionOpen(),
+    () => {
+      const base = loadNavSectionOpen();
+      const sec = parseWorkbenchSection();
+      if (!sec) return base;
+      return { ...base, [sec]: true };
+    },
   );
   const deepLinkScrolled = useRef(false);
+  const sectionPathScrolled = useRef(false);
   /** Operator clicked a job in a media-focused list — stop snapping to the producer. */
   const mediaPickTouched = useRef(false);
   const narrowLayout = useNarrowLayout(960);
@@ -6933,7 +6997,18 @@ export function WorkProductsApp() {
     appetiteTick,
   ]);
 
-  const navSections = useMemo(() => groupWorkProductsByNavSection(visibleItems), [visibleItems]);
+  const navSections = useMemo(() => {
+    const grouped = groupWorkProductsByNavSection(visibleItems);
+    const addressed = parseWorkbenchSection();
+    if (!addressed || grouped.some((sec) => sec.id === addressed)) return grouped;
+    const def = WORK_PRODUCT_NAV_SECTIONS.find((sec) => sec.id === addressed);
+    if (!def) return grouped;
+    const withEmpty = [...grouped, { ...def, items: [] as WorkProductItem[] }];
+    return WORK_PRODUCT_NAV_SECTIONS.flatMap((sec) => {
+      const hit = withEmpty.find((row) => row.id === sec.id);
+      return hit ? [hit] : [];
+    });
+  }, [visibleItems]);
   const navKeyboardItems = useMemo(
     () => workProductsInOpenNavSections(visibleItems, navSectionOpen),
     [visibleItems, navSectionOpen],
@@ -6946,7 +7021,18 @@ export function WorkProductsApp() {
       persistNavSectionOpen(next);
       return next;
     });
+    replaceWorkbenchSection(sectionAfterToggle(parseWorkbenchSection(), id, open));
   }, []);
+
+  useEffect(() => {
+    if (sectionPathScrolled.current) return;
+    const sec = parseWorkbenchSection();
+    if (!sec) return;
+    const el = document.getElementById(`wb-section-${sec}`);
+    if (!el) return;
+    sectionPathScrolled.current = true;
+    el.scrollIntoView({ block: "nearest" });
+  }, [navSections]);
 
   const failedVisible = useMemo(
     () => visibleItems.filter((it) => canArchiveTerminalWorkProduct(it)),

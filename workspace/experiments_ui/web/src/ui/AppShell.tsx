@@ -11,6 +11,7 @@ import {
 } from "./routes";
 import { usePhoneOverflowItems } from "./phoneChrome";
 import { useDeviceContext } from "./viewport";
+import { CLIENT_PATH_EVENT } from "./workbenchSectionPath";
 
 const SIDEBAR_KEY = "app-sidebar-collapsed-v1";
 const NAV_OPEN_KEY = "app-nav-open-v1";
@@ -73,7 +74,11 @@ function usePathname(): string {
   useEffect(() => {
     const sync = () => setPathname(window.location.pathname);
     window.addEventListener("popstate", sync);
-    return () => window.removeEventListener("popstate", sync);
+    window.addEventListener(CLIENT_PATH_EVENT, sync);
+    return () => {
+      window.removeEventListener("popstate", sync);
+      window.removeEventListener(CLIENT_PATH_EVENT, sync);
+    };
   }, []);
   return pathname;
 }

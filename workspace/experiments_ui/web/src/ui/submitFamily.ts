@@ -694,7 +694,8 @@ export function workProductCanQuickExtend(
 ): boolean {
   if (!String(item.job_key || "").trim()) return false;
   if (!workProductHasExtendableOutput(item)) return false;
-  if (!families || !families.length) return true;
+  // Wait for the family catalog — optimistic true collapsed Re-run before Extend existed.
+  if (!families || !families.length) return false;
   return families.some(isExtendFamilyOption);
 }
 

@@ -1,3 +1,6 @@
+import { parseWorkbenchSection, workbenchSectionPath } from "./workbenchSectionPath";
+import type { WorkProductNavSectionId } from "./workProductListSort";
+
 /** Extract a 64-hex content_id from a path or basename (content-addressed stills). */
 export function extractContentIdFromName(name?: string | null): string | null {
   const m = /([0-9a-f]{64})/i.exec(String(name || "").trim());
@@ -320,6 +323,8 @@ export function workbenchHref(opts?: {
   media?: string | null;
   q?: string | null;
   set?: string | null;
+  /** Omit to keep a section already in the path. Pass null for `/workbench`. */
+  section?: WorkProductNavSectionId | null;
 }): string {
   const sp = new URLSearchParams();
   const job = String(opts?.jobKey || "").trim();
@@ -338,7 +343,12 @@ export function workbenchHref(opts?: {
   if (q) sp.set("q", q);
   if (set && set !== "recent") sp.set("set", set);
   const qs = sp.toString();
-  return qs ? `/workbench?${qs}` : "/workbench";
+  const section =
+    opts && Object.prototype.hasOwnProperty.call(opts, "section")
+      ? opts.section ?? null
+      : parseWorkbenchSection();
+  const path = workbenchSectionPath(section);
+  return qs ? `${path}?${qs}` : path;
 }
 
 /** Comfy upload/staging folders under the input bind — not gallery identity. */

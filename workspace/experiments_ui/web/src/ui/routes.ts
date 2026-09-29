@@ -1,3 +1,5 @@
+import { workbenchSectionIsActive } from "./workbenchSectionPath";
+
 // Typed route registry for the Experiments UI.
 //
 // One source of truth for top-level screens: their paths, labels, nav grouping,
@@ -74,6 +76,36 @@ export const APP_ROUTES: AppRoute[] = [
     mark: "Wb",
     hint: "Job status — pending trim, retry, bindings, discard",
     group: "now",
+    children: [
+      {
+        id: "wb-live",
+        label: "Comfy Queue",
+        path: "/workbench/live",
+        hint: "Running and waiting on Comfy",
+        match: (p) => workbenchSectionIsActive("live", p),
+      },
+      {
+        id: "wb-pending",
+        label: "Pending",
+        path: "/workbench/pending",
+        hint: "Factory FIFO before Comfy",
+        match: (p) => workbenchSectionIsActive("pending", p),
+      },
+      {
+        id: "wb-errors",
+        label: "Errors",
+        path: "/workbench/errors",
+        hint: "Failed, interrupted, abandoned",
+        match: (p) => workbenchSectionIsActive("error", p),
+      },
+      {
+        id: "wb-done",
+        label: "Completed",
+        path: "/workbench/done",
+        hint: "Finished renders",
+        match: (p) => workbenchSectionIsActive("done", p),
+      },
+    ],
   },
   { id: "queue", path: "/comfy-queue", label: "Queue", mark: "Q", hint: "What's generating on Comfy right now", group: "now" },
   { id: "library", path: "/discovery", label: "Library", mark: "Lb", hint: "Search and find indexed media", group: "browse" },
@@ -247,7 +279,7 @@ export function navChildIsActive(child: AppNavChild, pathname: string): boolean 
 
 /**
  * Candidates for the same parent→child nav pattern (not all wired yet).
- * Factory Families/Hourlies are live; the rest are the natural next nests.
+ * Factory Families/Hourlies/Steering and Workbench sections are live.
  */
 export const NAV_CHILD_CANDIDATES: Array<{
   parentId: AppRouteId;
@@ -265,10 +297,10 @@ export const NAV_CHILD_CANDIDATES: Array<{
   {
     parentId: "workbench",
     children: [
-      { id: "wb-live", label: "Comfy Queue", note: "candidate — Workbench nav section" },
-      { id: "wb-pending", label: "Pending", note: "candidate — factory FIFO" },
-      { id: "wb-errors", label: "Errors", note: "candidate — failed / interrupted" },
-      { id: "wb-done", label: "Completed", note: "candidate — finished renders" },
+      { id: "wb-live", label: "Comfy Queue", note: "wired — /workbench/live" },
+      { id: "wb-pending", label: "Pending", note: "wired — /workbench/pending" },
+      { id: "wb-errors", label: "Errors", note: "wired — /workbench/errors" },
+      { id: "wb-done", label: "Completed", note: "wired — /workbench/done" },
     ],
   },
   {

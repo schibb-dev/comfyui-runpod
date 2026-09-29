@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { APP_ROUTES, navChildIsActive, NAV_CHILD_CANDIDATES } from "./routes";
+import { APP_ROUTES, navChildIsActive, NAV_CHILD_CANDIDATES, resolveRouteId } from "./routes";
 
 describe("factory nav children", () => {
   const factory = APP_ROUTES.find((r) => r.id === "factory");
@@ -29,5 +29,21 @@ describe("factory nav children", () => {
     expect(parents).toEqual(
       expect.arrayContaining(["factory", "workbench", "queue", "stills", "library", "workflows"]),
     );
+  });
+
+  it("addresses Workbench sections and keeps them on the workbench screen", () => {
+    const workbench = APP_ROUTES.find((r) => r.id === "workbench");
+    expect(workbench?.children?.map((c) => c.path)).toEqual([
+      "/workbench/live",
+      "/workbench/pending",
+      "/workbench/errors",
+      "/workbench/done",
+    ]);
+    expect(resolveRouteId("/workbench/pending")).toBe("workbench");
+    expect(resolveRouteId("/work-products/errors")).toBe("workbench");
+    const errors = workbench!.children!.find((c) => c.id === "wb-errors")!;
+    expect(navChildIsActive(errors, "/workbench/errors")).toBe(true);
+    expect(navChildIsActive(errors, "/workbench/error")).toBe(true);
+    expect(navChildIsActive(errors, "/workbench/pending")).toBe(false);
   });
 });
