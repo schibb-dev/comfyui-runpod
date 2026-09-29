@@ -61,10 +61,9 @@ Manual bins are the teacher. Eventually heuristics should propose Keep/Pin/Out
 Human override stays authoritative in `bins.json`; autosuggest never writes the
 ledger as source of truth.
 
-## Not in this slice
+## Not in this slice (seed-stills Phase 0/1)
 
 - Schedule rewrite / ruleset editor (U1)
-- Multi-pipe UI / chain pin-skip bins (Phase 3)
 - Auto / hybrid curation (Phase 4) — sketched above
 - `decisions.jsonl` retention / compaction (planned; audit-only today)
 
@@ -83,6 +82,24 @@ Clip-shaped units for `source_video` families (same Keep/Pin/Later/Out soft-bias
 Hybrid deck ranking (auto): ★ span clips → other span clips → whole-file virtual
 units. Existence of a span clip is already the strong signal; whole-file remains
 available and switchable.
+
+## Phase 3 — chain drain steer (runtime + backlog cull)
+
+Part of steering **all** production stages (not only seed lottery). Chain waiting
+lists (`i2v→GEX`, `GEX2→FACIAL`) hard-drop a parent when its **direct output
+clip** is:
+
+- appetite **`remove`** (own mark only — not inherited still/ancestor), or
+- consumer-bin video-steer **`out`** (`FB9_GEX` / `FB9_GEX_FACIAL`)
+
+| Piece | Location |
+|-------|----------|
+| Gate | `_chain_parent_output_blocked` in `shape_factory_hourly.py` |
+| Applied in | `list_i2v_needing_gex`, `list_gex2_needing_facial` (backlog API + hourly picks) |
+| Cull UI | Factory Map → Hourlies → Chain backlogs preview (appetite + Keep/Later/Out) |
+
+How marks map to stages will keep iterating (soft weights, descendant health,
+etc.); prefer shared stores over chain-only shadow state.
 
 ## Try it
 

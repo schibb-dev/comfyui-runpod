@@ -1,6 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { fetchHomeSummary, fetchHourlyChainBacklogs, fetchHourlySchedule, setHourlySchedule } from "./api";
+import {
+  fetchHomeSummary,
+  fetchHourlyChainBacklogs,
+  fetchHourlySchedule,
+  setHourlySchedule,
+  steerWorkProductCombos,
+} from "./api";
+import { AppetitePreviewBadge } from "./AppetitePreviewBadge";
 import { workbenchHref } from "./discoveryDeepLink";
 import {
   backlogItemByKey,
@@ -12,6 +19,8 @@ import { PipelineMediaPlayer } from "./PipelineMediaPlayer";
 import { routeHref } from "./routes";
 import { comfyHealthIsBackoff, comfyHealthSummary } from "./comfyHealth";
 import type {
+  Appetite,
+  AppetiteFacet,
   HomeSummaryResponse,
   HourlyChainBacklog,
   HourlyChainBacklogItem,
@@ -23,6 +32,7 @@ import type {
   HourlySubmitMode,
 } from "./types";
 import { factoryMapHourliesCurateHref } from "./factoryMapRoute";
+import { WorkProductAppetiteStrip } from "./WorkProductAppetiteStrip";
 
 function fileUrlFromRel(relpath?: string | null): string {
   if (!relpath) return "";
@@ -418,25 +428,123 @@ function backlogThumbUrl(item: HourlyChainBacklogItem): string {
 
 function BacklogThumb({ item }: { item: HourlyChainBacklogItem }) {
   const src = backlogThumbUrl(item);
-  if (!src) return <span className="home-backlog-thumb home-backlog-thumb--empty" aria-hidden />;
+  const rel = item.video_relpath || "";
   return (
-    <img
-      className="home-backlog-thumb"
-      src={src}
-      alt=""
-      loading="lazy"
-      onError={(e) => {
-        const img = e.currentTarget;
-        if (img.dataset.fallback !== "1" && item.video_url && img.src !== item.video_url) {
-          img.dataset.fallback = "1";
-          img.src = item.video_url;
-          return;
-        }
-        img.dataset.fallback = "1";
-        img.classList.add("home-backlog-thumb--empty");
-        img.removeAttribute("src");
-      }}
-    />
+    <span className="home-backlog-thumb-wrap">
+      {src ? (
+        <img
+          className="home-backlog-thumb"
+          src={src}
+          alt=""
+          loading="lazy"
+          onError={(e) => {
+            const img = e.currentTarget;
+            if (img.dataset.fallback !== "1" && item.video_url && img.src !== item.video_url) {
+              img.dataset.fallback = "1";
+              img.src = item.video_url;
+              return;
+            }
+            img.dataset.fallback = "1";
+            img.classList.add("home-backlog-thumb--empty");
+            img.removeAttribute("src");
+          }}
+        />
+      ) : (
+        <span className="home-backlog-thumb home-backlog-thumb--empty" aria-hidden />
+      )}
+      {rel ? (
+        <AppetitePreviewBadge
+          relpath={rel}
+          size="sm"
+          jobKey={item.job_key}
+          familySlug={item.consumer_family}
+          className="home-backlog-thumb__appetite"
+        />
+      ) : null}
+    </span>
+  );
+}
+
+function HourlyBacklogCullControls({
+  item,
+  chain,
+  onCulled,
+}: {
+  item: HourlyChainBacklogItem;
+  chain: HourlyChainBacklog;
+  onCulled: () => void;
+}) {
+  const rel = String(item.video_relpath || "").trim();
+  const fam = String(chain.consumer_family || item.consumer_family || "").trim();
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  const onAppetiteSaved = useCallback(
+    (appetite: Appetite | "", _facet: AppetiteFacet) => {
+      if (appetite === "remove") onCulled();
+    },
+    [onCulled],
+  );
+
+  const steer = useCallback(
+    async (status: "keep" | "later" | "out" | "clear") => {
+      if (!rel || !fam || busy) return;
+      setBusy(true);
+      setMsg("");
+      try {
+        await steerWorkProductCombos({
+          relpath: rel,
+          status,
+          families: [fam],
+          kind: "video",
+          job_key: item.job_key,
+          surface: "chain_backlog",
+        });
+        if (status === "out") onCulled();
+        else setMsg(status === "clear" ? "cleared" : status);
+      } catch (e) {
+        setMsg(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [busy, fam, item.job_key, onCulled, rel],
+  );
+
+  if (!rel) {
+    return (
+      <p className="factory-muted home-backlog-cull__hint">No media path — open parent on Workbench to cull.</p>
+    );
+  }
+
+  return (
+    <div className="home-backlog-cull">
+      <p className="home-backlog-cull__hint factory-muted">
+        Cull this parent clip for <strong>{fam || "chain"}</strong>. Appetite{" "}
+        <strong>Remove</strong> or steer <strong>Out</strong> drops it from the waiting list.
+      </p>
+      <WorkProductAppetiteStrip
+        relpath={rel}
+        jobKey={item.job_key}
+        familySlug={fam || undefined}
+        onSaved={onAppetiteSaved}
+      />
+      <div className="home-backlog-cull__steer" role="group" aria-label={`Steer for ${fam}`}>
+        <button type="button" className="drt-btn" disabled={busy || !fam} onClick={() => void steer("keep")}>
+          Keep
+        </button>
+        <button type="button" className="drt-btn" disabled={busy || !fam} onClick={() => void steer("later")}>
+          Later
+        </button>
+        <button type="button" className="drt-btn" disabled={busy || !fam} onClick={() => void steer("out")}>
+          Out
+        </button>
+        <button type="button" className="drt-btn" disabled={busy || !fam} onClick={() => void steer("clear")}>
+          Clear steer
+        </button>
+      </div>
+      {msg ? <p className="home-backlog-cull__msg factory-muted">{msg}</p> : null}
+    </div>
   );
 }
 
@@ -447,6 +555,7 @@ function HourlyBacklogPendingModal({
   count,
   onClose,
   onStep,
+  onCulled,
 }: {
   chain: HourlyChainBacklog;
   item: HourlyChainBacklogItem;
@@ -454,6 +563,7 @@ function HourlyBacklogPendingModal({
   count: number;
   onClose: () => void;
   onStep: (delta: number) => void;
+  onCulled: () => void;
 }) {
   const preview = item.pending_preview || {};
   const family = preview.family || item.consumer_family || "child";
@@ -519,18 +629,29 @@ function HourlyBacklogPendingModal({
           </div>
         </div>
         <div className="home-backlog-modal__body">
-          <PipelineMediaPlayer
-            videoUrl={item.video_url}
-            thumbUrl={backlogThumbUrl(item)}
-            mediaKey={item.job_key || item.video_name}
-            alt={item.video_name || "source clip"}
-            className="home-backlog-modal__player"
-          />
+          <div className="home-backlog-modal__player-wrap">
+            <PipelineMediaPlayer
+              videoUrl={item.video_url}
+              thumbUrl={backlogThumbUrl(item)}
+              mediaKey={item.job_key || item.video_name}
+              alt={item.video_name || "source clip"}
+              className="home-backlog-modal__player"
+            />
+            {item.video_relpath ? (
+              <AppetitePreviewBadge
+                relpath={item.video_relpath}
+                jobKey={item.job_key}
+                familySlug={chain.consumer_family || item.consumer_family}
+                className="home-backlog-modal__appetite"
+              />
+            ) : null}
+          </div>
           <div className="home-backlog-modal__meta">
             <p>
               Hourly would enqueue a <strong>{family}</strong> job on the pending FIFO, using this
               {item.producer_family ? ` ${item.producer_family}` : ""} clip as <code>source_video</code>.
             </p>
+            <HourlyBacklogCullControls item={item} chain={chain} onCulled={onCulled} />
             <dl>
               <div>
                 <dt>Prompt</dt>
@@ -735,6 +856,11 @@ function HourlyChainBacklogsCard({ refreshToken }: { refreshToken: number }) {
             );
           }}
           onStep={(delta) => stepNav(delta, { openPreview: true })}
+          onCulled={() => {
+            setViewerKey("");
+            setSelectedKey("");
+            void load();
+          }}
         />
       ) : null}
     </Panel>

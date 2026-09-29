@@ -1775,12 +1775,16 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            gex2 = root / "FB9_GEX2"
-            facial = root / "FB9_GEX_FACIAL"
-            kneel = root / "X-KNEEL-FB9"
-            faceblast = root / "FB9-FaceBlast"
+            data = root / "data"
+            (data / "output" / "og").mkdir(parents=True)
+            (data / "shape_factory").mkdir(parents=True)
+            jobs = root / "jobs"
+            gex2 = jobs / "FB9_GEX2"
+            facial = jobs / "FB9_GEX_FACIAL"
+            kneel = jobs / "X-KNEEL-FB9"
+            faceblast = jobs / "FB9-FaceBlast"
             for d in (gex2, facial, kneel, faceblast):
-                d.mkdir()
+                d.mkdir(parents=True)
             vid_g = "/home/yuji/comfyui-runpod-data/output/og/2026-03-02/gex2_out.mp4"
             vid_k = "/home/yuji/comfyui-runpod-data/output/og/2026-03-02/kneel_out.mp4"
             vid_fb = "/tmp/faceblast_out.mp4"
@@ -1815,7 +1819,19 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            payload = hourly_chain_backlogs(job_dir=root, cursor=0)
+            prompts = data / "pools" / "FB9_GEX" / "prompts"
+            prompts.mkdir(parents=True)
+            (prompts / "catalog-default.json").write_text(
+                json.dumps({"name": "Default", "slug": "default", "positive": "default"}),
+                encoding="utf-8",
+            )
+            (prompts / "catalog-faceblast-extend.json").write_text(
+                json.dumps(
+                    {"name": "FaceBlast extend", "slug": "faceblast-extend", "positive": "faceblast"}
+                ),
+                encoding="utf-8",
+            )
+            payload = hourly_chain_backlogs(data_root=data, job_dir=jobs, cursor=0)
         self.assertTrue(payload.get("ok"))
         chains = {c["id"]: c for c in payload.get("chains") or []}
         i2v = chains["i2v_to_gex"]
@@ -1836,6 +1852,128 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
         self.assertEqual(facial["count"], 1)
         self.assertEqual(facial["next"]["job_key"], "gex2-a")
         self.assertIn("gex2_out.png", str(facial["next"].get("thumb_url") or ""))
+
+    def test_chain_backlog_hard_drops_output_remove_and_steer_out(self) -> None:
+        import tempfile
+
+        from shape_factory_hourly import (
+            _chain_parent_output_blocked,
+            list_i2v_needing_gex,
+        )
+        from shape_factory_hourly_bins import set_bin_item
+        from shape_factory_hourly_video_steer import (
+            ensure_steer_bins_for_source_videos,
+            resolve_video_bin_id_for_family,
+            whole_file_clip_id,
+        )
+        from shape_factory_ratings import APPETITE_SCHEMA_VERSION
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            data = root / "data"
+            (data / "output" / "og").mkdir(parents=True)
+            (data / "shape_factory").mkdir(parents=True)
+            (data / "pools" / "FB9_GEX").mkdir(parents=True)
+            (data / "pools" / "FB9_GEX" / "pools.yaml").write_text(
+                "source_video:\n  members: []\n",
+                encoding="utf-8",
+            )
+            jobs = root / "jobs"
+            kneel = jobs / "X-KNEEL-FB9"
+            faceblast = jobs / "FB9-FaceBlast"
+            kneel.mkdir(parents=True)
+            faceblast.mkdir(parents=True)
+            vid_k = str(data / "output" / "og" / "kneel_chain.mp4")
+            vid_fb = str(data / "output" / "og" / "faceblast_chain.mp4")
+            Path(vid_k).write_bytes(b"fake")
+            Path(vid_fb).write_bytes(b"fake")
+            (kneel / "k.job.json").write_text(
+                json.dumps(
+                    {
+                        "job_key": "kneel-k",
+                        "status": "complete",
+                        "deposit": {"videos": [vid_k]},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (faceblast / "fb.job.json").write_text(
+                json.dumps(
+                    {
+                        "job_key": "faceblast-1",
+                        "status": "complete",
+                        "deposit": {"videos": [vid_fb]},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            # Unmarked: both present.
+            rows = list_i2v_needing_gex(data_root=data, job_dir=jobs)
+            self.assertEqual({r["job_key"] for r in rows}, {"kneel-k", "faceblast-1"})
+
+            # Own appetite remove on kneel output → dropped.
+            appetite_path = data / "output" / "_status" / "appetite_index.json"
+            appetite_path.parent.mkdir(parents=True, exist_ok=True)
+            appetite_path.write_text(
+                json.dumps(
+                    {
+                        "version": APPETITE_SCHEMA_VERSION,
+                        "by_output_relpath": {
+                            "og/kneel_chain.mp4": {"appetite": "remove", "facet": "both"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                _chain_parent_output_blocked(vid_k, consumer_family="FB9_GEX", data_root=data),
+                "appetite_remove",
+            )
+            rows = list_i2v_needing_gex(data_root=data, job_dir=jobs)
+            self.assertEqual([r["job_key"] for r in rows], ["faceblast-1"])
+
+            # Appetite remove on a source still only → parent still listed.
+            from shape_factory_ratings import ratings_db_path_for_index
+
+            db_path = ratings_db_path_for_index(appetite_path)
+            if db_path.is_file():
+                db_path.unlink()
+            appetite_path.write_text(
+                json.dumps(
+                    {
+                        "version": APPETITE_SCHEMA_VERSION,
+                        "by_output_relpath": {
+                            "input/still_only.jpeg": {"appetite": "remove", "facet": "source"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            rows = list_i2v_needing_gex(data_root=data, job_dir=jobs)
+            self.assertEqual({r["job_key"] for r in rows}, {"kneel-k", "faceblast-1"})
+
+            # Consumer video-steer Out on faceblast output → dropped.
+            ensure_steer_bins_for_source_videos(data_root=data)
+            bid = resolve_video_bin_id_for_family("FB9_GEX", data_root=data)
+            self.assertTrue(bid)
+            parent = "a" * 64
+            set_bin_item(
+                bin_id=str(bid),
+                content_id=whole_file_clip_id(parent),
+                status="out",
+                relpath="og/faceblast_chain.mp4",
+                unit="whole",
+                parent_content_id=parent,
+                surface="test",
+                data_root=data,
+            )
+            self.assertEqual(
+                _chain_parent_output_blocked(vid_fb, consumer_family="FB9_GEX", data_root=data),
+                "steer_out",
+            )
+            rows = list_i2v_needing_gex(data_root=data, job_dir=jobs)
+            self.assertEqual([r["job_key"] for r in rows], ["kneel-k"])
 
     def test_top_of_hour_and_recent_five_star_multiplier(self) -> None:
         from datetime import datetime, timezone

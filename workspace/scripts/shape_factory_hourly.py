@@ -3001,6 +3001,124 @@ def _default_job_root(data_root: Optional[Path] = None) -> Path:
     return _default_job_dir(data_root)
 
 
+def _chain_consumer_steer_status(
+    video: str,
+    *,
+    consumer_family: str,
+    data_root: Path,
+) -> str:
+    """Video-steer status for ``video`` in the consumer family's bin ('' if unset)."""
+    fam = str(consumer_family or "").strip()
+    if not fam or not str(video or "").strip():
+        return ""
+    try:
+        from shape_factory_hourly_video_steer import (
+            extract_content_id,
+            resolve_video_bin_id_for_family,
+            stable_path_content_id,
+            whole_file_clip_id,
+            _bin_item_maps,
+        )
+    except Exception:
+        return ""
+    try:
+        bid = resolve_video_bin_id_for_family(fam, data_root=data_root)
+    except Exception:
+        bid = None
+    if not bid:
+        return ""
+    try:
+        by_id, by_rel = _bin_item_maps(bid, data_root=data_root)
+    except Exception:
+        return ""
+    if not by_id and not by_rel:
+        return ""
+    raw = str(video).replace("\\", "/")
+    for k in (raw, raw.lstrip("/"), Path(raw).name):
+        hit = by_rel.get(k.lower())
+        if hit:
+            return str(hit)
+    pid = ""
+    try:
+        pid = extract_content_id(raw) or stable_path_content_id(raw)
+    except Exception:
+        pid = ""
+    if pid:
+        wid = whole_file_clip_id(pid)
+        for key in (wid, pid, wid.lower(), pid.lower()):
+            hit = by_id.get(key)
+            if hit:
+                return str(hit)
+    return ""
+
+
+def _chain_parent_output_blocked(
+    video: str,
+    *,
+    consumer_family: str,
+    data_root: Optional[Path] = None,
+    appetite_doc: Optional[dict[str, Any]] = None,
+) -> Optional[str]:
+    """Hard-drop reason when the parent's direct output clip is rejected for chaining.
+
+    Own appetite ``remove`` or consumer-bin steer ``out`` on that clip only —
+    never inherited still/ancestor marks.
+    """
+    vid = str(video or "").strip()
+    if not vid:
+        return None
+    root = (data_root or _default_data_root()).resolve()
+    doc = appetite_doc
+    if doc is None:
+        try:
+            doc = _load_appetite_index(root)
+        except Exception:
+            doc = None
+    if doc:
+        try:
+            from shape_factory_ratings import lookup_output_appetite, normalize_appetite
+        except ImportError:
+            lookup_output_appetite = None  # type: ignore
+            normalize_appetite = None  # type: ignore
+        if lookup_output_appetite is not None and normalize_appetite is not None:
+            row = lookup_output_appetite(vid, doc)
+            if isinstance(row, dict) and normalize_appetite(row.get("appetite")) == "remove":
+                return "appetite_remove"
+    status = _chain_consumer_steer_status(vid, consumer_family=consumer_family, data_root=root)
+    if status == "out":
+        return "steer_out"
+    return None
+
+
+def _filter_chain_parents(
+    rows: List[Dict[str, Any]],
+    *,
+    consumer_family: str,
+    data_root: Path,
+    appetite_doc: Optional[dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    if not rows:
+        return []
+    doc = appetite_doc
+    if doc is None:
+        try:
+            doc = _load_appetite_index(data_root)
+        except Exception:
+            doc = None
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        vid = str(row.get("video") or "")
+        if _chain_parent_output_blocked(
+            vid,
+            consumer_family=consumer_family,
+            data_root=data_root,
+            appetite_doc=doc,
+        ):
+            continue
+        out.append(row)
+    return out
+
+
 def list_gex2_needing_facial(
     *,
     data_root: Optional[Path] = None,
@@ -3009,6 +3127,7 @@ def list_gex2_needing_facial(
     lookback_days: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """Complete GEX2 jobs whose outputs are not yet FACIAL sources (newest first)."""
+    data_root = (data_root or _default_data_root()).resolve()
     root = job_dir or _default_job_root(data_root)
     facial_keys: Set[str] = set()
     facial_root = root / "FB9_GEX_FACIAL"
@@ -3055,7 +3174,7 @@ def list_gex2_needing_facial(
                 )
             )
     cands.sort(key=lambda t: (t[0], t[1]), reverse=True)
-    return [
+    rows = [
         {
             "job_key": job_key,
             "video": vid,
@@ -3064,6 +3183,11 @@ def list_gex2_needing_facial(
         }
         for _mtime, job_key, vid, ref in cands
     ]
+    return _filter_chain_parents(
+        rows,
+        consumer_family="FB9_GEX_FACIAL",
+        data_root=data_root,
+    )
 
 
 def find_gex2_needing_facial(
@@ -3181,7 +3305,9 @@ def list_i2v_needing_gex(
     Complete i2v/still-family deposits not yet used as FB9_GEX source_video.
 
     Ordered like ``find_i2v_needing_gex``: preferred producer families first, newest within band.
+    Parents whose direct output is appetite-remove or consumer-steer Out are omitted.
     """
+    data_root = (data_root or _default_data_root()).resolve()
     root = job_dir or _default_job_root(data_root)
     gex_sources: Set[str] = set()
     gex_root = root / "FB9_GEX"
@@ -3239,7 +3365,7 @@ def list_i2v_needing_gex(
                     "consumer_family": "FB9_GEX",
                 }
             )
-    return out
+    return _filter_chain_parents(out, consumer_family="FB9_GEX", data_root=data_root)
 
 
 def pick_i2v_needing_gex(
@@ -3401,6 +3527,32 @@ def _catalog_prompt_meta(path: Optional[Path]) -> Dict[str, Any]:
     }
 
 
+def _backlog_preview_context(
+    *,
+    data_root: Path,
+    job_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Shared schedule / pending-slug state for one backlog payload build.
+
+    ``pick_hourly_gex_catalog_prompt`` otherwise re-reads the schedule and scans
+    pending GEX jobs on every row — ~60s for a few hundred parents.
+    """
+    root = Path(data_root).resolve()
+    job_root = job_dir or _default_job_root(root)
+    schedule = load_hourly_schedule(data_root=root)
+    return {
+        "data_root": root,
+        "job_dir": job_root,
+        "schedule": schedule,
+        "promo_active": bool(faceblast_promo_active(schedule=schedule, data_root=root)),
+        "pending_slugs": _pending_hourly_prompt_slugs(job_dir=job_root, family="FB9_GEX"),
+        "gex_catalogs": _catalog_prompt_paths(root, "FB9_GEX"),
+        "facial_catalogs": _catalog_prompt_paths(root, "FB9_GEX_FACIAL"),
+        "meta_cache": {},
+        "pick_cache": {},
+    }
+
+
 def _pending_preview_for_row(
     row: Dict[str, Any],
     *,
@@ -3408,36 +3560,62 @@ def _pending_preview_for_row(
     data_root: Path,
     cursor: int,
     meta_cache: Dict[str, Dict[str, Any]],
+    preview_ctx: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     producer = str(row.get("producer_family") or "")
+    ctx = preview_ctx if isinstance(preview_ctx, dict) else {}
+    pick_cache = ctx.get("pick_cache") if isinstance(ctx.get("pick_cache"), dict) else None
     if chain_id == "gex2_to_facial":
         family = "FB9_GEX_FACIAL"
-        catalogs = _catalog_prompt_paths(data_root, family)
+        catalogs = ctx.get("facial_catalogs")
+        if not isinstance(catalogs, list):
+            catalogs = _catalog_prompt_paths(data_root, family)
         prompt = catalogs[0] if catalogs else None
         step = "chain_facial"
+        prefer = None
     else:
         family = "FB9_GEX"
+        promo = ctx.get("promo_active")
+        if promo is None:
+            promo = bool(faceblast_promo_active(data_root=data_root))
         prefer = (
             "catalog-faceblast-extend"
-            if producer == "FB9-FaceBlast" or faceblast_promo_active(data_root=data_root)
+            if producer == "FB9-FaceBlast" or promo
             else None
         )
+        step = "chain_gex_from_i2v"
+        prompt = None
+        pick_key = (family, prefer or "", int(cursor))
+        if pick_cache is not None and pick_key in pick_cache:
+            base = pick_cache[pick_key]
+            return {
+                **base,
+                "from_family": producer,
+            }
         prompt = pick_hourly_gex_catalog_prompt(
             cursor=int(cursor),
             data_root=data_root,
+            job_dir=ctx.get("job_dir"),
             prefer_stem=prefer,
+            schedule=ctx.get("schedule") if isinstance(ctx.get("schedule"), dict) else None,
+            pending_slugs=ctx.get("pending_slugs") if isinstance(ctx.get("pending_slugs"), set) else None,
+            catalogs=ctx.get("gex_catalogs") if isinstance(ctx.get("gex_catalogs"), list) else None,
         )
-        step = "chain_gex_from_i2v"
     cache_key = str(prompt.resolve()) if prompt is not None else ""
     if cache_key not in meta_cache:
         meta_cache[cache_key] = _catalog_prompt_meta(prompt)
-    return {
+    out = {
         "family": family,
         "step": step,
         "destination": "pending",
         "from_family": producer,
         **meta_cache[cache_key],
     }
+    if chain_id != "gex2_to_facial" and pick_cache is not None:
+        pick_cache[(family, prefer or "", int(cursor))] = {
+            k: v for k, v in out.items() if k != "from_family"
+        }
+    return out
 
 
 def _backlog_item(
@@ -3449,11 +3627,14 @@ def _backlog_item(
     chain_id: str = "i2v_to_gex",
     cursor: int = 0,
     meta_cache: Optional[Dict[str, Dict[str, Any]]] = None,
+    preview_ctx: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     job_key = str(row.get("job_key") or "")
     video = str(row.get("video") or "")
     root = (data_root or _default_data_root()).resolve()
     cache = meta_cache if meta_cache is not None else {}
+    if preview_ctx and isinstance(preview_ctx.get("meta_cache"), dict) and meta_cache is None:
+        cache = preview_ctx["meta_cache"]
     rank = int(next_rank) if next_rank else (1 if next_key and job_key == next_key else 0)
     out: Dict[str, Any] = {
         "job_key": job_key,
@@ -3469,6 +3650,7 @@ def _backlog_item(
             data_root=root,
             cursor=int(cursor),
             meta_cache=cache,
+            preview_ctx=preview_ctx,
         ),
     }
     if rank > 0:
@@ -3497,7 +3679,17 @@ def hourly_chain_backlogs(
     job_root = job_dir or _default_job_root(data_root)
     cur = int(cursor) if cursor is not None else _hourly_state_cursor(data_root)
 
-    i2v_rows = list_i2v_needing_gex(data_root=data_root, job_dir=job_root)
+    # Scan producer chains in parallel — each walks hundreds of job JSON files.
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fut_i2v = pool.submit(list_i2v_needing_gex, data_root=data_root, job_dir=job_root)
+        fut_facial = pool.submit(list_gex2_needing_facial, data_root=data_root, job_dir=job_root)
+        fut_ctx = pool.submit(_backlog_preview_context, data_root=data_root, job_dir=job_root)
+        i2v_rows = fut_i2v.result()
+        facial_rows = fut_facial.result()
+        preview_ctx = fut_ctx.result()
+
     i2v_nexts = pick_n_i2v_needing_gex(i2v_rows, cursor=cur, n=5)
     i2v_next = i2v_nexts[0] if i2v_nexts else None
     i2v_ranks = {str(r.get("job_key") or ""): i + 1 for i, r in enumerate(i2v_nexts)}
@@ -3512,14 +3704,13 @@ def hourly_chain_backlogs(
         fam = str(row.get("producer_family") or "?")
         i2v_by[fam] = i2v_by.get(fam, 0) + 1
 
-    facial_rows = list_gex2_needing_facial(data_root=data_root, job_dir=job_root)
     for row in facial_rows:
         row.setdefault("producer_family", "FB9_GEX2")
     facial_nexts = list(facial_rows[:5])
     facial_next = facial_nexts[0] if facial_nexts else None
     facial_ranks = {str(r.get("job_key") or ""): i + 1 for i, r in enumerate(facial_nexts)}
     facial_next_key = str((facial_next or {}).get("job_key") or "")
-    meta_cache: Dict[str, Dict[str, Any]] = {}
+    meta_cache: Dict[str, Dict[str, Any]] = preview_ctx["meta_cache"]
 
     def _item(
         row: Optional[Dict[str, Any]],
@@ -3542,6 +3733,7 @@ def hourly_chain_backlogs(
             chain_id=chain_id,
             cursor=preview_cursor,
             meta_cache=meta_cache,
+            preview_ctx=preview_ctx,
         )
 
     return {
@@ -4303,6 +4495,9 @@ def pick_hourly_gex_catalog_prompt(
     job_dir: Optional[Path] = None,
     family: str = "FB9_GEX",
     prefer_stem: Optional[str] = None,
+    schedule: Optional[Dict[str, Any]] = None,
+    pending_slugs: Optional[Set[str]] = None,
+    catalogs: Optional[List[Path]] = None,
 ) -> Optional[Path]:
     """Choose a ``catalog-*.json`` for V2V GEX / GEX2 hourlies.
 
@@ -4310,25 +4505,31 @@ def pick_hourly_gex_catalog_prompt(
     an i2v FB9-FaceBlast parent. If pending hourlies for this family have no
     faceblast-extend yet, pick that catalog so the variant appears on the FIFO.
     Otherwise rotate among catalogs by cursor.
+
+    Optional ``schedule`` / ``pending_slugs`` / ``catalogs`` avoid re-scanning the
+    same files when building a large chain-backlog payload.
     """
     data_root = (data_root or _default_data_root()).resolve()
-    catalogs = _catalog_prompt_paths(data_root, family)
-    if not catalogs:
+    catalog_list = list(catalogs) if catalogs is not None else _catalog_prompt_paths(data_root, family)
+    if not catalog_list:
         return None
-    by_stem = {p.stem: p for p in catalogs}
-    explore = hourly_explore_active(data_root=data_root)
+    by_stem = {p.stem: p for p in catalog_list}
+    explore = hourly_explore_active(schedule=schedule, data_root=data_root)
     if not prefer_stem and explore and explore.get("kind") == "prompt":
         prefer_stem = str(explore.get("prompt") or explore.get("target") or "").strip() or None
     if prefer_stem and prefer_stem in by_stem:
         return by_stem[prefer_stem]
     faceblast = by_stem.get("catalog-faceblast-extend")
-    if faceblast is not None and faceblast_promo_active(data_root=data_root):
+    if faceblast is not None and faceblast_promo_active(schedule=schedule, data_root=data_root):
         return faceblast
-    job_root = job_dir or _default_job_root(data_root)
-    pending = _pending_hourly_prompt_slugs(job_dir=job_root, family=family)
+    if pending_slugs is None:
+        job_root = job_dir or _default_job_root(data_root)
+        pending = _pending_hourly_prompt_slugs(job_dir=job_root, family=family)
+    else:
+        pending = pending_slugs
     if faceblast is not None and "faceblast-extend" not in pending:
         return faceblast
-    return catalogs[int(cursor) % len(catalogs)]
+    return catalog_list[int(cursor) % len(catalog_list)]
 
 
 def apply_hourly_gex_catalog_prompt(
