@@ -16,6 +16,9 @@ export const queryKeys = {
     promotionsRoot: ["shapeFactory", "templatePromotions"] as const,
     promotions: (opts?: { includeExpired?: boolean }) =>
       ["shapeFactory", "templatePromotions", opts || { includeExpired: false }] as const,
+    promptVariantsRoot: ["shapeFactory", "promptVariants"] as const,
+    promptVariants: (family: string) => ["shapeFactory", "promptVariants", family] as const,
+    promptProfile: (path: string) => ["shapeFactory", "promptProfile", path] as const,
     inputCurationRoot: ["shapeFactory", "inputCuration"] as const,
     inputCurationState: ["shapeFactory", "inputCuration", "state"] as const,
     inputCurationStills: (opts?: {

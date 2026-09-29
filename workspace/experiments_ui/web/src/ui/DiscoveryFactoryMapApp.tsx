@@ -27,6 +27,7 @@ import { formatIsoDateTime } from "./locale";
 import { AppetitePreviewBadge } from "./AppetitePreviewBadge";
 import { WorkProductAppetiteStrip, normalizeAppetiteRelpath } from "./WorkProductAppetiteStrip";
 import { FactoryPoolReview } from "./FactoryPoolReview";
+import { FamilyPromptCatalogPanel } from "./FamilyPromptCatalogPanel";
 import { ProvenanceAppetitePanel } from "./ProvenanceAppetitePanel";
 import { pairFromFactorySelection } from "./provenanceAppetite";
 import {
@@ -2943,6 +2944,7 @@ function FactoryMapFamilyView({
       <div className="sfmap-family-block">
         <FamilyGraph family={family} onOpenMedia={openMedia} />
         {showCurate ? <FamilyCurateSourcesStrip familySlug={family.family_slug} /> : null}
+        <FamilyPromptCatalogPanel familySlug={family.family_slug} />
         <FactoryPoolReview familySlug={family.family_slug} depositPool={depositPool} />
         <section className="sfmap-pool-members sfmap-pair-section">
           <h3 className="sfmap-pool-members__title">

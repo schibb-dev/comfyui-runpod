@@ -86,10 +86,13 @@ python workspace/scripts/shape_factory.py prompt-catalog backfill [--family SLUG
 1. **Pick** — Submit / Workbench list `available` variants; badge “Default” from designation.
 2. **Generate** — fork stamps `variant_id` + `variant_name` (snapshot) onto `job.prompt`.
 3. **Edit** — pre-Comfy edits owned text; “edited” when `content_hash` ≠ seed for that id.
-4. **Rename / availability / set default** — catalog APIs; id stable; jobs unchanged.
-5. **Promote fork** — new `variant_id` + operator-chosen `name`.
-6. **Promote update** — write text into an existing `variant_id` (preserves id + name).
-7. **Make default** — separate designation call (`default_variant_id = …`), not overwrite-by-filename.
+4. **Direct catalog edit** — Factory family detail → **Prompts** panel: edit positive/negative,
+   rename, set default, hide/show, or create a variant **without** a job
+   (`POST /api/shape-factory/prompt-variants` `update_text` / `create`).
+5. **Rename / availability / set default** — same catalog APIs; id stable; jobs unchanged.
+6. **Promote fork** — from a job: new `variant_id` + operator-chosen `name`.
+7. **Promote update** — from a job: write text into an existing `variant_id` (preserves id + name).
+8. **Make default** — separate designation call (`default_variant_id = …`), not overwrite-by-filename.
 
 Hourly still filters `catalog-*` filenames today; intent is to honor `available` once
 backfill is trusted (see CATALOG_IDENTITY adoption table).

@@ -500,6 +500,74 @@ class OwnedPromptTests(unittest.TestCase):
             self.assertEqual(upd["doc"]["positive"], "UPDATED")
             self.assertEqual(upd["doc"]["name"], "FaceBlast extend")
 
+    def test_job_free_catalog_update_and_create(self) -> None:
+        """Factory Prompts panel path: update_text / create without a job."""
+        from shape_factory_owned_prompt import (
+            list_prompt_variants,
+            promote_prompt_to_library,
+        )
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            prompts = root / "pools" / "BounceDanceA" / "prompts"
+            prompts.mkdir(parents=True)
+            (prompts / "catalog-default.json").write_text(
+                json.dumps(
+                    {
+                        "variant_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                        "name": "Base",
+                        "available": True,
+                        "positive": "OLD POS",
+                        "negative": "OLD NEG",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "pools" / "BounceDanceA" / "prompt_catalog.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "comfyui-runpod.prompt-catalog.v0",
+                        "default_variant_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            # update_text
+            upd = promote_prompt_to_library(
+                data_root=root,
+                family_slug="BounceDanceA",
+                positive="NEW POS",
+                negative="NEW NEG",
+                mode="update",
+                variant_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            )
+            self.assertTrue(upd["ok"], upd)
+            self.assertEqual(upd["doc"]["positive"], "NEW POS")
+            self.assertEqual(upd["doc"]["negative"], "NEW NEG")
+            self.assertEqual(upd["doc"]["name"], "Base")
+            self.assertEqual(upd["variant_id"], "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+
+            # create
+            created = promote_prompt_to_library(
+                data_root=root,
+                family_slug="BounceDanceA",
+                positive="FORK POS",
+                negative="",
+                mode="fork",
+                name="Evening bounce",
+                set_as_default=False,
+            )
+            self.assertTrue(created["ok"], created)
+            self.assertNotEqual(created["variant_id"], "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+            self.assertEqual(created["doc"]["name"], "Evening bounce")
+            rows = list_prompt_variants(root, "BounceDanceA")
+            names = {r["name"] for r in rows}
+            self.assertEqual(names, {"Base", "Evening bounce"})
+            defaults = [r for r in rows if r.get("is_default")]
+            self.assertEqual(len(defaults), 1)
+            self.assertEqual(defaults[0]["name"], "Base")
+
 
 if __name__ == "__main__":
     unittest.main()

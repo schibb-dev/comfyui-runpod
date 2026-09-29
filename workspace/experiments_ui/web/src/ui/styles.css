@@ -9507,6 +9507,155 @@ tr.disabled:hover td {
   gap: 10px;
 }
 
+.sfmap-prompt-catalog {
+  border: 1px solid var(--border, #2a3142);
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: var(--panel2, #141820);
+}
+
+.sfmap-prompt-catalog__head {
+  margin-bottom: 10px;
+}
+
+.sfmap-prompt-catalog__title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.sfmap-prompt-catalog__hint {
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+
+.sfmap-prompt-catalog__layout {
+  display: grid;
+  grid-template-columns: minmax(160px, 220px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+@media (max-width: 720px) {
+  .sfmap-prompt-catalog__layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.sfmap-prompt-catalog__list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.sfmap-prompt-catalog__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.sfmap-prompt-catalog__row:hover {
+  background: var(--panel, #1a1f2a);
+}
+
+.sfmap-prompt-catalog__row--active {
+  border-color: var(--accent, #6b8cff);
+  background: var(--panel, #1a1f2a);
+}
+
+.sfmap-prompt-catalog__row--hidden {
+  opacity: 0.65;
+}
+
+.sfmap-prompt-catalog__row-name {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sfmap-prompt-catalog__badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted, #aab2c5);
+  border: 1px solid var(--border, #2a3142);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.sfmap-prompt-catalog__new {
+  margin-top: 6px;
+  align-self: stretch;
+}
+
+.sfmap-prompt-catalog__editor {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sfmap-prompt-catalog__editor-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.sfmap-prompt-catalog__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted, #aab2c5);
+}
+
+.sfmap-prompt-catalog__field input,
+.sfmap-prompt-catalog__textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--border, #2a3142);
+  border-radius: 6px;
+  background: var(--panel, #0f131a);
+  color: var(--text, #e7eaf3);
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.sfmap-prompt-catalog__textarea {
+  resize: vertical;
+  min-height: 72px;
+  line-height: 1.4;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.sfmap-prompt-catalog__meta-actions,
+.sfmap-prompt-catalog__save-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sfmap-prompt-catalog__check {
+  font-size: 13px;
+  color: var(--text, #e7eaf3);
+}
+
+.sfmap-prompt-catalog__msg {
+  margin: 0;
+  font-size: 12px;
+}
+
 .sfmap-family-plan {
   margin: 0;
 }
@@ -14725,24 +14874,6 @@ button.home-backlog-row {
   font: inherit;
   min-width: 0;
 }
-
-.work-product-index-row > .steer-preview-badge-wrap {
-  top: 4px;
-  left: 4px;
-}
-
-.work-product-viewer__queued-source-frame > .steer-preview-badge-wrap {
-  top: 8px;
-  left: 72px;
-  z-index: 4;
-}
-
-.work-product-viewer__live-source > .steer-preview-badge-wrap {
-  top: 6px;
-  left: 6px;
-  z-index: 4;
-}
-
 button.home-backlog-linkish {
   border: 0;
   padding: 0;
@@ -16580,6 +16711,11 @@ button.home-backlog-linkish {
 .work-product-index-row > .appetite-preview-badge-wrap {
   top: 4px;
   right: 4px;
+}
+
+.work-product-index-row > .steer-preview-badge-wrap {
+  top: 4px;
+  left: 4px;
 }
 
 .work-product-index-row__title strong {
@@ -19013,6 +19149,18 @@ button.home-backlog-linkish {
   top: 8px;
   left: 8px;
   z-index: 2;
+}
+
+.work-product-viewer__queued-source-frame > .steer-preview-badge-wrap {
+  top: 8px;
+  left: 72px;
+  z-index: 4;
+}
+
+.work-product-viewer__live-source > .steer-preview-badge-wrap {
+  top: 6px;
+  left: 6px;
+  z-index: 4;
 }
 
 .work-product-viewer__live-plus-source {

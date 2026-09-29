@@ -4914,12 +4914,13 @@ def _shape_factory_prompt_variants_payload(cfg: ServerConfig, q: Dict[str, List[
 
 
 def _shape_factory_prompt_variants_mutate_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
-    """POST /api/shape-factory/prompt-variants — rename | set_available | set_default."""
+    """POST /api/shape-factory/prompt-variants — rename | set_available | set_default | update_text | create."""
     d = _workspace_scripts_dir()
     if d.is_dir() and str(d) not in sys.path:
         sys.path.insert(0, str(d))
     from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
     from shape_factory_owned_prompt import (  # type: ignore
+        promote_prompt_to_library,
         rename_prompt_variant,
         set_default_prompt_variant,
         set_prompt_variant_available,
@@ -4932,9 +4933,48 @@ def _shape_factory_prompt_variants_mutate_payload(cfg: ServerConfig, body: Dict[
         raise ValueError("missing_action")
     if not family:
         raise ValueError("missing_family")
+    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
+
+    if action in {"update_text", "create"}:
+        positive = body.get("positive")
+        negative = body.get("negative")
+        if positive is None and negative is None:
+            raise ValueError("missing_prompt_text")
+        pos = "" if positive is None else str(positive)
+        neg = "" if negative is None else str(negative)
+        set_as_default = bool(body.get("set_as_default") or body.get("set_default"))
+        name = str(body.get("name") or body.get("label") or "").strip() or None
+        if action == "create":
+            result = promote_prompt_to_library(
+                data_root=data_root,
+                family_slug=family,
+                positive=pos,
+                negative=neg,
+                mode="fork",
+                name=name,
+                label=name,
+                note=str(body.get("note") or "").strip() or None,
+                set_as_default=set_as_default,
+            )
+        else:
+            if not variant_id:
+                raise ValueError("missing_variant_id")
+            result = promote_prompt_to_library(
+                data_root=data_root,
+                family_slug=family,
+                positive=pos,
+                negative=neg,
+                mode="update",
+                variant_id=variant_id,
+                note=str(body.get("note") or "").strip() or None,
+                set_as_default=set_as_default,
+            )
+        if not result.get("ok"):
+            return result
+        return result
+
     if not variant_id:
         raise ValueError("missing_variant_id")
-    data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
     if action == "rename":
         return rename_prompt_variant(data_root, family, variant_id, str(body.get("name") or ""))
     if action == "set_available":

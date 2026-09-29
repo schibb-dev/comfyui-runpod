@@ -561,12 +561,16 @@ export async function fetchShapeFactoryPromptVariants(
 }
 
 export async function mutateShapeFactoryPromptVariant(body: {
-  action: "rename" | "set_available" | "set_default";
+  action: "rename" | "set_available" | "set_default" | "update_text" | "create";
   family: string;
-  variant_id: string;
+  variant_id?: string;
   name?: string;
   available?: boolean;
-}): Promise<{ ok: boolean; error?: string; detail?: string; [k: string]: unknown }> {
+  positive?: string;
+  negative?: string;
+  note?: string;
+  set_as_default?: boolean;
+}): Promise<{ ok: boolean; error?: string; detail?: string; variant_id?: string; path?: string; [k: string]: unknown }> {
   const r = await fetch("/api/shape-factory/prompt-variants", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -579,7 +583,7 @@ export async function mutateShapeFactoryPromptVariant(body: {
       `POST /api/shape-factory/prompt-variants failed: ${r.status}${detail ? `: ${detail}` : ""}${experimentsUiStaleApiHint()}`,
     );
   }
-  return j as { ok: boolean; error?: string; detail?: string };
+  return j as { ok: boolean; error?: string; detail?: string; variant_id?: string; path?: string };
 }
 
 export async function fetchShapeFactoryFamilies(): Promise<ShapeFactoryFamiliesResponse> {
