@@ -1,0 +1,30 @@
+---
+description: Experiments UI ports — phone/Tailscale uses Vite :5179, not only :8790
+alwaysApply: true
+---
+
+# Experiments UI ports (phone / Tailscale)
+
+When the operator says “the UI”, “Vite”, “phone”, “iPhone”, or “Tailscale”, **do not assume only :8790**.
+
+## Port map (this machine)
+
+| Port | What | Typical use |
+|------|------|-------------|
+| **5179** | Host Vite via `comfyui-runpod-vite.service` (`ui:dev:vite:tailscale --port 5179`) | **Default phone / Tailscale URL** |
+| **5178** | Interactive host Vite (`npm run ui:dev:vite` / `ui:dev:start`) | Desktop; left free so systemd can own 5179 |
+| **8790** | Container `experiments_ui_server.py` + built `dist/` | Production-ish / API behind Vite proxy |
+| **51780** | Docker publish of *in-container* Vite (:5178) | Rare; `npm run ui:dev` / `ui:dev:container` |
+
+Phone / remote HMR unit sets `EXPERIMENTS_UI_HMR_HOST` to the MagicDNS name (and often `HMR_PROTOCOL=wss` + `HMR_CLIENT_PORT=443` when Tailscale Serve fronts Vite). See [`scripts/install-systemd-boot.sh`](scripts/install-systemd-boot.sh) and [`scripts/tailscale_serve_vite.sh`](scripts/tailscale_serve_vite.sh).
+
+## After UI code changes / “restart everything”
+
+1. Check `systemctl --user status comfyui-runpod-vite.service` — if **inactive**, start it (`systemctl --user start comfyui-runpod-vite.service`). A dead :5179 looks like a **WSOD on the iPhone**.
+2. Rebuild/restart **8790** only when serving `dist/` or changing the Python API (`experiments_ui_server.py`). Vite on 5179 proxies `/api` + `/files` → `EXPERIMENTS_UI_PROXY_TARGET` (usually `http://127.0.0.1:8790`).
+3. Prefer phone URL: `http://<MagicDNS-or-tailnet-IP>:5179` (not :8790 unless intentionally using the baked build).
+
+## Do not
+
+- Tell the operator “only use :8790” when they historically use **:5179** from the phone.
+- Assume Vite is up because Docker/`comfyui0-runpod` is healthy — the Vite unit is a **separate** systemd user service.

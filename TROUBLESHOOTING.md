@@ -231,6 +231,21 @@ Then restart ComfyUI (or reload the UI). You can later edit `text_file_dirs.json
 
 ---
 
+## Experiments UI ports — phone / Tailscale (**5179**)
+
+**Operator default on phone:** host Vite on **`:5179`**, not the container build on `:8790`.
+
+| Port | Role |
+|------|------|
+| **5179** | Background Tailscale Vite — `systemctl --user status comfyui-runpod-vite.service` (`npm run ui:dev:vite:tailscale -- --port 5179`). Installed by [`scripts/install-systemd-boot.sh`](scripts/install-systemd-boot.sh). |
+| **5178** | Interactive Vite (`npm run ui:dev:vite` / `ui:dev:start`) |
+| **8790** | Container Experiments API + `dist/` |
+| **51780** | Host map → in-container Vite |
+
+If the iPhone shows a **white screen**, check whether `comfyui-runpod-vite.service` is **active**; a dead unit means nothing listens on 5179. Restart: `systemctl --user start comfyui-runpod-vite.service`. Phone URL form: `http://<tailnet-MagicDNS-or-IP>:5179`.
+
+---
+
 ## Experiments UI dev (`npm run ui:dev:start` / `ui:dev:all`) and Docker port **8790**
 
 Docker Compose maps **host `8790` → container `8790`**, where the container may run `experiments_ui_server.py` (see `entrypoint.sh` / `EXPERIMENTS_UI`).
