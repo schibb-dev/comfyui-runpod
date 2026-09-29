@@ -1,8 +1,15 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { AppetitePreviewFrame } from "./AppetitePreviewBadge";
 import { VideoTrimControls, type VideoTrimPlaybackMode } from "./VideoTrimControls";
 import { useTrimPlaybackEnforcement } from "./useTrimPlayback";
 import { parseFps, vhsDefaultsToMarks, type VhsDefaults } from "./workProductTrim";
+
+export type PipelineMediaPlayerHandle = {
+  play: () => void;
+  pause: () => void;
+  togglePlay: () => boolean;
+  isPlaying: () => boolean;
+};
 
 /**
  * Workbench-style media preview for pipeline lists (Queue, etc.).
@@ -10,45 +17,51 @@ import { parseFps, vhsDefaultsToMarks, type VhsDefaults } from "./workProductTri
  * readonly scrubber shows the trim range plus repeat/stop (marks are not editable). Explicit markIn/markOut
  * (from factory vhs_window) are used when skip/cap are unset/zero.
  */
-export function PipelineMediaPlayer({
-  videoUrl,
-  thumbUrl,
-  mediaKey,
-  alt = "",
-  className,
-  vhsWindow,
-  fpsHint,
-  markIn: markInProp,
-  markOut: markOutProp,
-  appetiteRelpath,
-  autoplay = false,
-  loop,
-  showControls,
-  showTrimControls,
-}: {
-  videoUrl?: string | null;
-  thumbUrl?: string | null;
-  mediaKey?: string;
-  alt?: string;
-  appetiteRelpath?: string | null;
-  /** Kept for call-site compatibility; queue viewers are always non-editing. */
-  readOnly?: boolean;
-  className?: string;
-  /** Applied VHS loader window (skip_first_frames / frame_load_cap). */
-  vhsWindow?: VhsDefaults | null;
-  /** Optional fps override (e.g. force_rate from the prompt). */
-  fpsHint?: number | null;
-  /** Optional Use marks in seconds (factory vhs_window). */
-  markIn?: number | null;
-  markOut?: number | null;
-  autoplay?: boolean;
-  /** When set, overrides the trim transport loop/stop mode. */
-  loop?: boolean;
-  /** Default: native controls when there is no trim window. */
-  showControls?: boolean;
-  /** Default: show trim bar when a trim window exists. Set false to hide until reveal. */
-  showTrimControls?: boolean;
-}) {
+export const PipelineMediaPlayer = forwardRef<
+  PipelineMediaPlayerHandle,
+  {
+    videoUrl?: string | null;
+    thumbUrl?: string | null;
+    mediaKey?: string;
+    alt?: string;
+    appetiteRelpath?: string | null;
+    /** Kept for call-site compatibility; queue viewers are always non-editing. */
+    readOnly?: boolean;
+    className?: string;
+    /** Applied VHS loader window (skip_first_frames / frame_load_cap). */
+    vhsWindow?: VhsDefaults | null;
+    /** Optional fps override (e.g. force_rate from the prompt). */
+    fpsHint?: number | null;
+    /** Optional Use marks in seconds (factory vhs_window). */
+    markIn?: number | null;
+    markOut?: number | null;
+    autoplay?: boolean;
+    /** When set, overrides the trim transport loop/stop mode. */
+    loop?: boolean;
+    /** Default: native controls when there is no trim window. */
+    showControls?: boolean;
+    /** Default: show trim bar when a trim window exists. Set false to hide until reveal. */
+    showTrimControls?: boolean;
+  }
+>(function PipelineMediaPlayer(
+  {
+    videoUrl,
+    thumbUrl,
+    mediaKey,
+    alt = "",
+    className,
+    vhsWindow,
+    fpsHint,
+    markIn: markInProp,
+    markOut: markOutProp,
+    appetiteRelpath,
+    autoplay = false,
+    loop,
+    showControls,
+    showTrimControls,
+  },
+  ref,
+) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
@@ -105,6 +118,37 @@ export function PipelineMediaPlayer({
     }
   }, [autoplay, loop, videoUrl, syncKey, hasTrimIntent]);
 
+  useImperativeHandle(
+    ref,
+    () => ({
+      play: () => {
+        const v = videoRef.current;
+        if (!v) return;
+        v.muted = true;
+        void v.play().catch(() => undefined);
+      },
+      pause: () => {
+        videoRef.current?.pause();
+      },
+      togglePlay: () => {
+        const v = videoRef.current;
+        if (!v) return false;
+        if (v.paused) {
+          v.muted = true;
+          void v.play().catch(() => undefined);
+          return true;
+        }
+        v.pause();
+        return false;
+      },
+      isPlaying: () => {
+        const v = videoRef.current;
+        return Boolean(v && !v.paused && !v.ended);
+      },
+    }),
+    [],
+  );
+
   if (videoUrl) {
     return (
       <div className={["work-product-viewer", "pipeline-media-player", className].filter(Boolean).join(" ")}>
@@ -115,23 +159,23 @@ export function PipelineMediaPlayer({
               className="work-product-viewer__video"
               src={videoUrl}
               poster={thumbUrl || undefined}
-            controls={showControls ?? !hasTrimIntent}
-            playsInline
-            muted
-            autoPlay={autoplay}
-            loop={Boolean(loop) && !hasTrimIntent}
-            preload="metadata"
-            onLoadedMetadata={(e) => {
-              const d = e.currentTarget.duration;
-              if (Number.isFinite(d) && d > 0) setDuration(d);
-              setCurrentTime(e.currentTarget.currentTime || 0);
-            }}
-            onDurationChange={(e) => {
-              const d = e.currentTarget.duration;
-              if (Number.isFinite(d) && d > 0) setDuration(d);
-            }}
-            onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime || 0)}
-            onSeeked={(e) => setCurrentTime(e.currentTarget.currentTime || 0)}
+              controls={showControls ?? !hasTrimIntent}
+              playsInline
+              muted
+              autoPlay={autoplay}
+              loop={Boolean(loop) && !hasTrimIntent}
+              preload="metadata"
+              onLoadedMetadata={(e) => {
+                const d = e.currentTarget.duration;
+                if (Number.isFinite(d) && d > 0) setDuration(d);
+                setCurrentTime(e.currentTarget.currentTime || 0);
+              }}
+              onDurationChange={(e) => {
+                const d = e.currentTarget.duration;
+                if (Number.isFinite(d) && d > 0) setDuration(d);
+              }}
+              onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime || 0)}
+              onSeeked={(e) => setCurrentTime(e.currentTarget.currentTime || 0)}
             />
           </AppetitePreviewFrame>
         </div>
@@ -182,7 +226,7 @@ export function PipelineMediaPlayer({
       <div className="work-product-viewer__empty">No preview</div>
     </div>
   );
-}
+});
 
 /** Pull VHS window (+ optional force_rate / Use marks) from queue/history key_params or vhs_window. */
 export function vhsWindowFromKeyParams(

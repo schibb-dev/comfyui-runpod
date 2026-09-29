@@ -4,20 +4,22 @@ import {
   fetchHomeSummary,
   fetchHourlyChainBacklogs,
   fetchHourlySchedule,
+  queueShapeFactoryCombo,
   setHourlySchedule,
-  steerWorkProductCombos,
 } from "./api";
 import { AppetitePreviewBadge } from "./AppetitePreviewBadge";
-import { workbenchHref } from "./discoveryDeepLink";
+import { workbenchHref, workbenchHrefForMedia } from "./discoveryDeepLink";
 import {
   backlogItemByKey,
   backlogNavItems,
   backlogNextPicks,
   stepBacklogNav,
 } from "./hourlyBacklogNav";
-import { PipelineMediaPlayer } from "./PipelineMediaPlayer";
+import { PipelineMediaPlayer, type PipelineMediaPlayerHandle } from "./PipelineMediaPlayer";
 import { routeHref } from "./routes";
 import { comfyHealthIsBackoff, comfyHealthSummary } from "./comfyHealth";
+import { SteerPreviewBadge } from "./SteerPreviewBadge";
+import { destinationForWhen, type SubmitWhen } from "./workProductPendingQueue";
 import type {
   Appetite,
   AppetiteFacet,
@@ -476,8 +478,6 @@ function HourlyBacklogCullControls({
 }) {
   const rel = String(item.video_relpath || "").trim();
   const fam = String(chain.consumer_family || item.consumer_family || "").trim();
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState("");
 
   const onAppetiteSaved = useCallback(
     (appetite: Appetite | "", _facet: AppetiteFacet) => {
@@ -486,43 +486,18 @@ function HourlyBacklogCullControls({
     [onCulled],
   );
 
-  const steer = useCallback(
-    async (status: "keep" | "later" | "out" | "clear") => {
-      if (!rel || !fam || busy) return;
-      setBusy(true);
-      setMsg("");
-      try {
-        await steerWorkProductCombos({
-          relpath: rel,
-          status,
-          families: [fam],
-          kind: "video",
-          job_key: item.job_key,
-          surface: "chain_backlog",
-        });
-        if (status === "out") onCulled();
-        else setMsg(status === "clear" ? "cleared" : status);
-      } catch (e) {
-        setMsg(e instanceof Error ? e.message : String(e));
-      } finally {
-        setBusy(false);
-      }
-    },
-    [busy, fam, item.job_key, onCulled, rel],
-  );
-
   if (!rel) {
     return (
-      <p className="factory-muted home-backlog-cull__hint">No media path — open parent on Workbench to cull.</p>
+      <p className="factory-muted home-backlog-cull__hint">No media path — use the viewer badges once media resolves.</p>
     );
   }
 
   return (
     <div className="home-backlog-cull">
       <p className="home-backlog-cull__hint factory-muted">
-        Cull this parent clip for <strong>{fam || "chain"}</strong>. Appetite{" "}
-        <strong>Remove</strong> or steer <strong>Out</strong> drops it from the waiting list.
-        <strong> Later</strong> / appetite <strong>Less</strong> soft-demote picks (transient).
+        Appetite on this parent for <strong>{fam || "chain"}</strong>. Use the{" "}
+        <strong>upper-left steer badge</strong> on the viewer for Keep / Pin / Later / Out.
+        Appetite <strong>Remove</strong> drops it from the waiting list.
       </p>
       <WorkProductAppetiteStrip
         relpath={rel}
@@ -530,23 +505,156 @@ function HourlyBacklogCullControls({
         familySlug={fam || undefined}
         onSaved={onAppetiteSaved}
       />
-      <div className="home-backlog-cull__steer" role="group" aria-label={`Steer for ${fam}`}>
-        <button type="button" className="drt-btn" disabled={busy || !fam} onClick={() => void steer("keep")}>
-          Keep
-        </button>
-        <button type="button" className="drt-btn" disabled={busy || !fam} onClick={() => void steer("later")}>
-          Later
-        </button>
-        <button type="button" className="drt-btn" disabled={busy || !fam} onClick={() => void steer("out")}>
-          Out
-        </button>
-        <button type="button" className="drt-btn" disabled={busy || !fam} onClick={() => void steer("clear")}>
-          Clear steer
-        </button>
-      </div>
-      {msg ? <p className="home-backlog-cull__msg factory-muted">{msg}</p> : null}
     </div>
   );
+}
+
+/** Jump to parent on Workbench, or submit the predicted child to Comfy now/later. */
+function HourlyBacklogActionBar({
+  item,
+  chain,
+  onSubmitted,
+  compact,
+}: {
+  item: HourlyChainBacklogItem;
+  chain: HourlyChainBacklog;
+  onSubmitted?: (jobKey: string) => void;
+  compact?: boolean;
+}) {
+  const preview = item.pending_preview || {};
+  const family = String(preview.family || chain.consumer_family || item.consumer_family || "").trim();
+  const sourceVideo = String(item.video || "").trim();
+  const promptProfile = String(preview.prompt_profile || "").trim();
+  const [busyWhen, setBusyWhen] = useState<SubmitWhen | "">("");
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+  const [submittedKey, setSubmittedKey] = useState("");
+
+  const workbenchUrl = item.job_key
+    ? workbenchHref({ jobKey: item.job_key })
+    : workbenchHrefForMedia({
+        relpath: item.video_relpath,
+        name: item.video_name,
+      });
+
+  const canSubmit = Boolean(family && sourceVideo);
+  const busy = Boolean(busyWhen);
+
+  const submit = useCallback(
+    async (when: "now" | "later") => {
+      if (!canSubmit || busy) return;
+      setBusyWhen(when);
+      setErr("");
+      setMsg("");
+      try {
+        const dest = destinationForWhen(when);
+        const res = await queueShapeFactoryCombo({
+          family_slug: family,
+          bindings: {
+            source_video: sourceVideo,
+            ...(promptProfile ? { prompt_profile: promptProfile } : {}),
+          },
+          destination: dest.destination,
+          pending_position: dest.pending_position,
+          front: dest.front,
+          source_surface: "hourly_backlog",
+        });
+        const key = String(res.job_key || "").trim();
+        if (key) {
+          setSubmittedKey(key);
+          const rank =
+            typeof res.pending_rank === "number" ? ` · pending #${res.pending_rank + 1}` : "";
+          setMsg(
+            when === "now"
+              ? `Submitted now · ${key}${res.prompt_id ? ` · ${res.prompt_id}` : ""}`
+              : `Submitted later · ${key}${rank}`,
+          );
+          onSubmitted?.(key);
+        } else {
+          setMsg(res.prompt_id ? `Comfy ${res.prompt_id}` : `Submitted ${when}`);
+        }
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusyWhen("");
+      }
+    },
+    [busy, canSubmit, family, onSubmitted, promptProfile, sourceVideo],
+  );
+
+  return (
+    <div className={`home-backlog-actions${compact ? " home-backlog-actions--compact" : ""}`}>
+      <div className="home-backlog-actions__row" role="group" aria-label="Backlog actions">
+        <a className="drt-btn" href={workbenchUrl} title="Open the parent job on Workbench">
+          Workbench
+        </a>
+        <button
+          type="button"
+          className="drt-btn home-backlog-actions__submit-now"
+          disabled={!canSubmit || busy}
+          title={
+            canSubmit
+              ? `Submit ${family} straight to Comfy now (front of queue)`
+              : "Need consumer family + source video"
+          }
+          onClick={() => void submit("now")}
+        >
+          {busyWhen === "now" ? "Submitting…" : "Submit now"}
+        </button>
+        <button
+          type="button"
+          className="drt-btn home-backlog-actions__submit-later"
+          disabled={!canSubmit || busy}
+          title={
+            canSubmit
+              ? `Submit ${family} to Comfy later (normal priority)`
+              : "Need consumer family + source video"
+          }
+          onClick={() => void submit("later")}
+        >
+          {busyWhen === "later" ? "Submitting…" : "Submit later"}
+        </button>
+      </div>
+      {msg ? (
+        <p className="home-backlog-actions__msg factory-muted">
+          {msg}
+          {submittedKey ? (
+            <>
+              {" · "}
+              <a className="home-cta" href={workbenchHref({ jobKey: submittedKey })}>
+                Open on Workbench →
+              </a>
+            </>
+          ) : null}
+        </p>
+      ) : null}
+      {err ? <p className="home-hourly-controls__err">{err}</p> : null}
+    </div>
+  );
+}
+
+const BACKLOG_PLAYBACK_PREFS_KEY = "hourly-backlog-preview-playback";
+
+function loadBacklogPlaybackPrefs(): { autoplay: boolean; repeat: boolean } {
+  try {
+    const raw = localStorage.getItem(BACKLOG_PLAYBACK_PREFS_KEY);
+    if (!raw) return { autoplay: true, repeat: true };
+    const parsed = JSON.parse(raw) as { autoplay?: unknown; repeat?: unknown };
+    return {
+      autoplay: parsed.autoplay !== false,
+      repeat: parsed.repeat !== false,
+    };
+  } catch {
+    return { autoplay: true, repeat: true };
+  }
+}
+
+function saveBacklogPlaybackPrefs(prefs: { autoplay: boolean; repeat: boolean }) {
+  try {
+    localStorage.setItem(BACKLOG_PLAYBACK_PREFS_KEY, JSON.stringify(prefs));
+  } catch {
+    /* ignore quota / private mode */
+  }
 }
 
 function HourlyBacklogPendingModal({
@@ -557,6 +665,7 @@ function HourlyBacklogPendingModal({
   onClose,
   onStep,
   onCulled,
+  onSubmitted,
 }: {
   chain: HourlyChainBacklog;
   item: HourlyChainBacklogItem;
@@ -565,11 +674,31 @@ function HourlyBacklogPendingModal({
   onClose: () => void;
   onStep: (delta: number) => void;
   onCulled: () => void;
+  onSubmitted?: (jobKey: string) => void;
 }) {
   const preview = item.pending_preview || {};
   const family = preview.family || item.consumer_family || "child";
   const promptName = preview.prompt_name || preview.prompt_label || preview.prompt_slug || "default";
   const rank = typeof item.next_rank === "number" ? item.next_rank : item.next ? 1 : 0;
+  const playerRef = useRef<PipelineMediaPlayerHandle | null>(null);
+  const [playbackPrefs, setPlaybackPrefs] = useState(loadBacklogPlaybackPrefs);
+
+  const setAutoplay = useCallback((next: boolean) => {
+    setPlaybackPrefs((prev) => {
+      const prefs = { ...prev, autoplay: next };
+      saveBacklogPlaybackPrefs(prefs);
+      return prefs;
+    });
+  }, []);
+
+  const setRepeat = useCallback((next: boolean) => {
+    setPlaybackPrefs((prev) => {
+      const prefs = { ...prev, repeat: next };
+      saveBacklogPlaybackPrefs(prefs);
+      return prefs;
+    });
+  }, []);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -593,6 +722,7 @@ function HourlyBacklogPendingModal({
       if (e.code === "Space" || e.key === " ") {
         e.preventDefault();
         e.stopImmediatePropagation();
+        playerRef.current?.togglePlay();
       }
     };
     window.addEventListener("keydown", onKey, { capture: true });
@@ -621,9 +751,6 @@ function HourlyBacklogPendingModal({
             <button type="button" className="drt-btn" disabled={count < 2} onClick={() => onStep(1)}>
               →
             </button>
-            <a className="drt-btn" href={workbenchHref({ jobKey: item.job_key })}>
-              Parent on Workbench
-            </a>
             <button type="button" onClick={onClose}>
               Close
             </button>
@@ -632,26 +759,65 @@ function HourlyBacklogPendingModal({
         <div className="home-backlog-modal__body">
           <div className="home-backlog-modal__player-wrap">
             <PipelineMediaPlayer
+              ref={playerRef}
               videoUrl={item.video_url}
               thumbUrl={backlogThumbUrl(item)}
               mediaKey={item.job_key || item.video_name}
               alt={item.video_name || "source clip"}
               className="home-backlog-modal__player"
+              autoplay={playbackPrefs.autoplay}
+              loop={playbackPrefs.repeat}
             />
             {item.video_relpath ? (
-              <AppetitePreviewBadge
-                relpath={item.video_relpath}
-                jobKey={item.job_key}
-                familySlug={chain.consumer_family || item.consumer_family}
-                className="home-backlog-modal__appetite"
-              />
+              <>
+                <SteerPreviewBadge
+                  key={`steer:${item.job_key || item.video_relpath}`}
+                  relpath={item.video_relpath}
+                  jobKey={item.job_key}
+                  familySlug={chain.consumer_family || item.consumer_family}
+                  assetKind="video"
+                  surface="chain_backlog"
+                  className="home-backlog-modal__steer"
+                  onStatusChange={(st) => {
+                    if (st === "out") onCulled();
+                  }}
+                />
+                <AppetitePreviewBadge
+                  relpath={item.video_relpath}
+                  jobKey={item.job_key}
+                  familySlug={chain.consumer_family || item.consumer_family}
+                  className="home-backlog-modal__appetite"
+                />
+              </>
             ) : null}
+            <div className="home-backlog-playback" role="group" aria-label="Playback">
+              <label className="home-backlog-playback__tog">
+                <input
+                  type="checkbox"
+                  checked={playbackPrefs.autoplay}
+                  onChange={(e) => setAutoplay(e.target.checked)}
+                />
+                Auto-play
+              </label>
+              <label className="home-backlog-playback__tog">
+                <input
+                  type="checkbox"
+                  checked={playbackPrefs.repeat}
+                  onChange={(e) => setRepeat(e.target.checked)}
+                />
+                Auto-repeat
+              </label>
+              <span className="factory-muted home-backlog-playback__hint">Space play/pause</span>
+            </div>
           </div>
           <div className="home-backlog-modal__meta">
             <p>
               Hourly would enqueue a <strong>{family}</strong> job on the pending FIFO, using this
               {item.producer_family ? ` ${item.producer_family}` : ""} clip as <code>source_video</code>.
+              Use <strong>Submit now</strong> / <strong>Submit later</strong> to send it to Comfy
+              immediately.
             </p>
+            <HourlyBacklogActionBar item={item} chain={chain} onSubmitted={onSubmitted} />
             <HourlyBacklogCullControls item={item} chain={chain} onCulled={onCulled} />
             <dl>
               <div>
@@ -680,7 +846,7 @@ function HourlyBacklogPendingModal({
             {preview.prompt_excerpt ? (
               <blockquote className="home-backlog-modal__excerpt">{preview.prompt_excerpt}</blockquote>
             ) : null}
-            <p className="factory-muted">↑↓ or ←→ next item · Esc close</p>
+            <p className="factory-muted">↑↓ or ←→ next item · Space play/pause · Esc close</p>
           </div>
         </div>
       </div>
@@ -782,6 +948,10 @@ function formatRecalcClock(iso: string): string {
 function HourlyChainBacklogsCard({ refreshToken }: { refreshToken: number }) {
   const [data, setData] = useState<HourlyChainBacklogsResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadingDetailId, setLoadingDetailId] = useState<string>("");
+  const [loadingMoreId, setLoadingMoreId] = useState<string>("");
+  const [elapsedSec, setElapsedSec] = useState(0);
+  const [statusLine, setStatusLine] = useState("Starting scan…");
   const [error, setError] = useState("");
   const [openId, setOpenId] = useState<string>("i2v_to_gex");
   const [familyFilter, setFamilyFilter] = useState<Record<string, string>>({});
@@ -792,29 +962,107 @@ function HourlyChainBacklogsCard({ refreshToken }: { refreshToken: number }) {
   const cardRef = useRef<HTMLDivElement | null>(null);
   const prevSnapRef = useRef<BacklogSnap | null>(null);
   const dataRef = useRef<HourlyChainBacklogsResponse | null>(null);
+  const openIdRef = useRef(openId);
+  const loadGenRef = useRef(0);
   dataRef.current = data;
+  openIdRef.current = openId;
 
-  const load = useCallback(async (opts?: { compare?: boolean }) => {
-    setLoading(true);
-    setError("");
-    const compare = opts?.compare !== false;
-    const before = compare ? prevSnapRef.current || snapshotBacklog(dataRef.current) : null;
-    try {
-      const next = await fetchHourlyChainBacklogs();
-      setData(next);
-      const after = snapshotBacklog(next);
-      if (after) {
-        prevSnapRef.current = after;
-        setLastRecalcAt(after.at);
-        if (compare && before) setDiffLines(diffBacklogLines(before, after));
-        else setDiffLines(after.chains.map((c) => `${c.label}: ${c.count} waiting`));
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
+  useEffect(() => {
+    if (!loading && !loadingDetailId && !loadingMoreId) {
+      setElapsedSec(0);
+      return;
     }
+    setElapsedSec(0);
+    const t0 = Date.now();
+    const id = window.setInterval(() => {
+      setElapsedSec(Math.floor((Date.now() - t0) / 1000));
+    }, 250);
+    return () => window.clearInterval(id);
+  }, [loading, loadingDetailId, loadingMoreId, refreshToken]);
+
+  const mergeChain = useCallback((chain: HourlyChainBacklog, append: boolean) => {
+    setData((prev) => {
+      if (!prev?.chains?.length) {
+        return { ok: true, chains: [chain], mode: "detail", cursor: prev?.cursor };
+      }
+      const chains = prev.chains.map((c) => {
+        if (c.id !== chain.id) return c;
+        if (!append) return { ...c, ...chain };
+        const prevItems = c.items || [];
+        const nextItems = [...prevItems, ...(chain.items || [])];
+        return {
+          ...c,
+          ...chain,
+          items: nextItems,
+          count: chain.count ?? c.count,
+        };
+      });
+      return { ...prev, chains };
+    });
   }, []);
+
+  const loadDetail = useCallback(
+    async (chainId: string, opts?: { append?: boolean; offset?: number }) => {
+      const append = Boolean(opts?.append);
+      if (append) setLoadingMoreId(chainId);
+      else setLoadingDetailId(chainId);
+      setStatusLine(append ? `Loading more for ${chainId}…` : `Loading list for ${chainId}…`);
+      try {
+        const detail = await fetchHourlyChainBacklogs({
+          mode: "detail",
+          chainId,
+          offset: opts?.offset ?? 0,
+          limit: 80,
+          cursor: dataRef.current?.cursor,
+        });
+        const chain = (detail.chains || [])[0];
+        if (chain) mergeChain(chain, append);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setLoadingDetailId("");
+        setLoadingMoreId("");
+        setStatusLine("");
+      }
+    },
+    [mergeChain],
+  );
+
+  const load = useCallback(
+    async (opts?: { compare?: boolean }) => {
+      const gen = ++loadGenRef.current;
+      setLoading(true);
+      setError("");
+      setStatusLine("Scanning complete parents (summary)…");
+      const compare = opts?.compare !== false;
+      const before = compare ? prevSnapRef.current || snapshotBacklog(dataRef.current) : null;
+      try {
+        const next = await fetchHourlyChainBacklogs({ mode: "summary" });
+        if (gen !== loadGenRef.current) return;
+        setData(next);
+        setStatusLine("Summary ready — expand a chain for the full list");
+        const after = snapshotBacklog(next);
+        if (after) {
+          prevSnapRef.current = after;
+          setLastRecalcAt(after.at);
+          if (compare && before) setDiffLines(diffBacklogLines(before, after));
+          else setDiffLines(after.chains.map((c) => `${c.label}: ${c.count} waiting`));
+        }
+        const open = String(openIdRef.current || "").trim();
+        const openChain = (next.chains || []).find((c) => c.id === open);
+        if (open && openChain && openChain.items_loaded === false && (openChain.count || 0) > 0) {
+          void loadDetail(open);
+        }
+      } catch (e) {
+        if (gen !== loadGenRef.current) return;
+        setError(e instanceof Error ? e.message : String(e));
+        setStatusLine("");
+      } finally {
+        if (gen === loadGenRef.current) setLoading(false);
+      }
+    },
+    [loadDetail],
+  );
 
   useEffect(() => {
     void load({ compare: false });
@@ -859,6 +1107,32 @@ function HourlyChainBacklogsCard({ refreshToken }: { refreshToken: number }) {
     void load({ compare: true });
   }, [load]);
 
+  const onToggleChain = useCallback(
+    (chainId: string) => {
+      setOpenId((cur) => {
+        const next = cur === chainId ? "" : chainId;
+        if (next) {
+          const ch = (dataRef.current?.chains || []).find((c) => c.id === next);
+          if (ch && ch.items_loaded === false && (ch.count || 0) > 0) {
+            void loadDetail(next);
+          }
+        }
+        return next;
+      });
+    },
+    [loadDetail],
+  );
+
+  const onLoadMore = useCallback(
+    (chain: HourlyChainBacklog) => {
+      const id = String(chain.id || "");
+      if (!id) return;
+      const offset = (chain.items || []).length;
+      void loadDetail(id, { append: true, offset });
+    },
+    [loadDetail],
+  );
+
   useEffect(() => {
     if (!openChain) return;
     if (selectedKey && backlogItemByKey(openChain, selectedKey)) return;
@@ -899,6 +1173,16 @@ function HourlyChainBacklogsCard({ refreshToken }: { refreshToken: number }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [selectedItem, stepNav, viewerKey]);
 
+  const busy = loading || Boolean(loadingDetailId) || Boolean(loadingMoreId);
+  const waitHint =
+    busy && elapsedSec >= 2
+      ? elapsedSec >= 60
+        ? " — still walking job trees; counts come before the full lists"
+        : elapsedSec >= 20
+          ? " — large trees; hang tight"
+          : " — scanning parents"
+      : "";
+
   return (
     <Panel
       title="Chain backlogs"
@@ -910,7 +1194,7 @@ function HourlyChainBacklogsCard({ refreshToken }: { refreshToken: number }) {
           disabled={loading}
           onClick={() => void load({ compare: true })}
         >
-          {loading ? "Scanning…" : "Recalculate"}
+          {loading ? `Scanning… ${elapsedSec}s` : "Recalculate"}
         </button>
       }
       footer={
@@ -925,14 +1209,25 @@ function HourlyChainBacklogsCard({ refreshToken }: { refreshToken: number }) {
       }
     >
       <div ref={cardRef} className="home-backlog-card" tabIndex={-1}>
-        {loading && !data ? <p className="factory-muted">Scanning complete parents…</p> : null}
+        {busy || statusLine ? (
+          <p className="home-backlog-status" role="status" aria-live="polite">
+            {loading
+              ? `Scanning complete parents… ${elapsedSec}s${waitHint}`
+              : loadingDetailId
+                ? `Loading ${loadingDetailId} list… ${elapsedSec}s`
+                : loadingMoreId
+                  ? `Loading more… ${elapsedSec}s`
+                  : statusLine}
+          </p>
+        ) : null}
         {error ? <p className="home-hourly-controls__err">{error}</p> : null}
         {data?.note ? <p className="home-hourly-controls__hint">{data.note}</p> : null}
         {typeof data?.cursor === "number" ? (
           <p className="home-hourly-controls__meta">
             Cursor {data.cursor}
+            {data.mode ? ` · ${data.mode}` : ""}
+            {data.cached ? ` · cached ${data.cache_age_sec ?? "?"}s` : ""}
             {lastRecalcAt ? ` · scanned ${formatRecalcClock(lastRecalcAt)}` : ""}
-            {loading ? " · refreshing…" : ""}
           </p>
         ) : null}
         {diffLines.length ? (
@@ -946,6 +1241,23 @@ function HourlyChainBacklogsCard({ refreshToken }: { refreshToken: number }) {
           </div>
         ) : null}
         <div className="home-backlog-list">
+          {loading && !chains.length ? (
+            <div className="home-backlog-skeleton" aria-hidden={false}>
+              <p className="factory-muted">Waiting on summary counts (i2v, facial, self-extend, Kneel→GEX2)…</p>
+              <p className="mono">{elapsedSec}s</p>
+              <div className="home-backlog-list" style={{ marginTop: 10 }}>
+                {["I2V → GEX", "GEX2 → Facial", "Named self-extend", "Kneel → GEX2"].map((label) => (
+                  <section key={label} className="home-backlog-chain" aria-busy="true">
+                    <div className="home-backlog-chain__head" style={{ cursor: "default" }}>
+                      <span className="home-backlog-chain__title">{label}</span>
+                      <span className="home-backlog-chain__count mono">…</span>
+                      <span className="home-backlog-chain__meta">scanning…</span>
+                    </div>
+                  </section>
+                ))}
+              </div>
+            </div>
+          ) : null}
           {chains.map((chain) => (
             <HourlyBacklogChain
               key={chain.id || chain.label}
@@ -953,12 +1265,15 @@ function HourlyChainBacklogsCard({ refreshToken }: { refreshToken: number }) {
               open={openId === chain.id}
               familyFilter={familyFilter[chain.id || ""] || "all"}
               selectedKey={openId === chain.id ? selectedKey : ""}
-              onToggle={() => setOpenId((cur) => (cur === chain.id ? "" : String(chain.id || "")))}
+              itemsLoading={loadingDetailId === chain.id}
+              moreLoading={loadingMoreId === chain.id}
+              onToggle={() => onToggleChain(String(chain.id || ""))}
               onFamily={(fam) =>
                 setFamilyFilter((prev) => ({ ...prev, [chain.id || ""]: fam }))
               }
               onSelectItem={(item) => selectItem(item, { openPreview: false })}
               onOpenItem={(item) => selectItem(item, { openPreview: true })}
+              onLoadMore={() => onLoadMore(chain)}
             />
           ))}
         </div>
@@ -971,6 +1286,12 @@ function HourlyChainBacklogsCard({ refreshToken }: { refreshToken: number }) {
                 {selectedItem.producer_family || ""} · {shortBacklogKey(String(selectedItem.job_key || ""))}
               </span>
             </div>
+            <HourlyBacklogActionBar
+              item={selectedItem}
+              chain={openChain}
+              compact
+              onSubmitted={() => void load({ compare: true })}
+            />
             <HourlyBacklogCullControls item={selectedItem} chain={openChain} onCulled={onCulled} />
           </div>
         ) : null}
@@ -989,6 +1310,7 @@ function HourlyChainBacklogsCard({ refreshToken }: { refreshToken: number }) {
           }}
           onStep={(delta) => stepNav(delta, { openPreview: true })}
           onCulled={onCulled}
+          onSubmitted={() => void load({ compare: true })}
         />
       ) : null}
     </Panel>
@@ -1000,19 +1322,25 @@ function HourlyBacklogChain({
   open,
   familyFilter,
   selectedKey,
+  itemsLoading,
+  moreLoading,
   onToggle,
   onFamily,
   onSelectItem,
   onOpenItem,
+  onLoadMore,
 }: {
   chain: HourlyChainBacklog;
   open: boolean;
   familyFilter: string;
   selectedKey: string;
+  itemsLoading?: boolean;
+  moreLoading?: boolean;
   onToggle: () => void;
   onFamily: (family: string) => void;
   onSelectItem: (item: HourlyChainBacklogItem) => void;
   onOpenItem: (item: HourlyChainBacklogItem) => void;
+  onLoadMore?: () => void;
 }) {
   const items = chain.items ?? [];
   const visible =
@@ -1027,6 +1355,8 @@ function HourlyBacklogChain({
       : chain.lookback_note
         ? "no age cull"
         : null;
+  const deferred = chain.items_loaded === false;
+  const hasMore = Boolean(chain.items_has_more);
 
   return (
     <section className="home-backlog-chain">
@@ -1037,6 +1367,7 @@ function HourlyBacklogChain({
           every {chain.drain_every ?? "?"} cursor
           {chain.due_this_cursor ? " · due now" : ""}
           {lookback ? ` · ${lookback}` : ""}
+          {deferred && !itemsLoading ? " · list on expand" : ""}
         </span>
       </button>
       {open ? (
@@ -1101,6 +1432,9 @@ function HourlyBacklogChain({
               ))}
             </div>
           ) : null}
+          {itemsLoading ? (
+            <p className="factory-muted home-backlog-status">Loading waiting list…</p>
+          ) : null}
           {visible.length > 0 ? (
             <ul className="home-backlog-items">
               {visible.map((it) => {
@@ -1133,6 +1467,18 @@ function HourlyBacklogChain({
                 );
               })}
             </ul>
+          ) : null}
+          {!itemsLoading && chain.items_loaded && hasMore ? (
+            <button
+              type="button"
+              className="drt-btn home-backlog-more"
+              disabled={moreLoading}
+              onClick={() => onLoadMore?.()}
+            >
+              {moreLoading
+                ? "Loading…"
+                : `Load more (${(chain.items || []).length}/${chain.items_total ?? chain.count ?? "?"})`}
+            </button>
           ) : null}
         </div>
       ) : null}

@@ -2422,6 +2422,7 @@ export type HourlyChainBacklog = {
   label?: string;
   producer_label?: string;
   consumer_family?: string;
+  consumer_families?: string[];
   count?: number;
   by_family?: Record<string, number>;
   drain_every?: number;
@@ -2431,12 +2432,20 @@ export type HourlyChainBacklog = {
   next?: HourlyChainBacklogItem | null;
   next_picks?: HourlyChainBacklogItem[];
   items?: HourlyChainBacklogItem[];
+  items_loaded?: boolean;
+  items_total?: number;
+  items_offset?: number;
+  items_limit?: number | null;
+  items_has_more?: boolean;
 };
 
 export type HourlyChainBacklogsResponse = {
   ok?: boolean;
+  mode?: string;
   cursor?: number;
   note?: string;
+  cached?: boolean;
+  cache_age_sec?: number;
   chains?: HourlyChainBacklog[];
   error?: string;
   detail?: string;

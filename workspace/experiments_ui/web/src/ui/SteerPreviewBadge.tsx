@@ -52,6 +52,8 @@ export function SteerPreviewBadge({
   assetKind = "still",
   size = "default",
   className,
+  surface = "preview_steer",
+  onStatusChange,
 }: {
   relpath?: string | null;
   contentId?: string | null;
@@ -63,6 +65,8 @@ export function SteerPreviewBadge({
   assetKind?: "still" | "video" | string;
   size?: "default" | "sm";
   className?: string;
+  surface?: string;
+  onStatusChange?: (status: string | null) => void;
 }) {
   const cid = useMemo(() => extractContentId(relpath, contentId), [relpath, contentId]);
   const kind = assetKind === "video" || assetKind === "clip" ? "video" : "still";
@@ -119,16 +123,18 @@ export function SteerPreviewBadge({
     }
   }, [cid, relpath, kind, familySlug]);
 
+  // Load current marks on mount / media change so the badge glyph stays accurate when navigating.
   useEffect(() => {
-    if (!open) return;
     if (!cid && !String(relpath || "").trim()) return;
     void refresh();
-  }, [open, cid, relpath, refresh]);
+  }, [cid, relpath, refresh]);
 
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopImmediatePropagation();
         setPinned(false);
         setOpen(false);
       }
@@ -139,10 +145,10 @@ export function SteerPreviewBadge({
       setPinned(false);
       setOpen(false);
     };
-    window.addEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, { capture: true });
     window.addEventListener("pointerdown", onPointerDown, true);
     return () => {
-      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keydown", onKey, { capture: true } as AddEventListenerOptions);
       window.removeEventListener("pointerdown", onPointerDown, true);
     };
   }, [open]);
@@ -175,7 +181,9 @@ export function SteerPreviewBadge({
   const targets: HourlyBinLookupTarget[] = lookup?.targets || [];
   const byFamily = lookup?.by_family || {};
   const steered = Object.entries(byFamily).filter(([, row]) => row?.status);
-  const primaryStatus = steered[0]?.[1]?.status || null;
+  const famPreferred = String(familySlug || "").trim();
+  const primaryStatus =
+    (famPreferred && byFamily[famPreferred]?.status) || steered[0]?.[1]?.status || null;
   const glyph = statusGlyph(primaryStatus);
   const title = steered.length
     ? steered.map(([fam, row]) => `${statusGlyph(row.status)} · ${fam}`).join(", ")
@@ -206,12 +214,14 @@ export function SteerPreviewBadge({
         variant_name: variantName || undefined,
         job_key: jobKey || undefined,
         kind,
-        surface: "preview_steer",
+        surface,
       });
       if (res.lookup) setLookup(res.lookup);
       else await refresh();
       if (res.errors?.length) {
         setMsg(res.errors.map((e) => `${e.family}: ${e.error}`).join("; "));
+      } else {
+        onStatusChange?.(status === "clear" ? null : status);
       }
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));

@@ -3267,16 +3267,130 @@ def _hourly_schedule_payload(cfg: ServerConfig) -> Dict[str, Any]:
     return out
 
 
-def _hourly_chain_backlogs_payload() -> Dict[str, Any]:
-    """GET /api/shape-factory/hourly-backlogs — computed i2v→GEX and GEX2→FACIAL waiting lists."""
+_HOURLY_BACKLOG_SUMMARY_CACHE: Dict[str, Any] = {"key": "", "at": 0.0, "payload": None}
+_HOURLY_BACKLOG_SUMMARY_TTL_SEC = 45.0
+
+
+def _hourly_chain_backlogs_payload(q: Optional[Dict[str, List[str]]] = None) -> Dict[str, Any]:
+    """GET /api/shape-factory/hourly-backlogs — chain waiting lists (summary/detail/full).
+
+    Summary/detail scans walk large job trees. Running them in-process shares the GIL with
+    live-preview and can stretch a ~25s scan into minutes — so we prefer a short-lived
+    subprocess for the heavy lift (same code path, isolated GIL).
+    """
     d = _workspace_scripts_dir()
     if d.is_dir() and str(d) not in sys.path:
         sys.path.insert(0, str(d))
-    from shape_factory_hourly import hourly_chain_backlogs  # type: ignore
     from shape_factory_map import resolve_shape_factory_data_root  # type: ignore
 
     data_root = resolve_shape_factory_data_root(repo_root=_repo_root())
-    return hourly_chain_backlogs(data_root=data_root)
+    qq = q or {}
+
+    def _one(key: str, default: str = "") -> str:
+        vals = qq.get(key) or []
+        return str(vals[0] if vals else default).strip()
+
+    mode = _one("mode", "summary") or "summary"
+    chain_id = _one("chain_id") or None
+    cursor_raw = _one("cursor")
+    cursor = int(cursor_raw) if cursor_raw.isdigit() else None
+    offset_raw = _one("offset", "0")
+    limit_raw = _one("limit")
+    try:
+        items_offset = max(0, int(offset_raw or 0))
+    except ValueError:
+        items_offset = 0
+    items_limit: Optional[int] = None
+    if limit_raw:
+        try:
+            items_limit = max(1, min(500, int(limit_raw)))
+        except ValueError:
+            items_limit = None
+
+    # Parent-process TTL for summary — subprocesses cannot share the module cache.
+    if mode == "summary" and not chain_id:
+        cache_key = f"{data_root}|{cursor}|{items_offset}|{items_limit}"
+        cached = _HOURLY_BACKLOG_SUMMARY_CACHE.get("payload")
+        if (
+            isinstance(cached, dict)
+            and _HOURLY_BACKLOG_SUMMARY_CACHE.get("key") == cache_key
+            and (time.time() - float(_HOURLY_BACKLOG_SUMMARY_CACHE.get("at") or 0.0))
+            < _HOURLY_BACKLOG_SUMMARY_TTL_SEC
+        ):
+            out = dict(cached)
+            out["cached"] = True
+            out["cache_age_sec"] = round(
+                time.time() - float(_HOURLY_BACKLOG_SUMMARY_CACHE.get("at") or 0.0), 1
+            )
+            out["via"] = "cache"
+            return out
+
+    # Prefer subprocess so live-preview traffic cannot starve the scan.
+    try:
+        import subprocess
+
+        script = (
+            "import json,sys\n"
+            f"sys.path.insert(0, {str(d)!r})\n"
+            "from pathlib import Path\n"
+            "from shape_factory_hourly import hourly_chain_backlogs\n"
+            "out = hourly_chain_backlogs(\n"
+            f"  data_root=Path({str(data_root)!r}),\n"
+            f"  mode={mode!r},\n"
+            f"  chain_id={chain_id!r},\n"
+            f"  cursor={cursor!r},\n"
+            f"  items_offset={items_offset!r},\n"
+            f"  items_limit={items_limit!r},\n"
+            ")\n"
+            "json.dump(out, sys.stdout, ensure_ascii=False)\n"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=False,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            import json as _json
+
+            payload = _json.loads(proc.stdout)
+            if isinstance(payload, dict):
+                payload.setdefault("via", "subprocess")
+                if mode == "summary" and not chain_id and payload.get("ok"):
+                    cache_key = f"{data_root}|{cursor}|{items_offset}|{items_limit}"
+                    _HOURLY_BACKLOG_SUMMARY_CACHE["key"] = cache_key
+                    _HOURLY_BACKLOG_SUMMARY_CACHE["at"] = time.time()
+                    _HOURLY_BACKLOG_SUMMARY_CACHE["payload"] = dict(payload)
+                    payload["cached"] = False
+                return payload
+        # Fall through to in-process on failure.
+        sys.stderr.write(
+            f"[hourly-backlogs] subprocess failed rc={proc.returncode} "
+            f"err={(proc.stderr or '')[:400]}\n"
+        )
+    except Exception as e:
+        sys.stderr.write(f"[hourly-backlogs] subprocess error: {e}\n")
+
+    from shape_factory_hourly import hourly_chain_backlogs  # type: ignore
+
+    out = hourly_chain_backlogs(
+        data_root=data_root,
+        mode=mode,
+        chain_id=chain_id,
+        cursor=cursor,
+        items_offset=items_offset,
+        items_limit=items_limit,
+    )
+    if isinstance(out, dict):
+        out.setdefault("via", "inprocess")
+        if mode == "summary" and not chain_id and out.get("ok"):
+            cache_key = f"{data_root}|{cursor}|{items_offset}|{items_limit}"
+            _HOURLY_BACKLOG_SUMMARY_CACHE["key"] = cache_key
+            _HOURLY_BACKLOG_SUMMARY_CACHE["at"] = time.time()
+            _HOURLY_BACKLOG_SUMMARY_CACHE["payload"] = dict(out)
+            out["cached"] = False
+    return out
 
 
 def _hourly_schedule_set_payload(cfg: ServerConfig, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -14560,7 +14674,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/shape-factory/hourly-backlogs":
             try:
-                payload = _hourly_chain_backlogs_payload()
+                payload = _hourly_chain_backlogs_payload(q)
                 code = 200 if payload.get("ok") else 500
                 return _json_response(self, code, payload)
             except Exception as e:

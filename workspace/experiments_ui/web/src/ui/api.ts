@@ -167,8 +167,21 @@ export async function fetchHomeSummary(opts?: {
   return j;
 }
 
-export async function fetchHourlyChainBacklogs(): Promise<HourlyChainBacklogsResponse> {
-  const r = await fetch("/api/shape-factory/hourly-backlogs");
+export async function fetchHourlyChainBacklogs(opts?: {
+  mode?: "summary" | "detail" | "full";
+  chainId?: string | null;
+  cursor?: number | null;
+  offset?: number;
+  limit?: number;
+}): Promise<HourlyChainBacklogsResponse> {
+  const sp = new URLSearchParams();
+  sp.set("mode", opts?.mode || "summary");
+  if (opts?.chainId?.trim()) sp.set("chain_id", opts.chainId.trim());
+  if (opts?.cursor != null && Number.isFinite(opts.cursor)) sp.set("cursor", String(opts.cursor));
+  if (opts?.offset != null && opts.offset > 0) sp.set("offset", String(opts.offset));
+  if (opts?.limit != null) sp.set("limit", String(opts.limit));
+  const qs = sp.toString();
+  const r = await fetch(`/api/shape-factory/hourly-backlogs?${qs}`);
   const j = (await r.json().catch(() => ({}))) as HourlyChainBacklogsResponse;
   if (!r.ok || j.ok === false) {
     const detail = [j.error, j.detail].filter(Boolean).join(": ");
