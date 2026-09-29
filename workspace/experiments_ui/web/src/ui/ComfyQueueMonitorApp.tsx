@@ -16,7 +16,7 @@ import { ComfyHealthBanner } from "./ComfyHealthBanner";
 import { comfyHealthIsBackoff, formatComfyRetry } from "./comfyHealth";
 import { ComfyLiveMetricsBar, ComfyLivePreview } from "./ComfyLivePreview";
 import { ComfyUiLink } from "./comfyUiWindow";
-import { discoveryLibraryHref, parseQueueDeepLink, queueHref, submitHref, workbenchHref } from "./discoveryDeepLink";
+import { parseQueueDeepLink, queueHref, submitHref } from "./discoveryDeepLink";
 import { useRegisterPhoneOverflow } from "./phoneChrome";
 import { PageHeader } from "./PageHeader";
 import { useDeviceContext } from "./viewport";
@@ -28,6 +28,11 @@ import { JobOverrideBadge, jobOverrideKinds, jobOverrideTitle } from "./jobOverr
 import { OverridePeekButton } from "./OverridePeek";
 import { jobPromptVariantDisplayName } from "./submitFamily";
 import { queryKeys } from "./queryKeys";
+import {
+  WorkProductSubmitActionLinks,
+  normalizeWorkProductRelpath,
+  workProductOutputRelpath,
+} from "./workProductSubmitLinks";
 import {
   isHistoryProblem,
   sortQueueHistoryItems,
@@ -381,15 +386,25 @@ function historyThumb(item: ComfyHistoryItem): string | null {
   return null;
 }
 
+/** Best media path for thumbs / appetite (output preferred, then input). */
 function historyAssetRelpath(item: ComfyHistoryItem): string | null {
-  for (const cand of [item.primary_video_relpath, item.primary_image_relpath, item.input_media_relpath]) {
-    const rel = String(cand || "")
-      .trim()
-      .replace(/^\/+/, "")
-      .replace(/\\/g, "/");
-    if (rel) return rel;
-  }
-  return null;
+  return (
+    workProductOutputRelpath({
+      primaryVideoRelpath: item.primary_video_relpath,
+      primaryImageRelpath: item.primary_image_relpath,
+    }) || normalizeWorkProductRelpath(item.input_media_relpath)
+  );
+}
+
+function historyOutputRelpath(item: ComfyHistoryItem): string | null {
+  return workProductOutputRelpath({
+    primaryVideoRelpath: item.primary_video_relpath,
+    primaryImageRelpath: item.primary_image_relpath,
+  });
+}
+
+function historyInputRelpath(item: ComfyHistoryItem): string | null {
+  return normalizeWorkProductRelpath(item.input_media_relpath);
 }
 
 function StatusChip({
@@ -755,11 +770,11 @@ function QueueLiveActions({
   const pid = item.prompt_id ?? "";
   const moveBusy = Boolean(pid) && movingPromptId === pid;
   const jobKey = String(item.job_key || "").trim() || null;
-  const workbenchUrl = workbenchHref({ jobKey, promptId: pid || null });
   const stillTag = isQueueStillTagItem(item);
   const editUrl =
     kind === "waiting" && jobKey && !stillTag ? submitHref({ editJob: jobKey, origin: "queue" }) : null;
   const cancelKind = kind === "waiting" ? "pending" : "running";
+  const inputRel = normalizeWorkProductRelpath(item.input_media_relpath);
   return (
     <>
       <button
@@ -820,15 +835,13 @@ function QueueLiveActions({
           </button>
         </>
       ) : null}
-      <a
-        className="pipeline-row__link"
-        href={workbenchUrl}
-        title={
-          jobKey ? `Open ${jobKey} in Workbench` : pid ? `Find prompt ${pid} in Workbench` : "Open Workbench"
-        }
-      >
-        Workbench
-      </a>
+      <WorkProductSubmitActionLinks
+        inputRelpath={inputRel}
+        libraryRelpath={inputRel}
+        jobKey={jobKey}
+        promptId={pid || null}
+        origin="queue"
+      />
       {editUrl ? (
         <a
           className="drt-btn"
@@ -845,25 +858,17 @@ function QueueLiveActions({
 function QueueHistoryActions({ item }: { item: ComfyHistoryItem }) {
   const jobKey = String(item.job_key || "").trim() || null;
   const pid = String(item.prompt_id || "").trim();
-  const libraryRel = historyAssetRelpath(item);
-  const workbenchUrl = workbenchHref({ jobKey, promptId: pid || null });
+  const outputRel = historyOutputRelpath(item);
+  const inputRel = historyInputRelpath(item);
   return (
-    <>
-      {libraryRel ? (
-        <a className="pipeline-row__link" href={discoveryLibraryHref(libraryRel)} title="Open in Library">
-          Open in Library
-        </a>
-      ) : (
-        <span className="pipeline-row__meta">No library path</span>
-      )}
-      <a
-        className="pipeline-row__link"
-        href={workbenchUrl}
-        title={jobKey ? `Open ${jobKey} in Workbench` : pid ? `Find prompt ${pid} in Workbench` : "Open Workbench"}
-      >
-        Workbench
-      </a>
-    </>
+    <WorkProductSubmitActionLinks
+      outputRelpath={outputRel}
+      inputRelpath={inputRel}
+      libraryRelpath={historyAssetRelpath(item)}
+      jobKey={jobKey}
+      promptId={pid || null}
+      origin="queue"
+    />
   );
 }
 

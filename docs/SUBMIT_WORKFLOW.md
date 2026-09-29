@@ -1,6 +1,6 @@
 # Submit workflow
 
-**Last updated:** 2026-08-11
+**Last updated:** 2026-09-29
 
 Single mechanism for **creating** factory jobs (and optionally submitting them to Comfy). Many entry points deep-link here with intent; they do not each own a private submit UI.
 
@@ -26,8 +26,8 @@ New doorways (Factory map, Rating, richer Clips/Library CTAs, **still gallery**)
 |---------|------|----------------|
 | **Submit** (`/submit`) | Compose next job: media stage, Use (trim/clips), family/step, identity, now/later, construction preview | Browsing corpus; job list; pending-job mutation; live Comfy watch |
 | **Workbench** (`/workbench`) | Job **status**: list/filter, pending trim on *this* job, unqueue/discard, bindings/JSON, result preview, doors into Submit | Primary “create from clip/asset” UX |
-| **Queue** (`/comfy-queue`) | Live Comfy running / pending / history | Compose or job CRUD |
-| **Library / Clips / Factory / Rating** | Find & judge; **hand off intent** to Submit | Private submit UIs |
+| **Queue** (`/comfy-queue`) | Live Comfy running / pending / history; **Submit output / Submit input** doors via `submitHref` | Compose UI or job CRUD |
+| **Library / Clips / Factory / Rating** | Find & judge; **hand off intent** to Submit | Private submit UIs; Library is not a workproduct *action* door (browse nav stays; `SHOW_LIBRARY_WORKPRODUCT_ACTION` stub to re-enable) |
 
 **Visual target:** Submit should feel like Workbench’s compose chrome (viewer + trim + clips + identity + now/later), not a form card. Workbench keeps that chrome only where it mutates or inspects an *existing* job.
 
@@ -91,6 +91,7 @@ After commit, inspect the real job on Workbench. The Submit panel keeps reflecti
 
 - Library / Clips: “Open in Submit” via `submitHref` (replaces inline Queue now/later on the clip rail).
 - Workbench: “Open in Submit” for Advance (Extend / Vary / Derive); re-run / unqueue / archive / delete stay on Workbench.
+- Queue (`/comfy-queue`): **Submit output** / **Submit input** (+ Workbench) on live and history row actions — shared [`workProductSubmitLinks.tsx`](../workspace/experiments_ui/web/src/ui/workProductSubmitLinks.tsx). Open-in-Library on those menus is stubbed off (`SHOW_LIBRARY_WORKPRODUCT_ACTION`).
 
 **Next**
 

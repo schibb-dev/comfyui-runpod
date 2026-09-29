@@ -55,6 +55,7 @@ import {
 import { useTrimPlaybackEnforcement, type TrimPlaybackMode } from "./useTrimPlayback";
 import { ComfyUiLink, comfyUiHostLabel } from "./comfyUiWindow";
 import { discoveryLibraryHref, extractContentIdFromName, parseWorkbenchDeepLink, stillsHref, buildSubmitDeepLink, lineageSummaryHref, workbenchHref, workbenchHrefForMedia, isLineageInputStill, type SubmitDeepLink } from "./discoveryDeepLink";
+import { SHOW_LIBRARY_WORKPRODUCT_ACTION } from "./workProductSubmitLinks";
 import { factoryMapFamilyHref } from "./factoryMapRoute";
 import {
   parseWorkbenchSection,
@@ -2451,16 +2452,14 @@ function filesHrefForRelpath(relpath: string): string {
   return "/files/" + norm.split("/").map(encodeURIComponent).join("/");
 }
 
-/** Deep link for a binding asset: Discovery / Stills gallery / raw file. */
+/** Deep link for a binding asset: Stills / file; Library only when stub flag is on. */
 function bindingAssetHref(row: WorkProductDetailRow): string | null {
   const rel = normalizeAppetiteRelpath(row.relpath);
   const asset = String(row.asset_url || "").trim();
   if (rel) {
-    if (/^(og|wip)\//i.test(rel)) {
-      return discoveryLibraryHref(rel);
-    }
-    if (/^output\//i.test(rel) || /\.mp4($|\?)/i.test(rel)) {
-      return discoveryLibraryHref(rel);
+    if (/^(og|wip)\//i.test(rel) || /^output\//i.test(rel) || /\.mp4($|\?)/i.test(rel)) {
+      if (SHOW_LIBRARY_WORKPRODUCT_ACTION) return discoveryLibraryHref(rel);
+      return filesHrefForRelpath(rel);
     }
     if (/^input\//i.test(rel) || /\.(jpe?g|png|webp|gif)($|\?)/i.test(rel)) {
       const base = rel.split("/").pop() || rel;
