@@ -280,6 +280,43 @@ class HourlyBinsTest(unittest.TestCase):
         self.assertIn("preview_steer", ledger)
         self.assertIn("faceblast-extend", ledger)
 
+    def test_steer_work_product_path_seed_without_hex(self) -> None:
+        """Screenshot / short still names get a synthesized seed: id."""
+        pools = self.root / "pools"
+        fam = "PathSeedStill"
+        d = pools / fam
+        d.mkdir(parents=True)
+        (d / "pools.yaml").write_text(
+            "pools:\n  source_still:\n    slot: source_still\n    members: []\n",
+            encoding="utf-8",
+        )
+        ensure_steer_bins_for_source_stills(data_root=self.root)
+        from shape_factory_hourly_bins import resolve_steer_content_id, synthesize_steer_seed_id
+
+        rel = "input/Screenshot_2026-09-01_144855.jpeg"
+        cid = synthesize_steer_seed_id(rel)
+        self.assertTrue(cid.startswith("seed:"))
+        self.assertEqual(resolve_steer_content_id("", rel), cid)
+        out = steer_work_product(
+            content_id="",
+            relpath=rel,
+            status="keep",
+            families=[fam],
+            kind="still",
+            surface="preview_steer",
+            data_root=self.root,
+        )
+        self.assertTrue(out.get("ok"))
+        self.assertEqual(out.get("content_id"), cid)
+        self.assertEqual(len(out.get("applied") or []), 1)
+        look = lookup_seed_steer(content_id="", relpath=rel, kind="still", data_root=self.root)
+        self.assertEqual((look.get("by_family") or {}).get(fam, {}).get("status"), "keep")
+        # Bias via relpath basename must still apply.
+        self.assertGreaterEqual(
+            still_bin_bias_mult(rel, family=fam, data_root=self.root),
+            8.0,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

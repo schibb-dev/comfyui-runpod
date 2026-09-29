@@ -24,7 +24,11 @@ function statusGlyph(status: string | null | undefined): string {
 
 function extractContentId(relpath?: string | null, explicit?: string | null): string {
   const ex = String(explicit || "").trim().toLowerCase();
-  if (ex) return ex;
+  if (ex) {
+    if (/^[0-9a-f]{64}$/.test(ex) || /^clip_[0-9a-f]{32}$/.test(ex) || ex.startsWith("whole:") || /^seed:[0-9a-f]{32}$/.test(ex)) {
+      return ex;
+    }
+  }
   const m = String(relpath || "").match(/[0-9a-f]{64}/i);
   return m ? m[0].toLowerCase() : "";
 }
@@ -96,9 +100,10 @@ export function SteerPreviewBadge({
   useEffect(() => () => cancelClose(), [cancelClose]);
 
   const refresh = useCallback(async () => {
-    if (!cid) return;
+    const rel = String(relpath || "").trim();
+    if (!cid && !rel) return;
     try {
-      const res = await fetchHourlyBinLookup({ contentId: cid, relpath, kind });
+      const res = await fetchHourlyBinLookup({ contentId: cid || null, relpath: rel || null, kind });
       setLookup(res);
       const by = res.by_family || {};
       const next = new Set<string>();
@@ -115,9 +120,10 @@ export function SteerPreviewBadge({
   }, [cid, relpath, kind, familySlug]);
 
   useEffect(() => {
-    if (!open || !cid) return;
+    if (!open) return;
+    if (!cid && !String(relpath || "").trim()) return;
     void refresh();
-  }, [open, cid, refresh]);
+  }, [open, cid, relpath, refresh]);
 
   useEffect(() => {
     if (!open) return;
@@ -185,13 +191,14 @@ export function SteerPreviewBadge({
   };
 
   const apply = async (status: string) => {
-    if (!cid || busy || selected.size === 0) return;
+    const rel = String(relpath || "").trim();
+    if ((!cid && !rel) || busy || selected.size === 0) return;
     setBusy(true);
     setMsg("");
     try {
       const res = await steerWorkProductCombos({
-        content_id: cid,
-        relpath: String(relpath || "").trim() || cid,
+        content_id: cid || undefined,
+        relpath: rel || cid,
         status,
         families: [...selected],
         variant_slug: variantSlug || undefined,
@@ -213,7 +220,7 @@ export function SteerPreviewBadge({
     }
   };
 
-  if (!cid) return null;
+  if (!cid && !String(relpath || "").trim()) return null;
 
   const variantLabel =
     String(variantName || "").trim() ||

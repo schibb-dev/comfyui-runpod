@@ -30,6 +30,7 @@ from shape_factory_hourly_bins import (
 CURATION_UNITS = ("auto", "clips", "videos")
 WHOLE_PREFIX = "whole:"
 _CLIP_ID_RE = re.compile(r"^clip_[0-9a-f]{32}$", re.I)
+_SEED_ID_RE = re.compile(r"^seed:[0-9a-f]{32}$", re.I)
 # Pool globs (FB9_GEX ~1.4k) dominate reload cost; short TTL keeps decks snappy.
 # Value: (monotonic_ts, scored newest-first [(mtime, path), ...])
 _MEMBERS_CACHE: Dict[str, Tuple[float, List[Tuple[float, Path]]]] = {}
@@ -45,7 +46,7 @@ def is_span_clip_id(item_id: str) -> bool:
 
 
 def is_steer_item_id(item_id: str) -> bool:
-    """Accept still 64-hex, span clip_*, or whole:* virtual ids."""
+    """Accept still 64-hex, span clip_*, whole:*, or path-synthesized seed:* ids."""
     s = str(item_id or "").strip()
     if not s:
         return False
@@ -53,7 +54,7 @@ def is_steer_item_id(item_id: str) -> bool:
         return True
     if is_span_clip_id(s) or is_whole_unit_id(s):
         return True
-    return False
+    return bool(_SEED_ID_RE.match(s))
 
 
 def whole_file_clip_id(parent_content_id: str) -> str:

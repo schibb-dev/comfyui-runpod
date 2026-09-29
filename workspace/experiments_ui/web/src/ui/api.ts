@@ -263,13 +263,18 @@ export async function clearHourlyBinSteering(body: {
 }
 
 export async function fetchHourlyBinLookup(opts: {
-  contentId: string;
+  contentId?: string | null;
   relpath?: string | null;
   kind?: "still" | "video" | string | null;
 }): Promise<HourlyBinLookupResponse> {
+  const cid = String(opts.contentId || "").trim();
+  const rel = String(opts.relpath || "").trim();
+  if (!cid && !rel) {
+    throw new Error("contentId or relpath required for hourly-bins lookup");
+  }
   const sp = new URLSearchParams();
-  sp.set("content_id", opts.contentId.trim());
-  if (opts.relpath?.trim()) sp.set("relpath", opts.relpath.trim());
+  if (cid) sp.set("content_id", cid);
+  if (rel) sp.set("relpath", rel);
   if (opts.kind?.trim()) sp.set("kind", opts.kind.trim());
   const r = await fetch(`/api/shape-factory/hourly-bins/lookup?${sp.toString()}`);
   const j = (await r.json().catch(() => ({}))) as HourlyBinLookupResponse;
@@ -283,7 +288,7 @@ export async function fetchHourlyBinLookup(opts: {
 }
 
 export async function steerWorkProductCombos(body: {
-  content_id: string;
+  content_id?: string;
   relpath: string;
   status: "keep" | "later" | "out" | "pin" | "clear" | "new" | string;
   families: string[];

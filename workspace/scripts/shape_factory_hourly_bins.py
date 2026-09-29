@@ -10,6 +10,7 @@ Keep/Pin/Later/Out soft-bias that family's hourly ``pool_product`` lottery.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -24,6 +25,10 @@ PIPE_SCHEMA_VERSION = 1
 
 DEFAULT_BIN_ID = "hourly-seed-stills"
 DEFAULT_POOL_FAMILY = "X-KNEEL-FB9-bare"
+# Path-based steer keys when the asset has no embedded 64-hex content id
+# (Screenshot_*, still-ig2j…, hourly outputs used as source, …).
+SEED_ID_PREFIX = "seed:"
+_SEED_ID_RE = re.compile(rf"^{re.escape(SEED_ID_PREFIX)}[0-9a-f]{{32}}$", re.I)
 # Historical cluster that once shared one bin; ensure_ splits these 1:1 now.
 LEGACY_SHARED_STILL_FAMILIES: Tuple[str, ...] = (
     "X-KNEEL-FB9-bare",
@@ -85,6 +90,39 @@ def combo_try_prefs_path(data_root: Optional[Path] = None) -> Path:
 def extract_content_id(name: Optional[str]) -> Optional[str]:
     m = _CONTENT_ID_RE.search(str(name or ""))
     return m.group(0).lower() if m else None
+
+
+def is_path_seed_id(item_id: str) -> bool:
+    return bool(_SEED_ID_RE.match(str(item_id or "").strip()))
+
+
+def synthesize_steer_seed_id(relpath: str) -> str:
+    """Stable steer id for assets without a 64-hex content hash (basename sha256)."""
+    name = Path(str(relpath or "").replace("\\", "/").strip()).name.lower()
+    if not name:
+        return ""
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:32]
+    return f"{SEED_ID_PREFIX}{digest}"
+
+
+def resolve_steer_content_id(content_id: str = "", relpath: str = "") -> str:
+    """Prefer real content/clip/whole ids; otherwise synthesize ``seed:<32hex>`` from path."""
+    raw = str(content_id or "").strip().lower()
+    rel = str(relpath or "").strip().replace("\\", "/")
+    try:
+        from shape_factory_hourly_video_steer import is_steer_item_id
+    except Exception:
+        is_steer_item_id = None  # type: ignore
+    if raw and is_steer_item_id is not None and is_steer_item_id(raw):
+        return raw
+    if raw and (len(raw) == 64 and all(c in "0123456789abcdef" for c in raw)):
+        return raw
+    if is_path_seed_id(raw):
+        return raw
+    hit = extract_content_id(raw) or extract_content_id(rel)
+    if hit:
+        return hit
+    return synthesize_steer_seed_id(rel or raw)
 
 
 def _atomic_write_json(path: Path, doc: Dict[str, Any]) -> None:
@@ -563,21 +601,22 @@ def set_bin_item(
 ) -> Dict[str, Any]:
     """Upsert a still/clip unit into the bin (or clear it back to New) and append a ledger row.
 
-    ``content_id`` may be 64-hex (still), ``clip_<32hex>`` (span), or ``whole:<id>``
-    (virtual whole-file). ``status`` of ``clear`` / ``new`` removes the item.
+    ``content_id`` may be 64-hex (still), ``clip_<32hex>`` (span), ``whole:<id>``
+    (virtual whole-file), or ``seed:<32hex>`` (path-synthesized when no hash).
+    ``status`` of ``clear`` / ``new`` removes the item.
     ``decision_extra`` merges into the append-only ledger row (variant, job_key, …).
     """
     raw_cid = str(content_id or "").strip()
-    cid = raw_cid.lower()
+    cid = resolve_steer_content_id(raw_cid, relpath)
     try:
         from shape_factory_hourly_video_steer import is_steer_item_id
     except Exception:
         is_steer_item_id = None  # type: ignore
     if is_steer_item_id is not None:
         if not is_steer_item_id(cid):
-            raise ValueError("content_id must be 64-hex, clip_* , or whole:*")
-    elif not cid or len(cid) != 64:
-        raise ValueError("content_id must be 64-hex")
+            raise ValueError("content_id must be 64-hex, clip_* , whole:*, or seed:*")
+    elif not cid or (len(cid) != 64 and not is_path_seed_id(cid)):
+        raise ValueError("content_id must be 64-hex or seed:*")
     st = str(status or "").strip().lower()
     clear = st in {"clear", "new", "unset", ""}
     if not clear and st not in BIN_ITEM_STATUSES:
@@ -591,6 +630,8 @@ def set_bin_item(
             unit_s = "whole"
         elif cid.startswith("clip_"):
             unit_s = "span"
+        elif is_path_seed_id(cid):
+            unit_s = "still"
         else:
             unit_s = "still"
     parent = str(parent_content_id or "").strip().lower()
@@ -946,12 +987,9 @@ def lookup_seed_steer(
 ) -> Dict[str, Any]:
     """Statuses for one seed across steer bins + recorded preferred variants (human arbiter)."""
     data_root = (data_root or default_data_root()).resolve()
-    cid = str(content_id or "").strip().lower()
+    cid = resolve_steer_content_id(content_id, relpath)
     if not cid:
-        hit = extract_content_id(relpath)
-        cid = hit or ""
-    if not cid:
-        raise ValueError("content_id required")
+        raise ValueError("content_id or relpath required")
     rel = str(relpath or "").strip().replace("\\", "/")
     kind_s = str(kind or "").strip().lower()
     if not kind_s:
@@ -1036,9 +1074,9 @@ def steer_work_product(
     Records variant meta on each decision + ``combo_try_prefs.json`` for later arbiters.
     """
     data_root = (data_root or default_data_root()).resolve()
-    cid = str(content_id or "").strip().lower() or (extract_content_id(relpath) or "")
+    cid = resolve_steer_content_id(content_id, relpath)
     if not cid:
-        raise ValueError("content_id required")
+        raise ValueError("content_id or relpath required")
     rel = str(relpath or "").strip().replace("\\", "/")
     st = str(status or "").strip().lower()
     fams = [str(f).strip() for f in (families or []) if str(f).strip()]

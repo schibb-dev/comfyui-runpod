@@ -60,7 +60,9 @@ class HourlyVideoSteerTest(unittest.TestCase):
         self.assertTrue(is_steer_item_id("a" * 64))
         self.assertTrue(is_steer_item_id("clip_" + "b" * 32))
         self.assertTrue(is_steer_item_id(whole_file_clip_id("c" * 64)))
+        self.assertTrue(is_steer_item_id("seed:" + "d" * 32))
         self.assertFalse(is_steer_item_id("not-an-id"))
+        self.assertFalse(is_steer_item_id("seed:short"))
         self.assertEqual(whole_file_clip_id("AbC"), "whole:abc")
 
     def test_ensure_video_bins_1to1(self) -> None:

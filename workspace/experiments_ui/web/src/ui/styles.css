@@ -14725,6 +14725,24 @@ button.home-backlog-row {
   font: inherit;
   min-width: 0;
 }
+
+.work-product-index-row > .steer-preview-badge-wrap {
+  top: 4px;
+  left: 4px;
+}
+
+.work-product-viewer__queued-source-frame > .steer-preview-badge-wrap {
+  top: 8px;
+  left: 72px;
+  z-index: 4;
+}
+
+.work-product-viewer__live-source > .steer-preview-badge-wrap {
+  top: 6px;
+  left: 6px;
+  z-index: 4;
+}
+
 button.home-backlog-linkish {
   border: 0;
   padding: 0;
