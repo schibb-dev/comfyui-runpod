@@ -2,9 +2,10 @@
 # Shape-factory maintenance + optional fill, gated by hourly-schedule.json.
 # Pending drain (shape_factory_pending_drain) owns pushing pending onto Comfy when
 # this tick leaves jobs pending (Comfy full / submit_mode=pending).
-# Priority when filling: occasionally GEX2→FACIAL (HOURLY_FACIAL_DRAIN_EVERY, default
-# every 6th cursor), then i2v→FB9_GEX on a steadier cadence (HOURLY_I2V_GEX_DRAIN_EVERY,
-# default every 3rd cursor — Kneel/BounceDance/FaceBlast/…), else seed.
+# Priority when filling: GEX2|Zoom→FACIAL (HOURLY_FACIAL_DRAIN_EVERY, default every 6th),
+# named-variant GEX|GEX2 self-extend (HOURLY_SELF_EXTEND_DRAIN_EVERY, default 4),
+# hot Kneel→GEX2 (HOURLY_KNEEL_GEX2_DRAIN_EVERY, default 12; re-enabled drain),
+# then i2v→GEX|GEX2 (HOURLY_I2V_GEX_DRAIN_EVERY, default 3), else seed.
 # Image seeds weight X-KNEEL-FB9-bare highest (plain X-KNEEL-FB9 is residual). HOURLY_SEED_OVER_CHAIN_SHARE (default 0.50)
 # can still skip facial on a facial-cadence tick. HOURLY_FACIAL_LOOKBACK_DAYS (default 14)
 # ignores ancient GEX2 jobs for facial drain.
@@ -39,6 +40,13 @@ HOURLY_I2V_GEX_LOOKBACK_DAYS="${HOURLY_I2V_GEX_LOOKBACK_DAYS:-30}"
 HOURLY_FACIAL_DRAIN_EVERY="${HOURLY_FACIAL_DRAIN_EVERY:-6}"
 # Drain at most one i2v/still → GEX|GEX2 job every N sample_cursor values (default 3).
 HOURLY_I2V_GEX_DRAIN_EVERY="${HOURLY_I2V_GEX_DRAIN_EVERY:-3}"
+# Named catalog self-extend (default every 4th cursor); hot Kneel→GEX2 (default 12).
+HOURLY_SELF_EXTEND_DRAIN_EVERY="${HOURLY_SELF_EXTEND_DRAIN_EVERY:-4}"
+HOURLY_KNEEL_GEX2_DRAIN_EVERY="${HOURLY_KNEEL_GEX2_DRAIN_EVERY:-12}"
+HOURLY_SELF_EXTEND_LOOKBACK_DAYS="${HOURLY_SELF_EXTEND_LOOKBACK_DAYS:-30}"
+HOURLY_KNEEL_GEX2_LOOKBACK_DAYS="${HOURLY_KNEEL_GEX2_LOOKBACK_DAYS:-30}"
+export HOURLY_SELF_EXTEND_DRAIN_EVERY HOURLY_KNEEL_GEX2_DRAIN_EVERY
+export HOURLY_SELF_EXTEND_LOOKBACK_DAYS HOURLY_KNEEL_GEX2_LOOKBACK_DAYS
 # Status walks every complete job with ffprobe; skip by default so fills stay on cadence.
 HOURLY_SKIP_STATUS="${HOURLY_SKIP_STATUS:-1}"
 HOURLY_MAINT_TIMEOUT_SEC="${HOURLY_MAINT_TIMEOUT_SEC:-90}"
@@ -368,6 +376,159 @@ Path(sys.argv[5]).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8"
 PY
   FILLS=$((FILLS + 1))
   log "facial step queued dest=$DEST (next cursor=$((CURSOR + 1))) fills=$FILLS"
+  continue
+fi
+
+# Phase 1b: named-variant GEX|GEX2 self-extend
+NEED_SELF_JSON=$(cd "$SCRIPTS" && python3 shape_factory_hourly.py need-self-extend --data-root "$REPO/.data" --cursor "$CURSOR")
+NEED_SELF_KEY=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('job_key') or '')" "$NEED_SELF_JSON")
+if [ -n "$NEED_SELF_KEY" ]; then
+  SELF_OK=$(cd "$SCRIPTS" && python3 -c "from shape_factory_hourly import want_self_extend_chain; import sys; print('1' if want_self_extend_chain(int(sys.argv[1])) else '0')" "$CURSOR")
+  if [ "$SELF_OK" != "1" ]; then
+    log "phase=skip_self_extend — not this cursor (HOURLY_SELF_EXTEND_DRAIN_EVERY=$HOURLY_SELF_EXTEND_DRAIN_EVERY) pending=$NEED_SELF_KEY"
+    NEED_SELF_KEY=""
+  else
+    SEED_OVER=$(cd "$SCRIPTS" && python3 -c "from shape_factory_hourly import want_seed_over_chain; import sys; print('1' if want_seed_over_chain(int(sys.argv[1])) else '0')" "$CURSOR")
+    if [ "$SEED_OVER" = "1" ]; then
+      log "phase=seed — skip self-extend this tick (HOURLY_SEED_OVER_CHAIN_SHARE) pending=$NEED_SELF_KEY"
+      NEED_SELF_KEY=""
+    fi
+  fi
+fi
+if [ -n "$NEED_SELF_KEY" ]; then
+  NEED_SELF_VID=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('video') or '')" "$NEED_SELF_JSON")
+  NEED_SELF_CONSUMER=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('consumer_family') or 'FB9_GEX')" "$NEED_SELF_JSON")
+  NEED_SELF_PROD=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('producer_family') or '')" "$NEED_SELF_JSON")
+  log "phase=self_extend — $NEED_SELF_PROD → $NEED_SELF_CONSUMER ($NEED_SELF_KEY)"
+  BIND_SELF=$(mktemp --suffix=.yaml)
+  python3 - "$NEED_SELF_VID" "$NEED_SELF_CONSUMER" "$BIND_SELF" "$REPO" "$CURSOR" "$NEED_SELF_JSON" <<'PY'
+import json, sys
+from pathlib import Path
+vid, consumer, out, repo = sys.argv[1], sys.argv[2], Path(sys.argv[3]), Path(sys.argv[4])
+cursor = int(sys.argv[5])
+row = json.loads(sys.argv[6])
+sys.path.insert(0, str(repo / "workspace" / "scripts"))
+from shape_factory_hourly import (
+    pick_hourly_gex_catalog_prompt,
+    _is_named_extend_variant,
+    _normalize_variant_bare,
+)
+esc = vid.replace("\\", "\\\\").replace('"', '\\"')
+lines = ['source_video:', '  from: path', f'  path: "{esc}"']
+slug = str(row.get("prompt_variant") or "")
+prefer = None
+if _is_named_extend_variant(slug):
+    bare = _normalize_variant_bare(slug)
+    prefer = "catalog-faceblast-extend" if bare == "faceblast-extend" else "catalog-default"
+prompt = pick_hourly_gex_catalog_prompt(
+    cursor=cursor,
+    data_root=repo / ".data",
+    family=consumer,
+    prefer_stem=prefer,
+)
+if prompt is not None:
+    pesc = str(prompt).replace("\\", "\\\\").replace('"', '\\"')
+    lines.extend(['prompt_profile:', '  from: path', f'  path: "{pesc}"'])
+out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+  (
+    cd "$SCRIPTS"
+    python3 shape_factory.py generate \
+      --shape "$(shape_for_family "$NEED_SELF_CONSUMER")" \
+      --pools "$(pools_for_family "$NEED_SELF_CONSUMER")" \
+      --binds-override "$BIND_SELF" \
+      --pick zip --limit 1 --job-suffix "$HOURLY_SUFFIX" \
+      --output-prefix-root "$HOURLY_PREFIX_ROOT" \
+      --job-key-prefix "$HOURLY_JOB_KEY_PREFIX" \
+      "${dev_args[@]}" >> "$LOG" 2>&1
+    maybe_submit "$NEED_SELF_CONSUMER" "$DEST"
+  )
+  rm -f "$BIND_SELF"
+  python3 - "$STATE_JSON" "$NEED_SELF_KEY" "$NEED_SELF_PROD" "$NEED_SELF_VID" "$NEED_SELF_CONSUMER" "$STATE" "$CURSOR" <<'PY'
+import json, sys
+from pathlib import Path
+data = json.loads(sys.argv[1])
+cursor = int(sys.argv[7])
+data["phase"] = "self_extend_queued"
+data["last_family"] = sys.argv[5]
+data["last_pick_mode"] = "chain"
+data["last_step"] = "chain_self_extend"
+data["last_self_extend_job"] = sys.argv[2]
+data["last_self_extend_producer"] = sys.argv[3]
+data["last_self_extend_video"] = sys.argv[4]
+data["sample_cursor"] = cursor + 1
+Path(sys.argv[6]).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+PY
+  FILLS=$((FILLS + 1))
+  log "self-extend step queued consumer=$NEED_SELF_CONSUMER dest=$DEST (next cursor=$((CURSOR + 1))) fills=$FILLS"
+  continue
+fi
+
+# Phase 1c: hot Kneel* → GEX2 (re-enabled; faceblast-extend)
+NEED_KNEEL2_JSON=$(cd "$SCRIPTS" && python3 shape_factory_hourly.py need-gex2-from-kneel --data-root "$REPO/.data")
+NEED_KNEEL2_KEY=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('job_key') or '')" "$NEED_KNEEL2_JSON")
+if [ -n "$NEED_KNEEL2_KEY" ]; then
+  KNEEL2_OK=$(cd "$SCRIPTS" && python3 -c "from shape_factory_hourly import want_kneel_gex2_chain; import sys; print('1' if want_kneel_gex2_chain(int(sys.argv[1])) else '0')" "$CURSOR")
+  if [ "$KNEEL2_OK" != "1" ]; then
+    log "phase=skip_kneel_gex2 — not this cursor (HOURLY_KNEEL_GEX2_DRAIN_EVERY=$HOURLY_KNEEL_GEX2_DRAIN_EVERY) pending=$NEED_KNEEL2_KEY"
+    NEED_KNEEL2_KEY=""
+  fi
+fi
+if [ -n "$NEED_KNEEL2_KEY" ]; then
+  NEED_KNEEL2_FAM=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('producer_family') or '')" "$NEED_KNEEL2_JSON")
+  NEED_KNEEL2_VID=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('video') or '')" "$NEED_KNEEL2_JSON")
+  log "phase=gex2_from_kneel — $NEED_KNEEL2_FAM → FB9_GEX2 ($NEED_KNEEL2_KEY)"
+  BIND_KNEEL2=$(mktemp --suffix=.yaml)
+  python3 - "$NEED_KNEEL2_VID" "$BIND_KNEEL2" "$REPO" "$CURSOR" <<'PY'
+import sys
+from pathlib import Path
+vid, out, repo = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+cursor = int(sys.argv[4])
+sys.path.insert(0, str(repo / "workspace" / "scripts"))
+from shape_factory_hourly import pick_hourly_gex_catalog_prompt
+esc = vid.replace("\\", "\\\\").replace('"', '\\"')
+lines = ['source_video:', '  from: path', f'  path: "{esc}"']
+prompt = pick_hourly_gex_catalog_prompt(
+    cursor=cursor,
+    data_root=repo / ".data",
+    family="FB9_GEX2",
+    prefer_stem="catalog-faceblast-extend",
+)
+if prompt is not None:
+    pesc = str(prompt).replace("\\", "\\\\").replace('"', '\\"')
+    lines.extend(['prompt_profile:', '  from: path', f'  path: "{pesc}"'])
+out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+  (
+    cd "$SCRIPTS"
+    python3 shape_factory.py generate \
+      --shape "$(shape_for_family FB9_GEX2)" \
+      --pools "$(pools_for_family FB9_GEX2)" \
+      --binds-override "$BIND_KNEEL2" \
+      --pick zip --limit 1 --job-suffix "$HOURLY_SUFFIX" \
+      --output-prefix-root "$HOURLY_PREFIX_ROOT" \
+      --job-key-prefix "$HOURLY_JOB_KEY_PREFIX" \
+      "${dev_args[@]}" >> "$LOG" 2>&1
+    maybe_submit FB9_GEX2 "$DEST"
+  )
+  rm -f "$BIND_KNEEL2"
+  python3 - "$STATE_JSON" "$NEED_KNEEL2_KEY" "$NEED_KNEEL2_FAM" "$NEED_KNEEL2_VID" "$STATE" "$CURSOR" <<'PY'
+import json, sys
+from pathlib import Path
+data = json.loads(sys.argv[1])
+cursor = int(sys.argv[6])
+data["phase"] = "gex2_from_kneel_queued"
+data["last_family"] = "FB9_GEX2"
+data["last_pick_mode"] = "chain"
+data["last_step"] = "chain_gex2_from_kneel"
+data["last_kneel_gex2_job"] = sys.argv[2]
+data["last_kneel_gex2_producer"] = sys.argv[3]
+data["last_kneel_gex2_video"] = sys.argv[4]
+data["sample_cursor"] = cursor + 1
+Path(sys.argv[5]).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+PY
+  FILLS=$((FILLS + 1))
+  log "kneel→GEX2 step queued dest=$DEST (next cursor=$((CURSOR + 1))) fills=$FILLS"
   continue
 fi
 

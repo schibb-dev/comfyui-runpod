@@ -19,7 +19,7 @@ Today’s hourly fill is **arbitrary in form** even when the *intent* is sensibl
 | Two chain drains hardcoded in `predict_hourly_gex2` | Priority is Python `if` order |
 | Cadence / lookback / seed-over via `HOURLY_*` env | Not reviewable in git as product policy |
 | Only two backlog cards | UI mirrors code, not a catalog |
-| Kneel→GEX2 helper exists but is off | Invisible “policy” in comments |
+| Kneel→GEX2 was off in hourly (helper only) | **Pre-0.4 legacy:** re-enabled hot-gated drain |
 | GEX2 fed as **seed peer**, not chain | Same family, two undocumented roles |
 | `.data/pipelines/*.pipeline.yaml` | Parallel description; hourly ignores them |
 | U1 sketch still names `facial_*` / `i2v_gex_*` knobs | Lifts special cases into YAML without generalizing |
@@ -124,19 +124,46 @@ drains:
   - id: gex2_to_facial
     kind: chain
     enabled: true
-    label: "GEX2 → FACIAL"
-    producers: [FB9_GEX2]
+    label: "GEX2|Zoom → FACIAL"
+    producers: [FB9_GEX2, FB8VA5-ZOOMOUT]
     consumer: FB9_GEX_FACIAL
-    pipeline_id: fb9-gex2-to-facial
+    pipeline_id: fb9-gex2-to-facial  # Zoom may cite fb8va5-zoomout-to-fb9-gex-facial
     cadence: { every_n: 6, skip_share: 0.50 }
     eligibility: { lookback_days: 14 }
     pick: newest
     backlog: true
 
+  - id: chain_self_extend
+    kind: chain
+    enabled: true
+    label: "GEX|GEX2 self-extend (named variant)"
+    producers: [FB9_GEX, FB9_GEX2]
+    consumer: same_as_producer
+    cadence: { every_n: 4, skip_share: 0.50 }
+    eligibility:
+      lookback_days: 30
+      prompt_variant_allow: [catalog-default, faceblast-extend]
+      exclude_replay_hex: true
+    pick: rotate_producers
+    backlog: true
+
+  - id: kneel_to_gex2
+    kind: chain
+    enabled: true
+    label: "Kneel* → GEX2 (hot, faceblast-extend)"
+    producers: [X-KNEEL-FB9-bare, X-KNEEL-FB9]
+    consumer: FB9_GEX2
+    cadence: { every_n: 12 }
+    eligibility:
+      lookback_days: 30
+      parent_appetite: [more, fast_track]
+    prompt: { prefer: catalog-faceblast-extend }
+    backlog: true
+
   - id: i2v_to_gex
     kind: chain
     enabled: true
-    label: "i2v → FB9_GEX"
+    label: "i2v → GEX|GEX2"
     producers:
       - X-KNEEL-FB9-bare
       - X-KNEEL-FB9
@@ -145,10 +172,10 @@ drains:
       - FB8VB2
       - FB8VA5-ZOOMOUT
       - Breast-shake-FB8VA5
-    consumer: FB9_GEX
+    consumer: FB9_GEX  # multi: GEX|GEX2; Kneel must not take GEX2 slot (see kneel_to_gex2)
     # pipeline_id: optional multi — or omit until one drain ↔ one pipeline
     cadence: { every_n: 3 }
-    eligibility: { lookback_days: null }
+    eligibility: { lookback_days: 30 }
     pick: rotate_producers
     backlog: true
 
@@ -170,8 +197,29 @@ seeds:
   - { family: Breast-shake-FB8VA5, weight: 7 }
 ```
 
-**Explicit non-drains (today):** Kneel→GEX2, GEX→GEX2 — absent from `drains[]`
-(or `enabled: false` with a comment). No more “comment policy.”
+**Legacy Pre-0.4 (2026-09-29, in `shape_factory_hourly.py` + shell):** appetite×variant
+analysis (Aug+ named catalogs; `(replay-hex)` excluded) added three chain drains
+before i2v→extend and re-enabled Kneel→GEX2:
+
+| Priority | Drain | Legacy env |
+|----------|-------|------------|
+| 1 | GEX2\|Zoom → FACIAL | `HOURLY_FACIAL_PRODUCERS`, existing facial cadence/lookback |
+| 2 | GEX\|GEX2 self-extend (named variant only) | `HOURLY_SELF_EXTEND_DRAIN_EVERY` (4), `HOURLY_SELF_EXTEND_LOOKBACK_DAYS` (30) |
+| 3 | Kneel* → GEX2 (hot parent; `catalog-faceblast-extend`) | `HOURLY_KNEEL_GEX2_DRAIN_EVERY` (12), hot gate |
+| 4 | i2v → GEX\|GEX2 | Pre-0.2 (Kneel skips GEX2 consumer here) |
+| last | seed lottery | unchanged |
+
+Evidence snapshot (operator analysis, not auto-tuned weights):
+
+- **Zoom → FACIAL** `catalog-default`: ~100% hot outputs (n≈41 Aug+).
+- **faceblast-extend** on extend hops: ~87% hot (n≈217 Aug+); prefer on Kneel→GEX2 fill.
+- **Self-extend replay-hex**: cold outputs — excluded via `_is_named_extend_variant`.
+- **Kneel → GEX2 replay-hex**: ~33% hot — drain uses hot parents only + rare cadence.
+
+**Still explicit non-drains:** GEX→GEX2 middle hop (adhoc volume negligible).
+
+When D1 lands, encode the Pre-0.4 table as `drains[]` entries (below) instead of
+Python order + env.
 
 ---
 

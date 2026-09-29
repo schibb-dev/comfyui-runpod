@@ -265,8 +265,9 @@ cadence → whether seed path even reached GEX2.
 
 ## 8. Open decisions
 
-- Kneel→GEX2 **chain** stays off (i2v drains to `FB9_GEX`) while GEX2 is a
-  **seed** peer of GEX — or restore chain as an explicit policy rule (U1).
+- Kneel→GEX2 **chain** re-enabled in legacy hourly (Pre-0.4): hot-gated drain +
+  `catalog-faceblast-extend`; i2v still skips GEX2 for Kneel producers. See
+  [`HOURLY_DRAIN_POLICY_PLAN.md`](./HOURLY_DRAIN_POLICY_PLAN.md).
 - Facial backlog **editor** UI vs one-shot cull archives (`jobs/_archive/*_backlog_cull_*`).
 - Seed weights: integers summing to 100 vs free weights.
 - Policy file shape: sibling `hourly-policy.yaml` vs grow `hourly-schedule.json`.

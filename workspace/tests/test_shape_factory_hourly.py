@@ -1015,7 +1015,7 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
                         {
                             "job_key": "gex2-a",
                             "status": "complete",
-                            "created_at": "2026-08-18T00:00:00+00:00",
+                            "created_at": "2026-09-20T00:00:00+00:00",
                             "deposit": {"videos": ["/tmp/gex2_out.mp4"]},
                         }
                     ),
@@ -1023,6 +1023,8 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
                 )
                 state = {"sample_cursor": 6, "phase": "idle"}
                 os.environ["HOURLY_SEED_OVER_CHAIN_SHARE"] = "0"
+                os.environ["HOURLY_SELF_EXTEND_DRAIN_EVERY"] = "999"
+                os.environ["HOURLY_KNEEL_GEX2_DRAIN_EVERY"] = "999"
                 os.environ["HOURLY_FACIAL_DRAIN_EVERY"] = "6"
                 with patch(
                     "shape_factory_hourly._default_job_root",
@@ -1093,6 +1095,74 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
             else:
                 os.environ["HOURLY_I2V_GEX_DRAIN_EVERY"] = prev_i
 
+    def test_pre04_named_variant_and_facial_producers(self) -> None:
+        import tempfile
+
+        from shape_factory_hourly import (
+            _is_named_extend_variant,
+            list_gex2_needing_facial,
+            list_named_self_extend,
+        )
+
+        self.assertTrue(_is_named_extend_variant("catalog-default"))
+        self.assertTrue(_is_named_extend_variant("faceblast-extend"))
+        self.assertFalse(_is_named_extend_variant("750bc8331d5a"))
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            zoom = root / "FB8VA5-ZOOMOUT"
+            gex = root / "FB9_GEX"
+            facial = root / "FB9_GEX_FACIAL"
+            for d in (zoom, gex, facial):
+                d.mkdir(parents=True)
+            vid_z = "/tmp/zoom_out.mp4"
+            vid_g = "/tmp/gex_out.mp4"
+            (zoom / "z.job.json").write_text(
+                json.dumps(
+                    {
+                        "job_key": "zoom-z",
+                        "status": "complete",
+                        "deposit": {"videos": [vid_z]},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            prompts = Path(td) / "pools" / "FB9_GEX" / "prompts"
+            prompts.mkdir(parents=True)
+            cat = prompts / "catalog-default.json"
+            cat.write_text(
+                json.dumps({"name": "Default", "slug": "default", "positive": "x"}),
+                encoding="utf-8",
+            )
+            (gex / "g.job.json").write_text(
+                json.dumps(
+                    {
+                        "job_key": "gex-g",
+                        "status": "complete",
+                        "deposit": {"videos": [vid_g]},
+                        "bindings": {"prompt_profile": {"path": str(cat)}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (gex / "replay.job.json").write_text(
+                json.dumps(
+                    {
+                        "job_key": "gex-replay",
+                        "status": "complete",
+                        "deposit": {"videos": ["/tmp/gex_replay.mp4"]},
+                        "bindings": {"prompt_profile": {"path": str(prompts / "_replay/abc12345.json")}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            facial_rows = list_gex2_needing_facial(job_dir=root, lookback_days=None)
+            self.assertEqual(len(facial_rows), 1)
+            self.assertEqual(facial_rows[0]["producer_family"], "FB8VA5-ZOOMOUT")
+            self_rows = list_named_self_extend(job_dir=root, lookback_days=None)
+            self.assertEqual(len(self_rows), 1)
+            self.assertEqual(self_rows[0]["job_key"], "gex-g")
+
     def test_simulate_hourly_picks_reports_variety(self) -> None:
         import os
         import tempfile
@@ -1119,12 +1189,14 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
                             {
                                 "job_key": f"gex2-{i}",
                                 "status": "complete",
-                                "created_at": "2026-08-18T00:00:00+00:00",
+                                "created_at": "2026-09-20T00:00:00+00:00",
                                 "deposit": {"videos": [f"/tmp/gex2_{i}.mp4"]},
                             }
                         ),
                         encoding="utf-8",
                     )
+                os.environ["HOURLY_SELF_EXTEND_DRAIN_EVERY"] = "999"
+                os.environ["HOURLY_KNEEL_GEX2_DRAIN_EVERY"] = "999"
                 (bounce / "b.job.json").write_text(
                     json.dumps(
                         {
@@ -1706,6 +1778,7 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
             self.assertEqual(hit.get("producer_family"), "X-KNEEL-FB9")
             self.assertEqual(hit.get("job_key"), "kneel-k")
             self.assertEqual(hit.get("video"), vid_k)
+            self.assertEqual(hit.get("consumer_family"), "FB9_GEX")
             rot_bounce = find_i2v_needing_gex(job_dir=root, cursor=1)
             assert rot_bounce is not None
             self.assertEqual(rot_bounce.get("producer_family"), "BounceDanceA")
@@ -2088,14 +2161,40 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
                 hit1 = pick_i2v_needing_gex(rows, cursor=1)
                 self.assertIsNotNone(hit0)
                 self.assertIsNotNone(hit1)
+                # Kneel→GEX2 is a separate hot-gated drain; i2v never assigns GEX2 for Kneel.
+                self.assertEqual(hit0["consumer_family"], "FB9_GEX")
+                self.assertEqual(hit1["consumer_family"], "FB9_GEX")
+
+                faceblast = jobs / "FB9-FaceBlast"
+                faceblast.mkdir(parents=True)
+                (faceblast / "fb.job.json").write_text(
+                    json.dumps(
+                        {
+                            "job_key": "faceblast-new",
+                            "status": "complete",
+                            "completed_at": new_ts,
+                            "deposit": {"videos": [str(data / "output" / "og" / "fb_new.mp4")]},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                Path(data / "output" / "og" / "fb_new.mp4").write_bytes(b"fake")
+                rows_fb = list_i2v_needing_gex(
+                    data_root=data, job_dir=jobs, now_ts=now.timestamp()
+                )
+                fb_only = [r for r in rows_fb if r["producer_family"] == "FB9-FaceBlast"]
+                self.assertEqual(len(fb_only), 1)
                 self.assertEqual(
-                    {hit0["consumer_family"], hit1["consumer_family"]},
+                    {
+                        pick_i2v_needing_gex(fb_only, cursor=0)["consumer_family"],
+                        pick_i2v_needing_gex(fb_only, cursor=1)["consumer_family"],
+                    },
                     {"FB9_GEX", "FB9_GEX2"},
                 )
 
                 found = find_i2v_needing_gex(data_root=data, job_dir=jobs, cursor=0)
                 self.assertEqual(found["job_key"], "kneel-new")
-                self.assertIn(found["consumer_family"], {"FB9_GEX", "FB9_GEX2"})
+                self.assertEqual(found["consumer_family"], "FB9_GEX")
         finally:
             if prev is None:
                 os.environ.pop("HOURLY_I2V_GEX_LOOKBACK_DAYS", None)
