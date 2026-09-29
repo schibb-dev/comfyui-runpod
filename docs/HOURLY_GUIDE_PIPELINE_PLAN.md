@@ -99,7 +99,17 @@ clip** is:
 | Cull UI | Factory Map → Hourlies → Chain backlogs preview (appetite + Keep/Later/Out) |
 
 How marks map to stages will keep iterating (soft weights, descendant health,
-etc.); prefer shared stores over chain-only shadow state.
+etc.); prefer shared stores over chain-only shadow state. Locked follow-ons
+(Less transient, age×appetite, Out→trash, similarity factor, slices):
+[`CHAIN_STEER_AND_APPETITE_CONTROL_PLAN.md`](./CHAIN_STEER_AND_APPETITE_CONTROL_PLAN.md).
+Custody / broken lineage:
+[`LINEAGE_REMEDIATION_PLAN.md`](./LINEAGE_REMEDIATION_PLAN.md).
+
+**Pre-0 (2026-09-29, legacy path):** i2v→extend backlog uses
+`HOURLY_I2V_GEX_LOOKBACK_DAYS` (default 30); parents are satisfied when **either**
+`FB9_GEX` or `FB9_GEX2` binds `source_video` (equal-weight consumer pick); soft
+Later/Less demote picks. Configuration-first drain walker remains later
+([`HOURLY_DRAIN_POLICY_PLAN.md`](./HOURLY_DRAIN_POLICY_PLAN.md)).
 
 ## Try it
 

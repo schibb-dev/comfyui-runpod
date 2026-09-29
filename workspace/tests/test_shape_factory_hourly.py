@@ -1878,6 +1878,11 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
                 "source_video:\n  members: []\n",
                 encoding="utf-8",
             )
+            (data / "pools" / "FB9_GEX2").mkdir(parents=True)
+            (data / "pools" / "FB9_GEX2" / "pools.yaml").write_text(
+                "source_video:\n  members: []\n",
+                encoding="utf-8",
+            )
             jobs = root / "jobs"
             kneel = jobs / "X-KNEEL-FB9"
             faceblast = jobs / "FB9-FaceBlast"
@@ -1953,7 +1958,7 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
             rows = list_i2v_needing_gex(data_root=data, job_dir=jobs)
             self.assertEqual({r["job_key"] for r in rows}, {"kneel-k", "faceblast-1"})
 
-            # Consumer video-steer Out on faceblast output → dropped.
+            # Consumer video-steer Out on faceblast for FB9_GEX only → still open for GEX2.
             ensure_steer_bins_for_source_videos(data_root=data)
             bid = resolve_video_bin_id_for_family("FB9_GEX", data_root=data)
             self.assertTrue(bid)
@@ -1973,7 +1978,195 @@ class ShapeFactoryHourlyTests(unittest.TestCase):
                 "steer_out",
             )
             rows = list_i2v_needing_gex(data_root=data, job_dir=jobs)
+            self.assertEqual({r["job_key"] for r in rows}, {"kneel-k", "faceblast-1"})
+            fb_row = next(r for r in rows if r["job_key"] == "faceblast-1")
+            self.assertEqual(fb_row.get("open_consumers"), ["FB9_GEX2"])
+
+            # Out on GEX2 as well → dropped from shared backlog.
+            ensure_steer_bins_for_source_videos(data_root=data)
+            bid2 = resolve_video_bin_id_for_family("FB9_GEX2", data_root=data)
+            self.assertTrue(bid2)
+            set_bin_item(
+                bin_id=str(bid2),
+                content_id=whole_file_clip_id(parent),
+                status="out",
+                relpath="og/faceblast_chain.mp4",
+                unit="whole",
+                parent_content_id=parent,
+                surface="test",
+                data_root=data,
+            )
+            rows = list_i2v_needing_gex(data_root=data, job_dir=jobs)
             self.assertEqual([r["job_key"] for r in rows], ["kneel-k"])
+
+    def test_i2v_extend_lookback_and_gex2_interchangeable(self) -> None:
+        import os
+        import tempfile
+        from datetime import datetime, timedelta, timezone
+
+        from shape_factory_hourly import (
+            find_i2v_needing_gex,
+            list_i2v_needing_gex,
+            pick_i2v_needing_gex,
+        )
+
+        prev = os.environ.get("HOURLY_I2V_GEX_LOOKBACK_DAYS")
+        try:
+            os.environ["HOURLY_I2V_GEX_LOOKBACK_DAYS"] = "14"
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                data = root / "data"
+                (data / "output" / "og").mkdir(parents=True)
+                (data / "shape_factory").mkdir(parents=True)
+                jobs = root / "jobs"
+                kneel = jobs / "X-KNEEL-FB9"
+                kneel.mkdir(parents=True)
+                now = datetime(2026, 9, 29, tzinfo=timezone.utc)
+                old_ts = (now - timedelta(days=40)).isoformat()
+                new_ts = (now - timedelta(days=3)).isoformat()
+                vid_old = str(data / "output" / "og" / "kneel_old.mp4")
+                vid_new = str(data / "output" / "og" / "kneel_new.mp4")
+                vid_bound = str(data / "output" / "og" / "kneel_bound.mp4")
+                for p in (vid_old, vid_new, vid_bound):
+                    Path(p).write_bytes(b"fake")
+                (kneel / "old.job.json").write_text(
+                    json.dumps(
+                        {
+                            "job_key": "kneel-old",
+                            "status": "complete",
+                            "completed_at": old_ts,
+                            "deposit": {"videos": [vid_old]},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                (kneel / "new.job.json").write_text(
+                    json.dumps(
+                        {
+                            "job_key": "kneel-new",
+                            "status": "complete",
+                            "completed_at": new_ts,
+                            "deposit": {"videos": [vid_new]},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                (kneel / "bound.job.json").write_text(
+                    json.dumps(
+                        {
+                            "job_key": "kneel-bound",
+                            "status": "complete",
+                            "completed_at": new_ts,
+                            "deposit": {"videos": [vid_bound]},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                # GEX2 already consumed bound parent — interchangeable satisfaction.
+                gex2 = jobs / "FB9_GEX2"
+                gex2.mkdir(parents=True)
+                (gex2 / "child.job.json").write_text(
+                    json.dumps(
+                        {
+                            "job_key": "gex2-child",
+                            "status": "complete",
+                            "bindings": {"source_video": {"path": vid_bound}},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+                rows = list_i2v_needing_gex(
+                    data_root=data, job_dir=jobs, now_ts=now.timestamp()
+                )
+                keys = {r["job_key"] for r in rows}
+                self.assertIn("kneel-new", keys)
+                self.assertNotIn("kneel-old", keys)
+                self.assertNotIn("kneel-bound", keys)
+
+                hit0 = pick_i2v_needing_gex(rows, cursor=0)
+                hit1 = pick_i2v_needing_gex(rows, cursor=1)
+                self.assertIsNotNone(hit0)
+                self.assertIsNotNone(hit1)
+                self.assertEqual(
+                    {hit0["consumer_family"], hit1["consumer_family"]},
+                    {"FB9_GEX", "FB9_GEX2"},
+                )
+
+                found = find_i2v_needing_gex(data_root=data, job_dir=jobs, cursor=0)
+                self.assertEqual(found["job_key"], "kneel-new")
+                self.assertIn(found["consumer_family"], {"FB9_GEX", "FB9_GEX2"})
+        finally:
+            if prev is None:
+                os.environ.pop("HOURLY_I2V_GEX_LOOKBACK_DAYS", None)
+            else:
+                os.environ["HOURLY_I2V_GEX_LOOKBACK_DAYS"] = prev
+
+    def test_i2v_chain_soft_less_demotes_pick(self) -> None:
+        import tempfile
+
+        from shape_factory_hourly import list_i2v_needing_gex, pick_i2v_needing_gex
+        from shape_factory_ratings import APPETITE_SCHEMA_VERSION, ratings_db_path_for_index
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            data = root / "data"
+            (data / "output" / "og").mkdir(parents=True)
+            (data / "shape_factory").mkdir(parents=True)
+            jobs = root / "jobs"
+            kneel = jobs / "X-KNEEL-FB9"
+            kneel.mkdir(parents=True)
+            vid_a = str(data / "output" / "og" / "kneel_a.mp4")
+            vid_b = str(data / "output" / "og" / "kneel_b.mp4")
+            Path(vid_a).write_bytes(b"a")
+            Path(vid_b).write_bytes(b"b")
+            # Same producer family; mtime order — write less-marked second so unmarked is newer.
+            (kneel / "a.job.json").write_text(
+                json.dumps(
+                    {
+                        "job_key": "kneel-less",
+                        "status": "complete",
+                        "completed_at": "2026-09-28T12:00:00+00:00",
+                        "deposit": {"videos": [vid_a]},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (kneel / "b.job.json").write_text(
+                json.dumps(
+                    {
+                        "job_key": "kneel-ok",
+                        "status": "complete",
+                        "completed_at": "2026-09-28T13:00:00+00:00",
+                        "deposit": {"videos": [vid_b]},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            appetite_path = data / "output" / "_status" / "appetite_index.json"
+            appetite_path.parent.mkdir(parents=True, exist_ok=True)
+            appetite_path.write_text(
+                json.dumps(
+                    {
+                        "version": APPETITE_SCHEMA_VERSION,
+                        "by_output_relpath": {
+                            "og/kneel_a.mp4": {"appetite": "less", "facet": "both"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            db_path = ratings_db_path_for_index(appetite_path)
+            if db_path.is_file():
+                db_path.unlink()
+
+            rows = list_i2v_needing_gex(data_root=data, job_dir=jobs)
+            self.assertEqual({r["job_key"] for r in rows}, {"kneel-less", "kneel-ok"})
+            less_row = next(r for r in rows if r["job_key"] == "kneel-less")
+            ok_row = next(r for r in rows if r["job_key"] == "kneel-ok")
+            self.assertLess(float(less_row["soft_weight"]), float(ok_row["soft_weight"]))
+            hit = pick_i2v_needing_gex(rows, cursor=0)
+            self.assertEqual(hit["job_key"], "kneel-ok")
 
     def test_top_of_hour_and_recent_five_star_multiplier(self) -> None:
         from datetime import datetime, timezone

@@ -13976,10 +13976,22 @@ tr.disabled:hover td {
 }
 .home-card__head {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 10px;
+}
+.home-card__head-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.home-card__actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .home-card__title {
   margin: 0;
@@ -13988,7 +14000,7 @@ tr.disabled:hover td {
 }
 .home-card__hint {
   font-size: 0.75rem;
-  text-align: right;
+  text-align: left;
 }
 .home-card__status {
   display: flex;
@@ -14952,6 +14964,36 @@ button.home-backlog-linkish {
 .home-backlog-cull__msg {
   margin: 0;
   font-size: 0.75rem;
+}
+.home-backlog-delta {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(120, 200, 140, 0.08);
+  border: 1px solid rgba(120, 200, 140, 0.22);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+.home-backlog-delta__title {
+  font-weight: 650;
+  margin-bottom: 4px;
+}
+.home-backlog-delta ul {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+.home-backlog-steer-dock {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.home-backlog-steer-dock__head {
+  font-size: 0.78rem;
+  font-weight: 650;
+  margin-bottom: 6px;
+}
+.home-backlog-recalc {
+  white-space: nowrap;
 }
 .home-backlog-modal__meta p {
   margin: 0 0 10px;

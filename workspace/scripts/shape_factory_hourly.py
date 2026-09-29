@@ -627,6 +627,35 @@ def _facial_lookback_days() -> Optional[float]:
     return days
 
 
+def _i2v_extend_lookback_days() -> Optional[float]:
+    """Age cull for i2v/still → GEX|GEX2 backlog (None = no limit). Default 30 days."""
+    raw = os.environ.get("HOURLY_I2V_GEX_LOOKBACK_DAYS", "30").strip()
+    if not raw:
+        return 30.0
+    low = raw.lower()
+    if low in {"0", "none", "off", "unlimited", "-1"}:
+        return None
+    try:
+        days = float(raw)
+    except ValueError:
+        return 30.0
+    if days <= 0.0:
+        return None
+    return days
+
+
+# Interchangeable extend consumers for i2v/still parents (Pre-0.2).
+_I2V_EXTEND_CONSUMERS: Tuple[str, ...] = ("FB9_GEX", "FB9_GEX2")
+
+
+def _i2v_extend_consumers() -> List[str]:
+    raw = os.environ.get("HOURLY_I2V_EXTEND_CONSUMERS", "").strip()
+    if not raw:
+        return list(_I2V_EXTEND_CONSUMERS)
+    out = [p.strip() for p in raw.split(",") if p.strip()]
+    return out or list(_I2V_EXTEND_CONSUMERS)
+
+
 def _job_event_ts(job: dict[str, Any], *, video_path: str = "") -> float:
     """Best-effort timestamp for when a job actually ran (not job-file mtime).
 
@@ -3090,15 +3119,108 @@ def _chain_parent_output_blocked(
     return None
 
 
+def _chain_parent_open_consumers(
+    video: str,
+    *,
+    consumer_families: List[str],
+    data_root: Path,
+    appetite_doc: Optional[dict[str, Any]] = None,
+) -> List[str]:
+    """Consumers still eligible for this parent clip (not remove; not steer Out)."""
+    vid = str(video or "").strip()
+    if not vid:
+        return []
+    doc = appetite_doc
+    if doc is None:
+        try:
+            doc = _load_appetite_index(data_root)
+        except Exception:
+            doc = None
+    if doc:
+        try:
+            from shape_factory_ratings import lookup_output_appetite, normalize_appetite
+        except ImportError:
+            lookup_output_appetite = None  # type: ignore
+            normalize_appetite = None  # type: ignore
+        if lookup_output_appetite is not None and normalize_appetite is not None:
+            row = lookup_output_appetite(vid, doc)
+            if isinstance(row, dict) and normalize_appetite(row.get("appetite")) == "remove":
+                return []
+    open_c: List[str] = []
+    for fam in consumer_families:
+        reason = _chain_parent_output_blocked(
+            vid, consumer_family=fam, data_root=data_root, appetite_doc=doc
+        )
+        if reason:
+            continue
+        open_c.append(fam)
+    return open_c
+
+
+def _chain_parent_soft_weight(
+    video: str,
+    *,
+    consumer_families: List[str],
+    data_root: Path,
+    appetite_doc: Optional[dict[str, Any]] = None,
+) -> float:
+    """Soft Later/Less demotion (and Keep/More boost) for chain pick ordering."""
+    vid = str(video or "").strip()
+    if not vid:
+        return 1.0
+    w = 1.0
+    doc = appetite_doc
+    if doc is None:
+        try:
+            doc = _load_appetite_index(data_root)
+        except Exception:
+            doc = None
+    if doc:
+        try:
+            from shape_factory_ratings import lookup_output_appetite, normalize_appetite
+        except ImportError:
+            lookup_output_appetite = None  # type: ignore
+            normalize_appetite = None  # type: ignore
+        if lookup_output_appetite is not None and normalize_appetite is not None:
+            row = lookup_output_appetite(vid, doc)
+            if isinstance(row, dict):
+                state = normalize_appetite(row.get("appetite"))
+                if state == "fast_track":
+                    w *= max(1.0, float(os.environ.get("HOURLY_CHAIN_APPETITE_FAST_TRACK_BOOST", "4.0")))
+                elif state == "more":
+                    w *= max(1.0, float(os.environ.get("HOURLY_CHAIN_APPETITE_MORE_BOOST", "2.0")))
+                elif state == "less":
+                    w *= max(0.0, float(os.environ.get("HOURLY_CHAIN_APPETITE_LESS_MULT", "0.15")))
+    later_hit = False
+    keep_hit = False
+    for fam in consumer_families:
+        status = _chain_consumer_steer_status(vid, consumer_family=fam, data_root=data_root)
+        if status == "later":
+            later_hit = True
+        elif status in {"keep", "pin"}:
+            keep_hit = True
+    if later_hit:
+        w *= 0.25
+    elif keep_hit:
+        w *= 2.0
+    return max(0.01, float(w))
+
+
 def _filter_chain_parents(
     rows: List[Dict[str, Any]],
     *,
-    consumer_family: str,
+    consumer_family: Optional[str] = None,
+    consumer_families: Optional[List[str]] = None,
     data_root: Path,
     appetite_doc: Optional[dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     if not rows:
         return []
+    families = list(consumer_families or [])
+    if consumer_family and consumer_family not in families:
+        families.append(str(consumer_family))
+    if not families:
+        return list(rows)
     doc = appetite_doc
     if doc is None:
         try:
@@ -3108,15 +3230,56 @@ def _filter_chain_parents(
     out: List[Dict[str, Any]] = []
     for row in rows:
         vid = str(row.get("video") or "")
-        if _chain_parent_output_blocked(
+        open_c = _chain_parent_open_consumers(
             vid,
-            consumer_family=consumer_family,
+            consumer_families=families,
             data_root=data_root,
             appetite_doc=doc,
-        ):
+        )
+        if not open_c:
             continue
-        out.append(row)
+        next_row = dict(row)
+        next_row["open_consumers"] = open_c
+        # Provisional consumer for UI/cull (first open); pick may rotate later.
+        if not next_row.get("consumer_family") or next_row.get("consumer_family") not in open_c:
+            next_row["consumer_family"] = open_c[0]
+        next_row["soft_weight"] = _chain_parent_soft_weight(
+            vid,
+            consumer_families=open_c,
+            data_root=data_root,
+            appetite_doc=doc,
+        )
+        out.append(next_row)
     return out
+
+
+def _collect_extend_source_keys(
+    job_root: Path,
+    consumer_families: List[str],
+) -> Set[str]:
+    """Match keys for videos already bound as source_video by any extend consumer."""
+    keys: Set[str] = set()
+    for fam in consumer_families:
+        fam_root = job_root / fam
+        if not fam_root.is_dir():
+            continue
+        for path in fam_root.glob("*.job.json"):
+            try:
+                job = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            src = _job_source_video_path(job)
+            if src:
+                keys |= _video_match_keys(src)
+    return keys
+
+
+def _pick_i2v_extend_consumer(open_consumers: List[str], *, cursor: int) -> str:
+    """Equal-weight rotate among open extend consumers (GEX | GEX2)."""
+    ordered = [c for c in _i2v_extend_consumers() if c in set(open_consumers)]
+    if not ordered:
+        ordered = list(open_consumers) or list(_i2v_extend_consumers())
+    return ordered[int(cursor) % len(ordered)]
 
 
 def list_gex2_needing_facial(
@@ -3300,28 +3463,28 @@ def list_i2v_needing_gex(
     *,
     data_root: Optional[Path] = None,
     job_dir: Optional[Path] = None,
+    now_ts: Optional[float] = None,
+    lookback_days: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Complete i2v/still-family deposits not yet used as FB9_GEX source_video.
+    Complete i2v/still-family deposits not yet used as FB9_GEX **or** FB9_GEX2
+    ``source_video`` (interchangeable extend consumers).
 
     Ordered like ``find_i2v_needing_gex``: preferred producer families first, newest within band.
-    Parents whose direct output is appetite-remove or consumer-steer Out are omitted.
+    Parents whose direct output is appetite-remove or steer-Out for all open consumers
+    are omitted. Soft Later/Less attach as ``soft_weight`` for pick ordering.
+    Age-culled by ``HOURLY_I2V_GEX_LOOKBACK_DAYS`` (default 30).
     """
     data_root = (data_root or _default_data_root()).resolve()
     root = job_dir or _default_job_root(data_root)
-    gex_sources: Set[str] = set()
-    gex_root = root / "FB9_GEX"
-    if gex_root.is_dir():
-        for path in gex_root.glob("*.job.json"):
-            try:
-                job = json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            src = _job_source_video_path(job)
-            if src:
-                gex_sources.add(src)
+    consumers = _i2v_extend_consumers()
+    bound_keys = _collect_extend_source_keys(root, consumers)
 
-    cands: List[Tuple[int, str, str, str, str]] = []
+    if lookback_days is None:
+        lookback_days = _i2v_extend_lookback_days()
+    now = float(now_ts if now_ts is not None else time.time())
+
+    cands: List[Tuple[int, str, str, str, str, float]] = []
     families = _image_to_gex_families()
     for pref, fam in enumerate(families):
         fam_root = root / fam
@@ -3338,34 +3501,46 @@ def list_i2v_needing_gex(
             if not vid:
                 continue
             raw_vids = _job_deposit_videos_raw(job) or [vid]
-            if any(v in gex_sources for v in raw_vids):
+            vid_keys: Set[str] = set()
+            for v in raw_vids:
+                vid_keys |= _video_match_keys(v)
+            if bound_keys & vid_keys:
                 continue
+            event_ts = _job_event_ts(job, video_path=vid)
+            if lookback_days is not None and event_ts > 0.0:
+                age_days = max(0.0, (now - event_ts) / 86400.0)
+                if age_days > float(lookback_days):
+                    continue
             job_key = str(job.get("job_key") or path.stem)
             try:
                 mtime = f"{path.stat().st_mtime:020.6f}"
             except OSError:
                 mtime = "0"
-            cands.append((pref, mtime, fam, job_key, vid))
+            cands.append((pref, mtime, fam, job_key, vid, event_ts))
 
     if not cands:
         return []
     cands.sort(key=lambda t: (t[0], t[1]), reverse=False)
-    # Expand preference bands newest-first so simulation can pop in drain order.
     out: List[Dict[str, Any]] = []
     seen_prefs = sorted({c[0] for c in cands})
     for pref in seen_prefs:
         band = [c for c in cands if c[0] == pref]
         band.sort(key=lambda t: t[1], reverse=True)
-        for _pref, _mt, fam, job_key, vid in band:
+        for _pref, _mt, fam, job_key, vid, _ets in band:
             out.append(
                 {
                     "producer_family": fam,
                     "job_key": job_key,
                     "video": vid,
-                    "consumer_family": "FB9_GEX",
+                    "consumer_family": consumers[0],
+                    "consumer_families": list(consumers),
                 }
             )
-    return _filter_chain_parents(out, consumer_family="FB9_GEX", data_root=data_root)
+    return _filter_chain_parents(
+        out,
+        consumer_families=consumers,
+        data_root=data_root,
+    )
 
 
 def pick_i2v_needing_gex(
@@ -3373,10 +3548,9 @@ def pick_i2v_needing_gex(
     *,
     cursor: int = 0,
 ) -> Optional[Dict[str, Any]]:
-    """Choose one i2v→GEX parent, rotating among families that still need a child.
+    """Choose one i2v→extend parent, rotating among families; soft-weight within band.
 
-    Preference order is ``_IMAGE_TO_GEX_FAMILIES``. Without rotation Kneel-bare
-    would consume every drain slot whenever any Kneel complete is waiting.
+    Assigns ``consumer_family`` equally among open GEX|GEX2 consumers.
     """
     if not rows:
         return None
@@ -3386,12 +3560,23 @@ def pick_i2v_needing_gex(
     extras = sorted(f for f in present if f not in families)
     families.extend(extras)
     if not families:
-        return rows[0]
-    fam = families[int(cursor) % len(families)]
-    for row in rows:
-        if str(row.get("producer_family") or "") == fam:
-            return row
-    return rows[0]
+        hit = dict(rows[0])
+    else:
+        fam = families[int(cursor) % len(families)]
+        band = [r for r in rows if str(r.get("producer_family") or "") == fam]
+        if not band:
+            band = list(rows)
+        # Soft Later/Less: prefer higher soft_weight within the producer band.
+        band_sorted = sorted(
+            band,
+            key=lambda r: float(r.get("soft_weight") or 1.0),
+            reverse=True,
+        )
+        hit = dict(band_sorted[0])
+    open_c = list(hit.get("open_consumers") or hit.get("consumer_families") or _i2v_extend_consumers())
+    hit["consumer_family"] = _pick_i2v_extend_consumer(open_c, cursor=int(cursor))
+    hit["open_consumers"] = open_c
+    return hit
 
 
 def _upcoming_due_cursors(start: int, due_fn, *, n: int) -> List[int]:
@@ -3434,11 +3619,12 @@ def find_i2v_needing_gex(
     cursor: int = 0,
 ) -> Optional[Dict[str, Any]]:
     """
-    Newest complete i2v/still-family deposit not yet used as an FB9_GEX source_video.
+    Newest complete i2v/still-family deposit not yet used as GEX|GEX2 source_video.
 
     Rotates among producer families that have backlog (see ``_IMAGE_TO_GEX_FAMILIES``)
     using ``cursor`` so FaceBlast / BounceDance are not stuck behind Kneel.
-    Returns ``{producer_family, job_key, video}`` or None.
+    Assigns ``consumer_family`` equally among open extend consumers.
+    Returns ``{producer_family, job_key, video, consumer_family, ...}`` or None.
     """
     cands = list_i2v_needing_gex(data_root=data_root, job_dir=job_dir)
     return pick_i2v_needing_gex(cands, cursor=int(cursor))
@@ -3546,7 +3732,9 @@ def _backlog_preview_context(
         "schedule": schedule,
         "promo_active": bool(faceblast_promo_active(schedule=schedule, data_root=root)),
         "pending_slugs": _pending_hourly_prompt_slugs(job_dir=job_root, family="FB9_GEX"),
+        "pending_slugs_gex2": _pending_hourly_prompt_slugs(job_dir=job_root, family="FB9_GEX2"),
         "gex_catalogs": _catalog_prompt_paths(root, "FB9_GEX"),
+        "gex2_catalogs": _catalog_prompt_paths(root, "FB9_GEX2"),
         "facial_catalogs": _catalog_prompt_paths(root, "FB9_GEX_FACIAL"),
         "meta_cache": {},
         "pick_cache": {},
@@ -3574,7 +3762,14 @@ def _pending_preview_for_row(
         step = "chain_facial"
         prefer = None
     else:
-        family = "FB9_GEX"
+        family = str(row.get("consumer_family") or "FB9_GEX").strip() or "FB9_GEX"
+        if family == "FB9_GEX2":
+            catalogs = ctx.get("gex2_catalogs")
+            pending = ctx.get("pending_slugs_gex2")
+        else:
+            family = "FB9_GEX"
+            catalogs = ctx.get("gex_catalogs")
+            pending = ctx.get("pending_slugs")
         promo = ctx.get("promo_active")
         if promo is None:
             promo = bool(faceblast_promo_active(data_root=data_root))
@@ -3591,15 +3786,17 @@ def _pending_preview_for_row(
             return {
                 **base,
                 "from_family": producer,
+                "family": family,
             }
         prompt = pick_hourly_gex_catalog_prompt(
             cursor=int(cursor),
             data_root=data_root,
             job_dir=ctx.get("job_dir"),
+            family=family,
             prefer_stem=prefer,
             schedule=ctx.get("schedule") if isinstance(ctx.get("schedule"), dict) else None,
-            pending_slugs=ctx.get("pending_slugs") if isinstance(ctx.get("pending_slugs"), set) else None,
-            catalogs=ctx.get("gex_catalogs") if isinstance(ctx.get("gex_catalogs"), list) else None,
+            pending_slugs=pending if isinstance(pending, set) else None,
+            catalogs=catalogs if isinstance(catalogs, list) else None,
         )
     cache_key = str(prompt.resolve()) if prompt is not None else ""
     if cache_key not in meta_cache:
@@ -3746,15 +3943,19 @@ def hourly_chain_backlogs(
         "chains": [
             {
                 "id": "i2v_to_gex",
-                "label": "i2v → FB9_GEX",
+                "label": "i2v → GEX|GEX2",
                 "producer_label": "complete Kneel / FaceBlast / BounceDance / FB8",
                 "consumer_family": "FB9_GEX",
+                "consumer_families": list(_i2v_extend_consumers()),
                 "count": len(i2v_rows),
                 "by_family": i2v_by,
                 "drain_every": _i2v_gex_drain_every(),
                 "due_this_cursor": want_i2v_gex_chain(cur),
-                "lookback_days": None,
-                "lookback_note": "No age cull — old completes stay until a GEX job binds the video.",
+                "lookback_days": _i2v_extend_lookback_days(),
+                "lookback_note": (
+                    "Age cull via HOURLY_I2V_GEX_LOOKBACK_DAYS (default 30). "
+                    "Parent leaves backlog when either FB9_GEX or FB9_GEX2 binds it."
+                ),
                 "next": _item(i2v_next, chain_id="i2v_to_gex", next_key=i2v_next_key, ranks=i2v_ranks),
                 "next_picks": [
                     _item(row, chain_id="i2v_to_gex", next_key=i2v_next_key, ranks=i2v_ranks) or {}
@@ -3914,12 +4115,14 @@ def simulate_hourly_picks(
             )
         elif i2v_q and want_i2v_gex_chain(cursor):
             hit = pick_i2v_needing_gex(i2v_q, cursor=cursor) or i2v_q[0]
-            i2v_q = [r for r in i2v_q if r is not hit]
+            i2v_q = [r for r in i2v_q if r is not hit and str(r.get("job_key")) != str(hit.get("job_key"))]
             producer = str(hit.get("producer_family") or "")
+            consumer = str(hit.get("consumer_family") or "FB9_GEX")
             prompt = pick_hourly_gex_catalog_prompt(
                 cursor=cursor,
                 data_root=data_root,
                 job_dir=job_root,
+                family=consumer,
                 prefer_stem=(
                     "catalog-faceblast-extend"
                     if producer == "FB9-FaceBlast" or faceblast_promo_active(data_root=data_root)
@@ -3928,7 +4131,7 @@ def simulate_hourly_picks(
             )
             pick.update(
                 {
-                    "family": "FB9_GEX",
+                    "family": consumer,
                     "pick_mode": "chain",
                     "step": "chain_gex_from_i2v",
                     "parent_job": hit.get("job_key"),
@@ -4001,6 +4204,8 @@ def simulate_hourly_picks(
         "policy": {
             "seed_over_chain_share": _seed_over_chain_share(),
             "facial_lookback_days": _facial_lookback_days(),
+            "i2v_extend_lookback_days": _i2v_extend_lookback_days(),
+            "i2v_extend_consumers": _i2v_extend_consumers(),
             "advance_cursor_every_tick": advance_cursor_every_tick,
             "explore": hourly_explore_active(data_root=data_root),
         },
@@ -4750,10 +4955,12 @@ def predict_hourly_gex2(
     need_i2v = find_i2v_needing_gex(data_root=data_root, job_dir=job_root, cursor=cursor)
     if need_i2v and want_i2v_gex_chain(cursor):
         producer = str(need_i2v.get("producer_family") or "")
+        consumer = str(need_i2v.get("consumer_family") or "FB9_GEX")
         prompt = pick_hourly_gex_catalog_prompt(
             cursor=cursor,
             data_root=data_root,
             job_dir=job_root,
+            family=consumer,
             prefer_stem=(
                 "catalog-faceblast-extend"
                 if producer == "FB9-FaceBlast" or faceblast_promo_active(data_root=data_root)
@@ -4763,7 +4970,7 @@ def predict_hourly_gex2(
         return {
             "cursor": cursor,
             "phase_if_idle": "gex_from_i2v",
-            "family": "FB9_GEX",
+            "family": consumer,
             "pick_mode": "chain",
             "step": "chain_gex_from_i2v",
             "parent_job": need_i2v.get("job_key"),

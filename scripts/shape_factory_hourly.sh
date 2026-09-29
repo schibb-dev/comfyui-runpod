@@ -12,8 +12,9 @@
 # After hourly policy changes, dry-run variety with:
 #   python3 workspace/scripts/shape_factory_hourly.py simulate-picks --count 32
 # i2v hourlies target ~90% fresh input stills from the last week (see HOURLY_* below).
-# Extension seeds: FB9_GEX and FB9_GEX2 share equal weight (Kneel→GEX2 chain still unused;
-# i2v still drains into FB9_GEX).
+# Extension seeds: FB9_GEX and FB9_GEX2 share equal weight. i2v/still chain drains into
+# either consumer interchangeably (HOURLY_I2V_EXTEND_CONSUMERS). HOURLY_I2V_GEX_LOOKBACK_DAYS
+# (default 30) age-culls the i2v→extend backlog.
 # Install timer: bash scripts/install-shape-factory-hourly.sh
 set -euo pipefail
 
@@ -32,17 +33,19 @@ HOURLY_FRESH_STILL_SHARE="${HOURLY_FRESH_STILL_SHARE:-0.90}"
 HOURLY_RECENT_STILL_DAYS="${HOURLY_RECENT_STILL_DAYS:-7}"
 HOURLY_SEED_OVER_CHAIN_SHARE="${HOURLY_SEED_OVER_CHAIN_SHARE:-0.50}"
 HOURLY_FACIAL_LOOKBACK_DAYS="${HOURLY_FACIAL_LOOKBACK_DAYS:-14}"
+# Age cull for i2v/still → GEX|GEX2 backlog (default 30; 0/none = unlimited).
+HOURLY_I2V_GEX_LOOKBACK_DAYS="${HOURLY_I2V_GEX_LOOKBACK_DAYS:-30}"
 # Drain at most one GEX2→FACIAL job every N sample_cursor values (default 6).
 HOURLY_FACIAL_DRAIN_EVERY="${HOURLY_FACIAL_DRAIN_EVERY:-6}"
-# Drain at most one i2v/still → FB9_GEX job every N sample_cursor values (default 3).
+# Drain at most one i2v/still → GEX|GEX2 job every N sample_cursor values (default 3).
 HOURLY_I2V_GEX_DRAIN_EVERY="${HOURLY_I2V_GEX_DRAIN_EVERY:-3}"
 # Status walks every complete job with ffprobe; skip by default so fills stay on cadence.
 HOURLY_SKIP_STATUS="${HOURLY_SKIP_STATUS:-1}"
 HOURLY_MAINT_TIMEOUT_SEC="${HOURLY_MAINT_TIMEOUT_SEC:-90}"
 HOURLY_STATUS_TIMEOUT_SEC="${HOURLY_STATUS_TIMEOUT_SEC:-60}"
 export HOURLY_PREDICTED_SHARE HOURLY_FRESH_STILL_SHARE HOURLY_RECENT_STILL_DAYS
-export HOURLY_SEED_OVER_CHAIN_SHARE HOURLY_FACIAL_LOOKBACK_DAYS HOURLY_FACIAL_DRAIN_EVERY
-export HOURLY_I2V_GEX_DRAIN_EVERY
+export HOURLY_SEED_OVER_CHAIN_SHARE HOURLY_FACIAL_LOOKBACK_DAYS HOURLY_I2V_GEX_LOOKBACK_DAYS
+export HOURLY_FACIAL_DRAIN_EVERY HOURLY_I2V_GEX_DRAIN_EVERY
 export HOURLY_SKIP_STATUS HOURLY_MAINT_TIMEOUT_SEC HOURLY_STATUS_TIMEOUT_SEC
 
 # Families maintained every tick (deposit / submit / status).
@@ -368,7 +371,7 @@ PY
   continue
 fi
 
-# Phase 2: i2v/still-family complete without FB9_GEX child (FaceBlast, BounceDanceA, Kneel, …)
+# Phase 2: i2v/still-family complete without GEX|GEX2 child (FaceBlast, BounceDanceA, Kneel, …)
 NEED_I2V_JSON=$(cd "$SCRIPTS" && python3 shape_factory_hourly.py need-gex-from-i2v --data-root "$REPO/.data" --cursor "$CURSOR")
 NEED_I2V_KEY=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('job_key') or '')" "$NEED_I2V_JSON")
 if [ -n "$NEED_I2V_KEY" ]; then
@@ -381,13 +384,15 @@ fi
 if [ -n "$NEED_I2V_KEY" ]; then
   NEED_I2V_FAM=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('producer_family') or '')" "$NEED_I2V_JSON")
   NEED_I2V_VID=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('video') or '')" "$NEED_I2V_JSON")
-  log "phase=gex_from_i2v — $NEED_I2V_FAM complete without GEX ($NEED_I2V_KEY)"
+  NEED_I2V_CONSUMER=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('consumer_family') or 'FB9_GEX')" "$NEED_I2V_JSON")
+  log "phase=gex_from_i2v — $NEED_I2V_FAM → $NEED_I2V_CONSUMER ($NEED_I2V_KEY)"
   BIND_I2V=$(mktemp --suffix=.yaml)
-  python3 - "$NEED_I2V_VID" "$NEED_I2V_FAM" "$BIND_I2V" "$REPO" "$CURSOR" <<'PY'
+  python3 - "$NEED_I2V_VID" "$NEED_I2V_FAM" "$BIND_I2V" "$REPO" "$CURSOR" "$NEED_I2V_CONSUMER" <<'PY'
 import sys
 from pathlib import Path
 vid, fam, out, repo = sys.argv[1], sys.argv[2], Path(sys.argv[3]), Path(sys.argv[4])
 cursor = int(sys.argv[5])
+consumer = (sys.argv[6] or "FB9_GEX").strip() or "FB9_GEX"
 sys.path.insert(0, str(repo / "workspace" / "scripts"))
 from shape_factory_hourly import pick_hourly_gex_catalog_prompt
 esc = vid.replace("\\", "\\\\").replace('"', '\\"')
@@ -396,6 +401,7 @@ prefer = "catalog-faceblast-extend" if fam == "FB9-FaceBlast" else None
 prompt = pick_hourly_gex_catalog_prompt(
     cursor=cursor,
     data_root=repo / ".data",
+    family=consumer,
     prefer_stem=prefer,
 )
 if prompt is not None:
@@ -406,33 +412,35 @@ PY
   (
     cd "$SCRIPTS"
     python3 shape_factory.py generate \
-      --shape "$(shape_for_family FB9_GEX)" \
-      --pools "$(pools_for_family FB9_GEX)" \
+      --shape "$(shape_for_family "$NEED_I2V_CONSUMER")" \
+      --pools "$(pools_for_family "$NEED_I2V_CONSUMER")" \
       --binds-override "$BIND_I2V" \
       --pick zip --limit 1 --job-suffix "$HOURLY_SUFFIX" \
       --output-prefix-root "$HOURLY_PREFIX_ROOT" \
       --job-key-prefix "$HOURLY_JOB_KEY_PREFIX" \
       "${dev_args[@]}" >> "$LOG" 2>&1
-    maybe_submit FB9_GEX "$DEST"
+    maybe_submit "$NEED_I2V_CONSUMER" "$DEST"
   )
   rm -f "$BIND_I2V"
-  python3 - "$STATE_JSON" "$NEED_I2V_KEY" "$NEED_I2V_FAM" "$NEED_I2V_VID" "$STATE" "$CURSOR" <<'PY'
+  python3 - "$STATE_JSON" "$NEED_I2V_KEY" "$NEED_I2V_FAM" "$NEED_I2V_VID" "$STATE" "$CURSOR" "$NEED_I2V_CONSUMER" <<'PY'
 import json, sys
 from pathlib import Path
 data = json.loads(sys.argv[1])
 cursor = int(sys.argv[6])
+consumer = (sys.argv[7] or "FB9_GEX").strip() or "FB9_GEX"
 data["phase"] = "gex_from_i2v_queued"
-data["last_family"] = "FB9_GEX"
+data["last_family"] = consumer
 data["last_pick_mode"] = "chain"
 data["last_step"] = "chain_gex_from_i2v"
 data["last_i2v_job"] = sys.argv[2]
 data["last_i2v_producer"] = sys.argv[3]
 data["last_i2v_video"] = sys.argv[4]
+data["last_i2v_consumer"] = consumer
 data["sample_cursor"] = cursor + 1
 Path(sys.argv[5]).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
   FILLS=$((FILLS + 1))
-  log "gex-from-i2v step queued producer=$NEED_I2V_FAM dest=$DEST (next cursor=$((CURSOR + 1))) fills=$FILLS"
+  log "gex-from-i2v step queued producer=$NEED_I2V_FAM consumer=$NEED_I2V_CONSUMER dest=$DEST (next cursor=$((CURSOR + 1))) fills=$FILLS"
   continue
 fi
 

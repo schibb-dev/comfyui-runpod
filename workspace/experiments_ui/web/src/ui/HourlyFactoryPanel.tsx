@@ -522,6 +522,7 @@ function HourlyBacklogCullControls({
       <p className="home-backlog-cull__hint factory-muted">
         Cull this parent clip for <strong>{fam || "chain"}</strong>. Appetite{" "}
         <strong>Remove</strong> or steer <strong>Out</strong> drops it from the waiting list.
+        <strong> Later</strong> / appetite <strong>Less</strong> soft-demote picks (transient).
       </p>
       <WorkProductAppetiteStrip
         relpath={rel}
@@ -704,6 +705,80 @@ function focusBacklogKey(root: HTMLElement | null, jobKey: string) {
   (prefer || nodes[0])?.focus();
 }
 
+function shortBacklogKey(jobKey: string): string {
+  const s = String(jobKey || "").trim();
+  if (!s) return "—";
+  if (s.length <= 36) return s;
+  return `${s.slice(0, 14)}…${s.slice(-12)}`;
+}
+
+type BacklogSnapChain = {
+  id: string;
+  label: string;
+  count: number;
+  next: string;
+  keys: string[];
+};
+
+type BacklogSnap = {
+  at: string;
+  chains: BacklogSnapChain[];
+};
+
+function snapshotBacklog(data: HourlyChainBacklogsResponse | null): BacklogSnap | null {
+  if (!data?.chains?.length) return null;
+  return {
+    at: new Date().toISOString(),
+    chains: data.chains.map((c) => ({
+      id: String(c.id || ""),
+      label: String(c.label || c.id || "chain"),
+      count: Number(c.count ?? (c.items || []).length),
+      next: String(c.next?.job_key || (c.next_picks || [])[0]?.job_key || ""),
+      keys: (c.items || []).map((it) => String(it.job_key || "")).filter(Boolean),
+    })),
+  };
+}
+
+function diffBacklogLines(prev: BacklogSnap | null, next: BacklogSnap): string[] {
+  if (!prev) {
+    return next.chains.map((c) => `${c.label}: ${c.count} waiting`);
+  }
+  const lines: string[] = [];
+  for (const nc of next.chains) {
+    const pc = prev.chains.find((c) => c.id === nc.id);
+    if (!pc) {
+      lines.push(`${nc.label}: ${nc.count} (new chain)`);
+      continue;
+    }
+    const delta = nc.count - pc.count;
+    const countBit =
+      delta === 0 ? String(nc.count) : `${pc.count} → ${nc.count} (${delta > 0 ? "+" : ""}${delta})`;
+    let line = `${nc.label}: ${countBit}`;
+    if (pc.next !== nc.next) {
+      line += ` · next ${shortBacklogKey(pc.next)} → ${shortBacklogKey(nc.next)}`;
+    }
+    const prevSet = new Set(pc.keys);
+    const nextSet = new Set(nc.keys);
+    let dropped = 0;
+    let added = 0;
+    for (const k of prevSet) if (!nextSet.has(k)) dropped += 1;
+    for (const k of nextSet) if (!prevSet.has(k)) added += 1;
+    if (dropped || added) line += ` · culled −${dropped} / new +${added}`;
+    lines.push(line);
+  }
+  return lines;
+}
+
+function formatRecalcClock(iso: string): string {
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" });
+  } catch {
+    return iso;
+  }
+}
+
 function HourlyChainBacklogsCard({ refreshToken }: { refreshToken: number }) {
   const [data, setData] = useState<HourlyChainBacklogsResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -712,13 +787,28 @@ function HourlyChainBacklogsCard({ refreshToken }: { refreshToken: number }) {
   const [familyFilter, setFamilyFilter] = useState<Record<string, string>>({});
   const [selectedKey, setSelectedKey] = useState<string>("");
   const [viewerKey, setViewerKey] = useState<string>("");
+  const [diffLines, setDiffLines] = useState<string[]>([]);
+  const [lastRecalcAt, setLastRecalcAt] = useState<string>("");
   const cardRef = useRef<HTMLDivElement | null>(null);
+  const prevSnapRef = useRef<BacklogSnap | null>(null);
+  const dataRef = useRef<HourlyChainBacklogsResponse | null>(null);
+  dataRef.current = data;
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts?: { compare?: boolean }) => {
     setLoading(true);
     setError("");
+    const compare = opts?.compare !== false;
+    const before = compare ? prevSnapRef.current || snapshotBacklog(dataRef.current) : null;
     try {
-      setData(await fetchHourlyChainBacklogs());
+      const next = await fetchHourlyChainBacklogs();
+      setData(next);
+      const after = snapshotBacklog(next);
+      if (after) {
+        prevSnapRef.current = after;
+        setLastRecalcAt(after.at);
+        if (compare && before) setDiffLines(diffBacklogLines(before, after));
+        else setDiffLines(after.chains.map((c) => `${c.label}: ${c.count} waiting`));
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -727,7 +817,7 @@ function HourlyChainBacklogsCard({ refreshToken }: { refreshToken: number }) {
   }, []);
 
   useEffect(() => {
-    void load();
+    void load({ compare: false });
   }, [load, refreshToken]);
 
   const chains = data?.chains ?? [];
@@ -763,6 +853,12 @@ function HourlyChainBacklogsCard({ refreshToken }: { refreshToken: number }) {
     [nav, selectItem, selectedKey, viewerKey],
   );
 
+  const onCulled = useCallback(() => {
+    setViewerKey("");
+    setSelectedKey("");
+    void load({ compare: true });
+  }, [load]);
+
   useEffect(() => {
     if (!openChain) return;
     if (selectedKey && backlogItemByKey(openChain, selectedKey)) return;
@@ -788,7 +884,10 @@ function HourlyChainBacklogsCard({ refreshToken }: { refreshToken: number }) {
       }
       if (e.code === "Space" || e.key === " ") {
         const t = e.target;
-        if (t instanceof HTMLElement && t.closest(".home-backlog-fams, .home-backlog-chain__head")) {
+        if (
+          t instanceof HTMLElement &&
+          t.closest(".home-backlog-fams, .home-backlog-chain__head, .home-backlog-cull, .home-card__actions")
+        ) {
           return;
         }
         if (!selectedItem) return;
@@ -803,7 +902,17 @@ function HourlyChainBacklogsCard({ refreshToken }: { refreshToken: number }) {
   return (
     <Panel
       title="Chain backlogs"
-      hint="Parents waiting for a child — not the pending FIFO"
+      hint="Steer parent clips here — Recalculate reloads what the next tick would drain"
+      actions={
+        <button
+          type="button"
+          className="drt-btn home-backlog-recalc"
+          disabled={loading}
+          onClick={() => void load({ compare: true })}
+        >
+          {loading ? "Scanning…" : "Recalculate"}
+        </button>
+      }
       footer={
         <span className="home-backlog-foot">
           <a className="home-cta" href={routeHref("workbench")}>
@@ -822,8 +931,19 @@ function HourlyChainBacklogsCard({ refreshToken }: { refreshToken: number }) {
         {typeof data?.cursor === "number" ? (
           <p className="home-hourly-controls__meta">
             Cursor {data.cursor}
+            {lastRecalcAt ? ` · scanned ${formatRecalcClock(lastRecalcAt)}` : ""}
             {loading ? " · refreshing…" : ""}
           </p>
+        ) : null}
+        {diffLines.length ? (
+          <div className="home-backlog-delta" role="status" aria-live="polite">
+            <div className="home-backlog-delta__title">Since last scan</div>
+            <ul>
+              {diffLines.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+          </div>
         ) : null}
         <div className="home-backlog-list">
           {chains.map((chain) => (
@@ -842,6 +962,18 @@ function HourlyChainBacklogsCard({ refreshToken }: { refreshToken: number }) {
             />
           ))}
         </div>
+        {openChain && selectedItem ? (
+          <div className="home-backlog-steer-dock">
+            <div className="home-backlog-steer-dock__head">
+              Steer selected
+              <span className="factory-muted mono">
+                {" "}
+                {selectedItem.producer_family || ""} · {shortBacklogKey(String(selectedItem.job_key || ""))}
+              </span>
+            </div>
+            <HourlyBacklogCullControls item={selectedItem} chain={openChain} onCulled={onCulled} />
+          </div>
+        ) : null}
       </div>
       {openChain && viewerItem ? (
         <HourlyBacklogPendingModal
@@ -856,11 +988,7 @@ function HourlyChainBacklogsCard({ refreshToken }: { refreshToken: number }) {
             );
           }}
           onStep={(delta) => stepNav(delta, { openPreview: true })}
-          onCulled={() => {
-            setViewerKey("");
-            setSelectedKey("");
-            void load();
-          }}
+          onCulled={onCulled}
         />
       ) : null}
     </Panel>
@@ -1017,17 +1145,22 @@ function Panel({
   hint,
   children,
   footer,
+  actions,
 }: {
   title: string;
   hint?: string;
   children: React.ReactNode;
   footer?: React.ReactNode;
+  actions?: React.ReactNode;
 }) {
   return (
     <section className="home-card sfmap-hourlies-card">
       <div className="home-card__head">
-        <h2 className="home-card__title">{title}</h2>
-        {hint ? <span className="home-card__hint factory-muted">{hint}</span> : null}
+        <div className="home-card__head-main">
+          <h2 className="home-card__title">{title}</h2>
+          {hint ? <span className="home-card__hint factory-muted">{hint}</span> : null}
+        </div>
+        {actions ? <div className="home-card__actions">{actions}</div> : null}
       </div>
       <div className="home-card__body">{children}</div>
       {footer ? <div className="home-card__foot">{footer}</div> : null}
@@ -1098,7 +1231,8 @@ export function HourlyFactoryPanel({ refreshToken = 0 }: { refreshToken?: number
   return (
     <div className="sfmap-hourlies">
       {error ? <p className="home-hourly-controls__err">{error}</p> : null}
-      <p className="home-hourly-controls__steer" style={{ marginBottom: 10 }}>
+      <HourlyChainBacklogsCard refreshToken={refreshToken} />
+      <p className="home-hourly-controls__steer">
         <a className="home-cta" href={factoryMapHourliesCurateHref()}>
           Steer seed stills →
         </a>
@@ -1131,7 +1265,6 @@ export function HourlyFactoryPanel({ refreshToken = 0 }: { refreshToken?: number
         />
         <HourlyNextSample sample={summary?.hourly?.next_sample} />
       </Panel>
-      <HourlyChainBacklogsCard refreshToken={refreshToken} />
     </div>
   );
 }
