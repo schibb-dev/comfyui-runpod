@@ -574,6 +574,61 @@ def _retire_producing_job(
     }
 
 
+def _strip_pool_memberships(pools_root: Path, purged_rel: str) -> List[Dict[str, Any]]:
+    """Remove matching members from every family pool index (best-effort)."""
+    purged_keys = _expanded_path_keys(purged_rel)
+    if not purged_keys or not pools_root.is_dir():
+        return []
+    stripped: List[Dict[str, Any]] = []
+    for index_path in pools_root.glob("*/index.json"):
+        try:
+            doc = json.loads(index_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(doc, dict):
+            continue
+        pools = doc.get("pools") if isinstance(doc.get("pools"), dict) else {}
+        changed = False
+        for pool_name, pool in pools.items():
+            if not isinstance(pool, dict):
+                continue
+            members = pool.get("members")
+            if not isinstance(members, list):
+                continue
+            keep: List[Any] = []
+            for member in members:
+                raw = member.get("path") if isinstance(member, dict) else member
+                if _expanded_path_keys(raw) & purged_keys:
+                    stripped.append(
+                        {
+                            "family": index_path.parent.name,
+                            "pool": str(pool_name),
+                            "path": _posix(raw),
+                        }
+                    )
+                    changed = True
+                    continue
+                keep.append(member)
+            if changed:
+                pool["members"] = keep
+        if changed:
+            from datetime import datetime, timezone
+
+            doc["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            tmp = index_path.with_suffix(".json.tmp")
+            try:
+                tmp.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                tmp.replace(index_path)
+            except Exception:
+                try:
+                    if tmp.is_file():
+                        tmp.unlink()
+                except Exception:
+                    pass
+                continue
+    return stripped
+
+
 def purge_remove_asset(
     relpath: str,
     *,
@@ -640,6 +695,8 @@ def purge_remove_asset(
         if not raw_path:
             continue
         retired.append(_retire_producing_job(Path(raw_path), rel, search_roots))
+    # Belt-and-suspenders: drop any pool memberships that raced in after analysis.
+    pool_stripped = _strip_pool_memberships(pools_root, rel)
     return {
         "ok": True,
         "relpath": rel,
@@ -648,6 +705,7 @@ def purge_remove_asset(
         "appetite_rows": int(judgment.get("appetite_rows") or 0) + int(extra.get("appetite_rows") or 0),
         "rating_rows": int(judgment.get("rating_rows") or 0) + int(extra.get("rating_rows") or 0),
         "producing_jobs": retired,
+        "pool_memberships_stripped": pool_stripped,
         "deletion": "purged",
     }
 

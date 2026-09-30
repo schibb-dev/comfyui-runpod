@@ -11,6 +11,7 @@ runnable workflow JSON + job metadata.
       --pools .data/pools/FB9_GEX2/pools.yaml --pick zip --limit 4 --dev
   python3 shape_factory.py submit --family FB9_GEX2 --limit 2
   python3 shape_factory.py pool sync --pools .data/pools/FB9_GEX2/pools.yaml
+  python3 shape_factory.py pool prune-missing --pools-root .data/pools --heal-jobs --apply
   python3 shape_factory.py status --family FB9_GEX2 --wait --deposit
   python3 shape_factory.py timings summary --family FB9_GEX2
   python3 shape_factory.py timings compare --baseline job_a.job.json --candidate job_b.job.json
@@ -1495,6 +1496,83 @@ def member_record_for_path(path: Path, *, job_key: Optional[str] = None, source:
     if png.is_file():
         rec["companion_png"] = str(png.resolve())
     return rec
+
+
+def pool_member_path_exists(raw: str | Path) -> bool:
+    """True when a pool member path resolves to an existing file on this host."""
+    text = str(raw or "").strip()
+    if not text:
+        return False
+    candidates = [Path(text).expanduser(), hostify_repo_path(text)]
+    # Relative og/… / wip/… paths are authored against the Comfy output bind.
+    if not text.startswith("/") and (text.startswith("og/") or text.startswith("wip/") or text.startswith("output/")):
+        rel = text[len("output/") :] if text.startswith("output/") else text
+        candidates.append(DEFAULT_DATA_ROOT.expanduser() / "output" / rel)
+        env_out = os.environ.get("COMFYUI_BIND_OUTPUT_DIR", "").strip()
+        if env_out:
+            candidates.append(Path(env_out).expanduser() / rel)
+    seen: set[str] = set()
+    for cand in candidates:
+        try:
+            key = str(cand)
+        except Exception:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if cand.is_file():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def prune_missing_pool_index_members(
+    index_doc: dict[str, Any],
+    *,
+    pool_id: str = "",
+    also_raw: bool = True,
+) -> list[dict[str, Any]]:
+    """Drop pool members whose media file is missing (and optionally ``_RAW_`` names).
+
+    Returns records describing each removal (pool_id, path, reason).
+    """
+    removed: list[dict[str, Any]] = []
+    pools = index_doc.get("pools") if isinstance(index_doc.get("pools"), dict) else {}
+    for pid, pool in list(pools.items()):
+        if pool_id and str(pid) != pool_id:
+            continue
+        if not isinstance(pool, dict):
+            continue
+        members = pool.get("members")
+        if not isinstance(members, list):
+            continue
+        keep: list[Any] = []
+        for member in members:
+            if not isinstance(member, dict):
+                keep.append(member)
+                continue
+            path = str(member.get("path") or member.get("relpath") or "").strip()
+            name = Path(path).name
+            reason = ""
+            if also_raw and _is_preview_or_raw_output_path(name):
+                reason = "raw_or_preview_name"
+            elif path and not pool_member_path_exists(path):
+                reason = "missing_file"
+            if reason:
+                removed.append(
+                    {
+                        "pool_id": str(pid),
+                        "path": path,
+                        "job_key": member.get("job_key"),
+                        "reason": reason,
+                    }
+                )
+                continue
+            keep.append(member)
+        pool["members"] = keep
+    return removed
 
 
 def upsert_pool_index_members(
@@ -9173,6 +9251,125 @@ def cmd_pool_sync(args: argparse.Namespace) -> int:
     return 0
 
 
+def _heal_job_missing_outputs(job_path: Path) -> dict[str, Any]:
+    """Strip missing paths from submit.outputs / deposit.videos. Returns a change summary."""
+    try:
+        job = json.loads(job_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"ok": False, "job_path": str(job_path), "error": str(exc)}
+    if not isinstance(job, dict):
+        return {"ok": False, "job_path": str(job_path), "error": "invalid_job"}
+    changed = False
+    cleared_outputs = 0
+    cleared_deposit = 0
+    submit = job.get("submit") if isinstance(job.get("submit"), dict) else None
+    if submit is not None and isinstance(submit.get("outputs"), list):
+        before = list(submit.get("outputs") or [])
+        after = [p for p in before if pool_member_path_exists(p)]
+        cleared_outputs = len(before) - len(after)
+        if cleared_outputs:
+            submit["outputs"] = after
+            if not after:
+                submit["output_discovery"] = "filesystem_missing"
+            changed = True
+    dep = job.get("deposit") if isinstance(job.get("deposit"), dict) else None
+    if dep is not None and isinstance(dep.get("videos"), list):
+        before = list(dep.get("videos") or [])
+        after = [p for p in before if pool_member_path_exists(p)]
+        cleared_deposit = len(before) - len(after)
+        if cleared_deposit:
+            dep["videos"] = after
+            dep["missing_cleared_at"] = utc_now()
+            changed = True
+    if changed:
+        atomic_write_json(job_path, job)
+    return {
+        "ok": True,
+        "job_path": str(job_path),
+        "job_key": str(job.get("job_key") or job_path.stem),
+        "changed": changed,
+        "cleared_outputs": cleared_outputs,
+        "cleared_deposit_videos": cleared_deposit,
+    }
+
+
+def cmd_pool_prune_missing(args: argparse.Namespace) -> int:
+    """Remove pool-index members whose files are gone (dry-run unless --apply)."""
+    pools_root = Path(args.pools_root).expanduser().resolve()
+    if not pools_root.is_dir():
+        print(f"error: pools root not found: {pools_root}", file=sys.stderr)
+        return 1
+    apply = bool(getattr(args, "apply", False))
+    also_raw = not bool(getattr(args, "keep_raw", False))
+    family = str(getattr(args, "family", "") or "").strip()
+    heal_jobs = bool(getattr(args, "heal_jobs", False))
+
+    print("# Shape factory pool prune-missing\n")
+    print(f"pools_root={pools_root}")
+    print(f"apply={1 if apply else 0} also_raw={1 if also_raw else 0} heal_jobs={1 if heal_jobs else 0}")
+
+    total_removed = 0
+    index_paths = sorted(pools_root.glob("*/index.json"))
+    if family:
+        index_paths = [p for p in index_paths if p.parent.name == family]
+    for index_path in index_paths:
+        index_doc = load_pool_index(index_path)
+        removed = prune_missing_pool_index_members(index_doc, also_raw=also_raw)
+        if not removed:
+            continue
+        print(f"\n{index_path.parent.name}: would_remove={len(removed)}" if not apply else f"\n{index_path.parent.name}: removed={len(removed)}")
+        for row in removed[:12]:
+            print(f"  [{row.get('reason')}] {Path(str(row.get('path') or '')).name}")
+        if len(removed) > 12:
+            print(f"  ... +{len(removed) - 12} more")
+        total_removed += len(removed)
+        if apply:
+            index_doc["updated_at"] = utc_now()
+            atomic_write_json(index_path, index_doc)
+
+    print(f"\nprune_missing_total={total_removed}")
+    if not apply and total_removed:
+        print("dry_run=1 (pass --apply to write)")
+
+    healed = 0
+    if heal_jobs:
+        job_dir = Path(getattr(args, "job_dir", None) or DEFAULT_JOB_DIR).expanduser()
+        if family:
+            scan_roots = [job_dir / family]
+        else:
+            scan_roots = [job_dir]
+        for root in scan_roots:
+            if not root.is_dir():
+                continue
+            for job_path in sorted(root.rglob("*.job.json")):
+                summary = _heal_job_missing_outputs(job_path) if apply else None
+                if not apply:
+                    # dry-run probe
+                    try:
+                        job = json.loads(job_path.read_text(encoding="utf-8"))
+                    except Exception:
+                        continue
+                    submit = job.get("submit") if isinstance(job.get("submit"), dict) else {}
+                    dep = job.get("deposit") if isinstance(job.get("deposit"), dict) else {}
+                    outs = list(submit.get("outputs") or []) + list(dep.get("videos") or [])
+                    miss = [p for p in outs if str(p).lower().endswith(".mp4") and not pool_member_path_exists(p)]
+                    if miss:
+                        healed += 1
+                        if healed <= 8:
+                            print(f"heal_job_candidate {job_path.name} missing={len(miss)}")
+                elif summary and summary.get("changed"):
+                    healed += 1
+                    if healed <= 8:
+                        print(
+                            f"healed {summary.get('job_key')} "
+                            f"outputs=-{summary.get('cleared_outputs')} "
+                            f"deposit=-{summary.get('cleared_deposit_videos')}"
+                        )
+        print(f"heal_jobs_touched={healed}")
+
+    return 0
+
+
 def update_job_status_from_comfy(
     job: dict[str, Any],
     *,
@@ -9399,11 +9596,53 @@ def cmd_deposit(args: argparse.Namespace) -> int:
             outputs = [str(p) for p in discover_job_outputs(job, data_root)]
         video_paths = [Path(str(p)).expanduser() for p in outputs if str(p).lower().endswith(".mp4")]
         video_paths = select_final_output_paths(video_paths, job=job, data_root=data_root)
+        # Never deposit ghost paths — stale submit.outputs after purge/delete re-poison pool indexes.
+        listed = list(video_paths)
+        existing = [p for p in video_paths if pool_member_path_exists(p)]
+        if not existing:
+            rediscovered = [
+                p
+                for p in select_final_output_paths(
+                    discover_job_outputs(job, data_root), job=job, data_root=data_root
+                )
+                if pool_member_path_exists(p)
+            ]
+            existing = rediscovered
+        existing_keys = {str(p) for p in existing}
+        dropped = [p for p in listed if str(p) not in existing_keys]
+        if dropped and not quiet:
+            print(
+                f"warn {job_key}: dropping {len(dropped)} missing output(s) "
+                f"(e.g. {Path(str(dropped[0])).name})"
+            )
+        video_paths = existing
         if not video_paths:
-            print(f"skip {job_key} (no mp4 outputs)")
+            # Heal job metadata so the next deposit/status pass does not keep retrying ghosts.
+            if listed:
+                submit["outputs"] = []
+                submit["output_discovery"] = "filesystem_missing"
+                dep = job.get("deposit") if isinstance(job.get("deposit"), dict) else None
+                if isinstance(dep, dict) and dep.get("videos"):
+                    dep["videos"] = [
+                        str(p) for p in (dep.get("videos") or []) if pool_member_path_exists(p)
+                    ]
+                    dep["missing_cleared_at"] = utc_now()
+                atomic_write_json(job_path, job)
+            print(f"skip {job_key} (no mp4 outputs on disk)")
             skipped += 1
             continue
-
+        # Keep submit.outputs aligned with files that still exist (host-canonical).
+        healed_outputs: list[str] = []
+        for p in video_paths:
+            raw = Path(p)
+            if raw.is_file():
+                healed_outputs.append(str(raw.resolve()))
+            else:
+                host = hostify_repo_path(raw)
+                healed_outputs.append(str(host.resolve() if host.is_file() else host))
+        submit["outputs"] = healed_outputs
+        submit["output_discovery"] = str(submit.get("output_discovery") or "filesystem")
+        video_paths = [Path(p) for p in healed_outputs]
         targets = deposit_targets_for_job(job)
         if not targets:
             print(f"skip {job_key} (no deposit targets in job)")
@@ -9736,6 +9975,29 @@ def build_parser() -> argparse.ArgumentParser:
     pool_sync.add_argument("--shape", help="shape.yaml (optional)")
     pool_sync.add_argument("--index", help="Override index.json output path")
     pool_sync.set_defaults(func=cmd_pool_sync)
+    pool_prune = pool_sub.add_parser(
+        "prune-missing",
+        help="Drop pool-index members whose media files are missing (and _RAW_/_PREVIEW_ names)",
+    )
+    pool_prune.add_argument(
+        "--pools-root",
+        default=str(Path(__file__).resolve().parents[2] / ".data" / "pools"),
+        help="Directory of per-family pool folders (each with index.json)",
+    )
+    pool_prune.add_argument("--family", help="Only prune one family subfolder")
+    pool_prune.add_argument("--apply", action="store_true", help="Write index changes (default: dry-run)")
+    pool_prune.add_argument(
+        "--keep-raw",
+        action="store_true",
+        help="Do not also drop members whose basename contains _RAW_/_PREVIEW_/_DEBUG_",
+    )
+    pool_prune.add_argument(
+        "--heal-jobs",
+        action="store_true",
+        help="Also strip missing paths from job submit.outputs / deposit.videos",
+    )
+    pool_prune.add_argument("--job-dir", default=str(DEFAULT_JOB_DIR), help="Job tree for --heal-jobs")
+    pool_prune.set_defaults(func=cmd_pool_prune_missing)
 
     st = sub.add_parser("status", help="Poll Comfy queue/history for submitted shape jobs")
     st.add_argument("--job", help="Single .job.json path")
