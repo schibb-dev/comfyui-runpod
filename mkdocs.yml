@@ -36,31 +36,31 @@ extra_css:
   - stylesheets/print.css
 
 nav:
-  - Planning hub: PLANNING_OVERVIEW.md
+  - Planning hub: plans/README.md
   - Programs:
-    - Discovery & similarity: DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md
-    - Lineage: LINEAGE_INDEX_SKETCH.md
+    - A1 Discovery: plans/a1-discovery.md
+    - A2 Experimentation: plans/a2-experimentation.md
+    - A3 Refinement: plans/a3-refinement.md
+    - Hourly drain policy: plans/a3-hourly-drain-policy.md
+    - A4 Production: plans/a4-production.md
+    - S1 Custody: plans/s1-custody.md
+    - S2 Platform: plans/s2-platform.md
+    - Asset galleries: plans/asset-gallery.md
+    - Judgment: plans/judgment.md
+  - Archive:
+    - Archive README: plans/archive/README.md
+    - Current ↔ archive MAP: plans/archive/MAP.md
+  - Reference:
+    - All docs index: INDEX.md
+    - Bucket model: DISPOSITION_BUCKET_MODEL.md
+    - Clips model: CLIP_SELECTION_MODEL.md
+    - Corpus lifecycle: CORPUS_LIFECYCLE.md
+    - Workflow intent: WORKFLOW_INTENT.md
+    - Factory MCP: FACTORY_MCP.md
     - Queue & jobs: SCHEDULED_AND_CONTAINER_JOBS_RUNDOWN.md
     - Workspace & resubmit: WORKSPACE_PROJECTS_RUNDOWN.md
     - Workflow compatibility: WORKFLOW_COMPATIBILITY.md
-    - Project organization: PROJECT_ORGANIZATION_PROPOSAL.md
-  - Active plans:
-    - Discovery FS watcher: DISCOVERY_INDEX_WATCHER_PLAN.md
-    - Ratings v1: RATINGS_V1_PLAN.md
-    - Bucket model: DISPOSITION_BUCKET_MODEL.md
-    - Bucket model Phase 2: BUCKET_MODEL_PHASE2_PLAN.md
-    - Corpus lifecycle: CORPUS_LIFECYCLE.md
-    - Asset lifecycle: ASSET_LIFECYCLE_PLAN.md
-    - Lineage remediation: LINEAGE_REMEDIATION_PLAN.md
-    - Chain steer & appetite control: CHAIN_STEER_AND_APPETITE_CONTROL_PLAN.md
-    - Hourly guide pipeline: HOURLY_GUIDE_PIPELINE_PLAN.md
-    - Workflow repair: WORKFLOW_REPAIR_PLAN.md
-    - Run spec display: RUN_SPEC_DISPLAY_PLAN.md
-    - Factory MCP: FACTORY_MCP.md
-  - Reference:
-    - All docs index: INDEX.md
     - Output path mitigation: OUTPUT_PATH_MITIGATION.md
-    - Current goal: CURRENT_GOAL.md
     - Check-in strategy: CHECKIN_STRATEGY.md
     - Experiments UI API concurrency: EXPERIMENTS_UI_API_CONCURRENCY.md
     - Krita AI setup: KRITA_AI_SETUP.md

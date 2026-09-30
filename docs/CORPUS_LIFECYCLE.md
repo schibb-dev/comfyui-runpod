@@ -2,7 +2,7 @@
 
 **Status:** Model v0 (terminology + canonical picture + catalog/gaps). Not a UI build yet.
 
-**Related:** [`ASSET_LIFECYCLE_PLAN.md`](./ASSET_LIFECYCLE_PLAN.md) (file custody), [`LINEAGE_REMEDIATION_PLAN.md`](./LINEAGE_REMEDIATION_PLAN.md) (broken refs / relocate / rot), [`DISPOSITION_BUCKET_MODEL.md`](./DISPOSITION_BUCKET_MODEL.md) (day-to-day review/disposition), [`RATINGS_V1_PLAN.md`](./RATINGS_V1_PLAN.md) (quality vs appetite), [`HEURISTIC_ENGINE_NORTH_STAR.md`](./HEURISTIC_ENGINE_NORTH_STAR.md) (desire→technique / find+generate), [`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md).
+**Related:** [`plans/s1-custody.md`](plans/s1-custody.md) (file custody), [`DISPOSITION_BUCKET_MODEL.md`](./DISPOSITION_BUCKET_MODEL.md) (day-to-day review/disposition), [`plans/judgment.md`](plans/judgment.md) (quality vs appetite), [`plans/a1-discovery.md`](plans/a1-discovery.md), [`plans/README.md`](plans/README.md). Archive bodies: [`plans/archive/MAP.md`](plans/archive/MAP.md).
 
 ---
 
@@ -152,7 +152,7 @@ Non-goals for that view: asset relocate UI, Comfy graph editing, full factory-ma
 ## 8. Non-goals (this model)
 
 - Implementing the unified UI in this doc pass.
-- Asset locate / relocate / input reorg ([`ASSET_LIFECYCLE_PLAN.md`](./ASSET_LIFECYCLE_PLAN.md)).
+- Asset locate / relocate / input reorg ([`plans/s1-custody.md`](plans/s1-custody.md)).
 - Renaming APIs (`disposition`, work items, etc. stay; **corpus lifecycle** is the umbrella name).
 - Replacing [`DISPOSITION_BUCKET_MODEL.md`](./DISPOSITION_BUCKET_MODEL.md) — that remains the review-session detail map.
 

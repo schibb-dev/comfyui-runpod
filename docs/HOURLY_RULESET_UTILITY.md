@@ -1,5 +1,7 @@
-# Hourly as a ruleset utility — moved
+# HOURLY RULESET UTILITY — moved
 
-**Merged** into [`HOURLY_UTILITY_PLAN.md`](./HOURLY_UTILITY_PLAN.md)
-(2026-08-27). Policy file, decision ledger, and operator UI are **U1 / U3 / U4**
-of that single plan; do not maintain a parallel north-star here.
+**Live:** [A3 Refinement](plans/a3-refinement.md)  
+**Archived draft:** [`plans/archive/HOURLY_RULESET_UTILITY.md`](plans/archive/HOURLY_RULESET_UTILITY.md)  
+**Map / conflicts:** [`plans/archive/MAP.md`](plans/archive/MAP.md)
+
+This path is a stub so old links keep working. Do not edit the archive as current authority.

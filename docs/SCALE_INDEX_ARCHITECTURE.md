@@ -2,7 +2,7 @@
 
 **Status:** Active — Phase A documented; Phases B–C shipping in code.
 
-**Related:** [`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md), [`DISCOVERY_INDEX_WATCHER_PLAN.md`](./DISCOVERY_INDEX_WATCHER_PLAN.md), [`ASSET_LIFECYCLE_PLAN.md`](./ASSET_LIFECYCLE_PLAN.md), [`DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md`](./DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md), [`LINEAGE_INDEX_SKETCH.md`](./LINEAGE_INDEX_SKETCH.md), [`EXPERIMENTS_UI_API_CONCURRENCY.md`](./EXPERIMENTS_UI_API_CONCURRENCY.md) (Workbench should list from the index, not walk `.job.json`).
+**Related:** [`plans/README.md`](plans/README.md), [`plans/a1-discovery.md`](plans/a1-discovery.md), [`plans/s1-custody.md`](plans/s1-custody.md), [`EXPERIMENTS_UI_API_CONCURRENCY.md`](./EXPERIMENTS_UI_API_CONCURRENCY.md) (Workbench should list from the index, not walk `.job.json`). Archived watcher/vision/lineage sketches: [`plans/archive/MAP.md`](plans/archive/MAP.md).
 
 ---
 

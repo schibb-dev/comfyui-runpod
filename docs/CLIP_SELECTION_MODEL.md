@@ -1,8 +1,8 @@
 # Clips, usable trim, and selection
 
 **Program:** A1 Discovery — asset-gallery specialization (clips). Parent class:
-[`ASSET_GALLERY_MODEL.md`](./ASSET_GALLERY_MODEL.md). Hub:
-[`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md).
+[`plans/asset-gallery.md`](plans/asset-gallery.md). Hub:
+[`plans/README.md`](plans/README.md).
 
 Locked product model for Asset / Clip / Use, starring, usable trim (hygiene),
 automation selection, ratings, used/unused cleanup, and soft-delete. Complements
@@ -53,7 +53,7 @@ Do **not** use ★ to mean “skip the glitch.” Do **not** use usable trim to 
 
 Unstarred clips stay available for manual Queue-from-clip / edit; they do **not** enter the hourly lottery.
 
-**Implementation sequence** (★ schema → picker → hourly bind → pool-level newer bias): [HOURLY_UTILITY_PLAN.md](./HOURLY_UTILITY_PLAN.md) (U0 / U2).
+**Implementation sequence** (★ schema → picker → hourly bind → pool-level newer bias): [plans/a3-refinement.md](plans/a3-refinement.md) (U0 / U2 in archive).
 
 Optional later: asset flag **clip-required** → no full-file fallback until something is starred.
 
@@ -97,7 +97,7 @@ Cleanup UIs can filter **unused** (+ unstarred / retired) without guessing which
 
 **Shipped (reuse stats):** `shape_factory.py reuse-stats` scans `*.job.json` and records seed/recipe rankings, split **hourly vs operator**. Hourly seed-family suggestions are **appetite-weighted**: operator `more`/`fast_track` is the strong prior, hourly appetite is a second vote, and unrated adhoc/hourly experiments keep a low floor so outliers stay possible without steering. Still `content_id` looking “invariant” is mostly a Stills→I2V affordance artifact. **Seed:** still `content_id`, `clip_id`, parent video, adhoc Use. **Recipe:** family, prompt variant, prompt text hash, family+prompt, frames/steps/overlap overrides, stack, family+prompt+stack. Snapshot: `.data/shape_factory/reuse_stats.json` (`--apply`). Each ranking uses `reuse_rate * log1p(unique)`; recipe ranking also requires the layer to cover ≥10% of that cohort.
 
-**Shipped (prefs):** `asset_clip_stars` multi-★ set (schema v5); legacy `default_clip_id` migrates into ★ and remains an alias. Automation uses `pick_seed_clip` (★ recency-weighted → usable-trim sidecar → full). See [HOURLY_UTILITY_PLAN.md](./HOURLY_UTILITY_PLAN.md) (U0).
+**Shipped (prefs):** `asset_clip_stars` multi-★ set (schema v5); legacy `default_clip_id` migrates into ★ and remains an alias. Automation uses `pick_seed_clip` (★ recency-weighted → usable-trim sidecar → full). See [plans/a3-refinement.md](plans/a3-refinement.md) (U0).
 
 **Utility (not online path):** `shape_factory.py mine-clips-from-jobs` recovers bookmarks from historical job `vhs_window` Use marks — skips whole-file windows and near-dups; dry-run unless `--apply`; does not auto-★.
 
@@ -136,4 +136,4 @@ Hard delete is for **unused** junk only (near-dup mistakes, never queued).
 3. Else usable trim  
 4. Else full asset  
 
-(Implementation today: use → source_clip → default_clip → sibling → sidecar → full; hourly ★ + newer wiring: [HOURLY_UTILITY_PLAN.md](./HOURLY_UTILITY_PLAN.md).)
+(Implementation today: use → source_clip → default_clip → sibling → sidecar → full; hourly ★ + newer wiring: [plans/a3-refinement.md](plans/a3-refinement.md).)

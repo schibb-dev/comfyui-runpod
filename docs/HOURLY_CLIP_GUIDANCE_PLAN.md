@@ -1,5 +1,7 @@
-# Hourly clip guidance — moved
+# HOURLY CLIP GUIDANCE PLAN — moved
 
-**Merged** into [`HOURLY_UTILITY_PLAN.md`](./HOURLY_UTILITY_PLAN.md)
-(2026-08-27). Clip ★ + newer bind is **U0 / U2** of that single hourly
-ruleset plan; do not maintain a parallel sequence here.
+**Live:** [A3 Refinement](plans/a3-refinement.md)  
+**Archived draft:** [`plans/archive/HOURLY_CLIP_GUIDANCE_PLAN.md`](plans/archive/HOURLY_CLIP_GUIDANCE_PLAN.md)  
+**Map / conflicts:** [`plans/archive/MAP.md`](plans/archive/MAP.md)
+
+This path is a stub so old links keep working. Do not edit the archive as current authority.

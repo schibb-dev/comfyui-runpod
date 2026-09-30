@@ -71,7 +71,7 @@ for msg in msgs:
 raise SystemExit(1 if any(m.startswith("ERROR:") for m in msgs) else 0)
 PY
   then
-    echo "ERROR: fix COMFYUI_BIND_OUTPUT_DIR in .env before running Comfy (see docs/CURRENT_GOAL.md)"
+    echo "ERROR: fix COMFYUI_BIND_OUTPUT_DIR in .env before running Comfy (see docs/plans/s2-platform.md)"
     exit 1
   fi
 fi

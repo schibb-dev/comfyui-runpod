@@ -1,9 +1,10 @@
 # Workflow factory — scheduled next steps
 
 **Role:** Ops checklist / session crumbs only. Architecture and program authority
-live in [`docs/PLANNING_OVERVIEW.md`](../docs/PLANNING_OVERVIEW.md) (A1–A4 / S1–S2).
-Hourly parent: [`docs/HOURLY_UTILITY_PLAN.md`](../docs/HOURLY_UTILITY_PLAN.md);
-**primary next hourly slice:** [`docs/HOURLY_DRAIN_POLICY_PLAN.md`](../docs/HOURLY_DRAIN_POLICY_PLAN.md).
+live in [`docs/plans/README.md`](../docs/plans/README.md) (A1–A4 / S1–S2).
+Hourly parent: [`docs/plans/a3-refinement.md`](../docs/plans/a3-refinement.md);
+**primary next hourly slice:** [`docs/plans/a3-hourly-drain-policy.md`](../docs/plans/a3-hourly-drain-policy.md).
+Archive map: [`docs/plans/archive/MAP.md`](../docs/plans/archive/MAP.md).
 
 Locked decisions (2026-07-03): install `/workflow/convert`, JSON pool index, pipeline FB9_GEX2→FACIAL, layered queue, shape_id + family_slug.
 
@@ -12,11 +13,12 @@ Locked decisions (2026-07-03): install `/workflow/convert`, JSON pool index, pip
 **Adopt from embed — easy case (2026-08-31):** If a Library video’s companion PNG UI workflow matches **exactly one** enrolled shape (mode-insensitive lite fingerprint), mint a Workbench job from reconstructed bindings/prompt (`origin: adopt_embed`) and deep-link `/workbench?job=…`. Library button **Adopt to Workbench**; CLI `shape_factory.py adopt-from-output --relpath …`. Ambiguous / no-match refused (no silent family pick). Already-indexed outputs just open the existing job.
 
 **Next session focus:** **Hourly drain policy as data (U1/M1)** —
-[`docs/HOURLY_DRAIN_POLICY_PLAN.md`](../docs/HOURLY_DRAIN_POLICY_PLAN.md) under
-[`docs/HOURLY_UTILITY_PLAN.md`](../docs/HOURLY_UTILITY_PLAN.md). Program map:
-[`docs/PLANNING_OVERVIEW.md`](../docs/PLANNING_OVERVIEW.md). Optional: hourly pick
-by `rating_effective` (after G); Discovery index watcher — see
-[`docs/RATINGS_V1_PLAN.md`](../docs/RATINGS_V1_PLAN.md).
+[`docs/plans/a3-hourly-drain-policy.md`](../docs/plans/a3-hourly-drain-policy.md) under
+[`docs/plans/a3-refinement.md`](../docs/plans/a3-refinement.md). Program map:
+[`docs/plans/README.md`](../docs/plans/README.md). Optional: hourly pick
+by `rating_effective` (after G); Discovery — see
+[`docs/plans/a1-discovery.md`](../docs/plans/a1-discovery.md) /
+[`docs/plans/judgment.md`](../docs/plans/judgment.md).
 
 **Job statuses:** [`docs/JOB_STATUS_LIFECYCLE.md`](../docs/JOB_STATUS_LIFECYCLE.md) — `interrupted` means lost from Comfy with **no** output; finished files heal to `complete`.
 
@@ -26,17 +28,17 @@ by `rating_effective` (after G); Discovery index watcher — see
 
 **Plan (2026-08-20 / widened 2026-08-27):** **Still image gallery** — first
 **asset-gallery** specialization (G0/G1 done; **G2 launch pad** landing
-2026-08-29). Next: **G3** collections→pools. Model:
-[`docs/ASSET_GALLERY_MODEL.md`](../docs/ASSET_GALLERY_MODEL.md); delivery:
-[`docs/STILL_GALLERY_HUB_PLAN.md`](../docs/STILL_GALLERY_HUB_PLAN.md).
+2026-08-29). Next: **G3** collections→pools. Live:
+[`docs/plans/asset-gallery.md`](../docs/plans/asset-gallery.md); archived bodies via
+[`docs/plans/archive/MAP.md`](../docs/plans/archive/MAP.md).
 **Backlog (2026-08-28):** UI navigation — (1) recent submits + (2) Queue/Workbench/Library/Clips/Stills deeplinks **shipped**; still open: Rating/Factory Map targeting, FS-style video browse, input/ tree browse (design). See [`docs/UI_NAVIGATION_BACKLOG.md`](../docs/UI_NAVIGATION_BACKLOG.md).
 
 **Plan (2026-08-20):** **Input still browser + collections-as-pools** — *(see Still gallery hub above; collections remain G3 of that plan.)*
 
 **Plan (2026-08-20 / merged 2026-08-27):** **Hourly as ruleset utility** — policy
-file, clip ★+newer bind, decision ledger, Home UI. Parent:
-[`docs/HOURLY_UTILITY_PLAN.md`](../docs/HOURLY_UTILITY_PLAN.md). **U1/M1 vehicle:**
-[`docs/HOURLY_DRAIN_POLICY_PLAN.md`](../docs/HOURLY_DRAIN_POLICY_PLAN.md).
+file, clip ★+newer bind, decision ledger, Home UI. Live parent:
+[`docs/plans/a3-refinement.md`](../docs/plans/a3-refinement.md). **U1/M1 vehicle:**
+[`docs/plans/a3-hourly-drain-policy.md`](../docs/plans/a3-hourly-drain-policy.md).
 Candidates to lift first into durable config: `facial_drain_every`,
 `i2v_gex_drain_every`, `seed_over_chain_share`, `facial_lookback_days`, seed
 family weights / `IMAGE_TO_GEX` families, fresh-still / kneel / 2025 boosts,

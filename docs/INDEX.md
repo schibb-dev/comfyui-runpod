@@ -12,55 +12,48 @@ This page mirrors the planning-relevant sections of the repo-root [DOCUMENTATION
 
 | Document | What it is |
 |----------|------------|
-| [CURRENT_GOAL.md](CURRENT_GOAL.md) | **Active handoff** — current goal (ComfyUI + GPU + mounts + Docker Desktop). |
-| [PLANNING_OVERVIEW.md](PLANNING_OVERVIEW.md) | **Planning hub** — programs P1–P9, focus, doc index. |
-| [WORKFLOW_INTENT.md](WORKFLOW_INTENT.md) | Factory + pipeline metaphor; station vocab; pipeline catalog pointer. |
+| [plans/README.md](plans/README.md) | **Planning hub** — A1–A4 / S1–S2, focus, doc index. |
+| [plans/archive/MAP.md](plans/archive/MAP.md) | Current ↔ archive map; defunct / conflict notes. |
+| [WORKFLOW_INTENT.md](WORKFLOW_INTENT.md) | Factory + pipeline metaphor; station vocab. |
 | [family_discovery/REVIEW.md](family_discovery/REVIEW.md) | Phase 2 provisional family proposals (operator naming gate). |
 | [../README.md](../README.md) | Main project guide (repo root). |
 | [../TROUBLESHOOTING.md](../TROUBLESHOOTING.md) | Common failures. |
 
----
-
-## Programs & vision
-
-| Document | What it is |
-|----------|------------|
-| [DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md](DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md) | Discovery / similarity / HITL vision (V1–V5 sequence). |
-| [VISION_V1_TIME_SLICE_CAPTION_SPIKE.md](VISION_V1_TIME_SLICE_CAPTION_SPIKE.md) | P1 V1 time-slice caption spike (impl). |
-| [SOURCE_FACET_SIMILARITY_PLAN.md](SOURCE_FACET_SIMILARITY_PLAN.md) | Source facet hold axes for hourly derive. |
-| [LINEAGE_INDEX_SKETCH.md](LINEAGE_INDEX_SKETCH.md) | Lineage index sketch. |
-| [SCHEDULED_AND_CONTAINER_JOBS_RUNDOWN.md](SCHEDULED_AND_CONTAINER_JOBS_RUNDOWN.md) | Queue & container jobs. |
-| [WORKSPACE_PROJECTS_RUNDOWN.md](WORKSPACE_PROJECTS_RUNDOWN.md) | Workspace projects & resubmit MVP. |
-| [PROJECT_ORGANIZATION_PROPOSAL.md](PROJECT_ORGANIZATION_PROPOSAL.md) | Repo split proposal. |
-| [WORKFLOW_COMPATIBILITY.md](WORKFLOW_COMPATIBILITY.md) | Workflow node upgrades. |
+Old paths such as `PLANNING_OVERVIEW.md` / `CURRENT_GOAL.md` are **stubs** → live plans + archive.
 
 ---
 
-## Active implementation plans
+## Live plans (`plans/`)
 
 | Document | What it is |
 |----------|------------|
-| [VISION_V1_TIME_SLICE_CAPTION_SPIKE.md](VISION_V1_TIME_SLICE_CAPTION_SPIKE.md) | **Primary** — time-slice captions (~12 videos, run-anywhere). |
-| [DISCOVERY_INDEX_WATCHER_PLAN.md](DISCOVERY_INDEX_WATCHER_PLAN.md) | Discovery FS watcher + enrichment jobs (V2). |
-| [RATINGS_V1_PLAN.md](RATINGS_V1_PLAN.md) | Ratings, disposition, triage. |
-| [DISPOSITION_BUCKET_MODEL.md](DISPOSITION_BUCKET_MODEL.md) | Bucket model reference (diagram-first). |
-| [CLIP_SELECTION_MODEL.md](CLIP_SELECTION_MODEL.md) | Asset / Clip / Use, starring, soft-delete. |
-| [CATALOG_IDENTITY.md](CATALOG_IDENTITY.md) | App-wide: opaque id, mutable name, available, default designation. |
-| [VARIANT_MANAGEMENT.md](VARIANT_MANAGEMENT.md) | Prompt variants: seed → owned → promote; catalog schema. |
-| [HOURLY_UTILITY_PLAN.md](HOURLY_UTILITY_PLAN.md) | Hourlies as ruleset utility: policy file, clip ★+newer bind, decision ledger, Home UI. |
-| [FACTORY_MCP.md](FACTORY_MCP.md) | Factory MCP: hourly explore / status / simulate; same record as Home. |
-| [STILL_GALLERY_HUB_PLAN.md](STILL_GALLERY_HUB_PLAN.md) | Still gallery as launch hub: Submit / collections / map / ratings from one image. |
-| [STILL_AUTO_TAGGER_PLAN.md](STILL_AUTO_TAGGER_PLAN.md) | Still auto-tagger (PromptGen-large pin → provisional gallery tags). |
-| [STILL_TAG_INDEX_HOUR_PLAN.md](STILL_TAG_INDEX_HOUR_PLAN.md) | Still-tag drain: adjustable scan/eval, 1h/3h SLA, 15m session, 60m hard kill. |
-| [HOURLY_CLIP_GUIDANCE_PLAN.md](HOURLY_CLIP_GUIDANCE_PLAN.md) | Stub → `HOURLY_UTILITY_PLAN.md` (clip bind = U0/U2). |
-| [HOURLY_RULESET_UTILITY.md](HOURLY_RULESET_UTILITY.md) | Stub → `HOURLY_UTILITY_PLAN.md` (policy/ledger/UI = U1/U3/U4). |
-| [BUCKET_MODEL_PHASE2_PLAN.md](BUCKET_MODEL_PHASE2_PLAN.md) | Work items, pool pages, multi-route Advance. |
-| [ASSET_LIFECYCLE_PLAN.md](ASSET_LIFECYCLE_PLAN.md) | Asset lifecycle phase 2. |
-| [LINEAGE_REMEDIATION_PLAN.md](LINEAGE_REMEDIATION_PLAN.md) | Broken lineage / relocate / rot remediation menu + slices. |
-| [CHAIN_STEER_AND_APPETITE_CONTROL_PLAN.md](CHAIN_STEER_AND_APPETITE_CONTROL_PLAN.md) | Chain steer: Less/habit/age×appetite/Out→trash/similarity. |
-| [HOURLY_GUIDE_PIPELINE_PLAN.md](HOURLY_GUIDE_PIPELINE_PLAN.md) | Hourly steer bins + Phase 3 chain hard-drop. |
-| [WORKFLOW_REPAIR_PLAN.md](WORKFLOW_REPAIR_PLAN.md) | Workflow repair tiers. |
-| [RUN_SPEC_DISPLAY_PLAN.md](RUN_SPEC_DISPLAY_PLAN.md) | Queue / Workbench / picker spec line; `__rs-` output suffix. |
+| [plans/a1-discovery.md](plans/a1-discovery.md) | A1 Discovery |
+| [plans/a2-experimentation.md](plans/a2-experimentation.md) | A2 Experimentation |
+| [plans/a3-refinement.md](plans/a3-refinement.md) | A3 Refinement (hourlies as manifestation) |
+| [plans/a3-hourly-drain-policy.md](plans/a3-hourly-drain-policy.md) | **Primary Next** — drain policy as data (U1/M1) |
+| [plans/a4-production.md](plans/a4-production.md) | A4 Production (stub) |
+| [plans/s1-custody.md](plans/s1-custody.md) | S1 Custody |
+| [plans/s2-platform.md](plans/s2-platform.md) | S2 Platform |
+| [plans/asset-gallery.md](plans/asset-gallery.md) | Asset galleries / starter roles |
+| [plans/judgment.md](plans/judgment.md) | Judgment (ratings + disposition) |
+| [plans/archive/README.md](plans/archive/README.md) | Archived drafts index → MAP |
+
+---
+
+## Product models & runbooks (docs root)
+
+| Document | What it is |
+|----------|------------|
+| [DISPOSITION_BUCKET_MODEL.md](DISPOSITION_BUCKET_MODEL.md) | Bucket model reference |
+| [CLIP_SELECTION_MODEL.md](CLIP_SELECTION_MODEL.md) | Asset / Clip / Use, starring, soft-delete |
+| [CORPUS_LIFECYCLE.md](CORPUS_LIFECYCLE.md) | Corpus lifecycle |
+| [CATALOG_IDENTITY.md](CATALOG_IDENTITY.md) | Opaque id, mutable name, default designation |
+| [VARIANT_MANAGEMENT.md](VARIANT_MANAGEMENT.md) | Prompt variants |
+| [FACTORY_MCP.md](FACTORY_MCP.md) | Factory MCP verbs |
+| [SCHEDULED_AND_CONTAINER_JOBS_RUNDOWN.md](SCHEDULED_AND_CONTAINER_JOBS_RUNDOWN.md) | Queue & container jobs |
+| [WORKSPACE_PROJECTS_RUNDOWN.md](WORKSPACE_PROJECTS_RUNDOWN.md) | Workspace projects & resubmit |
+| [WORKFLOW_COMPATIBILITY.md](WORKFLOW_COMPATIBILITY.md) | Workflow node upgrades |
+| [PROJECT_ORGANIZATION_PROPOSAL.md](PROJECT_ORGANIZATION_PROPOSAL.md) | Repo split proposal |
 
 ---
 
@@ -68,25 +61,23 @@ This page mirrors the planning-relevant sections of the repo-root [DOCUMENTATION
 
 | Document | What it is |
 |----------|------------|
-| [CHECKIN_STRATEGY.md](CHECKIN_STRATEGY.md) | Check-in / layering strategy. |
-| [EXPERIMENTS_UI_API_CONCURRENCY.md](EXPERIMENTS_UI_API_CONCURRENCY.md) | Parked: Experiments UI is already threaded; GIL + bind-mount job scans starve `/api`. |
-| [KRITA_AI_SETUP.md](KRITA_AI_SETUP.md) | Krita AI setup. |
-| [WSL_MOVE_TO_E_FOLLOWUP.md](WSL_MOVE_TO_E_FOLLOWUP.md) | WSL vhdx move follow-up. |
-| [CURSOR_AGENT_SUDO_ASKPASS.md](CURSOR_AGENT_SUDO_ASKPASS.md) | Cursor agent sudo/askpass. |
-| [RDP_UBUNTU_SETUP.md](RDP_UBUNTU_SETUP.md) | RDP / Ubuntu setup. |
+| [CHECKIN_STRATEGY.md](CHECKIN_STRATEGY.md) | Check-in / layering strategy |
+| [EXPERIMENTS_UI_API_CONCURRENCY.md](EXPERIMENTS_UI_API_CONCURRENCY.md) | Parked concurrency note |
+| [KRITA_AI_SETUP.md](KRITA_AI_SETUP.md) | Krita AI setup |
+| [WSL_MOVE_TO_E_FOLLOWUP.md](WSL_MOVE_TO_E_FOLLOWUP.md) | WSL vhdx move follow-up |
+| [CURSOR_AGENT_SUDO_ASKPASS.md](CURSOR_AGENT_SUDO_ASKPASS.md) | Cursor agent sudo/askpass |
+| [RDP_UBUNTU_SETUP.md](RDP_UBUNTU_SETUP.md) | RDP / Ubuntu setup |
 
 ---
 
 ## Repo-root docs (outside this site)
 
-These live at the repository root and are not in the MkDocs `docs/` tree:
-
 | Document | What it is |
 |----------|------------|
-| [../DOCUMENTATION.md](../DOCUMENTATION.md) | Full documentation index (all `*.md` in repo). |
-| [../RUNPOD.md](../RUNPOD.md) | RunPod deployment. |
-| [../GPU_CONFIGURATION_GUIDE.md](../GPU_CONFIGURATION_GUIDE.md) | GPU configuration. |
-| [../workspace/README.md](../workspace/README.md) | Workspace layout and tooling. |
+| [../DOCUMENTATION.md](../DOCUMENTATION.md) | Full documentation index |
+| [../RUNPOD.md](../RUNPOD.md) | RunPod deployment |
+| [../GPU_CONFIGURATION_GUIDE.md](../GPU_CONFIGURATION_GUIDE.md) | GPU configuration |
+| [../workspace/README.md](../workspace/README.md) | Workspace layout and tooling |
 
 ---
 

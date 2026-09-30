@@ -20,7 +20,8 @@ Use **`npm run up:minimal`** or **`make up-minimal`** only if you intentionally 
 
 | Document | What it is |
 |----------|------------|
-| [docs/CURRENT_GOAL.md](docs/CURRENT_GOAL.md) | **Active handoff** — current goal (ComfyUI + GPU + mounts + Docker Desktop). Read first when resuming infra work. |
+| [docs/plans/README.md](docs/plans/README.md) | **Planning hub** — programs A1–A4 / S1–S2, focus, doc index. |
+| [docs/plans/archive/MAP.md](docs/plans/archive/MAP.md) | Current ↔ archive map; defunct / conflict notes. |
 | **Planning docs site** | **Browse / search / print** — `./scripts/serve_planning_docs.sh` → http://127.0.0.1:8000 (MkDocs Material over `docs/`). Build static HTML: `./scripts/build_planning_docs.sh` → `site/`. |
 | [README.md](README.md) | Main project guide: Quick Start, Docker, Experiments UI, WSL cutover, ops runbook, tests. |
 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | Common failures (nodes, Docker, Experiments UI ports, etc.). |
@@ -90,19 +91,20 @@ Use **`npm run up:minimal`** or **`make up-minimal`** only if you intentionally 
 
 | Document | What it is |
 |----------|------------|
+| [docs/plans/README.md](docs/plans/README.md) | **Planning hub** — A1–A4 / S1–S2, focus, live plans. |
+| [docs/plans/a3-hourly-drain-policy.md](docs/plans/a3-hourly-drain-policy.md) | **Primary Next** — hourly drain policy as data (U1/M1). |
+| [docs/plans/archive/MAP.md](docs/plans/archive/MAP.md) | Archive map + defunct/conflict annotations. |
+| [docs/PLANNING_OVERVIEW.md](docs/PLANNING_OVERVIEW.md) | Stub → `docs/plans/README.md`. |
+| [docs/CURRENT_GOAL.md](docs/CURRENT_GOAL.md) | Stub → S2 / archived infra handoff. |
 | [docs/CHECKIN_STRATEGY.md](docs/CHECKIN_STRATEGY.md) | Check-in / layering strategy for repo changes. |
 | [docs/EXPERIMENTS_UI_API_CONCURRENCY.md](docs/EXPERIMENTS_UI_API_CONCURRENCY.md) | Parked: Experiments UI is already `ThreadingHTTPServer`; more threads will not speed fat work-products scans. |
 | [docs/FACTORY_MCP.md](docs/FACTORY_MCP.md) | Factory MCP verbs (hourly explore / status / simulate). |
 | [docs/KRITA_AI_SETUP.md](docs/KRITA_AI_SETUP.md) | Krita AI setup notes. |
-| [docs/LINEAGE_INDEX_SKETCH.md](docs/LINEAGE_INDEX_SKETCH.md) | Lineage index sketch / planning. |
 | [docs/PROJECT_ORGANIZATION_PROPOSAL.md](docs/PROJECT_ORGANIZATION_PROPOSAL.md) | Project organization proposal. |
 | [docs/RDP_UBUNTU_SETUP.md](docs/RDP_UBUNTU_SETUP.md) | RDP / Ubuntu setup notes. |
 | [docs/SCHEDULED_AND_CONTAINER_JOBS_RUNDOWN.md](docs/SCHEDULED_AND_CONTAINER_JOBS_RUNDOWN.md) | Scheduled and container job rundown. |
 | [docs/WORKFLOW_COMPATIBILITY.md](docs/WORKFLOW_COMPATIBILITY.md) | Workflow compatibility notes. |
 | [docs/WORKSPACE_PROJECTS_RUNDOWN.md](docs/WORKSPACE_PROJECTS_RUNDOWN.md) | Workspace projects rundown. |
-| [docs/PLANNING_OVERVIEW.md](docs/PLANNING_OVERVIEW.md) | **Planning hub** — programs (Discovery, lineage, queue, orchestration, …), focus, doc index. |
-| [docs/DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md](docs/DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md) | Discovery / similarity / HITL / V1–V5 sequence. |
-| [docs/VISION_V1_TIME_SLICE_CAPTION_SPIKE.md](docs/VISION_V1_TIME_SLICE_CAPTION_SPIKE.md) | P1 V1 time-slice caption spike (run-anywhere jobs, NDJSON, learn gate). |
 | [docs/WSL_MOVE_TO_E_FOLLOWUP.md](docs/WSL_MOVE_TO_E_FOLLOWUP.md) | WSL vhdx move to E: — junction workaround, verify, swap follow-up, **planned export/import to official registration**. |
 | [docs/CURSOR_AGENT_SUDO_ASKPASS.md](docs/CURSOR_AGENT_SUDO_ASKPASS.md) | Cursor agent sudo/askpass fix (cleanup script) and fallbacks if askpass still fails. |
 

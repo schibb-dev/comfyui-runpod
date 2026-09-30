@@ -26,7 +26,7 @@ affinity:  # soft dispatch hints
 | `fb9-april03-replay` | replay / archive | historical replay |
 
 Hourly informal pipelines (not YAML): facial drain, I2V→GEX drain, seed families —
-see `shape_factory_hourly.py` / `docs/HOURLY_UTILITY_PLAN.md`.
+see `shape_factory_hourly.py` / `docs/plans/a3-refinement.md` (drain policy: `docs/plans/a3-hourly-drain-policy.md`).
 
 **Factory Map UI:** open `/factory-map/pipeline/<pipeline_id>` → **Run pipeline** (background when wait is on).
 
