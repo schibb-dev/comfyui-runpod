@@ -1,11 +1,17 @@
 # Hourly drain policy — configuration-first design
 
+**Program:** A3 Refinement — **U1/U5 design vehicle** under
+[`HOURLY_UTILITY_PLAN.md`](./HOURLY_UTILITY_PLAN.md). Hub:
+[`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md).
+
 **Status:** Design (2026-09-29). Supersedes ad-hoc `HOURLY_*` special cases as the
-*model*; migration keeps env as override until readers land.  
+*model*; migration keeps env as override until readers land. **Primary next
+slice** for hourly manifestation (M1).  
 **Parents:** [`HOURLY_UTILITY_PLAN.md`](./HOURLY_UTILITY_PLAN.md) (U1 / U5),
 [`HOURLY_GUIDE_PIPELINE_PLAN.md`](./HOURLY_GUIDE_PIPELINE_PLAN.md),
 [`WORKFLOW_INTENT.md`](./WORKFLOW_INTENT.md),
-[`CHAIN_STEER_AND_APPETITE_CONTROL_PLAN.md`](./CHAIN_STEER_AND_APPETITE_CONTROL_PLAN.md).  
+[`CHAIN_STEER_AND_APPETITE_CONTROL_PLAN.md`](./CHAIN_STEER_AND_APPETITE_CONTROL_PLAN.md)
+(steer *marks*; this plan owns how hourlies *consume* them — no second scheduler).  
 **Custody:** [`LINEAGE_REMEDIATION_PLAN.md`](./LINEAGE_REMEDIATION_PLAN.md).
 
 ---

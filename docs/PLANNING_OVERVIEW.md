@@ -1,255 +1,162 @@
-# Planning overview — corraling related work
+# Planning overview — operator activities
 
-This document **organizes** scattered design notes, running systems, and sketches into **coherent programs**. It does not replace detailed specs; it is the map you return to after exploratory dives.
+This document is the **map** for design notes and delivery plans. Detailed
+specs stay in child docs; this file sets **authority**, **programs**, and
+**what to work on next**.
 
-**Browse (read / search / print):** `./scripts/serve_planning_docs.sh` → [http://127.0.0.1:8000](http://127.0.0.1:8000) — MkDocs Material site over `docs/`. Use browser Print on any page; bucket model PDF: `./scripts/build_bucket_model_pdf.sh`.
-
-**How to use it**
+**Browse:** `./scripts/serve_planning_docs.sh` → [http://127.0.0.1:8000](http://127.0.0.1:8000)
 
 | Mode | What you do |
 |------|-------------|
-| **Explore** | Follow curiosity; add bullets to a program’s *Notes & emergence* or open a new sketch doc. Chaos is allowed. |
-| **Corral** | When something repeats or blocks you, **name it**, assign it to **one program**, set **one next action**. |
-| **Execute** | Pick **at most one primary spike** and **one maintenance lane** per week; everything else stays parked. |
+| **Explore** | Follow curiosity; park notes here or in a child plan. |
+| **Corral** | When something repeats, assign it to **one program** and **one parent doc**. |
+| **Execute** | At most one primary spike + one learning/maintenance lane. |
 
-**Personal north star (design):** learn where models are **transformative** vs **noise**; build a **human-led corpus** with **classical search** for daily discovery and **batch AI** for analysis, tagging, and occasional retrain. See [`DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md`](./DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md). **Desire→technique / find+generate loop:** [`HEURISTIC_ENGINE_NORTH_STAR.md`](./HEURISTIC_ENGINE_NORTH_STAR.md).
+**Personal north star:** human-led corpus; classical search for daily discovery;
+batch AI for analysis/tagging. See [`DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md`](./DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md)
+and [`HEURISTIC_ENGINE_NORTH_STAR.md`](./HEURISTIC_ENGINE_NORTH_STAR.md).
 
 ---
 
-## System map (how pieces touch)
+## Worldview
 
 ```mermaid
-flowchart TB
-  subgraph make ["P3–P5 Make media"]
-    Q[Experiment queue / Comfy]
-    O[Orchestration sketches]
+flowchart LR
+  subgraph learn [Learning loop]
+    Exp[Experimentation]
+    Ref[Refinement]
   end
-  subgraph artifacts ["Artifacts on disk"]
-    OG[og / wip outputs]
-    EXP[experiments/]
-    IN[input/]
+  subgraph make [Scheduled make]
+    Hourly[Hourlies]
   end
-  subgraph understand ["P1–P2 Understand corpus"]
-    D[Discovery + looks-like]
-    L[Lineage / provenance]
+  subgraph see [Corpus visibility]
+    Disc[Discovery]
+    Gal[Asset galleries]
   end
-  subgraph trust ["P6–P7 Trust workflows"]
-    W[Workflow corpus + recipe]
-    QA[Media QA / roundtrip]
+  subgraph orch [Not yet real]
+    Prod[Production patterns]
   end
-  Q --> OG
-  Q --> EXP
-  O -.planned.-> Q
-  OG --> D
-  OG --> L
-  IN --> L
-  W --> Q
-  QA --> OG
+  Exp -->|"adhoc tries + judge"| Ref
+  Ref -->|"promote workflow / params / rules"| Hourly
+  Exp -->|"adhoc outputs"| Disc
+  Hourly -->|"bulk outputs"| Disc
+  Disc --> Gal
+  Gal -->|"starters and role sources"| Exp
+  Gal -->|"starters and role sources"| Hourly
+  Disc -->|"what to try / steer"| Exp
+  Ref -.->|"eventually"| Prod
+  Prod -.->|"pattern drains"| Hourly
+  Gal -.->|"identity / pose / look later"| Prod
 ```
 
-**Shared foundations:** paths under `workspace/output/`, embedded PNG/MP4 metadata, `experiments_ui_server.py`, Docker ops profile, GPU time.
+- **Hourlies** — scheduled **manifestation** of promoted rules, drains, seeds,
+  clip honesty, and steer gates. Not a separate program.
+- **Adhoc** — how you try new things and learn what hourlies need.
+- **Discovery** — make generated work (hourly + adhoc) visible and judgeable,
+  via Library and **asset galleries**.
+- **Experimentation** — create/guide adhoc; steer what hourlies attempt; pick
+  **starters** from galleries.
+- **Refinement** — tune workflows, run params, and hourly policy; promote winners.
+- **Production** — multi-stage workproduct patterns (e.g. Starter → Extend →
+  Climax → Denouement). Intent only; orchestration not implemented.
+
+“Dailies” in conversation = **Hourlies** (scheduled factory fill) unless a
+true daily tier is split later.
+
+### Asset galleries and starter roles
+
+The **stills gallery** was the first concrete **asset gallery**, not a privileged
+asset class. Same class includes clips, starter videos (no still), any
+workproduct treated as a starter, and later specialty sources (identity, pose,
+look for VACE, etc.).
+
+**Starter** is a **role**, not a file type. See [`ASSET_GALLERY_MODEL.md`](./ASSET_GALLERY_MODEL.md).
 
 ---
 
-## Programs (coherent plans)
+## Programs
 
-Each program has: **intent**, **today**, **next** (actionable), **later**, **key docs**, **not now**.
+| ID | Intent | Today (short) |
+|----|--------|---------------|
+| **A1 Discovery** | See / search / lineage / judge; asset galleries as role sources | Library, lineage UI, ratings/disposition, still gallery (first specialization), clips |
+| **A2 Experimentation** | Adhoc create + steer scheduled work; pick starters | Workbench, Submit, chain steer, backlog cards, remove/retire |
+| **A3 Refinement** | Promote technique into hourly + adhoc defaults | Shape factory, repair, run-spec, hourly utility + drain policy |
+| **A4 Production** | Patterned multi-step workproduct movement | Stub only — [`PRODUCTION_PATTERNS_PLAN.md`](./PRODUCTION_PATTERNS_PLAN.md) |
+| **S1 Custody** | Files and refs stay true | Registry Ph0–1; pool prune-missing; locate/remediation designed |
+| **S2 Platform** | Run the machine | Docker / WSL / GPU / check-in |
 
----
+Hourlies = runtime manifestation of **A3** (+ eventual **A4**), fed by **A2**,
+observed in **A1**, seeded from galleries.
 
-### P1 — Discovery & similarity (“looks / reads like”)
+### Old P1–P9 → new IDs
 
-**Intent:** Find and describe work by **perceptual and language** similarity; optional **in-timeline** slices; grow a **tagging corpus** without live LLM for daily browse.
-
-| | |
-|--|--|
-| **Today** | Discovery library (og/wip), path search, lineage UI, workflow facets, trim/health; `asset_tags` bootstrap + editorial `source_facets`; **no** CLIP/Florence index |
-| **Next (spike)** | **V2** — watcher + job-queue stubs that enqueue the same portable slice caption/tag scripts (V1 kept time slices) — [`DISCOVERY_INDEX_WATCHER_PLAN.md`](./DISCOVERY_INDEX_WATCHER_PLAN.md) |
-| **Later (locked sequence)** | **V3a** PromptGen-large tags into `asset_tags`/facets (pin: `_status/vision_v3a_tag_pin.json`; informed base∪large later) → **V4** BM25/sidecar search → **V3b** CLIP/ANN and **V5** HITL as recall demands |
-| **Docs** | [`DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md`](./DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md) (V1–V5 sequence), [`VISION_V1_TIME_SLICE_CAPTION_SPIKE.md`](./VISION_V1_TIME_SLICE_CAPTION_SPIKE.md), [`SOURCE_FACET_SIMILARITY_PLAN.md`](./SOURCE_FACET_SIMILARITY_PLAN.md), [`DISCOVERY_INDEX_WATCHER_PLAN.md`](./DISCOVERY_INDEX_WATCHER_PLAN.md), [`SCALE_INDEX_ARCHITECTURE.md`](./SCALE_INDEX_ARCHITECTURE.md) (job_output + ratings hot path + vector join rules) |
-| **Not now** | Temporal NL (“X then Y”); full LoRA; face-embedding identity provider |
-
-**GPU:** batch worker **off** interactive Comfy.
-
----
-
-### P2 — Lineage & provenance (“where did this come from?”)
-
-**Intent:** Durable **causal graph** (parents, runs, inputs) — orthogonal to similarity; meets Discovery at the **selected asset**.
-
-| | |
-|--|--|
-| **Today** | Prompt-path inference, `discovery_lineage_edges.json`, API + UI, `backfill_discovery_lineage.py`; **`job_output_index.sqlite`** for output→job joins ([`SCALE_INDEX_ARCHITECTURE.md`](./SCALE_INDEX_ARCHITECTURE.md)) |
-| **Next (spike)** | **Inferred ratings v1** — lineage-backed rollup to workflows/sources/recipes; see [`RATINGS_V1_PLAN.md`](./RATINGS_V1_PLAN.md) |
-| **Later** | Phase-1 `asset`/`run` store; **promotion** of referenced externals; T2I/T2V text roots; lineage-aware search; multi-hop inference |
-| **Docs** | [`LINEAGE_INDEX_SKETCH.md`](./LINEAGE_INDEX_SKETCH.md), [`RATINGS_V1_PLAN.md`](./RATINGS_V1_PLAN.md), [`SCALE_INDEX_ARCHITECTURE.md`](./SCALE_INDEX_ARCHITECTURE.md) |
-| **Not now** | Replacing similarity with graph traversal |
+| Old | New |
+|-----|-----|
+| P1 Discovery & similarity | A1 |
+| P2 Lineage & provenance | A1 (+ S1 for broken refs) |
+| P3 Experiment pipeline & queue | Hourly under A3 ops / A2 steer |
+| P4 Generation UX | A2 |
+| P5 Orchestration | A4 |
+| P6 Workflow corpus & recipe | A3 |
+| P7 Media QA | S1 / S2 (on demand) |
+| P8 Image content sorter / stills | A1 gallery specialization + A3 tag drains |
+| P9 Platform | S2 |
 
 ---
 
-### P3 — Experiment pipeline & queue (“keep runs flowing”)
+## Canonical parents (conflict rules)
 
-**Intent:** Reliable **tune experiments** → Comfy submit → status → recovery.
-
-| | |
-|--|--|
-| **Today** | `watch_queue.py`, ops containers, ledger, `status.json`, Experiments UI `/api/queue`; hourly timer + `hourly-schedule.json` (interval / queue caps only); chain cadences & seed weights mostly **code + `HOURLY_*` env** |
-| **Next** | Ops hygiene (disable duplicate Windows tasks if Docker ops on); ledger tuning only if pain |
-| **Next (plan)** | **Hourly policy as managed data** — lift drain cadences / seed families / lookbacks into `.data` config + Home UI (see `.data/WORKFLOW_FACTORY_NEXT.md`) |
-| **Later** | Tighter integration with durable `run` rows (P2) |
-| **Docs** | [`SCHEDULED_AND_CONTAINER_JOBS_RUNDOWN.md`](./SCHEDULED_AND_CONTAINER_JOBS_RUNDOWN.md) |
-| **Not now** | Multi-step orchestration execution |
-
----
-
-### P4 — Generation UX (“act on an artifact from the UI”)
-
-**Intent:** From a visible output, **replay / extend / tune** without fighting the canvas.
-
-| | |
-|--|--|
-| **Today** | Discovery player, Comfy quick edits, embed-api-prompt, queue submit; Workbench **work-product markers** (`decode.vae`, …) — [`WORK_PRODUCT_MARKERS.md`](./WORK_PRODUCT_MARKERS.md) |
-| **Next (MVP)** | **Resubmit / replay / extend** — liberal template pairing, fail-fast, logging (`WORKSPACE_PROJECTS_RUNDOWN` §4.1) |
-| **Next (plan)** | **Run spec display** — compact UNet/quant/size/TeaCache line on Queue, Workbench, family pickers; `__rs-` suffix on new output names — [`RUN_SPEC_DISPLAY_PLAN.md`](./RUN_SPEC_DISPLAY_PLAN.md) |
-| **Later** | WIP tune launcher; **load workflow on Comfy canvas** from Discovery; seed surfing; intermediate editor |
-| **Docs** | [`WORKSPACE_PROJECTS_RUNDOWN.md`](./WORKSPACE_PROJECTS_RUNDOWN.md) §4.1; `workspace/experiments_ui/docs/FEATURE_WIP_TUNE_LAUNCHER.md`; [`PROJECT_ORGANIZATION_PROPOSAL.md`](./PROJECT_ORGANIZATION_PROPOSAL.md) §9–10; [`WORK_PRODUCT_MARKERS.md`](./WORK_PRODUCT_MARKERS.md); [`RUN_SPEC_DISPLAY_PLAN.md`](./RUN_SPEC_DISPLAY_PLAN.md) |
-| **Not now** | Full workflow compatibility matrix |
+1. **One parent per theme.** Children add slices only; parent wins on policy.
+2. **Hourly** — parent [`HOURLY_UTILITY_PLAN.md`](./HOURLY_UTILITY_PLAN.md).
+   Children: [`HOURLY_GUIDE_PIPELINE_PLAN.md`](./HOURLY_GUIDE_PIPELINE_PLAN.md)
+   (pipes/bins), [`HOURLY_DRAIN_POLICY_PLAN.md`](./HOURLY_DRAIN_POLICY_PLAN.md)
+   (**U1/U5 design vehicle** for declarative drains). Steer *marks* live in
+   [`CHAIN_STEER_AND_APPETITE_CONTROL_PLAN.md`](./CHAIN_STEER_AND_APPETITE_CONTROL_PLAN.md);
+   hourly *consumption* of marks is specified under utility/drain — no second scheduler.
+3. **Custody** — parent [`ASSET_LIFECYCLE_PLAN.md`](./ASSET_LIFECYCLE_PLAN.md).
+   Children: lineage remediation, appetite-remove, output-path mitigation.
+4. **Judgment** — [`RATINGS_V1_PLAN.md`](./RATINGS_V1_PLAN.md) +
+   [`DISPOSITION_BUCKET_MODEL.md`](./DISPOSITION_BUCKET_MODEL.md).
+   Appetite-similarity is later A3 refinement, not a parallel rating system.
+5. **Asset galleries** — parent [`ASSET_GALLERY_MODEL.md`](./ASSET_GALLERY_MODEL.md).
+   Children: still gallery hub, clip selection model, future specialty galleries.
+   Auto-tagger / index-hour are tagging drains for a specialization (A3/S2).
+6. **`.data/WORKFLOW_FACTORY_NEXT.md`** — ops checklist / session crumbs only;
+   architecture lives in A3 parents.
 
 ---
 
-### P5 — Orchestration (“planned multi-step work”)
+## Suggested focus (now)
 
-**Intent:** Define **pipelines** across buckets/collections and eventually **execute** them with durable step state.
-
-| | |
-|--|--|
-| **Today** | Orchestrator JSON UI (projects/pipelines/queues — **planning**); Factory SQLite (buckets, run_plans, planned_jobs — **planner**) |
-| **Next** | **Nothing required** unless resubmit MVP proves need for collections; keep capturing plans in Orchestrator/Factory |
-| **Later** | Runner: planned_jobs → Comfy submit; A→B→C; workflow profiles / validation |
-| **Docs** | Vision doc § “Related: job runners…”; [`WORKSPACE_PROJECTS_RUNDOWN.md`](./WORKSPACE_PROJECTS_RUNDOWN.md) §4.1 |
-| **Not now** | Auto-executing `OrchestratorPipeline` steps |
+| Slot | Activity | Action |
+|------|----------|--------|
+| **Primary** | A3 / Hourly manifestation | Drain policy as data + steer consumption |
+| **Learning** | A2 | Adhoc + backlog steer; starters from galleries; feed Refinement |
+| **Visibility** | A1 | Discovery healthy; gallery language general; stills remain the concrete UI |
+| **Parked** | A4 | Capture Production patterns + role slots; no runner until drains are data-driven |
 
 ---
 
-### P6 — Workflow corpus & recipe (“cooked like” + maintenance)
-
-**Intent:** Understand **what workflow shapes exist**, keep them **valid** after upgrades, support **recipe similarity** later.
-
-| | |
-|--|--|
-| **Today** | Fingerprints in discovery index; `snowflake_inventory.py` spike; node rename tooling; shape_factory `graph_hash` on jobs |
-| **Next** | **Ratings v1** aggregates by `graph_hash` + factory recipe — [`RATINGS_V1_PLAN.md`](./RATINGS_V1_PLAN.md) Phase 1 |
-| **Later** | Recipe clusters in search; cached workflow profiles for queue validation; hourly/best pick by `rating_effective` |
-| **Docs** | [`WORKFLOW_COMPATIBILITY.md`](./WORKFLOW_COMPATIBILITY.md); [`RATINGS_V1_PLAN.md`](./RATINGS_V1_PLAN.md); vision doc “cooked like”; `workspace/scripts/snowflake_inventory.py` |
-| **Not now** | Full litegraph similarity product |
-
----
-
-### P7 — Media QA & reproducibility
-
-**Intent:** Trust that **WIP/output** matches workflow intent (roundtrip, agreement checks).
-
-| | |
-|--|--|
-| **Today** | `process_wip_dir`, `check_roundtrip_dir`, integration test + fixtures |
-| **Next** | Only when a specific workflow family regresses |
-| **Later** | CI gate on representative fixtures |
-| **Docs** | `workspace/tests/fixtures/media/README.md`, `workspace/README.md` |
-
----
-
-### P8 — Image content sorter (parallel CLIP path)
-
-**Intent:** **Still-image** libraries sorted/searchable for human curation — separate from **video slices**; feed factory seeds.
-
-| | |
-|--|--|
-| **Today** | `workflows/image_sorting_tools/` developed; Discovery path search + `asset_tags` bootstrap; Factory Map input curation (partial); **G0:** Library still → `/submit` I2V seed |
-| **Next (plan)** | Gallery G1+; **still auto-tagger** + **index-hour drain**. [`STILL_GALLERY_HUB_PLAN.md`](./STILL_GALLERY_HUB_PLAN.md), [`STILL_AUTO_TAGGER_PLAN.md`](./STILL_AUTO_TAGGER_PLAN.md), [`STILL_TAG_INDEX_HOUR_PLAN.md`](./STILL_TAG_INDEX_HOUR_PLAN.md) |
-| **Later** | Optional merge with P1 embeddings; extend collections/tags to Work Products video |
-| **Docs** | `PROJECT_ORGANIZATION_PROPOSAL.md` Project C; `IMAGE_SORTER_GUIDE.md`; P1 tag sequence; still auto-tagger plan |
-
----
-
-### P9 — Platform, infra & integrations
-
-**Intent:** Run Comfy + pipeline **reproducibly**; optional RunPod, GPU layout, Krita bridge, repo boundaries.
-
-| | |
-|--|--|
-| **Today** | Docker compose, RunPod doc, GPU guides, Krita optional env, check-in strategy |
-| **Next** | Batch vision **only via portable V1 runners** (local idle / Docker / optional RunPod); tear down paid pods when done |
-| **Later** | Submodule split per organization proposal |
-| **Docs** | [`DOCUMENTATION.md`](../DOCUMENTATION.md), `RUNPOD.md`, [`CHECKIN_STRATEGY.md`](./CHECKIN_STRATEGY.md), [`PROJECT_ORGANIZATION_PROPOSAL.md`](./PROJECT_ORGANIZATION_PROPOSAL.md), [`KRITA_AI_SETUP.md`](./KRITA_AI_SETUP.md), [`EXPERIMENTS_UI_API_CONCURRENCY.md`](./EXPERIMENTS_UI_API_CONCURRENCY.md) |
-
----
-
-## Cross-cutting rules (decisions that span programs)
-
-1. **One GPU consumer** for heavy forwards unless you explicitly time-share (Comfy vs batch tagging).
-2. **Artifacts are truth** on disk; indexes (Discovery, lineage, slices) are **derived and rebuildable**.
-3. **Three lenses stay separate:** provenance (P2), looks-like (P1), recipe (P6) — UI may join at one asset.
-4. **Labels are versioned judgments** — taxonomy drift is normal (refinement passes, not shame).
-5. **Exploration → corral:** if an idea survives two sessions, it gets a program home and a *next* line here.
-
----
-
-## Suggested focus (right now)
-
-Avoid parallel spikes across programs. Locked sequence for P1 vision:
-
-| Slot | Program | Action |
-|------|---------|--------|
-| **Primary spike** | **P1 / V2** | Watcher + job-queue stubs for portable slice caption/tag jobs — [`DISCOVERY_INDEX_WATCHER_PLAN.md`](./DISCOVERY_INDEX_WATCHER_PLAN.md) |
-| **Background** | **P3** | Keep queue/ledger healthy; no new architecture |
-| **Pinned (P1)** | V3a prep | Day-one tagger = PromptGen-large (`vision_v3a_tag_pin.json`); informed base∪large later |
-| **Parked (P1)** | V3b–V5 | Until V2 stubs + first V3a tag writes exist |
-| **Parked** | P4–P6 | Until slice-aware jobs can feed Discovery |
-| **Note-only** | P2, P5, P7–P9 | Capture pain in *Notes*; no build |
-
----
-
-## Notes & emergence (parking lot)
-
-_Use this section during mental exploration. Promote bullets into a program’s **Next** when they stabilize._
-
-- **Still image gallery as launch hub (2026-08-27):** End-state is a still gallery where one selected image launches into Submit (I2V templates), collections→pools, Factory Map, ratings, identity, recover — doors only, no private compose. Near: Library still → `/submit`. Plan: [`STILL_GALLERY_HUB_PLAN.md`](./STILL_GALLERY_HUB_PLAN.md). Supersedes narrower “input still browser + collections” parking note.
-- **Still auto-tagger (2026-08-27):** Gallery needs tags at scale; reuse V1 runners + PromptGen-large V3a pin. **No monolith JSON** (SQLite + NDJSON audit); **UI enqueues** tagging to a backlog; **index-hour drainer** owns Florence (front + inflight caps) so tagging does not thrash with I2V. Batch size empirical: small default (12) to learn, **large batches** as the ops target once measured. GPU flexible (local Comfy concert or RunPod). Default DB: `shape_factory/still_tags.sqlite`. Plans: [`STILL_AUTO_TAGGER_PLAN.md`](./STILL_AUTO_TAGGER_PLAN.md), [`STILL_TAG_INDEX_HOUR_PLAN.md`](./STILL_TAG_INDEX_HOUR_PLAN.md).
-- **V1 retrospective (2026-07-16): Keep time slices.** Offline 2s windows + whole-video A/B and the Vision slices review UI were enough to keep span-aware captions/tags on the path (index span rows later; V2 should enqueue the same portable scripts). Separately, blind tag judgment (48 samples) pinned **PromptGen-large** as the V3a day-one tagger; **base∪large** (or an informed union: large always, add base-only when ★/prior-good and not FP-blocked) stays deferred. Artifacts: `_status/vision_tag_judgments.ndjson`, `vision_v3a_tag_pin.json`.
-- **Hourly policy → managed config (2026-08-20):** Facial/i2v drain every-N, seed weights, lookbacks, boosts, etc. are first-order operator concerns but live in code/env today. See [`HOURLY_UTILITY_PLAN.md`](./HOURLY_UTILITY_PLAN.md).
-- **Heuristic engine north star (2026-08-29):** Appetite marks + similarity (tags / provenance / later embeds) → desire↔technique map; “more like this” = find **and** generate; exploit vs explore; classical heuristics tuned by models. Orientation doc: [`HEURISTIC_ENGINE_NORTH_STAR.md`](./HEURISTIC_ENGINE_NORTH_STAR.md).
-- **Chain steer + lineage remediation (2026-09-29):** Less transient / workproduct-scoped; Out→`og/_trash/`; age×appetite cull; similarity as later factor; general broken-lineage remediation (relocate map, rot, parent/child queues). Plans: [`CHAIN_STEER_AND_APPETITE_CONTROL_PLAN.md`](./CHAIN_STEER_AND_APPETITE_CONTROL_PLAN.md), [`LINEAGE_REMEDIATION_PLAN.md`](./LINEAGE_REMEDIATION_PLAN.md).
-- **Experiments UI concurrency (2026-09-21):** Server is already `ThreadingHTTPServer`. GIL + bind-mount `.job.json` walks starve `/api/queue` during Workbench loads; more threads will not fix it. Staged lite → enrich → still-tag stubs is the current path. Revisit only via a job index or a scan sidecar: [`EXPERIMENTS_UI_API_CONCURRENCY.md`](./EXPERIMENTS_UI_API_CONCURRENCY.md).
-- **Queue listing missing thumbs (2026-09-21):** Empty “No preview” was often factory jobs citing Comfy scratch `vision_v1/<sha>.jpg` (tagger upload folder) instead of a gallery still. Catalog + LoadImage now skip `vision_v1` / `clipspace` / `_factory` as sources; rewrite to a same-hash gallery file or `_factory/`. Tagging may still upload into `vision_v1/`. See [`ASSET_LIFECYCLE_PLAN.md`](./ASSET_LIFECYCLE_PLAN.md) and TROUBLESHOOTING.
-
----
-## Doc index (quick links)
+## Doc index
 
 | Topic | Document |
 |-------|----------|
-| Planning hub | **this file** |
-| Heuristic engine (desire→technique / find+generate) | [`HEURISTIC_ENGINE_NORTH_STAR.md`](./HEURISTIC_ENGINE_NORTH_STAR.md) |
-| Discovery / similarity / HITL / LLM posture | [`DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md`](./DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md) |
-| P1 V1 time-slice caption spike (impl) | [`VISION_V1_TIME_SLICE_CAPTION_SPIKE.md`](./VISION_V1_TIME_SLICE_CAPTION_SPIKE.md) |
-| Discovery FS watcher + enrichment jobs (planned) | [`DISCOVERY_INDEX_WATCHER_PLAN.md`](./DISCOVERY_INDEX_WATCHER_PLAN.md) |
-| Lineage DB sketch | [`LINEAGE_INDEX_SKETCH.md`](./LINEAGE_INDEX_SKETCH.md) |
-| Bucket model Phase 2 (work items, pools) | [`BUCKET_MODEL_PHASE2_PLAN.md`](./BUCKET_MODEL_PHASE2_PLAN.md) |
-| Clips / usable trim / starring / soft-delete | [`CLIP_SELECTION_MODEL.md`](./CLIP_SELECTION_MODEL.md) |
-| Hourly as ruleset utility (policy + clip bind + observability) | [`HOURLY_UTILITY_PLAN.md`](./HOURLY_UTILITY_PLAN.md) |
-| Factory MCP (hourly explore / status / simulate) | [`FACTORY_MCP.md`](./FACTORY_MCP.md) |
-| Still image gallery as launch hub | [`STILL_GALLERY_HUB_PLAN.md`](./STILL_GALLERY_HUB_PLAN.md) |
-| Corpus lifecycle (judgment + generation loop) | [`CORPUS_LIFECYCLE.md`](./CORPUS_LIFECYCLE.md) |
-| Asset lifecycle (file custody / locate / move) | [`ASSET_LIFECYCLE_PLAN.md`](./ASSET_LIFECYCLE_PLAN.md) |
-| Lineage remediation (broken refs / relocate / rot) | [`LINEAGE_REMEDIATION_PLAN.md`](./LINEAGE_REMEDIATION_PLAN.md) |
-| Chain steer & appetite control | [`CHAIN_STEER_AND_APPETITE_CONTROL_PLAN.md`](./CHAIN_STEER_AND_APPETITE_CONTROL_PLAN.md) |
-| Output path drift (prevent / detect / recover) | [`OUTPUT_PATH_MITIGATION.md`](./OUTPUT_PATH_MITIGATION.md) |
-| Queue & containers | [`SCHEDULED_AND_CONTAINER_JOBS_RUNDOWN.md`](./SCHEDULED_AND_CONTAINER_JOBS_RUNDOWN.md) |
-| Experiments UI API concurrency (parked) | [`EXPERIMENTS_UI_API_CONCURRENCY.md`](./EXPERIMENTS_UI_API_CONCURRENCY.md) |
-| Workspace projects & resubmit MVP | [`WORKSPACE_PROJECTS_RUNDOWN.md`](./WORKSPACE_PROJECTS_RUNDOWN.md) |
-| Repo split proposal | [`PROJECT_ORGANIZATION_PROPOSAL.md`](./PROJECT_ORGANIZATION_PROPOSAL.md) |
-| Workflow node upgrades | [`WORKFLOW_COMPATIBILITY.md`](./WORKFLOW_COMPATIBILITY.md) |
-| All docs entry | [`DOCUMENTATION.md`](../DOCUMENTATION.md) |
+| This hub | **this file** |
+| Asset galleries / starter roles | [`ASSET_GALLERY_MODEL.md`](./ASSET_GALLERY_MODEL.md) |
+| Production patterns (stub) | [`PRODUCTION_PATTERNS_PLAN.md`](./PRODUCTION_PATTERNS_PLAN.md) |
+| Hourly ruleset | [`HOURLY_UTILITY_PLAN.md`](./HOURLY_UTILITY_PLAN.md) |
+| Hourly drains as data | [`HOURLY_DRAIN_POLICY_PLAN.md`](./HOURLY_DRAIN_POLICY_PLAN.md) |
+| Guide pipes / bins / steer slices | [`HOURLY_GUIDE_PIPELINE_PLAN.md`](./HOURLY_GUIDE_PIPELINE_PLAN.md) |
+| Chain steer & appetite | [`CHAIN_STEER_AND_APPETITE_CONTROL_PLAN.md`](./CHAIN_STEER_AND_APPETITE_CONTROL_PLAN.md) |
+| Custody / locate | [`ASSET_LIFECYCLE_PLAN.md`](./ASSET_LIFECYCLE_PLAN.md) |
+| Broken lineage | [`LINEAGE_REMEDIATION_PLAN.md`](./LINEAGE_REMEDIATION_PLAN.md) |
+| Still gallery (specialization) | [`STILL_GALLERY_HUB_PLAN.md`](./STILL_GALLERY_HUB_PLAN.md) |
+| Clips | [`CLIP_SELECTION_MODEL.md`](./CLIP_SELECTION_MODEL.md) |
+| Ratings / disposition | [`RATINGS_V1_PLAN.md`](./RATINGS_V1_PLAN.md), [`DISPOSITION_BUCKET_MODEL.md`](./DISPOSITION_BUCKET_MODEL.md) |
+| Heuristic north star | [`HEURISTIC_ENGINE_NORTH_STAR.md`](./HEURISTIC_ENGINE_NORTH_STAR.md) |
+| Factory session crumbs | [`.data/WORKFLOW_FACTORY_NEXT.md`](../.data/WORKFLOW_FACTORY_NEXT.md) |
+| Historical infra handoff | [`CURRENT_GOAL.md`](./CURRENT_GOAL.md) |
 
 ---
 
-*Treat this file as living: after each spike retrospective, update **Today / Next / Not now** for affected programs only.*
+*Living file: after each spike, update Today / Next only for affected programs.*

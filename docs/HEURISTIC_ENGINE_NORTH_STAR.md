@@ -2,12 +2,13 @@
 
 **Status:** Vision note (2026-08-29). Not a build spec. Corrals the
 desire→technique / discover+generate loop so slice plans stay oriented.
+Hub (programs): [`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md).
 
 **Related:** [`CORPUS_LIFECYCLE.md`](./CORPUS_LIFECYCLE.md) (judgment ↔ generation loop),
 [`RATINGS_V1_PLAN.md`](./RATINGS_V1_PLAN.md) (quality vs appetite),
 [`APPETITE_SIMILARITY_BIAS_PLAN.md`](./APPETITE_SIMILARITY_BIAS_PLAN.md) (neighbor bias),
 [`DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md`](./DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md)
-(find / resemble), [`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md) (programs),
+(find / resemble), [`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md) (A1–A4 / S1–S2),
 [`DISCOVERY_INDEX_WATCHER_PLAN.md`](./DISCOVERY_INDEX_WATCHER_PLAN.md) (index freshness).
 
 ---

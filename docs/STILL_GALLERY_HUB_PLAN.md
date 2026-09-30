@@ -1,5 +1,10 @@
 # Still image gallery — launch hub
 
+**Program:** A1 Discovery — **first specialization** of the asset-gallery class
+(not a privileged asset type). Parent model:
+[`ASSET_GALLERY_MODEL.md`](./ASSET_GALLERY_MODEL.md). Hub:
+[`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md).
+
 **Status:** G0–G1 done; **G2 launch pad landing** (2026-08-29). **G3 map-side
 half landing** (family-page Curate sources strip + collection attach, appetite
 seed suggestions, job→Factory Map `#pools` / `#curation` / `#job=` links).
@@ -16,8 +21,10 @@ widens the older “input still browser + collections-as-pools” note.
 ## Goal
 
 An **image gallery** is the home for stills (Comfy/`input` first; later other
-still corpora). Selecting an image opens a **launch pad** — not a private
-submit form — into many destinations that already exist as doors:
+still corpora) — the first concrete **asset gallery**
+([`ASSET_GALLERY_MODEL.md`](./ASSET_GALLERY_MODEL.md)). Selecting an image opens
+a **launch pad** — not a private submit form — into many destinations that
+already exist as doors:
 
 | Launch | Destination | Intent |
 |--------|-------------|--------|

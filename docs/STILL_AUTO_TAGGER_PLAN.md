@@ -1,7 +1,11 @@
 # Still auto-tagger — plan
 
+**Program:** A3 tagging drain for the **still** asset-gallery specialization
+([`ASSET_GALLERY_MODEL.md`](./ASSET_GALLERY_MODEL.md)); not a separate gallery
+program. Hub: [`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md).
+
 **Status:** Planning (2026-08-27). Do **not** implement until T0 exits below are accepted.  
-**Home:** Gallery enrichment (G4) + P1 V3a day-one pin — not a new model bake-off.
+**Home:** Gallery enrichment (G4) + Discovery V3a day-one pin — not a new model bake-off.
 
 **Related:**
 [`STILL_GALLERY_HUB_PLAN.md`](./STILL_GALLERY_HUB_PLAN.md),
@@ -9,7 +13,7 @@
 [`DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md`](./DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md) (V3a),
 [`DISCOVERY_INDEX_WATCHER_PLAN.md`](./DISCOVERY_INDEX_WATCHER_PLAN.md) (V2 job framework; `input/` deferred),
 [`SCALE_INDEX_ARCHITECTURE.md`](./SCALE_INDEX_ARCHITECTURE.md) (SQLite indexes, not monolith blobs),
-[`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md) (P1 / P8).
+[`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md) (A1 / still specialization).
 
 ---
 

@@ -1,8 +1,14 @@
-# Current goal — read this first when resuming work
+# Current goal — historical infra handoff
 
-**Last updated:** 2026-07-02
+**Status:** Historical (Docker / WSL / GPU bring-up). **Do not treat as the
+active program map.** For what to work on next, read
+[`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md). Platform / runtime notes that
+remain useful live under **S2 Platform** there.
 
-This file is the **active handoff** for infrastructure and runtime work. Read it at the start of a session before guessing from git history or old chat.
+**Last updated as active goal:** 2026-07-02
+
+This file was the **active handoff** for infrastructure and runtime work during
+initial ComfyUI-on-Docker bring-up. Kept for mount layout and success checks.
 
 ---
 

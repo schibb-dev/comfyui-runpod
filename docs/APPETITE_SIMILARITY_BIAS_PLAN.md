@@ -1,5 +1,10 @@
 # Appetite similarity bias — technique track
 
+**Program:** A3 Refinement (later; not a parallel rating system). Judgment stays
+[`RATINGS_V1_PLAN.md`](./RATINGS_V1_PLAN.md) +
+[`DISPOSITION_BUCKET_MODEL.md`](./DISPOSITION_BUCKET_MODEL.md). Hub:
+[`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md).
+
 **Status:** stub (2026-08-29). Phase A shipped: mark appetite on Workbench + Factory Map
 inspectors ([`RATINGS_V1_PLAN.md`](./RATINGS_V1_PLAN.md)). **Facet UI (both/source/look) is
 retired as of 2026-09-08** — stored `facet` is up for review; factory credit still reads it.

@@ -1,7 +1,11 @@
 # Hourly guide pipeline — Phase 0/1 slice
 
+**Program:** A3 Refinement (pipes/bins under hourly). Hub:
+[`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md).
+
 **Status:** Active (first slice landed 2026-09-25). Parent:
-[`HOURLY_UTILITY_PLAN.md`](./HOURLY_UTILITY_PLAN.md).
+[`HOURLY_UTILITY_PLAN.md`](./HOURLY_UTILITY_PLAN.md). Drain policy as data:
+[`HOURLY_DRAIN_POLICY_PLAN.md`](./HOURLY_DRAIN_POLICY_PLAN.md).
 
 ## Activity model
 

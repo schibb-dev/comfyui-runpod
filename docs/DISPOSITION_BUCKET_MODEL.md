@@ -1,5 +1,9 @@
 # Disposition, buckets, and review — model reference
 
+**Program:** A1 Discovery (judgment). Hub:
+[`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md). Pair with
+[`RATINGS_V1_PLAN.md`](./RATINGS_V1_PLAN.md).
+
 **Last updated:** 2026-09-14
 
 A skimmable map of the day-to-day process for reviewing clips, committing work intent, and feeding the factory — not a schema dump or API reference. Umbrella picture and fragment inventory: [CORPUS_LIFECYCLE.md](./CORPUS_LIFECYCLE.md). For ratings implementation detail see [RATINGS_V1_PLAN.md](./RATINGS_V1_PLAN.md). Clip / usable trim / starring / soft-delete: [CLIP_SELECTION_MODEL.md](./CLIP_SELECTION_MODEL.md).

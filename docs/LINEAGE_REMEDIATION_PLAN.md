@@ -1,5 +1,8 @@
 # Lineage & asset remediation
 
+**Program:** S1 Custody (child of asset lifecycle). Hub:
+[`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md).
+
 **Status:** Design for future implementation (2026-09-29).  
 **Parents:** [`ASSET_LIFECYCLE_PLAN.md`](./ASSET_LIFECYCLE_PLAN.md) (Phases 2–3 locate/relocate),
 [`APPETITE_REMOVE_LIFECYCLE.md`](./APPETITE_REMOVE_LIFECYCLE.md),

@@ -1,5 +1,9 @@
 # Clips, usable trim, and selection
 
+**Program:** A1 Discovery — asset-gallery specialization (clips). Parent class:
+[`ASSET_GALLERY_MODEL.md`](./ASSET_GALLERY_MODEL.md). Hub:
+[`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md).
+
 Locked product model for Asset / Clip / Use, starring, usable trim (hygiene),
 automation selection, ratings, used/unused cleanup, and soft-delete. Complements
 [DISPOSITION_BUCKET_MODEL.md](./DISPOSITION_BUCKET_MODEL.md).

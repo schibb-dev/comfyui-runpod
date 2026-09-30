@@ -1,5 +1,11 @@
 # Chain steer & appetite control
 
+**Program:** A2 Experimentation (steer marks) + A3 consumption via hourly.
+Hub: [`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md). Owns **marks**; hourly
+*consumption* of marks is under
+[`HOURLY_UTILITY_PLAN.md`](./HOURLY_UTILITY_PLAN.md) /
+[`HOURLY_DRAIN_POLICY_PLAN.md`](./HOURLY_DRAIN_POLICY_PLAN.md) — no second scheduler.
+
 **Status:** Design locked for implementation sequencing (2026-09-29).  
 **Parents:** [`HOURLY_GUIDE_PIPELINE_PLAN.md`](./HOURLY_GUIDE_PIPELINE_PLAN.md) (Phase 3 hard-drop landed),
 [`RATINGS_V1_PLAN.md`](./RATINGS_V1_PLAN.md), [`HEURISTIC_ENGINE_NORTH_STAR.md`](./HEURISTIC_ENGINE_NORTH_STAR.md),

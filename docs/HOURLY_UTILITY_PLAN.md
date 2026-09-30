@@ -1,14 +1,22 @@
 # Hourly as a ruleset utility
 
+**Program:** A3 Refinement — hourlies are the **scheduled manifestation** of
+promoted rules (not a separate program). Hub:
+[`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md).
+
 **Status:** Active plan (merged 2026-08-27). Formerly split across
 `HOURLY_RULESET_UTILITY.md` and `HOURLY_CLIP_GUIDANCE_PLAN.md` — those files
 redirect here.
 
+**Canonical parent for hourly policy.** Children:
+[`HOURLY_GUIDE_PIPELINE_PLAN.md`](./HOURLY_GUIDE_PIPELINE_PLAN.md) (pipes/bins),
+[`HOURLY_DRAIN_POLICY_PLAN.md`](./HOURLY_DRAIN_POLICY_PLAN.md) (**U1/U5 design
+vehicle** — declarative drains; do this next for M1).
+
 **Product models (not duplicated):**
 [`CLIP_SELECTION_MODEL.md`](./CLIP_SELECTION_MODEL.md) (★ / Use / retire),
 [`DISPOSITION_BUCKET_MODEL.md`](./DISPOSITION_BUCKET_MODEL.md) (rate → dispose → Advance),
-[`WORKFLOW_INTENT.md`](./WORKFLOW_INTENT.md) (station vocab / pipelines),
-[`HOURLY_GUIDE_PIPELINE_PLAN.md`](./HOURLY_GUIDE_PIPELINE_PLAN.md) (asset→pool→bin→workflow pipes; Phase 0/1 seed-stills bin).
+[`WORKFLOW_INTENT.md`](./WORKFLOW_INTENT.md) (station vocab / pipelines).
 
 Ops crumbs also live in [`.data/WORKFLOW_FACTORY_NEXT.md`](../.data/WORKFLOW_FACTORY_NEXT.md).
 
@@ -152,6 +160,10 @@ Was H0–H3. Do not redo.
 
 ### U1 — Policy file *(lift knobs)*
 
+**Design vehicle:** [`HOURLY_DRAIN_POLICY_PLAN.md`](./HOURLY_DRAIN_POLICY_PLAN.md)
+(configuration-first drains; env as override until readers land). Implement U1
+via that plan — do not invent a second policy shape here.
+
 Add `.data/shape_factory/hourly-policy.yaml` (or extend `hourly-schedule.json`):
 
 - Drain: `facial_drain_every`, `i2v_gex_drain_every`, `seed_over_chain_share`,
@@ -165,6 +177,7 @@ Reader order: **file → env override → code fallback**. Allowlist in git for
 history; runtime-only overrides stay uncommitted.
 
 **Exit:** change GEX2 weight or facial cadence without editing Python.
+**Next (M1):** land drain-policy readers per the drain-policy plan.
 
 ---
 
@@ -224,7 +237,7 @@ instead of hardcoded family strings only — descriptive, not a lockout engine.
 | Milestone | Delivers | Notes |
 |-----------|----------|-------|
 | **M0** | U0 complete | Clip foundation on main |
-| **M1** | U1 | Policy file; operators edit weights/cadences |
+| **M1** | U1 via drain-policy plan | **Next primary** — [`HOURLY_DRAIN_POLICY_PLAN.md`](./HOURLY_DRAIN_POLICY_PLAN.md) |
 | **M2** | U2a (+ U2b as capacity) | Hourlies *guided by* newer ★ across pool |
 | **M3** | U3 | Explainable ticks |
 | **M4** | U4 | Home ruleset surface |

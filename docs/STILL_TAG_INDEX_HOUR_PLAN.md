@@ -1,5 +1,9 @@
 # Still-tag index hour — plan
 
+**Program:** A3/S2 tagging drain for the still gallery specialization. Hub:
+[`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md). Parent:
+[`STILL_AUTO_TAGGER_PLAN.md`](./STILL_AUTO_TAGGER_PLAN.md).
+
 **Status:** Active (2026-09-19). **SLA sessions** — attempt queued stills within
 `max_wait_hours` (default **3h**; gallery Queue tag uses `manual_max_wait_hours`,
 default **1h**). Exclusive Florence burst aims at `session_minutes` (default **15**);

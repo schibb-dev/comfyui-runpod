@@ -1,5 +1,9 @@
 # Asset lifecycle: registry, job backfill, relocation, image reorg
 
+**Program:** S1 Custody. Hub: [`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md).
+**Canonical parent** for locate/relocate/registry; child:
+[`LINEAGE_REMEDIATION_PLAN.md`](./LINEAGE_REMEDIATION_PLAN.md).
+
 **Scope:** **Asset lifecycle** = custody of the media object (identity, presence, location, references). For judgment, clips, disposition, factory work, and re-entry into review — the **corpus lifecycle** — see [`CORPUS_LIFECYCLE.md`](./CORPUS_LIFECYCLE.md). Do not use bare “lifecycle” without the qualifier.
 
 Status: **Phases 0–1 shipped** (content registry + job backfill). Phases 2–4 planned.

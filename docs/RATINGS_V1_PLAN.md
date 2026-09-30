@@ -1,5 +1,10 @@
 # Inferred ratings v1 — plan & session handoff
 
+**Program:** A1 Discovery (judgment). Hub:
+[`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md). Pair with
+[`DISPOSITION_BUCKET_MODEL.md`](./DISPOSITION_BUCKET_MODEL.md). Appetite-similarity
+is later A3 refinement — not a parallel rating system.
+
 **Last updated:** 2026-07-03
 
 This document captures **locked design direction** and the **concrete implementation plan** for the next session(s). It complements [`LINEAGE_INDEX_SKETCH.md`](./LINEAGE_INDEX_SKETCH.md) (provenance graph) and [`DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md`](./DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md) (browse/similarity). Factory ops checklist: [`.data/WORKFLOW_FACTORY_NEXT.md`](../.data/WORKFLOW_FACTORY_NEXT.md).

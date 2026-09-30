@@ -1,5 +1,8 @@
 # Discovery index watcher + asset enrichment jobs — plan
 
+**Program:** A1 Discovery / S2 freshness. Hub:
+[`PLANNING_OVERVIEW.md`](./PLANNING_OVERVIEW.md).
+
 **Status:** Planned — **not implemented** (saved 2026-07-09).
 
 **Related:** [`DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md`](./DISCOVERY_SEARCH_AND_SIMILARITY_VISION.md), [`LINEAGE_INDEX_SKETCH.md`](./LINEAGE_INDEX_SKETCH.md), [`RATINGS_V1_PLAN.md`](./RATINGS_V1_PLAN.md).
