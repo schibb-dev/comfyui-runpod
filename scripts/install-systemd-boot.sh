@@ -118,6 +118,7 @@ Type=oneshot
 WorkingDirectory=$REPO_ROOT
 Environment="PATH=$compose_service_path"
 # Does not use Docker restart policies. compose up only after preflight; see scripts/comfyui_keep.py.
+# Soft-revives output-sftp when down (does not consume Comfy retry budget).
 ExecStart=$QPYTHON $QKEEP
 EOF
 

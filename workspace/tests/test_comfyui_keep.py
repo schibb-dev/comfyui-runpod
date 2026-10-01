@@ -36,6 +36,7 @@ def facts(**kwargs) -> Facts:
             finished_at=NOW - timedelta(minutes=20),
         ),
         watch_queue=ContainerFacts(present=True, status="running"),
+        output_sftp=ContainerFacts(present=True, status="running"),
         http_8188_ok=False,
     )
     base.update(kwargs)
@@ -65,6 +66,20 @@ class ComfyuiKeepTests(unittest.TestCase):
         self.assertEqual(d.action, "noop")
         self.assertIn("queue ok", d.reason)
 
+    def test_running_healthy_soft_ups_sftp(self) -> None:
+        d = decide(
+            facts(
+                comfy=ContainerFacts(present=True, status="running", started_at=NOW - timedelta(hours=1)),
+                http_8188_ok=True,
+                output_sftp=ContainerFacts(present=True, status="exited", exit_code=255),
+            ),
+            KeepState(),
+        )
+        self.assertEqual(d.action, "up")
+        self.assertEqual(d.services, ("output-sftp",))
+        self.assertFalse(d.counts_attempt)
+        self.assertIn("output-sftp down", d.reason)
+
     def test_startup_grace(self) -> None:
         d = decide(
             facts(
@@ -75,6 +90,19 @@ class ComfyuiKeepTests(unittest.TestCase):
         )
         self.assertEqual(d.action, "noop")
         self.assertIn("startup grace", d.reason)
+
+    def test_startup_grace_still_soft_ups_sftp(self) -> None:
+        d = decide(
+            facts(
+                comfy=ContainerFacts(present=True, status="running", started_at=NOW - timedelta(minutes=3)),
+                http_8188_ok=False,
+                output_sftp=ContainerFacts(present=False),
+            ),
+            KeepState(),
+        )
+        self.assertEqual(d.action, "up")
+        self.assertEqual(d.services, ("output-sftp",))
+        self.assertFalse(d.counts_attempt)
 
     def test_running_hung_not_killed(self) -> None:
         d = decide(
@@ -103,6 +131,24 @@ class ComfyuiKeepTests(unittest.TestCase):
         self.assertEqual(d.action, "noop")
         self.assertIn("clean exit", d.reason)
 
+    def test_clean_exit_zero_still_soft_ups_sftp(self) -> None:
+        d = decide(
+            facts(
+                comfy=ContainerFacts(
+                    present=True,
+                    status="exited",
+                    exit_code=0,
+                    oom_killed=False,
+                    finished_at=NOW - timedelta(minutes=20),
+                ),
+                output_sftp=ContainerFacts(present=True, status="exited", exit_code=255),
+            ),
+            KeepState(),
+        )
+        self.assertEqual(d.action, "up")
+        self.assertEqual(d.services, ("output-sftp",))
+        self.assertFalse(d.counts_attempt)
+
     def test_oom_cooldown(self) -> None:
         d = decide(
             facts(
@@ -119,20 +165,68 @@ class ComfyuiKeepTests(unittest.TestCase):
         self.assertEqual(d.action, "noop")
         self.assertEqual(d.reason, "OOM cooldown")
 
+    def test_oom_cooldown_still_soft_ups_sftp(self) -> None:
+        d = decide(
+            facts(
+                comfy=ContainerFacts(
+                    present=True,
+                    status="exited",
+                    exit_code=137,
+                    oom_killed=True,
+                    finished_at=NOW - timedelta(minutes=5),
+                ),
+                output_sftp=ContainerFacts(present=True, status="dead"),
+            ),
+            KeepState(),
+        )
+        self.assertEqual(d.action, "up")
+        self.assertEqual(d.services, ("output-sftp",))
+        self.assertFalse(d.counts_attempt)
+
     def test_oom_ready_ups_comfy_only(self) -> None:
         d = decide(facts(), KeepState())
         self.assertEqual(d.action, "up")
         self.assertEqual(d.services, ("comfyui",))
+        self.assertTrue(d.counts_attempt)
+
+    def test_oom_ready_includes_sftp_when_down(self) -> None:
+        d = decide(
+            facts(output_sftp=ContainerFacts(present=True, status="exited", exit_code=255)),
+            KeepState(),
+        )
+        self.assertEqual(d.action, "up")
+        self.assertEqual(d.services, ("comfyui", "output-sftp"))
+        self.assertTrue(d.counts_attempt)
 
     def test_missing_watch_queue_included(self) -> None:
         d = decide(facts(watch_queue=ContainerFacts(present=False)), KeepState())
         self.assertEqual(d.services, ("comfyui", "watch_queue"))
+
+    def test_missing_watch_and_sftp_included(self) -> None:
+        d = decide(
+            facts(
+                watch_queue=ContainerFacts(present=False),
+                output_sftp=ContainerFacts(present=False),
+            ),
+            KeepState(),
+        )
+        self.assertEqual(d.services, ("comfyui", "watch_queue", "output-sftp"))
 
     def test_min_gap(self) -> None:
         state = KeepState(attempts=[NOW - timedelta(minutes=2)])
         d = decide(facts(), state)
         self.assertEqual(d.action, "noop")
         self.assertIn("min gap", d.reason)
+
+    def test_min_gap_still_soft_ups_sftp(self) -> None:
+        state = KeepState(attempts=[NOW - timedelta(minutes=2)])
+        d = decide(
+            facts(output_sftp=ContainerFacts(present=True, status="exited", exit_code=255)),
+            state,
+        )
+        self.assertEqual(d.action, "up")
+        self.assertEqual(d.services, ("output-sftp",))
+        self.assertFalse(d.counts_attempt)
 
     def test_retry_cap(self) -> None:
         state = KeepState(
@@ -146,6 +240,22 @@ class ComfyuiKeepTests(unittest.TestCase):
         self.assertEqual(d.action, "noop")
         self.assertIn("retry cap", d.reason)
         self.assertEqual(d.attempts_in_window, MAX_ATTEMPTS)
+
+    def test_retry_cap_still_soft_ups_sftp(self) -> None:
+        state = KeepState(
+            attempts=[
+                NOW - timedelta(minutes=90),
+                NOW - timedelta(minutes=40),
+                NOW - timedelta(minutes=20),
+            ]
+        )
+        d = decide(
+            facts(output_sftp=ContainerFacts(present=True, status="exited", exit_code=255)),
+            state,
+        )
+        self.assertEqual(d.action, "up")
+        self.assertEqual(d.services, ("output-sftp",))
+        self.assertFalse(d.counts_attempt)
 
     def test_old_attempts_pruned(self) -> None:
         state = KeepState(
@@ -162,6 +272,18 @@ class ComfyuiKeepTests(unittest.TestCase):
     def test_missing_container_ups(self) -> None:
         d = decide(facts(comfy=ContainerFacts(present=False)), KeepState())
         self.assertEqual(d.action, "up")
+
+    def test_hold_blocks_sftp_soft_up(self) -> None:
+        d = decide(
+            facts(
+                hold=True,
+                comfy=ContainerFacts(present=True, status="running", started_at=NOW - timedelta(hours=1)),
+                http_8188_ok=True,
+                output_sftp=ContainerFacts(present=True, status="exited", exit_code=255),
+            ),
+            KeepState(),
+        )
+        self.assertEqual(d.action, "noop")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Gentle capped restart for ComfyUI (compose up), without Docker restart: unless-stopped.
 
+Also soft-revives ``output-sftp`` when the boot unit says the stack should be up
+(SFTP uses ``restart: "no"`` like Comfy, so Docker flaps leave it dead otherwise).
+SFTP-only ups do not consume the Comfy retry budget.
+
 See scripts/install-systemd-boot.sh (comfyui-runpod-keep.timer).
 """
 from __future__ import annotations
@@ -23,6 +27,8 @@ STARTUP_GRACE = timedelta(minutes=12)
 BOOT_UNIT = "comfyui-runpod-docker.service"
 COMFY_CONTAINER = "comfyui0-runpod"
 WATCH_CONTAINER = "comfyui0-watch-queue"
+SFTP_CONTAINER = "output-sftp"
+SFTP_SERVICE = "output-sftp"
 
 Action = Literal["noop", "up"]
 
@@ -103,6 +109,7 @@ class Facts:
     preflight_ok: bool
     comfy: ContainerFacts
     watch_queue: ContainerFacts
+    output_sftp: ContainerFacts
     http_8188_ok: bool
 
 
@@ -112,11 +119,28 @@ class Decision:
     reason: str
     services: tuple[str, ...] = ()
     attempts_in_window: int = 0
+    """When False, a successful compose up does not consume Comfy retry budget (SFTP-only)."""
+    counts_attempt: bool = True
+
+
+def _container_needs_up(c: ContainerFacts) -> bool:
+    return (not c.present) or c.status in ("exited", "dead", "created")
+
+
+def _soft_sftp_up(n: int) -> Decision:
+    return Decision(
+        "up",
+        "output-sftp down; soft compose up",
+        (SFTP_SERVICE,),
+        attempts_in_window=n,
+        counts_attempt=False,
+    )
 
 
 def decide(facts: Facts, state: KeepState) -> Decision:
     state.prune(facts.now)
     n = len(state.attempts)
+    sftp_down = _container_needs_up(facts.output_sftp)
 
     if facts.hold:
         return Decision("noop", "hold file present", attempts_in_window=n)
@@ -128,9 +152,15 @@ def decide(facts: Facts, state: KeepState) -> Decision:
     c = facts.comfy
     if c.present and c.status == "running":
         if facts.http_8188_ok:
+            if sftp_down:
+                return _soft_sftp_up(n)
             return Decision("noop", "comfyui running and /queue ok", attempts_in_window=n)
         if c.started_at and facts.now - c.started_at < STARTUP_GRACE:
+            if sftp_down:
+                return _soft_sftp_up(n)
             return Decision("noop", "startup grace (8188 not ready yet)", attempts_in_window=n)
+        if sftp_down:
+            return _soft_sftp_up(n)
         return Decision(
             "noop",
             "container running but 8188 down past grace (not killing)",
@@ -139,12 +169,18 @@ def decide(facts: Facts, state: KeepState) -> Decision:
 
     unexpected = (not c.present) or c.status in ("exited", "dead", "created")
     if not unexpected:
+        if sftp_down:
+            return _soft_sftp_up(n)
         return Decision("noop", f"status={c.status or 'unknown'} (no action)", attempts_in_window=n)
 
     if c.present and c.status == "exited" and (c.exit_code or 0) == 0 and not c.oom_killed:
+        if sftp_down:
+            return _soft_sftp_up(n)
         return Decision("noop", "clean exit 0 (not retrying)", attempts_in_window=n)
 
     if n >= MAX_ATTEMPTS:
+        if sftp_down:
+            return _soft_sftp_up(n)
         oldest = min(state.attempts)
         until = oldest + WINDOW
         return Decision(
@@ -156,15 +192,21 @@ def decide(facts: Facts, state: KeepState) -> Decision:
     if state.attempts:
         last = max(state.attempts)
         if facts.now - last < MIN_GAP:
+            if sftp_down:
+                return _soft_sftp_up(n)
             return Decision("noop", "min gap since last attempt", attempts_in_window=n)
 
     if c.oom_killed and c.finished_at and facts.now - c.finished_at < OOM_GAP:
+        if sftp_down:
+            return _soft_sftp_up(n)
         return Decision("noop", "OOM cooldown", attempts_in_window=n)
 
     services = ["comfyui"]
     w = facts.watch_queue
-    if (not w.present) or w.status in ("exited", "dead"):
+    if _container_needs_up(w):
         services.append("watch_queue")
+    if sftp_down:
+        services.append(SFTP_SERVICE)
 
     return Decision("up", "unexpected exit; compose up", tuple(services), attempts_in_window=n)
 
@@ -288,6 +330,7 @@ def main(argv: list[str] | None = None) -> int:
         preflight_ok=preflight_ok(root),
         comfy=inspect_container(COMFY_CONTAINER),
         watch_queue=inspect_container(WATCH_CONTAINER),
+        output_sftp=inspect_container(SFTP_CONTAINER),
         http_8188_ok=http_queue_ok(),
     )
     decision = decide(facts, state)
@@ -295,7 +338,8 @@ def main(argv: list[str] | None = None) -> int:
         f"action={decision.action} services={','.join(decision.services) or '-'} "
         f"attempts={decision.attempts_in_window} "
         f"comfy={facts.comfy.status or 'missing'} exit={facts.comfy.exit_code} "
-        f"oom={facts.comfy.oom_killed}"
+        f"oom={facts.comfy.oom_killed} "
+        f"sftp={facts.output_sftp.status or 'missing'}"
     )
     log_line(log_path, f"{decision.reason} ({extra})")
 
@@ -306,9 +350,10 @@ def main(argv: list[str] | None = None) -> int:
 
     rc = compose_up(root, decision.services)
     if rc == 0:
-        state.attempts.append(now)
-        state.prune(now)
-        save_state(state_path, state)
+        if decision.counts_attempt:
+            state.attempts.append(now)
+            state.prune(now)
+            save_state(state_path, state)
         log_line(log_path, f"compose up -d {' '.join(decision.services)} ok")
         return 0
     log_line(log_path, f"compose up failed rc={rc} (attempt not counted)")

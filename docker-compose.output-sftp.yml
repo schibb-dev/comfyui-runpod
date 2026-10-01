@@ -21,6 +21,7 @@ services:
     image: atmoz/sftp:alpine
     container_name: output-sftp
     # Same as comfyui: no auto-restart on daemon boot (WSL bind-mount race). See install-systemd-boot.sh.
+    # Mid-session flaps: comfyui-runpod-keep soft-revives this service when the boot unit is active.
     restart: "no"
     ports:
       - "${OUTPUT_SFTP_PORT:-2222}:22"
